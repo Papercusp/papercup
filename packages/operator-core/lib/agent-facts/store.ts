@@ -1365,6 +1365,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // instead of itself. A re-assert of an existing key supersedes its own prior
   // version (excluded by `superseded_at IS NULL`), so it never evicts a
   // neighbour to make room for itself.
+  //
+  // ⚠ That CAP-1 holds only for a write that JOINS the population. An EXEMPT
+  // write (convention / `wall:` / `dead-end:`) does not, and trimming to CAP-1
+  // for it destroyed a fact to buy a seat nobody took — EI-20824216187836980.
+  // The OFFSET below is therefore computed, not constant; see its note.
   // `IS DISTINCT FROM` (not `<>`) so a NULL id — impossible via the RETURNING
   // above, but cheap to be total about — degrades to the old ranking instead of
   // silently matching nothing and disabling the cap entirely.
@@ -1401,7 +1406,30 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                  (EXTRACT(epoch FROM (expires_at - now()))
                     / GREATEST(EXTRACT(epoch FROM (expires_at - created_at)), 1)) DESC,
                  updated_at DESC
-       OFFSET ${Math.max(0, FACTS_PER_SCOPE_CAP - 1)})
+       -- EI-20824216187836980: CAP-1 is correct only when the row THIS call just
+       -- wrote is itself a MEMBER of the cap population. When it is EXEMPT (a
+       -- convention, or a 'wall:'/'dead-end:' safety slot — see
+       -- capPopulationPredicate) it never joins that population, so trimming the
+       -- incumbents to CAP-1 destroyed a live fact to make room for a row that
+       -- was never going to occupy the room. The offset is CAP for such a write.
+       --
+       -- Measured 2026-08-19 on workspace/papercusp-workspace: 200 non-exempt
+       -- rows pinned at exactly the cap beside 121 exempt ones, and 12 of the 28
+       -- evictions in the preceding 24h (43%) were bought by exempt writes that
+       -- took no seat. The reported symptom was a convention re-assert evicting
+       -- an unrelated peer's fact; the append-versioning it was blamed on is NOT
+       -- the cause — a non-exempt re-assert already evicts nothing, since its
+       -- prior version leaves the population as the new one enters it.
+       --
+       -- Membership is derived from the SAME predicate rather than re-decided in
+       -- TS: a hand-copied exemption test is exactly the drift that had already
+       -- broken the survival query (see its note below), and here it would fail
+       -- SILENTLY — over-evicting is indistinguishable from ordinary cap
+       -- pressure. count(*) is 0 or 1, since id is the primary key.
+       OFFSET (SELECT GREATEST(0, ${FACTS_PER_SCOPE_CAP}::int - count(*)::int)
+                 FROM harness_shared.agent_facts
+                WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}
+                  AND id = ${writtenId}))
     RETURNING key, confidence, expires_at, created_by`;
   const fact = rowToFact(rows[0]) as AssertFactResult;
   if (evictedRows.length > 0) {
@@ -1844,15 +1872,39 @@ export async function previewFactCapImpact(
   // this is how a preview would over-predict eviction for every ordinary refresh
   // of an existing fact, which is the single most common assert there is.
   const incumbents = population.filter((r) => r.key !== key);
-  const replacesExistingKey = incumbents.length !== population.length;
+  // EI-20824216187836980: an exempt row is absent from `population` by
+  // construction, so the filter above can NEVER see it — deciding this from the
+  // population alone reported a confident `false` for every convention / wall /
+  // dead-end refresh, i.e. "this write takes a new slot" about a write that
+  // takes none. Ask the table directly on that branch.
+  const replacesExistingKey = exempt
+    ? (
+        await sql<{ hit: number }[]>`
+          SELECT 1 AS hit
+            FROM harness_shared.agent_facts
+           WHERE workspace_id = ${ws} AND scope = ${input.scope}
+             AND coalesce(scope_ref,'') = ${ref ?? ''} AND key = ${key}
+             AND source_hive IS NULL AND superseded_at IS NULL
+             AND retracted_at IS NULL AND expires_at > now()
+           LIMIT 1`
+      ).length > 0
+    : incumbents.length !== population.length;
 
   const { orderAsSweepWould, rankOfId, sweepRemainingFraction } = await import('./sweep-ranking');
   const nowMs = Date.now();
 
   // Rank the incumbents exactly as the sweep's ORDER BY would, then take the
-  // tail past the offset — the same arithmetic as `OFFSET FACTS_PER_SCOPE_CAP-1`.
+  // tail past the offset — the same arithmetic as the sweep's own OFFSET.
+  //
+  // EI-20824216187836980: that offset is CAP-1 only for a write that JOINS the
+  // cap population. An EXEMPT write never does, so it buys no seat and must
+  // trim nothing — offset CAP. This mirrors the sweep's computed offset; the
+  // integration suite runs BOTH and requires them to name the same victims, so
+  // a drift here is a test failure rather than a forecast that quietly
+  // over-predicts the destruction its own caller is deciding against.
+  const capOffset = Math.max(0, exempt ? FACTS_PER_SCOPE_CAP : FACTS_PER_SCOPE_CAP - 1);
   const orderedIncumbents = orderAsSweepWould(incumbents, nowMs);
-  const doomed = orderedIncumbents.slice(Math.max(0, FACTS_PER_SCOPE_CAP - 1));
+  const doomed = orderedIncumbents.slice(capOffset);
   const wouldEvict: FactEviction[] = doomed.map((r) => ({
     key: r.key,
     confidence: parseFactConfidence(r.confidence),
