@@ -133,7 +133,12 @@ describe('the zero-write property (this is the acceptance criterion)', () => {
     expect(new Set(imports)).toEqual(
       new Set(['@papercusp/db-org', '../workspace-registry', './router', './types']),
     );
-    expect(src).not.toMatch(/goals:(create|update)|createGoal|startGoal|dispatchGoal/);
+    // Match CODE, not prose. The module's own doc comment names goals:create and
+    // goals:update precisely to say it cannot reach them, and an earlier version of
+    // this guard failed on that sentence — a guard that fires on the documentation
+    // explaining the invariant teaches the next author to delete the documentation.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toMatch(/goals:(create|update)|createGoal|startGoal|dispatchGoal/);
   });
 });
 
