@@ -14,6 +14,7 @@ import {
   LEARNING_SLO_DEFAULTS,
   collectMemoryZeroHitSignals,
   collectTriageEntropySignals,
+  effectiveZeroHitGate,
   flowSignalsFromAggregate,
   governorStarvationSignals,
   medianOf,
@@ -817,5 +818,122 @@ describe('recall empty-scope + scale-contradiction (P-037)', () => {
 
   it('stays silent when nothing contradicts — the live state today', () => {
     expect(recallScaleSignalsFromContradictions([])).toEqual([]);
+  });
+});
+
+/**
+ * gate-2 corpus normalization (EI-20878926803436140).
+ *
+ * PERMANENT CONTROLS, not arithmetic coverage. `recallPoolSignalsFromHealth`
+ * and `effectiveZeroHitGate` are importable pure functions, so per CLAUDE.md's
+ * falsifiability tier table this is a tier-1 subject: the wrong behaviour is
+ * kept here forever as a fixture and asserted to FAIL the property the real
+ * one passes — no mutation probe, no shared-tree mutation, and the property is
+ * re-proved on every single run.
+ *
+ * Every fixture below is a MEASURED slice (2026-08-19, harness_shared
+ * .memory_recall_stats joined to memory_canonical), never an invented number:
+ *
+ *   window   surface/pool        recalls   zero    corpus  verdict
+ *   aug-01   initialize/harness       54  1.0000    1,975  MUST fire  (true +)
+ *   now-7d   mid-turn/hive       214,222  0.8581       58  MUST NOT   (false +)
+ *   now-7d   injection/harness       184  0.9946       27  MUST fire  (true +)
+ *
+ * The two directions are SEPARATE failures: silencing the false alarm is only
+ * a fix if both true positives survive it, and the whole reason this bug
+ * existed is that the obvious remedy traded one for the other.
+ */
+describe('recall gate-2 corpus normalization — CONTROL set (EI-20878926803436140)', () => {
+  const pool = (over: Partial<RecallPoolHealth> = {}): RecallPoolHealth => ({
+    surface: 'mid-turn',
+    pool: 'hive',
+    scoreScale: 'rrf',
+    recalls: 40,
+    zeroHit: 0,
+    zeroHitRate: 0,
+    saturated: 0,
+    saturationRate: 0,
+    hitsP50: 1,
+    topScoreP50: 0.03,
+    scopes: ['hive:papercusp'],
+    emptyScope: 0,
+    emptyScopeRate: 0,
+    corpusActive: null,
+    ...over,
+  });
+  const starvedOf = (rows: RecallPoolHealth[]) =>
+    recallPoolSignalsFromHealth(rows).find((s) => s.key === 'recall-pool-starved');
+
+  /** The measured 2026-08-01 true positive: a real 1,975-memory scope, asked
+   *  correctly every time (0% empty-scope), returning NOTHING on all 54 calls
+   *  while its sibling pools answered the same recalls with 8.0 and 4.0 hits.
+   *  A corpus that large cannot explain a total blackout by sparsity. */
+  const AUG01_INITIALIZE_HARNESS = pool({
+    surface: 'initialize', pool: 'harness', scopes: ['harness:papercusp'],
+    recalls: 54, zeroHit: 54, zeroHitRate: 1.0, hitsP50: 0, corpusActive: 1975,
+  });
+
+  /** The measured false alarm that held EI-19920080383279759 at CRITICAL for
+   *  11 days: the SAME 58-memory scope reads 0.000 zero-hit on `initialize`,
+   *  so 0.858 here is the surface's query specificity, not a starved pool. */
+  const NOW_MIDTURN_HIVE = pool({
+    surface: 'mid-turn', pool: 'hive', scopes: ['hive:papercusp'],
+    recalls: 214222, zeroHit: 183_800, zeroHitRate: 0.8581, hitsP50: 0, corpusActive: 58,
+  });
+
+  it('CONTROL A: the 2026-08-01 blackout on a LARGE corpus still fires', () => {
+    const starved = starvedOf([AUG01_INITIALIZE_HARNESS]);
+    expect(starved).toBeDefined();
+    expect(starved!.body).toContain('initialize/harness');
+    // The corpus and the bar it earned must travel with the finding, or the
+    // next reader repeats the 11-day misdiagnosis.
+    expect(starved!.body).toContain('corpus=1975 active');
+  });
+
+  it('CONTROL B: the mid-turn/hive false alarm on a SMALL corpus does NOT fire', () => {
+    expect(starvedOf([NOW_MIDTURN_HIVE])).toBeUndefined();
+  });
+
+  it('CONTROL C: a SMALL-corpus pool at a true blackout STILL fires — the fix must not blind gate-2 to small pools', () => {
+    // Measured injection/harness: 27 active, 0.9946 zero-hit. Suppressing small
+    // pools wholesale would be the mirror-image bug of the one being fixed.
+    const starved = starvedOf([
+      pool({
+        surface: 'injection', pool: 'harness', scopes: ['harness:papercusp'],
+        recalls: 184, zeroHit: 183, zeroHitRate: 0.9946, hitsP50: 0, corpusActive: 27,
+      }),
+    ]);
+    expect(starved).toBeDefined();
+    expect(starved!.body).toContain('injection/harness');
+  });
+
+  it('CALIBRATION: CONTROL B is a genuine near-miss — the SAME row fires once its corpus is unknown', () => {
+    // Proves CONTROL B does not pass vacuously. Its 0.858 rate is above the
+    // flat 0.85 bar, so under the pre-fix gate (and for any caller with no
+    // corpus data) this exact row DOES fire; only the corpus term suppresses
+    // it. Without this, CONTROL B would still pass if gate-2 stopped firing
+    // altogether.
+    expect(starvedOf([{ ...NOW_MIDTURN_HIVE, corpusActive: null }])).toBeDefined();
+  });
+
+  it('CALIBRATION: CONTROL A is corpus-driven — the SAME blackout on a small corpus does NOT fire', () => {
+    // The other direction: A must pass because of the CORPUS, not merely
+    // because 1.0 always fires.
+    expect(starvedOf([{ ...AUG01_INITIALIZE_HARNESS, corpusActive: 58 }])).toBeUndefined();
+  });
+
+  it('CALIBRATION: the bar interpolates between the two bounds and never inverts', () => {
+    const d = LEARNING_SLO_DEFAULTS;
+    expect(effectiveZeroHitGate(null)).toBe(d.recallPoolMaxZeroHitRate);
+    expect(effectiveZeroHitGate(58)).toBe(d.recallPoolSmallCorpusMaxZeroHitRate);
+    expect(effectiveZeroHitGate(1975)).toBe(d.recallPoolMaxZeroHitRate);
+    // Midpoint of [100, 500] ⇒ midpoint of [0.97, 0.85].
+    expect(effectiveZeroHitGate(300)).toBeCloseTo(0.91, 10);
+    // Monotonically non-increasing in corpus size: a BIGGER corpus may never
+    // earn a LAXER bar, which is the property that keeps a large starved pool
+    // detectable no matter how the constants are retuned.
+    for (let n = 0; n <= 800; n += 40) {
+      expect(effectiveZeroHitGate(n + 40)).toBeLessThanOrEqual(effectiveZeroHitGate(n));
+    }
   });
 });
