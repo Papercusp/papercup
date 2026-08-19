@@ -238,6 +238,24 @@ describe('check-peer-dep-conflicts — manifest/lock drift', () => {
     }
   });
 
+  it('lets GATING drift win over a non-gating "unsupported range" verdict', () => {
+    // Both findings are present. NOT_CHECKED is registered non-gating, so if it were
+    // reported first the real drift would never block anything.
+    const root = fixture({
+      peer: { dockview: '~6.6.0' },
+      lockPeer: { dockview: '^6' },
+      installed: { dockview: '6.6.1' },
+    });
+    try {
+      const result = scan(root);
+      expect(result.unsupported).toHaveLength(1);
+      expect(result.drift).toHaveLength(1);
+      expect(runGuard(root)).toBe(EXIT_CONFLICTS);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports NOT_CHECKED (2), never OK, when there is no lock to compare against', () => {
     const root = fixture({ peer: { dockview: '^6' }, installed: { dockview: '6.6.1' }, noLock: true });
     try {
@@ -311,6 +329,9 @@ describe('check-peer-dep-conflicts — calibration against the real repo', () =>
     expect(result.checked).toBeGreaterThan(20);
     expect(result.unsupported).toEqual([]);
     expect(result.conflicts).toEqual([]);
+    // package.json and package-lock.json agree on every workspace's peers. This is the
+    // half that was silently wrong for 5 days after the manifest was fixed.
+    expect(result.drift).toEqual([]);
     // Authored against an already-clean tree: there is no historical debt to grandfather,
     // so any entry here would be a regression being silenced rather than fixed.
     expect(BASELINE).toEqual([]);
