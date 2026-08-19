@@ -2542,8 +2542,9 @@ def _fa_symlink_traversal(argv, cwd):
 
 
 try:
-    if re.search(r'(?:^|[\s;&|(])(?:[\w./-]*/)?(?:grep|egrep|fgrep|rg|ls)\b',
-                 command):
+    if re.search(
+            r'(?:^|[\s;&|(])(?:[\w./-]*/)?(?:grep|egrep|fgrep|rg|ls|find|bfs)\b',
+            command):
         import shlex
         _fa_lex = shlex.shlex(command, posix=True, punctuation_chars=True)
         _fa_lex.whitespace_split = True
@@ -2604,6 +2605,11 @@ try:
                     break
                 _fa_cwd = _fa_next
                 continue
+            if _fa_name in _FA_TRAVERSAL_CMDS:
+                # A DIFFERENT false-absence shape with a different grammar —
+                # judged here, then the scan ends on the same rule as below.
+                _fa_symlink_traversal(_fa_argv, _fa_cwd)
+                break
             if _fa_name not in _FA_SEARCH_CMDS:
                 # Only `cd` may precede the search — otherwise an earlier
                 # `mkdir`/`git clone` could be creating the very path we are
