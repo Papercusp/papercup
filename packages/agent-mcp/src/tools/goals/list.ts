@@ -131,11 +131,16 @@ export default defineTool({
       // direction this fold must never fail in.
       const liveness = holdersByGoal.get(goalHolderKey(r.workspace_id, r.id))?.liveness ?? 'unknown';
       const { settings } = parseGoalLaunchSettings(r.launch_settings);
-      return resolveGoalEffectiveActivity({
+      const activity = resolveGoalEffectiveActivity({
         status: r.status,
         launchSettings: settings,
         liveness,
       });
+      // Report the liveness we MEASURED, not `activity.liveness` — that one is
+      // null whenever status short-circuited the fold (paused / terminal), so
+      // reading it here would tell a caller `unknown` about a paused goal whose
+      // holders we just resolved perfectly well.
+      return { activity, liveness };
     };
 
     if (args.detail === 'summary') {
@@ -144,7 +149,7 @@ export default defineTool({
           id: r.id,
           title: r.title,
           ...readinessOf(r.id),
-          deactivated: activityOf(r).deactivated,
+          deactivated: activityOf(r).activity.deactivated,
         })),
       };
     }
