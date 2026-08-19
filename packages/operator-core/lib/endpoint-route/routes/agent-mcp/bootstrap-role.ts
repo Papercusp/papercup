@@ -457,6 +457,7 @@ const post = defineTool({
           sessionKey,
           mcpUrl: spec.mcpUrl,
           promptText: spec.promptText,
+          model: body.model?.trim() || null,
           // The session's coordination identity → the activity-bridge hook reports
           // this worker's tool calls under it (codex bakes it; can't env-expand).
           sid,

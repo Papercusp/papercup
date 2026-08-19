@@ -65,6 +65,7 @@ import {
 } from '@papercusp/orchestrator/codex-gateway-config';
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
+import { codexContextConfigToml } from './model-context-budget.mjs';
 
 import { dirname as __esmDirname } from 'node:path';
 import { fileURLToPath as __esmFileURLToPath } from 'node:url';
@@ -655,6 +656,9 @@ export function writeRoleCodexHome(opts: {
   mcpUrl: string;
   /** The role prompt — becomes AGENTS.md. */
   promptText: string;
+  /** Launch model. Extended-window models bake their canonical root keys into
+   *  config.toml so a later model-less resume inherits the same window. */
+  model?: string | null;
   /** The session's coordination identity (PAPERCUSP_SID = role-<uuid>). Baked
    *  into the activity-bridge hook so this worker's tool calls report under it.
    *  Omit → no activity hook (a role home without an identity). */
@@ -689,7 +693,9 @@ export function writeRoleCodexHome(opts: {
   // url is baked verbatim.
   const configPath = join(codexHome, 'config.toml');
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
+  const contextConfig = codexContextConfigToml(opts.model).trimEnd();
   const toml = [
+    ...(contextConfig ? contextConfig.split('\n') : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
     CODEX_ISOLATION_PREAMBLE,
@@ -777,6 +783,9 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 export interface SuCodexConfigInput {
   mcpUrl: string;
   sid: string;
+  /** Launch model. Omit/null resolves the installed Codex default, which keeps
+   *  repair and model-less resume paths aligned with a fresh launch. */
+  model?: string | null;
   token?: string | null;
   codexGatewayAccountId?: string | null;
   codexGatewayAuto?: boolean;
@@ -799,7 +808,9 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const sep = opts.mcpUrl.includes('?') ? '&' : '?';
   const url = `${opts.mcpUrl}${sep}client=${encodeURIComponent(opts.sid)}`;
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
+  const contextConfig = codexContextConfigToml(opts.model).trimEnd();
   return [
+    ...(contextConfig ? contextConfig.split('\n') : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
     CODEX_ISOLATION_PREAMBLE,

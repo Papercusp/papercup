@@ -1403,6 +1403,7 @@ const ensureCodexHome = defineTool({
       sessionKey: advSessionId,
       mcpUrl: spec.mcpUrl,
       sid: owner,
+      model: record.model,
       token: readSuperuserToken(),
       codexGatewayAuto: body.requireGatewayProvider === true,
       trustDir: null, // the home's inherited trust tables already cover the cwd

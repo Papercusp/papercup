@@ -2166,6 +2166,7 @@ const post = defineTool({
           mcpUrl: spec.mcpUrl,
           promptText,
           sid,
+          model,
           token: readSuperuserToken(),
           codexGatewayAccountId: accountPin.provider === 'codex' ? accountPin.accountId : null,
           // WI-3645: explicit-auto → the UNPINNED gateway provider block (header omitted;
