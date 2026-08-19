@@ -318,6 +318,77 @@ export function machineRowValue(entry: Pick<RosterEntry, 'machineLabel' | 'isLoc
   return label ? `${label} · this machine` : 'this machine';
 }
 
+/**
+ * The Plan section's pipeline line (P-014) — can the work described above it
+ * actually SHIP?
+ *
+ * Silent on a healthy pipeline, and silent on an unmeasured one. Those two
+ * silences are deliberate and different (plan D-011): a green gate needs no
+ * badge, and a `null` pipeline is a reading nobody took — the producer is
+ * fail-soft and resolves null rather than throwing — so inventing either an
+ * all-clear or an alarm from it would be a fabricated claim. Speaking ONLY when
+ * something is wrong is also what keeps the fixed-height rail (D-003) affordable.
+ *
+ * `stale-verdict` gets its own branch because it is the one colour that must NOT
+ * be rendered as either red or green: the recorded red is superseded, so the
+ * gate's real colour is UNKNOWN, and its failing-test names are exactly the ones
+ * that must not be dispatched against.
+ *
+ * Exported pure so the wording is unit-tested without mounting the dossier.
+ */
+export function pipelineNoteValue(
+  pipeline: AgentPipeline | null | undefined,
+): { severity: 'bad' | 'warn'; text: string } | null {
+  if (!pipeline) return null;
+  const { gate, deploy } = pipeline;
+  if (gate === 'green' && deploy === 'current') return null;
+
+  if (gate === 'stale-verdict') {
+    return {
+      severity: 'warn',
+      text:
+        'Release gate: verdict STALE — the recorded red has been superseded, so the gate’s real ' +
+        'colour is unknown. Do not act on its failing-test names; re-read the gate before ' +
+        'concluding anything about this agent’s work shipping.',
+    };
+  }
+
+  if (gate !== 'green') {
+    const bits: string[] = [];
+    if (pipeline.consecutiveReds) bits.push(`${pipeline.consecutiveReds} consecutive`);
+    if (pipeline.lastGreenAgoMs != null) bits.push(`last green ${fmtAgeShort(pipeline.lastGreenAgoMs)} ago`);
+    const files = pipeline.failingFiles ?? [];
+    const shown = files.slice(0, 2).join(', ');
+    const more = files.length > 2 ? ` (+${files.length - 2} more)` : '';
+    return {
+      severity: 'bad',
+      text:
+        `Release gate: ${gate.toUpperCase()}${bits.length ? ` (${bits.join(' · ')})` : ''} — this ` +
+        `agent’s merged work will NOT reach :3070 until it is green.` +
+        (files.length ? ` Failing: ${shown}${more}.` : '') +
+        (pipeline.rootCause ? ` Root cause: ${pipeline.rootCause}.` : ''),
+    };
+  }
+
+  // Green but not yet live — a real state, and the one most often misread as
+  // "my change is deployed" (a git fact is not a process fact).
+  return {
+    severity: 'warn',
+    text:
+      'Release gate green, but :3070 is BEHIND it — the tip is not live yet, so verify against ' +
+      'the port this agent’s write actually lands on rather than the one you assume.',
+  };
+}
+
+/** Coarse age for the pipeline line. Deliberately coarse: the exact minute of the
+ *  last green is never the decision, and a long string crowds a fixed-height rail. */
+function fmtAgeShort(ms: number): string {
+  const m = Math.round(ms / 60_000);
+  if (m < 90) return `${m}m`;
+  const h = Math.round(m / 60);
+  return h < 48 ? `${h}h` : `${Math.round(h / 24)}d`;
+}
+
 /** Build MetaRows from label/value pairs, DROPPING the ones that would render
  *  nothing. MetaRow itself returns null for an empty value, so handing a capped
  *  list the unfiltered set would make it promise "Show 6 more" and then reveal
