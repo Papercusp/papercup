@@ -33,6 +33,10 @@ import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
 import { greenCheckpointDbPoolSetenvArgs } from './release/checkpoint-db-pool';
 import { isFixtureLogLine } from './release/checkpoint-log-tags';
+import {
+  GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
+  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
+} from './release/green-checkpoint-schedule';
 import { quietCutSecFromEnv } from './release/quiet-cut';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
 import {

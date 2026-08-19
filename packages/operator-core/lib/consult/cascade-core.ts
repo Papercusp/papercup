@@ -19,7 +19,7 @@
  * Schema: migration 844 (cascade_cursor + cascade_digest on consult_state).
  */
 import type { Sql } from 'postgres';
-import { HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
+import { DEAD_RESPONDER_STATES, HARD_BLOCKED_EXPIRY_MS, PROCEED_EXPIRY_MS } from './get-feedback-core';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the two non-reply advance triggers. */
@@ -47,6 +47,10 @@ export interface CascadeSelectionEntry {
   score: number;
   similarity: number;
   liveness: string;
+  /** WI-39852: selectee entered via a carry-respawn revival (provenance only). */
+  revived?: boolean;
+  /** WI-39861: selectee entered on the ONE post-exhaustion refill round. */
+  refill?: boolean;
 }
 
 /** The selected cascade menu from a persisted routing snapshot. Tolerant of
@@ -139,6 +143,12 @@ export interface AdvanceCascadeResult {
   raced: boolean;
   next: { ownerId: string; via: 'floor' | 'minimum' } | null;
   woke: number;
+  /** WI-39861: this advance was the ONE bounded min-ANSWERS refill round — the
+   * menu exhausted with fewer substantive answers than selection.min, so the
+   * menu was extended from the untried route-time-live remainder of the
+   * snapshot pool (selection.refill stamps the round; a second exhaustion is
+   * terminal). */
+  refilled?: boolean;
 }
 
 /**
