@@ -186,7 +186,7 @@ const SANCTIONED =
  * written reason.
  */
 export function readsRawGoalHolder(text) {
-  const t = stripComments(text);
+  const t = stripCommentsOnly(text);
   return (
     HOLDER_TABLE.test(t) &&
     GOAL_MODE_FILTER.test(t) &&
