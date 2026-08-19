@@ -930,7 +930,7 @@ export function checkActiveCheckpointRun(
  *  are refused with `replace_refused_young` so callers wait for the verdict instead.
  *
  *  ⚠ THIS NUMBER IS NOT FREE TO PICK — it is pinned to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS
- *  (120m, harness/routines/release-actions.ts) by release-timing-invariants.test.ts, which is
+ *  (release/green-checkpoint-schedule.ts) by release-timing-invariants.test.ts, which is
  *  where the whole gate timing chain is enforced. It is written as a literal here rather than
  *  imported from that module ON PURPOSE: release-actions.ts calls registerSystemAction at
  *  module scope and pulls a large graph (pipeline-events, release-checkpoint-config, dev-data),
