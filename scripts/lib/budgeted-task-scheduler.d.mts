@@ -42,6 +42,19 @@ export interface TaskSchedulerStats extends ResolvedTaskBudget {
   observedMaxWorkers: number;
   observedMaxMemoryMb: number;
   observedMaxTasks: number;
+  /**
+   * How many times admission re-measured available memory, or `null` when no
+   * `readMemAvailableMb` was supplied. `null` and `0` are DIFFERENT facts — "nobody measured"
+   * vs "a reader was wired but never consulted" — and `formatTaskBudgetObservedMarker`
+   * distinguishes them by exactly this null (EI-20801764054303492).
+   */
+  memoryReadings: number | null;
+  /** Admissions the memory reading narrowed below the lane width. */
+  admissionClamps: number;
+  /** Narrowest width ever admitted, or `null` when no reader was supplied. */
+  minAdmittedWorkers: number | null;
+  /** Last finite reading, or `null` when unread/unreadable. */
+  lastMemAvailableMb: number | null;
 }
 
 export interface ScheduledTaskResult<Task, Value> {
