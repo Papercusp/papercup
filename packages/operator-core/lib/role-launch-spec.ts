@@ -75,7 +75,28 @@ import { CORE_MCP_TOOL_NAMES } from '@papercusp/orchestrator';
  * — the exact "never advertise the CREATE and hide the UNDO"-style
  * discoverability trap CORE_MCP_TOOL_NAMES's own EI-10946 note warns about.
  */
-export const SU_EXTRA_MCP_TOOL_NAMES: readonly string[] = ['chat:ask_choice'];
+export const SU_EXTRA_MCP_TOOL_NAMES: readonly string[] = [
+  'chat:ask_choice',
+  // consult-revival-and-honest-min-2026-08-18 P-005 [owner 2026-08-18 21:23Z
+  // interactive: "how do we get agents to use our get_feedback tool ad-hoc? adding
+  // it to the trimmed tool list or is there another way?"]: the consult verbs are
+  // seeded for su/psu sessions so an ad-hoc "who knows more than me about THIS?"
+  // costs zero discovery round-trips. Friction evidence: a consult:reply from a
+  // trimmed su session cost a failed tools:invoke schema-discovery round-trip
+  // (2026-08-18). SU-extra, not CORE: the shared spine is also every headless
+  // pipeline-role launch, where there is no call-count demand evidence yet
+  // (CORE's own convention) — su sessions are the population the owner's
+  // adoption push targets, and P-006's success metric (ad-hoc calls outnumber
+  // vetting-mandate calls in 1 week) measures exactly them. All FOUR verbs ride
+  // together per the spine's own EI-10946 rule (never advertise the ASK and
+  // hide the ANSWER/DECLINE/CLOSE): a routed consult wakes a PEER su session,
+  // which must be able to reply/decline from its seed, and the requester must
+  // be able to close.
+  'consult:get_feedback',
+  'consult:reply',
+  'consult:decline',
+  'consult:close',
+];
 import { assembleRolePrompt, resolvePromptFiles } from '@papercusp/orchestrator/role-prompt';
 import { harnessRoot } from '@papercusp/harness/paths';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
