@@ -90,7 +90,9 @@ describe('goals:list — summary/full projection', () => {
     );
     // `launch_settings` is an INPUT to the fold, not part of the response — the
     // resolved `holderPolicy` reports what it meant.
-    expect(res.data[0]).not.toHaveProperty('launch_settings');
+    expect((res as { data: Record<string, unknown>[] }).data[0]).not.toHaveProperty(
+      'launch_settings',
+    );
   });
 
   it('requests the full column set even in summary mode (shaping is post-query)', async () => {
