@@ -1917,6 +1917,48 @@ export async function composeOrient(
     }
   }
 
+  // ── peersKnow — when the declared intent semantically matches a CLOSED consult in
+  // the archive, surface the settled answer + provenance + the consult:get_feedback
+  // pointer (consult-revival-and-honest-min-2026-08-18 P-006). READ-ONLY twin of
+  // get_feedback's archive-first serve: reuses the router's query embedder + the same
+  // corpus/floor, never wakes or writes. BEST-EFFORT + zero-cost on no-match: the
+  // field is ABSENT unless a hit clears the precision-biased archive floor, and ANY
+  // failure (embedder unavailable, pgvector/column missing, slow leg) degrades to
+  // absent. Heavy seams imported per-call (the embedder graph must not load at
+  // registration — same constraint get-feedback.ts documents). Skipped on a monitor
+  // tick (EI-8300) and for short/generic intents (the module's own floor).
+  const peersKnowQuery = monitor ? undefined : args.intent;
+  if (peersKnowQuery && args.includePeersKnow !== false) {
+    try {
+      const pkResult = await withBoundedTimeout(
+        (async () => {
+          const [{ peersKnowLookup, PEERS_KNOW_MIN_INTENT_CHARS }, { buildQueryEmbedder }, { getOrgPg }] =
+            await Promise.all([
+              import('../../../consult/peers-know'),
+              import('../../search/embedder'),
+              import('@papercusp/db-org'),
+            ]);
+          if (peersKnowQuery.trim().length < PEERS_KNOW_MIN_INTENT_CHARS) return null;
+          const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
+          if (!ws) return null;
+          const embed = await buildQueryEmbedder({ acquireBudgetMs: 1_500 });
+          return peersKnowLookup(getOrgPg().sql, embed, { workspaceId: ws, intent: peersKnowQuery });
+        })(),
+        { fallback: null, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:peersKnow' },
+      );
+      if (pkResult.value) {
+        result.peersKnow = {
+          ...pkResult.value,
+          more:
+            `conversations:get { id: '${pkResult.value.ref}' } reads the full settled thread; ` +
+            'consult:get_feedback { question } re-asks fresh (archive-first serves settled questions instantly).',
+        };
+      }
+    } catch {
+      /* absent — the fold is best-effort by contract */
+    }
+  }
+
   // (WI-5951) The open-unanswered-questions fold that used to live here — the PULL
   // half of Q&A from WI-5807 / P-007 — was REMOVED, deliberately, by the same author.
   // It surfaced orphaned peer questions to agents at wake. coord:ask now REQUIRES a
