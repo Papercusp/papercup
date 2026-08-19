@@ -894,6 +894,23 @@ export interface RecallPoolHealth {
    *  invisible to gate-2; `initialize/harness` was the mirror image at 98.8%
    *  zero-hit with 0% empty-scope — same alarm, different bug. */
   emptyScopeRate: number;
+  /** Active memories REACHABLE by this slice's recalls — the recall-weighted
+   *  mean, over the window, of the corpus behind the scope keys each recall
+   *  actually asked under. `null` when the slice asked under no scope at all
+   *  (unknown, not zero — that is gate-3's signal, not gate-2's).
+   *
+   *  ⚠ This is gate-2's POWER TERM, and it exists because `zeroHitRate` alone
+   *  confounds a starved pool with a healthy pool asked a specific question.
+   *  Measured 2026-08-19, ONE scope (`hive:papercusp`, 58 active memories,
+   *  0% empty-scope) read 0.000 zero-hit on `initialize` (n=19,125) and 0.874
+   *  on `mid-turn` (n=207,390) — a 0.000→0.874 span driven purely by the
+   *  surface's query specificity, with the corpus held constant. The 0.85 gate
+   *  therefore sits INSIDE the normal band for a small corpus, which is how
+   *  EI-19920080383279759 stayed CRITICAL for 11 days on a false alarm.
+   *  Above a few hundred memories, sparsity can no longer explain a near-total
+   *  blackout, so the raw rate becomes trustworthy again — see
+   *  `effectiveZeroHitGate` in learning-slo.ts for how the bar is scaled. */
+  corpusActive: number | null;
 }
 
 /**
@@ -935,7 +952,19 @@ export async function readRecallHealthByPool(
   // surfaces as an unhandled rejection outside any test.
   const poolSurfaceFilter = opts.surface ?? null;
   const rows = (await sql`
-    WITH exploded AS (
+    WITH corpus AS (
+      -- Active memories per SCOPE KEY — gate-2's denominator (RecallPoolHealth
+      -- .corpusActive). Small: one row per distinct scope, ~60 on this box.
+      -- ⚠ D-013 / WI-9355: row_kind = 'memory' is MANDATORY. Entity-graph rows
+      -- share this table and outnumber real memories ~7:1, so a count that
+      -- omits it over-reports the corpus ~8x — which would silently relax the
+      -- very gate this column exists to tighten.
+      SELECT user_id AS scope_key, count(*)::int AS n
+      FROM harness_shared.memory_canonical
+      WHERE row_kind = 'memory' AND state = 'active' AND user_id IS NOT NULL
+      GROUP BY user_id
+    ),
+    exploded AS (
       SELECT
         s.surface,
         p.key                                   AS pool,
