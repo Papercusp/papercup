@@ -191,6 +191,10 @@ const DETAIL: AgentDetail = {
     },
     announcedGates: [],
     fleetControl: null,
+    // P-014: null = UNMEASURED, so the default fixture renders no pipeline line.
+    // Every pipeline assertion opts in via withSignals, which keeps the fixture
+    // silent for the ~80 tests that are not about the pipeline.
+    pipeline: null,
     unavailableSignals: [],
   },
 };
