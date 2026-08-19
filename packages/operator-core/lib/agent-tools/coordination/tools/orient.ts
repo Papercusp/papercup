@@ -753,6 +753,18 @@ export async function composeOrient(
    *  open (a leak). Undefined ⇒ the dependency re-check simply does not run and
    *  facts fold exactly as they did before. */
   cellIdentity?: { reader: CellReader; env: CellReadEnv },
+  /** consult-revival-and-honest-min-2026-08-18 P-006: the peers-know archive lookup —
+   *  "a CLOSED consult already settled a question like this intent". Resolved by the
+   *  handler (ctx workspace + the router's query embedder + PG, all heavy seams) and
+   *  INJECTED so composeOrient stays IO-free + unit-testable — the same contract as
+   *  pipelineFold / roleFolds. Undefined ⇒ the leg is absent. */
+  peersKnowFold?: (intent: string) => Promise<{
+    answer: string;
+    ref: string;
+    responder: string | null;
+    closedAt: string | null;
+    sim: number;
+  } | null>,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // EI-18748795522559631: memory recall is independent of the roster, backlog,
@@ -1920,42 +1932,26 @@ export async function composeOrient(
   // ── peersKnow — when the declared intent semantically matches a CLOSED consult in
   // the archive, surface the settled answer + provenance + the consult:get_feedback
   // pointer (consult-revival-and-honest-min-2026-08-18 P-006). READ-ONLY twin of
-  // get_feedback's archive-first serve: reuses the router's query embedder + the same
-  // corpus/floor, never wakes or writes. BEST-EFFORT + zero-cost on no-match: the
-  // field is ABSENT unless a hit clears the precision-biased archive floor, and ANY
-  // failure (embedder unavailable, pgvector/column missing, slow leg) degrades to
-  // absent. Heavy seams imported per-call (the embedder graph must not load at
-  // registration — same constraint get-feedback.ts documents). Skipped on a monitor
-  // tick (EI-8300) and for short/generic intents (the module's own floor).
+  // get_feedback's archive-first serve: the injected fold reuses the router's query
+  // embedder + the same corpus/floor, never wakes or writes. BEST-EFFORT +
+  // zero-cost on no-match: the field is ABSENT unless a hit clears the
+  // precision-biased archive floor, and ANY failure (embedder unavailable,
+  // pgvector/column missing, slow leg) degrades to absent. Skipped on a monitor
+  // tick (EI-8300); short/generic intents are floored inside the fold.
   const peersKnowQuery = monitor ? undefined : args.intent;
-  if (peersKnowQuery && args.includePeersKnow !== false) {
-    try {
-      const pkResult = await withBoundedTimeout(
-        (async () => {
-          const [{ peersKnowLookup, PEERS_KNOW_MIN_INTENT_CHARS }, { buildQueryEmbedder }, { getOrgPg }] =
-            await Promise.all([
-              import('../../../consult/peers-know'),
-              import('../../search/embedder'),
-              import('@papercusp/db-org'),
-            ]);
-          if (peersKnowQuery.trim().length < PEERS_KNOW_MIN_INTENT_CHARS) return null;
-          const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
-          if (!ws) return null;
-          const embed = await buildQueryEmbedder({ acquireBudgetMs: 1_500 });
-          return peersKnowLookup(getOrgPg().sql, embed, { workspaceId: ws, intent: peersKnowQuery });
-        })(),
-        { fallback: null, timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS, label: 'orient:peersKnow' },
-      );
-      if (pkResult.value) {
-        result.peersKnow = {
-          ...pkResult.value,
-          more:
-            `conversations:get { id: '${pkResult.value.ref}' } reads the full settled thread; ` +
-            'consult:get_feedback { question } re-asks fresh (archive-first serves settled questions instantly).',
-        };
-      }
-    } catch {
-      /* absent — the fold is best-effort by contract */
+  if (peersKnowQuery && peersKnowFold && args.includePeersKnow !== false) {
+    const pkResult = await withBoundedTimeout(peersKnowFold(peersKnowQuery), {
+      fallback: null as Awaited<ReturnType<NonNullable<typeof peersKnowFold>>>,
+      timeoutMs: ORIENT_FLEET_LEG_TIMEOUT_MS,
+      label: 'orient:peersKnow',
+    });
+    if (pkResult.value) {
+      result.peersKnow = {
+        ...pkResult.value,
+        more:
+          `conversations:get { id: '${pkResult.value.ref}' } reads the full settled thread; ` +
+          'consult:get_feedback { question } re-asks fresh (archive-first serves settled questions instantly).',
+      };
     }
   }
 
@@ -2738,6 +2734,26 @@ export default defineTool({
           return undefined;
         }
       })(),
+      // P-006 (consult-revival-and-honest-min-2026-08-18): the peers-know archive
+      // lookup. Heavy seams (embedder graph + PG) imported per-call inside the
+      // closure — never at registration (the same constraint get-feedback.ts
+      // documents) — and injected so composeOrient stays IO-free. Best-effort:
+      // any failure resolves null, and the module itself never throws.
+      async (intent: string) => {
+        try {
+          const [{ peersKnowLookup }, { buildQueryEmbedder }, { getOrgPg }] = await Promise.all([
+            import('../../../consult/peers-know'),
+            import('../../search/embedder'),
+            import('@papercusp/db-org'),
+          ]);
+          const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? activeWorkspaceId();
+          if (!ws) return null;
+          const embed = await buildQueryEmbedder({ acquireBudgetMs: 1_500 });
+          return await peersKnowLookup(getOrgPg().sql, embed, { workspaceId: ws, intent });
+        } catch {
+          return null;
+        }
+      },
     );
     // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
     // disclosure markers this payload carried, so the HUD sessions popup can
