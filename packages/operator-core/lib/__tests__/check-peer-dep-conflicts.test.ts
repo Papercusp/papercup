@@ -40,6 +40,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   scan,
+  scanLockDrift,
   satisfies,
   parseRange,
   parseVersion,
@@ -178,6 +179,70 @@ describe('check-peer-dep-conflicts — "could not judge" never renders as clean'
       const result = scan(root);
       expect(result.conflicts).toHaveLength(0);
       expect(result.checked).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('check-peer-dep-conflicts — manifest/lock drift', () => {
+  // THE SECOND HALF OF THE INCIDENT, and the reason a manifest-only guard was not enough.
+  // `npm install` re-resolves from the MANIFEST; `npm ci` installs strictly from the LOCK.
+  // Measured on this repo 2026-08-19: removing the bad `dockview ^5` peer from
+  // libs/papercusp-shared/package.json turned `npm install --dry-run` green while
+  // package-lock.json still recorded `"dockview": "^5.0.0"` — so the clean-checkout `npm ci`
+  // path stayed broken (EI-20453932158555033, open 5 days) and a manifest-only guard called
+  // it clean. These cases pin that gap shut.
+  it('FIRES when the lock still records a peer the manifest has dropped', () => {
+    const root = fixture({
+      peer: {},
+      lockPeer: { dockview: '^5.0.0' },
+      installed: { dockview: '6.6.1' },
+    });
+    try {
+      const drift = scanLockDrift(root);
+      expect(drift).toEqual([
+        { workspace: '@x/shared', dir: 'libs/shared', dep: 'dockview', manifest: null, lock: '^5.0.0' },
+      ]);
+      // The manifest alone looks perfectly clean here — that is the whole point.
+      expect(scan(root).conflicts).toHaveLength(0);
+      expect(runGuard(root)).toBe(EXIT_CONFLICTS);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('FIRES when manifest and lock record DIFFERENT ranges for the same peer', () => {
+    const root = fixture({
+      peer: { dockview: '^5 || ^6' },
+      lockPeer: { dockview: '^5.0.0' },
+      installed: { dockview: '6.6.1' },
+    });
+    try {
+      expect(scanLockDrift(root)).toEqual([
+        { workspace: '@x/shared', dir: 'libs/shared', dep: 'dockview', manifest: '^5 || ^6', lock: '^5.0.0' },
+      ]);
+      expect(runGuard(root)).toBe(EXIT_CONFLICTS);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is SILENT when the lock mirrors the manifest — not merely always-red', () => {
+    const root = fixture({ peer: { dockview: '^5 || ^6' }, installed: { dockview: '6.6.1' } });
+    try {
+      expect(scanLockDrift(root)).toEqual([]);
+      expect(runGuard(root)).toBe(EXIT_OK);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports NOT_CHECKED (2), never OK, when there is no lock to compare against', () => {
+    const root = fixture({ peer: { dockview: '^6' }, installed: { dockview: '6.6.1' }, noLock: true });
+    try {
+      expect(scanLockDrift(root)).toBeNull();
+      expect(runGuard(root)).toBe(EXIT_NOT_CHECKED);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
