@@ -3016,7 +3016,7 @@ describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)',
 
   it('fails OPEN — a throwing ancestry check never suppresses a real signal', async () => {
     const kept = await debounceRedTestSignals(
-      [sig({ failShas: ['a'], lastPassSha: 'p' })],
+      [sig({ failShas: ['a'], passShas: ['p'], lastPassSha: 'p' })],
       keepAll,
       undefined,
       undefined,
@@ -3026,11 +3026,35 @@ describe('red-test supersession by a passing DESCENDANT (EI-19363804802198172)',
     expect(kept).toHaveLength(1);
   });
 
+  it('fails OPEN per-candidate — one throwing candidate does not disqualify the others', async () => {
+    // (WI-39890) The set walk must not let a single git hiccup abort the whole
+    // candidate list: 'bad' throws, but 'good' still legitimately supersedes.
+    const kept = await debounceRedTestSignals(
+      [sig({ failShas: ['a'], passShas: ['bad', 'good'], lastPassSha: 'bad' })],
+      keepAll,
+      undefined,
+      undefined,
+      undefined,
+      async (failSha, passSha) => {
+        if (passSha === 'bad') throw new Error('git exploded');
+        return failSha === 'a' && passSha === 'good';
+      },
+    );
+    expect(kept).toEqual([]);
+  });
+
   it('is inert when no ancestry check is wired, and when there is no passing sha', async () => {
-    const noCheck = await debounceRedTestSignals([sig({ failShas: ['a'], lastPassSha: 'p' })], keepAll);
+    const noCheck = await debounceRedTestSignals(
+      [sig({ failShas: ['a'], passShas: ['p'], lastPassSha: 'p' })],
+      keepAll,
+    );
     expect(noCheck).toHaveLength(1);
+    // An EMPTY pass set is the "cannot show supersession" case — it must keep the
+    // signal, never suppress it. (WI-39890: this is also the shape a producer that
+    // does not populate pass_shas yields, so it is the fail-safe direction.)
     const noPass = await debounceRedTestSignals(
-      [sig({ failShas: ['a'] })], keepAll, undefined, undefined, undefined, ancestry({ a: ['p'] }),
+      [sig({ failShas: ['a'], passShas: [] })],
+      keepAll, undefined, undefined, undefined, ancestry({ a: ['p'] }),
     );
     expect(noPass).toHaveLength(1);
   });
