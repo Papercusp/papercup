@@ -4394,7 +4394,8 @@ export async function runWatchdogTick(
   const readKeyDups = deps?.readKeyDups ?? readWatchdogKeyDups;
   const pruneTicks = deps?.pruneTicks ?? pruneWatchdogTicks;
   const processAging = deps?.processAging
-    ?? ((ws: string, keys: string[], o: WatchdogTickOptions) => processKnownOpenAging(ws, keys, agingOptionsFromTick(o)));
+    ?? ((ws: string, knownOpen: readonly KnownOpenAgingInput[], o: WatchdogTickOptions) =>
+      processKnownOpenAging(ws, knownOpen, agingOptionsFromTick(o)));
   const processAutoClose = deps?.processAutoClose
     ?? ((ws: string, _o: WatchdogTickOptions) => runAutoCloseSweep(ws));
 

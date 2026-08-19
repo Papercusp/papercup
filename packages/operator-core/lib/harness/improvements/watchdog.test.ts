@@ -2173,13 +2173,20 @@ describe('runWatchdogTick — known-open aging wiring (consume-edges P-020 / EI-
     });
   }
 
-  it('passes the known-open keys to the aging seam and surfaces escalated ids in the result', async () => {
-    const seen: string[][] = [];
-    const res = await knownOpenTick(async (_ws, keys) => {
-      seen.push(keys);
-      return [{ issueId: 'EI-42', watchdogKey: keys[0], reescalation: false }];
+  it('passes the known-open keys AND the re-measured body to the aging seam, and surfaces escalated ids', async () => {
+    const seen: { key: string; evidence?: string | null }[][] = [];
+    const res = await knownOpenTick(async (_ws, knownOpen) => {
+      seen.push(knownOpen as { key: string; evidence?: string | null }[]);
+      return [{ issueId: 'EI-42', watchdogKey: 'service-down:shop', reescalation: false }];
     });
-    expect(seen).toEqual([['service-down:shop']]);
+    // EI-19920080383279759: the seam receives the CURRENT signal body, not just
+    // the key. A known-open signal declines its capture, so this is the only
+    // path by which live evidence can reach an escalation — asserting the key
+    // alone is what let the body silently fossilize.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toHaveLength(1);
+    expect(seen[0][0].key).toBe('service-down:shop');
+    expect(seen[0][0].evidence).toBeTruthy();
     expect(res.agingEscalations).toEqual(['EI-42']);
   });
 
