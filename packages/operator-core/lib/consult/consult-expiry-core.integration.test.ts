@@ -348,7 +348,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     const r = await sweepExpiredConsults(deps);
     expect(r).toMatchObject({ advanced: 0, expired: 1, woke: [id] });
 
-    const row = await cascadeRow(id);
+    const row = await fullRow(id);
     expect(row.state).toBe('expired');
     const outcome = typeof row.outcome === 'string' ? JSON.parse(row.outcome as string) : row.outcome;
     expect(outcome).toMatchObject({
@@ -371,7 +371,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     const id = await seedConsult({ latency: 'hard-blocked', routing: menuSnapshot(['only-r']) });
     const { deps, emits } = makeDeps({ withReach: true });
     await sweepExpiredConsults(deps);
-    const row = await cascadeRow(id);
+    const row = await fullRow(id);
     expect(row.state).toBe('expired');
     expect(row.outcome).toBeNull();
     expect(emits[0].summary).toContain('EXPIRED unanswered');
@@ -395,7 +395,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     const r = await sweepExpiredConsults(deps);
     expect(r).toMatchObject({ advanced: 1, expired: 0 });
 
-    const row = await cascadeRow(id);
+    const row = await fullRow(id);
     expect(row.state).toBe('awaiting_responder');
     expect(row.responder_id).toBe('r-b');
     expect(row.cascade_cursor).toBe(1); // first refill entry (old menu length)
@@ -427,7 +427,7 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     const { deps } = makeDeps({ withReach: true });
     const r = await sweepExpiredConsults(deps);
     expect(r).toMatchObject({ advanced: 0, expired: 1 });
-    const row = await cascadeRow(id);
+    const row = await fullRow(id);
     expect(row.state).toBe('expired');
     // s-c stayed untried: the stamp, not pool exhaustion, ended the chain.
     expect(routingOf(row).selection?.selected).toHaveLength(2);
