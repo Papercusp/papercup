@@ -902,6 +902,148 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(real.evicted ?? []).toEqual([]);
   });
 
+  it('EI-20824216187836980: an EXEMPT write (convention / wall: / dead-end:) evicts NOTHING at cap — it never joins the population it was trimming room for', async () => {
+    const scopeRef = 'su-exempt-write-takes-no-seat';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    // ── THE DEFECT ─────────────────────────────────────────────────────────
+    // capPopulationPredicate EXCLUDES conventions and the two typed safety
+    // slots, so such a row never occupies a cap seat. The sweep nonetheless
+    // trimmed incumbents to CAP-1 on every assert — buying a seat for a row
+    // that was never going to take one, and destroying a live fact to do it.
+    //
+    // Measured on the live scope 2026-08-19: workspace/papercusp-workspace held
+    // 200 non-exempt rows (pinned at exactly the cap) beside 121 exempt ones,
+    // and 12 of that day's 28 evictions were bought by exempt writes.
+    //
+    // NB the reported symptom blamed append-versioning ("the upsert supersedes
+    // into a NEW row"). That is not the cause: the non-exempt re-assert case is
+    // already correct and already pinned by the dryRun-upsert sibling above.
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    // ── POSITIVE CONTROL, FIRST — this is the calibration case ─────────────
+    // An ORDINARY new key MUST evict exactly one row here. Without it, "the
+    // exempt writes evicted nothing" is equally true of a scope where the cap
+    // never fired at all, and the test would pass against a sweep that had been
+    // disabled outright. This is what makes the assertions below falsifiable.
+    const ordinary = await assertFact(
+      { ...base, key: 'ordinary-newcomer', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(ordinary.evicted?.length).toBe(1);
+
+    // The control left the ordinary population at exactly the cap again (199
+    // incumbents + the newcomer), so every exempt write below meets a SATURATED
+    // scope — the only condition under which the bug can fire.
+    for (const probe of [
+      { label: 'convention', input: { key: 'a-convention', kind: 'convention' as const } },
+      { label: 'wall', input: { key: 'wall:owner-must-rule-on-the-guard' } },
+      { label: 'dead-end', input: { key: 'dead-end:tried-and-failed' } },
+    ]) {
+      const r = await assertFact(
+        { ...base, ...probe.input, body: `exempt ${probe.label}`, confidence: 'verified' },
+        db.sql,
+      );
+      expect(r.evicted ?? [], `${probe.label} write must not evict — it takes no cap seat`).toEqual([]);
+    }
+
+    // The exact reported shape: RE-asserting an ALREADY-LIVE convention key.
+    const reassert = await assertFact(
+      { ...base, key: 'a-convention', kind: 'convention', body: 'revised body' },
+      db.sql,
+    );
+    expect(reassert.evicted ?? []).toEqual([]);
+
+    // ── And the population itself is intact ────────────────────────────────
+    // State it at the row level, not just via the receipts: the receipt is
+    // computed by the same statement that would have done the damage, so a
+    // silent over-evict has to be caught against the table.
+    const [{ count: ordinaryLive }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND COALESCE(kind, '') <> 'convention'
+         AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'`;
+    expect(ordinaryLive).toBe(FACTS_PER_SCOPE_CAP);
+
+    // ...and all four exempt rows are live alongside it — the cap-bearing
+    // population is CAP, the exempt rows sit outside it, and neither displaced
+    // the other.
+    const [{ count: exemptLive }] = await db.sql<{ count: number }[]>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'owner' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND (COALESCE(kind, '') = 'convention'
+              OR key LIKE 'wall:%' OR key LIKE 'dead-end:%')`;
+    expect(exemptLive).toBe(3);
+  });
+
+  it('EI-20824216187836980: dryRun agrees with the sweep on an exempt write — forecasts no eviction, and reports the refresh as replacing an existing key', async () => {
+    const scopeRef = 'su-exempt-preview';
+    const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
+
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP; i++) {
+      await assertFact(
+        { ...base, key: `incumbent-${i}`, body: `n ${i}`, confidence: 'verified', ttlSec: 30 * 86400 },
+        db.sql,
+      );
+    }
+
+    // Non-vacuity: at this saturation an ORDINARY newcomer is forecast to kill
+    // someone, so "the exempt forecast is empty" is a claim about exemption
+    // rather than about a scope with room to spare.
+    const ordinary = await previewFactCapImpact(
+      { ...base, key: 'ordinary-newcomer', body: 'x', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(ordinary.exempt).toBe(false);
+    expect(ordinary.wouldEvict.length).toBeGreaterThan(0);
+
+    const conventionPreview = await previewFactCapImpact(
+      { ...base, key: 'a-convention', kind: 'convention', body: 'x' },
+      db.sql,
+    );
+    expect(conventionPreview.exempt).toBe(true);
+    expect(conventionPreview.wouldEvict).toEqual([]);
+    expect(conventionPreview.atCap).toBe(false);
+    // Exempt ⇒ no victim ranking to report (it is not in the ranked set).
+    expect(conventionPreview.survival).toBeNull();
+
+    // ── THE PIN: forecast must survive contact with the real sweep ─────────
+    const real = await assertFact({ ...base, key: 'a-convention', kind: 'convention', body: 'x' }, db.sql);
+    expect(real.evicted ?? []).toEqual([]);
+
+    // A refresh of that now-live convention must report replacesExistingKey.
+    // The exempt row is absent from the cap population, so deciding this from
+    // the population alone answered a confident `false` — "this takes a new
+    // slot" about a write that takes none.
+    const refresh = await previewFactCapImpact(
+      { ...base, key: 'a-convention', kind: 'convention', body: 'revised' },
+      db.sql,
+    );
+    expect(refresh.replacesExistingKey).toBe(true);
+    expect(refresh.wouldEvict).toEqual([]);
+
+    // Control for that field: a convention key that does NOT exist yet must
+    // still read false, so the branch above is not simply hardcoding true.
+    const freshConvention = await previewFactCapImpact(
+      { ...base, key: 'a-convention-never-written', kind: 'convention', body: 'y' },
+      db.sql,
+    );
+    expect(freshConvention.exempt).toBe(true);
+    expect(freshConvention.replacesExistingKey).toBe(false);
+    expect(freshConvention.wouldEvict).toEqual([]);
+  });
+
   it('EI-19483432832662150: an urgent SHORT-TTL fact is no longer doomed on arrival — the most-ELAPSED incumbent dies instead', async () => {
     const scopeRef = 'su-short-ttl-survives';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
