@@ -22,6 +22,8 @@ import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-cr
 import {
   GOAL_LAUNCH_DEFAULTS,
   UNLIMITED_CEILING,
+  declareGoalHolderPolicy,
+  goalHolderPolicySchema,
   goalLaunchSettingsSchema,
   writeGoalLaunchSettings,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
