@@ -146,6 +146,42 @@ export function judgeDeletionSet(
 }
 
 /**
+ * Max paths per `git check-ignore` invocation, so a repo with a huge deletion set
+ * cannot blow ARG_MAX. Purely a batching bound; the answer is the same either way.
+ */
+const CHECK_IGNORE_CHUNK = 500;
+
+/**
+ * The subset of `paths` that this repo's ignore rules CURRENTLY cover.
+ *
+ * `--no-index` is load-bearing: without it `git check-ignore` reports a TRACKED path
+ * as not-ignored, and every path we ask about here is tracked at HEAD by
+ * construction. The question this guard needs answered is "does .gitignore cover
+ * this path", not "has git already been made to track it anyway" — those differ for
+ * exactly the population that matters (see the caller).
+ *
+ * FAILS OPEN (empty set), like every other leg of this guard: if we cannot tell what
+ * is ignored we count everything, which is the pre-existing behaviour and errs
+ * toward quarantining rather than toward committing a wipe.
+ */
+async function ignoredSubset(
+  runGit: RunGit,
+  repoPath: string,
+  paths: string[],
+): Promise<Set<string>> {
+  const ignored = new Set<string>();
+  for (let i = 0; i < paths.length; i += CHECK_IGNORE_CHUNK) {
+    const chunk = paths.slice(i, i + CHECK_IGNORE_CHUNK);
+    const res = await runGit(['check-ignore', '--no-index', '-z', '--', ...chunk], repoPath);
+    // 0 = at least one path matched, 1 = none matched (NOT a failure). Anything
+    // else is a real git error, and a partial answer is worse than none.
+    if (res.code !== 0 && res.code !== 1) return new Set<string>();
+    for (const p of res.stdout.split('\0')) if (p) ignored.add(p);
+  }
+  return ignored;
+}
+
+/**
  * Detector: returns one ContentOffender per deleted path when the deletion set looks
  * like a wipe, so `commitOneRepo` excludes every one of them from `git add -A`.
  * Returns [] (no opinion) otherwise, and on any git failure.
@@ -165,9 +201,44 @@ export async function detectWholesaleDeletion(
   // repo was before this tick" that the ratio is meant to be measured against.
   const treeRes = await runGit(['ls-tree', '-r', '--name-only', 'HEAD'], repoPath);
   if (treeRes.code !== 0) return []; // unborn branch / no HEAD yet — no opinion
-  const trackedCount = treeRes.stdout.split('\n').filter(Boolean).length;
+  const trackedAtHead = treeRes.stdout.split('\n').filter(Boolean);
 
-  const verdict = judgeDeletionSet(deletedPaths, trackedCount, { ratio, minTracked });
+  // WI-39889: discount paths .gitignore already covers, on BOTH sides of the ratio.
+  //
+  // Deleting a file the repo's own ignore rules exclude is never a source wipe — it
+  // is an UNTRACKING REPAIR, the fix for a file that should not have been committed.
+  // Counting those made the guard fire on its own inverse: the 2026-08-15 incident
+  // (same one this module was written for) left `node_modules/` tracked in four
+  // submodules, because the .gitignore was missing from the working tree for the
+  // 39 minutes in which a sweep ran. An ordinary `npm run install:safe` months later
+  // turned those into 1,526-file deletion sets — 96% of "tracked" files — and the
+  // guard quarantined them every tick for 33 hours, stalling ALL commits in those
+  // repos and stranding real source edits behind build junk.
+  //
+  // This CANNOT weaken the real case: in a genuine wipe the .gitignore is deleted
+  // too (that is the documented signature), so nothing reads as ignored and the
+  // ratio is unchanged. And a package-defining deletion stays decisive on its own —
+  // it is judged against the FULL set below, so no ignore rule can silence it.
+  const ignored = await ignoredSubset(runGit, repoPath, [...new Set([...deletedPaths, ...trackedAtHead])]);
+  const effectiveDeleted = deletedPaths.filter((p) => !ignored.has(p));
+  const trackedCount = trackedAtHead.filter((p) => !ignored.has(p)).length;
+
+  const packageDefiningDeleted = PACKAGE_DEFINING_FILES.filter((f) => deletedPaths.includes(f));
+  if (effectiveDeleted.length === 0 && packageDefiningDeleted.length === 0) {
+    log?.(
+      `[wholesale-deletion-guard] ${repoPath}: all ${deletedPaths.length} deletion(s) are paths ` +
+        `.gitignore already covers — untracking repair, not a wipe. No opinion (WI-39889).`,
+    );
+    return [];
+  }
+
+  // Judged on the ignore-discounted sets, but with any package-defining deletion
+  // folded back in so the catastrophe check is evaluated against the full truth.
+  const verdict = judgeDeletionSet(
+    [...new Set([...effectiveDeleted, ...packageDefiningDeleted])],
+    trackedCount,
+    { ratio, minTracked },
+  );
   if (!verdict.wipe) return [];
 
   log?.(
