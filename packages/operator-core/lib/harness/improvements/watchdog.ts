@@ -885,14 +885,21 @@ function countFailShas(shas: (string | null)[] | null | undefined): Array<[strin
  * filing SAYS, so a triager stops bisecting a sha that cannot be the cause.
  *
  * ONE home for the fact: both the renderer and the supersession check call this
- * rather than re-deriving `failShas.includes(passSha)` locally.
+ * rather than re-deriving the intersection locally.
+ *
+ * (WI-39890) Takes the whole PASS SET, not one sha. A flip is a property of the
+ * window, so asking it about only the newest-by-wall-clock pass under-reports:
+ * a sha that failed AND passed earlier in the window is just as unattributable,
+ * and missing it would let the supersession check below suppress a genuinely
+ * non-deterministic test. Widening it can only ever KEEP more signals.
  */
 export function hasSameShaVerdictFlip(
   failShas: readonly string[],
-  lastPassSha: string | undefined,
+  passShas: readonly string[] | string | undefined,
 ): boolean {
-  if (!lastPassSha) return false;
-  return failShas.includes(lastPassSha);
+  if (!passShas) return false;
+  const passes = typeof passShas === 'string' ? [passShas] : passShas;
+  return failShas.some((sha) => passes.includes(sha));
 }
 
 /**
