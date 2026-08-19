@@ -485,10 +485,11 @@ function escalationBody(d: AgingDecision): string {
  */
 export async function processKnownOpenAging(
   workspaceId: string,
-  knownOpenKeys: string[],
+  knownOpenInputs: readonly KnownOpenAgingInput[],
   opts: KnownOpenAgingOptions = {},
   deps: Partial<KnownOpenAgingDeps> = {},
 ): Promise<KnownOpenAgingOutcome[]> {
+  const { keys: knownOpenKeys, evidenceByKey } = splitAgingInputs(knownOpenInputs);
   if (knownOpenKeys.length === 0) return [];
   const d: KnownOpenAgingDeps = { ...defaultDeps, ...deps };
   const nowMs = opts.nowMs ?? Date.now();
@@ -541,7 +542,7 @@ export async function processKnownOpenAging(
         summary:
           `Known-open aging: ${dec.watchdogKey} still firing after ~${hours(dec.openForMs)} ` +
           `(${dec.issueId}${dec.bumpTo ? `, severity → ${dec.bumpTo}` : ''})`,
-        body: escalationBody(dec),
+        body: escalationBody(dec) + currentEvidenceBlock(evidenceByKey.get(dec.watchdogKey)),
         // EI-14854: coalesce on the CONDITION (the watchdogKey), not the summary —
         // the summary's live `~Nh` duration + re-minted issueId made every tick a
         // fresh, un-coalesced escalation. A stable subjectSignature keys the ONE
