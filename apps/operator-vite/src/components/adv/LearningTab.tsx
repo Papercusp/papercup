@@ -6076,18 +6076,34 @@ function RetainedLedgerCard({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [degraded, setDegraded] = useState<string[]>([]);
 
+  // Which kinds the CURRENT tab can show, and therefore whether a shipped /
+  // in-flight outcome means anything here at all. Derived from the SAME
+  // `RETAIN_STATUSFUL_KINDS` the server narrows by, so the control and the
+  // query can never disagree about what a click will yield (WI-39900).
+  const tabHasOutcomes =
+    rtab === "all" || RETAIN_STATUSFUL_KINDS.includes(RETAIN_KIND_FOR_TAB[rtab]);
+  // Owner report 2026-08-19: "for runbooks im seeing 706 but both filters of
+  // shipped and in flight are showing 0 … this is an issue with all the tabs
+  // except plans and work items". `rship` is a nuqs param, so a filter set on
+  // Plans followed the reader to Runbooks and emptied a 706-row ledger with no
+  // explanation. A filter the tab cannot honour is now simply NOT APPLIED —
+  // the chips disable themselves below and say why, and the reader's choice is
+  // preserved for when they return to a tab that has outcomes, rather than
+  // being silently reset or silently obeyed into an empty list.
+  const effectiveFilter: RetainFeedFilter = tabHasOutcomes ? rship : "all";
+
   // A tab/filter switch restarts the ledger from page 1.
   useEffect(() => {
     setCursor(null);
     setNextCursor(null);
     setRows([]);
-  }, [rtab, rship]);
+  }, [rtab, effectiveFilter]);
 
   const feed = useSyncQuery<RetainFeedPage | undefined>({
     queryName: "learning.retainFeed",
     args: {
       tab: rtab,
-      filter: rship,
+      filter: effectiveFilter,
       ...(cursor ? { cursor } : {}),
       ...(hive ? { hive } : {}),
     },
