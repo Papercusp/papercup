@@ -721,52 +721,91 @@ export async function getFeedbackCore(
   //    decline (that protocol line would otherwise make every minimum consult
   //    a designed decline — a burned wake).
   let woke = 0;
-  if (willWake && chosen) {
+  if (willWake && finalChosen) {
     const r = await deps.reach({
-      responder: chosen.ownerId,
+      responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
       summary: `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
       body:
-        chosenVia === 'minimum'
-          ? `Selected as BEST-AVAILABLE reviewer (blended score ${chosen.score.toFixed(2)}, sim ${chosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
+        finalChosenVia === 'minimum'
+          ? `Selected as BEST-AVAILABLE reviewer (blended score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
             `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n` +
             `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence — labeled first-principles reasoning is admissible here); ` +
             `consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. Untyped conversations:post is refused.`
-          : `Routed to you by transcript relevance (score ${chosen.score.toFixed(2)}, sim ${chosen.signals.similarity.toFixed(2)}).\n` +
-            `Why you: ${evidenceLine(chosen)} — sessions:read resolves the refs.\n` +
+          : `Routed to you by transcript relevance (score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)}).\n` +
+            `Why you: ${evidenceLine(finalChosen)} — sessions:read resolves the refs.\n` +
             `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence. ` +
             `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
             `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
     });
     woke = r.woke;
+
+    // 7b) WI-39852 wake-failed leg: a LIVE-read chosen responder whose wake
+    //     reached NOBODY is a false-parked zombie — treat as dead and revive
+    //     the SAME owner. Shares the one-revival budget with dead-preempt
+    //     (revivalUsed), so a revived-then-unreachable session can never loop.
+    //     The row is already persisted; on spawn, stamp the revival marker
+    //     onto the persisted selection provenance (selected[0] IS the chosen).
+    if (woke === 0 && !revivalUsed && deps.revive) {
+      revivalUsed = true;
+      const rr = await deps.revive({
+        ownerId: finalChosen.ownerId,
+        conversationId: opened.conversation_id,
+        brief: revivalBrief({
+          requesterId: req.requesterId,
+          question: req.question,
+          conversationId: opened.conversation_id,
+          candidate: finalChosen,
+        }),
+      });
+      revival = {
+        ownerId: finalChosen.ownerId,
+        trigger: 'wake-failed',
+        spawned: rr.spawned,
+        verified: rr.verified,
+        detail: rr.detail,
+      };
+      if (rr.spawned) {
+        await sql`
+          UPDATE harness_shared.consult_state
+             SET routing = jsonb_set(routing, '{selection,selected,0,revived}', 'true'::jsonb)
+           WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${opened.conversation_id}
+        `;
+      }
+    }
   }
 
-  const parkKey = chosen && latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null;
+  const parkKey = finalChosen && latency === 'hard-blocked' ? consultParkKey(opened.conversation_id) : null;
   const viaNote =
-    chosenVia === 'minimum'
+    finalChosenVia === 'minimum'
       ? ' ⚠ Best-available pick BELOW the relevance floor (minimum-fill, D-001) — weigh the reply as a first-principles review, not grounded expertise.'
       : '';
-  const hint = chosen
+  const revivalNote = revival
+    ? revival.spawned
+      ? ` 🧭 REVIVED ${revival.ownerId} (${revival.trigger}: carry-respawn ${revival.verified === true ? 'verified live' : revival.verified === null ? 'still booting — the cascade expiry guards the reply' : 'spawned'}); the consult brief is their first turn.`
+      : ` ⚠ Revival of ${revival.ownerId} was attempted (${revival.trigger}) but FAILED to spawn — fell back to the pre-revival selection. Detail: ${revival.detail}`
+    : '';
+  const hint = finalChosen
     ? latency === 'hard-blocked'
-      ? `Routed + woke ${chosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}`
-      : `Routed + woke ${chosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}`
+      ? `Routed + woke ${finalChosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${revivalNote}`
+      : `Routed + woke ${finalChosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${revivalNote}`
     : reason === 'embed_unavailable'
-      ? 'The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.'
+      ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.${revivalNote}`
       : reason === 'no_live_responder'
-        ? 'Matching candidates exist but none is LIVE — no wake is possible and the minimum could not be filled with a reachable reviewer. remaining_candidates lists them; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.'
-        : "No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).";
+        ? `Matching candidates exist but none is LIVE — no wake is possible and the minimum could not be filled with a reachable reviewer. remaining_candidates lists them; read their transcripts via sessions:read / sessions:search (retrieval fallback) and proceed.${revivalNote}`
+        : `No transcript cleared this question's relevance floor (and no minimum-fill applied — either min 0 was requested or nothing matched at all): there is no best-available reviewer to route to. Proceed on your own judgment (first-class honest verdict, not an error).${revivalNote}`;
 
   return {
     ok: true,
-    verdict: chosen ? 'routed' : 'no_qualified_responder',
+    verdict: finalChosen ? 'routed' : 'no_qualified_responder',
     ...(reason ? { reason } : {}),
     conversation_id: opened.conversation_id,
     thread_id: opened.thread_id,
     state,
-    responder: chosen,
-    responder_via: chosenVia,
-    remaining_candidates: (selected.length > 0
-      ? selected.slice(1)
+    responder: finalChosen,
+    responder_via: finalChosenVia,
+    remaining_candidates: (finalSelected.length > 0
+      ? finalSelected.slice(1)
       : route.qualified.map((c) => ({ candidate: c, via: 'floor' as SelectionVia }))
     ).map((s) => ({
       ownerId: s.candidate.ownerId,
@@ -782,6 +821,7 @@ export async function getFeedbackCore(
       woke,
     },
     park_key: parkKey,
+    ...(revival ? { revival } : {}),
     ...(route.snapshot.degraded ? { degraded: route.snapshot.degraded } : {}),
     hint,
   };
