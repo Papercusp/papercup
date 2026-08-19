@@ -66,11 +66,61 @@ export function checkFile({ path, text, protectedModules }: {
     module: any;
     why: any;
 }[];
+/**
+ * The guard's OWN BLIND SPOT, measured — the population carrying the risky shape on modules
+ * the registry does NOT cover.
+ *
+ * EI-20836231573383362: this guard passed `✓ ... 327 candidate test file(s) scanned — no bare
+ * vi.mock factories` at 20:24Z while a bare `@papercusp/db-org` factory had been sitting in
+ * sync-resolver/learning-knowledge-scout.test.ts for ~3 weeks, breaking COLLECTION of that
+ * whole file. The scan was CORRECT — db-org is not a protected module — but the verdict read
+ * as a tree-wide all-clear, and was used as one ("lint:full-replacement-mocks passed, so bare
+ * factories are not the problem"). A bounded measurement rendered as an unbounded verdict is
+ * indistinguishable from a real zero, which is the specific way this guard was worse than no
+ * guard: it supplied positive evidence for a conclusion it never tested.
+ *
+ * So the pass path reports BOTH halves of one measurement — what was checked and what is
+ * structurally out of scope. Deriving them from the SAME parse of the SAME corpus is the
+ * point: a scope note computed separately could drift from the check it qualifies.
+ */
+export function exposureCensus({ files, protectedModules }: {
+    files: any;
+    protectedModules: any;
+}): {
+    modules: number;
+    pairs: number;
+    internalModules: number;
+    top: {
+        module: any;
+        files: any;
+        internal: any;
+    }[];
+};
+/**
+ * Render the scope qualifier that travels with a PASS. Pure, so a test can pin the one
+ * property that matters: a non-zero exposure must never render as an unqualified all-clear.
+ */
+export function printExposureNote(exposure: any): string;
+/**
+ * Pure half of the pre-filter: which already-read files could mention a protected module.
+ * Split out so ONE read of the corpus can feed both the violation scan and the exposure
+ * census — two walks could disagree about what the tree contains, and the whole point of
+ * the census is that it qualifies THIS run's verdict.
+ */
+export function selectCandidates({ files, protectedModules }: {
+    files: any;
+    protectedModules: any;
+}): any;
 /** Test files that could possibly mention a protected module — cheap substring pre-filter. */
 export function collectCandidateFiles({ listFiles, read, protectedModules }: {
     listFiles: any;
     read: any;
     protectedModules: any;
+}): any;
+/** Read every listed file once, dropping unreadable ones. */
+export function readAllFiles({ listFiles, read }: {
+    listFiles: any;
+    read: any;
 }): {
     path: any;
     text: any;
@@ -92,6 +142,24 @@ export const FIXTURE_PROTECTED: {
     module: string;
     why: string;
 }[];
+export namespace EXPOSURE_FIXTURES {
+    namespace bareOnUnprotected {
+        let path: string;
+        let text: string;
+    }
+    namespace bareOnProtected {
+        let path_1: string;
+        export { path_1 as path };
+        let text_1: string;
+        export { text_1 as text };
+    }
+    namespace safeSpreadOnUnprotected {
+        let path_2: string;
+        export { path_2 as path };
+        let text_2: string;
+        export { text_2 as text };
+    }
+}
 /**
  * The fixtures live HERE, not in the vitest guard test, and that is load-bearing rather
  * than tidiness: a fixture is mock SOURCE TEXT, so a `.test.ts` holding one is itself a
