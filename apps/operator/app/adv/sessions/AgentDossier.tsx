@@ -75,14 +75,13 @@ function shortSource(s: string): string {
   return s || '—';
 }
 
-/** "19m left" / "<1m left" / "expired" from an ISO expiry. */
-function expiresIn(iso: string): string {
-  const ms = new Date(iso).getTime() - Date.now();
-  if (!Number.isFinite(ms)) return '';
-  if (ms <= 0) return 'expired';
-  const min = Math.round(ms / 60_000);
-  return min < 1 ? '<1m left' : `${min}m left`;
-}
+/* The local `expiresIn` that used to live here is now
+   `formatTimeLeft` in @papercusp/operator-core/lib/format/relative-time
+   (popup-agent-state-coverage-2026-08-18 P-009): the conversation popup's
+   status band renders the same countdown for an `events:await` timeout, and a
+   second hand-rolled one is how one popup comes to word the same expiry two
+   ways. Same output for every value this file already rendered, plus an
+   hour/day scale — a 3h lock said "180m left" before. */
 
 function MetaRow({ label, value }: { label: string; value: React.ReactNode }): React.JSX.Element | null {
   if (value == null || value === '' || value === false) return null;
