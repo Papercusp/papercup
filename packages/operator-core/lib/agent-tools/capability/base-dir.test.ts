@@ -157,6 +157,19 @@ describe('EI-20881501070735530 — the base-dir fallback is not re-implemented p
   /** base-dir.ts owns the fallback and quotes the old shape in its own EI-1754 history. */
   const EXEMPT = new Set(['base-dir.ts']);
 
+  /**
+   * The invariant is about CODE. A fixed site that DOCUMENTS what it used to do — which
+   * is how the two survivors are annotated now — must not read as a live offender, or the
+   * guard punishes exactly the comment that stops the next person reintroducing it.
+   *
+   * Deliberately fail-CLOSED where it is imprecise: block comments and whole-line `//`
+   * comments are removed, a TRAILING `//` comment after code is not. So the worst case is
+   * a noisy false alarm on a pattern quoted at the end of a code line, never a silent miss.
+   */
+  function stripComments(src: string): string {
+    return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  }
+
   const agentToolsRoot = fileURLToPath(new URL('..', import.meta.url));
 
   function sourceFiles(dir: string, acc: string[] = []): string[] {
