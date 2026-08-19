@@ -1021,6 +1021,27 @@ export async function readRecallHealthByPool(
       -- mean of every key it ever touched. Measured 2026-08-19: initialize/harness
       -- spans 26 distinct scope keys of which 21 hold nothing, so an unweighted
       -- median reads 0 while ~all of its 30k recalls ask a 1,975-memory scope.
+      -- ⚠ THE BLEND IS REAL AND MEASURED INERT — do not "fix" it without
+      -- re-measuring first (EI-20883740453844956, investigated 2026-08-19).
+      -- This GROUP BY is (surface, pool, scale), which is COARSER than the
+      -- scope key row_corpus is derived from, so one group can average
+      -- heterogeneous corpora. Measured over BOTH the current 7d window and
+      -- the 2026-08-01 incident window, every group is either homogeneous
+      -- (min = max) or straddling with a zeroHitRate so far from the bar that
+      -- avg / min / max imply the SAME verdict: NOT ONE live verdict changes
+      -- under any of the three estimators. The obvious hardening — judge by
+      -- min(row_corpus) to fail toward silence — was designed, calibrated
+      -- against the aug-01 true positive (initialize/harness, 1.0000 zero at a
+      -- uniform 1,975 corpus: fires under all three), and DROPPED as dead
+      -- complexity: it adds a required field to this exported interface and a
+      -- second corpus estimator to reason about, and moves no verdict.
+      -- It becomes material only if a group ever straddles a knee (100 / 500,
+      -- see effectiveZeroHitGate) AND its rate lands BETWEEN the two implied
+      -- bars. That conjunction is the thing to re-measure — not the spread.
+      -- Sub-case, also measured: a recall asking a scope that EXISTS but holds
+      -- nothing (row_corpus = 0) is a guaranteed zero-hit and is counted as a
+      -- retrieval miss. Confirmed at exactly 1.0000 zero-hit — and 0.8% of one
+      -- group (244/29,252 initialize/harness), moving its rate 0.3964 to 0.3916.
       avg(row_corpus)                                        AS corpus_active,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY hits)      AS hits_p50,
       percentile_cont(0.5) WITHIN GROUP (ORDER BY top)
