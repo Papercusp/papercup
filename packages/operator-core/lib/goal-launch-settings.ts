@@ -264,6 +264,49 @@ export function resolveGoalHolderPolicy(
   };
 }
 
+/**
+ * The write-boundary refusal message, or null when the policy is acceptable
+ * (P-003 of goal-live-holder-guarantee-2026-08-18).
+ *
+ * WHY A SHARED PREDICATE AND NOT A LINE AT EACH DOOR. Three doors install a
+ * goal's holder policy — `goals:create`, `goals:start`, and GOAL-mode attach
+ * (`mode:set { mode:'goal', subject }`) — and `killCriterionProblem`'s docblock
+ * already records what happens when each writes its own copy: the door with the
+ * looser copy quietly becomes the way to install what the others would have
+ * refused. Same rule, same shape (a MESSAGE, not a boolean, because every
+ * caller surfaces it verbatim).
+ *
+ * WHAT IT REFUSES, AND WHY THAT IS NOT THE SAME AS "REFUSE EVERY GOAL". D-008
+ * makes `requireLive` default TRUE at READ time, which is what covers the 18
+ * goals that already exist with no migration. That default is a rescue for the
+ * legacy population, NOT a licence for the population to keep growing: this
+ * refuses a NEW holder-required goal whose creator declared nothing, so the set
+ * of goals whose holder semantics nobody chose can only shrink from here.
+ *
+ * The predicate is written as `requireLive && isDefault` rather than the
+ * equivalent-today `isDefault` on purpose. They coincide only because the
+ * default is true; stating both keeps the rule honest ("a goal that WILL require
+ * a live holder, whose owner never said so") if D-008's default is ever revisited.
+ *
+ * Pinning EITHER field counts as declaring. A goal that pins only
+ * `onLoss:'respawn'` has engaged with the policy deliberately and gets the
+ * `requireLive` default knowingly — which is exactly the distinction `isDefault`
+ * was added to carry, so it is read here rather than re-derived from absence.
+ */
+export function goalHolderPolicyProblem(
+  settings: GoalLaunchSettings | null | undefined,
+): string | null {
+  const policy = resolveGoalHolderPolicy(settings);
+  if (!policy.requireLive || !policy.isDefault) return null;
+  return (
+    'this goal would require a LIVE holder but declares no holder policy — ' +
+    `it is inheriting the default (requireLive: ${GOAL_HOLDER_DEFAULTS.requireLive}, ` +
+    `onLoss: '${GOAL_HOLDER_DEFAULTS.onLoss}') rather than stating one. ` +
+    "Declare it: holder: { requireLive: true } if a live holder is what you mean, " +
+    'or holder: { requireLive: false } for a goal driven by routines rather than a held session.'
+  );
+}
+
 /** The launch knobs a goal can pin, per slot or as its across-the-board default. */
 export const launchProfileSchema = z
   .object({
