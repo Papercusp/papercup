@@ -911,7 +911,18 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
     // (WI-39890) Distinct passing shas, newest first — the ancestry-complete
     // candidate set. `countFailShas` is a misnomer here but is exactly the
     // dedupe+order we want, and reusing it keeps ONE normalization for shas.
-    const passShas = countFailShas(r.pass_shas).map(([sha]) => sha);
+    //
+    // `last_pass_sha` is UNIONED IN rather than trusted as the whole set: a
+    // producer that has not populated `pass_shas` then degrades to exactly the
+    // OLD single-candidate behaviour instead of silently yielding an EMPTY set,
+    // which would disable supersession AND the same-sha flip together. That is
+    // the fail-safe direction — the widened set can only ever suppress more
+    // correctly and disattribute more flakes, never fewer. (Not hypothetical:
+    // this change passed through precisely that state while the SQL projection
+    // below was still unlanded, and it typechecked clean throughout.)
+    const passShas = countFailShas([...(r.pass_shas ?? []), r.last_pass_sha ?? null]).map(
+      ([sha]) => sha,
+    );
     const sameShaFlip = hasSameShaVerdictFlip(failShas, passShas);
     return {
       source: 'red-test' as const,
