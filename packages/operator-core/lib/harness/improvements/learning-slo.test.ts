@@ -916,10 +916,20 @@ describe('recall gate-2 corpus normalization — CONTROL set (EI-208789268034361
     expect(starvedOf([{ ...NOW_MIDTURN_HIVE, corpusActive: null }])).toBeDefined();
   });
 
-  it('CALIBRATION: CONTROL A is corpus-driven — the SAME blackout on a small corpus does NOT fire', () => {
-    // The other direction: A must pass because of the CORPUS, not merely
-    // because 1.0 always fires.
-    expect(starvedOf([{ ...AUG01_INITIALIZE_HARNESS, corpusActive: 58 }])).toBeUndefined();
+  it('CALIBRATION: one rate in the straddle band fires on a large corpus and not on a small one', () => {
+    // The other direction, and the assertion that corrected me: my first
+    // attempt here claimed CONTROL A's 1.0 blackout would go SILENT at corpus
+    // 58. It does not, and it must not — the small-corpus bar is 0.97,
+    // deliberately below 1.0, so a total blackout stays detectable at ANY
+    // corpus size (CONTROL C). The test caught the contradiction between that
+    // assertion and the design; the code was right.
+    //
+    // So corpus-drivenness is proved with a rate INSIDE the straddle band
+    // [0.85, 0.97), where the two bars genuinely disagree. Same row, same
+    // rate, opposite verdicts — corpus size is the only variable.
+    const straddle = { ...AUG01_INITIALIZE_HARNESS, zeroHit: 49, zeroHitRate: 0.90 };
+    expect(starvedOf([{ ...straddle, corpusActive: 1975 }])).toBeDefined();
+    expect(starvedOf([{ ...straddle, corpusActive: 58 }])).toBeUndefined();
   });
 
   it('CALIBRATION: the bar interpolates between the two bounds and never inverts', () => {
