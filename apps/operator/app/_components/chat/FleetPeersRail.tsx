@@ -29,6 +29,20 @@
  * the shared liveness oracle, so a peer here reads the same as the same agent on
  * the board behind the popup. Never re-derive a private live/idle vocabulary in
  * this file.
+ *
+ * ── The leader-brief overlay (popup-agent-state-coverage-2026-08-18) ─────────
+ * When the viewed agent leads this fleet, the rail additionally renders what
+ * `fleet:leader-brief` — the object that leader is actually handed — says about
+ * each member. That overlay is GLYPHS ON EXISTING ROWS plus one bounded block
+ * at the top; it adds no rows, because the rail's fixed height is a constraint
+ * paid for after one agent's 32 locks made it ~2,000px tall (D-003). The
+ * derivation is the pure, unit-tested `leader-brief-alerts.ts` — this file
+ * renders it and decides nothing.
+ *
+ * The overlay is ADDITIVE and never overrides the board column: a member can be
+ * `working` on the board and dormant in the brief at the same time, and that
+ * pair IS the finding. Suppressing one to make the row consistent would delete
+ * exactly the signal the plan exists to surface.
  */
 import { useMemo } from 'react';
 import { Tooltip } from '../../harness/Tooltip';
@@ -36,6 +50,7 @@ import FleetRoleGlyph from '../FleetRoleGlyph';
 import { useChatClock } from './message-timestamp';
 import { formatAge, type HudColumnId } from '../../adv/hud/hud-board-model';
 import type { FleetPeer, FleetPeersModel } from './fleet-peers';
+import type { FleetAlertsModel, LeaderBriefAlertsModel, MemberAlert } from './leader-brief-alerts';
 
 /** The state word under each peer. Terse on purpose: this column is ~248px and
  *  the row's job is to be scanned, not read. The full sentence rides in `title`
