@@ -2822,6 +2822,9 @@ describe('red-test SAME-SHA verdict flip (WI-10929)', () => {
       rows({
         fail_shas: ['ed37db59c8', 'ed37db59c8', 'ed37db59c8', 'ed37db59c8', 'ed37db59c8'],
         last_pass_sha: 'ed37db59c8',
+        // WI-39890: the flip is now derived from the pass SET, so the fixture must carry it.
+        // Faithful to the modelled shape — every run in the window was on ed37db59c8.
+        pass_shas: ['ed37db59c8'],
         last_pass_at: '2026-08-04T01:10:41Z',
       }),
       6,
