@@ -1851,6 +1851,33 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       /\.tsx?$/.test(f) || f === "package.json" || f.endsWith("/package.json"),
   },
   {
+    // EI-20863237237162828 (2026-08-19) — the OTHER direction of the guard directly
+    // above. That one catches a local package IMPORTED BUT NOT DECLARED; this one
+    // catches an external peer DECLARED BUT UNSATISFIABLE by the installed tree.
+    //
+    // Why it must be repo-wide rather than a workspace suite: the blast radius of a bad
+    // peer range is not the workspace that declares it. npm resolves peers TREE-WIDE, so
+    // `libs/papercusp-shared` declaring `dockview ^5` against an installed 6.6.1 broke
+    // `npm install` for EVERY agent on EVERY package — and `npm run install:safe` is the
+    // one sanctioned install path here, so while it was red there was no sanctioned way
+    // to repair dependencies at all. The offending edit touched exactly one package.json
+    // in a submodule; no workspace test suite covers that shape.
+    workspace: "@papercusp/operator-core",
+    script: "lint:peer-dep-conflicts",
+    // Exit 2 = NOT CHECKED (no workspaces resolved, nothing installed to judge against,
+    // or a range form the checker refuses to guess at). A gate checkout has no
+    // node_modules by construction, so "examined nothing" must not red the fleet gate —
+    // same contract as lint:di-seam-arity-strands above.
+    notCheckedIsNonGating: true,
+    // Peer declarations live ONLY in package.json; the versions they are judged against
+    // move with the lockfile. Anything else cannot change this guard's verdict.
+    appliesTo: (f) =>
+      f === "package.json" ||
+      f.endsWith("/package.json") ||
+      f === "package-lock.json" ||
+      f.endsWith("/package-lock.json"),
+  },
+  {
     // retire-mug-kettle-su-only-2026-08-09 P-016 — the recurrence guard for the
     // mug/kettle/cup retirement. Repo-wide because the thing it guards against is a NEW
     // entry point, and nobody knows in advance which file is about to grow one: the
