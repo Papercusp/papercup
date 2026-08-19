@@ -14,6 +14,17 @@
  * with no I/O: it is cheap enough to run in the affected-tests loop, and it fails at
  * EDIT time rather than at the next multi-hour gate freeze.
  *
+ * ⚠ TWO DIFFERENT PROBLEMS LIVE IN THIS FILE, and only one of them is this test's to
+ * solve. The four links above are four GENUINELY DIFFERENT numbers whose ORDERING is a
+ * design decision — no import can enforce that, so it is asserted here. What was ALSO
+ * asserted here for a while was that three other constants held the same value as the
+ * suite budget; those were hand-typed copies, made necessary by a module-load side
+ * effect in the budget's old home. WI-39841's follow-on removed the side effect
+ * (`operator-core/lib/release/green-checkpoint-schedule.ts` is a leaf with no imports),
+ * so those three now IMPORT the budget and the drift is impossible rather than detected.
+ * When you are tempted to add an assertion here, ask which of the two you have: a real
+ * ordering decision belongs in this file; two names for one number belongs in an import.
+ *
  * If you are here because this test just went red: do not "fix" it by nudging one
  * number until it passes. Read the chain below, decide which link genuinely needs to
  * move, and move the OTHERS to keep the ordering — the whole point is that these four
@@ -58,7 +69,7 @@ type Link = readonly [name: string, ms: number];
 /** The whole chain, in the order a single run passes through it. */
 const CHAIN: readonly Link[] = [
   [
-    "GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (release-actions.ts)",
+    "GREEN_CHECKPOINT_SUITE_TIMEOUT_MS (release/green-checkpoint-schedule.ts)",
     GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
   ],
   ["SELF_WATCHDOG_MS (green-checkpoint.ts)", SELF_WATCHDOG_MS],
