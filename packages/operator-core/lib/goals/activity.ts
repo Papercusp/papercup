@@ -94,6 +94,29 @@ export interface GoalActivityVerdict {
 }
 
 /**
+ * Is this goal DELIBERATELY paused? The goal-level analogue of the unit
+ * reconciler's `isAdministrativelyPaused` (WI-5378), and the reason P-005
+ * exists: there, a `disabled`/`masked` unit is read from a PERSISTED
+ * administrative marker rather than inferred from the fact that nothing is
+ * running, because a deliberate stop and a crash look identical from the
+ * outside. A goal is no different.
+ *
+ * Takes the raw status string rather than `GoalStatus` so a caller holding an
+ * unvalidated column value (every SQL read) can ask without a cast.
+ *
+ * LIVES HERE, not in `agent-mcp`'s `pause-record.ts` where P-005 first wrote it
+ * (which now re-exports it, so P-005's callers are unchanged). The move is
+ * structural, not cosmetic: this module is operator-core's cheapest PURE fold,
+ * and reaching for the predicate through the agent-mcp package BARREL pulled
+ * that entire index into every consumer of it — a cycle
+ * (`sync-resolver → activity → @papercusp/agent-mcp → goals/get → …`) for a
+ * one-line string comparison. Plan D-011.
+ */
+export function isGoalAdministrativelyPaused(status: string | null | undefined): boolean {
+  return status === 'paused';
+}
+
+/**
  * Terminal per the goal partition (`GOAL_TERMINAL_STATUSES`, mirrored here as a
  * string test so a raw column value needs no cast).
  */
