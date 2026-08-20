@@ -61,16 +61,12 @@ export interface FlapDampingInput {
  * Pure decision for one target. The caller persists `nextState` and performs a returned restart
  * or escalation; this function never performs I/O.
  */
-export function decideFlapDamping(
-  input: FlapDampingInput,
-): { action: FlapDampingAction; nextState: FlapDampingState } {
+export function decideFlapDamping(input: FlapDampingInput): { action: FlapDampingAction; nextState: FlapDampingState } {
   const state = { ...input.state };
 
   if (input.healthy) {
     if (state.healthySince == null) state.healthySince = input.now;
-    const reset =
-      (state.gaveUp || state.restarts.length > 0) &&
-      input.now - state.healthySince >= HEALTHY_RESET_MS;
+    const reset = (state.gaveUp || state.restarts.length > 0) && input.now - state.healthySince >= HEALTHY_RESET_MS;
     if (reset) {
       state.gaveUp = false;
       state.restarts = [];
@@ -88,9 +84,7 @@ export function decideFlapDamping(
   if (state.lastRestartAt != null) {
     // backoffIndex advances after an attempt, so spacing uses the prior rung.
     const priorIndex = Math.max(0, state.backoffIndex - 1);
-    const priorWaitSec = BACKOFF_SEQUENCE_SEC[
-      Math.min(priorIndex, BACKOFF_SEQUENCE_SEC.length - 1)
-    ];
+    const priorWaitSec = BACKOFF_SEQUENCE_SEC[Math.min(priorIndex, BACKOFF_SEQUENCE_SEC.length - 1)];
     if (input.now - state.lastRestartAt < priorWaitSec * 1000) {
       return { action: { kind: 'waiting-backoff' }, nextState: state };
     }
@@ -106,9 +100,7 @@ export function decideFlapDamping(
     };
   }
 
-  const backoffSec = BACKOFF_SEQUENCE_SEC[
-    Math.min(state.backoffIndex, BACKOFF_SEQUENCE_SEC.length - 1)
-  ];
+  const backoffSec = BACKOFF_SEQUENCE_SEC[Math.min(state.backoffIndex, BACKOFF_SEQUENCE_SEC.length - 1)];
   state.restarts = [...pruned, input.now];
   state.backoffIndex = Math.min(state.backoffIndex + 1, BACKOFF_SEQUENCE_SEC.length - 1);
   state.lastRestartAt = input.now;

@@ -53,8 +53,9 @@ describe('shared flap damping (goal-live-holder-guarantee P-008)', () => {
       restartsInWindow: GIVE_UP_THRESHOLD,
     });
     expect(giveUp.nextState.gaveUp).toBe(true);
-    expect(decideFlapDamping({ healthy: false, state: giveUp.nextState, now: now + 60_000 }).action)
-      .toEqual({ kind: 'already-escalated' });
+    expect(decideFlapDamping({ healthy: false, state: giveUp.nextState, now: now + 60_000 }).action).toEqual({
+      kind: 'already-escalated',
+    });
   });
 
   it('prunes attempts at the give-up-window boundary', () => {
