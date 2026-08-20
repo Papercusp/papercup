@@ -2,32 +2,24 @@
 
 **Question:** can we confidently ship the shared-pot (P2P federated) feature to public production?
 
-**VERDICT — updated 2026-08-09T05:05Z (prior: 2026-08-01T19:15Z; originally 2026-07-27T06:05Z):
-NO-GO for unconditional public ship.** The substrate is release-grade, but the conditional-go set
-is **no longer the three rows the 08-01 verdict named** — a security regression was confirmed on
-2026-08-09 and the standing gate that would have caught it is switched off. Nothing below is
-waiting on a decision; every open row has a named owner and a concrete flip condition.
+**VERDICT — updated and signed 2026-08-20T07:36Z (su-416b5, `WI-39359`, owner-directed AUTO):
+NO-GO for unconditional public ship.** In the non-git/non-coordination P2P lane, the remaining
+release-readiness gap is one evidence wall, not a second code defect: the distinct-account live
+rig cannot enter a scenario until the `aviynw` frame has a valid GitHub token.
 
-> ⚠ **VERDICT REASON UPDATED 2026-08-16T03:0xZ (su-c531b, WI-37110). The verdict is UNCHANGED —
-> still NO-GO — but BOTH clauses of the sentence above are now stale, and the governing reason
-> has moved.**
->
-> - *"a security regression was confirmed on 2026-08-09"* — that is C-001 / `WI-37195`, now
->   **`done`** (verified in PG).
-> - *"the standing gate that would have caught it is switched off"* — **FALSE as of today.**
->   `WI-37144` is **`dropped`**; the timer is armed and firing (53 runs since 2026-07-27, last
->   02:47:29Z, next 03:39Z).
->
-> **The reason it is still NO-GO is now §3 row 0: the core p2p leg has never been measured.**
-> `local_matrix` — the 18-scenario leg carrying `membership_churn`, `content_bidir`,
-> `replication_soak`, `restart_durability` — executed exactly **once in the last 20 days**
-> (2026-08-16T02:47:29Z, which failed on an incidental sidecar race); 51 of 53 runs never
-> reached it, and `last-matrix-green` is **481h** stale against a 144h TTL.
->
-> This is a **NO-GO on absent evidence, not on a known defect** — a materially different claim
-> from the 08-09 verdict, and it must not be paraphrased as either "p2p is broken" or "p2p is
-> fine, pending paperwork". The single flip condition is one gate run reporting
-> `local_matrix=OK`; the next unforced attempt is the 03:39Z timer.
+The retained gate run `/tmp/live-fed-gate-20260820-002304` proves the current boundary. It built
+and verified the sidecar, repacked `Papercusp_gate.deb`, and its exact production
+attestation-write probe returned `{"user":"papercupai","ok":true,"cleanedUp":true}`. The
+`local_matrix` leg then failed its side-effect-free host preflight on **only** the missing/invalid
+`aviynw` token, before frame-image construction, container provisioning, core eviction, or any
+federation scenario. This is a **NO-GO on absent current live evidence, not evidence that P2P is
+broken**. The flip condition is a valid `aviynw` token followed by a real distinct-account gate
+run whose applicable live legs execute and pass.
+
+Git, coordination metadata, code-signing inputs, and the separately governed shipped-seed
+artifact mismatch are outside this lane and are not additional P2P evidence walls. The dated
+blocks below remain as audit history; where an older statement conflicts with this signature or
+the current §3 row 0, the current text controls.
 
 > ## ⚠ RE-SIGNED 2026-08-16T03:5xZ (su-0c703, `WI-39359`, owner-directed AUTO) — VERDICT UNCHANGED (**NO-GO**), but the reason above is no longer the ONLY one, and the "single flip condition" clause is now INCOMPLETE
 >
@@ -691,11 +683,27 @@ logs are from the green run `m1785117063`.
 > FALSE as of today — the timer is armed and firing (53 runs since 2026-07-27; last 02:47:29Z;
 > next 03:39Z). Read row 0 first; A and B are kept verbatim below for quotability only.
 
-**0. THE CORE P2P LEG HAS NEVER BEEN MEASURED — this is the governing GO/NO-GO fact.**
-   *Filed 2026-08-16 by su-c531b (WI-37110). This is an ABSENCE of evidence, not evidence of a
-   defect — do not quote it as either "p2p is broken" or "p2p is unverified-but-probably-fine".*
+**0. CURRENT CORE P2P LIVE EVIDENCE IS BLOCKED BEFORE SCENARIOS — this is the governing in-lane
+GO/NO-GO fact.**
+   *Re-signed 2026-08-20 by su-416b5 (`WI-39359`). This is an ABSENCE of current live evidence,
+   not evidence of a federation defect.*
 
-   Measured directly from `~/.papercusp/live-fed-gate/verdicts.jsonl` (53 runs since 2026-07-27):
+   Current retained evidence is `/tmp/live-fed-gate-20260820-002304`: sidecar build and bundle
+   verification completed; `Papercusp_gate.deb` was repacked; `papercupai` passed the exact
+   attestation-write probe with cleanup; and `local-matrix.out` contains one deterministic
+   failure, `FATAL(preflight): no gh token for 'aviynw'`. No frame was built, no container was
+   provisioned, no cores were evicted, and no scenario ran. A read-only credential re-check at
+   signing time agrees: `papercupai` valid, `aviynw` invalid or missing.
+
+   **The one in-lane wall is therefore `aviynw`.** It simultaneously blocks the distinct-account
+   local matrix, attestation/live witness, and fresh two-machine evidence. Do not force another
+   expensive rig attempt while the preflight is deterministically red, and do not substitute the
+   same `papercupai` identity on both frames: that topology collapses the membership identity and
+   can false-green. The flip condition is a valid `aviynw` token followed by actual live-leg
+   execution and green evidence.
+
+   The census and failure chronology below are the **2026-08-16 historical baseline**, retained
+   for provenance rather than presented as current counts:
 
    | | |
    |---|---|
@@ -737,23 +745,23 @@ logs are from the green run `m1785117063`.
    Now repacks whenever a consumer leg is due, reusing the gate's own `local_matrix_due()`
    predicate, with a falsifiable recurrence guard in `federation-asserts.selftest.sh`.
 
-   **⚠ CORRECTION to how this document has described the wall.** The two GitHub failures are
-   **distinct, on different accounts, and block different legs** — conflating them made the
-   blocker look larger and far less actionable than it is:
+   **⚠ CURRENT CORRECTION (2026-08-20).** The earlier `papercupai email_unverified` wall cleared;
+   the production probe minted and cleaned up its gist successfully. Both live-evidence paths now
+   collapse to the same remaining credential:
 
    | leg | needs | blocked by |
    |---|---|---|
-   | attestation legs | a **mintable gist** + D-030 distinct accounts | `papercupai` `email_unverified` (422 on `POST /gists`) |
-   | **`local_matrix` (core federation)** | only `gh auth token` | **`aviynw` alone** — `papercupai`'s token is valid and sufficient |
+   | attestation legs | a **mintable gist** + D-030 distinct accounts | **`aviynw` alone** — `papercupai` now passes the write probe |
+   | **`local_matrix` (core federation)** | a valid token for each distinct frame identity | **`aviynw` alone** |
 
-   Measured 2026-08-16T04:2xZ: `gh auth token --user papercupai` → 40 chars, valid;
-   `--user aviynw` → **length 0**, "the token in default is invalid". `rig_set_identity`
+   Re-measured 2026-08-20T07:36Z: `papercupai` is valid and its production write probe reports
+   `ok:true, cleanedUp:true`; `aviynw` remains invalid or missing. `rig_set_identity`
    (`bin/lib/deb-hetzner-rig.sh:683`) hard-FATALs on an empty token, and frame identities are
    `P_A_USER=papercupai` / `P_B_USER=aviynw` (`deb-hetzner-matrix.sh:141-142`).
 
    **So the owner ask is ONE command — `gh auth login -h github.com` for `aviynw` — and it is
-   sufficient to restore core-federation measurability**, independently of the
-   email-verification issue. Standing fact: `wall:p2p-core-federation-blocked-on-aviynw-gh-token`.
+   sufficient to restore core-federation measurability.** Standing fact:
+   `wall:p2p-core-federation-blocked-on-aviynw-gh-token`.
 
    **RE-VERIFIED 2026-08-16T04:44Z (su-c531b).** Still `papercupai` = 40 chars valid / `aviynw`
    = length 0, "The token in default is invalid". Worth stating because a coord notice at
@@ -839,8 +847,8 @@ logs are from the green run `m1785117063`.
    proven falsifiable by mutating an out-of-tree copy. Standing fact:
    `local-matrix-host-preflight-class-fix`.
 
-   > ⚠ **This does NOT change row 0's headline number.** It is still **3 reached runs / 0
-   > scenarios executed**. The preflight makes *failing* cheap and legible; it does not make
+   > ⚠ **Historical note:** at this point in the 2026-08-16 chronology the census was **3 reached
+   > runs / 0 scenarios executed**. The preflight makes *failing* cheap and legible; it does not make
    > the leg *pass*. Only the `aviynw` token does that. Do not read this fix as progress
    > toward a federation verdict.
 
@@ -865,16 +873,11 @@ logs are from the green run `m1785117063`.
    the last run, so a failed attempt does not reset the window and the leg stays DUE — it will
    take the next unforced timer automatically once the credential is restored.
 
-   **⚠ The ATTESTATION wall (distinct from the row-0 blocker above) is UNCHANGED and
-   OWNER-GATED — and a `SKIPPED` leg is NOT it clearing.** Re-probed read-only
-   2026-08-16T03:0xZ: `papercupai` holds a valid token *with* `gist` scope but the account is
-   **`email_unverified`** (GitHub 422 on `POST /gists`: "user must have a verified email");
-   `aviynw` has **no `oauth_token` key at all** in `hosts.yml` ("the token in default is
-   invalid"). Both fixes are owner-only. Proof the wall is cleared =
-   `attestation-write-preflight` reporting **OK with a minted gist** — *never* a SKIP.
-   ⚠ Do not read this paragraph as the core-federation blocker: clearing `aviynw` alone restores
-   `local_matrix` (row 0) but does **not** clear this attestation wall, which additionally needs
-   `papercupai`'s email verified. Standing fact:
+   **✅ THE SEPARATE `papercupai` ATTESTATION WALL IS CLEARED (2026-08-20).** The retained run's
+   exact production probe reports `{"user":"papercupai","ok":true,"cleanedUp":true}` — the
+   required minted-gist-and-cleanup proof, not a SKIP. Its next line reports only
+   `ATTESTATION_WRITE: user=aviynw code=token_missing`. Attestation and `local_matrix` therefore
+   share the same sole remaining wall: a valid distinct `aviynw` credential. Standing fact:
    `wall:p2p-core-federation-blocked-on-aviynw-gh-token`.
 
 **A. C-001 — consent withdrawal does not cut on the from-repo path (`WI-37195`).** The single
