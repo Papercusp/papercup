@@ -339,6 +339,7 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
       'plan-class-investigation',
       'plan-class-migration',
       'pot-coordination-health',
+      'spec-test-adequacy',
       'su-agent-behavior',
     ]);
     for (const r of shipped) {

@@ -1,0 +1,104 @@
+/** plans:evaluate-spec-test-adequacy — compile exact clause/evidence rows into scorecard drafts. */
+import { z } from 'zod';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { listSpecClauses } from './spec-clauses-store';
+import { listSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
+import { evaluateSpecTestAdequacy, PLAN_CLASSES } from './spec-test-adequacy';
+
+const fingerprint = z.string().trim().min(1).max(256);
+const currentSchema = z.object({
+  evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
+  evidenceRef: z.string().trim().min(1).max(2000),
+  sourceFingerprint: fingerprint,
+  testFingerprint: fingerprint.nullable().optional(),
+  fixtureFingerprint: fingerprint.nullable().optional(),
+  rubricFingerprint: fingerprint.nullable().optional(),
+  environmentFingerprint: fingerprint.nullable().optional(),
+});
+
+const argsSchema = z.object({
+  harness: harnessArg,
+  slug: z.string().min(1),
+  planClass: z.enum(PLAN_CLASSES),
+  workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
+  current: z.array(currentSchema).max(500).optional(),
+  includeDraft: z.boolean().optional(),
+  now: z.string().datetime({ offset: true }).optional(),
+  limit: z.number().int().min(1).max(1000).optional(),
+});
+
+export default defineTool({
+  name: 'plans:evaluate-spec-test-adequacy',
+  description:
+    'Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict.',
+  guidance: {
+    when: 'During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.',
+    notWhen: 'Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit.',
+    chaining:
+      'plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy with current fingerprints → scorecards:emit each passing draft. P-007 consumes current emitted rows at work_items:complete.',
+    seeAlso: ['plans:get-spec-evidence', 'scorecards:emit', 'rubrics:get spec-test-adequacy'],
+  },
+  capability: 'plans:read',
+  requirePrincipal: false,
+  skipWorkspaceTx: true,
+  agentRoles: [...AGENT_ROLES],
+  modality: ['text'],
+  args: argsSchema,
+  async handler(args, ctx) {
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    const allEvidence = await listSpecEvidence({
+      harnessSlug,
+      planSlug: args.slug,
+      workItemIds: args.workItemIds,
+      specIds: args.specIds,
+      current: args.current,
+      limit: args.limit ?? 1000,
+    });
+    const evidenceSpecIds = new Set(allEvidence.map((row) => row.specId));
+    const requestedSpecIds = args.specIds ?? (args.workItemIds ? [...evidenceSpecIds] : undefined);
+    const clauses = await listSpecClauses({
+      harnessSlug,
+      planSlug: args.slug,
+      specIds: requestedSpecIds,
+      planItemIds: args.planItemIds,
+    });
+    const eligible = clauses.filter(
+      (clause) => args.includeDraft === true || clause.lifecycleStatus === 'active' || clause.lifecycleStatus === 'accepted',
+    );
+    const now = args.now ? new Date(args.now) : new Date();
+    const rows = eligible.map((clause) =>
+      evaluateSpecTestAdequacy({ clause, evidence: allEvidence, planClass: args.planClass, now }),
+    );
+    return {
+      data: {
+        ok: true,
+        slug: args.slug,
+        harnessSlug,
+        planClass: args.planClass,
+        rubricRef: 'spec-test-adequacy',
+        rows,
+        count: rows.length,
+        verdicts: {
+          pass: rows.filter((row) => row.verdict === 'pass').length,
+          fail: rows.filter((row) => row.verdict === 'fail').length,
+          unknown: rows.filter((row) => row.verdict === 'unknown').length,
+        },
+        wouldBlock: rows
+          .filter((row) => row.wouldBlock.length > 0)
+          .map((row) => ({ specId: row.specId, revision: row.specRevision, criteria: row.wouldBlock })),
+        uncoveredWorkItemSelection:
+          args.workItemIds && evidenceSpecIds.size === 0
+            ? {
+                workItemIds: args.workItemIds,
+                reason: 'No exact evidence edge exists for the selected work item(s); pass specIds to evaluate intended uncovered clauses.',
+              }
+            : null,
+      },
+    };
+  },
+});
