@@ -429,7 +429,24 @@ export async function runGym(
   return summary;
 }
 
-const isDirect = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+/**
+ * Whether this module is the process entrypoint, rather than merely bundled into one.
+ *
+ * Comparing argv[1] with import.meta.url alone is insufficient after esbuild bundles this
+ * module into serve.mjs: both values then name the outer bundle, so an import falsely runs
+ * this CLI and its process.exit() kills the packaged operator. Keep the equality check, but
+ * also prove the entrypoint still has this runner's own basename.
+ */
+export function isTemplateGymCliEntry(
+  entryPath: string | undefined = process.argv[1],
+  modulePath: string = fileURLToPath(import.meta.url),
+): boolean {
+  if (!entryPath) return false;
+  if (!/^template-gym-runner\.(?:[cm]?[jt]s)$/.test(path.basename(modulePath))) return false;
+  return path.resolve(entryPath) === path.resolve(modulePath);
+}
+
+const isDirect = isTemplateGymCliEntry();
 if (isDirect) {
   const argv = process.argv.slice(2);
   const flag = (name: string): string | undefined => {
