@@ -2929,13 +2929,27 @@ export default defineTool({
         await persistLaunchTransaction();
         continue;
       }
-      // A wave that did not fully verify stops the transaction here. For an
-      // UNCONFIRMED wave that is the canary gate working as designed (do not
-      // multiply a launch nobody has confirmed) — but now WITHOUT the false 502
-      // (EI-20437060078324174): the unconfirmed members are reported as
-      // unverified, and the resume path re-opens the unopened remainder once
-      // they prove live (EI-20497372063255974).
+      // A canary that did not fully verify stops the transaction: do not multiply
+      // a launch nobody has confirmed. Once the canary has positively verified,
+      // an otherwise-clean later wave may be only UNCONFIRMED because its members
+      // are slow to take their first turn under load. Keep opening the pre-pinned
+      // cohort in that case; otherwise one slow member aborts the whole remainder
+      // and every retry wave under-delivers (EI-20583314472856369). Positive
+      // failures still stop immediately, and the unresolved members remain in
+      // `unconfirmed`/`recovery.retryOwnerIds` for later liveness reconciliation.
       wave.state = 'partial';
+      const waveFullyOpened = openedThisWave.length === ownerIds.length;
+      const wavePositivelyFailed =
+        spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
+      const canContinueAfterUnconfirmedWave =
+        waveIndex > 0 &&
+        launchTransaction.verifiedMemberIds.length > 0 &&
+        waveFullyOpened &&
+        !wavePositivelyFailed;
+      if (canContinueAfterUnconfirmedWave) {
+        await persistLaunchTransaction();
+        continue;
+      }
       launchTransaction.state = 'partial';
       await persistLaunchTransaction();
       break;

@@ -1548,6 +1548,35 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(spawnConsoleMock.mock.calls.length).toBeGreaterThan(1);
   });
 
+  it('continues after a later fully-opened wave is only unconfirmed once the canary is verified', async () => {
+    // A slow member in a later wave must not abort the pre-pinned remainder. The
+    // canary gate still holds: the first wave is positively verified, the second
+    // wave is unconfirmed on both bounded probes, and the final member opens.
+    launchTransaction.verify
+      .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified canary' })
+      .mockResolvedValueOnce({ agentStarted: null, waitedMs: 25_000, sessions: [], note: 'UNVERIFIED wave' })
+      .mockResolvedValueOnce({ agentStarted: null, waitedMs: 30_000, sessions: [], note: 'UNVERIFIED wave' })
+      .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified final wave' });
+
+    const res = await tool.handler(
+      { name: 'Slow Later Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    const waveSizes = launchTransaction.verify.mock.calls.map(
+      (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
+    );
+
+    expect(payload.ok).toBe(true);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(5);
+    expect(waveSizes).toEqual([1, 3, 3, 1]);
+    expect(payload.launchTransaction.state).toBe('partial');
+    expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(2);
+    expect(payload.unverifiedMembers).toHaveLength(3);
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toHaveLength(3);
+    expect(payload.failed).toEqual([]);
+  });
+
   it('rolls out one canary then bounded waves, with exact pre-pinned identities', async () => {
     const res = await tool.handler(
       { name: 'Bounded Wave Fleet', plan: 'my-plan', harness: 'papercusp', count: 8 } as never,
