@@ -106,6 +106,9 @@ import {
   preflightPlaneCloseLive,
   renderPlaneClosePreflightWarning,
 } from '../../agent-plane-close-preflight';
+import { SPEC_EVIDENCE_KINDS } from '../plans/spec-evidence-store';
+import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
+import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 
 // EI-7031: coerce common LLM mis-shapes (bare string, scalar↔array swaps, missing
 // summary) to the CompletionRecord contract BEFORE validation — a finished
@@ -140,6 +143,35 @@ const completionSpec = z
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
       "A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.",
+  );
+
+const specEvidenceFingerprint = z.string().trim().min(1).max(256);
+const specAdequacyCompletionSpec = z
+  .object({
+    classRef: z
+      .enum(PLAN_CLASS_RUBRIC_REFS)
+      .describe('Existing plan-class standard that determines the required proof floor.'),
+    current: z
+      .array(
+        z
+          .object({
+            evidenceKind: z.enum(SPEC_EVIDENCE_KINDS),
+            evidenceRef: z.string().trim().min(1).max(2000),
+            sourceFingerprint: specEvidenceFingerprint,
+            testFingerprint: specEvidenceFingerprint.nullable().optional(),
+            fixtureFingerprint: specEvidenceFingerprint.nullable().optional(),
+            rubricFingerprint: specEvidenceFingerprint.nullable().optional(),
+            environmentFingerprint: specEvidenceFingerprint.nullable().optional(),
+          })
+          .strict(),
+      )
+      .max(500)
+      .optional()
+      .describe('Current fingerprints for the exact bound evidence refs; omitted dimensions remain unknown, never pass.'),
+  })
+  .strict()
+  .describe(
+    'Required on a terminal close that covers active test-requiring spec clauses. The gate recomputes per-clause adequacy and accepts only exact current terminal scorecards whose grading audit is settled.',
   );
 
 /**
@@ -231,6 +263,8 @@ const itemSpec = z.object({
    * decision-ledger disposition from it. Stays out of the fixed `completion` record.
    */
   outputPayload: z.unknown().optional(),
+  /** Current proof attestation for a terminal close covering first-class spec clauses. */
+  specAdequacy: specAdequacyCompletionSpec.optional(),
   /**
    * P-017 (b) gate #2 / D-016 / D-050 — REQUIRED for close-intent items.
    *
@@ -1617,6 +1651,43 @@ async function completeOne(
     };
   }
 
+  // first-class-spec-clauses-and-prior-attempt-briefs-2026-08-20 P-007 /
+  // D-003..D-006: terminal completion is the hard per-clause adequacy gate. Recompute
+  // against the exact CURRENT clause/evidence revisions and require the corresponding
+  // terminal, audited scorecard before any completion/state write. A missing plan stamp
+  // or a plan item with no test-requiring clauses is explicitly non-applicable, keeping
+  // legacy and non-behavioral work items compatible. Infrastructure/read failures fail
+  // CLOSED and are retryable: an unavailable gate must never silently become a pass.
+  let specAdequacyChecked: string[] | undefined;
+  if (closeIntentRequested) {
+    try {
+      const gate = await specTestAdequacyCompletionGate({
+        workItem: existing,
+        attestation: it.specAdequacy,
+      });
+      if (!gate.ok) {
+        return {
+          ok: false,
+          id: it.id,
+          error:
+            `refusing terminal completion for '${it.id}': spec-test-adequacy gate is not current: ${gate.reason}. ` +
+            'Retry after binding current proof, emitting terminal scorecards, and settling any pending grading audits. No completion record or state transition was written.',
+          specAdequacy: { applicable: true, retryable: true, checked: gate.checked },
+        };
+      }
+      if (gate.applicable) specAdequacyChecked = gate.checked;
+    } catch (error) {
+      return {
+        ok: false,
+        id: it.id,
+        error:
+          `refusing terminal completion for '${it.id}': spec-test-adequacy gate could not establish a current verdict (${error instanceof Error ? error.message : String(error)}). ` +
+          'This is retryable; no completion record or state transition was written.',
+        specAdequacy: { applicable: true, retryable: true, checked: [] },
+      };
+    }
+  }
+
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.
   //
@@ -2457,6 +2528,7 @@ async function completeOne(
     completion,
     reflect,
     ...(it.outputPayload !== undefined ? { outputPayload: it.outputPayload } : {}),
+    ...(specAdequacyChecked ? { specAdequacy: { applicable: true, checked: specAdequacyChecked } } : {}),
     ...(finish ? { finish } : {}),
   };
 }
@@ -2566,6 +2638,8 @@ export default defineTool({
             completion: completionSpec.optional(),
             /** Optional kind-specific structured output (single-complete shorthand). */
             outputPayload: z.unknown().optional(),
+            /** Current per-clause proof attestation for spec-covered terminal closes. */
+            specAdequacy: specAdequacyCompletionSpec.optional(),
             /** Required only when this single item requests a terminal close. */
             assumptions: assumptionsArg
               .optional()
@@ -2645,6 +2719,7 @@ export default defineTool({
             state: args.state,
             completion: args.completion!,
             outputPayload: args.outputPayload,
+            specAdequacy: args.specAdequacy,
             assumptions: args.assumptions,
           },
         ];

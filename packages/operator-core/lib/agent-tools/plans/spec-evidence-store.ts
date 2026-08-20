@@ -355,6 +355,47 @@ export interface ListSpecEvidenceOptions {
   limit?: number;
 }
 
+export interface WorkItemSpecRevisionEdge {
+  workItemId: string;
+  planSlug: string;
+  specId: string;
+  specRevision: number;
+  specFingerprint: string;
+}
+
+/** Read the explicit many-to-many coverage edges for one work item. */
+export async function listWorkItemSpecRevisionEdges(options: {
+  harnessSlug?: string;
+  planSlug: string;
+  workItemId: string;
+}): Promise<WorkItemSpecRevisionEdge[]> {
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const rows = await withWorkspace(
+    scope.workspaceId,
+    async (tx) => tx<{
+      work_item_id: string;
+      plan_slug: string;
+      spec_id: string;
+      spec_revision: number;
+      spec_fingerprint: string;
+    }[]>`
+      SELECT work_item_id, plan_slug, spec_id, spec_revision, spec_fingerprint
+        FROM harness_shared.work_item_spec_revision_edges
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND plan_slug = ${options.planSlug}
+         AND work_item_id = ${options.workItemId}
+       ORDER BY spec_id, spec_revision`,
+  );
+  return rows.map((row) => ({
+    workItemId: row.work_item_id,
+    planSlug: row.plan_slug,
+    specId: row.spec_id,
+    specRevision: Number(row.spec_revision),
+    specFingerprint: row.spec_fingerprint,
+  }));
+}
+
 export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
   const workItemIds = options.workItemIds ?? [];
