@@ -63,6 +63,8 @@ import {
   applyDefaultClaudeAuthSettingsArgs,
   enforceDefaultClaudeAccount,
   sanitizeInheritedEnv,
+  applyCodexDiagnosticEnv,
+  CODEX_DIAGNOSTIC_RUST_LOG,
   addDirArgs,
   forkUnsupportedMessage,
   forkBootstrapBody,
@@ -2571,6 +2573,19 @@ describe('psu-launcher arg parsing', () => {
       CLAUDE_CONFIG_DIR: '/home/u/.papercusp/session-claude/su-spawner',
       KEEP_ME: 'v',
     })).toEqual({ KEEP_ME: 'v' });
+  });
+
+  it('applyCodexDiagnosticEnv stamps the deterministic core/TUI filter and replaces inherited RUST_LOG', () => {
+    const env = { RUST_LOG: 'debug', KEEP_ME: 'v' };
+    expect(applyCodexDiagnosticEnv(env, 'codex')).toEqual({
+      RUST_LOG: CODEX_DIAGNOSTIC_RUST_LOG,
+      KEEP_ME: 'v',
+    });
+  });
+
+  it('applyCodexDiagnosticEnv leaves non-Codex launches unchanged', () => {
+    const env = { RUST_LOG: 'debug', KEEP_ME: 'v' };
+    expect(applyCodexDiagnosticEnv(env, 'claude')).toEqual(env);
   });
 
   it('codexGatewayConfigPatch inserts root provider selector before tables and replaces prior pin', () => {

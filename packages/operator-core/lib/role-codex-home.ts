@@ -692,10 +692,13 @@ export function writeRoleCodexHome(opts: {
   // bearer_token_env_var. codex does NOT env-expand config.toml, so the
   // url is baked verbatim.
   const configPath = join(codexHome, 'config.toml');
+  const logDir = join(codexHome, 'log');
+  mkdirSync(logDir, { recursive: true });
   const gatewayConfig = codexGatewayConfigToml(opts.codexGatewayAccountId, { gatewayOn: opts.codexGatewayAuto });
   const contextConfig = codexContextConfigToml(opts.model).trimEnd();
   const toml = [
     ...(contextConfig ? contextConfig.split('\n') : []),
+    `log_dir = "${tomlEscape(logDir)}"`,
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
     CODEX_ISOLATION_PREAMBLE,
@@ -783,6 +786,8 @@ export type { CodexHomeDiagnostics, CodexPapercuspDiagnostics } from './codex-ho
 export interface SuCodexConfigInput {
   mcpUrl: string;
   sid: string;
+  /** Absolute per-session directory Codex uses for its plaintext TUI log. */
+  logDir?: string | null;
   /** Launch model. Omit/null resolves the installed Codex default, which keeps
    *  repair and model-less resume paths aligned with a fresh launch. */
   model?: string | null;
@@ -811,6 +816,7 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
   const contextConfig = codexContextConfigToml(opts.model).trimEnd();
   return [
     ...(contextConfig ? contextConfig.split('\n') : []),
+    ...(opts.logDir ? [`log_dir = "${tomlEscape(opts.logDir)}"`] : []),
     ...gatewayConfig.root,
     ...CODEX_DANGER_TOML,
     CODEX_ISOLATION_PREAMBLE,
@@ -854,19 +860,22 @@ export function ensureSuCodexHomeConfig(
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
   if (!existsSync(codexHome)) return { codexHome, configPath, repaired: false, reason: 'no-home' };
+  const logDir = join(codexHome, 'log');
+  mkdirSync(logDir, { recursive: true });
   const expectedContextConfig = codexContextConfigToml(opts.model);
+  const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
   try {
     const current = readFileSync(configPath, 'utf8');
     const contextMatches = expectedContextConfig
       ? current.startsWith(expectedContextConfig)
       : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current);
-    if (current.includes('[mcp_servers.papercusp-su]') && contextMatches) {
+    if (current.includes('[mcp_servers.papercusp-su]') && contextMatches && current.includes(expectedLogDir)) {
       return { codexHome, configPath, repaired: false };
     }
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
-  writeFileSync(configPath, suCodexConfigToml(opts), { mode: 0o600 });
+  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
   return { codexHome, configPath, repaired: true };
 }
 
@@ -939,7 +948,9 @@ export function writeSuCodexHome(opts: {
   // config.toml) + the superuser bearer as an http_headers Authorization
   // (D-006 — the env-var form doesn't deliver on codex 0.135).
   const configPath = join(codexHome, 'config.toml');
-  writeFileSync(configPath, suCodexConfigToml(opts), { mode: 0o600 });
+  const logDir = join(codexHome, 'log');
+  mkdirSync(logDir, { recursive: true });
+  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
 
   // SU sessions pass coordSid so the merged activity hook's coord fold stays
   // ON (new coord:inbox messages folded into the SAME activity:report round

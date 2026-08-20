@@ -5940,6 +5940,20 @@ export function sanitizeInheritedEnv(env) {
   return out;
 }
 
+// Codex's TUI file logger is opt-in through config.toml's `log_dir`; RUST_LOG
+// controls which of the useful core/TUI diagnostics are written once that
+// directory is configured. Keep this at the shared launcher boundary so fresh,
+// resume, PTY, plain, and host-handoff launches all carry the same diagnostic
+// environment. Managed Codex launches intentionally replace an inherited value:
+// a parent session's broad or quiet RUST_LOG must not make reconnect evidence
+// depend on which shell happened to spawn the member.
+export const CODEX_DIAGNOSTIC_RUST_LOG = 'codex_core=info,codex_tui=info';
+
+export function applyCodexDiagnosticEnv(env, agent) {
+  if (agent === 'codex') env.RUST_LOG = CODEX_DIAGNOSTIC_RUST_LOG;
+  return env;
+}
+
 /**
  * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC hook
  * enrollment guard, GENERALIZED (WI-4394) to any settings.json-wired CC hook,
@@ -6424,6 +6438,9 @@ function runWrapper({
         `mode ${hostHandoff.mode ?? 'unknown'})\n`,
     );
   }
+  // EI-203876: stamp Codex's diagnostic filter after host-handoff env overlay,
+  // so a successor cannot inherit a predecessor's missing/stale RUST_LOG.
+  applyCodexDiagnosticEnv(env, env.PAPERCUSP_AGENT);
   if (ownerId && usePtyHost({ env })) {
     try {
       hostThroughPty({

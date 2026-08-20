@@ -123,6 +123,10 @@ describe('writeRoleCodexHome', () => {
     const toml = readFileSync(out.configPath, 'utf8');
     expect(toml).toContain('[mcp_servers.papercusp]');
     expect(toml).toContain(`url = "${url}"`);
+    const logDir = join(out.codexHome, 'log');
+    expect(toml).toContain(`log_dir = "${logDir}"`);
+    expect(toml.indexOf(`log_dir = "${logDir}"`)).toBeLessThan(toml.indexOf('[features]'));
+    expect(existsSync(logDir)).toBe(true);
     // role-scoped, sig-auth — no bearer token (unlike the codex-su home).
     expect(toml).not.toContain('bearer_token_env_var');
     // psu-isolation P-004 / D-001: no cwd AGENTS.md read + native memory off.
@@ -362,6 +366,7 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(fresh.configPath, 'utf8')).toMatch(
       /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
     );
+    expect(readFileSync(fresh.configPath, 'utf8')).toContain(`log_dir = "${join(fresh.codexHome, 'log')}"`);
 
     writeFileSync(fresh.configPath, '# archived config lost\n');
     const repaired = ensureSuCodexHomeConfig({
@@ -374,6 +379,7 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toMatch(
       /^model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
     );
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain(`log_dir = "${join(repaired.codexHome, 'log')}"`);
   });
 
   it.each([
@@ -467,6 +473,10 @@ describe('writeSuCodexHome', () => {
     // per-session client baked into the url (codex can't env-expand config.toml).
     expect(toml).toContain('client=su-abc-123');
     expect(toml).toContain('superuser=1');
+    const logDir = join(out.codexHome, 'log');
+    expect(toml).toContain(`log_dir = "${logDir}"`);
+    expect(toml.indexOf(`log_dir = "${logDir}"`)).toBeLessThan(toml.indexOf('[features]'));
+    expect(existsSync(logDir)).toBe(true);
     // psu-isolation P-004 / D-001: no cwd AGENTS.md read + native memory off.
     expect(toml).toContain('project_doc_max_bytes = 0');
     expect(toml).toContain('[features]');
