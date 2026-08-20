@@ -126,6 +126,7 @@ import {
   type GreenCheckpointCapacityMode,
 } from "./release-config";
 import { formatFailingFilesLine } from "../../../../scripts/lib/vitest-summary.mjs";
+import type { FrozenCandidateRepairQueue } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
 let repo: string;
 async function commit(
@@ -188,6 +189,189 @@ function stubDeps(
   };
   return { deps, calls };
 }
+
+describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
+  it("freezes the first red candidate and does not run or dispatch again while its fixer is live", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+    let queue: FrozenCandidateRepairQueue | null = null;
+    const dispatchedHeads: string[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async (next) => {
+      dispatchedHeads.push(next.repairHead);
+      return { spawnId: "fixer-1", runId: "run-1" };
+    };
+    deps.frozenRepairFixerAlive = async () => true;
+
+    const first = await runGreenCheckpoint(cfg(), deps, {
+      candidate: frozen,
+      noPush: true,
+    });
+
+    expect(first).toMatchObject({
+      green: false,
+      reason: "not-green",
+      candidate: frozen,
+      repairQueue: {
+        candidate: frozen,
+        repairHead: frozen,
+        phase: "awaiting-fixer",
+        attempts: 1,
+        fixerSpawnId: "fixer-1",
+      },
+    });
+    expect(dispatchedHeads).toEqual([frozen]);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+
+    const movingTip = await commit("c", "3", "moving staging tip");
+    const second = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(second).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      candidate: frozen,
+      repairQueue: {
+        candidate: frozen,
+        repairHead: frozen,
+        attempts: 1,
+        fixerSpawnId: "fixer-1",
+      },
+    });
+    expect(movingTip).not.toBe(frozen);
+    expect(dispatchedHeads).toEqual([frozen]);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+  });
+
+  it("holds without a suite until the exact frozen patch is on staging, then promotes only the repaired head", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("b", "3", "forward repair");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 1,
+      phase: "awaiting-fixer",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/broken.test.ts"],
+    };
+    let patchOnStaging = false;
+    let cleanupCount = 0;
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.finalizeFrozenRepairWorktree = async () => repaired;
+    deps.stagingContainsFrozenRepair = async () => patchOnStaging;
+    deps.cleanupFrozenRepairWorktree = async () => {
+      cleanupCount += 1;
+    };
+
+    const held = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(held).toMatchObject({
+      green: null,
+      reason: "repair-staging-mismatch",
+      candidate: repaired,
+      repairQueue: {
+        candidate: frozen,
+        repairHead: repaired,
+        phase: "ready-to-verify",
+      },
+    });
+    expect(queue).toMatchObject({
+      candidate: frozen,
+      repairHead: repaired,
+      phase: "ready-to-verify",
+    });
+    expect(calls).not.toContain("runGreen");
+    expect(await revParse(repo, "ready")).toBe(ready);
+
+    patchOnStaging = true;
+    const promoted = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(promoted).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: repaired,
+      from: ready,
+    });
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(await revParse(repo, "ready")).toBe(repaired);
+    expect(queue).toBeNull();
+    expect(cleanupCount).toBe(1);
+  });
+
+  it("retries forward from a red repair head without adopting the moving staging tip", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const repaired = await commit("b", "3", "first forward repair");
+    await commit("c", "4", "newer unrelated staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 1,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/first.test.ts"],
+    };
+    const dispatchedHeads: string[] = [];
+    const { deps, calls } = stubDeps(false, ["lib/still-broken.test.ts"]);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => true;
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async (next) => {
+      dispatchedHeads.push(next.repairHead);
+      return { spawnId: "fixer-2", runId: "run-2" };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      green: false,
+      reason: "not-green",
+      candidate: repaired,
+      repairQueue: {
+        phase: "awaiting-fixer",
+        candidate: frozen,
+        repairHead: repaired,
+        attempts: 2,
+        fixerSpawnId: "fixer-2",
+        failingTests: ["lib/still-broken.test.ts"],
+      },
+    });
+    expect(queue).toMatchObject(result.repairQueue!);
+    expect(dispatchedHeads).toEqual([repaired]);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(await revParse(repo, "ready")).toBe(ready);
+  });
+});
 
 // EI-1762: pin the checkpoint log dir INSIDE the per-test temp repo (auto-cleaned by
 // afterEach) so the suite never writes fixture logs into the REAL ~/.papercusp/checkpoint-logs/

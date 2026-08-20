@@ -129,6 +129,8 @@ import {
   RELEASE_FIXER_DEDUP_MS,
   recordCheckpointVerdict,
   buildCheckpointDetail,
+  readFrozenCandidateRepairQueue,
+  writeFrozenCandidateRepairQueue,
   type AutoServePlan,
   type DeployEventRow,
   type ReleaseFixerRecord,
@@ -136,6 +138,7 @@ import {
 } from './release-actions';
 import { getSystemAction, listSystemActions, type SystemActionCtx } from './system-actions';
 import type { FlakeSuspect } from '../../dev-data';
+import type { FrozenCandidateRepairQueue } from '../../release/frozen-candidate-repair-queue';
 
 describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   it('builds a green-checkpoint-stall body with streak, age, capped candidate + failing tests', () => {
@@ -1306,6 +1309,34 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect((d.failingTests as string[]).length).toBe(20);
   });
 
+  it('WI-39944: buildCheckpointDetail preserves the bounded repair-queue identity needed by durable readers', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      repairQueue: {
+        schemaVersion: 1,
+        phase: 'awaiting-fixer',
+        candidate: 'a'.repeat(40),
+        base: 'b'.repeat(40),
+        repairHead: 'c'.repeat(40),
+        worktreePath: '/tmp/repair',
+        attempts: 2,
+        openedAtMs: 1,
+        updatedAtMs: 2,
+        fixerSpawnId: 'fixer-2',
+        failingTests: ['lib/broken.test.ts'],
+      },
+    });
+
+    expect(d.repairQueue).toEqual({
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(12),
+      repairHead: 'c'.repeat(12),
+      attempts: 2,
+      fixerSpawnId: 'fixer-2',
+    });
+  });
+
   it('EI-15849: buildCheckpointDetail persists isolationNote even when the gate is NOT absorbed (red) — the absorber\'s reasoning must survive past the truncated console log', () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',
@@ -1540,6 +1571,41 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       const d = buildCheckpointDetail({ reason: 'advanced', green: true, candidate: 'a'.repeat(40) });
       expect(d.retriage).toBeUndefined();
     });
+  });
+});
+
+describe('WI-39944: the repair queue persists on the existing routine metadata row', () => {
+  const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+  const queue: FrozenCandidateRepairQueue = {
+    schemaVersion: 1,
+    phase: 'ready-to-verify',
+    candidate: 'a'.repeat(40),
+    base: 'b'.repeat(40),
+    repairHead: 'c'.repeat(40),
+    worktreePath: '/tmp/frozen-repair',
+    attempts: 1,
+    openedAtMs: 1,
+    updatedAtMs: 2,
+    fixerSpawnId: 'fixer-1',
+    failingTests: ['lib/broken.test.ts'],
+  };
+
+  it('round-trips the full queue and clears only repair_queue without creating a parallel store', async () => {
+    fakeSql.unsafe.mockResolvedValueOnce([{ repair_queue: queue }] as never);
+
+    await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual(queue);
+
+    await writeFrozenCandidateRepairQueue(target, queue);
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(
+      expect.stringContaining("metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb"),
+      ['my-harness', JSON.stringify({ repair_queue: queue })],
+    );
+
+    await writeFrozenCandidateRepairQueue(target, null);
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(
+      expect.stringContaining("metadata = COALESCE(metadata, '{}'::jsonb) - 'repair_queue'"),
+      ['my-harness'],
+    );
   });
 });
 
