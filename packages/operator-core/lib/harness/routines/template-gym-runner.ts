@@ -389,6 +389,7 @@ export async function runGym(
     summaryJson?: string;
   } = {},
 ): Promise<GymRunSummary> {
+  const startedAt = new Date().toISOString();
   const papercuspRoot = repoRootFromHere();
   const papercuspMobileRoot =
     opts.papercuspMobileRoot ??
@@ -405,7 +406,6 @@ export async function runGym(
   if (want('mobile-check-union')) legs.push(checkUnionLeg(consumers));
   if (want('mobile-capability-diversity')) legs.push(capabilityDiversityLeg(consumers));
   for (const consumer of consumers) if (want(consumer.id)) legs.push(await runConsumerLeg(papercuspRoot, consumer));
-  const startedAt = new Date().toISOString();
   const summary: GymRunSummary = {
     runId: `template-gym-${startedAt.replace(/[:.]/g, '-')}`,
     startedAt,

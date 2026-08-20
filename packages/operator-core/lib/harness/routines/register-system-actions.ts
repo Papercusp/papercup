@@ -28,11 +28,6 @@
  * additionally reports the surface as having SHRUNK. Before renaming an action,
  * grep the whole tree for its name as a literal, not just for its constants.
  *
- * ⚠ Deliberate exception: an action that is a live `target_role` but is NOT actually
- * registered here stays UNCLASSIFIED on purpose (see the `system:template-gym` note in
- * routine-classification.ts) — classifying a never-registered action launders a silent
- * no-op into a healthy-looking row. Classify what you register; leave the rest unknown.
- *
  * Registered handlers:
  *   - `system:git-sync` — git-sync-auto-commit P-005/P-009/P-010/P-012.
  *   - `system:blueprint-run` — harness-blueprint-orchestration P-021 / D-018.
