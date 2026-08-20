@@ -45,10 +45,10 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   boundTestRunPayload,
@@ -111,6 +111,90 @@ function declaredWorkspaceDirs(root: string): string[] {
 function isInsideRoot(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+/**
+ * A checkout that can own an absolute test path without relying on Papercusp's
+ * router. This requires superproject markers, then accepts either a Vitest
+ * config or an installed Vitest binary for the generic runner.
+ */
+function isWorkspaceCheckoutRoot(root: string): boolean {
+  try {
+    const git = statSync(join(root, '.git'));
+    if (!git.isDirectory() && !git.isFile()) return false;
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+    return Array.isArray(pkg.workspaces) || Array.isArray(pkg.workspaces?.packages);
+  } catch {
+    return false;
+  }
+}
+
+function isVitestCheckoutRoot(root: string): boolean {
+  if (!isWorkspaceCheckoutRoot(root)) return false;
+  return [
+    'vitest.config.ts',
+    'vitest.config.mts',
+    'vitest.config.cts',
+    'vitest.config.js',
+    'vitest.config.mjs',
+    'vitest.config.cjs',
+  ].some((name) => existsSync(join(root, name))) || existsSync(join(root, 'node_modules', '.bin', 'vitest'));
+}
+
+/** Find the owning superproject for an absolute path, bounded to its ancestors. */
+export function checkoutRootForPath(file: string): string | undefined {
+  if (!isAbsolute(file)) return undefined;
+  let dir = dirname(resolve(file));
+  for (let depth = 0; depth < 64; depth += 1) {
+    if (isWorkspaceCheckoutRoot(dir)) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
+
+/**
+ * Select one checkout for a test request. Relative paths retain the caller's
+ * ambient tree. Absolute paths switch only when every path resolves to the same
+ * discovered checkout; mixed roots stay on the ambient tree and fail loudly
+ * through the normal path checks instead of silently combining trees.
+ */
+export function checkoutRootForTestFiles(files: string[], ambientRoot: string): string {
+  const absoluteFiles = files.filter((file) => isAbsolute(file));
+  if (absoluteFiles.length === 0) return ambientRoot;
+  const roots = absoluteFiles.map(checkoutRootForPath);
+  if (roots.some((root): root is undefined => root === undefined)) return ambientRoot;
+  const unique = [...new Set(roots as string[])];
+  return unique.length === 1 ? unique[0]! : ambientRoot;
+}
+
+/**
+ * Discover real Hive checkouts in the canonical and scoped Papercus homes.
+ * The optional parent list keeps this focused-testable while production follows
+ * the same ordering as the Hive seed routine.
+ */
+export function discoverKnownHiveCheckoutRoots(
+  hiveParents: string[] = [
+    join(homedir(), '.papercusp', 'hives'),
+    ...(process.env.PAPERCUSP_HOME?.trim() ? [join(process.env.PAPERCUSP_HOME.trim(), 'hives')] : []),
+  ],
+): string[] {
+  const roots = new Set<string>();
+  for (const parent of hiveParents) {
+    try {
+      for (const entry of readdirSync(parent, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const root = join(parent, entry.name);
+        if (isWorkspaceCheckoutRoot(root)) roots.add(root);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return [...roots];
 }
 
 /**
@@ -189,8 +273,10 @@ interface RouterOutcome {
   output: string;
 }
 
-/** Spawn the router, capturing its own diagnostics (TEST_FILE_* lines). */
-function runRouter(
+/** Spawn a bounded test process, capturing its diagnostics. */
+function runTestProcess(
+  command: string,
+  commandArgs: string[],
   args: string[],
   cwd: string,
   env: NodeJS.ProcessEnv,
@@ -217,7 +303,7 @@ function runRouter(
     // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
     // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
     // router and every child/grandchild it spawned — instead of just the router itself.
-    const child = spawn(process.execPath, [join(cwd, 'scripts', 'test-files.mjs'), ...args], {
+    const child = spawn(command, [...commandArgs, ...args], {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -269,6 +355,44 @@ function runRouter(
   });
 }
 
+/** Spawn the Papercusp router, preserving its owning-workspace guarantees. */
+function runRouter(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<RouterOutcome> {
+  return runTestProcess(
+    process.execPath,
+    [join(cwd, 'scripts', 'test-files.mjs')],
+    args,
+    cwd,
+    env,
+    timeoutMs,
+    signal,
+  );
+}
+
+/** Spawn a generic external Vitest checkout through its local npm installation. */
+function runDirectVitest(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<RouterOutcome> {
+  return runTestProcess(
+    process.platform === 'win32' ? 'npx.cmd' : 'npx',
+    ['--no-install', 'vitest'],
+    args,
+    cwd,
+    env,
+    timeoutMs,
+    signal,
+  );
+}
+
 /**
  * The whole run, callable OUTSIDE the MCP handler (P-011 / D-006: scorecards:emit runs
  * a criterion's structured tests-check through this exact path, so a grading-time run
@@ -285,7 +409,7 @@ export async function runTestFilesCore(opts: {
   testNamePattern?: string;
   signal?: AbortSignal;
 }): Promise<TestFilesCoreResult> {
-  const { root } = opts;
+  const root = checkoutRootForTestFiles(opts.files, opts.root);
   const runId = randomUUID();
 
   // WI-7189 / EI-19383071792758676: a wrong-tree resolution used to be SILENT —
@@ -293,16 +417,18 @@ export async function runTestFilesCore(opts: {
   // and returned a confident, plausible, WRONG green. `root` is echoed on EVERY
   // return path so a wrong-tree run is visible instead of silent. One loud
   // pre-flight refusal catches what the router's own check can't: a root that
-  // isn't a papercusp checkout AT ALL (missing the router script itself).
-  if (!existsSync(join(root, 'scripts', 'test-files.mjs'))) {
+  // isn't a papercusp checkout AT ALL (missing the router script itself) or a
+  // known npm-workspace Vitest checkout.
+  const hasRouter = existsSync(join(root, 'scripts', 'test-files.mjs'));
+  if (!hasRouter && !isVitestCheckoutRoot(root)) {
     return {
       ok: false,
       runId,
       root,
       error: 'invalid_root',
       hint:
-        `resolved workspace root '${root}' has no scripts/test-files.mjs — it is not a papercusp ` +
-        `checkout (or is a stale/partial one). This usually means the calling session is scoped to ` +
+        `resolved workspace root '${root}' has no scripts/test-files.mjs or runnable Vitest workspace — ` +
+        `it is not a supported checkout (or is a stale/partial one). This usually means the calling session is scoped to ` +
         `the wrong harness/tree (e.g. a legacy standalone clone) rather than the canonical staging ` +
         `checkout. Verify with 'pwd'/'git remote -v' in the tree you intend, and re-check how this ` +
         `session's harness/project is registered.`,
@@ -336,7 +462,12 @@ export async function runTestFilesCore(opts: {
     // tool's own contract from depending on a repair one layer down.
     if (opts.testNamePattern) vitestArgs.push(`--testNamePattern=${opts.testNamePattern}`);
 
-    const outcome = await runRouter(
+    const childEnv = {
+      ...process.env,
+      PAPERCUSP_TEST_RUN_GROUP: runId,
+      PAPERCUSP_TEST_ATTRIBUTION: '1',
+    };
+    const outcome = await (hasRouter ? runRouter(
       [...pathResolution.files, '--', ...vitestArgs],
       root,
       // The reporter inside the child reads this and stamps run_group_id, so
@@ -353,7 +484,13 @@ export async function runTestFilesCore(opts: {
       },
       timeoutMs,
       opts.signal,
-    );
+    ) : runDirectVitest(
+      ['run', ...vitestArgs, ...pathResolution.files],
+      root,
+      childEnv,
+      timeoutMs,
+      opts.signal,
+    ));
 
     if (outcome.aborted) {
       return {
@@ -455,7 +592,7 @@ export async function runTestFilesCore(opts: {
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through scripts/test-files.mjs and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. The router refuses zero/partial matches (`route_error`) and invalid checkouts (`invalid_root`). `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
+    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen: 'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
