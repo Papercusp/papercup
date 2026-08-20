@@ -304,9 +304,18 @@ export default defineTool({
     // (mig 461 harness_slug) or the capture routes nowhere and peers reject the
     // wire row. Resolved only when federating (a registry read per assert is
     // not worth paying for hive-private facts).
+    // EI-20339866359446342: an explicit harness-scoped fact already names the
+    // federation context in its normalized `scopeRef`. The old call ignored it
+    // and consulted only ctx.harnessSlug, so an SU/operator call with
+    // `{ scope:'harness', scopeRef:'papercusp', shareable:true }` was rejected
+    // as unroutable despite carrying the exact slug the resolver needs. Reuse
+    // the normalized ref (which also folds the documented `harness` alias) for
+    // harness-scoped facts; other scopes still derive federation identity from
+    // the caller's concrete harness context.
+    const federationHarnessSlug = args.scope === 'harness' ? scopeRef : concreteHarnessSlug;
     const potHomeSlug =
       args.shareable === true
-        ? await (await import('../../agent-facts/store')).resolveFactFederationSlug(ctx.harnessSlug)
+        ? await (await import('../../agent-facts/store')).resolveFactFederationSlug(federationHarnessSlug)
         : null;
     if (args.shareable === true && !potHomeSlug) {
       throw new InvalidInputError(

@@ -193,6 +193,50 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     expect(assertFactSpy.mock.calls[0][0]).toMatchObject({ shareable: true, potHomeSlug: 'hive-home' });
   });
 
+  it('uses an explicit harness scopeRef as the federation context for a shareable fact (EI-203398)', async () => {
+    resolveFactFederationSlugSpy.mockResolvedValue('papercusp');
+    await assertTool.handler(
+      {
+        scope: 'harness',
+        scopeRef: 'papercusp',
+        key: 'k-shareable-explicit-harness',
+        body: 'share me with this harness',
+        shareable: true,
+      } as never,
+      ctx,
+    );
+    expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith('papercusp');
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      shareable: true,
+      potHomeSlug: 'papercusp',
+    });
+  });
+
+  it('uses the documented harness alias as the federation context for a shareable fact (EI-203398)', async () => {
+    resolveFactFederationSlugSpy.mockResolvedValue('papercusp');
+    await assertTool.handler(
+      {
+        scope: 'harness',
+        harness: 'papercusp',
+        key: 'k-shareable-harness-alias',
+        body: 'share me through the compatibility alias',
+        shareable: true,
+      } as never,
+      ctx,
+    );
+    expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith('papercusp');
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({
+      scope: 'harness',
+      scopeRef: 'papercusp',
+      shareable: true,
+      potHomeSlug: 'papercusp',
+    });
+  });
+
   it('the acceptTruncation arg description documents the escape hatch (P-007 regression guard stays visible)', () => {
     const description = assertTool.args.shape.acceptTruncation.description ?? '';
     expect(description).toMatch(/REFUSED/);
