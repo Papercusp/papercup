@@ -9,6 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, waitFor, fireEvent, within } from '@testing-library/react';
 import AgentDossier, {
+  AGENT_DOSSIER_COVERAGE_BOUNDARY,
   type AgentDetail,
   machineRowValue,
   pipelineNoteValue,
@@ -200,6 +201,68 @@ const DETAIL: AgentDetail = {
 };
 
 describe('AgentDossier', () => {
+  it('(P-015) pins the exact historical exclusion boundary and its later-surfaced leaves', () => {
+    const historical = [
+      'RosterEntry.heartbeatFresh',
+      'RosterEntry.stale',
+      'RosterEntry.workspaceId',
+      'RosterEntry.lastOutputAt',
+      'RosterEntry.hasLaunchRecord',
+      'RosterEntry.launchStartedAt',
+      'RosterEntry.display',
+      'RosterEntry.driveMode',
+      'RosterEntry.runId',
+      'RosterEntry.thinking',
+      'AdvRosterMode.subject',
+      'PresenceRecord.potSlug',
+      'PresenceRecord.capabilityTags',
+      'PresenceRecord.tty',
+      'LockHeld.acquiredAt',
+      'CoordMessageSummary.to',
+      'CoordHandoffSummary.to',
+      'CoordHandoffSummary.nextAction',
+      'AgentDossierClaim.harness',
+      'AgentLane.nowNext',
+      'AgentAnnouncedGate.announcedBy',
+      'AgentSubscription.policy',
+      'AgentSubscription.expiresTs',
+      'PushedContextDroppedStage.stage',
+      'AgentOrdersMission.authoritySource',
+      'AgentOrdersMode.setAt',
+      'AgentOrdersWakeMode.defaultMode',
+      'AgentOrdersFact.sourceRef',
+      'AgentOrdersCarry.generation',
+      'AgentOrdersCarry.citedRefs',
+    ];
+    const laterSurfaced = ['AgentSubscription.expiresTs', 'AgentLane.nowNext'];
+
+    expect([...AGENT_DOSSIER_COVERAGE_BOUNDARY.historicalObjectALeafFields]).toEqual(historical);
+    expect(new Set(historical).size).toBe(30);
+    expect([...AGENT_DOSSIER_COVERAGE_BOUNDARY.laterSurfacedObjectALeafFields]).toEqual(
+      laterSurfaced,
+    );
+    expect(laterSurfaced.every((field) => historical.includes(field))).toBe(true);
+    expect(historical.filter((field) => !laterSurfaced.includes(field))).toHaveLength(28);
+
+    expect([...AGENT_DOSSIER_COVERAGE_BOUNDARY.lowValueAgentSideFields]).toEqual([
+      'fleetHealth',
+      'fleetCatchUp',
+      'fleetDelta',
+      'planEvents',
+      'recipes',
+      'host',
+      'ownerPresent',
+    ]);
+    expect([...AGENT_DOSSIER_COVERAGE_BOUNDARY.papercupPaneOnlyFields]).toEqual([
+      'paneContext',
+      'deepWork',
+    ]);
+    expect([...AGENT_DOSSIER_COVERAGE_BOUNDARY.viewerInaccessiblePerCallFields]).toEqual([
+      'laneClaim',
+      'taskToolSchemaPack',
+    ]);
+  });
+
   beforeEach(() => {
     syncState.detail = DETAIL;
     syncState.calls = [];

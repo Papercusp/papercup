@@ -68,6 +68,83 @@ import { HoverDetail } from '@/app/harness/HoverDetail';
 // other existing `import { type AgentDetail } from './AgentDossier'`).
 export type { AgentDetail, AgentSignals } from './use-agent-detail';
 
+/**
+ * The audited coverage boundary for popup-agent-state-coverage P-015.
+ *
+ * `historicalObjectALeafFields` freezes the ORIGINAL object-A audit at
+ * pre-implementation revision 14deb8b797d59a6cb3d6e2bd8c0d403ea5dceb83.
+ * That audit found 43 unrendered leaf signatures and selected nine UI
+ * concepts covering 13 leaves, so the exact historical remainder is 30 (plan
+ * D-014). The earlier "34" mixed concept and leaf counts and is not a valid
+ * field count.
+ *
+ * This is provenance, not a claim that every historical remainder stayed
+ * absent forever. P-009 and P-014 later surfaced the two leaves named in
+ * `laterSurfacedObjectALeafFields`; the current object-A remainder is therefore
+ * 28 (D-016). Keeping both lists prevents either kind of audit drift: silently
+ * rewriting the historical result or re-filing a field that now renders.
+ *
+ * The reason for the remaining object-A boundary is also frozen here: raw
+ * liveness legs are superseded by the shared session-state verdict; launch,
+ * transport, and bee fields are plumbing on this human-facing rail; and the
+ * nested fields are detail on lists already capped at three rows. Promoting
+ * those details to new rows would spend the dossier's fixed-height invariant.
+ *
+ * The other three lists cover the separate agent-side audit. Low-value fields
+ * do not change an operator decision, papercup pane state does not exist for an
+ * su session, and per-call ephemera cannot be obtained by a viewer without
+ * inventing a new durable record (D-012/D-013).
+ */
+export const AGENT_DOSSIER_COVERAGE_BOUNDARY = {
+  historicalObjectALeafFields: [
+    'RosterEntry.heartbeatFresh',
+    'RosterEntry.stale',
+    'RosterEntry.workspaceId',
+    'RosterEntry.lastOutputAt',
+    'RosterEntry.hasLaunchRecord',
+    'RosterEntry.launchStartedAt',
+    'RosterEntry.display',
+    'RosterEntry.driveMode',
+    'RosterEntry.runId',
+    'RosterEntry.thinking',
+    'AdvRosterMode.subject',
+    'PresenceRecord.potSlug',
+    'PresenceRecord.capabilityTags',
+    'PresenceRecord.tty',
+    'LockHeld.acquiredAt',
+    'CoordMessageSummary.to',
+    'CoordHandoffSummary.to',
+    'CoordHandoffSummary.nextAction',
+    'AgentDossierClaim.harness',
+    'AgentLane.nowNext',
+    'AgentAnnouncedGate.announcedBy',
+    'AgentSubscription.policy',
+    'AgentSubscription.expiresTs',
+    'PushedContextDroppedStage.stage',
+    'AgentOrdersMission.authoritySource',
+    'AgentOrdersMode.setAt',
+    'AgentOrdersWakeMode.defaultMode',
+    'AgentOrdersFact.sourceRef',
+    'AgentOrdersCarry.generation',
+    'AgentOrdersCarry.citedRefs',
+  ],
+  laterSurfacedObjectALeafFields: [
+    'AgentSubscription.expiresTs',
+    'AgentLane.nowNext',
+  ],
+  lowValueAgentSideFields: [
+    'fleetHealth',
+    'fleetCatchUp',
+    'fleetDelta',
+    'planEvents',
+    'recipes',
+    'host',
+    'ownerPresent',
+  ],
+  papercupPaneOnlyFields: ['paneContext', 'deepWork'],
+  viewerInaccessiblePerCallFields: ['laneClaim', 'taskToolSchemaPack'],
+} as const;
+
 function shortSource(s: string): string {
   const v = (s || '').toLowerCase();
   if (v.includes('claude')) return 'claude';
