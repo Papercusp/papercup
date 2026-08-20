@@ -654,10 +654,9 @@ describe('judgePeerFederationSilence — a cursor outlives admission (WI-39489)'
     expect(determined.breaches[0]).toContain('NO PEER ADMITTED');
   });
 
-  it('does not fire the absent-peer verdict while a peer is still ADVANCING', () => {
-    // Not all silent ⇒ the per-peer reading is licensed and unchanged, whatever
-    // the admitted set says. The new branch is gated on allSilent, not on
-    // admission alone.
+  it('reports peer ABSENCE when no remote peer is admitted, even if a historical cursor advanced recently', () => {
+    // A durable cursor can be fresh from just before a peer departed. It is not
+    // a current positive control once the admitted set says there are no peers.
     const rows = [log(OWN, 0), log(PEERS[0]!, 48), log(PEERS[1]!, 0.1)];
     const v = judgePeerFederationSilence(rows, {
       silentAfterMs: SLO,
@@ -667,8 +666,82 @@ describe('judgePeerFederationSilence — a cursor outlives admission (WI-39489)'
     });
     expect(v.allSilent).toBe(false);
     expect(v.admittedRemoteLogs).toBe(0);
-    expect(v.breaches[0]).toContain('1 of 2');
-    expect(v.breaches[0]).not.toContain('NO PEER ADMITTED');
+    expect(v.breaches[0]).toContain('NO PEER ADMITTED');
+    expect(v.breaches[0]).toContain('ABSENT, not slow');
+    expect(v.breaches[0]).not.toContain('1 of 2 remote log');
+    expect(v.silent[0]!.admitted).toBe(false);
+  });
+
+  it('REPRODUCTION: four historical cursors are named ABSENT while the one admitted peer advances (EI-206660)', () => {
+    // Exact live invariant shape on papercusp: 4/5 raw remote cursors stale,
+    // admittedRemoteLogs=1, and the admitted peer is the sole advancing log.
+    const active = 'peer-current-admitted';
+    const rows = [
+      log(OWN, 0),
+      log('historical-1', 166),
+      log('historical-2', 150),
+      log('historical-3', 136),
+      log('historical-4', 96),
+      log(active, 0.1),
+    ];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN, active],
+    });
+
+    expect(v.totalLogs).toBe(5);
+    expect(v.silent).toHaveLength(4);
+    expect(v.allSilent).toBe(false);
+    expect(v.admittedRemoteLogs).toBe(1);
+    expect(v.silent.every((s) => s.admitted === false)).toBe(true);
+    expect(v.breaches[0]).toContain('PEERS ABSENT');
+    expect(v.breaches[0]).toContain('4 silent remote cursor(s) are NOT ADMITTED');
+    expect(v.breaches[0]).toContain('all 1 admitted remote log(s) keep advancing');
+    expect(v.breaches[0]).not.toContain('4 of 5 remote log(s) have federated nothing');
+  });
+
+  it('an unadmitted fresh cursor cannot mask an all-admitted-silent local fold', () => {
+    const admitted = PEERS[0]!;
+    const historicalButFresh = PEERS[1]!;
+    const v = judgePeerFederationSilence(
+      [log(OWN, 0), log(admitted, 48), log(historicalButFresh, 0.1)],
+      {
+        silentAfterMs: SLO,
+        nowMs: NOW,
+        ownLogKeyHex: OWN,
+        admittedLogKeysHex: [OWN, admitted],
+      },
+    );
+
+    // Raw cursors are not all silent, but the whole CURRENT admitted population is.
+    expect(v.allSilent).toBe(false);
+    expect(v.admittedRemoteLogs).toBe(1);
+    expect(v.breaches[0]).toContain('LOCAL FOLD SUSPECT');
+    expect(v.breaches[0]).toContain('all 1 ADMITTED remote log(s) silent');
+    expect(v.breaches[0]).not.toContain('PEERS ABSENT');
+  });
+
+  it('separates an admitted silent peer from an additional absent historical cursor', () => {
+    const admittedSilent = PEERS[0]!;
+    const admittedFresh = PEERS[1]!;
+    const absentSilent = PEERS[2]!;
+    const v = judgePeerFederationSilence(
+      [log(OWN, 0), log(admittedSilent, 48), log(admittedFresh, 0.1), log(absentSilent, 72)],
+      {
+        silentAfterMs: SLO,
+        nowMs: NOW,
+        ownLogKeyHex: OWN,
+        admittedLogKeysHex: [OWN, admittedSilent, admittedFresh],
+      },
+    );
+
+    expect(v.admittedRemoteLogs).toBe(2);
+    expect(v.breaches[0]).toContain('1 of 2 ADMITTED remote log(s)');
+    expect(v.breaches[0]).toContain('1 further silent cursor(s) are NOT ADMITTED');
+    expect(v.silent.find((s) => s.logKeyHex === admittedSilent)?.admitted).toBe(true);
+    expect(v.silent.find((s) => s.logKeyHex === absentSilent)?.admitted).toBe(false);
   });
 
   it('counts admission over the JUDGED population, so residue cannot fake an admitted peer', () => {
