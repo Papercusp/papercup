@@ -72,9 +72,7 @@ describe('frozen-candidate repair queue', () => {
         spawnId: 'spawn-1',
         nowMs: T0 + 1,
       });
-      expect(
-        decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 2, fixerAlive }),
-      ).toEqual({
+      expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 2, fixerAlive })).toEqual({
         kind: 'wait-for-fixer',
         fixerSpawnId: 'spawn-1',
         liveness: expectedLiveness,
@@ -116,9 +114,11 @@ describe('frozen-candidate repair queue', () => {
       spawnId: 'dead-spawn',
       nowMs: T0 + 1,
     });
-    expect(
-      decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 2, fixerAlive: false }),
-    ).toMatchObject({ kind: 'dispatch-fixer', reason: 'fixer-dead', nextAttempt: 2 });
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 2, fixerAlive: false })).toMatchObject({
+      kind: 'dispatch-fixer',
+      reason: 'fixer-dead',
+      nextAttempt: 2,
+    });
     queue = markFrozenRepairFixerDispatched(queue, {
       spawnId: 'replacement-spawn',
       nowMs: T0 + 3,
@@ -289,12 +289,12 @@ describe('frozen-candidate repair queue', () => {
       repairHead: C1,
       nowMs: T0 + 2,
     });
-    expect(() =>
-      markFrozenRepairVerificationGreen(queue, { repairHead: C2, nowMs: T0 + 3 }),
-    ).toThrow(/stale repair result/);
-    expect(() =>
-      markFrozenRepairVerificationRed(queue, { repairHead: C2, nowMs: T0 + 3 }),
-    ).toThrow(/stale repair result/);
+    expect(() => markFrozenRepairVerificationGreen(queue, { repairHead: C2, nowMs: T0 + 3 })).toThrow(
+      /stale repair result/,
+    );
+    expect(() => markFrozenRepairVerificationRed(queue, { repairHead: C2, nowMs: T0 + 3 })).toThrow(
+      /stale repair result/,
+    );
   });
 
   it('parses only a coherent versioned JSONB record and returns a detached value', () => {

@@ -23,10 +23,7 @@ export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
 const MAX_PERSISTED_FAILURES = 50;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
-export type FrozenCandidateRepairPhase =
-  | 'awaiting-fixer'
-  | 'ready-to-verify'
-  | 'ready-to-promote';
+export type FrozenCandidateRepairPhase = 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
 
 export interface FrozenCandidateRepairQueue {
   schemaVersion: typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
@@ -152,11 +149,7 @@ function boundedFailures(values: readonly string[]): string[] {
     .map((value) => value.slice(0, MAX_PERSISTED_FAILURE_CHARS));
 }
 
-function requirePhase(
-  queue: FrozenCandidateRepairQueue,
-  phase: FrozenCandidateRepairPhase,
-  operation: string,
-): void {
+function requirePhase(queue: FrozenCandidateRepairQueue, phase: FrozenCandidateRepairPhase, operation: string): void {
   if (queue.phase !== phase) {
     throw new Error(`${operation} requires phase ${phase}; found ${queue.phase}`);
   }
@@ -164,9 +157,7 @@ function requirePhase(
 
 function requireCurrentHead(queue: FrozenCandidateRepairQueue, repairHead: string): void {
   if (queue.repairHead !== repairHead) {
-    throw new Error(
-      `stale repair result for ${repairHead}; queue expects ${queue.repairHead}`,
-    );
+    throw new Error(`stale repair result for ${repairHead}; queue expects ${queue.repairHead}`);
   }
 }
 
@@ -199,17 +190,12 @@ export function createFrozenCandidateRepairQueue(input: {
 }
 
 /** Parse a JSONB metadata value without letting a malformed queue steer the release gate. */
-export function parseFrozenCandidateRepairQueue(
-  value: unknown,
-): FrozenCandidateRepairQueue | null {
+export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidateRepairQueue | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
   if (row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION) return null;
-  if (
-    row.phase !== 'awaiting-fixer' &&
-    row.phase !== 'ready-to-verify' &&
-    row.phase !== 'ready-to-promote'
-  ) return null;
+  if (row.phase !== 'awaiting-fixer' && row.phase !== 'ready-to-verify' && row.phase !== 'ready-to-promote')
+    return null;
   if (!nonBlank(row.candidate) || !nonBlank(row.repairHead) || !nonBlank(row.worktreePath)) {
     return null;
   }
