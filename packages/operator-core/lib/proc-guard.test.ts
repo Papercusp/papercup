@@ -34,6 +34,7 @@ import {
   parseUsageUsec,
   computeCoresBusy,
   sampleCgroupBusy,
+  sampleBusyMatches,
   formatBusy,
 } from '../../../scripts/proc-guard.mjs';
 
@@ -430,6 +431,56 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       expect(res.status).toBe('unknown');
       expect(res.reason).toBe('cpu-stat-unreadable');
       expect(res.cores).toBeUndefined();
+    });
+
+    it('fails closed before sleeping when the budget cannot fit one full sample', async () => {
+      const { procRoot, cgroupRoot } = busyFixture([1_000_000, 2_000_000]);
+      let sleeps = 0;
+      const res = await sampleCgroupBusy(42, {
+        procRoot,
+        cgroupRoot,
+        sampleMs: 1_000,
+        budgetMs: 500,
+        sleep: async () => {
+          sleeps += 1;
+        },
+        now: () => 0,
+      });
+
+      expect(res.status).toBe('unknown');
+      expect(res.reason).toBe('budget-exhausted');
+      expect(sleeps).toBe(0);
+    });
+
+    it('shares one wall-clock budget across matches instead of serialising samples', async () => {
+      const { procRoot, cgroupRoot, advance } = busyFixture([1_000_000, 2_000_000]);
+      mkdirSync(join(procRoot, '43'), { recursive: true });
+      writeFileSync(join(procRoot, '43', 'cgroup'), '0::/test.scope\n');
+
+      let nowMs = 0;
+      let active = 0;
+      let maxActive = 0;
+      const results = (await sampleBusyMatches(
+        [{ pid: 42 }, { pid: 43 }],
+        {
+          procRoot,
+          cgroupRoot,
+          sampleMs: 1_000,
+          budgetMs: 1_500,
+          sleep: async () => {
+            active += 1;
+            maxActive = Math.max(maxActive, active);
+            await Promise.resolve();
+            advance();
+            nowMs = 1_000;
+            active -= 1;
+          },
+          now: () => nowMs,
+        },
+      )) as Array<{ status: string }>;
+
+      expect(maxActive).toBe(2);
+      expect(results.map((sample) => sample.status)).toEqual(['ok', 'ok']);
     });
   });
 

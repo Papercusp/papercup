@@ -290,6 +290,11 @@ export function matchExternalProcessesDetailed(pattern, opts = {}) {
 
 const DEFAULT_CGROUP_ROOT = '/sys/fs/cgroup';
 const DEFAULT_SAMPLE_MS = 10_000;
+// One normal 10s measurement plus a measured-latency cushion. The shared
+// deadline is intentionally independent of the number of matching processes:
+// `--busy` must not multiply a health-hold budget by serialising one sample per
+// row (EI-20949036178670253).
+const DEFAULT_BUSY_BUDGET_MS = DEFAULT_SAMPLE_MS + 5_000;
 /** Below this, report the reading as near-zero and print its falsifier. */
 const NEAR_ZERO_CORES = 0.05;
 
@@ -351,6 +356,7 @@ export function computeCoresBusy(deltaUsec, elapsedMs) {
  *
  * @param {number} pid
  * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
+ *           budgetMs?: number; deadlineAt?: number;
  *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
  */
 export async function sampleCgroupBusy(pid, opts = {}) {
@@ -359,6 +365,34 @@ export async function sampleCgroupBusy(pid, opts = {}) {
   const sampleMs = opts.sampleMs ?? DEFAULT_SAMPLE_MS;
   const sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   const now = opts.now ?? (() => Date.now());
+  const startedAt = now();
+  if (!(sampleMs > 0) || !Number.isFinite(sampleMs)) {
+    return { status: 'unknown', reason: 'invalid-sample-window' };
+  }
+  if (opts.budgetMs !== undefined && (!(opts.budgetMs >= 0) || !Number.isFinite(opts.budgetMs))) {
+    return { status: 'unknown', reason: 'invalid-budget' };
+  }
+  if (opts.deadlineAt !== undefined && !Number.isFinite(opts.deadlineAt)) {
+    return { status: 'unknown', reason: 'invalid-deadline' };
+  }
+  const budgetDeadline = opts.budgetMs === undefined ? null : startedAt + opts.budgetMs;
+  const deadlineAt =
+    opts.deadlineAt === undefined
+      ? budgetDeadline
+      : budgetDeadline === null
+        ? opts.deadlineAt
+        : Math.min(opts.deadlineAt, budgetDeadline);
+  const budgetExceeded = (cgroupPath, elapsedMs = Math.max(0, now() - startedAt)) => ({
+    status: 'unknown',
+    reason: 'budget-exhausted',
+    cgroupPath,
+    elapsedMs,
+  });
+
+  // Do not begin a partial measurement. A short remainder would only produce
+  // an incomparable rate and, more importantly, spend the caller's remaining
+  // hold budget without yielding a useful answer.
+  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(null);
 
   let cgPath = null;
   try {
@@ -367,6 +401,7 @@ export async function sampleCgroupBusy(pid, opts = {}) {
     return { status: 'unknown', reason: 'no-cgroup-entry' };
   }
   if (!cgPath) return { status: 'unknown', reason: 'not-cgroup-v2' };
+  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath);
 
   const statPath = path.join(cgroupRoot, cgPath, 'cpu.stat');
   const readUsage = () => {
@@ -379,11 +414,14 @@ export async function sampleCgroupBusy(pid, opts = {}) {
 
   const a = readUsage();
   if (a === null) return { status: 'unknown', reason: 'cpu-stat-unreadable', cgroupPath: cgPath };
+  if (deadlineAt !== null && deadlineAt - now() < sampleMs) return budgetExceeded(cgPath);
   const t0 = now();
   await sleep(sampleMs);
-  const b = readUsage();
   const elapsedMs = now() - t0;
+  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath, elapsedMs);
+  const b = readUsage();
   if (b === null) return { status: 'unknown', reason: 'cpu-stat-unreadable', cgroupPath: cgPath };
+  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath, elapsedMs);
   const cores = computeCoresBusy(b - a, elapsedMs);
   if (cores === null) return { status: 'unknown', reason: 'zero-elapsed', cgroupPath: cgPath };
 
@@ -395,7 +433,36 @@ export async function sampleCgroupBusy(pid, opts = {}) {
   } catch {
     /* the proc count is a nicety; the rate is the answer */
   }
+  if (deadlineAt !== null && now() >= deadlineAt) return budgetExceeded(cgPath, elapsedMs);
   return { status: 'ok', cores, procs, elapsedMs, cgroupPath: cgPath };
+}
+
+/**
+ * Sample matched process cgroups concurrently under one wall-clock budget.
+ *
+ * A caller that wants a bounded health hold must budget the whole batch, not
+ * multiply the per-process interval by the number of rows. All samples share
+ * one absolute deadline, so a large match set cannot turn a 10-second sample
+ * into an unbounded serial wait.
+ *
+ * @param {{ pid: number }[]} matches
+ * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
+ *           budgetMs?: number; deadlineAt?: number;
+ *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
+ * @returns {Promise<unknown[]>}
+ */
+export async function sampleBusyMatches(matches, opts = {}) {
+  const now = opts.now ?? (() => Date.now());
+  const startedAt = now();
+  const deadlineAt =
+    opts.deadlineAt !== undefined
+      ? opts.deadlineAt
+      : opts.budgetMs === undefined
+        ? undefined
+        : startedAt + opts.budgetMs;
+  const sampleOpts = { ...opts, now, deadlineAt };
+  delete sampleOpts.budgetMs;
+  return Promise.all(matches.map((match) => sampleCgroupBusy(match.pid, sampleOpts)));
 }
 
 /** Render one `--busy` line (+ its falsifier when near-zero). Pure, so the
@@ -425,11 +492,14 @@ async function main(argv) {
   const busy = flags.includes('--busy');
   const sampleMsFlag = flags.find((f) => f.startsWith('--sample-ms='));
   const sampleMs = sampleMsFlag ? Number(sampleMsFlag.slice('--sample-ms='.length)) : DEFAULT_SAMPLE_MS;
-  if (cmd !== 'check' || !pattern || !(sampleMs > 0)) {
+  const budgetMsFlag = flags.find((f) => f.startsWith('--budget-ms='));
+  const budgetMs = budgetMsFlag ? Number(budgetMsFlag.slice('--budget-ms='.length)) : DEFAULT_BUSY_BUDGET_MS;
+  if (cmd !== 'check' || !pattern || !(sampleMs > 0) || !Number.isFinite(sampleMs) || !(budgetMs > 0) || !Number.isFinite(budgetMs)) {
     console.error(
-      'usage: node scripts/proc-guard.mjs check <pattern> [--busy] [--sample-ms=<n>]\n' +
+      'usage: node scripts/proc-guard.mjs check <pattern> [--busy] [--sample-ms=<n>] [--budget-ms=<n>]\n' +
         '  --busy  also answer "is it WORKING" — a two-sample cgroup CPU rate per match,\n' +
-        '          which sees every descendant at any depth (a /proc tree walk does not).',
+        '          which sees every descendant at any depth (a /proc tree walk does not).\n' +
+        '  --budget-ms=<n>  shared wall-clock budget for all --busy samples (default 15s).',
     );
     process.exit(2);
     return;
@@ -452,11 +522,11 @@ async function main(argv) {
       ? ''
       : ` (${fullMatches.length} full-argv match(es): ${argvTextOnly.length} argv-text-only ignored)`;
   console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`);
-  for (const m of matches) {
+  const samples = busy ? await sampleBusyMatches(matches, { sampleMs, budgetMs }) : [];
+  for (const [index, m] of matches.entries()) {
     console.log(`  ${m.pid}  ${m.cmdline}`);
     if (!busy) continue;
-    const sample = await sampleCgroupBusy(m.pid, { sampleMs });
-    for (const line of formatBusy(sample)) console.log(`         ${line}`);
+    for (const line of formatBusy(samples[index])) console.log(`         ${line}`);
   }
   process.exit(0);
 }
