@@ -19,7 +19,11 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
-import { setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
+import {
+  registerHarnessProject,
+  setupPlanPgFixture,
+  type PlanPgFixture,
+} from './_pg-tool-fixture';
 
 // Stub ONLY the agent runner: yield an error event so the REAL
 // executePlanAgentTurn settles the run to `failed`. Async-generator shape
@@ -83,6 +87,10 @@ async function waitForSettle(runId: number, timeoutMs = 8_000): Promise<string> 
 beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
+  // plans:launch validates its concrete harness through resolvePlanScope before
+  // it mints a run row. Register the synthetic harness as a Hive home so the
+  // launch path reaches the background-settlement assertion.
+  await registerHarnessProject(admin, fx.workspaceId, HARNESS);
 }, 60_000);
 
 afterAll(async () => {
@@ -91,6 +99,14 @@ afterAll(async () => {
      WHERE plan_run_id IN (SELECT id FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS})
   `.catch(() => {});
   await admin`DELETE FROM harness_shared.plan_runs WHERE harness_slug = ${HARNESS}`.catch(() => {});
+  await admin`
+    DELETE FROM harness_shared.pots
+     WHERE workspace_id = ${fx?.workspaceId ?? 'default'} AND pot_home_slug = ${HARNESS}
+  `.catch(() => {});
+  await admin`
+    DELETE FROM harness_shared.projects
+     WHERE workspace_id = ${fx?.workspaceId ?? 'default'} AND slug = ${HARNESS}
+  `.catch(() => {});
   await fx?.dispose();
 });
 
