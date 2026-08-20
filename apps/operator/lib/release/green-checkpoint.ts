@@ -5541,9 +5541,22 @@ async function tryLongestGreenPrefix(
       `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
   );
   const initialPrefixIndex = commits.indexOf(prefixTip);
-  await deps.setupTree(prefixTip);
-  let confirm = await runConfirm();
-  if (!confirm.green) {
+  type ConfirmResult = Awaited<ReturnType<CheckpointDeps["runGreen"]>>;
+  let initialPrefixUnbuildable = false;
+  try {
+    await deps.setupTree(prefixTip);
+  } catch (error) {
+    initialPrefixUnbuildable = true;
+    const detail = error instanceof Error ? error.message : String(error);
+    logPartialGreenGate(
+      `partial-green-gate: prefix ${prefixTip.slice(0, 8)} unbuildable during setup/build — ` +
+        `${detail}; attempting bounded forward/bisect recovery`,
+    );
+  }
+  let confirm: ConfirmResult | null = initialPrefixUnbuildable
+    ? null
+    : await runConfirm();
+  if (!confirm?.green) {
     // WI-38298: the cheap locator is deliberately conservative, but its first candidate
     // can still be red because an unrelated failure predates the candidate's repair. Do
     // not spend the full confirm suite and then give up: probe the next prefix first
@@ -5555,10 +5568,12 @@ async function tryLongestGreenPrefix(
     let recoveryLeft = initialPrefixIndex + 1;
     let recoveryPrefix: string | null = null;
 
-    logPartialGreenGate(
-      `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — ` +
-        `attempting bounded forward/bisect recovery`,
-    );
+    if (!initialPrefixUnbuildable) {
+      logPartialGreenGate(
+        `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — ` +
+          `attempting bounded forward/bisect recovery`,
+      );
+    }
 
     const confirmLaterPrefix = async (
       index: number,
@@ -5569,8 +5584,17 @@ async function tryLongestGreenPrefix(
         `partial-green-gate: ${strategy} recovery confirming later prefix ${sha.slice(0, 8)} ` +
           `(attempt ${recoveryAttempts + 1}/${maxRecoveryConfirms})`,
       );
-      await deps.setupTree(sha);
       recoveryAttempts += 1;
+      try {
+        await deps.setupTree(sha);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        logPartialGreenGate(
+          `partial-green-gate: ${strategy} recovery prefix ${sha.slice(0, 8)} ` +
+            `unbuildable during setup/build — ${detail}; continuing recovery`,
+        );
+        return false;
+      }
       const laterConfirm = await runConfirm();
       if (laterConfirm.green) {
         recoveryPrefix = sha;
@@ -5636,10 +5660,17 @@ async function tryLongestGreenPrefix(
     // otherwise narrows recoveryPrefix to never after this guard. Reassert the closure's
     // runtime contract locally: only a non-null confirmed prefix reaches the advance.
     const recoveredPrefix = recoveryPrefix as string | null;
-    if (recoveredPrefix === null) {
-      logPartialGreenGate(
-        `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`,
-      );
+    if (recoveredPrefix === null || confirm === null) {
+      if (initialPrefixUnbuildable) {
+        logPartialGreenGate(
+          `partial-green-gate: prefix ${prefixTip.slice(0, 8)} remained unbuildable ` +
+            `or no later prefix confirmed green — holding (no partial advance)`,
+        );
+      } else {
+        logPartialGreenGate(
+          `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`,
+        );
+      }
       return null; // affected reasoning was incomplete; stay safe
     }
 

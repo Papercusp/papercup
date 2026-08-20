@@ -7963,6 +7963,8 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     commits: string[]; // lastReady..candidate, OLDEST-FIRST full shas
     confirmGreen: boolean | boolean[];
     logPath?: string;
+    /** Prefix refs whose setup/build should fail before the confirm suite starts. */
+    setupFailures?: string[];
     /** WI-39841: wall-clock cost of EACH confirm suite. The salvage's budget check is a
      *  time measurement, so exercising it needs a confirm that actually costs time — the
      *  real one is tens of minutes. */
@@ -7973,6 +7975,10 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
     const deps: CheckpointDeps = {
       setupTree: async (ref) => {
         calls.push(`setup:${ref.slice(0, 7)}`);
+        if (opts.setupFailures?.includes(ref)) {
+          calls.push(`setup-failed:${ref.slice(0, 7)}`);
+          throw new Error(`pinned runtime build failed at ${ref.slice(0, 7)}`);
+        }
       },
       runGreen: async () => {
         runGreenN++;
@@ -8115,6 +8121,48 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(2);
       expect(calls).toContain(`setup:${c2.slice(0, 7)}`);
       expect(calls).toContain(`setup:${c3.slice(0, 7)}`);
+    });
+
+    it("classifies an unbuildable initial prefix and recovers to a later confirmed prefix", async () => {
+      const { c2, c3, c4 } = await chain();
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: [FAILING],
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        changedFiles: {
+          [c2]: ["packages/operator-core/lib/unrelated-a.ts"],
+          [c3]: [FAILING], // later prefix is the first buildable repair candidate
+          [c4]: [FAILING],
+        },
+        setupFailures: [c2],
+        commits: [c2, c3, c4],
+        confirmGreen: true,
+      });
+      const lines: string[] = [];
+      deps.log = (line: string) => lines.push(line);
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({
+        advanced: true,
+        reason: "advanced-prefix",
+        advancedTo: c3,
+      });
+      expect(await revParse(repo, "ready")).toBe(c3);
+      expect(calls).toContain(`setup-failed:${c2.slice(0, 7)}`);
+      expect(calls).toContain(`setup:${c3.slice(0, 7)}`);
+      expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(1);
+      expect(
+        lines.some(
+          (line) =>
+            line.includes(`prefix ${c2.slice(0, 8)} unbuildable during setup/build`) &&
+            line.includes("bounded forward/bisect recovery"),
+        ),
+      ).toBe(true);
+      expect(
+        lines.some((line) =>
+          line.includes(`recovered later green prefix ${c3.slice(0, 8)}`),
+        ),
+      ).toBe(true);
     });
 
     it("stops the prefix AT the commit touching the failing file — never extends past it", async () => {
