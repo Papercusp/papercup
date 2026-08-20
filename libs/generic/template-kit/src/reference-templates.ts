@@ -50,24 +50,81 @@ export const PAPERCUSP_OPS_HIVES_TEMPLATE: TemplateManifest = {
   // building agent specializes for its domain.
   contracts: ["candidate-set"],
   decisionPoints: [
-    { id: "seam-work-item-kind", prompt: "What work_item kind crosses the seam (worked instances: purchase-research, bet-analysis)?" },
-    { id: "contract-shape", prompt: "What does the down-leg contract carry (specialize the candidate-set template; one parse gate, rejects emitted as events)?" },
-    { id: "domain-lexicon", prompt: "What are the domain nouns/verbs for hives, roles, and work (replaces the placeholder lexicon in the starter blueprints)?" },
-    { id: "domain-roles", prompt: "Which member roles does the domain hive place, and with what capability envelopes (confinement rule stays inviolable)?" },
-    { id: "app-tables", prompt: "Which app tables does ingested contract output land in, and what is the app-plane read model over them?" },
+    {
+      id: "seam-work-item-kind",
+      prompt:
+        "What work_item kind crosses the seam (worked instances: purchase-research, bet-analysis)?",
+    },
+    {
+      id: "contract-shape",
+      prompt:
+        "What does the down-leg contract carry (specialize the candidate-set template; one parse gate, rejects emitted as events)?",
+    },
+    {
+      id: "domain-lexicon",
+      prompt:
+        "What are the domain nouns/verbs for hives, roles, and work (replaces the placeholder lexicon in the starter blueprints)?",
+    },
+    {
+      id: "domain-roles",
+      prompt:
+        "Which member roles does the domain hive place, and with what capability envelopes (confinement rule stays inviolable)?",
+    },
+    {
+      id: "app-tables",
+      prompt:
+        "Which app tables does ingested contract output land in, and what is the app-plane read model over them?",
+    },
   ],
-  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-agentic-desktop-app"],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-agentic-desktop-app",
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
   checks: [
-    { id: "confinement-guard", run: "checks/confinement-guard.test.ts", summary: "no hive role holds cart/checkout/vault/approvals-write-analog capabilities" },
-    { id: "seam-round-trip", run: "checks/seam-round-trip.test.ts", summary: "enqueue → complete with payload → contract parse gate ingests → app table row exists" },
-    { id: "gym-signals", run: "checks/gym-signals.test.ts", summary: "the hive's guardrail gym signals are present and wired" },
+    {
+      id: "confinement-guard",
+      run: "checks/confinement-guard.test.ts",
+      summary:
+        "no hive role holds cart/checkout/vault/approvals-write-analog capabilities",
+    },
+    {
+      id: "seam-round-trip",
+      run: "checks/seam-round-trip.test.ts",
+      summary:
+        "enqueue → complete with payload → contract parse gate ingests → app table row exists",
+    },
+    {
+      id: "gym-signals",
+      run: "checks/gym-signals.test.ts",
+      summary: "the hive's guardrail gym signals are present and wired",
+    },
   ],
   musts: [
-    { id: "seam-only-crossing", rule: "Every judgment-plane crossing composes @papercusp/pot-app-seam (bootstrap, work-items transport, ingest loop) — never hand-rolled calls against /api/harness/*", enforcedBy: "seam-round-trip" },
-    { id: "one-parse-gate", rule: "An app-owned contracts package with strict schemas both directions; the parse gate is the ONLY path from agent output to an app table and rejects emit events, never silent drops", enforcedBy: "seam-round-trip" },
-    { id: "confinement-inviolable", rule: "Every hive role is read + propose-only against the app dangerous surface, pinned via role capability envelopes; the app blueprints/README.md is the canonical statement of the rule", enforcedBy: "confinement-guard" },
-    { id: "nothing-else-crosses", rule: "No second transport, no side-channel table writes, no direct DB access from a role", enforcedBy: "prose-only" },
+    {
+      id: "seam-only-crossing",
+      rule: "Every judgment-plane crossing composes @papercusp/pot-app-seam (bootstrap, work-items transport, ingest loop) — never hand-rolled calls against /api/harness/*",
+      enforcedBy: "seam-round-trip",
+    },
+    {
+      id: "one-parse-gate",
+      rule: "An app-owned contracts package with strict schemas both directions; the parse gate is the ONLY path from agent output to an app table and rejects emit events, never silent drops",
+      enforcedBy: "seam-round-trip",
+    },
+    {
+      id: "confinement-inviolable",
+      rule: "Every hive role is read + propose-only against the app dangerous surface, pinned via role capability envelopes; the app blueprints/README.md is the canonical statement of the rule",
+      enforcedBy: "confinement-guard",
+    },
+    {
+      id: "nothing-else-crosses",
+      rule: "No second transport, no side-channel table writes, no direct DB access from a role",
+      enforcedBy: "prose-only",
+    },
   ],
 };
 
@@ -91,20 +148,57 @@ export const TAURI_DESKTOP_SHELL_TEMPLATE: TemplateManifest = {
   ],
   contracts: [],
   decisionPoints: [
-    { id: "ui-shape", prompt: "What SPA surface does the deterministic plane need (grids, approvals view, streams)? FREE tier — compose as judged best." },
-    { id: "app-identity", prompt: "App name, bundle identifier, app-home directory, and release channels (feeds tauri.conf + tauri-release-kit config)." },
+    {
+      id: "ui-shape",
+      prompt:
+        "What SPA surface does the deterministic plane need (grids, approvals view, streams)? FREE tier — compose as judged best.",
+    },
+    {
+      id: "app-identity",
+      prompt:
+        "App name, bundle identifier, app-home directory, and release channels (feeds tauri.conf + tauri-release-kit config).",
+    },
   ],
   composesWith: ["papercusp-ops-pots", "papercusp-agentic-desktop-app"],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
   checks: [
-    { id: "boot-e2e", run: "checks/boot-e2e.test.ts", summary: "composed app builds, sidecar spawns, discovery file written, health returns 200" },
+    {
+      id: "boot-e2e",
+      run: "checks/boot-e2e.test.ts",
+      summary:
+        "composed app builds, sidecar spawns, discovery file written, health returns 200",
+    },
   ],
   musts: [
-    { id: "thin-shell", rule: "No domain logic in Rust — the shell is a HOST; packaged sidecar resolution is resource_dir()/dist-sidecar + vendored bin/node + bundled_path_env, dev is the repo dist-sidecar", enforcedBy: "prose-only" },
-    { id: "discovery-file", rule: "Port + pid written to the app home at boot and removed on shutdown — the shell polls it, the CLI reads it", enforcedBy: "boot-e2e" },
-    { id: "graceful-shutdown", rule: "SIGTERM ordering host close, sync stop, PG stop, discovery-file removal, with a force-exit timer; the final unlink is synchronous (WI-2866/WI-2667 lessons)", enforcedBy: "boot-e2e" },
-    { id: "embedded-pg-lifecycle", rule: "Embedded Postgres boot/stop bound to the sidecar, migrations on boot, connection via @papercusp/embedded-pg-discovery, portable initdb flags (WI-2649)", enforcedBy: "boot-e2e" },
-    { id: "env-gated-planes", rule: "Booting with no optional-plane config changes nothing — an unset operator URL means the plane is off, never a crash", enforcedBy: "boot-e2e" },
+    {
+      id: "thin-shell",
+      rule: "No domain logic in Rust — the shell is a HOST; packaged sidecar resolution is resource_dir()/dist-sidecar + vendored bin/node + bundled_path_env, dev is the repo dist-sidecar",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "discovery-file",
+      rule: "Port + pid written to the app home at boot and removed on shutdown — the shell polls it, the CLI reads it",
+      enforcedBy: "boot-e2e",
+    },
+    {
+      id: "graceful-shutdown",
+      rule: "SIGTERM ordering host close, sync stop, PG stop, discovery-file removal, with a force-exit timer; the final unlink is synchronous (WI-2866/WI-2667 lessons)",
+      enforcedBy: "boot-e2e",
+    },
+    {
+      id: "embedded-pg-lifecycle",
+      rule: "Embedded Postgres boot/stop bound to the sidecar, migrations on boot, connection via @papercusp/embedded-pg-discovery, portable initdb flags (WI-2649)",
+      enforcedBy: "boot-e2e",
+    },
+    {
+      id: "env-gated-planes",
+      rule: "Booting with no optional-plane config changes nothing — an unset operator URL means the plane is off, never a crash",
+      enforcedBy: "boot-e2e",
+    },
   ],
 };
 
@@ -129,7 +223,11 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
   components: [],
   contracts: [],
   decisionPoints: [
-    { id: "domain", prompt: "What is the app's domain — the noun the deterministic plane ledgers and the judgment plane reasons about? Drives every aspect-level decision point." },
+    {
+      id: "domain",
+      prompt:
+        "What is the app's domain — the noun the deterministic plane ledgers and the judgment plane reasons about? Drives every aspect-level decision point.",
+    },
   ],
   composesWith: ["papercusp-desktop-app", "papercusp-ops-pots"],
   // P-015: requires is the HARD pinned edge. P-022 re-layered it: papercusp-desktop-app
@@ -140,14 +238,34 @@ export const AGENTIC_DESKTOP_APP_TEMPLATE: TemplateManifest = {
     { id: "papercusp-desktop-app", version: "0.1.0" },
     { id: "papercusp-ops-pots", version: "0.1.0" },
   ],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml"],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+  ],
   checks: [
-    { id: "composition-integrity", run: "checks/composition-integrity.test.ts", summary: "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs" },
+    {
+      id: "composition-integrity",
+      run: "checks/composition-integrity.test.ts",
+      summary:
+        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
+    },
   ],
   musts: [
-    { id: "walk-decision-points", rule: "Answer EVERY decision point of the closure — the answers are the ship disclosure that makes free composition reviewable (domain is answered once)", enforcedBy: "prose-only" },
-    { id: "honor-closure-musts", rule: "Honor every closure member MUST tiers in full — the seam discipline is Tier B, the chassis invariants keep it bootable", enforcedBy: "prose-only" },
-    { id: "mechanical-validation", rule: "Expand through resolveRequiresClosure, compose through composeTemplates, and run the union of checks as the CI gate", enforcedBy: "composition-integrity" },
+    {
+      id: "walk-decision-points",
+      rule: "Answer EVERY decision point of the closure — the answers are the ship disclosure that makes free composition reviewable (domain is answered once)",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "honor-closure-musts",
+      rule: "Honor every closure member MUST tiers in full — the seam discipline is Tier B, the chassis invariants keep it bootable",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "mechanical-validation",
+      rule: "Expand through resolveRequiresClosure, compose through composeTemplates, and run the union of checks as the CI gate",
+      enforcedBy: "composition-integrity",
+    },
   ],
 };
 
@@ -177,20 +295,61 @@ export const PAPERCUSP_DATA_SYNC_TEMPLATE: TemplateManifest = {
   ],
   contracts: [],
   decisionPoints: [
-    { id: "sync-transport", prompt: "Which sync transport fits the app — SSE (simplest, one-directional server push over the sidecar) or Zero (bidirectional)? Default SSE unless the app needs client-originated sync." },
-    { id: "synced-surfaces", prompt: "Which app tables/views must sync live to the UI, and which stay request/response? Wire the PG NOTIFY bridge only for the live set." },
-    { id: "projection-set", prompt: "Which derived read models does the UI query (feed projection-index from the change stream), and what burst policy per subscriber (wake floor / coalesce window via debounce-coalesce)?" },
-    { id: "large-assets", prompt: "Does the app move large files (models, media, archives)? If so, route them through resumable-download with streaming checksums; if not, drop the component from the composition." },
+    {
+      id: "sync-transport",
+      prompt:
+        "Which sync transport fits the app — SSE (simplest, one-directional server push over the sidecar) or Zero (bidirectional)? Default SSE unless the app needs client-originated sync.",
+    },
+    {
+      id: "synced-surfaces",
+      prompt:
+        "Which app tables/views must sync live to the UI, and which stay request/response? Wire the PG NOTIFY bridge only for the live set.",
+    },
+    {
+      id: "projection-set",
+      prompt:
+        "Which derived read models does the UI query (feed projection-index from the change stream), and what burst policy per subscriber (wake floor / coalesce window via debounce-coalesce)?",
+    },
+    {
+      id: "large-assets",
+      prompt:
+        "Does the app move large files (models, media, archives)? If so, route them through resumable-download with streaming checksums; if not, drop the component from the composition.",
+    },
   ],
-  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-search", "papercusp-data-layer"],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-search",
+    "papercusp-data-layer",
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
   checks: [
-    { id: "components-integrated", run: "checks/components-integrated.test.ts", summary: "every pinned component package is a declared dependency of the composed app (config section: components)" },
+    {
+      id: "components-integrated",
+      run: "checks/components-integrated.test.ts",
+      summary:
+        "every pinned component package is a declared dependency of the composed app (config section: components)",
+    },
   ],
   musts: [
-    { id: "sidecar-host-streams", rule: "Live surfaces stream over the sidecar host — never a second server for sync", enforcedBy: "prose-only" },
-    { id: "burst-policy", rule: "Every synced surface has a burst policy (wake floor / coalesce window) — an unbounded change stream into a UI is a self-inflicted outage", enforcedBy: "prose-only" },
-    { id: "deps-declared", rule: "Every kept component is a real package dependency — not wired on paper", enforcedBy: "components-integrated" },
+    {
+      id: "sidecar-host-streams",
+      rule: "Live surfaces stream over the sidecar host — never a second server for sync",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "burst-policy",
+      rule: "Every synced surface has a burst policy (wake floor / coalesce window) — an unbounded change stream into a UI is a self-inflicted outage",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "deps-declared",
+      rule: "Every kept component is a real package dependency — not wired on paper",
+      enforcedBy: "components-integrated",
+    },
   ],
 };
 
@@ -220,21 +379,66 @@ export const PAPERCUSP_SEARCH_TEMPLATE: TemplateManifest = {
   ],
   contracts: [],
   decisionPoints: [
-    { id: "search-surfaces", prompt: "Which app tables/entities are searchable? Each becomes a pluggable SearchSource owning its own tsvector/pgvector SQL — the engine composes them; it never guesses your schema." },
-    { id: "retrieval-mode", prompt: "BM25-only or hybrid BM25+embeddings? Hybrid needs a query embedder injected (the lib carries no embedding provider). Default BM25-only until the app has an embedding pipeline; RRF fusion turns on with the second ranking." },
-    { id: "relevance-stack", prompt: "Is raw retrieval enough, or does the app need the precision stack — cross-encoder reranking (@papercusp/rerank; needs a ZeroEntropy API key) plus search-core's steering/rewrite/category-match? Drop rerank + search-core from the composition when plain retrieval suffices." },
-    { id: "relevance-evals", prompt: "What proves relevance for THIS domain — which golden queries and which metrics (search-core's shared eval-harness contract)? A search plane without an eval set degrades silently." },
+    {
+      id: "search-surfaces",
+      prompt:
+        "Which app tables/entities are searchable? Each becomes a pluggable SearchSource owning its own tsvector/pgvector SQL — the engine composes them; it never guesses your schema.",
+    },
+    {
+      id: "retrieval-mode",
+      prompt:
+        "BM25-only or hybrid BM25+embeddings? Hybrid needs a query embedder injected (the lib carries no embedding provider). Default BM25-only until the app has an embedding pipeline; RRF fusion turns on with the second ranking.",
+    },
+    {
+      id: "relevance-stack",
+      prompt:
+        "Is raw retrieval enough, or does the app need the precision stack — cross-encoder reranking (@papercusp/rerank; needs a ZeroEntropy API key) plus search-core's steering/rewrite/category-match? Drop rerank + search-core from the composition when plain retrieval suffices.",
+    },
+    {
+      id: "relevance-evals",
+      prompt:
+        "What proves relevance for THIS domain — which golden queries and which metrics (search-core's shared eval-harness contract)? A search plane without an eval set degrades silently.",
+    },
   ],
-  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-data-sync", "papercusp-data-layer"],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-data-sync",
+    "papercusp-data-layer",
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
   checks: [
-    { id: "components-integrated", run: "checks/components-integrated.test.ts", summary: "every pinned component package is a declared dependency of the composed app (config section: components)" },
+    {
+      id: "components-integrated",
+      run: "checks/components-integrated.test.ts",
+      summary:
+        "every pinned component package is a declared dependency of the composed app (config section: components)",
+    },
   ],
   musts: [
-    { id: "own-postgres-search", rule: "Search queries the app OWN embedded Postgres — never a separate search engine or service", enforcedBy: "prose-only" },
-    { id: "source-per-surface", rule: "Each searchable surface is its own SearchSource owning its SQL — never one source with schema switches", enforcedBy: "prose-only" },
-    { id: "secrets-injected", rule: "Rerank and embedding-provider keys are injected config — never committed", enforcedBy: "prose-only" },
-    { id: "deps-declared", rule: "Every kept component is a real package dependency — not wired on paper", enforcedBy: "components-integrated" },
+    {
+      id: "own-postgres-search",
+      rule: "Search queries the app OWN embedded Postgres — never a separate search engine or service",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "source-per-surface",
+      rule: "Each searchable surface is its own SearchSource owning its SQL — never one source with schema switches",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "secrets-injected",
+      rule: "Rerank and embedding-provider keys are injected config — never committed",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "deps-declared",
+      rule: "Every kept component is a real package dependency — not wired on paper",
+      enforcedBy: "components-integrated",
+    },
   ],
 };
 
@@ -263,22 +467,71 @@ export const PAPERCUSP_DATA_LAYER_TEMPLATE: TemplateManifest = {
   ],
   contracts: [],
   decisionPoints: [
-    { id: "app-schema", prompt: "Which tables does the app own, and what is the migration story? Migrations run forward-only on boot (the embedded-postgres-server pattern) — there is no ops window in a desktop app." },
-    { id: "connection-resolution", prompt: "Parameterize @papercusp/embedded-pg-discovery for THIS app: which env vars (in priority order), which discovery-file path under the app home, which fallback URL? Never hardcode the port — it rotates per boot." },
-    { id: "contract-gates", prompt: "Which writes cross a trust boundary (agent output, imported files, network payloads)? Each gets the typed-contracts discipline — a dedicated contracts package + ONE parse gate, rejects surfaced as events. If the app composes papercusp-ops-pots this is MANDATORY for the seam; if nothing untrusted writes, drop the pattern." },
+    {
+      id: "app-schema",
+      prompt:
+        "Which tables does the app own, and what is the migration story? Migrations run forward-only on boot (the embedded-postgres-server pattern) — there is no ops window in a desktop app.",
+    },
+    {
+      id: "connection-resolution",
+      prompt:
+        "Parameterize @papercusp/embedded-pg-discovery for THIS app: which env vars (in priority order), which discovery-file path under the app home, which fallback URL? Never hardcode the port — it rotates per boot.",
+    },
+    {
+      id: "contract-gates",
+      prompt:
+        "Which writes cross a trust boundary (agent output, imported files, network payloads)? Each gets the typed-contracts discipline — a dedicated contracts package + ONE parse gate, rejects surfaced as events. If the app composes papercusp-ops-pots this is MANDATORY for the seam; if nothing untrusted writes, drop the pattern.",
+    },
   ],
-  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-data-sync", "papercusp-search"],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-data-sync",
+    "papercusp-search",
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
   checks: [
-    { id: "components-integrated", run: "checks/components-integrated.test.ts", summary: "every pinned component package is a declared dependency of the composed app (config section: components)" },
+    {
+      id: "components-integrated",
+      run: "checks/components-integrated.test.ts",
+      summary:
+        "every pinned component package is a declared dependency of the composed app (config section: components)",
+    },
   ],
   musts: [
-    { id: "app-owns-postgres", rule: "The app owns its embedded Postgres under the app home — never a system or external database", enforcedBy: "prose-only" },
-    { id: "no-hardcoded-pg", rule: "Never hardcode the PG port or URL — the port rotates per boot; always resolve through resolvePgUrl", enforcedBy: "prose-only" },
-    { id: "postgres-js-client", rule: "postgres-js is the app PG client, not node-postgres — the search aspect SearchSource types its handle as a postgres-js Sql function (WI-2872)", enforcedBy: "prose-only" },
-    { id: "forward-only-migrations", rule: "Migrations run on boot and are forward-only — a desktop app has no ops window", enforcedBy: "prose-only" },
-    { id: "single-parse-gate", rule: "Every trust-boundary write goes through a single typed-contract parse gate — mandatory for the seam down-leg when composing papercusp-ops-pots", enforcedBy: "prose-only" },
-    { id: "deps-declared", rule: "Every kept component is a real package dependency — not wired on paper", enforcedBy: "components-integrated" },
+    {
+      id: "app-owns-postgres",
+      rule: "The app owns its embedded Postgres under the app home — never a system or external database",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "no-hardcoded-pg",
+      rule: "Never hardcode the PG port or URL — the port rotates per boot; always resolve through resolvePgUrl",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "postgres-js-client",
+      rule: "postgres-js is the app PG client, not node-postgres — the search aspect SearchSource types its handle as a postgres-js Sql function (WI-2872)",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "forward-only-migrations",
+      rule: "Migrations run on boot and are forward-only — a desktop app has no ops window",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "single-parse-gate",
+      rule: "Every trust-boundary write goes through a single typed-contract parse gate — mandatory for the seam down-leg when composing papercusp-ops-pots",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "deps-declared",
+      rule: "Every kept component is a real package dependency — not wired on paper",
+      enforcedBy: "components-integrated",
+    },
   ],
 };
 
@@ -308,21 +561,62 @@ export const PAPERCUSP_UI_TEMPLATE: TemplateManifest = {
   ],
   contracts: [],
   decisionPoints: [
-    { id: "ui-surfaces", prompt: "Which surfaces does the app's deterministic plane need — data grids, terminal/agent-output panes, markdown/docs views, JSON inspectors, a multi-panel workbench? Take only the components those surfaces use; drop the rest from the composition." },
-    { id: "grid-usage", prompt: "papergrid is a META-PACKAGE — apps depend on the grid SUB-PACKAGES directly (@papercusp/grid-core, @papercusp/bloom-grid, @papercusp/grid). Which grids does the app need, and do any need server-rendered rows (bloom-grid) vs pure client virtualization (grid-core)?" },
-    { id: "workbench-layout", prompt: "What is the panel layout — which panels register in the dock-workbench registry, what is the default logical layout, and where does layout persistence live (the app's data layer vs localStorage)?" },
-    { id: "branding-lexicon", prompt: "How are user-facing nouns kept rebrandable? @papercusp/lexicon's TermKey is a CLOSED papercusp-internal vocabulary (fleet, harness, operator, ...) resolved through the active brand pack — route THOSE terms through it (wire the configure*() host seam to the app's pack selection) wherever your chrome surfaces them. The app's OWN domain nouns are NOT lexicon terms: keep them in one app-local terms module so a rebrand is still one edit — never hardcode a display label a rebrand would have to grep for." },
+    {
+      id: "ui-surfaces",
+      prompt:
+        "Which surfaces does the app's deterministic plane need — data grids, terminal/agent-output panes, markdown/docs views, JSON inspectors, a multi-panel workbench? Take only the components those surfaces use; drop the rest from the composition.",
+    },
+    {
+      id: "grid-usage",
+      prompt:
+        "papergrid is a META-PACKAGE — apps depend on the grid SUB-PACKAGES directly (@papercusp/grid-core, @papercusp/bloom-grid, @papercusp/grid). Which grids does the app need, and do any need server-rendered rows (bloom-grid) vs pure client virtualization (grid-core)?",
+    },
+    {
+      id: "workbench-layout",
+      prompt:
+        "What is the panel layout — which panels register in the dock-workbench registry, what is the default logical layout, and where does layout persistence live (the app's data layer vs localStorage)?",
+    },
+    {
+      id: "branding-lexicon",
+      prompt:
+        "How are user-facing nouns kept rebrandable? @papercusp/lexicon's TermKey is a CLOSED papercusp-internal vocabulary (fleet, harness, operator, ...) resolved through the active brand pack — route THOSE terms through it (wire the configure*() host seam to the app's pack selection) wherever your chrome surfaces them. The app's OWN domain nouns are NOT lexicon terms: keep them in one app-local terms module so a rebrand is still one edit — never hardcode a display label a rebrand would have to grep for.",
+    },
   ],
   composesWith: ["papercusp-tauri-desktop-shell", "papercusp-data-sync"],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml", "agent-insights/templates-component-catalog"],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
   checks: [
-    { id: "components-integrated", run: "checks/components-integrated.test.ts", summary: "every pinned component package is a declared dependency of the composed app (config section: components)" },
+    {
+      id: "components-integrated",
+      run: "checks/components-integrated.test.ts",
+      summary:
+        "every pinned component package is a declared dependency of the composed app (config section: components)",
+    },
   ],
   musts: [
-    { id: "headless-primitives", rule: "Primitives stay headless and are styled from the app design system — never forked to hardcode brand values", enforcedBy: "prose-only" },
-    { id: "grid-subpackages", rule: "Depend on the grid sub-packages directly — @papercusp/papergrid is the catalog handle, not the import", enforcedBy: "prose-only" },
-    { id: "lexicon-scope", rule: "papercusp-internal TermKeys route through the lexicon; the app own domain nouns live in one app-local terms module (WI-2873) — never hardcode a label a rebrand would grep for", enforcedBy: "prose-only" },
-    { id: "deps-declared", rule: "Every kept component (and the primitives peer deps) is a real package dependency — not wired on paper", enforcedBy: "components-integrated" },
+    {
+      id: "headless-primitives",
+      rule: "Primitives stay headless and are styled from the app design system — never forked to hardcode brand values",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "grid-subpackages",
+      rule: "Depend on the grid sub-packages directly — @papercusp/papergrid is the catalog handle, not the import",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "lexicon-scope",
+      rule: "papercusp-internal TermKeys route through the lexicon; the app own domain nouns live in one app-local terms module (WI-2873) — never hardcode a label a rebrand would grep for",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "deps-declared",
+      rule: "Every kept component (and the primitives peer deps) is a real package dependency — not wired on paper",
+      enforcedBy: "components-integrated",
+    },
   ],
 };
 
@@ -347,10 +641,24 @@ export const DESKTOP_APP_TEMPLATE: TemplateManifest = {
   components: [],
   contracts: [],
   decisionPoints: [
-    { id: "domain", prompt: "What is the app's domain — the noun its data layer ledgers and its UI surfaces? Drives every aspect-level decision point (schema, searchable surfaces, panels, lexicon terms)." },
-    { id: "optional-planes", prompt: "Beyond the required closure, does the app need live UI state sync (compose papercusp-data-sync) or search over its data (compose papercusp-search)? Add them to the composition now if so — both are designed to drop onto this chassis." },
+    {
+      id: "domain",
+      prompt:
+        "What is the app's domain — the noun its data layer ledgers and its UI surfaces? Drives every aspect-level decision point (schema, searchable surfaces, panels, lexicon terms).",
+    },
+    {
+      id: "optional-planes",
+      prompt:
+        "Beyond the required closure, does the app need live UI state sync (compose papercusp-data-sync) or search over its data (compose papercusp-search)? Add them to the composition now if so — both are designed to drop onto this chassis.",
+    },
   ],
-  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-data-layer", "papercusp-ui", "papercusp-data-sync", "papercusp-search"],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-data-layer",
+    "papercusp-ui",
+    "papercusp-data-sync",
+    "papercusp-search",
+  ],
   // P-015: HARD pinned deps — composing/installing this app template pulls
   // the whole chassis+data+ui closure in; the checks union covers the closure.
   requires: [
@@ -358,14 +666,34 @@ export const DESKTOP_APP_TEMPLATE: TemplateManifest = {
     { id: "papercusp-data-layer", version: "0.1.0" },
     { id: "papercusp-ui", version: "0.1.0" },
   ],
-  docs: ["agent-insights/templates-system-design", "agent-insights/templates-template-yaml"],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+  ],
   checks: [
-    { id: "composition-integrity", run: "checks/composition-integrity.test.ts", summary: "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs" },
+    {
+      id: "composition-integrity",
+      run: "checks/composition-integrity.test.ts",
+      summary:
+        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
+    },
   ],
   musts: [
-    { id: "thin-app-template", rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects", enforcedBy: "composition-integrity" },
-    { id: "full-union-green", rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity", enforcedBy: "prose-only" },
-    { id: "no-agent-surfaces", rule: "No hives and no seam in an app built from this template — if agents appear mid-build, switch the composition root to papercusp-agentic-desktop-app", enforcedBy: "prose-only" },
+    {
+      id: "thin-app-template",
+      rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "full-union-green",
+      rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "no-agent-surfaces",
+      rule: "No hives and no seam in an app built from this template — if agents appear mid-build, switch the composition root to papercusp-agentic-desktop-app",
+      enforcedBy: "prose-only",
+    },
   ],
 };
 
@@ -391,12 +719,32 @@ export const RELEASE_PIPELINE_TEMPLATE: TemplateManifest = {
   components: [{ id: "tauri-release-kit", version: "0.1.0" }],
   contracts: [],
   decisionPoints: [
-    { id: "release-channels", prompt: "Which release channels does the app ship (stable only? stable+beta?) and what tag scheme names them? The kit's channel→tag resolution (defaultTagFor) encodes the answer; every channel needs its own updater feed URL." },
-    { id: "release-targets", prompt: "What is the target matrix — linux-x86_64 (deb/AppImage) built locally, mac universal (dmg) and windows (msi/nsis) on VMs over the kit's SSH frame? Which targets are release-blocking vs best-effort?" },
-    { id: "signing-and-updater", prompt: "Where does the Tauri signing key live (keyPath + passwordEnv — the key and password are NEVER committed; keychain/keyfile per platform), and where do updater manifests point (latestJsonUrl — usually the gh release asset URL)? A desktop app without signing/updater wiring is a prototype." },
-    { id: "sidecar-build", prompt: "What does buildSidecar(ctx) do for THIS app — the ONE injected seam (worked instances range from ~42 lines of esbuild to a ~1,070-line bundler)? Keep it a pure function of the repo tree; everything else is the kit's." },
+    {
+      id: "release-channels",
+      prompt:
+        "Which release channels does the app ship (stable only? stable+beta?) and what tag scheme names them? The kit's channel→tag resolution (defaultTagFor) encodes the answer; every channel needs its own updater feed URL.",
+    },
+    {
+      id: "release-targets",
+      prompt:
+        "What is the target matrix — linux-x86_64 (deb/AppImage) built locally, mac universal (dmg) and windows (msi/nsis) on VMs over the kit's SSH frame? Which targets are release-blocking vs best-effort?",
+    },
+    {
+      id: "signing-and-updater",
+      prompt:
+        "Where does the Tauri signing key live (keyPath + passwordEnv — the key and password are NEVER committed; keychain/keyfile per platform), and where do updater manifests point (latestJsonUrl — usually the gh release asset URL)? A desktop app without signing/updater wiring is a prototype.",
+    },
+    {
+      id: "sidecar-build",
+      prompt:
+        "What does buildSidecar(ctx) do for THIS app — the ONE injected seam (worked instances range from ~42 lines of esbuild to a ~1,070-line bundler)? Keep it a pure function of the repo tree; everything else is the kit's.",
+    },
   ],
-  composesWith: ["papercusp-tauri-desktop-shell", "papercusp-desktop-app", "papercusp-agentic-desktop-app"],
+  composesWith: [
+    "papercusp-tauri-desktop-shell",
+    "papercusp-desktop-app",
+    "papercusp-agentic-desktop-app",
+  ],
   docs: [
     "agent-insights/templates-system-design",
     "agent-insights/templates-template-yaml",
@@ -404,13 +752,34 @@ export const RELEASE_PIPELINE_TEMPLATE: TemplateManifest = {
     "build-system/tauri-release-kit-proposal",
   ],
   checks: [
-    { id: "components-integrated", run: "checks/components-integrated.test.ts", summary: "every pinned component package is a declared dependency of the composed app (config section: components)" },
+    {
+      id: "components-integrated",
+      run: "checks/components-integrated.test.ts",
+      summary:
+        "every pinned component package is a declared dependency of the composed app (config section: components)",
+    },
   ],
   musts: [
-    { id: "no-signing-material-in-repo", rule: "Signing material never enters the repo — signing.keyPath points outside it", enforcedBy: "prose-only" },
-    { id: "kit-bumps-versions", rule: "The kit bumps versions, never by hand — every file carrying the version is listed in its config", enforcedBy: "prose-only" },
-    { id: "generated-updater-manifests", rule: "Updater manifests are generated, never hand-rolled — latest.json comes from the kit", enforcedBy: "prose-only" },
-    { id: "buildsidecar-only-seam", rule: "buildSidecar() stays the ONLY app-specific code path in the release plane", enforcedBy: "prose-only" },
+    {
+      id: "no-signing-material-in-repo",
+      rule: "Signing material never enters the repo — signing.keyPath points outside it",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "kit-bumps-versions",
+      rule: "The kit bumps versions, never by hand — every file carrying the version is listed in its config",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "generated-updater-manifests",
+      rule: "Updater manifests are generated, never hand-rolled — latest.json comes from the kit",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "buildsidecar-only-seam",
+      rule: "buildSidecar() stays the ONLY app-specific code path in the release plane",
+      enforcedBy: "prose-only",
+    },
   ],
 };
 
@@ -427,12 +796,33 @@ export const PROJECT_HISTORY_TEMPLATE: TemplateManifest = {
   components: [{ id: "plan-parser", version: "0.1.0" }],
   contracts: [],
   decisionPoints: [
-    { id: "history-scope", prompt: "Which harness is authoritative, and should the default <harness>- plan-prefix filter be kept or disabled with --prefix= to export the whole harness?" },
-    { id: "project-identity", prompt: "What stable project id/name and repository web URL should the artifact expose?" },
-    { id: "artifact-adapter", prompt: "Will the host serve JSON statically or import the generated TypeScript artifact through a thin API adapter, and at what committed path?" },
-    { id: "regeneration-gate", prompt: "Which build/test command regenerates the artifact, and where does --check fail stale committed output?" },
+    {
+      id: "history-scope",
+      prompt:
+        "Which harness is authoritative, and should the default <harness>- plan-prefix filter be kept or disabled with --prefix= to export the whole harness?",
+    },
+    {
+      id: "project-identity",
+      prompt:
+        "What stable project id/name and repository web URL should the artifact expose?",
+    },
+    {
+      id: "artifact-adapter",
+      prompt:
+        "Will the host serve JSON statically or import the generated TypeScript artifact through a thin API adapter, and at what committed path?",
+    },
+    {
+      id: "regeneration-gate",
+      prompt:
+        "Which build/test command regenerates the artifact, and where does --check fail stale committed output?",
+    },
   ],
-  composesWith: ["papercusp-webapp", "papercusp-desktop-app", "papercusp-agentic-desktop-app", "papercusp-ui"],
+  composesWith: [
+    "papercusp-webapp",
+    "papercusp-desktop-app",
+    "papercusp-agentic-desktop-app",
+    "papercusp-ui",
+  ],
   docs: [
     "build-system/project-history",
     "agent-insights/templates-system-design",
@@ -440,13 +830,34 @@ export const PROJECT_HISTORY_TEMPLATE: TemplateManifest = {
     "agent-insights/templates-component-catalog",
   ],
   checks: [
-    { id: "project-history-artifact", run: "checks/project-history-artifact.test.ts", summary: "the configured generated JSON or TypeScript artifact is schema v1, belongs to the expected project/harness, and names the canonical generator" },
+    {
+      id: "project-history-artifact",
+      run: "checks/project-history-artifact.test.ts",
+      summary:
+        "the configured generated JSON or TypeScript artifact is schema v1, belongs to the expected project/harness, and names the canonical generator",
+    },
   ],
   musts: [
-    { id: "derived-read-model", rule: "The generated artifact is disposable derived output; Papercusp ledgers and Git remain authoritative", enforcedBy: "project-history-artifact" },
-    { id: "installed-generator", rule: "Generation invokes the installed papercusp project-history CLI, never a path into a Papercusp source checkout", enforcedBy: "prose-only" },
-    { id: "versioned-contract", rule: "Consumers reject unknown schema versions instead of guessing a compatible shape", enforcedBy: "project-history-artifact" },
-    { id: "thin-consumer-adapter", rule: "Project-specific code only selects config, transports the artifact, and composes UI; it never forks the assembler", enforcedBy: "prose-only" },
+    {
+      id: "derived-read-model",
+      rule: "The generated artifact is disposable derived output; Papercusp ledgers and Git remain authoritative",
+      enforcedBy: "project-history-artifact",
+    },
+    {
+      id: "installed-generator",
+      rule: "Generation invokes the installed papercusp project-history CLI, never a path into a Papercusp source checkout",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "versioned-contract",
+      rule: "Consumers reject unknown schema versions instead of guessing a compatible shape",
+      enforcedBy: "project-history-artifact",
+    },
+    {
+      id: "thin-consumer-adapter",
+      rule: "Project-specific code only selects config, transports the artifact, and composes UI; it never forks the assembler",
+      enforcedBy: "prose-only",
+    },
   ],
 };
 
@@ -502,7 +913,13 @@ export const PAPERCUSP_WEB_HOST_TEMPLATE: TemplateManifest = {
         "deployed multi-user webapp without traces debugs blind; a local single-user install can skip it.",
     },
   ],
-  composesWith: ["papercusp-data-layer", "papercusp-ui", "papercusp-data-sync", "papercusp-search", "papercusp-webapp"],
+  composesWith: [
+    "papercusp-data-layer",
+    "papercusp-ui",
+    "papercusp-data-sync",
+    "papercusp-search",
+    "papercusp-webapp",
+  ],
   docs: [
     "agent-insights/templates-system-design",
     "agent-insights/templates-template-yaml",
@@ -510,15 +927,44 @@ export const PAPERCUSP_WEB_HOST_TEMPLATE: TemplateManifest = {
     "agent-insights/restart-webapp-audit-papercusp-webapp-template",
   ],
   checks: [
-    { id: "boot-e2e", run: "checks/boot-e2e.test.ts", summary: "composed web app builds, host starts, discovery file written, health returns 200" },
+    {
+      id: "boot-e2e",
+      run: "checks/boot-e2e.test.ts",
+      summary:
+        "composed web app builds, host starts, discovery file written, health returns 200",
+    },
   ],
   musts: [
-    { id: "standalone-output", rule: "output standalone + outputFileTracingRoot + complete transpilePackages — all three before first deploy", enforcedBy: "prose-only" },
-    { id: "auth-before-exposure", rule: "Both auth placeholders replaced before any non-local exposure — the auth-strategy decision point is not optional", enforcedBy: "prose-only" },
-    { id: "discovery-lifecycle", rule: "The discovery file is written on boot and removed on shutdown", enforcedBy: "boot-e2e" },
-    { id: "wire-boot-check", rule: "checks/boot-e2e.test.ts is wired in the composed app TEMPLATE_CHECKS_CONFIG boot section, spawn mode in CI", enforcedBy: "prose-only" },
-    { id: "next-manual-sig-handle", rule: "NEXT_MANUAL_SIG_HANDLE=1 whenever the app registers its own shutdown hook (WI-2880) — else Next truncates async cleanup", enforcedBy: "boot-e2e" },
-    { id: "native-deps-copy", rule: "A post-build native-deps copy step for every spawn-based dependency (WI-2875) — the standalone tracer will not carry them", enforcedBy: "prose-only" },
+    {
+      id: "standalone-output",
+      rule: "output standalone + outputFileTracingRoot + complete transpilePackages — all three before first deploy",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "auth-before-exposure",
+      rule: "Both auth placeholders replaced before any non-local exposure — the auth-strategy decision point is not optional",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "discovery-lifecycle",
+      rule: "The discovery file is written on boot and removed on shutdown",
+      enforcedBy: "boot-e2e",
+    },
+    {
+      id: "wire-boot-check",
+      rule: "checks/boot-e2e.test.ts is wired in the composed app TEMPLATE_CHECKS_CONFIG boot section, spawn mode in CI",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "next-manual-sig-handle",
+      rule: "NEXT_MANUAL_SIG_HANDLE=1 whenever the app registers its own shutdown hook (WI-2880) — else Next truncates async cleanup",
+      enforcedBy: "boot-e2e",
+    },
+    {
+      id: "native-deps-copy",
+      rule: "A post-build native-deps copy step for every spawn-based dependency (WI-2875) — the standalone tracer will not carry them",
+      enforcedBy: "prose-only",
+    },
   ],
 };
 
@@ -565,7 +1011,13 @@ export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
         "designed to drop onto this chassis.",
     },
   ],
-  composesWith: ["papercusp-web-host", "papercusp-data-layer", "papercusp-ui", "papercusp-data-sync", "papercusp-search"],
+  composesWith: [
+    "papercusp-web-host",
+    "papercusp-data-layer",
+    "papercusp-ui",
+    "papercusp-data-sync",
+    "papercusp-search",
+  ],
   // P-015: HARD pinned deps — composing/installing this app template pulls
   // the web chassis + data + UI closure in; the checks union covers the closure.
   requires: [
@@ -579,13 +1031,133 @@ export const PAPERCUSP_WEBAPP_TEMPLATE: TemplateManifest = {
     "agent-insights/restart-webapp-audit-papercusp-webapp-template",
   ],
   checks: [
-    { id: "composition-integrity", run: "checks/composition-integrity.test.ts", summary: "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs" },
+    {
+      id: "composition-integrity",
+      run: "checks/composition-integrity.test.ts",
+      summary:
+        "the composed set resolves (composeTemplates ok: pins consistent, one root app scope) and the union of checks is what CI runs",
+    },
   ],
   musts: [
-    { id: "thin-app-template", rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects", enforcedBy: "composition-integrity" },
-    { id: "full-union-green", rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity", enforcedBy: "prose-only" },
-    { id: "no-agent-surfaces", rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-pots to the composition explicitly", enforcedBy: "prose-only" },
-    { id: "auth-before-exposure", rule: "The web-host auth placeholders are replaced before any non-local exposure", enforcedBy: "prose-only" },
+    {
+      id: "thin-app-template",
+      rule: "The app template adds glue guidance and decision points, never its own components — capability belongs in aspects",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "full-union-green",
+      rule: "The composed app passes the FULL union of the closure checks — boot-e2e, components-integrated, composition-integrity",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "no-agent-surfaces",
+      rule: "No hives and no seam in an app built from this template — if agents appear mid-build, add papercusp-ops-pots to the composition explicitly",
+      enforcedBy: "prose-only",
+    },
+    {
+      id: "auth-before-exposure",
+      rule: "The web-host auth placeholders are replaced before any non-local exposure",
+      enforcedBy: "prose-only",
+    },
+  ],
+};
+
+/** Aspect: the portable Rust/UniFFI/config/token contract shared by Android and iPhone. */
+export const PAPERCUSP_MOBILE_BASE_TEMPLATE: TemplateManifest = {
+  id: "papercusp-mobile-base",
+  version: "0.1.0",
+  scope: "aspect",
+  category: "shell",
+  summary:
+    "The cross-platform base for official Papercusp mobile apps: a three-crate Rust workspace (portable core, " +
+    "one UniFFI bindings crate, and an off-device CLI), one generated Kotlin/Swift boundary, deterministic design " +
+    "tokens, explicit non-secret runtime configuration, source/placeholder/secret hygiene, and portable verification. " +
+    "Product domain behavior, endpoints, copy, navigation, branding, assets, and optional native capabilities stay in " +
+    "the consuming app.",
+  components: [{ id: "rust-uniffi-mobile-base", version: "0.1.0" }],
+  contracts: [],
+  decisionPoints: [
+    {
+      id: "product-domain",
+      prompt:
+        "What domain behavior belongs in the portable Rust core, and what remains native presentation?",
+    },
+    {
+      id: "rust-msrv",
+      prompt: "Which supported Rust MSRV does the app require?",
+    },
+    {
+      id: "license-and-repository",
+      prompt:
+        "What SPDX license, authorship, and repository metadata replace the neutral starter values?",
+    },
+    {
+      id: "design-token-source",
+      prompt:
+        "Which product token values and typography replace the neutral token source while preserving deterministic Kotlin/Swift generation?",
+    },
+    {
+      id: "optional-capabilities",
+      prompt:
+        "Which optional native seams—credentials, deep links, push, crash reporting, analytics, camera, microphone, media playback, or local networking—are enabled?",
+    },
+    {
+      id: "runtime-configuration",
+      prompt:
+        "Which non-secret endpoints/identifiers are build-time versus runtime inputs, and which device credentials use secure storage?",
+    },
+  ],
+  composesWith: [],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
+  checks: [
+    {
+      id: "mobile-base-contract",
+      run: "checks/mobile-base-contract.test.ts",
+      summary:
+        "the three-crate Rust/UniFFI/token scaffold exists and source is free of unallowlisted placeholders, secret paths, and credential signatures",
+    },
+    {
+      id: "mobile-base-commands",
+      run: "checks/mobile-base-commands.test.ts",
+      summary:
+        "the configured Rust, binding-smoke, and token-drift commands execute directly and pass",
+    },
+  ],
+  musts: [
+    {
+      id: "portable-domain-core",
+      rule: "Portable domain outcomes, state transitions, validation, serialization, and error taxonomy live in Rust; native shells own presentation and platform lifecycle",
+      enforcedBy: "mobile-base-contract",
+    },
+    {
+      id: "single-uniffi-boundary",
+      rule: "One UDL is the native contract source and generated Kotlin/Swift never becomes a hand-maintained second boundary",
+      enforcedBy: "mobile-base-contract",
+    },
+    {
+      id: "deterministic-mobile-tokens",
+      rule: "One neutral token source deterministically generates Kotlin and Swift outputs and fails on drift",
+      enforcedBy: "mobile-base-commands",
+    },
+    {
+      id: "no-secrets-or-placeholders",
+      rule: "Tracked source contains no usable credential, service payload, generated native artifact, unresolved identity placeholder, or foreign product identity outside an explicit allowlist",
+      enforcedBy: "mobile-base-contract",
+    },
+    {
+      id: "portable-verification",
+      rule: "Rust format, clippy, tests, boundary smoke, and token drift execute as direct configured commands; unsupported platform legs report host-constrained in their shell checks",
+      enforcedBy: "mobile-base-commands",
+    },
+    {
+      id: "optional-capabilities-stay-optional",
+      rule: "Credentials, links, push, analytics, crash reporting, camera, microphone, media, and local networking add no default base dependency",
+      enforcedBy: "prose-only",
+    },
   ],
 };
 
@@ -603,4 +1175,5 @@ export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PROJECT_HISTORY_TEMPLATE,
   PAPERCUSP_WEB_HOST_TEMPLATE,
   PAPERCUSP_WEBAPP_TEMPLATE,
+  PAPERCUSP_MOBILE_BASE_TEMPLATE,
 ];

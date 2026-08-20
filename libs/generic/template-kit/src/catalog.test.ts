@@ -6,7 +6,10 @@ import { validateCatalog } from "./component-manifest.js";
 // ids are unique, and every composesWith reference resolves in-catalog.
 describe("COMPONENT_CATALOG", () => {
   it("every entry validates; ids unique; composesWith refs resolve", () => {
-    expect(validateCatalog(COMPONENT_CATALOG)).toEqual({ ok: true, errors: [] });
+    expect(validateCatalog(COMPONENT_CATALOG)).toEqual({
+      ok: true,
+      errors: [],
+    });
   });
 
   it("covers the P-004 component set", () => {
@@ -18,13 +21,16 @@ describe("COMPONENT_CATALOG", () => {
       "tauri-release-kit",
       "typed-contracts",
       "hono-host",
+      "rust-uniffi-mobile-base",
     ]) {
       expect(ids).toContain(required);
     }
   });
 
   it("tier-B components are exactly the seam disciplines (D-002)", () => {
-    const tierB = COMPONENT_CATALOG.filter((m) => m.tier === "B").map((m) => m.id).sort();
+    const tierB = COMPONENT_CATALOG.filter((m) => m.tier === "B")
+      .map((m) => m.id)
+      .sort();
     expect(tierB).toEqual(["pot-app-seam", "typed-contracts"]);
   });
 });

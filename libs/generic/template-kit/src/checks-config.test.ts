@@ -4,7 +4,10 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseChecksConfig, validateChecksConfig } from "./checks-config.js";
 
-const TEMPLATES_DIR = join(dirname(fileURLToPath(import.meta.url)), "../../../../templates");
+const TEMPLATES_DIR = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "../../../../templates",
+);
 
 const valid = {
   app: { name: "quartermaster", root: "." },
@@ -20,11 +23,49 @@ const valid = {
     parseOutputExport: "parseCandidateSet",
     joinKey: "itemId",
     validInput: { itemId: 42, item: "Cash Drawer", qty: 2 },
-    validOutput: { itemId: 42, candidates: [], searchNotes: "none qualified", ts: "2026-07-04T00:00:00Z" },
+    validOutput: {
+      itemId: 42,
+      candidates: [],
+      searchNotes: "none qualified",
+      ts: "2026-07-04T00:00:00Z",
+    },
     invalidOutput: { itemId: 42, candidates: [] },
   },
   boot: { mode: "attach", discoveryFile: "~/.quartermaster/operator.json" },
-  gym: { blueprint: "blueprints/quartermaster-ops/blueprint.yaml", requiredSignals: ["no-checkout-reach"] },
+  gym: {
+    blueprint: "blueprints/quartermaster-ops/blueprint.yaml",
+    requiredSignals: ["no-checkout-reach"],
+  },
+  mobileBase: {
+    rustMsrv: "1.88",
+    rootCargo: "Cargo.toml",
+    cargoLock: "Cargo.lock",
+    crateManifests: [
+      "crates/store_core/Cargo.toml",
+      "crates/store_bindings/Cargo.toml",
+      "crates/store_cli/Cargo.toml",
+    ],
+    udl: "crates/store_bindings/src/store.udl",
+    uniffiConfig: "crates/store_bindings/uniffi.toml",
+    bindgen: "crates/store_bindings/src/bin/uniffi-bindgen.rs",
+    tokenSource: "design/mobile-tokens.json",
+    generatedTokenFiles: [
+      "android/app/src/main/java/dev/store/DesignTokens.kt",
+      "ios/Store/DesignTokens.swift",
+    ],
+    requiredPaths: ["Makefile"],
+    scanRoots: ["crates", "android", "ios", "design"],
+    forbiddenTokens: ["com.example", "example.invalid", "MobileApp"],
+    allowlistedFiles: ["docs/template-provenance.md"],
+    secretPathPatterns: ["(^|/)release\\.jks$"],
+    portableCommands: [
+      { id: "rust-test", command: ["cargo", "test", "--workspace"] },
+      {
+        id: "token-drift",
+        command: ["node", "tools/generate-mobile-tokens.mjs", "--check"],
+      },
+    ],
+  },
 };
 
 describe("validateChecksConfig", () => {
@@ -45,20 +86,62 @@ describe("validateChecksConfig", () => {
     });
     expect(errors).toContain("app.name: required non-empty string");
     expect(errors).toContain("confinement.blueprints: must be non-empty");
-    expect(errors).toContain("confinement.dangerousCapabilities: must be a list of non-empty strings");
-    expect(errors).toContain("boot.command: required (list of strings) in spawn mode");
+    expect(errors).toContain(
+      "confinement.dangerousCapabilities: must be a list of non-empty strings",
+    );
+    expect(errors).toContain(
+      "boot.command: required (list of strings) in spawn mode",
+    );
     expect(errors).toContain("boot.discoveryFile: required non-empty string");
     expect(errors).toContain("gym.blueprint: required non-empty string");
     expect(errors).toContain("gym.requiredSignals: must be non-empty");
   });
 
   it("rejects a seam section missing its gates and fixtures", () => {
-    const errors = validateChecksConfig({ app: { name: "x" }, seam: { workItemKind: "k" } });
+    const errors = validateChecksConfig({
+      app: { name: "x" },
+      seam: { workItemKind: "k" },
+    });
     expect(errors).toContain("seam.contractModule: required non-empty string");
-    expect(errors).toContain("seam.parseInputExport: required non-empty string");
-    expect(errors).toContain("seam.parseOutputExport: required non-empty string");
+    expect(errors).toContain(
+      "seam.parseInputExport: required non-empty string",
+    );
+    expect(errors).toContain(
+      "seam.parseOutputExport: required non-empty string",
+    );
     expect(errors).toContain("seam.validInput: required object fixture");
     expect(errors).toContain("seam.invalidOutput: required object fixture");
+  });
+
+  it("rejects an incomplete mobile base and duplicate command ids", () => {
+    const errors = validateChecksConfig({
+      app: { name: "x" },
+      mobileBase: {
+        crateManifests: ["one/Cargo.toml"],
+        generatedTokenFiles: ["Tokens.kt"],
+        requiredPaths: [],
+        scanRoots: [],
+        forbiddenTokens: [],
+        portableCommands: [
+          { id: "test", command: [] },
+          { id: "test", command: ["cargo", "test"], timeoutMs: 0 },
+        ],
+      },
+    });
+    expect(errors).toContain("mobileBase.rootCargo: required non-empty string");
+    expect(errors).toContain(
+      "mobileBase.crateManifests: must contain exactly core, bindings, and CLI manifests",
+    );
+    expect(errors).toContain(
+      "mobileBase.generatedTokenFiles: must contain at least Kotlin and Swift outputs",
+    );
+    expect(errors).toContain("mobileBase.requiredPaths: must be non-empty");
+    expect(errors).toContain(
+      "mobileBase.portableCommands[1].id: duplicate 'test'",
+    );
+    expect(errors).toContain(
+      "mobileBase.portableCommands[1].timeoutMs: must be a positive number when present",
+    );
   });
 
   it("parseChecksConfig throws on invalid, returns typed on valid", () => {
@@ -68,7 +151,26 @@ describe("validateChecksConfig", () => {
 
   it("the committed worked-example reference config validates", () => {
     const raw = JSON.parse(
-      readFileSync(join(TEMPLATES_DIR, "papercusp-agentic-desktop-app/reference/worked-example.checks-config.json"), "utf8"),
+      readFileSync(
+        join(
+          TEMPLATES_DIR,
+          "papercusp-agentic-desktop-app/reference/worked-example.checks-config.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(validateChecksConfig(raw)).toEqual([]);
+  });
+
+  it("the committed mobile-base reference config validates", () => {
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          TEMPLATES_DIR,
+          "papercusp-mobile-base/reference/mobile-base.checks-config.example.json",
+        ),
+        "utf8",
+      ),
     );
     expect(validateChecksConfig(raw)).toEqual([]);
   });
