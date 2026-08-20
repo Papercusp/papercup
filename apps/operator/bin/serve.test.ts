@@ -190,6 +190,41 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
       expect(fired).toBe(1);
     });
 
+    it("records the parent-death decision durably before handing off SIGTERM", () => {
+      process.env.PAPERCUSP_DESKTOP = "1";
+      const logPath = join(tmpHome, "gateway-parent-death.log");
+      const previousGatewayMode = process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE;
+      const previousGatewayLog = process.env.PAPERCUSP_GATEWAY_LOG;
+      process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE = "1";
+      process.env.PAPERCUSP_GATEWAY_LOG = logPath;
+
+      try {
+        let fired = 0;
+        serve.startParentDeathWatch(() => void fired++, {
+          expectedPpid: 2238351,
+          declaredByLauncher: true,
+          currentPpid: () => 2026497,
+          parentAlive: () => false,
+        });
+
+        expect(fired).toBe(1);
+        const durable = readFileSync(logPath, "utf8");
+        expect(durable).toContain("[serve-parent-watch ");
+        expect(durable).toContain("desktop parent pid 2238351 is gone");
+        expect(durable).toContain(
+          "self-terminating instead of running orphaned",
+        );
+      } finally {
+        if (previousGatewayMode === undefined)
+          delete process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE;
+        else process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE = previousGatewayMode;
+        if (previousGatewayLog === undefined)
+          delete process.env.PAPERCUSP_GATEWAY_LOG;
+        else process.env.PAPERCUSP_GATEWAY_LOG = previousGatewayLog;
+        rmSync(logPath, { force: true });
+      }
+    });
+
     it("with a DECLARED parent pid, catches a dead parent even when ppid NEVER changes", () => {
       // This is the case a ppid watch structurally cannot see, and the whole
       // reason the launcher handoff exists: same ppid at every read, parent gone.

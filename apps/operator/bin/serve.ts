@@ -41,8 +41,9 @@ import {
   createServer as createNetServer,
   connect as netConnect,
 } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
+  appendFileSync,
   existsSync,
   readFileSync,
   writeFileSync,
@@ -182,6 +183,39 @@ const PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || join(homedir(), ".papercusp"
 const OPERATOR_JSON = join(PAPERCUSP_DIR, "operator.json");
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
 const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, "superuser-token");
+
+/**
+ * Durable sink for the parent-death decision. The gateway already owns
+ * `gateway.log`; use that exact surface in gateway-sidecar mode so its next
+ * postmortem has the watch decision and the SIGTERM drain outcome in one file.
+ * Other packaged sidecars share this entrypoint but not the gateway logger, so
+ * they use one small lifecycle log under PAPERCUSP_HOME instead of depending on
+ * their already-broken stdout pipe.
+ */
+function parentDeathLogPath(): string {
+  if (process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1") {
+    return (
+      process.env.PAPERCUSP_GATEWAY_LOG ||
+      join(homedir(), ".papercusp", "gateway.log")
+    );
+  }
+  return join(PAPERCUSP_DIR, "parent-death.log");
+}
+
+function writeParentDeathDiagnostic(message: string): void {
+  try {
+    const path = parentDeathLogPath();
+    mkdirSync(dirname(path), { recursive: true });
+    appendFileSync(
+      path,
+      `[serve-parent-watch ${new Date().toISOString()}] ${message}\n`,
+      { encoding: "utf8", mode: 0o600 },
+    );
+  } catch {
+    // Diagnostics must never block the termination path. `log()` below remains
+    // the best-effort console fallback when the file is unavailable.
+  }
+}
 // WI-3287: a packaged env-sidecar sibling (env-operator-launcher.ts's bundled
 // spawn — prod/staging running request-only alongside the primary, EI-126)
 // re-execs THIS SAME serve.mjs under the SAME $HOME, identified by
@@ -372,9 +406,14 @@ export function startParentDeathWatch(
   };
 
   const fire = (why: string): void => {
-    log(
-      `desktop parent pid ${originalPpid} is gone (${why}) — self-terminating instead of running orphaned`,
-    );
+    const message =
+      `desktop parent pid ${originalPpid} is gone (${why}) — ` +
+      "self-terminating instead of running orphaned";
+    // Write the durable evidence FIRST: the parent just died, so stdout may
+    // already be a broken pipe and its silence is not evidence that fire()
+    // failed to run (WI-39599).
+    writeParentDeathDiagnostic(message);
+    log(message);
     onOrphaned();
   };
 
