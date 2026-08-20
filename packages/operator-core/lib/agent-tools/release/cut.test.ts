@@ -273,6 +273,83 @@ describe('release:cut — preflight (read-only)', () => {
   });
 });
 
+describe('release:cut — prepare-tag (explicit create-only remote ref)', () => {
+  const sourceSha = 'f9030aa73955125a3f155444b0dc81668dc62ac0';
+  const args = { op: 'prepare-tag', version: '0.0.18', channel: 'alpha', sourceSha };
+
+  it('is a dry-run by default and discloses the only remote write', async () => {
+    const b = body(await tool.handler(args as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({
+      ok: true,
+      op: 'prepare-tag',
+      dry_run: true,
+      tag: 'desktop-v0.0.18-alpha',
+      remoteRefWrite: true,
+      githubRelease: false,
+      artifactUpload: false,
+    });
+    expect(b.wouldRun).toContain(`PAPERCUSP_RELEASE_PREPARE_TAG_SHA='${sourceSha}'`);
+    expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM='1'");
+    expect(execFileSyncM).not.toHaveBeenCalled();
+  });
+
+  it('rejects malformed source authority before resolving or writing a ref', async () => {
+    const b = body(await tool.handler({ ...args, sourceSha: 'f9030aa' } as never, { role: 'operator' } as never));
+
+    expect(b.refused).toBe(true);
+    expect(b.reason).toMatch(/bad_source_sha/);
+    expect(execFileSyncM).not.toHaveBeenCalled();
+  });
+
+  it('role-gates the confirmed remote write', async () => {
+    const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'cup' } as never));
+
+    expect(b.refused).toBe(true);
+    expect(b.reason).toMatch(/role_forbidden/);
+    expect(execFileSyncM).not.toHaveBeenCalled();
+  });
+
+  it('runs the release-owned helper with exact source + explicit confirmation', async () => {
+    execFileSyncM.mockReturnValue('created exact tag\n' as never);
+
+    const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
+
+    expect(b).toMatchObject({
+      ok: true,
+      op: 'prepare-tag',
+      tag: 'desktop-v0.0.18-alpha',
+      sourceSha,
+      remoteRefWrite: true,
+      githubRelease: false,
+      artifactUpload: false,
+      output: 'created exact tag',
+    });
+    expect(execFileSyncM).toHaveBeenCalledWith(
+      expect.stringMatching(/papercusp-desktop\/bin\/release-local\.sh$/),
+      ['0.0.18', 'alpha'],
+      expect.objectContaining({
+        env: expect.objectContaining({
+          PAPERCUSP_RELEASE_PREPARE_TAG_SHA: sourceSha,
+          PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
+        }),
+      }),
+    );
+  });
+
+  it('returns a structured refusal when create detects an existing mismatch', async () => {
+    execFileSyncM.mockImplementation(() => {
+      throw new Error('origin refs/tags/desktop-v0.0.18-alpha already exists at deadbeef');
+    });
+
+    const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
+
+    expect(b).toMatchObject({ ok: false, op: 'prepare-tag', refused: true, tag: 'desktop-v0.0.18-alpha' });
+    expect(b.reason).toMatch(/prepare_tag_failed/);
+    expect(b.reason).toMatch(/already exists/);
+  });
+});
+
 describe('release:cut — status (read-only)', () => {
   it('reports an in-flight cut without launching', async () => {
     const running: CutStatus = {

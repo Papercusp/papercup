@@ -9,16 +9,19 @@
  * `release:deploy` gives the deploy: a preflight go/no-go, a DETACHED launch (a 35–60 min
  * build can't be an awaited tool call), status polling, and a structured hand-off.
  *
- * ⛔ LOCAL-only (papercusp-desktop/RELEASE-RUNBOOK.md; owner directive 2026-07-08: "we are
+ * ⛔ Artifact cuts are LOCAL-only (papercusp-desktop/RELEASE-RUNBOOK.md; owner directive 2026-07-08: "we are
  * no longer using GitHub for our releases — build the installer locally and I'll upload
  * it"). Every path here runs the cut with PAPERCUSP_PUBLISH_GITHUB=0 (release-local.sh
  * skips its superseded tag-push + GitHub-Release steps) and `handoff` returns the local
- * artifact paths + sha256 for the OWNER to upload. This tool never pushes a tag, never
- * creates a GitHub Release.
+ * artifact paths + sha256 for the OWNER to upload. `prepare-tag` is the one explicit,
+ * separately confirmed remote-ref write: it creates a missing exact tag with a
+ * force-with-lease expecting absence. It never creates a GitHub Release or uploads bytes.
  *
  * Ops (discriminated on `op`):
  *   - preflight  — READ-ONLY go/no-go: signing key, cutter + verify scripts present, no cut
  *                  already in flight, VM reminders for requested mac/windows legs.
+ *   - prepare-tag — explicitly create the exact release tag required by the dogfood pin.
+ *                  Dry-run unless confirm:true; refuses to overwrite an existing mismatch.
  *   - run        — fire the LOCAL cut DETACHED (survives compaction/relaunch). Dry-run
  *                  unless confirm:true. Heavy + owner-walled → operator-config-write role.
  *                  Audited. Refuses if a cut is already in flight.
@@ -248,14 +251,27 @@ const legsFrom = (a: { mac?: boolean; windows?: boolean; arm64?: boolean }): Cut
   arm64: a.arm64,
 });
 
+function desktopReleaseTag(version: string, channel: Channel): string {
+  return channel === 'stable' ? `desktop-v${version}` : `desktop-v${version}-${channel}`;
+}
+
+function prepareTagPreview(desktop: string, version: string, channel: Channel, sourceSha: string): string {
+  const script = path.join(desktop, 'bin', 'release-local.sh');
+  return (
+    `PAPERCUSP_RELEASE_PREPARE_TAG_SHA='${sourceSha}' ` +
+    `PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM='1' ` +
+    `'${script}' '${version}' '${channel}'`
+  );
+}
+
 export default defineTool({
   name: 'release:cut',
   profile: 'engineer',
   description:
-    'CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ LOCAL-only, never GitHub). Every run/run-leg requires sourceSha, the exact 40-char superproject commit the cutter must still be on; drift refuses before writes, and LOCAL cuts never mutate remote tags. Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).',
+    'CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ artifacts stay LOCAL; never create a GitHub Release). Every run/run-leg requires sourceSha, the exact 40-char superproject commit the cutter must still be on; drift refuses before writes. op:prepare-tag is the separate, explicit remote-ref write required before a brand-new version: create-only force-with-lease, dry-run unless confirm:true, never overwrites a mismatched tag. Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).',
   guidance: {
     when:
-      'Cutting a desktop release. Solo: preflight → run{confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): each agent gate-status first (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs).',
+      'Cutting a desktop release. Brand-new version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): prepare the tag once, then each agent gate-status first (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs).',
     notWhen: "Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub.",
     seeAlso: [
       'recipes:run release-verify-provenance / release-vm-preflight / release-install-and-relaunch-verify (the RELEASE-RUNBOOK ship-gate this cut composes)',
@@ -284,6 +300,17 @@ export default defineTool({
       windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
+    }),
+    z.object({
+      op: z.literal('prepare-tag'),
+      version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease).'),
+      channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
+      sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit the new release tag must name.'),
+      root: cutRootArg.optional(),
+      confirm: z
+        .boolean()
+        .optional()
+        .describe('false/absent ⇒ DRY RUN. true ⇒ create the missing exact remote tag under an absence lease.'),
     }),
     z.object({
       op: z.literal('run'),
@@ -346,6 +373,119 @@ export default defineTool({
         note: result.go
           ? "Ready to cut. release:cut{op:run,version,channel,confirm:true} fires it detached. LOCAL-only — hand the owner the artifacts (op:handoff), never publish to GitHub."
           : `Not ready — resolve the blocker(s) first: ${result.blockers.join('; ')}`,
+      });
+    }
+
+    // ── prepare-tag: the one explicit remote-ref write ──
+    // A LOCAL artifact cut still never publishes to GitHub. This separate op
+    // satisfies the dogfood clone pin for a brand-new version without hiding a
+    // remote mutation inside the build, and its empty force-with-lease refuses
+    // to overwrite a ref created concurrently or at a different source.
+    if (args.op === 'prepare-tag') {
+      if (!isValidVersion(args.version)) {
+        return json({
+          ok: false,
+          op: 'prepare-tag',
+          refused: true,
+          reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
+        });
+      }
+      if (!isValidSourceSha(args.sourceSha)) {
+        return json({
+          ok: false,
+          op: 'prepare-tag',
+          refused: true,
+          reason: `bad_source_sha '${args.sourceSha ?? '<missing>'}' — expected an exact 40-character lowercase superproject commit.`,
+        });
+      }
+      if (args.confirm && !isOperatorConfigWriteRole(ctx.role)) {
+        return json({
+          ok: false,
+          op: 'prepare-tag',
+          refused: true,
+          reason: `role_forbidden — release:cut{op:prepare-tag,confirm:true} requires operator, mug, or architect role (you are role:${ctx.role ?? 'unknown'}).`,
+        });
+      }
+
+      const channel = args.channel as Channel;
+      const selected = await resolveCutRoot(args.root);
+      if (!selected.ok) return json({ ok: false, op: 'prepare-tag', refused: true, reason: selected.reason });
+      const tag = desktopReleaseTag(args.version, channel);
+      const wouldRun = prepareTagPreview(selected.desktopRoot, args.version, channel, args.sourceSha);
+      if (!args.confirm) {
+        return json({
+          ok: true,
+          op: 'prepare-tag',
+          dry_run: true,
+          version: args.version,
+          channel,
+          sourceSha: args.sourceSha,
+          tag,
+          root: selected.desktopRoot,
+          ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
+          remoteRefWrite: true,
+          githubRelease: false,
+          artifactUpload: false,
+          wouldRun,
+          note:
+            `Pass confirm:true to create missing origin refs/tags/${tag} at the exact source under a create-only lease. ` +
+            'If origin is GitHub the TAG becomes visible there; this never creates a GitHub Release or uploads artifacts.',
+        });
+      }
+
+      let commandOutput = '';
+      try {
+        commandOutput = String(
+          execFileSync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
+            cwd: selected.desktopRoot,
+            encoding: 'utf8',
+            timeout: 120_000,
+            maxBuffer: 4 * 1024 * 1024,
+            env: {
+              ...process.env,
+              PAPERCUSP_RELEASE_PREPARE_TAG_SHA: args.sourceSha,
+              PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
+            },
+          }),
+        ).trim();
+      } catch (err) {
+        const reason = `prepare_tag_failed — ${err instanceof Error ? err.message : String(err)}`;
+        const { ownerLabel } = readIdentity(ctx);
+        await recordCutAudit('prepare-tag', `${ownerLabel} (role:${ctx.role ?? 'unknown'})`, {
+          version: args.version,
+          channel,
+          sourceSha: args.sourceSha,
+          tag,
+          root: selected.desktopRoot,
+          created: false,
+          reason,
+        });
+        return json({ ok: false, op: 'prepare-tag', refused: true, version: args.version, channel, sourceSha: args.sourceSha, tag, reason });
+      }
+
+      const { ownerLabel } = readIdentity(ctx);
+      await recordCutAudit('prepare-tag', `${ownerLabel} (role:${ctx.role ?? 'unknown'})`, {
+        version: args.version,
+        channel,
+        sourceSha: args.sourceSha,
+        tag,
+        root: selected.desktopRoot,
+        created: true,
+      });
+      return json({
+        ok: true,
+        op: 'prepare-tag',
+        version: args.version,
+        channel,
+        sourceSha: args.sourceSha,
+        tag,
+        root: selected.desktopRoot,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
+        remoteRefWrite: true,
+        githubRelease: false,
+        artifactUpload: false,
+        output: commandOutput,
+        note: `Exact release tag ${tag} is prepared. The artifact cut remains LOCAL-only and must still receive sourceSha=${args.sourceSha}.`,
       });
     }
 
