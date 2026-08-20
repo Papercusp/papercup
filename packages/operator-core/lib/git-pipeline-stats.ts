@@ -383,6 +383,50 @@ export interface RetriageVerdict {
 }
 
 /**
+ * A git-sync conflict escalation is refreshed by each actual conflict tick. Bound
+ * the read-side claim so a dead writer or an old pre-fix row cannot assert that a
+ * conflict is still open forever.
+ */
+export const GIT_SYNC_CONFLICT_MAX_AGE_MS = 30 * 60_000;
+
+export interface GitSyncConflictCurrentnessInput {
+  escalationMtimeMs: number | null;
+  lastSyncedAtMs: number | null;
+  lastMergeCompletedAtMs: number | null;
+  lastMergeCompleted: readonly string[];
+  nowMs?: number;
+  maxAgeMs?: number;
+}
+
+/**
+ * Pure read-side guard for the `git-sync-conflict` escalation.
+ *
+ * `last_merge_completed` is positive proof that the merge stage ran cleanly, but
+ * only when its timestamp belongs to the current escalation and is no later than
+ * the tick's `last_synced_at`. A stale/invalid proof is ignored. Independently,
+ * the escalation row itself must have been refreshed within the bounded window;
+ * later error ticks do not extend that window because they may fail before merge.
+ */
+export function isGitSyncConflictCurrent(input: GitSyncConflictCurrentnessInput): boolean {
+  const rowAt = input.escalationMtimeMs;
+  const now = input.nowMs ?? Date.now();
+  const maxAge = input.maxAgeMs ?? GIT_SYNC_CONFLICT_MAX_AGE_MS;
+  if (!Number.isFinite(rowAt) || !Number.isFinite(now) || !Number.isFinite(maxAge) || maxAge < 0) return false;
+
+  const mergeProofAt = input.lastMergeCompletedAtMs;
+  const proofScopes = input.lastMergeCompleted;
+  const proofIsForThisRow =
+    proofScopes.length > 0 &&
+    Number.isFinite(mergeProofAt) &&
+    (mergeProofAt as number) >= (rowAt as number) &&
+    (input.lastSyncedAtMs == null ||
+      (Number.isFinite(input.lastSyncedAtMs) && (mergeProofAt as number) <= input.lastSyncedAtMs));
+  if (proofIsForThisRow) return false;
+
+  return now - (rowAt as number) <= maxAge;
+}
+
+/**
  * Pick the re-triage verdict belonging to `observedCandidate` out of the recent pipeline events.
  *
  * Pure + total, and deliberately CONSERVATIVE in one direction: it returns null rather than a
@@ -711,15 +755,27 @@ export async function gitPipelineSnapshot(
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
   try {
     const escRows = await sql<{ escalation: Record<string, unknown> }[]>`
-      SELECT escalation
+      SELECT escalation, mtime_ms
         FROM harness_shared.harness_escalations
        WHERE harness_slug = ${slug}
          AND escalation IS NOT NULL
          AND (escalation::jsonb ->> 'kind') = 'git-sync-conflict'
+       ORDER BY mtime_ms DESC
        LIMIT 1
     `;
     const esc = escRows[0]?.escalation;
-    if (esc) {
+    const escMtimeMs = num(escRows[0]?.mtime_ms);
+    const lastMergeCompleted = strArr(meta.last_merge_completed);
+    const lastMergeCompletedAtMs = num(meta.last_merge_completed_at);
+    if (
+      esc &&
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: escMtimeMs,
+        lastSyncedAtMs: num(meta.last_synced_at),
+        lastMergeCompletedAtMs,
+        lastMergeCompleted,
+      })
+    ) {
       const conflicts = Array.isArray(esc.conflicts)
         ? (esc.conflicts as Array<Record<string, unknown>>).map((c) => ({
             scope: String(c.scope ?? ''),

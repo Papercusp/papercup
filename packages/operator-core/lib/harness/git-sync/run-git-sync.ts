@@ -649,6 +649,12 @@ export type GitSyncOutcome = {
    *  failure mode this whole field exists to prevent, reintroduced one level up. The
    *  nullable type forces every consumer to decide which it is. */
   strandedSubmodules: StrandedSubmodule[] | null;
+  /**
+   * Scopes whose fetch+merge stage completed successfully this pass, even when a
+   * later push failed. This is distinct from `merged`: it proves that the merge
+   * stage ran without a conflict and is safe for escalation clearing.
+   */
+  mergeCompleted?: string[];
 } & (
   | { status: 'nothing' }
   | { status: 'synced'; headSha: string; pushed: string[]; merged: string[] }
@@ -1581,7 +1587,7 @@ export function newStashEntries(current: StashEntry[], knownShas: readonly strin
   return current.filter((e) => !known.has(e.sha));
 }
 
-type RepoSyncResult = { oversized: OversizedFile[]; contentErrors: ContentOffender[] } & (
+type RepoSyncResult = { oversized: OversizedFile[]; contentErrors: ContentOffender[]; mergeCompleted?: boolean } & (
   | { status: 'nothing' }
   | { status: 'synced'; pushed: boolean; merged: boolean }
   | { status: 'conflict'; conflictedFiles: string[] }
@@ -2052,10 +2058,10 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
 
 /** JSON-serializable — checkpointed as the superproject `git-sync:push` step output. */
 type ReconcilePushResult =
-  | { status: 'nothing' }
-  | { status: 'synced'; pushed: boolean; merged: boolean }
+  | { status: 'nothing'; mergeCompleted?: boolean }
+  | { status: 'synced'; pushed: boolean; merged: boolean; mergeCompleted?: boolean }
   | { status: 'conflict'; conflictedFiles: string[] }
-  | { status: 'error'; message: string };
+  | { status: 'error'; message: string; mergeCompleted?: boolean };
 
 /**
  * WI-1416: the RECONCILE+PUSH half of one repo's sync — resolve branch → fetch →
@@ -2157,6 +2163,10 @@ async function reconcileAndPushOneRepo(
     }
     return { status: 'conflict', conflictedFiles: conflicted };
   }
+  // A successful merge is evidence that this repo's merge stage completed cleanly,
+  // even when it produced no merge commit. Keep that proof alive if a later push
+  // fails: conflict resolution and push success are independent facts.
+  let mergeCompleted = true;
   let mergedNew = seedTransplanted || !/Already up to date/i.test(merge.stdout);
 
   let pushed = false;
@@ -2190,18 +2200,25 @@ async function reconcileAndPushOneRepo(
           }
           return { status: 'conflict', conflictedFiles: conflicted };
         }
+        // The retry merge also completed cleanly; retain the positive proof for a
+        // subsequent push error. A retry conflict/error returns above without proof.
+        mergeCompleted = true;
         mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
         push = await runNetworkGitWithGitHubHttpsFallback(runGit, ['push', remote, `HEAD:${branch}`], repoPath, o.log);
       }
       if (push.code !== 0) {
-        return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
+        return {
+          status: 'error',
+          message: `push failed: ${push.stderr.trim() || push.stdout.trim()}`,
+          mergeCompleted,
+        };
       }
       pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
     }
   }
 
-  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
-  return { status: 'synced', pushed, merged: mergedNew };
+  if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing', mergeCompleted };
+  return { status: 'synced', pushed, merged: mergedNew, mergeCompleted };
 }
 
 /**
@@ -2302,6 +2319,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }],
       pushed: [],
       merged: [],
+      mergeCompleted: [],
       oversized: [],
       contentErrors: [],
       // No repo to inspect: nothing was measured, so null (never []) — an all-clear we
@@ -2321,6 +2339,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     errors: RepoError[];
     pushed: string[];
     merged: string[];
+    mergeCompleted: string[];
     oversized: ScopedOversized[];
     contentErrors: ScopedContentError[];
     /** Checkpoint the census with the phase. Outer mutable state disappears on replay,
@@ -2333,6 +2352,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     errors: [],
     pushed: [],
     merged: [],
+    mergeCompleted: [],
     oversized: [],
     contentErrors: [],
     strandedSubmodules: null,
@@ -2340,6 +2360,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   });
 
   const absorb = (into: PhaseCollect, scope: string, r: RepoSyncResult): void => {
+    if (r.mergeCompleted) into.mergeCompleted.push(scope);
     if (r.oversized.length > 0) {
       into.oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
       log(
@@ -2549,18 +2570,19 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const errors = [...sub.errors, ...supr.errors];
   const pushed = [...sub.pushed, ...supr.pushed];
   const merged = [...sub.merged, ...supr.merged];
+  const mergeCompleted = [...sub.mergeCompleted, ...supr.mergeCompleted];
   const oversized = [...sub.oversized, ...supr.oversized];
   const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)
-    return { status: 'conflict', conflicts, errors, pushed, merged, oversized, contentErrors, strandedSubmodules };
+    return { status: 'conflict', conflicts, errors, pushed, merged, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   if (errors.length > 0)
-    return { status: 'error', errors, pushed, merged, oversized, contentErrors, strandedSubmodules };
+    return { status: 'error', errors, pushed, merged, mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // NOTE 'nothing' carries the census too. A tick that commits nothing is the MOST likely
   // one to be stranding work — the visible tree is clean precisely because the dirty repo
   // is invisible — so this is the last status that should omit it.
-  if (!didSomething) return { status: 'nothing', oversized, contentErrors, strandedSubmodules };
+  if (!didSomething) return { status: 'nothing', mergeCompleted, oversized, contentErrors, strandedSubmodules };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
   return {
@@ -2568,6 +2590,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     headSha: superHeadSha ?? (await headSha(runGit, repo)),
     pushed,
     merged,
+    mergeCompleted,
     oversized,
     contentErrors,
     strandedSubmodules,

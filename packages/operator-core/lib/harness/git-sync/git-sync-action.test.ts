@@ -1212,6 +1212,33 @@ describe('EI-18 repeated-failure escalation (git-sync-error)', () => {
     expect(loopbackFetchMock).not.toHaveBeenCalled();
   });
 
+  it('clears a prior conflict escalation when the merge completed before a push error', async () => {
+    runGitSyncMock.mockResolvedValue({
+      ...errorOutcome,
+      mergeCompleted: ['superproject'],
+    });
+    counterRows = [{ et: 0, lo: [] }];
+
+    await action(ctx);
+
+    // The push still failed, but the producer proved the fetch+merge stage completed
+    // without conflicts. Retire only the conflict row plus the independently measured
+    // strand row; do not require a misleading `synced` outcome.
+    expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand']]);
+    expect(routinePatches()[0]).toMatchObject({
+      last_merge_completed: ['superproject'],
+      last_merge_completed_at: expect.any(Number),
+    });
+    expect(appendPipelineEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'git_sync',
+        status: 'error',
+        detail: expect.objectContaining({ mergeCompleted: ['superproject'] }),
+      }),
+    );
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+  });
+
   it('the THIRD consecutive error tick writes the git-sync-error escalation + broadcasts, and dispatches NO resolver', async () => {
     runGitSyncMock.mockResolvedValue(errorOutcome);
     counterRows = [{ et: 2, lo: [] }]; // two prior error ticks → this one crosses the threshold

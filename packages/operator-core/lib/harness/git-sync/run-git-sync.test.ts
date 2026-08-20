@@ -1563,7 +1563,11 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
       config: { pushSubmodules: false },
     });
     expect(out.status).toBe('error'); // NOT 'conflict' — nothing for a merge-resolver to merge
-    if (out.status === 'error') expect(out.errors[0].message).toMatch(/merge failed \(no conflicted paths\)/);
+    if (out.status === 'error') {
+      expect(out.errors[0].message).toMatch(/merge failed \(no conflicted paths\)/);
+      // A failed merge is not positive evidence that the merge stage completed.
+      expect(out.mergeCompleted).toEqual([]);
+    }
   });
 
   it('EI-20328688606935149: skips an authenticated no-op push when fetched origin already contains HEAD', async () => {
@@ -1622,7 +1626,13 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     });
 
     expect(out.status).toBe('error');
-    if (out.status === 'error') expect(out.errors[0]?.message).toMatch(/verify your email address/i);
+    if (out.status === 'error') {
+      expect(out.errors[0]?.message).toMatch(/verify your email address/i);
+      // The merge stage completed cleanly before the authenticated push failed. That
+      // positive evidence must survive the error outcome so the action can retire an
+      // earlier merge-conflict escalation without pretending the push succeeded.
+      expect(out.mergeCompleted).toEqual(['superproject']);
+    }
     expect(pushCalls).toBe(1);
   });
 

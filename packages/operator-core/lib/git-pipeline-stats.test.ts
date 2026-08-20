@@ -13,6 +13,8 @@ import {
   selectActiveCheckpointRoot,
   pickRetriageVerdict,
   projectGreenCheckpointFireFreshness,
+  GIT_SYNC_CONFLICT_MAX_AGE_MS,
+  isGitSyncConflictCurrent,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
@@ -32,6 +34,79 @@ describe('resolverModel', () => {
     expect(resolverModel()).toBe('opus:xhigh');
     vi.stubEnv('AGENT_MODELS', JSON.stringify({ worker: 'opus' })); // no merge-resolver key
     expect(resolverModel()).toBe('opus:xhigh');
+  });
+});
+
+describe('isGitSyncConflictCurrent', () => {
+  const NOW = 1_800_000_000_000;
+
+  it('keeps a freshly refreshed conflict row open without merge-completion proof', () => {
+    expect(
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: NOW - 5_000,
+        lastSyncedAtMs: NOW,
+        lastMergeCompletedAtMs: null,
+        lastMergeCompleted: [],
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('suppresses a row when the same sync tick proves its merge stage completed', () => {
+    expect(
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: NOW - 5_000,
+        lastSyncedAtMs: NOW,
+        lastMergeCompletedAtMs: NOW - 1_000,
+        lastMergeCompleted: ['superproject'],
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+  });
+
+  it('does not let proof from before the escalation retire a newer conflict row', () => {
+    expect(
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: NOW - 1_000,
+        lastSyncedAtMs: NOW,
+        lastMergeCompletedAtMs: NOW - 2_000,
+        lastMergeCompleted: ['superproject'],
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('does not trust proof newer than the sync timestamp', () => {
+    expect(
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: NOW - 5_000,
+        lastSyncedAtMs: NOW - 2_000,
+        lastMergeCompletedAtMs: NOW - 1_000,
+        lastMergeCompleted: ['superproject'],
+        nowMs: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it('fails closed for a stale or malformed escalation timestamp', () => {
+    expect(
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: NOW - GIT_SYNC_CONFLICT_MAX_AGE_MS - 1,
+        lastSyncedAtMs: null,
+        lastMergeCompletedAtMs: null,
+        lastMergeCompleted: [],
+        nowMs: NOW,
+      }),
+    ).toBe(false);
+    expect(
+      isGitSyncConflictCurrent({
+        escalationMtimeMs: null,
+        lastSyncedAtMs: NOW,
+        lastMergeCompletedAtMs: null,
+        lastMergeCompleted: [],
+        nowMs: NOW,
+      }),
+    ).toBe(false);
   });
 });
 

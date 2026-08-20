@@ -1035,6 +1035,7 @@ async function recordOutcome(
 ): Promise<void> {
   const pushed = 'pushed' in outcome ? outcome.pushed : [];
   const merged = 'merged' in outcome ? outcome.merged : [];
+  const mergeCompleted = outcome.mergeCompleted ?? [];
   // errors[] exists on both 'conflict' and 'error' outcomes — record it ALWAYS so a
   // sibling (sub)repo error on a conflict tick isn't invisible (it was: a non-error
   // status used to drop the error list entirely, e.g. a libs/papercusp push failure
@@ -1064,6 +1065,11 @@ async function recordOutcome(
     // readable without the mode that says what an empty one MEANS for this member.
     push_mode: pushMode,
     last_merged: merged,
+    // A successful merge stage is stronger evidence than `last_merged` (which only
+    // reports a merge commit). Clear the proof on every tick that did not earn it so
+    // a later reader can never mistake an old merge for this tick's evidence.
+    last_merge_completed: mergeCompleted,
+    last_merge_completed_at: mergeCompleted.length > 0 ? localSyncRecordedAt : null,
     last_conflicts: outcome.status === 'conflict' ? outcome.conflicts.map((c) => c.scope) : [],
     last_errors: errors.map((e) => `${e.scope}: ${e.message}`),
     // GAP-3: clear the stale single error on any non-error outcome (JSONB `||` keeps old keys).
@@ -4113,6 +4119,7 @@ async function recordAndEscalateTick(a: {
   pushMode: string;
 }): Promise<void> {
   const { slug, workspaceId, outcome, errTicks, contentTicks } = a;
+  const mergeCompleted = outcome.mergeCompleted ?? [];
   await recordOutcome(slug, workspaceId, outcome, errTicks, contentTicks, a.pushMode);
 
   // Pipeline history (mig 177): log every tick so the /admin Git tab can show
@@ -4125,6 +4132,7 @@ async function recordAndEscalateTick(a: {
     detail: {
       pushed: 'pushed' in outcome ? outcome.pushed : [],
       merged: 'merged' in outcome ? outcome.merged : [],
+      mergeCompleted,
       conflicts:
         outcome.status === 'conflict'
           ? outcome.conflicts.map((c) => ({ scope: c.scope, files: c.conflictedFiles }))
@@ -4146,8 +4154,14 @@ async function recordAndEscalateTick(a: {
       console.warn(`[git-sync] ${slug}: merge conflict(s) in ${scopes} — dispatching merge-resolver`);
       await spawnMergeResolver(slug, workspaceId, outcome.conflicts, a.cfgBranch ?? 'main');
     }
-  } else if (outcome.status === 'synced' || outcome.status === 'nothing') {
+  } else if (
+    outcome.status === 'synced' ||
+    outcome.status === 'nothing' ||
+    (outcome.status === 'error' && mergeCompleted.length > 0)
+  ) {
     // A clean pass means any prior conflict is resolved — clear the escalation.
+    // An error tick may also clear it, but only when the producer proved that its
+    // merge stage completed without conflicts; a push failure alone is not proof.
     await clearGitSyncEscalation(slug, [ESCALATION_KIND]);
     // P-004 (deterministic-commit-workitem-attribution): persist the commit->work-item link
     // from the attributed commits git-sync just made (their trailers). Same flag-gate as the
