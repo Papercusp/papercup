@@ -780,28 +780,53 @@ async function resolveHiveMemberSlugs(potHomeSlug: string, workspaceId?: string)
  * is a silent correctness bug: the badge would count a different corpus than
  * the rows it sits above.
  */
-function retainStoreDeps(
+async function retainStoreDeps(
   sql: import('postgres').Sql,
   workspaceId: string,
   hive: string | undefined,
-): import('./learning-retain-read').RetainFeedDeps {
+): Promise<import('./learning-retain-read').RetainFeedDeps> {
+  const { currentMemoryBackendChoice } = await import('../memory/backend-selection');
+  // Only these two active choices enumerate the canonical Postgres rows.
+  // A custom/future backend keeps the pluggable `backend.list()` contract — a
+  // raw canonical query must never silently substitute a different corpus.
+  const canonicalBacked = ['mem0', 'hybrid-pg'].includes(currentMemoryBackendChoice());
+  let memoryScopesOnce: Promise<string[]> | null = null;
+  const resolveMemoryScopes = (): Promise<string[]> =>
+    (memoryScopesOnce ??= (async () => {
+      if (hive) return [`hive:${hive}`];
+      const { listPots } = await import('../agent-tools/pot/_resolve');
+      return (await listPots(workspaceId)).map((p) => `hive:${p.slug}`);
+    })());
+
+  const listMemories = async () => {
+    const { getMemoryBackend } = await import('../memory/backend');
+    const backend = getMemoryBackend();
+    const avail = await backend.available();
+    if (!avail.ok) throw new Error(avail.reason);
+    const scopes = await resolveMemoryScopes();
+    if (scopes.length === 0) return [];
+    return backend.list({ scope: scopes.length === 1 ? scopes[0]! : scopes });
+  };
+
   return {
     // WI-39535: the hive's shared-memory pool as a ledger kind. Scope
     // resolution mirrors learning.hive (learning-hive-read): `hive:<slug>` for
     // a selected pot, every pot's pool under the All-Pots lens (ListOptions.scope
     // takes the array in one call). An unavailable backend throws → the leg
     // degrades VISIBLY (degraded: ['memory']), never silently.
-    listMemories: async () => {
-      const { getMemoryBackend } = await import('../memory/backend');
-      const backend = getMemoryBackend();
-      const avail = await backend.available();
-      if (!avail.ok) throw new Error(avail.reason);
-      if (hive) return backend.list({ scope: `hive:${hive}` });
-      const { listPots } = await import('../agent-tools/pot/_resolve');
-      const slugs = (await listPots(workspaceId)).map((p) => p.slug);
-      if (slugs.length === 0) return [];
-      return backend.list({ scope: slugs.map((s) => `hive:${s}`) });
-    },
+    listMemories,
+    ...(canonicalBacked
+      ? {
+          listMemoriesPage: async (opts) => {
+            const { listCanonicalRetainMemoriesPage } = await import('./learning-retain-read');
+            return listCanonicalRetainMemoriesPage(sql, await resolveMemoryScopes(), opts);
+          },
+          countMemories: async () => {
+            const { countCanonicalRetainMemories } = await import('./learning-retain-read');
+            return countCanonicalRetainMemories(sql, await resolveMemoryScopes());
+          },
+        }
+      : {}),
     listRubrics: async () => {
       const { listRubrics } = await import('../rubrics');
       return (await listRubrics()).map((r) => ({
@@ -4575,7 +4600,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const page = await readRetainFeed(
         sql,
         ws,
-        retainStoreDeps(sql, ws, a.hive),
+        await retainStoreDeps(sql, ws, a.hive),
         {
           tab: a.tab,
           filter: a.filter,
@@ -4622,7 +4647,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const ws = activeWorkspaceId();
       const { sql } = getOrgPg();
       const harnessScopes = await retainHiveScopes(a.hive, 'learning.retainCounts');
-      const counts = await readRetainCounts(sql, ws, retainStoreDeps(sql, ws, a.hive), {
+      const counts = await readRetainCounts(sql, ws, await retainStoreDeps(sql, ws, a.hive), {
         ...(harnessScopes ? { harnessScopes } : {}),
         ...(harnessScopes
           ? { memberSlugs: harnessScopes.map((s) => (s.startsWith('harness:') ? s.slice('harness:'.length) : s)) }

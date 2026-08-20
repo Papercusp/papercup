@@ -226,6 +226,16 @@ export interface RetainFeedDeps {
    *  caller (`hive:<slug>` / every pot under the All-Pots lens). A throw
    *  degrades the leg like any other. */
   listMemories: () => Promise<RetainMemorySource[]>;
+  /** Optional bounded/keyset read over the SAME memory corpus. Canonical-
+   *  backed callers expose this so a 75-row ledger page never materializes the
+   *  whole store; pluggable backends without it retain `listMemories` exactly. */
+  listMemoriesPage?: (opts: {
+    window: RetainLegWindow | null;
+    limit: number;
+  }) => Promise<RetainMemorySource[]>;
+  /** Optional exact corpus count over the SAME memory scopes. This is separate
+   *  from the bounded page on purpose: a page length is never a badge total. */
+  countMemories?: () => Promise<number>;
   listRubrics: () => Promise<Array<{ slug: string; title: string; status: string; updatedAt: string }>>;
   /** One keyset page of recipes by recent activity (code-recipes-store
    *  listRecipesActivityPage). `ts` = GREATEST(last_run_at, updated_at, created_at). */
@@ -298,6 +308,81 @@ function legWindowSql(sql: Sql, w: RetainLegWindow | null) {
   return sql`x.ts < ${w.beforeTs}::timestamptz`;
 }
 
+/** The canonical-store population behind Mem0Backend.list() for a set of
+ * resolved pools. Keep this ONE predicate shared by the bounded page and exact
+ * count: `row_kind` excludes mem0's entity graph, `state` preserves the
+ * backend's archived-row rule, and the validity clause preserves its default
+ * current-only read. */
+function canonicalRetainMemoryCorpusSql(sql: Sql, scopes: readonly string[]) {
+  return sql`m.row_kind = 'memory'
+    AND m.state <> 'archived'
+    AND (m.invalid_at IS NULL OR m.invalid_at > now())
+    AND m.user_id = ANY(${scopes as string[]}::text[])`;
+}
+
+/**
+ * One canonical/keyset page for the Retain memory leg.
+ *
+ * This is deliberately a capability rather than a replacement for the
+ * pluggable backend seam. `retainStoreDeps` exposes it only for the two active
+ * backends whose list semantics are this canonical table (`mem0` and
+ * `hybrid-pg`); every other backend keeps the legacy `backend.list()` path.
+ */
+export async function listCanonicalRetainMemoriesPage(
+  sql: Sql,
+  scopes: readonly string[],
+  opts: { window: RetainLegWindow | null; limit: number },
+): Promise<RetainMemorySource[]> {
+  if (scopes.length === 0) return [];
+  const rows = (await sql`
+    SELECT x.id, x.payload, x.ts
+      FROM (
+        SELECT m.id::text AS id,
+               m.payload,
+               date_trunc('milliseconds',
+                 COALESCE(m.updated_at, m.created_at, to_timestamp(0))) AS ts
+          FROM harness_shared.memory_canonical m
+         WHERE ${canonicalRetainMemoryCorpusSql(sql, scopes)}
+      ) x
+     WHERE ${legWindowSql(sql, opts.window)}
+     ORDER BY x.ts DESC, x.id COLLATE "C" ASC
+     LIMIT ${opts.limit}
+  `) as Array<{ id: string; payload: Record<string, unknown> | null; ts: Date | string | null }>;
+
+  return rows.map((row) => {
+    const payload = row.payload ?? {};
+    const metadata = Object.fromEntries(
+      Object.entries(payload).filter(
+        ([key]) =>
+          !['user_id', 'agent_id', 'run_id', 'hash', 'data', 'createdAt', 'updatedAt', 'textLemmatized', 'attributedTo'].includes(
+            key,
+          ),
+      ),
+    );
+    const ts = toIsoMs(row.ts) ?? '1970-01-01T00:00:00.000Z';
+    const kind = typeof payload.kind === 'string' ? payload.kind : undefined;
+    return {
+      id: row.id,
+      text: typeof payload.data === 'string' ? payload.data : String(payload.data ?? ''),
+      ...(kind !== undefined ? { kind } : {}),
+      // Canonical table activity is the keyset order. Stamp it into the
+      // neutral metadata spelling retainMemoryTsOf already consumes.
+      metadata: { ...metadata, updated_at: ts },
+    };
+  });
+}
+
+/** Exact badge denominator for {@link listCanonicalRetainMemoriesPage}. */
+export async function countCanonicalRetainMemories(sql: Sql, scopes: readonly string[]): Promise<number> {
+  if (scopes.length === 0) return 0;
+  const rows = (await sql`
+    SELECT count(*)::int AS n
+      FROM harness_shared.memory_canonical m
+     WHERE ${canonicalRetainMemoryCorpusSql(sql, scopes)}
+  `) as Array<{ n: number | string }>;
+  return Number(rows[0]?.n ?? 0);
+}
+
 /**
  * Whole-read budget for one Retained page, in ms — comfortably under the
  * ~10s RESOLVER_READ_TIMEOUT_MS this exists to stay beneath, and ~2.6x the
@@ -353,13 +438,12 @@ export async function readRetainFeed(
   // recorded in `degraded` / nulled, never left to hang the page.
   const withinBudget = createReadDeadline(opts.budgetMs ?? RETAIN_READ_BUDGET_MS);
 
-  // `listMemories` and `listRubrics` are each consumed TWICE per page: once by
-  // their own leg (which needs the rows) and once by the counts fan-out below
-  // (which needs only `.length`). Both are FULL-CORPUS reads — unlike every
-  // other leg, which is keyset-paged — so calling each twice doubles the
-  // dominant cost of the page to recompute a number the first read already
-  // held. Memoize per invocation: one read each, and the count can no longer
-  // disagree with the rows it is counting (they are now the same array).
+  // `listRubrics`, and `listMemories` on the LEGACY compatibility path, can be
+  // consumed twice per page: once by their own leg and once by inline counts.
+  // Memoize per invocation so the fallback never doubles a full-corpus read.
+  // Canonical-backed memory callers expose independent page/count capabilities
+  // instead: the bounded rows and exact denominator need not materialize one
+  // shared array merely to agree.
   //
   // Rejection semantics are unchanged. A shared rejected promise is still
   // observed by both consumers, and both already handle it — the leg via the
@@ -376,9 +460,14 @@ export async function readRetainFeed(
 
   const legMemories = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('memory', cursor);
-    if (!listMemoriesOnce) throw new Error('listMemories dep not wired');
-    const all = await listMemoriesOnce();
-    return all
+    const source = deps.listMemoriesPage
+      ? await deps.listMemoriesPage({ window: w, limit })
+      : listMemoriesOnce
+        ? await listMemoriesOnce()
+        : (() => {
+            throw new Error('listMemories dep not wired');
+          })();
+    return source
       .flatMap((e) => {
         if (!e.id || !e.text) return [];
         const m = e.metadata ?? {};
@@ -688,7 +777,9 @@ export async function readRetainCounts(
   const listMemories = opts.listMemories ?? deps.listMemories;
   const listRubrics = opts.listRubrics ?? (() => deps.listRubrics());
   const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
-      listMemories
+      deps.countMemories
+        ? withinBudget(deps.countMemories(), 'memories count').catch(() => null)
+        : listMemories
         ? withinBudget(
             listMemories().then((r) => r.length),
             'memories count',

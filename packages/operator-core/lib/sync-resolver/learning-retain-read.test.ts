@@ -8,7 +8,9 @@ import { mkdtemp, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
+  countCanonicalRetainMemories,
   countInsightDocs,
+  listCanonicalRetainMemoriesPage,
   parseInsightFrontmatter,
   readInsightDocsPage,
   readRetainDetail,
@@ -157,6 +159,63 @@ describe('retain cursor + leg windows', () => {
     ];
     const sorted = rows.slice().sort(compareRetainRows);
     expect(sorted.map((r) => `${r.kind}:${r.id}`)).toEqual(['plan:a', 'plan:z', 'wi:b', 'plan:a']);
+  });
+});
+
+describe('canonical Retain memory reads', () => {
+  it('uses the shared current-memory/scope predicate, keyset window, and maps canonical activity into metadata', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = sqlStub((text, values) => {
+      calls.push({ text, values });
+      if (text.includes('SELECT x.id, x.payload, x.ts')) {
+        return [
+          {
+            id: 'm-z',
+            payload: {
+              data: 'Canonical fact',
+              user_id: 'hive:pot-a',
+              kind: 'feedback',
+              created_by: 'owner',
+            },
+            ts: '2026-08-14T12:34:56.789Z',
+          },
+        ];
+      }
+      return [];
+    });
+    const window = {
+      beforeTs: '2026-08-15T00:00:00.000Z',
+      includeTies: false,
+      tieIdAfter: 'm-mid',
+    };
+
+    const rows = await listCanonicalRetainMemoriesPage(sql, ['hive:pot-a'], { window, limit: 75 });
+
+    expect(rows).toEqual([
+      {
+        id: 'm-z',
+        text: 'Canonical fact',
+        kind: 'feedback',
+        metadata: {
+          kind: 'feedback',
+          created_by: 'owner',
+          updated_at: '2026-08-14T12:34:56.789Z',
+        },
+      },
+    ]);
+    const renderedSql = calls.map((call) => call.text).join('\n');
+    expect(renderedSql).toContain("m.row_kind = 'memory'");
+    expect(renderedSql).toContain("m.state <> 'archived'");
+    expect(renderedSql).toContain('m.invalid_at IS NULL OR m.invalid_at > now()');
+    expect(renderedSql).toContain('m.user_id = ANY(');
+    expect(renderedSql).toContain('x.id COLLATE "C" >');
+    expect(calls.flatMap((call) => call.values)).toContain(window.beforeTs);
+    expect(calls.flatMap((call) => call.values)).toContain(window.tieIdAfter);
+  });
+
+  it('counts the exact matching corpus independently of the bounded page', async () => {
+    const sql = sqlStub((text) => (text.includes('count(*)::int AS n') ? [{ n: '58' }] : []));
+    await expect(countCanonicalRetainMemories(sql, ['hive:pot-a'])).resolves.toBe(58);
   });
 });
 
@@ -372,12 +431,11 @@ describe('readRetainFeed', () => {
     expect(listRecipesPage).not.toHaveBeenCalled();
   });
 
-  it('the full-corpus deps are read ONCE per page even when both their leg and the counts consume them', async () => {
-    // listMemories/listRubrics are the only two legs that read a FULL corpus
-    // (every other leg is keyset-paged), and on page 1 of an `all` tab BOTH
-    // their row leg and the counts fan-out want them. Reading twice doubles
-    // the dominant cost of the page to recompute a length the first read
-    // already held, so the page must share one read per dep.
+  it('the legacy full-corpus fallback is read ONCE per page even when both its leg and counts consume it', async () => {
+    // A pluggable backend without the optional bounded/exact capabilities
+    // retains the old listMemories contract. On page 1 of an `all` tab BOTH
+    // its row leg and counts want that array, so the compatibility path must
+    // share one read rather than doubling it.
     const listMemories = vi.fn(async () => [
       { id: 'm1', text: 'first memory', metadata: { created_at: '2026-08-16T00:00:00.000Z' } },
       { id: 'm2', text: 'second memory', metadata: { created_at: '2026-08-15T00:00:00.000Z' } },
@@ -659,6 +717,56 @@ describe('readRetainFeed', () => {
       text,
       ...(kind ? { kind } : {}),
       metadata,
+    });
+
+    it('uses the bounded page capability with the cursor window and never calls the full-list fallback', async () => {
+      const listMemories = vi.fn(async () => [mem('must-not-load', 'whole corpus')]);
+      const listMemoriesPage = vi.fn(async () => [
+        mem('m-after', 'After cursor', { updated_at: '2026-08-14T00:00:00.000Z' }),
+      ]);
+      const cursor = encodeRetainCursor({
+        ts: '2026-08-15T00:00:00.000Z',
+        kind: 'memory',
+        id: 'm-mid',
+      });
+
+      const page = await readRetainFeed(
+        sqlStub(() => []),
+        'ws-1',
+        { ...emptyFeedDeps(), listMemories, listMemoriesPage },
+        { tab: 'memories', cursor, limit: 7 },
+      );
+
+      expect(listMemoriesPage).toHaveBeenCalledWith({
+        window: {
+          beforeTs: '2026-08-15T00:00:00.000Z',
+          includeTies: false,
+          tieIdAfter: 'm-mid',
+        },
+        limit: 7,
+      });
+      expect(listMemories).not.toHaveBeenCalled();
+      expect(page.rows.map((row) => row.id)).toEqual(['m-after']);
+    });
+
+    it('uses the exact count capability even when the bounded page contains fewer rows', async () => {
+      const listMemories = vi.fn(async () => [mem('must-not-load', 'whole corpus')]);
+      const listMemoriesPage = vi.fn(async () => [
+        mem('m-one', 'Visible page row', { updated_at: '2026-08-16T00:00:00.000Z' }),
+      ]);
+      const countMemories = vi.fn(async () => 58);
+
+      const page = await readRetainFeed(
+        sqlStub(() => [{ n: 0 }]),
+        'ws-1',
+        { ...emptyFeedDeps(), listMemories, listMemoriesPage, countMemories },
+        { tab: 'memories', withCounts: true, limit: 1 },
+      );
+
+      expect(page.rows).toHaveLength(1);
+      expect(page.counts?.memories).toBe(58);
+      expect(countMemories).toHaveBeenCalledTimes(1);
+      expect(listMemories).not.toHaveBeenCalled();
     });
 
     it('interleaves memory rows by metadata recency, with provenance in meta', async () => {
