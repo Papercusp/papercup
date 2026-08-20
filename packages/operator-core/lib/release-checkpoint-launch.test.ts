@@ -281,6 +281,40 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r).toMatchObject({ active: false, unit: checkpointUnitForRoot('/tree') });
   });
 
+  it('keeps a trusted inactive unit inactive when its stable log has an exact valid result marker', () => {
+    const unit = checkpointUnitForRoot('/tree');
+    const readLogTail = vi.fn(() =>
+      '__GREEN_CHECKPOINT_RESULT__ ' +
+      JSON.stringify({ advanced: false, candidate: 'abc123', from: null, green: null, reason: 'not-green' }),
+    );
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' }),
+      () => null,
+      undefined,
+      undefined,
+      undefined,
+      readLogTail,
+    );
+
+    expect(r).toMatchObject({ active: false, unit, terminal_marker: true });
+    expect(readLogTail).toHaveBeenCalledWith(`/tmp/${unit}.log`);
+  });
+
+  it('exposes a readable no-verdict log without treating the finished unit as active', () => {
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' }),
+      () => null,
+      undefined,
+      undefined,
+      undefined,
+      vi.fn(() => '[green-checkpoint] GREEN_CHECKPOINT_CAPACITY mode=shared'),
+    );
+
+    expect(r).toMatchObject({ active: false, terminal_marker: false });
+  });
+
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
     const startedAt = new Date(Date.now() - 5 * 60_000).toISOString(); // started 5 min ago
     const execFn = vi.fn((cmd: string, args: string[]) => {
@@ -824,6 +858,27 @@ describe('checkActiveCheckpointRun MainPID liveness cross-check (EI-9180 self-he
     const r = checkActiveCheckpointRun('/tree', execFn, () => null, pidAlive);
     expect(pidAlive).toHaveBeenCalledWith(99999);
     expect(r).toEqual({ active: false, unit: checkpointUnitForRoot('/tree') });
+  });
+
+  it('checks the stable result marker on a dead MainPID and still reports active:false for a finished run', () => {
+    const unit = checkpointUnitForRoot('/tree');
+    const readLogTail = vi.fn(() => '__GREEN_CHECKPOINT_RESULT__ {"green":true,"reason":"up-to-date"}');
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({
+        ActiveState: 'active',
+        ExecMainStartTimestamp: '2026-07-10T12:20:44Z',
+        MainPID: '99999',
+      }),
+      () => null,
+      () => false,
+      undefined,
+      undefined,
+      readLogTail,
+    );
+
+    expect(r).toMatchObject({ active: false, unit, terminal_marker: true });
+    expect(readLogTail).toHaveBeenCalledWith(`/tmp/${unit}.log`);
   });
 
   it('trusts ActiveState when the reported MainPID IS alive (the normal case)', () => {
