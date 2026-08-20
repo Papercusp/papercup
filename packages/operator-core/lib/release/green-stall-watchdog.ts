@@ -41,7 +41,11 @@ import { execFileSync } from 'node:child_process';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { broadcastSevereEvent, broadcastSevereEventResolved } from '../severe-event-broadcast';
 import { readRoutineEngineLiveness } from './routine-engine-liveness';
-import { isCheckpointRunLockHeldCheap } from '../release-checkpoint-launch';
+import {
+  isCheckpointRunLockHeldCheap,
+  readCheckpointRunPhaseCheap,
+} from '../release-checkpoint-launch';
+import { integrationRoot } from '../release-deploy-launch';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
@@ -132,6 +136,12 @@ export interface GreenStallSnapshot {
    *  rather than fire-staleness (the routine engine not running). Absent/empty
    *  when the stall is fire-stale or the field predates this fix. */
   failingTests?: string[];
+  /** EI-20378004056924553: the per-root checkpoint run-lock was held by a live process when
+   *  the phase marker was read. A missing value is UNKNOWN and must not suppress an alarm. */
+  checkpointRunActive?: boolean;
+  /** EI-20378004056924553: the run's published phase, when its marker was readable. Only an
+   *  active `delivering` phase is a suppression; missing/unreadable phase fails open. */
+  checkpointRunPhase?: string | null;
 }
 
 export interface GreenStallVerdict {

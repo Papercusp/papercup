@@ -662,13 +662,43 @@ export const CHECKPOINT_RUN_LOCK_STALE_MS = 190 * 60_000;
  * after process start, while still rejecting a recycled PID that started materially later. */
 const PROCESS_START_AFTER_LOCK_TOLERANCE_MS = 5_000;
 
-/** EI-18757156963245979: default reader for the run-lock's `phase.json` — the marker the RUN
- *  itself publishes (green-checkpoint.ts's `writeCheckpointRunPhase`) when it leaves the suite
- *  and enters the verdict path. Real fs; injectable for tests. Never throws: a missing or
- *  malformed marker returns null and the replace decision degrades to the age test alone. */
-function defaultReadRunPhase(lockDir: string): { phase?: string; at?: string } | null {
+/** EI-18757156963245979: the run-lock's `phase.json` shape — the marker the RUN itself
+ *  publishes (green-checkpoint.ts's `writeCheckpointRunPhase`) when it leaves the suite and
+ *  enters the verdict path. */
+export interface CheckpointRunPhase {
+  phase?: string;
+  at?: string;
+}
+
+/** Default reader for the run-lock's `phase.json`. Real fs; injectable for tests. Never throws:
+ *  a missing or malformed marker returns null and the replace decision degrades to the age test
+ *  alone. */
+function defaultReadRunPhase(lockDir: string): CheckpointRunPhase | null {
   try {
-    return JSON.parse(readFileSync(path.join(lockDir, 'phase.json'), 'utf8')) as { phase?: string; at?: string };
+    return JSON.parse(readFileSync(path.join(lockDir, 'phase.json'), 'utf8')) as CheckpointRunPhase;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read a checkpoint run's published phase without spawning a subprocess.
+ *
+ * This is intentionally separate from the systemd-facing `checkActiveCheckpointRun`: the
+ * process-level watchdog needs the same cheap, per-root marker for cron and manual runs alike.
+ * A missing/unreadable phase is UNKNOWN and therefore returns null; callers must fail open and
+ * retain their ordinary stall decision rather than treating an unreadable marker as `delivering`.
+ * `checkpointLogDir` is injectable because per-hive gates route their run locks into a
+ * slug-specific log directory while the operator-home gate uses the ambient default.
+ */
+export function readCheckpointRunPhaseCheap(
+  root: string,
+  checkpointLogDir: string = checkpointLogDirFromEnv(),
+  readRunPhase: (lockDir: string) => CheckpointRunPhase | null = defaultReadRunPhase,
+): CheckpointRunPhase | null {
+  const lockDir = checkpointRunLockDirMirror(checkpointLogDir, root);
+  try {
+    return readRunPhase(lockDir);
   } catch {
     return null;
   }
@@ -711,8 +741,9 @@ function checkRunLockHeld(
   pidAlive: (pid: number) => boolean,
   readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null,
   readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
+  checkpointLogDir: string = checkpointLogDirFromEnv(),
 ): { held: boolean; pid?: number | null; started_at?: string | null; elapsed_sec?: number | null } {
-  const lockDir = checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root);
+  const lockDir = checkpointRunLockDirMirror(checkpointLogDir, root);
   const owner = readLockOwner(lockDir);
   if (!owner || typeof owner.pid !== 'number' || !pidAlive(owner.pid)) return { held: false };
   const startedMs = owner.startedAt ? Date.parse(owner.startedAt) : NaN;
@@ -754,8 +785,9 @@ export function isCheckpointRunLockHeldCheap(
   pidAlive: (pid: number) => boolean = defaultPidAlive,
   readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
   readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
+  checkpointLogDir: string = checkpointLogDirFromEnv(),
 ): { held: boolean; pid?: number; elapsedSec: number | null } {
-  const r = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
+  const r = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs, checkpointLogDir);
   // Keep the existing cheap shape for the clear path, but expose the verified owner PID when
   // held. Consumers that need to reason about the run's mechanism (rather than merely its
   // liveness) can now inspect /proc/<pid> without re-reading owner.json or racing a recycled PID.
