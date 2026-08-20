@@ -10,7 +10,6 @@ import { test, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import { loadBuiltinBlueprint } from '@papercusp/orchestrator/blueprint';
 import '../coord-ops/index.js';
-import './index.js';
 import { coordOpNames } from '../coord-ops/registry.js';
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner.js';
 import { makeFakeCaps, makeCtx } from '../coord-ops/test-support.js';

@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -21,6 +24,7 @@ import {
  */
 
 const ROOT = '/repo/lib';
+const BLUEPRINT_STEPS_DIR = join(dirname(dirname(fileURLToPath(import.meta.url))), 'blueprint-steps');
 
 /** Build a fake fs from a { path: contents } map. */
 function vfs(files: Record<string, string>) {
@@ -248,5 +252,29 @@ describe('buildIndex', () => {
     const r = selectRelatedTests({ rootDir: ROOT, changedPaths: [`${ROOT}/b.ts`], fs });
     expect(r.mode).toBe('related');
     expect(r.selected).toEqual([`${ROOT}/a.test.ts`]);
+  });
+});
+
+describe('repository test import surfaces', () => {
+  it('keeps single-blueprint tests on their leaf registration op instead of the all-ops barrel', () => {
+    const singleBlueprintTests = readdirSync(BLUEPRINT_STEPS_DIR)
+      .filter(
+        (name) =>
+          name.endsWith('-blueprint.test.ts') || name === 'negative-space-marketplace-roundtrip.test.ts',
+      )
+      .sort();
+
+    const barrelImporters = singleBlueprintTests.filter((name) => {
+      const source = readFileSync(join(BLUEPRINT_STEPS_DIR, name), 'utf8');
+      return /(?:import|from)\s+['"]\.\/index(?:\.js)?['"]/.test(source);
+    });
+
+    // These tests each import their one ./ops/* module already, which registers
+    // the op under test. Pulling ./index.js as well eagerly registers every other
+    // deterministic op and turns a leaf test into a 1,000+ source graph hub.
+    // Whole-registry invariant tests have different names and intentionally keep
+    // the barrel; this guard targets only the single-blueprint contract tests.
+    expect(singleBlueprintTests.length).toBeGreaterThan(0);
+    expect(barrelImporters).toEqual([]);
   });
 });

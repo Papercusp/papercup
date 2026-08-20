@@ -49,7 +49,6 @@ import {
   type InstallBlueprintCoreDeps,
 } from '../cupboard/install-blueprint-core.js';
 import '../coord-ops/index.js';
-import './index.js';
 import { runProgramCore, inlineRunOp } from '../coord-ops/program-runner.js';
 import { makeFakeCaps, makeCtx } from '../coord-ops/test-support.js';
 import { setNegativeSpaceScanDeps } from './ops/negative-space-scan.js';
