@@ -550,6 +550,12 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     file: 'packages/operator-core/lib/harness/routines/plan-run-action.ts',
     executor: 'routine-agent-dispatch',
     recovers: ['agent-session', 'work-item-dispatch'],
+    mitigation: {
+      kind: 'out-of-band-backstop',
+      backstop: 'goal-liveness-watchdog',
+      why:
+        'The heartbeat cannot recover a steward when the agent layer is empty: its plan-run fire only mints work for the same dispatcher. The in-process goal-liveness watchdog survives that absence and escalates the dark goal, so the heartbeat is an optimization rather than the only detection path.',
+    },
     note: 'The plan\'s motivating case, verified from source. The routine fires system:plan-run, which mints an instance plan and "the instance\'s items as frontier work_items — the harness\'s existing dispatcher executes those work_items, no second execution engine" (plan-run-action.ts). routine-classification.ts already types it { spend: \'llm\' }. So a steward that is dead because nothing is alive to claim its work is "recovered" by minting more work nobody claims.',
   },
   {

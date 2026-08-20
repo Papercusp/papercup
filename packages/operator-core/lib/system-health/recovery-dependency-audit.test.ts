@@ -425,11 +425,17 @@ describe('recovery-dependency-audit — the real table (pinned verdicts)', () =>
     expect(new Set(RECOVERY_MECHANISMS.map((m) => m.name)).size).toBe(RECOVERY_MECHANISMS.length);
   });
 
-  it('THE FINDING: the blender steward heartbeat is fate-shared on the agent layer it recovers', () => {
+  it('THE FINDING: the blender steward heartbeat is fate-shared, with an out-of-band mitigation', () => {
     const row = byName.get('plan-schedule-blender-steward-heartbeat-2026-08-11');
     expect(row?.executor).toBe('routine-agent-dispatch');
-    expect(row?.verdict).toBe('fate-shared');
+    // The heartbeat still cannot perform the recovery when the agent layer is
+    // empty; P-006 only makes the real backstop explicit.
+    expect(row?.verdict).toBe('fate-shared-mitigated');
     expect(row?.fateSharedOn).toEqual(['agent-session', 'work-item-dispatch']);
+    expect(row?.mitigation).toMatchObject({
+      kind: 'out-of-band-backstop',
+      backstop: 'goal-liveness-watchdog',
+    });
   });
 
   it('the event-loop family is classified by whether the executor rides the judged loop', () => {
@@ -460,12 +466,15 @@ describe('recovery-dependency-audit — the real table (pinned verdicts)', () =>
     }
   });
 
-  it('renders a markdown table that leads with the unmitigated findings and states its coverage', () => {
+  it('renders a markdown table with the mitigated findings and states its coverage', () => {
     const table = renderRecoveryAuditTable(result);
     const lines = table.split('\n');
     const firstRow = lines[2] ?? '';
+    // P-006 closes the final unmitigated real-table finding; the first rows are
+    // now the explicitly mitigated cases, still ordered ahead of sound rows.
     expect(firstRow).toContain('fate-shared');
-    expect(firstRow).not.toContain('fate-shared-mitigated');
+    expect(firstRow).toContain('fate-shared-mitigated');
+    expect(result.counts['fate-shared']).toBe(0);
     expect(table).toContain('the durable-tier list is NOT exhaustive');
   });
 });
