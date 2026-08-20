@@ -4,6 +4,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, 
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
+  codexContextConfigArgs,
+  codexContextConfigToml,
+} from '../../../packages/operator-core/lib/model-context-budget.mjs';
+import {
   parseArgs,
   planValue,
   parkRoleScopedMcpJson,
@@ -3714,29 +3718,23 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
   it('canonicalizes a user-facing Codex family before constructing fresh-launch argv', () => {
     const parsed = parseArgs(['--no-picker', '--model=sol:xhigh']);
     expect(parsed).toMatchObject({ agent: 'codex', model: 'gpt-5.6-sol:xhigh' });
-    // The trailing window pair is the extended-window config (plan
-    // codex-1m-context-window-2026-08-17 D-003) — gpt-5.6 declares the guide's
-    // exact 1M window and pushes codex's own auto-compact to
-    // a 90% backstop that should never fire under our 400k/200k soft limits.
+    // The trailing window pair is the canonical runtime-authoritative config
+    // (plan codex-1m-context-window-2026-08-17 D-007). The focused policy tests
+    // pin both the installed-record max and the cache-missing 1M fallback; this
+    // seam pins that psu carries whichever result the canonical resolver emits.
     expect(modelArgsFor(parsed.agent, parsed.model)).toEqual([
       '-m',
       'gpt-5.6-sol',
       '-c',
       'model_reasoning_effort="xhigh"',
-      '-c',
-      'model_context_window=1000000',
-      '-c',
-      'model_auto_compact_token_limit=900000',
+      ...codexContextConfigArgs('gpt-5.6-sol'),
     ]);
     expect(modelArgsFor('codex', 'gpt-5.6-terra:high')).toEqual([
       '-m',
       'gpt-5.6-terra',
       '-c',
       'model_reasoning_effort="high"',
-      '-c',
-      'model_context_window=1000000',
-      '-c',
-      'model_auto_compact_token_limit=900000',
+      ...codexContextConfigArgs('gpt-5.6-terra'),
     ]);
   });
 
@@ -5038,7 +5036,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
     expect(modelArgsFor('codex', 'sol:high')).toEqual([
       '-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"',
-      '-c', 'model_context_window=1000000', '-c', 'model_auto_compact_token_limit=900000',
+      ...codexContextConfigArgs('gpt-5.6-sol'),
     ]);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
@@ -5079,7 +5077,7 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
       '-c', 'model_reasoning_effort="high"',
       // The window pair rides the RESUME too, and stays ahead of the subcommand
       // with the other top-level options (plan codex-1m D-002 / P-002).
-      '-c', 'model_context_window=1000000', '-c', 'model_auto_compact_token_limit=900000',
+      ...codexContextConfigArgs('gpt-5.6-sol'),
       'resume', 'uuid-2',
     ]);
     expect(resumeArgsFor({ agent: 'omp', ompThreadId: 'thr-1' }, { model: 'opus:high' }).args).toEqual([
@@ -7163,8 +7161,7 @@ describe('codexContextWindowConfigPatch (resume inherits the window)', () => {
     // block landing first is correctness, not tidiness: emitted below the
     // [mcp_servers.papercusp-su] header these would become MCP server settings.
     expect(out.indexOf('model_context_window')).toBeLessThan(out.indexOf('[mcp_servers.papercusp-su]'));
-    expect(out).toContain('model_context_window = 1000000');
-    expect(out).toContain('model_auto_compact_token_limit = 900000');
+    expect(out).toContain(codexContextConfigToml('gpt-5.6-sol').trim());
     expect(out).toContain('url = "x"'); // pre-existing content survives
   });
 
