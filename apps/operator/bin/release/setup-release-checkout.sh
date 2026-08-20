@@ -47,6 +47,12 @@
 # Usage:
 #   setup-release-checkout.sh [--ref <commit-ish>] [--node-modules auto|force|skip]
 #                             [--integration <dir>] [--release <dir>]
+#                             [--prepare-existing]
+#
+# `--prepare-existing` is a dependency-only recovery mode for a clone that has
+# already been pinned and had its submodules checked out by an earlier step. It
+# validates the existing HEAD, then skips the destructive superproject checkout,
+# clean, and submodule replacement stages while still running dependency setup.
 #
 # Env overrides: PAPERCUSP_INTEGRATION_ROOT, PAPERCUSP_RELEASE_ROOT.
 set -euo pipefail
@@ -62,14 +68,17 @@ REF="main"
 NODE_MODULES_MODE="auto"   # auto = copy when missing/lockfile-changed; force = always; skip = never
 
 BUILD_SPA="0"
+PREPARE_EXISTING="0"
+REF_WAS_SET="0"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --ref) REF="$2"; shift 2 ;;
+    --ref) REF="$2"; REF_WAS_SET="1"; shift 2 ;;
     --node-modules) NODE_MODULES_MODE="$2"; shift 2 ;;
     --integration) INTEGRATION_ROOT="$2"; shift 2 ;;
     --release) RELEASE_ROOT="$2"; shift 2 ;;
     --build-spa) BUILD_SPA="1"; shift ;;
+    --prepare-existing) PREPARE_EXISTING="1"; shift ;;
     *) echo "[setup-release] unknown arg: $1" >&2; exit 2 ;;
   esac
 done
