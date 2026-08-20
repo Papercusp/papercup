@@ -106,7 +106,7 @@ const requiredCheckIds = (platform: MobilePlatform): string[] =>
 
 export function validateMobileCheckUnion(
   platform: MobilePlatform,
-  registry: readonly TemplateManifest[] = REFERENCE_TEMPLATES,
+  registry: TemplateManifest[] = REFERENCE_TEMPLATES,
 ): string[] {
   const root = platform === 'android' ? PAPERCUSP_ANDROID_APP_TEMPLATE : PAPERCUSP_IPHONE_APP_TEMPLATE;
   const closure = resolveRequiresClosure([root], registry);
@@ -144,7 +144,7 @@ function consumerDefinitions(
   sidestageMobileRoot: string,
 ): MobileConsumer[] {
   const config = (root: string, name: string): string => path.join(root, name);
-  return [
+  const consumers: MobileConsumer[] = [
     {
       id: 'papercusp-android',
       product: 'papercusp',
@@ -173,7 +173,8 @@ function consumerDefinitions(
       root: sidestageMobileRoot,
       configPath: config(sidestageMobileRoot, 'checks-config.iphone.json'),
     },
-  ].map((consumer) => ({
+  ];
+  return consumers.map((consumer) => ({
     ...consumer,
     root: path.resolve(papercuspRoot, consumer.root),
     configPath: path.resolve(papercuspRoot, consumer.configPath),
