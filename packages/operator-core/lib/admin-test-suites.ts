@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync } from 'node:fs';
 import { wsLocalKey } from './browser-workspace';
 import { readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -1476,11 +1476,28 @@ async function runCommand(
   });
 }
 
+export function resolveTauriAgentToolsCommand(
+  env: NodeJS.ProcessEnv = process.env,
+  isExecutable: (candidate: string) => boolean = (candidate) => {
+    try {
+      accessSync(candidate, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+): string {
+  const explicit = env.VERIFY_TAURI_AGENT_TOOLS_BIN?.trim();
+  if (explicit && path.isAbsolute(explicit) && isExecutable(explicit)) return explicit;
+  return 'tauri-agent-tools';
+}
+
 async function runTauri(ctx: SuiteContext, args: string[], timeoutMs = 12_000): Promise<ExecResult> {
   ctx.signal.throwIfAborted();
   const pinned = ctx.bridgePid !== null ? [...args, '--pid', String(ctx.bridgePid)] : args;
-  ctx.sink.log({ suiteId: ctx.spec.id, level: 'info', line: `tauri-agent-tools ${pinned.join(' ')}` });
-  return await runCommand('tauri-agent-tools', pinned, { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs });
+  const command = resolveTauriAgentToolsCommand();
+  ctx.sink.log({ suiteId: ctx.spec.id, level: 'info', line: `${command} ${pinned.join(' ')}` });
+  return await runCommand(command, pinned, { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs });
 }
 
 async function runTauriJson<T>(ctx: SuiteContext, args: string[], timeoutMs = 12_000): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {

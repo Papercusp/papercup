@@ -9,6 +9,7 @@ import {
   expandAdminTestSuiteSelection,
   isAdminTestSuiteId,
   pickBridgePid,
+  resolveTauriAgentToolsCommand,
   warmRouteResult,
   gradeChaosSummary,
   buildInteractionMeasureScript,
@@ -168,6 +169,28 @@ describe('pickBridgePid (suite-run bridge pinning)', () => {
 
   it('multiple bridges, none ours → throws instead of driving an arbitrary window', () => {
     expect(() => pickBridgePid({ explicit: null, envPid: null, live: [10, 20], ancestors: noAncestors })).toThrow(/refusing to drive/i);
+  });
+});
+
+describe('resolveTauriAgentToolsCommand', () => {
+  it('uses the verifier-provided absolute executable when ambient PATH is irrelevant', () => {
+    const candidate = '/opt/papercusp/bin/tauri-agent-tools';
+    expect(resolveTauriAgentToolsCommand(
+      { VERIFY_TAURI_AGENT_TOOLS_BIN: candidate },
+      (value) => value === candidate,
+    )).toBe(candidate);
+  });
+
+  it('falls back to PATH lookup when the override is absent, relative, or not executable', () => {
+    expect(resolveTauriAgentToolsCommand({}, () => false)).toBe('tauri-agent-tools');
+    expect(resolveTauriAgentToolsCommand(
+      { VERIFY_TAURI_AGENT_TOOLS_BIN: 'relative/tauri-agent-tools' },
+      () => true,
+    )).toBe('tauri-agent-tools');
+    expect(resolveTauriAgentToolsCommand(
+      { VERIFY_TAURI_AGENT_TOOLS_BIN: '/missing/tauri-agent-tools' },
+      () => false,
+    )).toBe('tauri-agent-tools');
   });
 });
 
