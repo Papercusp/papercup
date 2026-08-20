@@ -71,15 +71,28 @@ const CTX = { isSuperuser: true, uiClientId: 'a1-alloc-test-client' } as never;
 let rootSql: postgres.Sql;
 let dbName: string;
 
-async function allocate(): Promise<{
+type AllocateArgs = {
+  harness?: string;
+  name?: string;
+  intent?: string;
+  by?: string;
+  force?: boolean;
+};
+
+async function allocate(args: AllocateArgs = {}): Promise<{
   ok: boolean;
   number?: number;
   path?: string;
   arm_path?: string;
   arm_command?: string;
   requested_from_harness?: string;
+  error?: string;
 }> {
-  const res = (await tool.handler({} as never, CTX)) as { content: { text: string }[] };
+  // These calls intentionally exercise the allocator's repeated-number
+  // sequence. WI-38353's default dedup guard is covered explicitly below;
+  // force is required here so the sequence assertions do not get mistaken
+  // for multiple agents proposing the same migration work.
+  const res = (await tool.handler({ force: true, ...args } as never, CTX)) as { content: { text: string }[] };
   return JSON.parse(res.content[0]!.text);
 }
 
@@ -158,7 +171,7 @@ describe('db:next-migration allocator (§A1)', () => {
 
   it('EI-20213083520776566: accepts a harness-scoped coding call without partitioning the workspace-global allocation', async () => {
     const res = (await tool.handler(
-      { harness: 'papercusp', name: 'scoped-call' } as never,
+      { harness: 'papercusp', name: 'scoped-call', force: true } as never,
       CTX,
     )) as { content: { text: string }[] };
     const out = JSON.parse(res.content[0]!.text) as {
@@ -173,7 +186,7 @@ describe('db:next-migration allocator (§A1)', () => {
 
   it('accepts the CLI-documented by attribution on the MCP door', async () => {
     const res = (await tool.handler(
-      { name: 'compatible-by', by: 'su-explicit-label' } as never,
+      { name: 'compatible-by', by: 'su-explicit-label', force: true } as never,
       CTX,
     )) as { content: { text: string }[] };
     const out = JSON.parse(res.content[0]!.text) as { ok: boolean; reserved_by?: string };
@@ -219,7 +232,7 @@ describe('db:next-migration allocator (§A1)', () => {
     // it resolves the stable su fallback and the reservation lands. Run last so
     // it does not perturb the sequential reservation counter the tests above pin.
     const clientlessSu = { isSuperuser: true } as never;
-    const res = (await tool.handler({} as never, clientlessSu)) as { content: { text: string }[] };
+    const res = (await tool.handler({ force: true } as never, clientlessSu)) as { content: { text: string }[] };
     const out = JSON.parse(res.content[0]!.text) as {
       ok: boolean;
       number?: number;
@@ -286,5 +299,14 @@ describe('db:next-migration allocator (§A1)', () => {
     const r = await toolPromise;
     expect(r.ok).toBe(true);
     expect(r.number).toBe(901); // GREATEST(fsMax 900 via the late file, reserved 502, applied 400) + 1
+  });
+
+  it('WI-38353: refuses a near-identical recent reservation unless forced', async () => {
+    const name = `dedup-guard-${randomBytes(6).toString('hex')}`;
+    const first = await allocate({ name });
+    expect(first.ok).toBe(true);
+
+    const duplicate = await allocate({ name, force: false });
+    expect(duplicate).toMatchObject({ ok: false, error: 'redundant_migration' });
   });
 });
