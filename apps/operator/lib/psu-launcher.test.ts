@@ -7161,6 +7161,9 @@ describe('codexContextWindowConfigPatch (resume inherits the window)', () => {
     // block landing first is correctness, not tidiness: emitted below the
     // [mcp_servers.papercusp-su] header these would become MCP server settings.
     expect(out.indexOf('model_context_window')).toBeLessThan(out.indexOf('[mcp_servers.papercusp-su]'));
+    expect(out).toMatch(
+      /^# BEGIN PAPERCUSP_CODEX_CONTEXT_WINDOW\nmodel_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n/,
+    );
     expect(out).toContain(codexContextConfigToml('gpt-5.6-sol').trim());
     expect(out).toContain('url = "x"'); // pre-existing content survives
   });

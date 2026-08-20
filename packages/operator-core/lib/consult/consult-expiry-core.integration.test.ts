@@ -35,10 +35,9 @@ const MIGRATION_844_ARMED = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url),
 );
 const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `${MIGRATION_844_ARMED}.DRAFT`;
-const MIGRATION_856_ARMED = fileURLToPath(
+const MIGRATION_856 = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/856-backfill-answered-expired-consult-outcomes.sql', import.meta.url),
 );
-const MIGRATION_856 = existsSync(MIGRATION_856_ARMED) ? MIGRATION_856_ARMED : `${MIGRATION_856_ARMED}.DRAFT`;
 
 let rootSql: Sql;
 
@@ -245,6 +244,7 @@ describe('migration 856 historical answered-expired outcome repair', () => {
     const trulyUnanswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
     const explicitOutcome = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
     const stillOpen = await seedConsult({ state: 'awaiting_responder', expiresAt: FUTURE });
+    const scalarDigest = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
 
     await setDigest(legacyAnswered, [
       { ownerId: 'reviewer-b', kind: 'answer', at: PAST, excerpt: 'first' },
@@ -263,21 +263,25 @@ describe('migration 856 historical answered-expired outcome repair', () => {
     ]);
     await rootSql`
       UPDATE harness_shared.consult_state
+         SET cascade_digest = ${rootSql.json('legacy-scalar' as never)}
+       WHERE workspace_id = ${WS} AND conversation_id = ${scalarDigest}
+    `;
+    await rootSql`
+      UPDATE harness_shared.consult_state
          SET outcome = ${rootSql.json({ disposition: 'requester_recorded', answer: 'keep me' })}
        WHERE workspace_id = ${WS} AND conversation_id = ${explicitOutcome}
     `;
 
-    // postgres.js executes SQL directly rather than through psql; keep the
-    // production safety directive in the migration and strip only that client
-    // meta-command for this real-Postgres test.
-    const migrationSql = readFileSync(MIGRATION_856, 'utf8')
-      .replace(/^\\set ON_ERROR_STOP on\s*$/m, '')
-      .replace(/^BEGIN;\s*$/m, '')
-      .replace(/^COMMIT;\s*$/m, '');
+    const migrationSql = readFileSync(MIGRATION_856, 'utf8');
     const [candidate] = (await rootSql`
       SELECT count(*) FILTER (WHERE entry.value ->> 'kind' = 'answer')::integer AS answers
         FROM harness_shared.consult_state cs
-        CROSS JOIN LATERAL jsonb_array_elements(cs.cascade_digest)
+        CROSS JOIN LATERAL jsonb_array_elements(
+          CASE
+            WHEN jsonb_typeof(cs.cascade_digest) = 'array' THEN cs.cascade_digest
+            ELSE '[]'::jsonb
+          END
+        )
           WITH ORDINALITY AS entry(value, ordinality)
        WHERE cs.workspace_id = ${WS}
          AND cs.conversation_id = ${legacyAnswered}
@@ -292,7 +296,9 @@ describe('migration 856 historical answered-expired outcome repair', () => {
       SELECT conversation_id, outcome
         FROM harness_shared.consult_state
        WHERE workspace_id = ${WS}
-         AND conversation_id IN (${legacyAnswered}, ${trulyUnanswered}, ${explicitOutcome}, ${stillOpen})
+         AND conversation_id IN (
+           ${legacyAnswered}, ${trulyUnanswered}, ${explicitOutcome}, ${stillOpen}, ${scalarDigest}
+         )
     `) as unknown as Array<{ conversation_id: string; outcome: unknown }>;
     const byId = new Map(outcomes.map((row) => [row.conversation_id, row.outcome]));
     expect(byId.get(legacyAnswered)).toMatchObject({
@@ -303,6 +309,7 @@ describe('migration 856 historical answered-expired outcome repair', () => {
     expect(byId.get(trulyUnanswered)).toBeNull();
     expect(byId.get(explicitOutcome)).toMatchObject({ disposition: 'requester_recorded', answer: 'keep me' });
     expect(byId.get(stillOpen)).toBeNull();
+    expect(byId.get(scalarDigest)).toBeNull();
 
     await rootSql.unsafe(migrationSql);
     const [afterSecondRun] = (await rootSql`

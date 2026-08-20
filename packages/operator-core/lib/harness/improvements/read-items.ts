@@ -23,7 +23,9 @@ import {
   listIssueScopes,
   listIssues,
   type EngineerIssue,
+  type IssueSeverity,
   type IssueState,
+  type IssueStoreKind,
   type ListIssueScopesFilter,
   type ListIssuesFilter,
 } from '../../issues-engineer';
@@ -203,6 +205,11 @@ function isIdeaLifecycle(v: unknown): v is import('./lifecycle').IdeaLifecyclePa
 export interface ReadImprovementOpts {
   /** Restrict to a lifecycle state (default: all states, so rollups + dedup see resolved too). */
   state?: 'open' | 'resolved' | 'closed';
+  /** Bounded server-side filters shared by the Learning-tab snapshot/read/count path. */
+  q?: string;
+  kinds?: readonly IssueStoreKind[];
+  severities?: readonly IssueSeverity[];
+  scopes?: readonly string[];
   limit?: number;
   /**
    * ISO timestamp — rows created STRICTLY before it (WI-39455, the stale-tail
@@ -289,6 +296,19 @@ const defaultDeps: ReadImprovementDeps = {
   listScopes: listIssueScopes,
   readLoopOutputIds: async () => (await (await import('./loop-output')).readLoopOutputIds()).ids,
 };
+
+/**
+ * Resolve the exact scope set that may reach SQL. A requested Learning-tab scope
+ * is intersected with the Hive lens before the read/count, so a Hive can never
+ * widen a user filter and a capped read cannot hide the requested-set semantics.
+ */
+function effectiveScopes(opts: ReadImprovementOpts): readonly string[] | undefined {
+  const lensScopes = opts.harnessScopes ?? (opts.harnessSlug ? [`harness:${opts.harnessSlug}`] : undefined);
+  if (opts.scopes === undefined) return lensScopes;
+  if (lensScopes === undefined) return opts.scopes;
+  const allowed = new Set(lensScopes);
+  return opts.scopes.filter((scope) => allowed.has(scope));
+}
 
 /**
  * Deps for {@link countObservationFilingsSince}. Deliberately a SEPARATE, narrow type
@@ -467,6 +487,8 @@ async function readBySelector(
   deps: ReadImprovementDeps,
 ): Promise<ImprovementCandidate[]> {
   const origins = opts.origins ?? ORGANIC_ONLY;
+  const scopeSet = effectiveScopes(opts);
+  if (scopeSet?.length === 0) return [];
 
   // Learning-loop provenance scope (P-001/D-002). Resolved BEFORE the read so it
   // becomes a SQL predicate: `limit` is applied by Postgres, so post-filtering the
@@ -492,15 +514,15 @@ async function readBySelector(
     const discovered = await deps.listScopes({
       ...selector,
       state: opts.state,
+      q: opts.q,
+      kinds: opts.kinds,
+      severities: opts.severities,
+      ...(scopeSet ? { scopes: scopeSet } : {}),
       signalOrigins: origins,
       ...(issueIds ? { issueIds } : {}),
     });
-    const allowed = opts.harnessScopes
-      ? new Set(opts.harnessScopes)
-      : opts.harnessSlug
-        ? new Set([`harness:${opts.harnessSlug}`])
-        : undefined;
-    const scopes = allowed ? discovered.filter((scope) => allowed.has(scope)) : discovered;
+    const allowed = scopeSet ? new Set(scopeSet) : undefined;
+   const scopes = allowed ? discovered.filter((scope) => allowed.has(scope)) : discovered;
     const scopedReads = await Promise.all(
       scopes.map((scope) =>
         readBySelector(

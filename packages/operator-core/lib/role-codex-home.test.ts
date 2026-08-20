@@ -49,6 +49,24 @@ async function loadMod() {
   return import('./role-codex-home');
 }
 
+/** Install the exact stale cache shape that caused D-007 to rewrite the
+ * documented 1M/900k opt-in as 872k/784.8k on real hosts. */
+function installStaleExtendedWindowRecord(model: string) {
+  const dir = join(fakeHome, '.codex');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'models_cache.json'),
+    JSON.stringify({
+      models: [{
+        slug: model,
+        context_window: 272_000,
+        max_context_window: 872_000,
+        effective_context_window_percent: 95,
+      }],
+    }),
+  );
+}
+
 /** Drop stub CC lock-hook scripts under the fake home so writeCodexLockHooks
  *  has something to point at (it no-ops when they're absent). */
 async function installFakeHooks() {
@@ -76,6 +94,7 @@ function installOwnerRuntimeProof(owner: string) {
 
 describe('writeRoleCodexHome', () => {
   it('prepends the exact 1M/900k root keys for an extended-window role model', async () => {
+    installStaleExtendedWindowRecord('gpt-5.6-sol');
     const writeRoleCodexHome = await load();
     const out = writeRoleCodexHome({
       sessionKey: 'context-role',
@@ -340,6 +359,7 @@ describe('writeSuCodexHome', () => {
   it('resolves an omitted launch model from the installed Codex default for model-less resumes', async () => {
     mkdirSync(join(fakeHome, '.codex'), { recursive: true });
     writeFileSync(join(fakeHome, '.codex', 'config.toml'), 'model = "gpt-5.6-luna"\n');
+    installStaleExtendedWindowRecord('gpt-5.6-luna');
 
     const { writeSuCodexHome } = await loadMod();
     const out = writeSuCodexHome({
@@ -355,6 +375,7 @@ describe('writeSuCodexHome', () => {
   });
 
   it('bakes the exact context roots into fresh and repaired SU homes', async () => {
+    installStaleExtendedWindowRecord('gpt-5.6-terra');
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const fresh = writeSuCodexHome({
       sessionKey: 'context-su',
@@ -389,6 +410,7 @@ describe('writeSuCodexHome', () => {
       'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n',
     ],
   ])('upgrades a healthy managed SU home with %s before a model-less resume', async (_case, prefix) => {
+    installStaleExtendedWindowRecord('gpt-5.6-sol');
     const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
     const sessionKey = `context-upgrade-${prefix.length}`;
     const old = writeSuCodexHome({

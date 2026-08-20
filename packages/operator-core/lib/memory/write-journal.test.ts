@@ -38,6 +38,7 @@ const backend = {
   remember: vi.fn(async () => ({ ids: ['new-mem-1'], storedEvents: 1 })),
   update: vi.fn(async () => {}),
   search: vi.fn(async () => [] as Array<{ id: string; text?: string; score?: number }>),
+  invalidateEntry: vi.fn(async () => true),
 };
 vi.mock('./backend', () => ({ getMemoryBackend: () => backend }));
 
@@ -56,6 +57,7 @@ beforeEach(() => {
   backend.remember.mockClear().mockResolvedValue({ ids: ['new-mem-1'], storedEvents: 1 });
   backend.update.mockClear().mockResolvedValue(undefined);
   backend.search.mockClear().mockResolvedValue([]);
+  backend.invalidateEntry.mockClear().mockResolvedValue(true);
 });
 
 describe('journalPendingWrite / markJournalCommitted', () => {
@@ -134,6 +136,46 @@ describe('drainMemoryWriteJournal', () => {
     const commit = executed.find((e) => e.text.includes("SET status = 'committed'"));
     expect(commit?.values).toContain('new-mem-1');
     expect(r.recoveredWindow).toEqual({ from: baseRow.requested_at, to: baseRow.requested_at });
+  });
+
+  it('replays a superseding remember, strips its journal marker, then closes the old window', async () => {
+    pendingRows = [{
+      ...baseRow,
+      metadata: {
+        scope: 'user',
+        __journal_supersede_of: 'old-mem-1',
+      },
+    }];
+
+    const r = await drainMemoryWriteJournal();
+
+    expect(r.recovered).toBe(1);
+    expect(backend.invalidateEntry).toHaveBeenCalledWith('old-mem-1', {
+      supersededBy: 'new-mem-1',
+    });
+    const [, opts] = backend.remember.mock.calls[0] as unknown as [string, Record<string, unknown>];
+    expect(opts.metadata).not.toHaveProperty('__journal_supersede_of');
+    expect(backend.remember.mock.invocationCallOrder[0]).toBeLessThan(
+      backend.invalidateEntry.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('finishes a supersession after the replacement already landed (dedup replay)', async () => {
+    pendingRows = [{
+      ...baseRow,
+      metadata: { scope: 'user', __journal_supersede_of: 'old-mem-1' },
+    }];
+    backend.search.mockResolvedValue([
+      { id: 'already-written-new', text: 'the fact', score: 0.0328 },
+    ]);
+
+    const r = await drainMemoryWriteJournal();
+
+    expect(r.deduped).toBe(1);
+    expect(backend.remember).not.toHaveBeenCalled();
+    expect(backend.invalidateEntry).toHaveBeenCalledWith('old-mem-1', {
+      supersededBy: 'already-written-new',
+    });
   });
 
   // EI-10544: the near-dup verdict is made on the TEXT, never on the backend's

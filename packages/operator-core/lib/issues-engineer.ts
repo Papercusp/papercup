@@ -1144,8 +1144,13 @@ export interface ListIssuesFilter {
  */
 export interface ListIssueScopesFilter {
   state?: IssueState;
+  /** Case-insensitive literal substring matched against title + body. */
+  q?: string;
   kind?: IssueStoreKind;
   kinds?: readonly IssueStoreKind[];
+  severity?: IssueSeverity;
+  severities?: readonly IssueSeverity[];
+  scopes?: readonly string[];
   topic?: string;
   lane?: string;
   signalOrigins?: readonly SignalOrigin[];
@@ -1160,6 +1165,7 @@ export interface ListIssueScopesFilter {
  */
 export async function listIssueScopes(filter: ListIssueScopesFilter = {}): Promise<string[]> {
   const { sql } = getOrgPg();
+  const q = filter.q?.trim();
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
   const topicTagsCte = filter.topic
     ? sql`WITH tagged AS MATERIALIZED (
@@ -1178,8 +1184,11 @@ export async function listIssueScopes(filter: ListIssueScopesFilter = {}): Promi
       FROM harness_shared.engineer_issues ei
      WHERE ei.workspace_id = ${issuesScopeWorkspace()}
        AND ei.kind = ANY(${kindSet as string[]}::text[])
-       AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
-       AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+      AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+      AND ${q ? sql`(COALESCE(ei.title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(ei.body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
+      AND ${filter.scopes ? sql`ei.scope = ANY(${filter.scopes as string[]}::text[])` : sql`TRUE`}
+      AND ${filter.severities ? sql`ei.severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+      AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
        AND ${filter.topic ? sql`ei.issue_id IN (SELECT src_ref FROM tagged)` : sql`TRUE`}
        AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}

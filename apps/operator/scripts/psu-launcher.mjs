@@ -708,9 +708,9 @@ export function modelArgsFor(agent, model) {
         : model;
   const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(effectiveModel);
   if (agent === 'codex') {
-    // Extended-window models are launched at their declared window with the
-    // native auto-compact pushed to a 90% backstop (plan
-    // codex-1m-context-window-2026-08-17 D-002). Without this, codex runs its
+    // Extended-window models are launched with the exact top-level opt-in and
+    // native auto-compact backstop (plan codex-1m-context-window-2026-08-17
+    // D-008). Without this, codex runs its
     // 272k default -> 258,400 effective and its OWN summarizer fires before
     // papercusp's 400k su/leader carry cut is ever reached, so the soft limit
     // in D-001 never gets to run. `[]` for a model with no extended window, so

@@ -207,6 +207,14 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
       const updateOf = typeof row.metadata?.__journal_update_of === 'string'
         ? (row.metadata.__journal_update_of as string)
         : null;
+      const supersedeOf = typeof row.metadata?.__journal_supersede_of === 'string'
+        ? (row.metadata.__journal_supersede_of as string)
+        : null;
+      const {
+        __journal_update_of: _journalUpdateOf,
+        __journal_supersede_of: _journalSupersedeOf,
+        ...storedMetadata
+      } = row.metadata ?? {};
 
       // EI-10371 stage 1: re-detect at replay time — update-replays don't carry
       // journal metadata into the store, and rows journaled before stamping
@@ -244,9 +252,22 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
       // toward RECOVERING the fact (the drain's entire purpose), never toward
       // silently dropping it.
       const dup = neighbors.find(
-        (n) => typeof n.text === 'string' && lexicalSimilarity(row.content, n.text) >= DRAIN_DEDUP_THRESHOLD,
+        (n) =>
+          n.id !== supersedeOf &&
+          typeof n.text === 'string' &&
+          lexicalSimilarity(row.content, n.text) >= DRAIN_DEDUP_THRESHOLD,
       );
       if (dup) {
+        // P-005: the content may already have landed before the live call's
+        // validity-close failed. Finish that close before committing the
+        // journal row, using the existing row as the replacement id.
+        if (supersedeOf) {
+          const invalidateEntry = backend.invalidateEntry?.bind(backend);
+          if (!invalidateEntry) {
+            throw new Error('journal supersede requires validity-window support');
+          }
+          await invalidateEntry(supersedeOf, { supersededBy: dup.id });
+        }
         await sql`
           UPDATE harness_shared.memory_write_journal
              SET status = 'committed', committed_at = now(), committed_memory_id = ${dup.id},
@@ -261,7 +282,7 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
         scope: row.scope,
         ...(row.kind ? { kind: row.kind } : {}),
         metadata: {
-          ...(row.metadata ?? {}),
+          ...storedMetadata,
           ...(secrets.matched
             ? { possible_secret: true, possible_secret_classes: secrets.classes }
             : {}),
@@ -272,6 +293,17 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
         },
         verbatim: row.verbatim,
       });
+      if (supersedeOf) {
+        const replacingId = ids[0];
+        if (!replacingId) {
+          throw new Error('journal supersede write returned no replacement id');
+        }
+        const invalidateEntry = backend.invalidateEntry?.bind(backend);
+        if (!invalidateEntry) {
+          throw new Error('journal supersede requires validity-window support');
+        }
+        await invalidateEntry(supersedeOf, { supersededBy: replacingId });
+      }
       await sql`
         UPDATE harness_shared.memory_write_journal
            SET status = 'committed', committed_at = now(), committed_memory_id = ${ids[0] ?? null},

@@ -56,6 +56,11 @@ vi.mock('../../memory/memory-pause', () => ({
 vi.mock('../../memory/ref-expand', () => ({
   expandRefsForEmbed: vi.fn(async () => undefined),
 }));
+vi.mock('../../memory/anthropic-judge', () => ({
+  createAnthropicJudge: vi.fn(),
+  conflictJudgeAvailable: vi.fn(() => false),
+  warnConflictJudgeUnavailableOnce: vi.fn(),
+}));
 
 import remember, { runbookShapeHint } from './remember';
 import { coerceMemoryKind, normalizeMemoryKind } from './remember-coerce';
@@ -63,12 +68,14 @@ import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
 import { journalPendingWrite } from '../../memory/write-journal';
+import { createAnthropicJudge, conflictJudgeAvailable } from '../../memory/anthropic-judge';
 
 type FakeBackend = {
   name: string;
   available: ReturnType<typeof vi.fn>;
   remember: ReturnType<typeof vi.fn>;
   search: ReturnType<typeof vi.fn>;
+  invalidateEntry?: ReturnType<typeof vi.fn>;
 };
 
 /** A fake neutral MemoryBackend (generalize-memory-backend-swappable D-003). */
@@ -82,6 +89,7 @@ const fakeBackend = (
   search: vi.fn(async () =>
     searchResults.map((r) => ({ scope: 'user-1', ...r })),
   ),
+  invalidateEntry: vi.fn(async () => true),
 });
 
 const useBackend = (b: FakeBackend): void => {
@@ -105,6 +113,76 @@ beforeEach(() => {
   vi.mocked(getOrgPg).mockReturnValue({
     sql: vi.fn(async () => undefined) as unknown,
   } as unknown as ReturnType<typeof getOrgPg>);
+  vi.mocked(conflictJudgeAvailable).mockReturnValue(false);
+  vi.mocked(createAnthropicJudge).mockReturnValue(
+    vi.fn(async () => ({ conflicts: [] })),
+  );
+});
+
+describe('memory:remember — conflict supersession (temporal-lite P-005)', () => {
+  const OLD_ID = '11111111-1111-4111-8111-111111111111';
+  const NEW_ID = '22222222-2222-4222-8222-222222222222';
+
+  beforeEach(() => {
+    delete process.env.PAPERCUSP_MEMORY_DEDUP;
+    delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK;
+    vi.mocked(conflictJudgeAvailable).mockReturnValue(true);
+    vi.mocked(createAnthropicJudge).mockReturnValue(
+      vi.fn(async () => ({
+        conflicts: [{ memory_id: OLD_ID, summary: 'old and new cannot both be current' }],
+      })),
+    );
+  });
+
+  it('a conflict refusal offers the exact one-call resolution', async () => {
+    const b = fakeBackend([{ id: OLD_ID, text: 'default embedder is gemma' }], [NEW_ID]);
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'default embedder is harrier', kind: 'project' },
+      fakeCtx,
+    );
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(out).toMatchObject({
+      ok: false,
+      reason: 'conflict',
+      resolution_hint: 'pass supersede:<id> to record the new fact as replacing the old one',
+    });
+    expect(b.remember).not.toHaveBeenCalled();
+  });
+
+  it('supersede writes the replacement, then closes only the named conflict', async () => {
+    const b = fakeBackend([{ id: OLD_ID, text: 'default embedder is gemma' }], [NEW_ID]);
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'default embedder is harrier', kind: 'project', supersede: OLD_ID },
+      fakeCtx,
+    );
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(out).toMatchObject({ ok: true, ids: [NEW_ID], superseded: OLD_ID });
+    expect(b.invalidateEntry).toHaveBeenCalledWith(OLD_ID, { supersededBy: NEW_ID });
+    expect(b.remember.mock.invocationCallOrder[0]).toBeLessThan(
+      b.invalidateEntry!.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('refuses before writing when the backend cannot close validity windows', async () => {
+    const b = fakeBackend([], [NEW_ID]);
+    delete b.invalidateEntry;
+    useBackend(b);
+
+    const res = await remember.handler(
+      { content: 'replacement', kind: 'project', supersede: OLD_ID },
+      fakeCtx,
+    );
+    const out = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(out).toMatchObject({ ok: false, reason: 'supersede_unsupported' });
+    expect(b.remember).not.toHaveBeenCalled();
+  });
 });
 
 describe('memory:remember — backend seam (D-003)', () => {
@@ -433,6 +511,7 @@ describe('memory:remember — dedup-on-write (P-016)', () => {
     delete process.env.PAPERCUSP_MEMORY_CONFLICT_CHECK; // conflict-check default ON
     const priorKey = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    vi.mocked(conflictJudgeAvailable).mockReturnValue(true);
     const b = fakeBackend([
       { id: 'mem-rel', text: 'a related fact', score: 0.5 },
     ]);

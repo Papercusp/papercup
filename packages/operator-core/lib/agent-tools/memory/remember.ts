@@ -212,6 +212,8 @@ export default defineTool({
       .describe("Scope to a Pot's SHARED pool (knowledge-packs P-004) — every agent in every member harness of that pot recalls it. Use for discovered project conventions (test command, build path, design system) the whole pot should inherit. Mutually exclusive with harness_slug."),
     force: z.boolean().optional()
       .describe('Bypass the dedup-on-write similarity check (P-016). Use only when knowingly writing a near-duplicate the agent has decided to keep separate. Default: false.'),
+    supersede: z.string().uuid('supersede must be a valid memory UUID').optional()
+      .describe('Write this fact as the replacement for the given memory id (temporal-lite): after the new row lands, close the old row\'s validity window with superseded_by = the new id. This is the one-call resolution for a conflict refusal.'),
     shareable: z.boolean().optional()
       .describe('OPT-IN federation egress (F0-2): true = this memory may federate to other hives. Default false — memories are hive-private.'),
     workspace: z.string().optional()
@@ -230,6 +232,21 @@ export default defineTool({
       };
     }
     const backend = getMemoryBackend();
+    const invalidateSuperseded = args.supersede
+      ? backend.invalidateEntry?.bind(backend)
+      : undefined;
+    // P-005: refuse before journaling/writing when this backend cannot honour
+    // the requested lifecycle transition. A plain remember followed by an
+    // unsupported invalidate would leave two current, contradictory facts.
+    if (args.supersede && !invalidateSuperseded) {
+      return {
+        content: [{ type: 'text', text: JSON.stringify({
+          ok: false,
+          reason: 'supersede_unsupported',
+          message: 'supersede requires a backend with validity-window support (temporal-lite unavailable)',
+        }) }],
+      };
+    }
     if (args.harness_slug && args.hive_slug) {
       return {
         content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'harness_slug and hive_slug are mutually exclusive — pick the pool the fact belongs to.' }) }],
@@ -352,7 +369,12 @@ export default defineTool({
       scope: scopeKey,
       kind: args.kind,
       content: args.content,
-      metadata,
+      // The internal marker never reaches the stored memory payload. It lets
+      // the journal drain finish the SAME supersession if the embed/store or
+      // validity-close leg fails after this call has durably parked the write.
+      metadata: args.supersede
+        ? { ...metadata, __journal_supersede_of: args.supersede }
+        : metadata,
       verbatim: true,
     });
     const journaledFields = journalId
@@ -439,6 +461,10 @@ export default defineTool({
           let top: (typeof neighbors)[number] | undefined;
           let best = -Infinity;
           for (const n of neighbors) {
+            // The caller explicitly chose this old row as the one being
+            // replaced. Exclude only that row; a different near-duplicate
+            // must still refuse instead of turning supersede into force.
+            if (n.id === args.supersede) continue;
             const sim = lexicalSimilarity(args.content, n.text);
             if (sim > best) {
               best = sim;
@@ -446,7 +472,11 @@ export default defineTool({
             }
           }
           const topScore = top !== undefined ? best : null;
-          if (top && topScore !== null && topScore >= dedupThreshold()) {
+          if (
+            top &&
+            topScore !== null &&
+            topScore >= dedupThreshold()
+          ) {
             // Deliberate refusal — close the journal row (content is already
             // in the store as `top`) so the drain never replays it.
             if (journalId) void markJournalCommitted(journalId, top.id);
@@ -480,7 +510,12 @@ export default defineTool({
             neighbors: neighbors.map((n) => ({ id: n.id, text: n.text, score: n.score })),
             judge: createAnthropicJudge(),
           });
-          if (conflict.conflicts.length > 0) {
+          // `supersede:<id>` is an explicit resolution of THAT conflict, not a
+          // blanket force-through: any other contradiction still refuses.
+          const unresolvedConflicts = conflict.conflicts.filter(
+            (c) => c.memory_id !== args.supersede,
+          );
+          if (unresolvedConflicts.length > 0) {
             // Deliberate refusal — the agent must resolve the contradiction;
             // the drain must not land the conflicting write behind its back.
             if (journalId) void markJournalCommitted(journalId, null);
@@ -490,7 +525,8 @@ export default defineTool({
                 text: JSON.stringify({
                   ok: false,
                   reason: 'conflict',
-                  conflicts: conflict.conflicts,
+                  conflicts: unresolvedConflicts,
+                  resolution_hint: 'pass supersede:<id> to record the new fact as replacing the old one',
                   hint: 'New memory directly contradicts existing memories. memory:forget the contradicted entries first, or pass force=true to write anyway.',
                 }),
               }],
@@ -589,9 +625,47 @@ export default defineTool({
       throw err;
     }
 
-    // The write landed — close the journal row (fire-and-forget; a missed
-    // close self-heals on drain via the near-dup guard).
-    if (journalId) void markJournalCommitted(journalId, ids[0] ?? null);
+    // P-005 one-call conflict resolution: the replacement must exist before
+    // the old window closes, matching memory:update's established ordering.
+    // A failed close leaves the write-ahead journal pending; its replay finds
+    // this newly written fact via the near-dup guard and retries the close,
+    // rather than losing the caller's supersession intent.
+    let superseded: string | false | undefined;
+    let supersedeNote: string | undefined;
+    if (args.supersede && invalidateSuperseded) {
+      const replacingId = ids[0];
+      if (!replacingId) {
+        superseded = false;
+        supersedeNote = 'write returned no replacement id; old memory was not superseded';
+      } else {
+        try {
+          const closed = await withMemoryToolTimeout(
+            invalidateSuperseded(args.supersede, { supersededBy: replacingId }),
+            'memory:remember supersede',
+          );
+          superseded = closed ? args.supersede : false;
+          if (!closed) {
+            supersedeNote = 'no open memory matched — already superseded or unknown id';
+          }
+        } catch (err) {
+          superseded = false;
+          supersedeNote = `replacement stored but supersession will retry: ${
+            err instanceof MemoryTimeoutError
+              ? 'memory_timeout'
+              : err instanceof Error
+                ? err.message
+                : String(err)
+          }`;
+        }
+      }
+    }
+
+    // The write landed. Close the journal row only when no supersession was
+    // requested or its validity close completed. A false/failed close stays
+    // pending so the drain can reconcile it without another agent call.
+    if (journalId && (!args.supersede || superseded === args.supersede)) {
+      void markJournalCommitted(journalId, ids[0] ?? null);
+    }
 
     // Live-refresh the settings memory page (userMemory.list sync query) —
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
@@ -624,6 +698,20 @@ export default defineTool({
         text: JSON.stringify({
           ok: true,
           ids,
+          ...(args.supersede
+            ? {
+                superseded: superseded ?? false,
+                ...(supersedeNote ? { supersede_note: supersedeNote } : {}),
+                ...(journalId && superseded !== args.supersede
+                  ? {
+                      journaled: true,
+                      will_retry: true,
+                      journal_id: journalId,
+                      retry_hint: 'Replacement stored; the journal will retry closing the old memory — do NOT re-fire this write.',
+                    }
+                  : {}),
+              }
+            : {}),
           // EI-10371: tell the agent out loud so it can tell the user — the
           // metadata stamp alone is invisible until someone opens settings.
           ...(secrets.matched

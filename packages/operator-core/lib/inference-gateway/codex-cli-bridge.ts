@@ -171,11 +171,12 @@ export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRu
     opts.model,
     '-c',
     `model_reasoning_effort="${opts.effort}"`,
-    // Declare the model's real window (plan codex-1m-context-window-2026-08-17
-    // D-002). This bridge is single-turn, so native compaction is not the
-    // concern here — the INPUT ceiling is: without it a large bridged prompt is
-    // budgeted against codex's 272k default rather than the 872k the model
-    // actually accepts. `[]` for a model with no extended window.
+    // Declare the exact extended-window opt-in (plan
+    // codex-1m-context-window-2026-08-17 D-008). This bridge is single-turn, so
+    // native compaction is not the concern here — the INPUT ceiling is: without
+    // it a large bridged prompt is budgeted against codex's 272k default rather
+    // than the measured 828,400 effective window. `[]` for a model with no
+    // extended window.
     ...codexContextConfigArgs(opts.model),
     '-', // prompt from stdin
   ];
