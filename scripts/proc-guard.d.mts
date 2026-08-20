@@ -60,9 +60,12 @@ export function parsePpid(statLine: string): number | null;
  * Enumerate every live process as { pid, ppid, argv, cmdline }, from a /proc root (real or a test fixture).
  *
  * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
+ * @param {{ readIdentity?: boolean }} [opts] - Read known-workload identity markers when requested.
  * @returns {ProcRow[]}
  */
-export function listProcesses(procRoot?: string): ProcRow[];
+export function listProcesses(procRoot?: string, opts?: {
+    readIdentity?: boolean;
+}): ProcRow[];
 /**
  * pid + every ancestor up to (and including) pid 1, by walking `ppid` via
  * `byPid` (a Map<pid, ppid|null>). Cycle/depth-guarded so a corrupt or
@@ -83,6 +86,8 @@ export function getAncestryChain(pid: number, byPid: Map<number, number | null>,
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * For the known `green-checkpoint` workload, gate-owned environment/cgroup
+ * identity is also accepted so argv-blind descendants are not missed.
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern: string, opts?: {
@@ -98,7 +103,7 @@ export function matchExternalProcesses(pattern: string, opts?: {
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
- * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[] }}
+ * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
 export function matchExternalProcessesDetailed(pattern: string, opts?: {
     procRoot?: string;
@@ -107,6 +112,7 @@ export function matchExternalProcessesDetailed(pattern: string, opts?: {
     matches: ProcRow[];
     fullMatches: ProcRow[];
     argvTextOnly: ProcRow[];
+    identityMatches: ProcRow[];
 };
 /**
  * Parse the cgroup-v2 path out of a `/proc/<pid>/cgroup` body (`0::<path>`).
@@ -209,6 +215,14 @@ export type ProcRow = {
      * - Full command line, NUL separators replaced by spaces.
      */
     cmdline: string;
+    /**
+     * Non-secret identity evidence read only when checking the known green-checkpoint workload.
+     */
+    identity?: {
+        greenCheckpointMarker: boolean;
+        releaseGateMarker: boolean;
+        cgroupPath: string | null;
+    } | undefined;
 };
 /**
  * A successful cgroup CPU sample. The literal status is load-bearing: callers

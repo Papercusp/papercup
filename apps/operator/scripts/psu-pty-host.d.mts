@@ -902,9 +902,13 @@ export function runMcpReconnectMacro({ serverName, write, readTap, resetTap, sle
     step: string;
     detail: string;
 }>;
-/** Coalesce key for an injected turn: its first non-empty line, trimmed+capped.
+/** Coalesce key for an injected turn: a loop's stable instance id when present,
+ *  otherwise its first non-empty line, trimmed+capped. Loop short-form wakes
+ *  lead with `Loop wake #<fireNumber>`, so text-only keys treat every fire as a
+ *  different source and let a queued backlog spend one turn per fire. The
+ *  envelope's routineId is the stable identity we actually want to coalesce.
  *  Pure — exported for tests. */
-export function turnCoalesceKey(data: any): string;
+export function turnCoalesceKey(data: any, routineId: any): string;
 /** Render the delivered turn text, annotating how many duplicates folded in.
  *  Pure — exported for tests. */
 export function renderCoalescedTurn(data: any, folded: any): any;
@@ -913,7 +917,7 @@ export function renderCoalescedTurn(data: any, folded: any): any;
  *  the caller became the waiter and must claim() at delivery — or on ANY early exit
  *  (defer/error), so folded wakes never black-hole behind a dead waiter. */
 export function makeTurnCoalescer(): {
-    admit(key: any, data: any): boolean;
+    admit(key: any, data: any, metadata: any): boolean;
     claim(key: any): any;
     size(): number;
 };
