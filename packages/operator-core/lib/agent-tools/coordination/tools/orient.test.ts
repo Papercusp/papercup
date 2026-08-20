@@ -159,6 +159,12 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ recipesLimit: 0 }).success).toBe(true);
   });
 
+  it('exposes the includePeersKnow opt-out in the transport schema', () => {
+    const parsed = orientTool.args.safeParse({ includePeersKnow: false });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.includePeersKnow).toBe(false);
+  });
+
   it('accepts stale includeFleetCatchup casing in the transport schema', () => {
     expect(orientTool.args.safeParse({ includeFleetCatchup: false }).success).toBe(true);
   });
@@ -610,6 +616,43 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     ]);
   });
 
+  it('opts into history explicitly and keeps a superseded marker in the compact memory body', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'memory:search': () => ({
+        ok: true,
+        results: [{
+          id: 'old-memory',
+          memory: 'Gemma is the default embedder',
+          score: 0.9,
+          metadata: {
+            validity: {
+              status: 'superseded',
+              invalid_at: '2026-07-10T15:45:00.000Z',
+              superseded_by: 'new-memory',
+            },
+          },
+        }],
+      }),
+    });
+
+    const r = await composeOrient({
+      memoryQuery: 'default embedder history',
+      memoryIncludeSuperseded: true,
+      harness: 'h',
+    }, call, 'me');
+
+    expect(calls.find((c) => c.name === 'memory:search')!.args).toMatchObject({
+      include_superseded: true,
+    });
+    expect(r.memory?.hits).toEqual([
+      expect.objectContaining({
+        id: 'old-memory',
+        memory: '[SUPERSEDED 2026-07-10] Gemma is the default embedder',
+      }),
+    ]);
+  });
+
   it('folds intent-relevant recipes (recipes:search), compact; skipped when includeRecipes:false', async () => {
     const authority = { version: 1, revision: 'a'.repeat(64), context: { harness: 'papercusp' } };
     const recipeHandler = () => ({
@@ -660,6 +703,75 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       expect(calls.some((c) => c.name === 'recipes:search')).toBe(false);
       expect(r.recipes).toBeUndefined();
     }
+  });
+
+  it('folds peersKnow by default and does not invoke the archive lookup when explicitly disabled', async () => {
+    const intent = 'why does the vector scan stop before every relevant row is returned?';
+    const hit = {
+      answer: 'raise hnsw.ef_search before running the scan',
+      ref: 'conv-known-answer',
+      responder: 'agent-expert',
+      closedAt: '2026-08-20T12:00:00.000Z',
+      sim: 0.97,
+    };
+    const leanArgs = {
+      intent,
+      claimableLimit: 0,
+      inboxLimit: 0,
+      memoryLimit: 0,
+      includePlanEvents: false,
+      includeRecipes: false,
+      includeFleetCatchUp: false,
+      includeFleetHealth: false,
+    };
+    const composeWithPeersKnow = (
+      args: Parameters<typeof composeOrient>[0],
+      call: InnerCall,
+      peersKnowFold: NonNullable<Parameters<typeof composeOrient>[14]>,
+    ) =>
+      composeOrient(
+        args,
+        call,
+        'me',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        peersKnowFold,
+      );
+
+    const enabledFold = vi.fn(async () => hit);
+    const { call: enabledCall } = fakeCall({
+      ...CORE,
+      'coord:declare-intent': () => ({ ok: true }),
+    });
+    const enabled = await composeWithPeersKnow(leanArgs, enabledCall, enabledFold);
+
+    expect(enabledFold).toHaveBeenCalledOnce();
+    expect(enabledFold).toHaveBeenCalledWith(intent);
+    expect(enabled.peersKnow).toMatchObject(hit);
+    expect(enabled.peersKnow?.more).toContain("conversations:get { id: 'conv-known-answer' }");
+
+    const disabledFold = vi.fn(async () => hit);
+    const { call: disabledCall } = fakeCall({
+      ...CORE,
+      'coord:declare-intent': () => ({ ok: true }),
+    });
+    const disabled = await composeWithPeersKnow(
+      { ...leanArgs, includePeersKnow: false },
+      disabledCall,
+      disabledFold,
+    );
+
+    expect(disabledFold).not.toHaveBeenCalled();
+    expect(disabled.peersKnow).toBeUndefined();
   });
 
   it('best-effort: a failing recipes:search degrades to null, not a thrown orient', async () => {
