@@ -710,9 +710,14 @@ export async function fireLoopWake(input: LoopFireInput, deps: LoopFireDeps = {}
   // waiting." Withheld SILENTLY (no recordFire call, matching Guard 1's fire-gate pattern):
   // this is expected, benign, self-correcting behavior, not a fire-history-worthy anomaly —
   // the routine simply re-checks on its normal cadence next tick.
+  //
+  // Monitor loops are the exception: their cadence is the heartbeat/backstop for the state
+  // they are watching, so a deliberate gate wait must not silence that monitor. A monitor
+  // loop's persisted mode is the structural signal; do not infer it from goal prose.
   const listBlockingAwaits = deps.listBlockingAwaits ?? defaultListBlockingAwaits;
   const blockingAwaits = await listBlockingAwaits(input.targetOwnerId).catch(() => []);
-  if (blockingAwaits.length > 0) {
+  const isMonitorLoop = input.payloadTemplate?.mode === 'monitor';
+  if (!isMonitorLoop && blockingAwaits.length > 0) {
     const decision = decideLoopAwaitSuppression({ awaits: blockingAwaits, nowMs: Date.now() });
     if (decision.suppress) {
       return {

@@ -288,6 +288,25 @@ describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
       expect(res).toMatchObject({ fired: true, woken: 1 });
     });
 
+    it('a monitor loop keeps its heartbeat despite an active blocking await', async () => {
+      const deps = mkDeps({
+        listBlockingAwaits: vi.fn(async () => [
+          {
+            eventKey: 'green-checkpoint:inconclusive:papercusp',
+            expiresTs: new Date(Date.now() + 10 * 60_000).toISOString(),
+            createdAt: new Date().toISOString(),
+          },
+        ]) as never,
+      });
+      const res = await fireLoopWake(
+        { ...baseInput, intervalSec: 60, payloadTemplate: { mode: 'monitor' } },
+        deps,
+      );
+
+      expect(res).toMatchObject({ fired: true, woken: 1 });
+      expect(deps.wake).toHaveBeenCalledTimes(1);
+    });
+
     it('a blocking-await READ FAILURE fails OPEN — the loop still fires (fail-soft, never wedges a loop)', async () => {
       const deps = mkDeps({
         listBlockingAwaits: vi.fn(async () => {
