@@ -36,11 +36,13 @@ import {
   makeGoalScaleOverride,
   makeWholeSystemInstanceOverride,
   type CapturePort,
+  type GoalAmendmentDispatchPort,
   type GoalDispatchPort,
   type RouterPorts,
 } from './router';
 import {
   buildCapturePort,
+  buildGoalAmendmentDispatchPort,
   buildGoalDispatchPort,
   buildGymDispatchPort,
   buildInstanceDispatchPort,
@@ -106,6 +108,9 @@ export interface BuildScoutCycleDepsOptions {
   /** Override the goal rail's create+start dispatch (tests / drills — a live goal spawn
    *  is a real agent). Default: the production `buildGoalDispatchPort` (P-013 / D-005). */
   goalDispatch?: GoalDispatchPort;
+  /** Override the existing-goal amendment dispatch (tests/drills). Default: the
+   * production adapter over the registered goals:update tool (D-004/D-013). */
+  goalAmendmentDispatch?: GoalAmendmentDispatchPort;
   /** Called when a deterministic Scout side rail authors a new draft plan that needs Queen review. */
   onScoutDraftCreated?: (draft: { slug: string; title: string }) => Promise<void>;
   /**
@@ -366,6 +371,10 @@ export function buildScoutCycleDeps(
     // goal-scale → goals create+start (P-013 / D-005): the full-auto goal rail. The
     // BLENDER_GOAL_RAIL flag gates it at route time (goalEnabled below), not here.
     goalDispatch: opts.goalDispatch ?? buildGoalDispatchPort({ harnessSlug: opts.harnessSlug }),
+    // goal-with-target → goals:update (D-004/D-013): zero spend and no launch.
+    // This is deliberately a sibling port on the SAME rail, not a sixth rail.
+    goalAmendmentDispatch:
+      opts.goalAmendmentDispatch ?? buildGoalAmendmentDispatchPort({ harnessSlug: opts.harnessSlug }),
   };
 
   const baseReaders = opts.stateOfHiveReaders ?? buildStateOfHiveReaders();

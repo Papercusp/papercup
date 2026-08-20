@@ -11,6 +11,7 @@ import type { ArchivePort, ArchiveEliteView } from './gym-bridge';
 import type { CaptureImprovementInput, CaptureImprovementResult } from '../harness/improvements/capture-core';
 import {
   buildCapturePort,
+  buildGoalAmendmentDispatchPort,
   buildGymDispatchPort,
   buildPlansNewPort,
   improvementBody,
@@ -118,6 +119,28 @@ describe('buildPlansNewPort', () => {
     expect(arg.title).toBe('Wake-on-grant for blocked edits');
     expect(arg.rationale).toContain('Scout-generated');
     expect(arg.rationale).toContain('idea-1, idea-2');
+  });
+});
+
+describe('buildGoalAmendmentDispatchPort', () => {
+  it('maps a targeted proposal onto goals:update without silently changing title or bounds', async () => {
+    const dispatch = vi.fn(async () => ({ data: { id: 'goal-existing' } }));
+    const port = buildGoalAmendmentDispatchPort(
+      { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
+      dispatch,
+    );
+
+    await expect(
+      port({ proposal: proposal({ targetGoalId: 'goal-existing' }), targetGoalId: 'goal-existing' }),
+    ).resolves.toEqual({ goalId: 'goal-existing' });
+
+    const [args, scope] = dispatch.mock.calls[0];
+    expect(args.id).toBe('goal-existing');
+    expect(args.body).toContain('**Mechanism:**');
+    expect(args.body).toContain('Cheap experiment (D-006)');
+    expect(args.reason).toContain('Scout proposal prop-1');
+    expect(Object.keys(args).sort()).toEqual(['body', 'id', 'reason']);
+    expect(scope).toEqual({ harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' });
   });
 });
 

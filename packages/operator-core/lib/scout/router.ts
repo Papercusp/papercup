@@ -161,6 +161,7 @@ export function decideRoutes(
   let goalsDecided = 0;
   return proposals.map((p) => {
     let { rail, reason, followedHint } = classifyProposal(p, opts);
+    const isGoalAmendment = rail === 'goal' && Boolean(p.targetGoalId?.trim());
     // D-003: never route onto a disabled gym — manufactured outcomes are worse
     // than no outcomes. Rerouted (not dropped) so the idea still lands on a
     // live rail and its outcome is real.
@@ -172,15 +173,15 @@ export function decideRoutes(
     // P-013 / D-005: the goal rail's gate + per-cycle cap. Both reroute to the
     // PLAN rail — a goal-scale idea is multi-plan scope, so a draft plan is its
     // live fallback surface; dropping it would lose the idea entirely.
-    if (rail === 'goal' && opts.goalEnabled === false) {
+    if (rail === 'goal' && !isGoalAmendment && opts.goalEnabled === false) {
       rail = 'plan';
       reason = `${reason}; goal rail gated OFF → plan`;
       followedHint = false;
-    } else if (rail === 'goal' && goalsDecided >= maxGoals) {
+    } else if (rail === 'goal' && !isGoalAmendment && goalsDecided >= maxGoals) {
       rail = 'plan';
       reason = `${reason}; goal cap reached (${maxGoals}/cycle) → plan`;
       followedHint = false;
-    } else if (rail === 'goal') {
+    } else if (rail === 'goal' && !isGoalAmendment) {
       goalsDecided += 1;
     }
     const title = proposalTitle(p);
@@ -262,6 +263,21 @@ export interface GoalDispatchRequest {
  *  `harness_shared.goals` row AND starts its GOAL-mode agent (router-deps.ts). */
 export type GoalDispatchPort = (req: GoalDispatchRequest) => Promise<{ goalId: string }>;
 
+/** One existing-goal amendment request (D-004/D-013). The production port maps
+ * the proposal onto the existing `goals:update` door; the router deliberately
+ * carries no parallel amendment verb or approval surface. */
+export interface GoalAmendmentDispatchRequest {
+  proposal: Proposal;
+  /** The existing goal named by {@link Proposal.targetGoalId}. */
+  targetGoalId: string;
+}
+
+/** goal-with-target → goals:update. Returns the amended id for the ordinary
+ * `goal:<id>` provenance ref — amendment is the goal rail, not a sixth rail. */
+export type GoalAmendmentDispatchPort = (
+  req: GoalAmendmentDispatchRequest,
+) => Promise<{ goalId: string }>;
+
 /**
  * The injected effect port. Every rail's side-effect goes through here so
  * {@link routeProposals} is testable with fakes (invariant #5: assert routing
@@ -284,6 +300,12 @@ export interface RouterPorts {
    * per-decision, never aborting the batch.
    */
   goalDispatch?: GoalDispatchPort;
+  /**
+   * goal-with-target → goals:update (D-004/D-013). OPTIONAL for defensive
+   * embeddings; a targeted goal proposal must never fall through to creation
+   * merely because this port is absent.
+   */
+  goalAmendmentDispatch?: GoalAmendmentDispatchPort;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -691,20 +713,33 @@ export async function routeProposals(
         const { slug } = await ports.plansNew({ proposal: p, slugStem: deriveSlugStem(p.framing) });
         d.routedRef = `plan:${slug}`;
       } else if (d.rail === 'goal') {
-        // P-013 / D-005: draft the two rails HERE so no goal can reach the port
-        // without them — the port's own types then require both.
-        if (!ports.goalDispatch) {
-          d.error = 'no goal dispatch wired (goalDispatch port missing)';
+        const targetGoalId = p.targetGoalId?.trim();
+        if (targetGoalId) {
+          // D-004/D-013: goal WITH a target is an amendment through the existing
+          // goals:update door. Never fall through to creation if the amendment
+          // port is missing — that would mint an autonomous goal by accident.
+          if (!ports.goalAmendmentDispatch) {
+            d.error = 'no goal amendment dispatch wired (goalAmendmentDispatch port missing)';
+          } else {
+            const { goalId } = await ports.goalAmendmentDispatch({ proposal: p, targetGoalId });
+            d.routedRef = `goal:${goalId}`;
+          }
         } else {
-          const rails = draftGoalRails(p, {
-            ...(opts.goalBudgetCentsCap !== undefined ? { budgetCentsCap: opts.goalBudgetCentsCap } : {}),
-          });
-          const { goalId } = await ports.goalDispatch({
-            proposal: p,
-            title: proposalTitle(p) || `Scout goal ${p.id}`,
-            ...rails,
-          });
-          d.routedRef = `goal:${goalId}`;
+          // P-013 / D-005: goal WITHOUT a target remains creation. Draft the
+          // two rails HERE so no new goal can reach the port without them.
+          if (!ports.goalDispatch) {
+            d.error = 'no goal dispatch wired (goalDispatch port missing)';
+          } else {
+            const rails = draftGoalRails(p, {
+              ...(opts.goalBudgetCentsCap !== undefined ? { budgetCentsCap: opts.goalBudgetCentsCap } : {}),
+            });
+            const { goalId } = await ports.goalDispatch({
+              proposal: p,
+              title: proposalTitle(p) || `Scout goal ${p.id}`,
+              ...rails,
+            });
+            d.routedRef = `goal:${goalId}`;
+          }
         }
       } else {
         const { id } = await ports.capture({ proposal: p });

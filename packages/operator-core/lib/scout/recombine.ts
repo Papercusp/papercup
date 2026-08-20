@@ -265,6 +265,8 @@ type ParsedProposal = {
   bet: string;
   cheapExperiment: ScoutExperiment;
   routeHint?: Proposal['routeHint'];
+  /** Existing goal named by an amendment proposal (D-004). */
+  targetGoalId?: string;
   /** WI-39721: a non-empty hint the model asked for that was NOT accepted above,
    *  recorded verbatim so the coercion is countable instead of silent. */
   droppedRouteHint?: string;
@@ -281,6 +283,7 @@ function parseProposal(raw: unknown): ParsedProposal | null {
     falsifiableSignal: str(expSrc?.falsifiableSignal ?? expSrc?.falsifiable_signal),
   };
   const route = str(o.route ?? o.routeHint);
+  const targetGoalId = str(o.targetGoalId ?? o.target_goal_id);
   const accepted = (ACCEPTED_ROUTE_HINTS as readonly string[]).includes(route);
   const routeHint = accepted ? (route as Proposal['routeHint']) : undefined;
   return {
@@ -290,6 +293,7 @@ function parseProposal(raw: unknown): ParsedProposal | null {
     bet: str(o.bet),
     cheapExperiment,
     routeHint,
+    ...(targetGoalId ? { targetGoalId } : {}),
     // Routing is UNCHANGED by this record: an unaccepted hint still coerces to
     // undefined (→ DEFAULT_ROUTING_RAIL). We only stop throwing away the fact
     // that the model asked for something else. An ABSENT hint is not a drop.
@@ -377,6 +381,7 @@ export async function recombineProposals(
               addressesPatternRefs,
               ...(seededByRefs.length ? { seededByRefs } : {}),
               ...(parsed.routeHint ? { routeHint: parsed.routeHint } : {}),
+              ...(parsed.targetGoalId ? { targetGoalId: parsed.targetGoalId } : {}),
               // WI-39879: the unaccepted ask rides ON the proposal too, not only in
               // the batch tally below. Routing is UNCHANGED — classifyProposal reads
               // `routeHint` alone, which is still undefined here — but the proposal

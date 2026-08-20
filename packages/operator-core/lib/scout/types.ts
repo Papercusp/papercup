@@ -410,6 +410,12 @@ export interface Proposal {
    */
   routeHint?: 'plan' | 'gym' | 'improvement' | 'instance' | 'goal';
   /**
+   * Existing goal to amend when `routeHint === 'goal'` (D-004). A target does
+   * not create a sixth rail and does not route by itself: goal-with-target is
+   * an amendment; goal-without-target remains creation.
+   */
+  targetGoalId?: string;
+  /**
    * WI-39879 — the rail the model ASKED FOR that intake did not accept, recorded
    * verbatim so a starved rail is READABLE rather than merely countable.
    *

@@ -210,7 +210,7 @@ describe('recombineProposals — dropped routeHint signal', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const r = await recombineProposals([scored({ idea: idea({ id: 'g' }) })], {
-        llmCall: fakeProposer({ ...COMPLETE_PROPOSAL, route: 'goal' }),
+        llmCall: fakeProposer({ ...COMPLETE_PROPOSAL, route: 'goal', targetGoalId: 'goal-existing' }),
       });
       // Routing is UNCHANGED: the hint is still dropped, exactly as before.
       expect(r.proposals).toHaveLength(1);
@@ -222,6 +222,9 @@ describe('recombineProposals — dropped routeHint signal', () => {
       // so this is the copy that survives into scout_cycle_stage_artifacts and makes
       // the goal-draft queue readable. Still routing-neutral: routeHint stays undefined.
       expect(r.proposals[0].droppedRouteHint).toBe('goal');
+      // P-006/D-004: the target survives independently of the still-held intake
+      // decision. This does NOT widen route acceptance: routeHint remains absent.
+      expect(r.proposals[0].targetGoalId).toBe('goal-existing');
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toContain('goal×1');
     } finally {
@@ -415,4 +418,3 @@ type MissingFromIncompleteList = Exclude<
 >;
 // @ts-expect-error — the four missing members make Exclude non-never, so AssertNever must refuse to compile. (Keep this directive and the line it guards adjacent and single-line: a directive whose next line is a comment or an unfinished expression suppresses nothing and reports as unused.)
 export type IncompleteRouteHintListIsRejected = AssertNever<MissingFromIncompleteList>;
-

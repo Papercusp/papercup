@@ -197,6 +197,29 @@ describe('buildScoutCycleDeps — route wiring (ctx-bound plan creator)', () => 
     expect(planDrafts).toHaveLength(1);
     expect(decisions[0].routedRef).toBe(`plan:${planDrafts[0].slug}`);
   });
+
+  it('wires the injected amendment port for goal-with-target without calling goal creation', async () => {
+    const goalAmendmentDispatch = vi.fn(async ({ targetGoalId }: { targetGoalId: string }) => ({
+      goalId: targetGoalId,
+    }));
+    const goalDispatch = vi.fn(async () => ({ goalId: 'wrong-new-goal' }));
+    const { deps } = build({ goalAmendmentDispatch, goalDispatch });
+    const proposal = fixtureProposal({
+      id: 'prop-amend',
+      routeHint: 'goal',
+      targetGoalId: 'goal-existing',
+    });
+
+    const decisions = await deps.route([proposal]);
+
+    expect(decisions[0]).toMatchObject({
+      proposalId: 'prop-amend',
+      rail: 'goal',
+      routedRef: 'goal:goal-existing',
+    });
+    expect(goalAmendmentDispatch).toHaveBeenCalledWith({ proposal, targetGoalId: 'goal-existing' });
+    expect(goalDispatch).not.toHaveBeenCalled();
+  });
 });
 
 describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading P-005)', () => {

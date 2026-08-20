@@ -27,6 +27,7 @@ import {
   proposalTitle,
   proposalToGymView,
   routeProposals,
+  type GoalAmendmentDispatchRequest,
   type GoalDispatchRequest,
   type RouterPorts,
   type RoutingDecision,
@@ -288,12 +289,20 @@ describe('routeProposals', () => {
 /* ── the goal rail (blender-loop-repair-and-opus5-xhigh P-013 / D-005) ── */
 
 describe('goal rail', () => {
-  const goalHinted = (id: string) => fixtureProposal({ id, routeHint: 'goal' });
+  const goalHinted = (id: string, over: Partial<Proposal> = {}) =>
+    fixtureProposal({ id, routeHint: 'goal', ...over });
 
   it('classifyProposal follows an explicit goal routeHint', () => {
     const c = classifyProposal(fixtureProposal({ routeHint: 'goal' }));
     expect(c.rail).toBe('goal');
     expect(c.followedHint).toBe(true);
+  });
+
+  it('goal-with-target stays on the amendment path even when creation is gated or capped', () => {
+    const targeted = goalHinted('amend', { targetGoalId: 'goal-existing' });
+    expect(decideRoutes([targeted], { goalEnabled: false, maxGoalsPerCycle: 0 })[0].rail).toBe('goal');
+    // The zero creation cap still applies to an untargeted proposal.
+    expect(decideRoutes([goalHinted('create')], { maxGoalsPerCycle: 0 })[0].rail).toBe('plan');
   });
 
   it('isGoalScaleProposal: explicit hint always counts; otherwise the conservative marker scan', () => {
@@ -435,6 +444,45 @@ describe('goal rail', () => {
     expect(requests[0].title.length).toBeGreaterThan(0);
     expect(requests[0].killCriterion).toContain('spin count unchanged');
     expect(requests[0].budgetCents).toBe(7500);
+  });
+
+  it('routeProposals sends goal-with-target to amendment, never creation', async () => {
+    const amendments: GoalAmendmentDispatchRequest[] = [];
+    const creations: GoalDispatchRequest[] = [];
+    const { ports } = makeFakePorts();
+    ports.goalAmendmentDispatch = async (req) => {
+      amendments.push(req);
+      return { goalId: req.targetGoalId };
+    };
+    ports.goalDispatch = async (req) => {
+      creations.push(req);
+      return { goalId: 'wrong-new-goal' };
+    };
+    const proposal = goalHinted('amend-1', { targetGoalId: 'goal-existing' });
+
+    const res = await routeProposals([proposal], ports, { goalEnabled: false, maxGoalsPerCycle: 0 });
+
+    expect(res.decisions[0].routedRef).toBe('goal:goal-existing');
+    expect(res.failed).toEqual([]);
+    expect(amendments).toEqual([{ proposal, targetGoalId: 'goal-existing' }]);
+    expect(creations).toEqual([]);
+  });
+
+  it('a targeted proposal never falls through to creation when its amendment port is absent', async () => {
+    const creations: GoalDispatchRequest[] = [];
+    const { ports } = makeFakePorts();
+    ports.goalDispatch = async (req) => {
+      creations.push(req);
+      return { goalId: 'wrong-new-goal' };
+    };
+    const res = await routeProposals(
+      [goalHinted('amend-1', { targetGoalId: 'goal-existing' })],
+      ports,
+    );
+    expect(res.decisions[0].error).toMatch(/goalAmendmentDispatch port missing/);
+    expect(res.decisions[0].routedRef).toBeUndefined();
+    expect(res.failed).toEqual(['amend-1']);
+    expect(creations).toEqual([]);
   });
 
   it('a goal-routed decision with NO goalDispatch port fails defensively, never aborting the batch', async () => {

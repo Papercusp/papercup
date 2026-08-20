@@ -283,6 +283,21 @@ describe('goals:update — unrestricted amendments are always reversible from hi
       before: 50000,
       after: 75000,
     });
+    expect(detail.changes.find((change) => change.field === 'title')).toEqual({
+      field: 'title',
+      before: 'Ship a paid app',
+      after: 'Ship a profitable app',
+    });
+    expect(detail.changes.find((change) => change.field === 'body')).toEqual({
+      field: 'body',
+      before: 'the original statement',
+      after: 'the revised outcome',
+    });
+    expect(detail.changes.find((change) => change.field === 'killCriterion')).toEqual({
+      field: 'killCriterion',
+      before: 'no paying user after 2 weeks',
+      after: 'no repeat purchase after 30 days',
+    });
   });
 
   it('generates an explicit reason when a non-pause caller omitted one', async () => {

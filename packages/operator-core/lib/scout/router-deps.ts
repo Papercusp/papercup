@@ -29,6 +29,7 @@ import type { Proposal } from './types';
 import {
   proposalTitle,
   type CapturePort,
+  type GoalAmendmentDispatchPort,
   type GoalDispatchPort,
   type GymDispatchPort,
   type InstanceDispatchPort,
@@ -241,5 +242,92 @@ export function buildGoalDispatchPort(opts: GoalDispatchPortOptions): GoalDispat
       console.warn(`[scout/goal-rail] goal ${res.goalId}: ${w}`);
     }
     return { goalId: res.goalId };
+  };
+}
+
+/* ────────────────────────────────────────────────────────────────────────
+ * goal-with-target → goals:update (D-004/D-013 — amendment, never creation)
+ * ──────────────────────────────────────────────────────────────────────── */
+
+export interface GoalAmendmentDispatchPortOptions {
+  /** Harness that owns the Scout cycle; carried into the in-process tool ctx. */
+  harnessSlug: string;
+  /** Workspace override (default: the active workspace at dispatch time). */
+  workspaceId?: string;
+  /** Audit author written by goals:update history. */
+  uiClientId?: string;
+}
+
+export interface GoalUpdateDispatchArgs {
+  id: string;
+  body: string;
+  reason: string;
+}
+
+/** Injectable only so the proposal→goals:update mapping is unit-testable. The
+ * production default dispatches the registered tool itself — never duplicate SQL. */
+export type GoalUpdateDispatcher = (
+  args: GoalUpdateDispatchArgs,
+  opts: GoalAmendmentDispatchPortOptions,
+) => Promise<unknown>;
+
+async function dispatchGoalUpdateThroughTool(
+  args: GoalUpdateDispatchArgs,
+  opts: GoalAmendmentDispatchPortOptions,
+): Promise<unknown> {
+  const [{ handleHttpToolRequest }, { ADMIN_PROXY_HOST_EXTRAS }, { activeWorkspaceId }] = await Promise.all([
+    import('@papercusp/agent-mcp'),
+    import('../endpoint-route/routes/admin/proxy-host-extras'),
+    import('../workspace-registry'),
+  ]);
+  const searchParams = new URLSearchParams({
+    superuser: '1',
+    client: opts.uiClientId ?? 'scout-goal-amendment',
+    harness: opts.harnessSlug,
+    workspace: opts.workspaceId ?? activeWorkspaceId(),
+  });
+  const response = await handleHttpToolRequest(
+    {
+      method: 'POST',
+      pathname: '/api/agent-tools/goals/update',
+      searchParams,
+      headers: {},
+      body: args,
+    },
+    ADMIN_PROXY_HOST_EXTRAS,
+  );
+  if (response.status !== 200) {
+    throw new Error(`goals:update returned HTTP ${response.status}`);
+  }
+  const envelope = response.body as { content?: Array<{ type: string; text?: string }> };
+  const text = envelope.content?.find((part) => part.type === 'text')?.text;
+  const parsed = text ? (JSON.parse(text) as Record<string, unknown>) : {};
+  const reasons = Array.isArray(parsed.degradedReasons)
+    ? parsed.degradedReasons.filter((reason): reason is string => typeof reason === 'string').join('; ')
+    : '';
+  if (parsed.ok === false || parsed.data === null || parsed.degraded === true) {
+    throw new Error(`goals:update refused amendment${reasons ? `: ${reasons}` : ''}`);
+  }
+  return parsed;
+}
+
+/**
+ * Production amendment adapter. It changes only the goal body and records a
+ * proposal-derived reason: title, budget, kill criterion, and status remain
+ * untouched unless a future Proposal type explicitly carries those fields.
+ * `goals:update` supplies the append-only before/after audit history.
+ */
+export function buildGoalAmendmentDispatchPort(
+  opts: GoalAmendmentDispatchPortOptions,
+  dispatch: GoalUpdateDispatcher = dispatchGoalUpdateThroughTool,
+): GoalAmendmentDispatchPort {
+  return async ({ proposal, targetGoalId }) => {
+    const body = improvementBody(proposal).slice(0, 20_000);
+    const reason = (
+      `Scout proposal ${proposal.id}: ` +
+      (proposal.whyNew?.trim() || proposal.bet?.trim() || proposal.framing?.trim() || 'amendment')
+    ).slice(0, 500);
+    await dispatch({ id: targetGoalId, body, reason }, opts);
+    return { goalId: targetGoalId };
   };
 }
