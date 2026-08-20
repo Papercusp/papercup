@@ -4689,6 +4689,36 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
       expect(out?.elapsedSec).toBe(720);
     });
 
+    it('does not mix cached run A detail with the live lock identity for back-to-back run B', () => {
+      const out = mapCheckpointRunInFlight(
+        {
+          activeRun: {
+            active: true,
+            candidate: 'run-a-candidate',
+            startedAtMs: NOW - 20 * 60_000,
+            elapsedSec: 20 * 60,
+          },
+          computedAtMs: NOW - 1_000,
+        },
+        NOW,
+        null,
+        {
+          held: true,
+          startedAtMs: NOW - 4_000,
+          elapsedSec: 4,
+          pid: 4242,
+        },
+      );
+
+      expect(out).toMatchObject({
+        active: true,
+        activeSource: 'run-lock',
+        startedAtMs: NOW - 4_000,
+        elapsedSec: 4,
+      });
+      expect(out?.candidate).toBeNull();
+    });
+
     it('attaches the retriage marker on a lock-driven upgrade, so the cron re-triage window stays readable', () => {
       const out = mapCheckpointRunInFlight(staleIdle, NOW, MARKER_FIXTURE, { held: true, elapsedSec: 900 });
       expect(out?.active).toBe(true);

@@ -3028,7 +3028,7 @@ export interface PipelinePositionDeps {
    * never throws, and a `null` degrades this leg to exactly its previous cache-only
    * behaviour rather than to a wrong answer.
    */
-  readCheckpointRunLock?: (root: string) => Promise<{ held: boolean; elapsedSec: number | null } | null>;
+  readCheckpointRunLock?: (root: string) => Promise<CheckpointRunLockReading | null>;
   /**
    * EI-19327418148563597: raw bytes of a repo-relative file, for the release-content-drift
    * check (does the RELEASE checkout :3070 serves differ from the tree the caller is
@@ -3087,10 +3087,27 @@ const realReadCheckpointRunSnapshot = async (): Promise<{
  * `PAPERCUSP_INTEGRATION_ROOT`, which is what green-checkpoint's own `cfg.integrationRoot`
  * resolves from when it ACQUIRES the lock.
  */
-const realReadCheckpointRunLock = async (root: string): Promise<{ held: boolean; elapsedSec: number | null } | null> => {
+interface CheckpointRunLockReading {
+  held: boolean;
+  elapsedSec: number | null;
+  /** Approximate lock-owner start, derived from the same live elapsed reading. */
+  startedAtMs?: number | null;
+  /** Verified lock-owner PID, when the underlying probe can provide it. */
+  pid?: number | null;
+}
+
+const realReadCheckpointRunLock = async (root: string): Promise<CheckpointRunLockReading | null> => {
   try {
     const { isCheckpointRunLockHeldCheap } = await import('./release-checkpoint-launch');
-    return isCheckpointRunLockHeldCheap(root);
+    const reading = isCheckpointRunLockHeldCheap(root);
+    return {
+      ...reading,
+      // The lock probe computes elapsedSec from owner.json's acquisition timestamp. Preserve
+      // that same identity for the mapper instead of allowing a cached systemd run's start
+      // timestamp to pair with this lock's elapsed reading.
+      startedAtMs:
+        reading.held && reading.elapsedSec != null ? Date.now() - reading.elapsedSec * 1000 : null,
+    };
   } catch {
     return null;
   }
@@ -3112,6 +3129,14 @@ const realReadCheckpointRunLock = async (root: string): Promise<{ held: boolean;
  * this window, the live lock wins.
  */
 const CHECKPOINT_CACHE_TRUSTED_MS = 90_000;
+
+/**
+ * systemd's ExecMainStartTimestamp and the run-lock's acquisition timestamp are recorded at
+ * adjacent points while the same process starts. They are not byte-identical, so allow a small
+ * bounded skew when joining the two observations. A larger gap means a back-to-back run, not
+ * clock noise, and cached detail must not be reused.
+ */
+const CHECKPOINT_RUN_IDENTITY_TOLERANCE_MS = 30_000;
 
 /**
  * Pure: shape the cached `dev.gitPipeline` derived-read's `activeRun` + its
@@ -3153,7 +3178,7 @@ export function mapCheckpointRunInFlight(
    * AUTHORITATIVE for liveness: it is an observation of NOW, pid-verified, and blind to
    * neither origin, whereas `cached` is a snapshot of unbounded age.
    */
-  liveLock?: { held: boolean; elapsedSec: number | null } | null,
+  liveLock?: CheckpointRunLockReading | null,
   /**
    * EI-19931692050586322: the run's OWN published `inFlightCandidate` marker, already
    * freshness-checked by `parseInFlightCandidate`. Authoritative, exactly like `retriage` —
@@ -3197,23 +3222,40 @@ export function mapCheckpointRunInFlight(
   const lockDecides = liveLock != null && (liveLock.held || !(cachedActive && cacheCoversStartup));
   const active = lockDecides ? liveLock!.held : cachedActive;
 
-  // Does the cached DETAIL describe the run we are now reporting? When the lock overturned
-  // the cached verdict, the cache was describing a different moment — a run that has since
-  // finished, or an idle gate that has since started one — so its candidate/timings must NOT
-  // be re-presented as current. Emitting them anyway is how a finished run's candidate gets
-  // read as "what the gate is judging right now".
-  const cachedDescribesNow = cachedRun != null && cachedRun.active === active;
-  const candidate = cachedDescribesNow ? cachedRun!.candidate : null;
-  const startedAtMs = cachedDescribesNow
-    ? cachedRun!.startedAtMs
-    : active && liveLock?.elapsedSec != null
-      ? nowMs - liveLock.elapsedSec * 1000
+  // Does the cached DETAIL describe the run we are now reporting? Comparing only `active`
+  // aliases every active run to every other active run. In particular, a cache for run A can
+  // be active while the live lock has already moved to run B, which used to mix A.startedAtMs
+  // with B.elapsedSec. Join on the two run-start observations before reusing any cached detail;
+  // an unjoinable live lock is deliberately UNKNOWN rather than permission to guess.
+  const liveLockStartedAtMs =
+    liveLock?.held === true
+      ? Number.isFinite(liveLock.startedAtMs)
+        ? (liveLock.startedAtMs as number)
+        : liveLock.elapsedSec != null && Number.isFinite(liveLock.elapsedSec)
+          ? nowMs - liveLock.elapsedSec * 1000
+          : null
       : null;
-  // Prefer the lock's elapsed: the cached one is frozen at cache-compute time and understates
-  // a live run's age by exactly `asOfAgeMs` (a 12m run reported as "running ~5m").
+  const cachedIdentityMatchesLiveLock =
+    liveLock?.held !== true ||
+    (cachedRun?.active === true &&
+      cachedRun.startedAtMs !== null &&
+      liveLockStartedAtMs !== null &&
+      Math.abs(cachedRun.startedAtMs - liveLockStartedAtMs) <= CHECKPOINT_RUN_IDENTITY_TOLERANCE_MS);
+  const cachedDescribesNow =
+    cachedRun != null && cachedRun.active === active && cachedIdentityMatchesLiveLock;
+  const candidate = cachedDescribesNow ? cachedRun!.candidate : null;
+  // When a live lock answers, derive BOTH timing fields from that same lock identity. The
+  // cached elapsed is frozen at cache-compute time and the cached start may belong to another
+  // active run; using either beside the live lock would recreate the mixed-run verdict.
+  const startedAtMs =
+    liveLock?.held === true
+      ? liveLockStartedAtMs ?? null
+      : cachedDescribesNow
+        ? cachedRun!.startedAtMs
+        : null;
   const elapsedSec =
-    active && liveLock?.held && liveLock.elapsedSec != null
-      ? liveLock.elapsedSec
+    liveLock?.held === true
+      ? liveLock.elapsedSec ?? null
       : cachedDescribesNow
         ? cachedRun!.elapsedSec
         : null;
