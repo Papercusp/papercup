@@ -32,7 +32,7 @@ import {
 import { sendMessage } from '../coordination/messages';
 import { getPresence } from '../coordination/presence';
 import { CUE_AUTHORITY_FIELD, fleetScopedCueAuthority } from '../coordination/cue-authority';
-import { hostAudienceResolvers } from '../coordination/audience-host';
+import { listFleetControlMembers } from '../coordination/audience-host';
 import { resolveFleetCaller } from './_shared';
 import { classifyFleetControlInvoker } from './fleet-auth';
 import type { ResolveIdentityCtx } from '../coordination/identity';
@@ -247,9 +247,7 @@ export async function applyFleetControl(
   let liveMembers: string[] | undefined;
   if (action === 'wind-down') {
     try {
-      liveMembers = (await hostAudienceResolvers.listFleetMembers(slug)).filter(
-        (id) => id !== ownerId,
-      );
+      liveMembers = (await listFleetControlMembers(slug)).filter((id) => id !== ownerId);
       const releasedAt = new Date().toISOString();
       await Promise.allSettled(
         liveMembers.map((memberOwnerId) =>
@@ -278,7 +276,7 @@ export async function applyFleetControl(
     try {
       const members =
         liveMembers ??
-        (await hostAudienceResolvers.listFleetMembers(slug)).filter((id) => id !== ownerId);
+        (await listFleetControlMembers(slug)).filter((id) => id !== ownerId);
       if (members.length > 0) {
         const { summary, body } = fleetControlCueText(
           action,

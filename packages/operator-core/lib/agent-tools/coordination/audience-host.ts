@@ -38,6 +38,46 @@ const storeOpts = {
 const subStore = new PgEntitySubscriptionStore(storeOpts);
 const linkStore = new PgLinkStore(storeOpts);
 
+/**
+ * Resolve the live roster used by typed fleet control operations.
+ *
+ * This is intentionally separate from the @fleet: delivery audience: muted and
+ * digest members are still fleet members and must receive binding wind-down/resume
+ * control, including the durable release latch that prevents queued wakes from
+ * reanimating a released session.
+ */
+export async function listFleetControlMembers(fleetSlug: string): Promise<string[]> {
+  const slug = fleetSlugFromName(fleetSlug);
+  const ws = coordWorkspaceId();
+  const localMembers = await liveFleetMemberIds(slug, ws);
+
+  // A session leading several fleets carries only its newest fleet label on the
+  // singular coord_presence.fleet_slug column (mig 407). Union the durable or
+  // federated leader so control reaches every fleet it leads.
+  let federatedMembers: FederatedFleetMemberRow[] = [];
+  try {
+    federatedMembers = await listFederatedFleetMembers({
+      workspaceId: ws,
+      fleetSlug: slug,
+      staleMs: PRESENCE_STALE_MS,
+    });
+  } catch {
+    /* federated roster unavailable — local members alone */
+  }
+  let localRegistryLeader: string | null = null;
+  try {
+    localRegistryLeader = (await getFleet(ws, slug))?.leaderOwnerId ?? null;
+  } catch {
+    /* registry unavailable — no local leader to union */
+  }
+  const leaderOwnerId = resolveFederatedFleetLeader({ localRegistryLeader, federatedMembers });
+  return unionFederatedFleetMembers({
+    localMemberIds: localMembers,
+    federatedMemberIds: federatedMembers.map((m) => m.ownerId),
+    leaderOwnerId,
+  });
+}
+
 export const hostAudienceResolvers: AudienceResolvers = {
   async listTargetSubscribers(targetKind, targetRef) {
     const rows = await subStore.listTargetSubscribers(targetKind, targetRef);
@@ -135,45 +175,7 @@ export const hostAudienceResolvers: AudienceResolvers = {
     // NB: this is the deliverable audience, NOT a membership check — the catch-up gate
     // checks membership directly (fetchPresenceFleet) so a muted member still reads history.
     const slug = fleetSlugFromName(fleetSlug);
-    const ws = coordWorkspaceId();
-    const localMembers = await liveFleetMemberIds(slug, ws);
-    // A session leading SEVERAL fleets carries only its newest fleet's label on
-    // coord_presence.fleet_slug (the column is singular, mig 407), so the
-    // presence fold silently drops the leader from every OTHER fleet's member
-    // audience. The leader is definitionally a member: union in the durable
-    // registry leader so `@fleet:<slug>` always reaches them. Overrides still
-    // apply below — a leader who muted their own fleet stays muted.
-    //
-    // P-301 — the CROSS-MACHINE generalization: once a fleet spans machines, its
-    // members + leader can live on different boxes. Fold in the FEDERATED members
-    // (remote live sessions carrying this fleet_slug, projected from the
-    // session-presence gossip into shared_session_presence, mig 479) and a
-    // FEDERATED leader (when the durable agent_fleets row lives on another machine,
-    // so the local registry read is null, the leader is derived from a federated
-    // member advertising fleet_role='leader'). All federated reads are best-effort:
-    // empty/failing → exactly today's local-only audience.
-    let federatedMembers: FederatedFleetMemberRow[] = [];
-    try {
-      federatedMembers = await listFederatedFleetMembers({
-        workspaceId: ws,
-        fleetSlug: slug,
-        staleMs: PRESENCE_STALE_MS,
-      });
-    } catch {
-      /* federated roster unavailable — local members alone */
-    }
-    let localRegistryLeader: string | null = null;
-    try {
-      localRegistryLeader = (await getFleet(ws, slug))?.leaderOwnerId ?? null;
-    } catch {
-      /* registry unavailable — no local leader to union */
-    }
-    const leaderOwnerId = resolveFederatedFleetLeader({ localRegistryLeader, federatedMembers });
-    const members = unionFederatedFleetMembers({
-      localMemberIds: localMembers,
-      federatedMemberIds: federatedMembers.map((m) => m.ownerId),
-      leaderOwnerId,
-    });
+    const members = await listFleetControlMembers(slug);
     const overrides = await getFleetDeliveryOverrides(slug);
     if (overrides.size === 0) return members;
     return members.filter((id) => {

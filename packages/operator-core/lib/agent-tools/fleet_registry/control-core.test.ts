@@ -24,6 +24,7 @@ vi.mock('../../agent-fleets-store', async (importOriginal) => ({
 vi.mock('../coordination/messages', () => ({ sendMessage: vi.fn(async () => ({ msg_id: 'm-cue' })) }));
 vi.mock('../coordination/presence', () => ({ getPresence: vi.fn(async () => null) }));
 vi.mock('../coordination/audience-host', () => ({
+  listFleetControlMembers: vi.fn(async () => [] as string[]),
   hostAudienceResolvers: { listFleetMembers: vi.fn(async () => [] as string[]) },
 }));
 vi.mock('../../session-brief', async (importOriginal) => ({
@@ -44,7 +45,7 @@ import {
 import { getFleet, setFleetControlState, type AgentFleetRecord } from '../../agent-fleets-store';
 import { sendMessage } from '../coordination/messages';
 import { getPresence } from '../coordination/presence';
-import { hostAudienceResolvers } from '../coordination/audience-host';
+import { hostAudienceResolvers, listFleetControlMembers } from '../coordination/audience-host';
 import { CUE_AUTHORITY_FIELD } from '../coordination/cue-authority';
 import { buildFleetDrainStamp } from './drain-stamp';
 import { clearSessionBriefReleasedForFleet, markSessionBriefReleased } from '../../session-brief';
@@ -53,7 +54,8 @@ const getFleetM = vi.mocked(getFleet);
 const setControlM = vi.mocked(setFleetControlState);
 const sendM = vi.mocked(sendMessage);
 const presenceM = vi.mocked(getPresence);
-const membersM = vi.mocked(hostAudienceResolvers.listFleetMembers);
+const membersM = vi.mocked(listFleetControlMembers);
+const deliveryMembersM = vi.mocked(hostAudienceResolvers.listFleetMembers);
 const drainStampM = vi.mocked(buildFleetDrainStamp);
 const markReleasedM = vi.mocked(markSessionBriefReleased);
 const clearReleasedM = vi.mocked(clearSessionBriefReleasedForFleet);
@@ -84,6 +86,7 @@ beforeEach(() => {
   presenceM.mockResolvedValue(null as never);
   sendM.mockResolvedValue({ msg_id: 'm-cue' } as never);
   membersM.mockResolvedValue([]);
+  deliveryMembersM.mockResolvedValue([]);
   drainStampM.mockResolvedValue(null); // default: fails-soft, no auto-stamp
   markReleasedM.mockResolvedValue(true);
   clearReleasedM.mockResolvedValue(0);
@@ -158,6 +161,22 @@ describe('applyFleetControl', () => {
     expect(Math.min(...markReleasedM.mock.invocationCallOrder)).toBeLessThan(
       Math.min(...sendM.mock.invocationCallOrder),
     );
+  });
+
+  it('uses the control roster so muted/digest members receive the binding release cue', async () => {
+    getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+    // The delivery audience would omit these members; typed control must not.
+    deliveryMembersM.mockResolvedValue(['m-full']);
+    membersM.mockResolvedValue(['m-muted', 'm-digest', 'm-full', callerRef.ownerId]);
+
+    const r = await applyFleetControl({} as never, 'backend', 'wind-down', 'release cut');
+
+    expect(r).toMatchObject({
+      ok: true,
+      notified: ['m-muted', 'm-digest', 'm-full'],
+    });
+    expect(markReleasedM.mock.calls.map(([id]) => id)).toEqual(['m-muted', 'm-digest', 'm-full']);
+    expect(deliveryMembersM).not.toHaveBeenCalled();
   });
 
   it('an su session invokes as OWNER (the owner-authority proxy) even when not leader', async () => {

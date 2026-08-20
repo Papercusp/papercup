@@ -48,6 +48,7 @@ import {
   canonicalizeAudienceSelector,
   deriveAudienceKey,
   hostAudienceResolvers,
+  listFleetControlMembers,
 } from './audience-host';
 import { listPresence } from './presence';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
@@ -213,6 +214,24 @@ describe('hostAudienceResolvers.listFleetMembers — multi-fleet leader union (m
     vi.mocked(getFleet).mockResolvedValue({ leaderOwnerId: 'su-multi-leader' } as never);
     vi.mocked(getFleetDeliveryOverrides).mockResolvedValue(new Map([['su-multi-leader', 'muted']]) as never);
     expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['lane-a']);
+  });
+
+  it('control roster bypasses muted/digest delivery overrides for typed fleet control', async () => {
+    vi.mocked(liveFleetMemberIds).mockResolvedValue(['muted-member', 'digest-member', 'full-member']);
+    vi.mocked(getFleet).mockResolvedValue(null as never);
+    vi.mocked(getFleetDeliveryOverrides).mockResolvedValue(
+      new Map([
+        ['muted-member', 'muted'],
+        ['digest-member', 'digest'],
+      ]) as never,
+    );
+
+    expect(await listFleetControlMembers('git-plan')).toEqual([
+      'muted-member',
+      'digest-member',
+      'full-member',
+    ]);
+    expect(await hostAudienceResolvers.listFleetMembers('git-plan')).toEqual(['full-member']);
   });
 });
 
