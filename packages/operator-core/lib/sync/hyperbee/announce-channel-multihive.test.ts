@@ -53,7 +53,9 @@ interface FakeChannel {
   open(): void;
 }
 
-function makeFakeMux(fakeOpts: { firstCreateReturnsNull?: boolean } = {}) {
+function makeFakeMux(
+  fakeOpts: { firstCreateReturnsNull?: boolean; openStaysPending?: boolean } = {},
+) {
   const toKey = (protocol: string, id?: Buffer | null): string =>
     protocol + '##' + (id ? Buffer.from(id).toString('hex') : '');
   const channels = new Map<string, FakeChannel>();
@@ -82,7 +84,7 @@ function makeFakeMux(fakeOpts: { firstCreateReturnsNull?: boolean } = {}) {
         },
         open() {
           ch.opened = true;
-          ch.onopen?.();
+          if (!fakeOpts.openStaysPending) ch.onopen?.();
         },
       };
       channels.set(key, ch);
@@ -248,6 +250,21 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
     expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['late-accepted-log']);
     expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
     expect(announcePairingStateForTopic(t1.toString('hex')).remoteOpenObserved).toBe(true);
+  });
+
+  it('WI-40008: a local open on a shared socket is not remote intent for that topic', () => {
+    const topic = Buffer.alloc(32, 23);
+    const mux = makeFakeMux({ openStaysPending: true });
+    const socket = { userData: mux };
+
+    openAnnounceChannel(socket, topic, { ourAnnounce: announce('local-only-topic') });
+
+    expect(announcePairingStateForTopic(topic.toString('hex'))).toMatchObject({
+      present: true,
+      attempts: 1,
+      everPaired: false,
+      remoteOpenObserved: false,
+    });
   });
 
   it('waits for the Noise stream opened promise before opening the announce channel', async () => {

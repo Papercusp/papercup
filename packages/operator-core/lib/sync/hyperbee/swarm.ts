@@ -1187,13 +1187,16 @@ export function openAnnounceChannel(
             return;
           }
           const remoteTopicHex = id.toString('hex');
+          const cur = states.get(remoteTopicHex);
           // WI-40008: this callback is the positive witness that the REMOTE
           // peer opened the same topic. A process-global swarm connection by
           // itself proves only that the peer shares some topic; without this
           // witness a private side-topic's local channel attempts can trigger
           // the unpaired repair and tear down a healthy socket used elsewhere.
-          recordAnnounceRemoteOpen(remoteTopicHex);
-          const cur = states.get(remoteTopicHex);
+          // Record only topics this muxer already tracks: a remote can propose
+          // arbitrary ids, and the module-level pairing map must not become an
+          // unbounded registry of peer-controlled unknown topics.
+          if (cur) recordAnnounceRemoteOpen(remoteTopicHex);
           announceDebug(
             `pair mux=${muxId} topic=${id.toString('hex').slice(0, 16)} hasState=${Boolean(
               cur,
