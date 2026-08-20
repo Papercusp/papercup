@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 745,
+  "count": 748,
   "tools": [
     {
       "name": "ablation:report",
@@ -17026,6 +17026,80 @@
       }
     },
     {
+      "name": "plans:bind-spec-evidence",
+      "http": {
+        "path": "/api/agent-tools/plans/bind-spec-evidence",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Bind tests, fixtures, coverage-census rows, mutations/counterexamples, checks, manual proof, or operational evidence to an exact immutable spec revision and work item. Legacy coversVALs are accepted as sourceValId aliases. Exact replays are idempotent; changed fingerprints append history.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Recording execution proof for one or more plan specs before work-item completion or plan acceptance.",
+        "notWhen": "Authoring behavior — plans:set-specs. Running a test — testing:run.",
+        "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:get-spec-evidence with current fingerprints."
+      }
+    },
+    {
       "name": "plans:disarm-schedule",
       "http": {
         "path": "/api/agent-tools/plans/disarm-schedule",
@@ -17127,6 +17201,80 @@
         "when": "Correcting or rewriting a SPECIFIC part of a plan body the structured verbs cannot reach — a stale citation, a wrong line, a paragraph in `## Background` or a decision body. The default for small/targeted prose fixes.",
         "notWhen": "Replacing the whole Now block (set-now), appending a decision/item (add-decision / add-item), or flipping status (set-status) — use the structured verb. A wholesale rewrite of most of the document — use plans:set-content / set-content-chunk.",
         "chaining": "Read the current text (plans:get) → plans:edit { slug, old_string, new_string }. For several edits, call plans:edit repeatedly (each is CAS-safe on its own match)."
+      }
+    },
+    {
+      "name": "plans:evaluate-spec-test-adequacy",
+      "http": {
+        "path": "/api/agent-tools/plans/evaluate-spec-test-adequacy",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Grade each affected current spec revision as one row against the reusable spec-test-adequacy rubric. Resolves exact P-005 evidence bindings and returns scorecards:emit-compatible drafts plus every fail/unknown would-block reason. Read-only; it never files a verdict.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "During implementation feedback or immediately before attempting work-item completion for spec-covered behavior.",
+        "notWhen": "Authoring clauses — plans:set-specs. Binding proof — plans:bind-spec-evidence. Filing a returned draft — scorecards:emit.",
+        "chaining": "plans:get-specs → plans:bind-spec-evidence → plans:evaluate-spec-test-adequacy with current fingerprints → scorecards:emit each passing draft. P-007 consumes current emitted rows at work_items:complete."
       }
     },
     {
@@ -17253,6 +17401,39 @@
         "when": "Inspecting one or more specific P-NNN (their status / blockers / phase / importance) without pulling the whole plan. The targeted read between plans:items (many by status) and plans:get (the whole plan). Read several at once via itemIds:[…] (one plan) or items:[…] (cross-plan).",
         "notWhen": "You need the whole plan (Now / decisions / prose) — plans:get. Many items by status — plans:items.",
         "chaining": "plans:get-item { slug, item } → plans:set-status / plans:set-item-blocked-by / plans:set-item-phase to act on it."
+      }
+    },
+    {
+      "name": "plans:get-spec-evidence",
+      "http": {
+        "path": "/api/agent-tools/plans/get-spec-evidence",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read exact work-item/spec-revision evidence and compute per-dimension current|stale|unknown|not-applicable status. Spec currentness comes from the canonical revision pointer; source/test/fixture/rubric/environment values compare with explicit current fingerprints, and missing inputs remain unknown.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "kettle",
+        "worker",
+        "cup"
+      ],
+      "guidance": {
+        "when": "Auditing whether each current plan spec has fresh evidence, including legacy VAL aliases and historical bindings.",
+        "notWhen": "Writing evidence — plans:bind-spec-evidence. Reading behavior without proof — plans:get-specs.",
+        "chaining": "plans:bind-spec-evidence → plans:get-spec-evidence { current:[…] } → completion/acceptance gate."
       }
     },
     {
