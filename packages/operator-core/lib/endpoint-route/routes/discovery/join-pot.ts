@@ -72,10 +72,11 @@ export default defineTool({
     // stamps (hive_pubkey, owner_device_pubkey) onto the registry view, which is the
     // DETERMINISTIC leg the substrate's owner-bootstrap admit resolves from in every
     // process (hive-membership-store.ts leg 0 / Brief-3). Without it this join-BY-ID
-    // path had no source at all: `opts.ownerDevicePubkey` was never supplied, a
-    // join-by-id caller's member links don't carry the binding, and the local-directory
-    // fallback is empty on a fresh joiner — so the view went unstamped and admission
-    // fell back on directory TIMING, the exact race Brief-3 removed. Live-reproduced on
+    // path had no explicit source at all: `opts.ownerDevicePubkey` was never supplied,
+    // the observed gist-less owner path omitted the normally link-carried binding
+    // (WI-38345), and the local-directory fallback was empty on the fresh joiner — so
+    // the view went unstamped and admission fell back on directory TIMING, the exact
+    // race Brief-3 removed. Live-reproduced on
     // the 2-machine gate rig: `owner-resolve → ownerDevice=<null>` on the joiner, the
     // owner's announce conclusively rejected `binding_invalid`, and because announces
     // are never re-delivered the A→B stall is PERMANENT (0 pot_members, never converged).

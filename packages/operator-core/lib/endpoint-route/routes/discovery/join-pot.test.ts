@@ -120,8 +120,9 @@ describe('POST /api/discovery/join-pot (Gap 9)', () => {
   // WI-38343: the owner-device binding is what the substrate's owner-bootstrap
   // admit resolves from (hive-membership-store leg 0 / Brief-3, the DETERMINISTIC
   // leg). This join-BY-ID route never forwarded one, and a join-by-id caller has
-  // no other source: its member links need not carry the binding, and the
-  // local-directory fallback is empty on a fresh joiner. Live-reproduced on the
+  // no other source: the observed gist-less owner path omitted the normally
+  // link-carried binding (WI-38345), and the local-directory fallback was empty
+  // on a fresh joiner. Live-reproduced on the
   // 2-machine gate rig — `owner-resolve → ownerDevice=<null>` on the joiner, the
   // owner's announce conclusively rejected `binding_invalid`, and since announces
   // are never re-delivered the A→B stall is PERMANENT (0 pot_members).
