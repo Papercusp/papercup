@@ -179,9 +179,14 @@ export const FACT_BODY_MAX_CHARS = 1200;
 /** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;
-/** Ordinary facts expire after a week. A convention with no explicit ttlSec
- * uses PostgreSQL's `infinity` timestamp instead (see assertFact). */
+/** Ordinary facts expire after a week. */
 export const FACT_DEFAULT_TTL_SEC = 7 * 24 * 3600;
+/**
+ * WI-39880: conventions stay outside observation-cap churn, but an omitted TTL
+ * must still be bounded so abandoned governance does not accumulate forever in
+ * every orient fold. Re-asserting the stable key refreshes this full window.
+ */
+export const FACT_CONVENTION_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 /** PostgreSQL's canonical no-expiry timestamptz representation. */
 export const FACT_PERMANENT_EXPIRY = 'infinity';
 
@@ -427,7 +432,7 @@ export interface AgentFact {
   settledBy?: string | null;
   createdBy: string;
   updatedAt: string;
-  /** ISO timestamp, or PostgreSQL's `infinity` for an unbounded convention. */
+  /** ISO timestamp, or PostgreSQL's `infinity` for a legacy unbounded row. */
   expiresAt: string;
   /** Migration 801: deliberate retraction audit metadata. These fields are
    * selected by the version-history read; ordinary live folds omit them. */
@@ -627,7 +632,7 @@ export interface AssertFactInput {
    *  invites the re-derivation it exists to prevent. */
   settledBy?: string | null;
   createdBy: string;
-  /** Explicit TTL; omitted conventions are permanent, other facts default to 7d. */
+  /** Explicit TTL; omitted conventions default to 90d, other facts to 7d. */
   ttlSec?: number;
   workspaceId?: string;
   /** F0-2 (federated-scout-gym): OPT-IN federation egress — only shareable
@@ -1147,16 +1152,18 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // EI-18681964809855890: an explicit ttlSec always wins; otherwise a
   // provisional/suspected confidence tier shortens the default (see
   // defaultTtlSecForConfidence) before falling back to FACT_DEFAULT_TTL_SEC.
-  // P-028 / EI-20038280125466267: a declared convention is normative state,
-  // not a decaying observation. With no explicit TTL, store it with
-  // PostgreSQL's `infinity` timestamp; callers can still opt into a bounded
-  // convention lifetime by passing ttlSec explicitly.
-  const permanentConvention = input.kind === 'convention' && input.ttlSec == null && !subjectVolatile;
+  // P-028 / WI-39880: a declared convention is normative state and remains
+  // outside observation-cap churn, but omitted-TTL conventions are bounded to
+  // 90 days. Active governance is refreshed by stable-key re-assertion; stale
+  // governance becomes eligible for the existing expiry reaper instead of
+  // growing the deterministic orient fold forever.
   const ttl = subjectVolatile
     ? (input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_VOLATILE_MAX_TTL_SEC)
     : input.ttlSec && input.ttlSec > 0
       ? input.ttlSec
-      : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
+      : input.kind === 'convention'
+        ? FACT_CONVENTION_DEFAULT_TTL_SEC
+        : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
   const confidence = input.confidence ?? null;
   // P-008 (b), migration 690. `dependsOn` arrives ALREADY RESOLVED (see
   // AssertFactInput.dependsOn) — the store's job is to normalize and persist it,
@@ -1240,7 +1247,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
        ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy ?? null},
-       ${permanentConvention ? sql`'infinity'::timestamptz` : sql`now() + make_interval(secs => ${ttl})`},
+       now() + make_interval(secs => ${ttl}),
        ${input.shareable === true},
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
@@ -2507,6 +2514,16 @@ export async function supersededVersionsForKeys(
  *  retracted > 30d ago — keeps the audit trail bounded. Fail-soft at call site. */
 export async function sweepExpiredFacts(inject?: Sql): Promise<number> {
   const sql = sqlOf(inject);
+  // WI-39880: rows written before conventions received a bounded default carry
+  // `expires_at = 'infinity'`. Merely bounding new asserts would strand that
+  // installed population forever, so the existing reaper also backfills each
+  // legacy row from its last refresh time. This is idempotent: after the first
+  // sweep no matching infinity row remains, and the ordinary expiry branch
+  // below owns its eventual hard-delete (including the 30d history window).
+  await sql`
+    UPDATE harness_shared.agent_facts
+       SET expires_at = updated_at + make_interval(secs => ${FACT_CONVENTION_DEFAULT_TTL_SEC})
+     WHERE kind = 'convention' AND expires_at = 'infinity'::timestamptz`;
   const rows = await sql<{ key: string }[]>`
     DELETE FROM harness_shared.agent_facts
      WHERE expires_at < now() - interval '30 days'

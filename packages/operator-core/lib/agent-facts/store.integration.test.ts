@@ -33,6 +33,7 @@ import {
   renderFactsFold,
   factVersions,
   FACTS_PER_SCOPE_CAP,
+  FACT_CONVENTION_DEFAULT_TTL_SEC,
   FACTS_VOLATILE_PER_SCOPE_CAP,
   FACT_PERMANENT_EXPIRY,
   FACT_VOLATILE_MAX_TTL_SEC,
@@ -41,6 +42,7 @@ import {
   factCitationRef,
   listFactEvictionDisclosures,
   previewFactCapImpact,
+  sweepExpiredFacts,
   type FactDependency,
 } from './store';
 import { isAgentFactWireRow } from '../sync/hyperbee/projections/agent-facts';
@@ -2007,16 +2009,20 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
     expect(f.enforcement).toEqual({ tier: 'structural' });
   });
 
-  it('defaults an unbounded convention to infinity and keeps it out of observation-cap eviction', async () => {
-    const permanent = await assertFact(conv(), db.sql);
-    expect(permanent.expiresAt).toBe(FACT_PERMANENT_EXPIRY);
-    expect(renderFactsFold([permanent])).toContain('(permanent');
+  it('WI-39880: defaults a convention to a bounded 90d lifetime while keeping it out of observation-cap eviction', async () => {
+    const assertedAt = Date.now();
+    const boundedDefault = await assertFact(conv(), db.sql);
+    const remainingSec = (new Date(boundedDefault.expiresAt).getTime() - assertedAt) / 1000;
+    expect(remainingSec).toBeGreaterThan(FACT_CONVENTION_DEFAULT_TTL_SEC - 5);
+    expect(remainingSec).toBeLessThanOrEqual(FACT_CONVENTION_DEFAULT_TTL_SEC + 5);
+    expect(boundedDefault.expiresAt).not.toBe(FACT_PERMANENT_EXPIRY);
+    expect(renderFactsFold([boundedDefault])).not.toContain('(permanent');
     const [stored] = await db.sql<{ expires_at: string }[]>`
       SELECT expires_at::text
         FROM harness_shared.agent_facts
        WHERE workspace_id = ${WS} AND scope = 'workspace' AND key = 'migrations-via-runner'
          AND superseded_at IS NULL`;
-    expect(stored.expires_at).toBe(FACT_PERMANENT_EXPIRY);
+    expect(stored.expires_at).not.toBe(FACT_PERMANENT_EXPIRY);
 
     const bounded = await assertFact(conv({ key: 'bounded-convention', ttlSec: 3600 }), db.sql);
     expect(bounded.expiresAt).not.toBe(FACT_PERMANENT_EXPIRY);
@@ -2038,6 +2044,26 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
     expect((await listConventionFacts({ workspaceId: WS }, db.sql)).map((f) => f.key)).toEqual(
       expect.arrayContaining(['migrations-via-runner', 'bounded-convention']),
     );
+  });
+
+  it('WI-39880: the expiry sweep bounds legacy infinity conventions from their last refresh', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, key, body, created_by, kind, expires_at, updated_at)
+      VALUES
+        (${WS}, 'workspace', 'legacy-convention', 'old governance', 'su-legacy',
+         'convention', 'infinity'::timestamptz, now() - interval '10 days')`;
+
+    await sweepExpiredFacts(db.sql);
+
+    const [legacy] = await db.sql<{ expires_at: string; remaining_days: number }[]>`
+      SELECT expires_at::text,
+             extract(epoch FROM (expires_at - now()))::float / 86400 AS remaining_days
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'workspace' AND key = 'legacy-convention'`;
+    expect(legacy.expires_at).not.toBe(FACT_PERMANENT_EXPIRY);
+    expect(legacy.remaining_days).toBeGreaterThan(79.9);
+    expect(legacy.remaining_days).toBeLessThanOrEqual(80);
   });
 
   it('REFUSES a floorless gate at the STORE, not just the tool layer', async () => {
