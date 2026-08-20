@@ -10078,6 +10078,57 @@ export function realCheckpointDeps(
             );
             return check.status === 0;
           },
+          async reconcileFrozenRepairIntoStaging(
+            queue: FrozenCandidateRepairQueue,
+          ) {
+            const { bridgeContainedCommitIntoCurrentBranch } = await import(
+              "@papercusp/operator-core/lib/harness/git-sync/run-git-sync"
+            );
+            const runGit = async (args: string[], cwd: string) =>
+              exec("git", ["-C", cwd, ...args], { allowNonZero: true });
+            const bridge = await bridgeContainedCommitIntoCurrentBranch(
+              runGit,
+              cfg.integrationRoot,
+              queue.repairHead,
+              { log },
+            );
+
+            let joinedSha: string | null = null;
+            if (bridge.status === "bridged") {
+              joinedSha = bridge.joinedSha;
+            } else if (bridge.status === "not-needed") {
+              const currentHead = await revParse(
+                cfg.integrationRoot,
+                cfg.integrationBranch,
+              );
+              if (
+                await isAncestor(
+                  cfg.integrationRoot,
+                  queue.repairHead,
+                  currentHead,
+                )
+              ) {
+                joinedSha = currentHead;
+              }
+            } else {
+              log(
+                `frozen repair ancestry bridge ${bridge.status}: ${"reason" in bridge ? bridge.reason : bridge.message}`,
+              );
+            }
+            if (!joinedSha) return null;
+
+            // The generic bridge owns only the local, content-proven join. Publication is
+            // part of the checkpoint transaction: a rejected staging push throws, leaves
+            // the queue ready-to-promote, and is retried without another exact suite.
+            await exec("git", [
+              "-C",
+              cfg.integrationRoot,
+              "push",
+              "origin",
+              `${joinedSha}:refs/heads/${cfg.integrationBranch}`,
+            ]);
+            return joinedSha;
+          },
           async cleanupFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
             if (!existsSync(queue.worktreePath)) return;
             await exec(
