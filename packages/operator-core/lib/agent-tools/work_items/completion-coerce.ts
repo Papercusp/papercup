@@ -1,5 +1,5 @@
 /**
- * completion-coerce.ts — EI-7031: be liberal in what `work_items:complete` accepts.
+ * completion-coerce.ts — EI-7031: normalise structured `work_items:complete` input.
  *
  * work_items:complete failed ~15% of calls in the wild (52/348 in 24h). The live
  * `tool_invocations` breakdown showed the failures are NOT connectivity / logic /
@@ -25,11 +25,12 @@
  * coercion runs.
  *
  * The durable fix is coercion at the input boundary (a Zod `preprocess`), applied
- * BEFORE validation so a well-meant-but-mis-shaped completion is normalised to the
- * CompletionRecord contract instead of hard-rejected. WELL-FORMED input passes
- * through byte-for-byte unchanged — this only rescues the shapes that would
- * otherwise 400. It cannot mask a logic bug: the fields still validate after
- * coercion; we just stop losing finished work to shape variance.
+ * BEFORE validation so structured-but-mis-shaped fields are normalised to the
+ * CompletionRecord contract. A bare completion string is deliberately NOT rescued:
+ * it has no field boundary for verification evidence, and silently turning it into
+ * `{ summary }` can close an item with authority:'proposed' while making the caller
+ * believe the full completion was recorded. The schema therefore rejects that shape
+ * with an actionable object example, while JSON-object strings remain recoverable.
  */
 
 /** CompletionRecord fields that are arrays of strings (a lone scalar → `[scalar]`). */
@@ -53,6 +54,15 @@ const BOOL_FIELDS = ['addedTests'] as const;
 /** Every completion-record field name — used to recognise a FLAT completion. */
 export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_FIELDS, ...BOOL_FIELDS, 'verification', 'coverage'];
 
+/** Exact object-form example shared by the schema error and the tool guidance. */
+export const COMPLETION_OBJECT_EXAMPLE =
+  '{ summary: "what changed", testsRun: "npm run test:file -- path/to.test.ts", testResult: "passed", ' +
+  'verifiedHow: "unit", addedTests: true, filesChanged: ["path/to/file"] }';
+
+/** Actionable refusal for the lossy prose/string completion shape. */
+export const COMPLETION_STRING_REJECTION =
+  `completion must be a structured object, not a bare string. Pass completion: ${COMPLETION_OBJECT_EXAMPLE}.`;
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -68,8 +78,8 @@ function joinToString(v: readonly unknown[]): string {
 
 /**
  * EI-7311: a JSON-STRINGIFIED completion object (e.g. `completion: '{"summary":
- * "...", "tests": "..."}'`) hits the bare-string branch below and gets wrapped
- * whole as `{ summary: <the entire JSON text> }` — silently DROPPING every
+ * "...", "tests": "..."}'`) used to hit the bare-string branch below and get
+ * wrapped whole as `{ summary: <the entire JSON text> }` — silently DROPPING every
  * other field, including `tests`/`deferred`, which then trips the false
  * verificationWarning ("neither tests nor deferred populated") even though the
  * caller's original completion had `tests` populated. Confirmed live via
@@ -119,8 +129,8 @@ const COMPLETION_SHAPE_KEYS = new Set([
  * structure still open — 17274515 was missing exactly ONE `}`, and appending it
  * recovered the whole object with `summary` + `verification` intact. Because the
  * truncated text still starts `{` and (coincidentally) ends `}`, it slips past
- * `tryParseJsonObject` and lands in the bare-string branch, where the ENTIRE 4.7KB
- * of broken JSON is stuffed into `summary` and every structured field — the
+ * `tryParseJsonObject` and used to land in the bare-string branch, where the ENTIRE
+ * 4.7KB of broken JSON was stuffed into `summary` and every structured field — the
  * verification evidence the close is judged on — is destroyed. The completion is
  * then RECORDED that way, and the call also CLOSES the item, so the loss is
  * silent and durable.
@@ -176,7 +186,8 @@ function repairTruncatedJsonObject(s: string): Record<string, unknown> | undefin
  *  - a JSON-stringified object → parsed + coerced as an object (EI-7311)
  *  - a TRUNCATED JSON-stringified object → closers rebuilt, then coerced as an
  *    object, so surviving evidence is kept instead of destroyed (EI-20724228359175431)
- *  - a bare string        → { summary: <string> }
+ *  - a bare string        → left as a string so the schema can reject it with an
+ *    actionable object-form example
  *  - array-typed field given a scalar → wrapped in a 1-element array (lossless)
  *  - string-typed field given an array → joined with '; '
  *  - a missing/empty summary → derived from title / first whatLanded / status
@@ -189,9 +200,8 @@ export function coerceCompletionShape(raw: unknown): unknown {
     const parsedObject = tryParseJsonObject(raw);
     if (parsedObject) return coerceCompletionShape(parsedObject);
     // EI-20724228359175431: a TRUNCATED JSON completion — recover the fields that
-    // did arrive rather than swallowing the whole broken blob as `summary`. Marked
-    // distinctly from 'bare-string' so the caller-facing warning can say the record
-    // may be INCOMPLETE (fields survived, so the bare-string warning would not fire).
+    // did arrive rather than rejecting the whole broken blob. Mark it distinctly so
+    // the caller-facing warning can say the record may be INCOMPLETE.
     const repaired = repairTruncatedJsonObject(raw);
     if (repaired) {
       const coerced = coerceCompletionShape(repaired);
@@ -199,16 +209,10 @@ export function coerceCompletionShape(raw: unknown): unknown {
         ? { ...coerced, __shapeCoercedFrom: 'truncated-json' as const }
         : coerced;
     }
-    const s = raw.trim();
-    // EI-13687: a bare (non-JSON) string can ONLY ever populate `summary` — every
-    // other CompletionRecord field (testsRun/testResult/verifiedHow/addedTests/
-    // filesChanged/whatLanded/deferred/migrations) is necessarily empty, not just
-    // "not filled in". Mark the coercion so the caller-facing warning downstream
-    // (complete.ts) can say so LOUDLY instead of the generic "fill `tests`" nudge
-    // that reads like a nag about one missing field. The marker rides through the
-    // schema (declared explicitly on completionSpec, complete.ts) and is stripped
-    // before the completion record is used/rendered/broadcast.
-    return s ? { summary: s, __shapeCoercedFrom: 'bare-string' as const } : raw; // empty string: let validation reject it
+    // A prose/string completion has no safe way to carry structured evidence. Leave it
+    // untouched; the completionSpec preprocess adds COMPLETION_STRING_REJECTION before
+    // the object schema runs, so callers get the repair shape instead of a lossy close.
+    return raw;
   }
   if (!isPlainObject(raw)) return raw;
 
@@ -321,15 +325,13 @@ export function coerceCompletionShape(raw: unknown): unknown {
  * EI-13016: EI-9930 only merged siblings when `completion` was ALREADY a plain
  * object, bailing whenever it was a bare string ("left for coerceCompletionShape")
  * — but coerceCompletionShape runs on the `completion` VALUE alone and never sees
- * the top-level siblings, so they were still dropped. The live repro was exactly
- * `{ id, state, tests: "…", completion: "<prose>" }` (WI-5069, 2026-07-16): the
- * string completion coerced to `{ summary }`, the flat `tests` was stripped by the
- * object schema, terminalCompletionEvidence stayed null, and the verificationWarning
- * demanding `tests` became UNSATISFIABLE (re-sending with `tests` populated changed
- * nothing). So when siblings exist and `completion` is a string, coerce it to its
- * object shape HERE first, then merge — the flat siblings survive in both cases. A
- * string that cannot become an object (empty/whitespace) is left for validation to
- * reject. No siblings found → returned unchanged, same reference, exactly like before.
+ * the top-level siblings, so they were still dropped. The attempted rescue made the
+ * lossy prose shape even harder to notice: `{ id, state, tests: "…", completion:
+ * "<prose>" }` became a successful `{ summary, tests }` record despite the caller
+ * never supplying a structured completion object. Keep the bail-out for non-object
+ * values so the schema rejects the original shape; JSON-object strings still parse to
+ * an object here and retain their flat siblings. No siblings found → returned
+ * unchanged, same reference, exactly like before.
  */
 export function gatherFlatCompletion(args: unknown): unknown {
   if (!isPlainObject(args)) return args;
@@ -346,9 +348,9 @@ export function gatherFlatCompletion(args: unknown): unknown {
 
   if (args.completion !== undefined) {
     if (!found) return args;
-    // EI-13016: coerce a bare-string `completion` to its object shape so the flat
-    // siblings can be merged in (a plain object is passed through by coerceCompletionShape
-    // unchanged). An un-objectifiable value (e.g. an empty string) → bail, leave for validation.
+    // Only an objectifiable completion may merge flat siblings. A prose/string completion
+    // stays untouched so the nested schema can reject it with the exact object example;
+    // JSON-object strings are objectifiable and still retain the useful sibling fields.
     const base = coerceCompletionShape(args.completion);
     if (!isPlainObject(base)) return args;
     const out: Record<string, unknown> = { ...args };

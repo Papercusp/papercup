@@ -82,7 +82,12 @@ import complete, {
   hasEnumeratedVerificationCoverage,
   isVerificationWorkItem,
 } from './complete';
-import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
+import {
+  COMPLETION_OBJECT_EXAMPLE,
+  COMPLETION_STRING_REJECTION,
+  coerceCompletionShape,
+  gatherFlatCompletion,
+} from './completion-coerce';
 import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
@@ -939,7 +944,7 @@ describe('work_items:complete (keyed-array)', () => {
     );
   });
 
-  // The bare-string-summary-only case: NO structured fields at all. Before this fix
+  // The summary-only case: NO structured fields at all. Before this fix
   // `completionEvidenceFromRecord` returned `undefined` here (nothing structured to
   // report) and the summary went with it. The summary must still land, even though
   // `completionAuthority` correctly stays 'proposed' (no verifiedHow/testsRun/testResult).
@@ -2113,44 +2118,29 @@ describe('work_items:complete (keyed-array)', () => {
     });
   });
 
-  // ── EI-13687: a bare-string `completion` warns LOUDLY (names the dropped fields + the
-  // correct object shape) instead of the generic "fill `tests`" nudge that reads like a nag
-  // about one missing field when actually every structured field was silently discarded.
-  describe('verificationWarning — bare-string completion coercion (EI-13687)', () => {
-    beforeEach(() => {
-      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+  // ── WI-39573: a prose/string completion must fail before any record or state write. ─────
+  describe('bare-string completion refusal (WI-39573)', () => {
+    it('returns the exact structured-object repair shape from the schema', () => {
+      const result = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({ id: 'F-12', state: 'passed', assumptions: 'none', completion: 'shipped it, all green' });
+      expect(result.success).toBe(false);
+      const message = result.error?.issues.map((issue) => issue.message).join(' ') ?? '';
+      expect(message).toContain(COMPLETION_STRING_REJECTION);
+      expect(message).toContain(COMPLETION_OBJECT_EXAMPLE);
     });
 
-    it('names the dropped fields + the correct object shape when `completion` was passed as a bare string', async () => {
-      getWorkItem.mockResolvedValue(item);
-      const r = await one({ id: 'F-12', state: 'passed', completion: 'shipped it, all green' });
-      expect(r.ok).toBe(true); // still recorded, never hard-rejected (EI-24)
-      expect(r.completion.summary).toBe('shipped it, all green');
-      expect(r.verificationWarning).toMatch(/bare STRING/);
-      expect(r.verificationWarning).toMatch(/silently coerced/);
-      expect(r.verificationWarning).toContain('testsRun');
-      expect(r.verificationWarning).toContain('verifiedHow');
-      expect(r.verificationWarning).toContain('addedTests');
-      expect(r.verificationWarning).toMatch(/work_items:complete\(\{ id, state, completion: \{/);
-    });
-
-    it('the internal __shapeCoercedFrom marker never leaks onto the returned/broadcast completion record', async () => {
-      getWorkItem.mockResolvedValue(item);
-      const r = await one({ id: 'F-12', state: 'passed', completion: 'shipped it' });
-      expect(r.completion).not.toHaveProperty('__shapeCoercedFrom');
-    });
-
-    it('does NOT use the bare-string wording once structured evidence is present (e.g. rescued via a flat sibling, EI-13016)', async () => {
-      getWorkItem.mockResolvedValue(item);
-      const r = await one({ id: 'F-12', state: 'passed', completion: 'shipped it', tests: '18 vitest green' });
-      expect(r.verificationWarning).toBeUndefined();
-    });
-
-    it('an OBJECT completion (never coerced from a string) keeps the original generic wording', async () => {
-      getWorkItem.mockResolvedValue(item);
-      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped it' } });
-      expect(r.verificationWarning).toMatch(/neither `tests` nor `deferred`/);
-      expect(r.verificationWarning).not.toMatch(/bare STRING/);
+    it('does not invoke the work-item reader or state writer after refusal', () => {
+      const result = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({ id: 'F-12', state: 'passed', assumptions: 'none', completion: 'shipped it' });
+      expect(result.success).toBe(false);
+      expect(getWorkItem).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
   });
 
@@ -2233,28 +2223,20 @@ describe('work_items:complete ephemeral terminal-deliverable warning (EI-2026815
 
 /**
  * EI-7031 — work_items:complete failed ~15% of calls, almost entirely on malformed
- * `completion` SHAPE from LLM callers (bare string, scalar↔array swaps, missing
- * summary, flat fields with no wrapper). Each was a finished unit of work whose
- * completion was REJECTED and LOST, leaving the item claimable. We coerce those
- * shapes to the contract BEFORE validation ("be liberal in what you accept"); a
- * well-formed completion is unaffected. These pin the coercion + the wiring + that
- * the published tools/list schema is unchanged.
+ * `completion` SHAPE from LLM callers (scalar↔array swaps, missing summary, flat
+ * fields with no wrapper). Structured fields are normalised BEFORE validation; a
+ * prose/bare-string completion is rejected instead of being silently turned into
+ * summary-only evidence. These pin the coercion + the wiring + the published schema.
  */
 describe('work_items:complete input coercion (EI-7031)', () => {
   describe('coerceCompletionShape (unit)', () => {
-    it('a bare string completion → { summary } (the 18× "expected object, received string")', () => {
-      expect(coerceCompletionShape('shipped the fix')).toEqual({
-        summary: 'shipped the fix',
-        __shapeCoercedFrom: 'bare-string',
-      });
+    it('leaves a prose/bare string unchanged so the schema can reject it with the object example', () => {
+      expect(coerceCompletionShape('shipped the fix')).toBe('shipped the fix');
     });
 
-    // EI-13687: the marker that lets complete.ts warn LOUDLY (naming every dropped field +
-    // the correct object shape) instead of the generic "fill `tests`" nudge — see
-    // complete.test.ts's "bare-string coercion warns loudly" describe block below.
-    it('marks the coercion so downstream can tell "genuinely a bare string" apart from "a well-formed object"', () => {
-      const fromString = coerceCompletionShape('shipped it') as { __shapeCoercedFrom?: unknown };
-      expect(fromString.__shapeCoercedFrom).toBe('bare-string');
+    it('does not add a coercion marker to a bare string or a normal object', () => {
+      const fromString = coerceCompletionShape('shipped it');
+      expect(fromString).toBe('shipped it');
       const fromObject = coerceCompletionShape({ summary: 'shipped it' }) as { __shapeCoercedFrom?: unknown };
       expect(fromObject.__shapeCoercedFrom).toBeUndefined();
     });
@@ -2376,20 +2358,17 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.whatLanded).toEqual(['one file']);
     });
 
-    it('genuine prose that merely starts/ends with braces but is not valid JSON still falls back to the bare-string summary path', () => {
+    it('genuine prose that merely starts/ends with braces but is not valid JSON remains a rejected string', () => {
       const prose = '{fixed the thing, verified it works}';
-      expect(coerceCompletionShape(prose)).toEqual({ summary: prose, __shapeCoercedFrom: 'bare-string' });
+      expect(coerceCompletionShape(prose)).toBe(prose);
     });
 
-    it('a JSON ARRAY string (not an object) is not mistaken for the object shape — falls back to bare-string summary', () => {
+    it('a JSON ARRAY string (not an object) is not mistaken for the object shape', () => {
       const jsonArrayString = JSON.stringify(['a', 'b']);
-      expect(coerceCompletionShape(jsonArrayString)).toEqual({
-        summary: jsonArrayString,
-        __shapeCoercedFrom: 'bare-string',
-      });
+      expect(coerceCompletionShape(jsonArrayString)).toBe(jsonArrayString);
     });
 
-    it('a JSON-OBJECT-shaped string is recursed into the object path — NOT marked as a bare-string coercion (fields survive, EI-7311)', () => {
+    it('a JSON-OBJECT-shaped string is recursed into the object path — NOT marked as truncation (fields survive, EI-7311)', () => {
       const jsonString = JSON.stringify({ summary: 's', tests: '5 green' });
       const out = coerceCompletionShape(jsonString) as { __shapeCoercedFrom?: unknown };
       expect(out.__shapeCoercedFrom).toBeUndefined();
@@ -2471,11 +2450,8 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         expect(gatherFlatCompletion(call)).toBe(call);
       });
 
-      // EI-13016: a bare-string `completion` (prose OR a JSON blob) with a flat sibling used
-      // to bail here ("left for coerceCompletionShape") — but coerceCompletionShape only sees
-      // the `completion` value, never the top-level sibling, so `tests` was dropped and the
-      // verificationWarning became unsatisfiable. Now the string is coerced to its object shape
-      // and the sibling is merged in (the WI-5069, 2026-07-16 repro).
+      // EI-13016: JSON-object strings remain objectifiable and may merge a flat sibling;
+      // prose strings must stay untouched so the nested completion schema rejects them.
       it('coerces a raw JSON-string `completion` and MERGES a flat `tests` sibling into it (EI-13016)', () => {
         expect(
           gatherFlatCompletion({ id: 'WI-1', completion: JSON.stringify({ summary: 's' }), tests: 'flat' }),
@@ -2485,22 +2461,14 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         });
       });
 
-      it('coerces a bare PROSE-string `completion` and MERGES a flat `tests` sibling into { summary } (the exact WI-5069 repro)', () => {
-        expect(
-          gatherFlatCompletion({
-            id: 'WI-5069',
-            state: 'done',
-            completion: 'Completion audit prose',
-            tests: '18 green',
-          }),
-        ).toEqual({
+      it('does not rescue a prose-string `completion` with a flat `tests` sibling (WI-5069)', () => {
+        const call = {
           id: 'WI-5069',
           state: 'done',
-          // __shapeCoercedFrom rides along (EI-13687) — complete.ts strips it before use/return;
-          // it still lets the downstream warning distinguish "was a bare string" even when a flat
-          // sibling rescued some evidence.
-          completion: { summary: 'Completion audit prose', tests: '18 green', __shapeCoercedFrom: 'bare-string' },
-        });
+          completion: 'Completion audit prose',
+          tests: '18 green',
+        };
+        expect(gatherFlatCompletion(call)).toBe(call);
       });
 
       it('an empty-string `completion` with a flat sibling is left for validation (no merge onto a non-object)', () => {
@@ -2518,10 +2486,22 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       );
     });
 
-    it('completion passed as a bare STRING now records instead of 400ing', async () => {
-      const r = await one({ id: 'WI-9', state: 'resolved', completion: 'fixed the thing' });
-      expect(r.ok).toBe(true);
-      expect(r.completion.summary).toBe('fixed the thing');
+    it('completion passed as a bare STRING is rejected with the exact structured-object example', () => {
+      const result = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({
+        id: 'WI-9',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: 'fixed the thing',
+      });
+      expect(result.success).toBe(false);
+      const message = result.error?.issues.map((issue) => issue.message).join(' ') ?? '';
+      expect(message).toContain(COMPLETION_STRING_REJECTION);
+      expect(message).toContain(COMPLETION_OBJECT_EXAMPLE);
+      expect(getWorkItem).not.toHaveBeenCalled();
     });
 
     it('scalar whatLanded + array tests now record', async () => {
@@ -2612,34 +2592,26 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.verificationWarning).toBeUndefined();
     });
 
-    // EI-13016: the EI-9930 rescue only fired when `completion` was already a plain OBJECT.
-    // A bare-STRING completion (the live shape the reporter used) still dropped the flat
-    // `tests` sibling — the object schema stripped it, coerceCompletionShape never saw it,
-    // terminalCompletionEvidence stayed null, and the verificationWarning demanding `tests`
-    // became unsatisfiable (re-sending with `tests` changed nothing). Now the string
-    // completion is coerced to { summary } and the sibling merges in — verification survives
-    // and reaches the terminal state writer as completionEvidence (the WI-5069, 2026-07-16 repro).
-    it('a flat top-level `tests` sibling of a bare-STRING `completion` is rescued — no false verificationWarning + evidence reaches the state writer (EI-13016)', async () => {
-      const r = await one({
+    // EI-13016 / WI-39573: a flat sibling must not turn a prose completion into a
+    // structured record. gatherFlatCompletion leaves the original call intact, so
+    // strict parsing reports both the invalid completion value and any misplaced sibling.
+    it('a flat top-level `tests` sibling cannot rescue a bare-STRING `completion`', () => {
+      const result = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({
         id: 'WI-9',
         state: 'resolved',
+        assumptions: 'none',
         completion: 'Completion audit — everything verified in tree and deploy.',
         tests: 'npm run test:file — 154 green (exit 0)',
       });
-      expect(r.ok).toBe(true);
-      expect(r.completion.summary).toBe('Completion audit — everything verified in tree and deploy.');
-      expect(r.completion.tests).toBe('npm run test:file — 154 green (exit 0)');
-      // The unsatisfiable-warning loop is closed: the warning no longer fires.
-      expect(r.verificationWarning).toBeUndefined();
-      // …and the evidence is not merely echoed — it is passed to the terminal state writer as
-      // completionEvidence, which is what persists terminalCompletionEvidence (was null before).
-      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
-        'WI-9',
-        'resolved',
-        expect.objectContaining({
-          completionEvidence: expect.objectContaining({ testsRun: 'npm run test:file — 154 green (exit 0)' }),
-        }),
-      );
+      expect(result.success).toBe(false);
+      const message = result.error?.issues.map((issue) => issue.message).join(' ') ?? '';
+      expect(message).toContain(COMPLETION_STRING_REJECTION);
+      expect(getWorkItem).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
     // EI-6999: a shape with NEITHER `completion` NOR any recognizable flat

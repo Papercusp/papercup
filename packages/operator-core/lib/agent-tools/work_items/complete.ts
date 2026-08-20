@@ -84,7 +84,12 @@ import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { shapeWorkItemWriteEcho } from './write-echo-shape';
-import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
+import {
+  COMPLETION_OBJECT_EXAMPLE,
+  COMPLETION_STRING_REJECTION,
+  coerceCompletionShape,
+  gatherFlatCompletion,
+} from './completion-coerce';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -110,39 +115,43 @@ import { SPEC_EVIDENCE_KINDS } from '../plans/spec-evidence-store';
 import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 
-// EI-7031: coerce common LLM mis-shapes (bare string, scalar↔array swaps, missing
-// summary) to the CompletionRecord contract BEFORE validation — a finished
-// completion is normalised, never hard-rejected+lost. Well-formed input is
-// unchanged. Mirrors the `stringTolerantBool` z.preprocess pattern (plans/new.ts).
+// EI-7031: coerce structured LLM mis-shapes (scalar↔array swaps, missing summary)
+// to the CompletionRecord contract BEFORE validation. A bare string is intentionally
+// refused: converting it to `{ summary }` loses the caller's evidence shape and can
+// close an item with authority:'proposed' without the caller realising it. JSON-object
+// strings remain supported by coerceCompletionShape.
 const completionSpec = z
   .preprocess(
-    coerceCompletionShape,
+    (raw, ctx) => {
+      const coerced = coerceCompletionShape(raw);
+      // A JSON-object string (including a recoverable truncated object) becomes an
+      // object and continues through normal coercion. A prose/string value remains a
+      // string, so reject it with the exact object-form repair example before Zod's
+      // generic "expected object, received string" message can obscure the fix.
+      if (typeof raw === 'string' && typeof coerced === 'string') {
+        ctx.addIssue({ code: 'custom', message: COMPLETION_STRING_REJECTION });
+      }
+      return coerced;
+    },
     CompletionRecordSchema.extend({
       workItem: z.string().min(1).optional(),
-      // EI-13687: internal marker set by coerceCompletionShape when the caller passed
-      // `completion` as a bare (non-JSON) string — declared here so it survives the
-      // schema's default field-stripping instead of vanishing before completeOne can
-      // see it and warn loudly. Stripped from the record before it is used/returned.
-      // EI-20724228359175431 widened this to a union: 'truncated-json' marks a
+      // EI-20724228359175431: 'truncated-json' marks a
       // JSON-stringified completion whose tail was cut off and whose closers were
       // rebuilt, so the caller can be told the record may be missing a field that
-      // never arrived (the bare-string warning cannot fire — fields DID survive).
-      __shapeCoercedFrom: z.enum(['bare-string', 'truncated-json']).optional(),
+      // never arrived.
+      __shapeCoercedFrom: z.literal('truncated-json').optional(),
     }),
   )
   .describe(
-    // EI-13687: this is the shape a caller only discovers today by tripping the wrong-type
-    // error once — state it up front. A bare string is ACCEPTED (never hard-rejected, EI-24)
-    // but coerces to { summary: <string> } ONLY: testsRun/testResult/verifiedHow/addedTests/
-    // filesChanged/whatLanded/deferred/migrations all come back EMPTY, silently. Pass an
-    // object when you have any of those to report.
+    // EI-39573: publish the same repair shape that the schema-level string refusal returns.
     "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: string, addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. `verifiedHow` accepts a concise free-text label; prefer 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing' for coarse queryable modes. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. " +
       // observation-and-recall-surface-honesty-2026-08-16 P-001: coordNotes is the second
       // input to checkpoint-harvest, so it carries the same first-line-is-the-title rule as
       // loop:checkpoint { insight }. Shared constant, never re-worded here — the guard test
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
-      "A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.",
+      `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
+      `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
 
 const specEvidenceFingerprint = z.string().trim().min(1).max(256);
@@ -532,8 +541,8 @@ const MAX_PATHS_PROBED = 60;
 /**
  * EI-20093150500083378: `filesChanged` names paths that DO NOT EXIST, and nothing notices.
  *
- * Every OTHER evidence field on this call is challenged — a bare-string completion is
- * downgraded to `proposed`, a unit-only close over TypeScript draws `typeEvidenceWarning`,
+ * Every OTHER evidence field on this call is challenged — a unit-only close over TypeScript draws
+ * `typeEvidenceWarning`,
  * a terminal close without `assumptions` is refused outright. `filesChanged` alone was
  * taken verbatim, and it is the field most likely to be written from MEMORY rather than
  * observation, because it is filled in LAST — when the work is done and the details have
@@ -1479,16 +1488,13 @@ async function completeOne(
   ident: { ownerId: string; ownerLabel?: string },
   ctx: UnifiedToolContext,
 ): Promise<BulkItemResult> {
-  // EI-13687: a bare-string `completion` was silently coerced to `{ summary }` —
-  // every other field is necessarily empty (not merely "unset"). Pull the marker
-  // off BEFORE anything downstream sees it (rendering, evidence extraction, the
-  // broadcast record) — it is purely an internal signal for the warning below.
+  // EI-20724228359175431: pull the truncation marker off BEFORE anything downstream
+  // sees it (rendering, evidence extraction, the broadcast record). It is purely an
+  // internal signal for the caller-facing warning below.
   const shapeCoercedFrom = (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
-  const shapeCoercedFromBareString = shapeCoercedFrom === 'bare-string';
-  // EI-20724228359175431: the tail-truncated JSON case. Unlike the bare-string one,
-  // structured fields DID survive, so the verification warning below stays silent —
-  // which is exactly why this needs its own signal: the caller must learn their
-  // input was cut off, because whatever was cut is simply MISSING from the record.
+  // The tail-truncated JSON case has structured fields that survived, so the
+  // verification warning below stays silent; the caller still needs to learn their
+  // input was cut off because whatever was cut is simply MISSING from the record.
   const shapeCoercedFromTruncatedJson = shapeCoercedFrom === 'truncated-json';
   if (shapeCoercedFrom) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
 
@@ -2126,16 +2132,11 @@ async function completeOne(
   // between the two call sites.
   const hasTests = completionEvidenceForGate !== undefined;
   const hasDeferred = Array.isArray(it.completion.deferred) && it.completion.deferred.length > 0;
-  // EI-13687: when `completion` arrived as a bare string, hasTests/hasDeferred are
-  // UNCONDITIONALLY false (the coercion can only ever populate `summary`) — so give
-  // the caller the concrete dropped-fields list + the exact object shape to resend,
-  // instead of the generic "fill `tests`" nudge that reads like a nag about one
-  // missing field rather than "your structured evidence was silently discarded".
+  // Bare strings never reach this handler: completionSpec rejects them before
+  // completeOne runs, with the exact structured-object example in its issue message.
   const verificationWarning =
     !hasTests && !hasDeferred
-      ? shapeCoercedFromBareString
-        ? `completion for ${it.id} was passed as a bare STRING and silently coerced to { summary: ${JSON.stringify(it.completion.summary)} } — every other field (testsRun, testResult, verifiedHow, addedTests, filesChanged, whatLanded, deferred, migrations) is EMPTY, not just unfilled, because a string can only ever populate \`summary\`. If you have structured evidence, RESEND as an object: work_items:complete({ id, state, completion: { summary, testsRun: '<what you ran>', testResult: '<pass/fail summary>', verifiedHow: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests: <boolean>, filesChanged: [...] } }) — or, if genuinely unverified, resend with \`deferred: ['<what you left undone + why>']\`.`
-        : `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
+      ? `recorded a completion for ${it.id} with neither \`tests\` nor \`deferred\` populated — a settled unit should state whether it was VERIFIED (fill \`tests\`: what you ran / how you checked it, e.g. "18 vitest green" or "n/a — docs only") or CONSCIOUSLY DEFERRED (fill \`deferred\`: what you left undone + why). Add one so the unit isn't silently unverified (flush-to-proceed: a unit settles only live-verified or explicitly deferred-with-reason).`
       : undefined;
 
   // EI-19380332459719944: a skip hiding inside an otherwise-green testsRun/testResult
