@@ -227,6 +227,14 @@ export const FACT_SUSPECTED_DEFAULT_TTL_SEC = 6 * 3600;
  * — it only lengthens how long a fact survives BEFORE eviction competition,
  * without inflating what gets injected into any one orient/context. */
 export const FACTS_PER_SCOPE_CAP = 200;
+/**
+ * Volatile measurements are short-lived snapshots, not standing conclusions.
+ * Keep a separate, deliberately smaller population so a burst of snapshots
+ * cannot evict ordinary facts, while still bounding snapshot-key churn within
+ * each selector. One quarter of the ordinary cap leaves room for the normal
+ * standing-fact corpus without making this a second unbounded store.
+ */
+export const FACTS_VOLATILE_PER_SCOPE_CAP = Math.max(1, Math.floor(FACTS_PER_SCOPE_CAP / 4));
 /** Fold budget: max facts per scope-selector in one fold read. */
 export const FACTS_FOLD_LIMIT = 12;
 
@@ -1773,6 +1781,7 @@ export interface FactSelector {
  * parity` in store.integration.test.ts holds the two together.
  */
 function capPopulationPredicate(sql: Sql, ws: string, scope: string, ref: string) {
+  const volatileMarker = sql`measurement->>'subjectVolatile'`;
   return sql`workspace_id = ${ws} AND scope = ${scope}
          AND coalesce(scope_ref,'') = ${ref}
          -- LOCAL partition only (H6): the local writer's cap must never evict
@@ -1787,7 +1796,12 @@ function capPopulationPredicate(sql: Sql, ws: string, scope: string, ref: string
          AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
          -- P-028: conventions are governance rows, not ordinary cap population.
-         AND COALESCE(kind, '') <> 'convention'`;
+         AND COALESCE(kind, '') <> 'convention'
+         -- EI-20365165629381535: keep moving snapshots out of the ordinary
+         -- population. IS DISTINCT FROM includes missing, malformed, and
+         -- non-true markers in the ordinary partition without turning NULL
+         -- into an accidental exclusion.
+         AND ${volatileMarker} ${sql`IS DISTINCT FROM`} ${'true'}`;
 }
 
 /**
