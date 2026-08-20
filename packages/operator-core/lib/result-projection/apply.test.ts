@@ -699,3 +699,100 @@ describe('applyResultProjection — a degraded verdict LEADS the content (EI-207
     expect(isVerdictText(texts[texts.length - 1])).toBe(true);
   });
 });
+
+/**
+ * EI-20437640729173444 — projection must disclose the difference between
+ * rendered line semantics and structured payload semantics, and must inspect
+ * truncation markers before a pick/pipe stage can remove them.
+ */
+describe('applyResultProjection — structured-body and custom truncation disclosures (EI-20437640729173444)', () => {
+  it('warns that pipe/count sees one rendered JSON line, not matching array items', () => {
+    const body = JSON.stringify({
+      results: [
+        { id: 'WI-1', state: 'open' },
+        { id: 'WI-2', state: 'open' },
+        { id: 'WI-3', state: 'done' },
+      ],
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pipe: [{ op: 'grep', pattern: 'state' }, { op: 'count' }] }),
+      { toolName: 'work_items:list' },
+    );
+
+    // The JSON was compact, so grep retained one rendered line and count
+    // correctly reports that line count. It must not pretend this is an
+    // item-level count of three matching rows.
+    expect(bodyText(out)).toBe('1');
+    const footer = footerOf(out);
+    expect(footer).toContain('pipe applied directly to structured JSON');
+    expect(footer).toContain('count` reports rendered line count, not matching item count');
+    expect(footer).toContain('JSON on 1 line(s)');
+    expect(footer).toContain('Use `pick` first');
+    expect(reportOf(out).notes.join(' ')).toContain('rendered JSON lines');
+  });
+
+  it('warns on a generic _projection truncation marker before pick removes it', () => {
+    const body = JSON.stringify({
+      results: [{ id: 'WI-1' }, { id: 'WI-2' }],
+      _projection: { truncated: true, omittedCount: 4 },
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pick: ['results[].id'] }),
+      { toolName: 'work_items:list' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({ results: [{ id: 'WI-1' }, { id: 'WI-2' }] });
+    const footer = footerOf(out);
+    expect(footer).toContain('field-level/custom-shaper truncation');
+    expect(footer).toContain('$._projection.truncated');
+    expect(footer).toContain("re-call work_items:list with payloadTier:'full'");
+    expect(reportOf(out).notes.join(' ')).toContain('omitted fields/items were never serialized');
+  });
+
+  it('warns on field-level and custom-shaper truncation markers', () => {
+    const body = JSON.stringify({
+      rows: [{ id: 'WI-1', title: 'retained' }],
+      fieldTruncated: true,
+      truncatedByBudget: true,
+    });
+    const out = applyResultProjection(
+      textResult(body),
+      spec({ pick: ['rows[].id'] }),
+      { toolName: 'work_items:list' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({ rows: [{ id: 'WI-1' }] });
+    const footer = footerOf(out);
+    expect(footer).toContain('$.fieldTruncated');
+    expect(footer).toContain('$.truncatedByBudget');
+    expect(footer).toContain('field-level/custom-shaper truncation');
+    expect(reportOf(out).notes).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: 'false generic marker',
+      body: { rows: [{ id: 'WI-1' }], _projection: { truncated: false } },
+    },
+    {
+      name: 'false field marker',
+      body: { rows: [{ id: 'WI-1' }], fieldTruncated: false, payloadTierForced: false },
+    },
+    {
+      name: 'ordinary truncation prose',
+      body: { rows: [{ id: 'WI-1' }], note: 'This report describes truncation policy.' },
+    },
+  ])('$name does not cry wolf', ({ body }) => {
+    const out = applyResultProjection(
+      textResult(JSON.stringify(body)),
+      spec({ pick: ['rows[].id'] }),
+      { toolName: 'work_items:list' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({ rows: [{ id: 'WI-1' }] });
+    expect(footerOf(out)).not.toContain('field-level/custom-shaper truncation');
+    expect(reportOf(out).notes).toEqual([]);
+  });
+});

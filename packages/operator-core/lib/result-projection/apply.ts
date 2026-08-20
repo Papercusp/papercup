@@ -213,6 +213,10 @@ function detectBodyTruncationMarkers(...sources: Array<{ value: unknown; text?: 
   return markers;
 }
 
+function describeBodyTruncationMarkers(markers: BodyTruncationMarker[]): string {
+  return markers.map(({ path, detail }) => `${path} (${detail})`).join('; ');
+}
+
 // ── line operators ────────────────────────────────────────────────────────────
 
 function splitLines(text: string): { lines: string[]; trailingNewline: boolean } {
@@ -546,6 +550,55 @@ export function applyResultProjection<T extends ProjectableResult>(
     let working = original;
     let regexFlavor: 'js-regexp' | undefined;
 
+    // Classify ONCE, before either projection domain changes the body. The
+    // same result is used by `pick` below and by the warning for pipe-only JSON
+    // so the stage cannot teach one shape while operating on another.
+    const bodyShape = classifyProjectionBody(textItems);
+    const { json } = bodyShape;
+    const upstream = (
+      result._meta as
+        | { payloadProjection?: { truncated?: boolean; tier?: string; omittedCount?: number } }
+        | undefined
+    )?.payloadProjection;
+
+    // `pipe` deliberately has line semantics. That is correct for text, but a
+    // compact JSON array is commonly ONE rendered line, so grep|count over it
+    // returns a line count (often 1), not the number of matching items. Keep
+    // the documented operator behavior and make the dimensional mismatch
+    // impossible to mistake for an item-level finding. `pick` is the explicit
+    // structured form and runs before `pipe` when the caller wants item counts.
+    if ((spec.pipe?.length ?? 0) > 0 && !spec.pick && json) {
+      const hasCount = spec.pipe.some((stage) => stage.op === 'count');
+      note(
+        `pipe applied directly to structured JSON: these operators inspect rendered ` +
+          `JSON lines, not array/object items${hasCount ? '; `count` reports rendered line count, not matching item count' : ''}. ` +
+          `This body is JSON on ${bodyShape.lineCount} line(s), so any count is a line count over the rendering. ` +
+          `Use \`pick\` first (for example, \`pick: ["items[].field"]\`) for item-level filtering/counting.`,
+      );
+    }
+
+    // Custom tier shapers and field-level bounds often have no shared
+    // `_meta.payloadProjection` envelope. Inspect their marker-shaped body
+    // contracts BEFORE `pick`/`pipe` can discard them. Do not duplicate the
+    // stronger framework-level warning when that envelope is present.
+    const bodyTruncationMarkers = upstream?.truncated
+      ? []
+      : detectBodyTruncationMarkers(
+          { value: json?.parsed, text: original },
+          ...(result.structuredContent !== undefined ? [{ value: result.structuredContent }] : []),
+        );
+    if (bodyTruncationMarkers.length > 0) {
+      const recovery = opts.toolName
+        ? `re-call ${opts.toolName} with payloadTier:'full' (or narrower args)`
+        : `re-call the tool with payloadTier:'full' (or narrower args)`;
+      note(
+        `the tool or its payload shaper marked field-level/custom-shaper truncation before this projection ` +
+          `(${describeBodyTruncationMarkers(bodyTruncationMarkers)}). The projection can inspect only the ` +
+          `retained SAMPLE; omitted fields/items were never serialized, so any filter/count is not a complete ` +
+          `population finding. ${recovery} before concluding a value is absent.`,
+      );
+    }
+
     if (spec.pick) {
       // SHARED with the result-door footer (classifyProjectionBody) so the
       // operator we RECOMMEND cannot drift from the one that actually runs —
@@ -554,7 +607,6 @@ export function applyResultProjection<T extends ProjectableResult>(
       // advisory prose, "See also: …"), so the joined text does not parse even
       // though the payload plainly does. Caught live on work_items:list, where
       // `pick` reported "not JSON" against a body visibly starting `[{"id":…`.
-      const { json } = classifyProjectionBody(textItems);
       // itemIndex >= 0 means it took that per-item fallback: say the advisory
       // items were dropped rather than dropping them quietly.
       if (json && json.itemIndex >= 0 && textItems.length > 1) {
@@ -694,11 +746,6 @@ export function applyResultProjection<T extends ProjectableResult>(
     // the opposite direction — not "the tool returned everything", but "the
     // corpus I searched was everything". A filter is only honest about a MISS if
     // it is honest about what it was allowed to search.
-    const upstream = (
-      result._meta as
-        | { payloadProjection?: { truncated?: boolean; tier?: string; omittedCount?: number } }
-        | undefined
-    )?.payloadProjection;
     if (upstream?.truncated) {
       const omitted = upstream.omittedCount ?? 0;
       const scope =
