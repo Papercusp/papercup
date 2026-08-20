@@ -39,6 +39,14 @@ import { registerCell, type CellSpec } from './cell-registry';
 import { AGENT_GOAL_CELL_ID } from './agent-goal-ref';
 
 /**
+ * The release-pipeline resolvers below describe the operator HOME Pot's checkout,
+ * gate, release process, and incident lease. Other harnesses in this workspace
+ * have independent pipelines, so exposing these cells workspace-wide lets their
+ * agents read Papercusp state as if it were their own (EI-20709429494940822).
+ */
+const OPERATOR_PIPELINE_VISIBILITY = { kind: 'harness', ref: 'papercusp' } as const;
+
+/**
  * The pipeline-position cell. Owned by su-28464 per P-006 — registration does not
  * transfer ownership of the resolver.
  *
@@ -105,15 +113,16 @@ export const GIT_PIPELINE_POSITION_CELL: CellSpec = {
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
 
   /**
-   * P-019 (a)/(b). Workspace-visible: pipeline position is about the SHARED tree, so
-   * every agent in the workspace legitimately reads it — and narrowing it would break
-   * the very "did my commit land" question it exists to answer.
+   * P-019 (a)/(b). Harness-visible: pipeline position is about the operator HOME
+   * Pot's shared tree. Other harnesses in this workspace have independent trees and
+   * gates, so showing them this value would answer "did my commit land" about the
+   * wrong checkout.
    *
    * `local` despite that: the positions are relative to THIS hive's checkout and
    * serving process, so the value is not merely uninteresting to a foreign hive, it
    * would be actively misread there as a statement about their own pipeline.
    */
-  visibility: { kind: 'workspace' },
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
 
   /** Poll rides predicate_watches — deliberately NOT a second subscription mechanism. */
@@ -223,7 +232,7 @@ export const GATE_VERDICT_CELL: CellSpec = {
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
 
-  visibility: { kind: 'workspace' },
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.consecutiveReds' },
 
@@ -304,7 +313,7 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
 
-  visibility: { kind: 'workspace' },
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'changeInCandidate.judgingSha' },
 
@@ -443,7 +452,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
 
   resolver: 'readGateOwnership() @ packages/operator-core/lib/coord/gate-ownership.ts',
 
-  visibility: { kind: 'workspace' },
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'gate.ownership.claimState' },
   shape:
@@ -497,7 +506,7 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
 
-  visibility: { kind: 'workspace' },
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'deployedSha' },
   shape: '{ deployedSha, serving: { startedSinceCodeChange, unknownReason, pid, codeAsOfSource }, verdictUnknown[] }',
@@ -568,7 +577,7 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
 
   resolver: 'gitPipelinePosition() @ packages/operator-core/lib/git-pipeline-position.ts',
 
-  visibility: { kind: 'workspace' },
+  visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'verdictProvenance.mainBehindStaging' },
   shape:

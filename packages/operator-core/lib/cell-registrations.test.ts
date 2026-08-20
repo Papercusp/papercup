@@ -10,6 +10,7 @@ import {
   GIT_PIPELINE_POSITION_CELL,
   GATE_VERDICT_CELL,
   GATE_CANDIDATE_CELL,
+  GATE_OWNERSHIP_CELL,
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
   AGENT_GOAL_CELL,
@@ -17,6 +18,15 @@ import {
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
+
+const OPERATOR_PIPELINE_CELLS = [
+  GIT_PIPELINE_POSITION_CELL,
+  GATE_VERDICT_CELL,
+  GATE_CANDIDATE_CELL,
+  GATE_OWNERSHIP_CELL,
+  DEPLOYED_SHA_CELL,
+  MAIN_BEHIND_STAGING_CELL,
+];
 
 /**
  * P-006. The value of this suite is not "a cell is registered" — it is that the
@@ -32,9 +42,9 @@ describe('P-006: git.pipelinePosition registers under the D-038 contract', () =>
 
   it('registers and is retrievable', () => {
     registerBuiltinCells();
-    // P-019: reads are audience-scoped. This cell is workspace-visible, so any
-    // reader sees it — which is itself the assertion worth making here.
-    expect(getCell('git.pipelinePosition', { ownerId: 'su-anyone' })?.resolver).toContain(
+    // P-019: the cell describes the operator HOME Pot's checkout, not every
+    // independently-managed harness that happens to share this workspace.
+    expect(getCell('git.pipelinePosition', { ownerId: 'su-anyone', harnessSlug: 'papercusp' })?.resolver).toContain(
       'gitPipelinePosition()',
     );
   });
@@ -93,6 +103,16 @@ describe('P-007: the four verdict cells', () => {
   beforeEach(() => __resetCellRegistryForTests());
 
   const NEW_CELLS = [GATE_VERDICT_CELL, GATE_CANDIDATE_CELL, DEPLOYED_SHA_CELL, MAIN_BEHIND_STAGING_CELL];
+
+  it.each(OPERATOR_PIPELINE_CELLS.map((c) => [c.cell, c] as const))(
+    '%s is visible only inside the operator home harness',
+    (id, spec) => {
+      expect(spec.visibility).toEqual({ kind: 'harness', ref: 'papercusp' });
+      registerBuiltinCells();
+      expect(getCell(id, { ownerId: 'su-inside', harnessSlug: 'papercusp' })).toBeDefined();
+      expect(getCell(id, { ownerId: 'su-outside', harnessSlug: 'sidestage' })).toBeUndefined();
+    },
+  );
 
   it.each(NEW_CELLS.map((c) => [c.cell, c] as const))('%s validates with zero rejections', (_id, spec) => {
     expect(validateCellSpec(spec)).toEqual([]);
