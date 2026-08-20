@@ -1088,9 +1088,9 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, injectHookPath
  * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
  * to append to the backend CLI argv — the first user turn that makes a SCRIPTED plan
  * launch (a fleet/automation member) start working the plan immediately instead of
- * orienting once and parking idle. All three backends take a positional prompt that
- * keeps the session interactive (claude `[prompt]`, omp `… "prompt"`, codex `[PROMPT]`),
- * so this is the same for every agent.
+ * orienting once and parking idle. All three backends have a native first-turn
+ * seam, but fresh OMP UI sessions need the managed-pty barrier because asynchronous
+ * MCP discovery can still be assembling their prompt when OMP submits argv.
  *
  * Empty (today's behavior) unless ALL hold: the server supplied `res.kickoffPrompt`
  * (a plan is bound) · this is a `--no-picker` launch (`args.picker === false`) so an
@@ -1156,13 +1156,43 @@ export function resolveKickoffText(args, env = process.env) {
 }
 
 /**
+ * Route a scripted FRESH launch's first turn to the backend's safe delivery
+ * seam. Claude and Codex keep their native trailing positional prompt. OMP's
+ * UI session starts asynchronous MCP discovery, so its first turn must go
+ * through the managed pty's startup/output barrier instead of being submitted
+ * by OMP while its prompt is still being assembled (EI-20339142329504181).
+ *
+ * The returned kickoff is already provenance-tagged; callers pass it to
+ * runWrapper({ kickoff }) for OMP. Pure apart from the existing provenance
+ * ledger write performed by tagKickoffProvenance.
+ */
+export function routeFreshKickoff(backend, res, args, env = process.env) {
+  const kickoffArgs = kickoffPositionalArgs(res, {
+    ...args,
+    kickoffPromptText: resolveKickoffText(args, env),
+  });
+  if (!kickoffArgs.length) {
+    return { positionalArgs: [], managedKickoff: null, kickoffSeeded: false };
+  }
+
+  const sidForTag = res?.envelopeEnv?.PAPERCUSP_SID || env?.PAPERCUSP_SID || null;
+  const tagged = kickoffArgs.map((text) => tagKickoffProvenance(text, sidForTag, env));
+  if (backend === 'omp') {
+    return { positionalArgs: [], managedKickoff: tagged[0], kickoffSeeded: true };
+  }
+  return { positionalArgs: tagged, managedKickoff: null, kickoffSeeded: true };
+}
+
+/**
  * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
- * an empty prompt forever. Keep the positional prompt last (after every flag),
- * tag it as machine-origin, and expose whether a turn was actually seeded so
- * the caller can report the launch honestly. Pure except for the existing
- * provenance-ledger write performed by tagKickoffProvenance.
+ * an empty prompt forever. Keep the native positional prompt last for
+ * Claude/Codex (after every flag); fresh OMP uses the managed-pty kickoff
+ * returned alongside the argv. Tag machine-origin turns and expose whether a
+ * turn was actually seeded so the caller can report the launch honestly. Pure
+ * except for the existing provenance-ledger write performed by
+ * tagKickoffProvenance.
  *
  * @param {any[]} launchArgs
  */
@@ -1172,19 +1202,11 @@ export function finalizeFreshRoleArgs(backend, launchArgs, res, args, env = proc
     ...addDirArgs(backend, args?.addDir || []),
     ...(args?.passthrough || []),
   ];
-  const kickoffArgs = kickoffPositionalArgs(res, {
-    ...args,
-    kickoffPromptText: resolveKickoffText(args, env),
-  });
-  if (!kickoffArgs.length) return { args: baseArgs, kickoffSeeded: false };
-
-  const sidForTag = res?.envelopeEnv?.PAPERCUSP_SID || env?.PAPERCUSP_SID || null;
+  const kickoff = routeFreshKickoff(backend, res, args, env);
   return {
-    args: [
-      ...baseArgs,
-      ...kickoffArgs.map((text) => tagKickoffProvenance(text, sidForTag, env)),
-    ],
-    kickoffSeeded: true,
+    args: [...baseArgs, ...kickoff.positionalArgs],
+    kickoff: kickoff.managedKickoff,
+    kickoffSeeded: kickoff.kickoffSeeded,
   };
 }
 
@@ -8182,7 +8204,7 @@ async function roleFlow(args, role, rolesMeta) {
   // the scripted first turn as the final positional argument. Fresh SU launches
   // already use this kickoff seam; roles must too because acceptance graders are
   // fresh headless role sessions and have no human to submit an empty prompt.
-  const { args: roleArgs, kickoffSeeded: roleKickoffSeeded } = finalizeFreshRoleArgs(
+  const { args: roleArgs, kickoff: roleKickoff, kickoffSeeded: roleKickoffSeeded } = finalizeFreshRoleArgs(
     res.agent,
     launchArgs,
     res,
@@ -8221,6 +8243,7 @@ async function roleFlow(args, role, rolesMeta) {
     wrapperBin: bin,
     args: roleArgs,
     cwd: res.cwd,
+    kickoff: roleKickoff,
     // PAPERCUSP_MODEL: the launch model spec, exported so the codex/omp title hook can
     // render the model in the terminal title (WI-1963 title-parity — those CLIs have no
     // live model object like Claude's statusline stdin). Omitted when no --model (default).
@@ -8702,11 +8725,13 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // SCRIPTED plan launch so a fleet/automation member immediately starts working
   // the plan instead of orienting once (reading the plan + brief as system prompt)
   // and then parking idle on its inbox-wake — the gap a leader previously closed by
-  // hand with a coord:send wake. All three backends accept a TRAILING POSITIONAL
-  // prompt that keeps the session INTERACTIVE while submitting it as the first turn
-  // (claude `[prompt]`, omp `… "prompt"`, codex `[PROMPT]` — their -p/--print and
-  // `codex exec` non-interactive modes are NOT used here), so the kickoff is one
-  // positional appended AFTER every flag (incl. the launch-context flag's value).
+  // hand with a coord:send wake. Claude and Codex accept a TRAILING POSITIONAL
+  // prompt that keeps the session INTERACTIVE while submitting it as the first
+  // turn (`claude [prompt]`, `codex [PROMPT]`). OMP's UI startup can submit that
+  // positional prompt before asynchronous MCP discovery settles, so
+  // routeFreshKickoff sends OMP through the managed-pty startup barrier instead.
+  // The native positional prompt is appended AFTER every Claude/Codex flag (incl.
+  // the launch-context flag's value); their non-interactive modes are NOT used here.
   // Gated to --no-picker launches (an interactive human picker launch still opens at
   // an empty prompt) + an explicit --no-kickoff opt-out. Text is server-supplied
   // (res.kickoffPrompt = the canonical deriveLaunchPromptText, present iff a plan is
@@ -8719,15 +8744,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // via a correctly-escaped `export K=…` in the oneliner prelude and arrives
   // intact (multiline / quotes included). So the desktop docs-agent launcher sets
   // the env var, not the flag.
-  const kickoffArgs = kickoffPositionalArgs(res, {
-    ...args,
-    kickoffPromptText: resolveKickoffText(args),
-  });
-  if (kickoffArgs.length) {
-    // turn-provenance P-002: tag the scripted first turn (fleet-kickoff) so the
-    // session's own prompt hook labels it machine-origin, not owner input.
-    const sidForTag = res?.envelopeEnv?.PAPERCUSP_SID || process.env.PAPERCUSP_SID || null;
-    launchArgs.push(...kickoffArgs.map((t) => tagKickoffProvenance(t, sidForTag)));
+  const kickoff = routeFreshKickoff(res.agent, res, args);
+  if (kickoff.kickoffSeeded) {
     console.error(`psu: kickoff — seeding first turn${res.planSlug ? ` to advance plan ${res.planSlug}` : ''} (suppress with --no-kickoff)`);
   }
 
@@ -8831,6 +8849,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     wrapperBin: bin,
     args: launchArgs,
     cwd: res.cwd,
+    kickoff: kickoff.managedKickoff,
     kickoffFile: res.sessionPortKickoffFile || null,
     sessionPort: res.sessionPort ? {
       ...res.sessionPort,

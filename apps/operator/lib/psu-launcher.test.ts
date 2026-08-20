@@ -107,6 +107,7 @@ import {
   suLaunchArgs,
   resolveOmpInjectHookPath,
   kickoffPositionalArgs,
+  routeFreshKickoff,
   tagKickoffProvenance,
   resolveKickoffText,
   finalizeFreshRoleArgs,
@@ -492,6 +493,64 @@ describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
     expect(
       kickoffPositionalArgs({}, parseArgs(['--no-picker', '--agent=claude', '--kickoff=q', '--no-kickoff'])),
     ).toEqual([]);
+  });
+});
+
+describe('routeFreshKickoff (EI-20339142329504181 OMP startup barrier)', () => {
+  const KICK = 'Begin: advance the admitted work item.';
+
+  it('routes a fresh OMP kickoff through the managed pty instead of argv', () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'omp-kickoff-prov-'));
+    try {
+      const args = parseArgs(['--no-picker', '--agent=omp', '--plan=p']);
+      const result = routeFreshKickoff(
+        'omp',
+        { kickoffPrompt: KICK, planSlug: 'p', envelopeEnv: { PAPERCUSP_SID: 'omp-1' } },
+        args,
+        { PAPERCUSP_SID: 'omp-1', PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir },
+      );
+
+      expect(result.positionalArgs).toEqual([]);
+      expect(result.kickoffSeeded).toBe(true);
+      expect(result.managedKickoff).toMatch(
+        /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: advance the admitted work item\.$/,
+      );
+    } finally {
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps Claude and Codex fresh kickoffs on their positional argv seam', () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'native-kickoff-prov-'));
+    try {
+      const args = parseArgs(['--no-picker', '--agent=claude', '--plan=p']);
+      for (const backend of ['claude', 'codex']) {
+        const result = routeFreshKickoff(
+          backend,
+          { kickoffPrompt: KICK, planSlug: 'p', envelopeEnv: { PAPERCUSP_SID: `${backend}-1` } },
+          args,
+          { PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir },
+        );
+        expect(result.managedKickoff).toBeNull();
+        expect(result.positionalArgs).toHaveLength(1);
+        expect(result.positionalArgs[0]).toMatch(/Begin: advance the admitted work item\.$/);
+      }
+    } finally {
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('does not create a managed kickoff for picker, no-kickoff, or absent-kickoff launches', () => {
+    const res = { kickoffPrompt: KICK, planSlug: 'p', envelopeEnv: { PAPERCUSP_SID: 'omp-1' } };
+    expect(routeFreshKickoff('omp', res, parseArgs(['--agent=omp']), {})).toEqual({
+      positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
+    });
+    expect(routeFreshKickoff('omp', res, parseArgs(['--no-picker', '--agent=omp', '--no-kickoff']), {})).toEqual({
+      positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
+    });
+    expect(routeFreshKickoff('omp', { envelopeEnv: { PAPERCUSP_SID: 'omp-1' } }, parseArgs(['--no-picker', '--agent=omp']), {})).toEqual({
+      positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
+    });
   });
 });
 
@@ -2728,6 +2787,32 @@ describe('roleLaunchArgs (interactive role session)', () => {
         sid: 'role-judge-1',
         origin: 'fleet-kickoff',
       });
+    } finally {
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('routes a scripted headless OMP role kickoff to the managed pty, not argv', () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'role-omp-kickoff-prov-'));
+    try {
+      const parsed = parseArgs(['--no-picker', '--agent=omp', '--headless', '--role=judge']);
+      const result = finalizeFreshRoleArgs(
+        'omp',
+        ['--extension', '/home/user/.papercusp-coord.ts'],
+        { envelopeEnv: { PAPERCUSP_SID: 'role-omp-1' } },
+        parsed,
+        {
+          PAPERCUSP_KICKOFF_PROMPT: 'Grade the frozen acceptance evidence.',
+          PAPERCUSP_SID: 'role-omp-1',
+          PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+        },
+      );
+
+      expect(result.kickoffSeeded).toBe(true);
+      expect(result.args).toEqual(['--extension', '/home/user/.papercusp-coord.ts']);
+      expect(result.kickoff).toMatch(
+        /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nGrade the frozen acceptance evidence\.$/,
+      );
     } finally {
       rmSync(provenanceDir, { recursive: true, force: true });
     }
