@@ -9,6 +9,7 @@ import {
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 
 type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
+type ListedEvidence = Awaited<ReturnType<NonNullable<GateDeps['listEvidence']>>>[number];
 
 const WORK_ITEM = {
   id: 'WI-101',
@@ -100,6 +101,20 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
   };
 }
 
+function listedEvidence(over: Partial<ListedEvidence> = {}): ListedEvidence {
+  return {
+    id: 1,
+    sourceValId: 'VAL-003-01',
+    currentRevision: 1,
+    observedAt: '2026-08-20T00:01:30.000Z',
+    bindingFingerprint: 'sha256:binding',
+    createdBy: 'su-test',
+    createdAt: '2026-08-20T00:01:31.000Z',
+    ...evidence(),
+    ...over,
+  };
+}
+
 function matchingCard(over: Partial<ScorecardRow> = {}): ScorecardRow {
   const result = evaluateSpecTestAdequacy({
     clause: clause(),
@@ -146,7 +161,7 @@ const ATTESTATION = {
 function passingDeps() {
   const listClauses = vi.fn<NonNullable<GateDeps['listClauses']>>(async () => [clause()]);
   const listEdges = vi.fn<NonNullable<GateDeps['listEdges']>>(async () => []);
-  const listEvidence = vi.fn<NonNullable<GateDeps['listEvidence']>>(async () => [evidence()]);
+  const listEvidence = vi.fn<NonNullable<GateDeps['listEvidence']>>(async () => [listedEvidence()]);
   const listCards = vi.fn<NonNullable<GateDeps['listCards']>>(async () => [matchingCard()]);
   return {
     listClauses,
@@ -246,7 +261,7 @@ describe('specTestAdequacyCompletionGate', () => {
   it('returns evaluator would-block reasons for stale or otherwise inadequate evidence', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([
-      evidence({
+      listedEvidence({
         currentness: {
           ...evidence().currentness,
           overall: 'stale',
