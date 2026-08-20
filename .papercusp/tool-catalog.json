@@ -2990,7 +2990,8 @@
         "test-writer",
         "monitor",
         "blender",
-        "foreign-session"
+        "foreign-session",
+        "judge"
       ],
       "guidance": {
         "when": "Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.",
@@ -12525,7 +12526,8 @@
         "papercup-deep",
         "kettle",
         "doc-steward",
-        "scanner"
+        "scanner",
+        "judge"
       ],
       "profile": "engineer",
       "guidance": {
@@ -24789,7 +24791,8 @@
         "test-writer",
         "monitor",
         "blender",
-        "foreign-session"
+        "foreign-session",
+        "judge"
       ],
       "guidance": {
         "when": "You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.",
