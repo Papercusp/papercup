@@ -39,6 +39,7 @@ import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
 import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
+import { activeWorkspaceId } from "../../workspace-registry";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -146,6 +147,35 @@ async function armAwaits(
     advice:
       "Registered. End your turn now — you are re-invoked when it fires (or at the deadline). Do not poll.",
   };
+}
+
+/**
+ * A global git-sync key is emitted by every harness in the workspace. Keep the
+ * convenient global key, but bind this wait to the concrete harness/workspace
+ * that owns the caller so another harness's commit cannot wake it.
+ *
+ * Operator-scope calls carry `'*'` as their workspace sentinel; use the active
+ * concrete workspace in that case. An unscoped operator call has no reliable
+ * harness identity, so it retains the legacy global wait rather than guessing.
+ */
+function gitSyncAwaitScope(ctx: Parameters<typeof resolveAgentIdentity>[0]): {
+  installSlug: string;
+  workspaceId: string;
+} | null {
+  const installSlug = typeof ctx.harnessSlug === "string" ? ctx.harnessSlug.trim() : "";
+  if (!installSlug || installSlug === "*") return null;
+
+  const contextWorkspace =
+    typeof ctx.workspaceId === "string" && ctx.workspaceId.trim() && ctx.workspaceId !== "*"
+      ? ctx.workspaceId.trim()
+      : typeof ctx.principal?.workspaceId === "string" &&
+          ctx.principal.workspaceId.trim() &&
+          ctx.principal.workspaceId !== "*"
+        ? ctx.principal.workspaceId.trim()
+        : activeWorkspaceId();
+  return contextWorkspace && contextWorkspace !== "*"
+    ? { installSlug, workspaceId: contextWorkspace }
+    : null;
 }
 
 function reply(body: unknown) {
@@ -731,12 +761,14 @@ defineTool({
     timeout_sec: timeoutArg,
   }),
   async handler(args, ctx) {
+    const scope = gitSyncAwaitScope(ctx);
     return reply(
       await armAwaits(
         ctx,
         [buildKey("git-sync", { sha: args.sha })],
         args.note ?? "git-sync:await — blocked until locally committed",
         args.timeout_sec,
+        scope ? { payloadFilter: scope } : undefined,
       ),
     );
   },

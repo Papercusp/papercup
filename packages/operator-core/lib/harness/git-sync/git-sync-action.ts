@@ -1734,7 +1734,9 @@ async function handleGitSync(
   // later git-sync:egressed event emitted by runGithubBridgeLeg.
   // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
   // fire-and-forget, never gates the tick, benign to replay past the record step.
-  if (outcome.status === 'synced') emitGitSyncCommittedEvent(outcome.headSha);
+  if (outcome.status === 'synced') {
+    emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
+  }
 
   // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,
   // one bridge pass per tick — ingress origin → admission → egress canonical →
@@ -1995,7 +1997,9 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     // only when the remote staging ref was pushed or was already at canonicalSha.
     // Emit after the metadata write so a woken waiter can immediately verify the
     // same writer-backed watermark. A skipped/failed/no-egress tick emits nothing.
-    if (outcome.egressHead) emitGitSyncEgressedEvent(outcome.egressHead);
+    if (outcome.egressHead) {
+      emitGitSyncEgressedEvent(outcome.egressHead, { scope: { installSlug: slug, workspaceId } });
+    }
   } catch (e) {
     console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
   }

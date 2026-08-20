@@ -4,17 +4,20 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-events';
+import { payloadMatchesFilter } from '../../events/await/pattern';
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
 const typedEmit = () =>
   vi.fn(async (_opts: EmitOpts) => ({ ok: true as const, key: '', woken: 0, notified: [] as string[], msgId: null, waiters: 0 }));
 
 const SHA = 'abcdef1234567890fedcba';
+const SCOPE_A = { installSlug: 'harness-a', workspaceId: 'workspace-a' };
+const SCOPE_B = { installSlug: 'harness-b', workspaceId: 'workspace-a' };
 
 describe('emitGitSyncCommittedEvent (P-102)', () => {
   it('fires BOTH the global git-sync:committed and the per-sha key, with payload.sha', async () => {
     const emit = typedEmit();
-    emitGitSyncCommittedEvent(SHA, { emit });
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
     await new Promise((r) => setTimeout(r, 0));
     expect(emit).toHaveBeenCalledTimes(2);
     const keys = emit.mock.calls.map((c) => c[0].key);
@@ -23,7 +26,7 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     for (const call of emit.mock.calls) {
       expect(call[0]).toMatchObject({
         source: 'git-sync',
-        payload: expect.objectContaining({ sha: SHA }),
+        payload: expect.objectContaining({ sha: SHA, ...SCOPE_A }),
       });
       // short-sha (12) appears in the human summary
       expect(call[0].summary).toContain(SHA.slice(0, 12));
@@ -34,7 +37,7 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
 
   it('is an awaiter-only signal — no `to` push (audience is whoever awaited)', async () => {
     const emit = typedEmit();
-    emitGitSyncCommittedEvent(SHA, { emit });
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
     await new Promise((r) => setTimeout(r, 0));
     for (const call of emit.mock.calls) expect(call[0].to).toBeUndefined();
   });
@@ -44,7 +47,7 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     const emit = vi.fn(async () => {
       throw new Error('engine down');
     });
-    expect(() => emitGitSyncCommittedEvent(SHA, { emit: emit as never })).not.toThrow();
+    expect(() => emitGitSyncCommittedEvent(SHA, { emit: emit as never, scope: SCOPE_A })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('committed-event'));
     warn.mockRestore();
@@ -55,17 +58,28 @@ describe('emitGitSyncCommittedEvent (P-102)', () => {
     const emit = vi.fn(async () => {
       throw Object.assign(new Error('write CONNECTION_ENDED'), { code: 'CONNECTION_ENDED' });
     });
-    expect(() => emitGitSyncCommittedEvent(SHA, { emit: emit as never })).not.toThrow();
+    expect(() => emitGitSyncCommittedEvent(SHA, { emit: emit as never, scope: SCOPE_A })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  it('scopes a global wake to its harness and workspace (two-harness regression)', async () => {
+    const emit = typedEmit();
+    emitGitSyncCommittedEvent(SHA, { emit, scope: SCOPE_A });
+    await new Promise((r) => setTimeout(r, 0));
+
+    const globalPayload = emit.mock.calls.find((call) => call[0].key === 'git-sync:committed')?.[0].payload;
+    expect(globalPayload).toEqual({ sha: SHA, ...SCOPE_A });
+    expect(payloadMatchesFilter(SCOPE_A, globalPayload)).toBe(true);
+    expect(payloadMatchesFilter(SCOPE_B, globalPayload)).toBe(false);
   });
 });
 
 describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
   it('fires BOTH remote-egress keys with payload.sha and an explicit origin/staging summary', async () => {
     const emit = typedEmit();
-    emitGitSyncEgressedEvent(SHA, { emit });
+    emitGitSyncEgressedEvent(SHA, { emit, scope: SCOPE_A });
     await new Promise((r) => setTimeout(r, 0));
 
     expect(emit).toHaveBeenCalledTimes(2);
@@ -76,7 +90,7 @@ describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
     for (const call of emit.mock.calls) {
       expect(call[0]).toMatchObject({
         source: 'git-sync',
-        payload: { sha: SHA },
+        payload: { sha: SHA, ...SCOPE_A },
       });
       expect(call[0].summary).toContain('origin/staging');
       expect(call[0].summary).toContain(SHA.slice(0, 12));
@@ -88,7 +102,7 @@ describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
     const emit = vi.fn(async () => {
       throw new Error('engine down');
     });
-    expect(() => emitGitSyncEgressedEvent(SHA, { emit: emit as never })).not.toThrow();
+    expect(() => emitGitSyncEgressedEvent(SHA, { emit: emit as never, scope: SCOPE_A })).not.toThrow();
     await new Promise((r) => setTimeout(r, 0));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('egressed-event'));
     warn.mockRestore();

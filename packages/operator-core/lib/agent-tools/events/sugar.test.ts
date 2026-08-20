@@ -698,6 +698,33 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
   });
 });
 
+describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () => {
+  const gitSyncTool = definedTools.find((tool) => tool.name === "git-sync:await");
+  if (!gitSyncTool) throw new Error("git-sync:await tool was not registered");
+
+  it("binds the global commit wait to the caller's concrete harness and workspace", async () => {
+    const res = await gitSyncTool.handler(
+      {} as never,
+      { harnessSlug: "harness-a", workspaceId: "workspace-a" } as never,
+    );
+
+    expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed"]);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(registerAwait.mock.calls[0][0].payloadFilter).toEqual({
+      installSlug: "harness-a",
+      workspaceId: "workspace-a",
+    });
+  });
+
+  it("keeps an operator-scope call unfiltered when no concrete harness is available", async () => {
+    const res = await gitSyncTool.handler({}, { harnessSlug: "*", workspaceId: "workspace-a" } as never);
+
+    expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed"]);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(registerAwait.mock.calls[0][0].payloadFilter).toBeNull();
+  });
+});
+
 describe("work-item:await registration latches (EI-13095 — the sugar used to bypass them)", () => {
   const wiTool = definedTools.find((tool) => tool.name === "work-item:await");
   if (!wiTool) throw new Error("work-item:await tool was not registered");

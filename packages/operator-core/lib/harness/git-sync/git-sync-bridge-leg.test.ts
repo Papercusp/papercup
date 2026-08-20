@@ -274,7 +274,9 @@ describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', ()
 
     expect(loadHarnessRegistryMock).toHaveBeenCalledWith(WS);
     expect(runGithubBridgeTickMock).toHaveBeenCalledOnce();
-    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD);
+    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD, {
+      scope: { installSlug: SLUG, workspaceId: WS },
+    });
   });
 
   it('emits only after the writer-backed metadata watermark is persisted', async () => {
@@ -291,7 +293,9 @@ describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', ()
     await runGithubBridgeLeg(SLUG, WS);
 
     expect(emitGitSyncEgressedEventMock).toHaveBeenCalledOnce();
-    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD);
+    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD, {
+      scope: { installSlug: SLUG, workspaceId: WS },
+    });
     expect(order.slice(-2)).toEqual(['metadata', 'event']);
   });
 
