@@ -7,12 +7,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Idea, Proposal, ScoredIdea, ScoutLlmCall } from './types';
 import {
+  buildRecombinePrompt,
   planRecombinations,
   validateProposal,
   recombineProposals,
   ACCEPTED_ROUTE_HINTS,
   ALL_ROUTE_HINTS,
   DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+  type RouteHintHold,
   type RouteHintsAreExhaustive,
 } from './recombine';
 import { classifyProposal, DEFAULT_ROUTING_RAIL, makeGoalScaleOverride } from './router';
@@ -121,6 +123,17 @@ describe('planRecombinations', () => {
   });
 });
 
+describe('buildRecombinePrompt — target-aware goal intake', () => {
+  it('offers goal only as a known-target amendment and forbids invented targets', () => {
+    const group = planRecombinations([scored({ idea: idea({ id: 'goal-candidate' }) })])[0]!;
+    const { system } = buildRecombinePrompt(group, {});
+    expect(system).toContain('"route": "plan|gym|improvement|goal"');
+    expect(system).toContain('targetGoalId');
+    expect(system).toContain('ONLY to amend a KNOWN existing goal');
+    expect(system).toContain('Never invent a targetGoalId');
+  });
+});
+
 describe('recombineProposals', () => {
   it('only recombines survivors (verdict ≠ reject)', async () => {
     const kept = scored({ idea: idea({ id: 'k', title: 'kept idea', body: 'a' }), verdict: 'keep' });
@@ -199,34 +212,53 @@ describe('recombineProposals', () => {
 });
 
 /**
- * WI-39721 — the routeHint coercion must be LOUD, and ROUTING-NEUTRAL while it is.
- * `parseProposal` accepts 3 of the 5 members declared by `Proposal['routeHint']`;
- * 'goal'/'instance' coerce to undefined and take DEFAULT_ROUTING_RAIL. Admitting
- * them is owner-reserved (D-006), so what is pinned here is the SIGNAL — and, just
- * as load-bearing, that emitting it changed no routing.
+ * WI-39721 — rejected routeHint coercion must be LOUD and routing-neutral.
+ * `goal` is accepted only when targetGoalId makes it an amendment. Untargeted
+ * goal creation and every instance hint still coerce to undefined and take
+ * DEFAULT_ROUTING_RAIL.
  */
 describe('recombineProposals — dropped routeHint signal', () => {
-  it('records an unaccepted hint WITHOUT routing it (still coerces to undefined)', async () => {
+  it('keeps goal creation held and records the rejected hint loudly', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const r = await recombineProposals([scored({ idea: idea({ id: 'g' }) })], {
-        llmCall: fakeProposer({ ...COMPLETE_PROPOSAL, route: 'goal', targetGoalId: 'goal-existing' }),
+        llmCall: fakeProposer({ ...COMPLETE_PROPOSAL, route: 'goal' }),
       });
-      // Routing is UNCHANGED: the hint is still dropped, exactly as before.
       expect(r.proposals).toHaveLength(1);
       expect(r.proposals[0].routeHint).toBeUndefined();
-      // ...but the ask is no longer invisible.
       expect(r.droppedRouteHints).toEqual([{ value: 'goal', count: 1 }]);
-      // WI-39879 — and it rides ON the proposal, not only in the batch tally. The
-      // tally dies at the `recombine` PORT boundary (typed `=> Promise<Proposal[]>`),
-      // so this is the copy that survives into scout_cycle_stage_artifacts and makes
-      // the goal-draft queue readable. Still routing-neutral: routeHint stays undefined.
       expect(r.proposals[0].droppedRouteHint).toBe('goal');
-      // P-006/D-004: the target survives independently of the still-held intake
-      // decision. This does NOT widen route acceptance: routeHint remains absent.
-      expect(r.proposals[0].targetGoalId).toBe('goal-existing');
+      expect(r.proposals[0].targetGoalId).toBeUndefined();
       expect(warn).toHaveBeenCalledTimes(1);
       expect(String(warn.mock.calls[0]?.[0])).toContain('goal×1');
+      expect(String(warn.mock.calls[0]?.[0])).toContain('goal requires a non-empty targetGoalId');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('admits goal WITH target as an amendment and preserves the recombine-to-router seam', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await recombineProposals([scored({ idea: idea({ id: 'amend' }) })], {
+        llmCall: fakeProposer({
+          ...COMPLETE_PROPOSAL,
+          route: 'goal',
+          targetGoalId: '  goal-existing  ',
+        }),
+      });
+      expect(r.proposals).toHaveLength(1);
+      expect(r.proposals[0]).toMatchObject({
+        routeHint: 'goal',
+        targetGoalId: 'goal-existing',
+      });
+      expect(r.proposals[0].droppedRouteHint).toBeUndefined();
+      expect(r.droppedRouteHints).toEqual([]);
+      expect(classifyProposal(r.proposals[0])).toMatchObject({
+        rail: 'goal',
+        followedHint: true,
+      });
+      expect(warn).not.toHaveBeenCalled();
     } finally {
       warn.mockRestore();
     }
@@ -274,7 +306,7 @@ describe('recombineProposals — dropped routeHint signal', () => {
     }
   });
 
-  it('proves the recombine-to-router seam: direct goal hints stay held while plan escalation is live', async () => {
+  it('proves the seam: untargeted direct goal creation stays held while plan escalation is live', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       // This is the real producer path: the model asks recombine for `goal`,
@@ -316,18 +348,14 @@ describe('recombineProposals — dropped routeHint signal', () => {
 /**
  * WI-39724 — the routeHint DRIFT GUARD.
  *
- * `Proposal['routeHint']` (types.ts) and the set `parseProposal` accepts drifted apart
- * with NOTHING failing: the union grew to 5 members, the parser still accepted 3, and
- * the goal rail's direct-hint path was dead code in production for a day while looking
- * armed (D-006). What is pinned here is the WEAKER, DECISION-INDEPENDENT invariant:
+ * `Proposal['routeHint']` (types.ts) and the set `parseProposal` accepts once drifted
+ * apart with NOTHING failing. What is pinned here is the target-aware invariant:
  *
- *   every member of the union is EITHER accepted by recombine
- *   OR listed in DELIBERATELY_UNACCEPTED_ROUTE_HINTS with a written reason
+ *   every union member is accepted, held, or conditionally held with a reason;
+ *   every conditional hold must also be named in ACCEPTED_ROUTE_HINTS
  *
- * so it passes today (documenting the two pending hints in code) and fails the moment
- * a NEW hint is added without a decision. It deliberately does NOT assert the two sets
- * are EQUAL — that assertion is false today and would force the owner's intake ruling
- * by the back door, which D-006 reserves.
+ * so a new hint without a decision fails, and either half of the goal amendment
+ * admission cannot be changed without the other.
  *
  * FALSIFIABILITY (acceptance): proven by permanent in-file CONTROLS below — the audit
  * is a pure function over its three inputs, so a deliberately-broken input set is fed
@@ -340,12 +368,21 @@ type CoverageViolation = { hint: string; problem: string };
 function auditRouteHintCoverage(
   all: readonly string[],
   accepted: readonly string[],
-  unaccepted: Record<string, string | undefined>,
+  unaccepted: Record<string, RouteHintHold | undefined>,
 ): CoverageViolation[] {
   const violations: CoverageViolation[] = [];
   for (const hint of all) {
     const isAccepted = accepted.includes(hint);
     const isListed = Object.prototype.hasOwnProperty.call(unaccepted, hint);
+    const hold = unaccepted[hint];
+    if (hold && typeof hold !== 'string') {
+      if (!hold.reason.trim()) {
+        violations.push({ hint, problem: 'conditionally held with no written reason' });
+      } else if (!isAccepted) {
+        violations.push({ hint, problem: 'conditional admission is missing from accepted hints' });
+      }
+      continue;
+    }
     if (isAccepted && isListed) {
       violations.push({ hint, problem: 'contradictory: both accepted and listed as deliberately unaccepted' });
       continue;
@@ -355,7 +392,7 @@ function auditRouteHintCoverage(
       violations.push({ hint, problem: 'undecided: neither accepted nor listed as deliberately unaccepted' });
       continue;
     }
-    const reason = unaccepted[hint];
+    const reason = hold;
     if (typeof reason !== 'string' || reason.trim() === '') {
       violations.push({ hint, problem: 'listed as deliberately unaccepted with no written reason' });
     }
@@ -379,14 +416,16 @@ describe('routeHint drift guard (WI-39724)', () => {
     ).toEqual([]);
   });
 
-  it("documents the pending hints rather than routing them — 'goal' and 'instance' are held, not accepted", () => {
-    // Pinned so the guard cannot be satisfied by quietly ADMITTING them: that is the
-    // owner-reserved intake decision (D-006), not a way to make this file go green.
-    for (const hint of ['goal', 'instance'] as const) {
-      expect(ALL_ROUTE_HINTS).toContain(hint);
-      expect(ACCEPTED_ROUTE_HINTS as readonly string[]).not.toContain(hint);
-      expect(DELIBERATELY_UNACCEPTED_ROUTE_HINTS[hint]?.trim()).toBeTruthy();
-    }
+  it('accepts targeted goal amendments while holding creation and all instance hints', () => {
+    expect(ALL_ROUTE_HINTS).toContain('goal');
+    expect(ACCEPTED_ROUTE_HINTS as readonly string[]).toContain('goal');
+    const goalHold = DELIBERATELY_UNACCEPTED_ROUTE_HINTS.goal;
+    expect(goalHold).toMatchObject({ exceptWhen: 'targetGoalId' });
+    expect(typeof goalHold === 'object' ? goalHold.reason : '').toMatch(/D-006/);
+
+    expect(ALL_ROUTE_HINTS).toContain('instance');
+    expect(ACCEPTED_ROUTE_HINTS as readonly string[]).not.toContain('instance');
+    expect(DELIBERATELY_UNACCEPTED_ROUTE_HINTS.instance).toEqual(expect.any(String));
   });
 
   // ---- CONTROLS: the guard must FAIL on each way the invariant can break. ----
@@ -404,16 +443,27 @@ describe('routeHint drift guard (WI-39724)', () => {
   it('CONTROL — catches a deliberately-unaccepted hint with an empty reason', () => {
     const v = auditRouteHintCoverage(ALL_ROUTE_HINTS, ACCEPTED_ROUTE_HINTS, {
       ...DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
-      goal: '   ',
+      instance: '   ',
     });
-    expect(v).toEqual([{ hint: 'goal', problem: expect.stringContaining('no written reason') }]);
+    expect(v).toEqual([{ hint: 'instance', problem: expect.stringContaining('no written reason') }]);
   });
 
   it('CONTROL — catches a hint that is both accepted and held back', () => {
-    const v = auditRouteHintCoverage(ALL_ROUTE_HINTS, [...ACCEPTED_ROUTE_HINTS, 'goal'], {
+    const v = auditRouteHintCoverage(ALL_ROUTE_HINTS, [...ACCEPTED_ROUTE_HINTS, 'instance'], {
       ...DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
     });
-    expect(v).toEqual([{ hint: 'goal', problem: expect.stringContaining('contradictory') }]);
+    expect(v).toEqual([{ hint: 'instance', problem: expect.stringContaining('contradictory') }]);
+  });
+
+  it('CONTROL — catches a conditional admission missing from accepted hints', () => {
+    const v = auditRouteHintCoverage(
+      ALL_ROUTE_HINTS,
+      ACCEPTED_ROUTE_HINTS.filter((hint) => hint !== 'goal'),
+      DELIBERATELY_UNACCEPTED_ROUTE_HINTS,
+    );
+    expect(v).toEqual([
+      { hint: 'goal', problem: expect.stringContaining('conditional admission is missing') },
+    ]);
   });
 
   it('CONTROL — catches a stale entry left behind after a hint leaves the union', () => {

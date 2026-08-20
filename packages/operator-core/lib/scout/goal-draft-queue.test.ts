@@ -72,6 +72,11 @@ describe('selectGoalDrafts (pure)', () => {
     expect(selectGoalDrafts([row([proposal({ droppedRouteHint: 'instance' })])])).toEqual([]);
     // An ACCEPTED hint routed normally and is not a draft.
     expect(selectGoalDrafts([row([proposal({ routeHint: 'plan' })])])).toEqual([]);
+    expect(
+      selectGoalDrafts([
+        row([proposal({ routeHint: 'goal', targetGoalId: 'goal-existing' })]),
+      ]),
+    ).toEqual([]);
   });
 
   it('degrades to less evidence — never an exception — on a partial artifact row', () => {
@@ -234,7 +239,7 @@ describe('the zero-write property (this is the acceptance criterion)', () => {
   });
 });
 
-describe('routing and intake are UNCHANGED by the draft queue (D-006 stays owner-reserved)', () => {
+describe('draft queue preserves the creation/amendment intake split', () => {
   it('a goal-scale ask still takes the default rail — the hint is evidence, not routing', () => {
     const asked = proposal({ droppedRouteHint: 'goal' });
     // routeHint is undefined: parseProposal coerced it. classifyProposal reads
@@ -245,10 +250,11 @@ describe('routing and intake are UNCHANGED by the draft queue (D-006 stays owner
     expect(decision.followedHint).toBe(false);
   });
 
-  it('intake still refuses the goal hint, with its reason on record', () => {
-    expect(ACCEPTED_ROUTE_HINTS).not.toContain('goal');
-    expect(ACCEPTED_ROUTE_HINTS).not.toContain(DEFAULT_DRAFT_RAIL);
-    expect(DELIBERATELY_UNACCEPTED_ROUTE_HINTS.goal).toBeTruthy();
-    expect(DELIBERATELY_UNACCEPTED_ROUTE_HINTS.goal).toMatch(/D-006/);
+  it('accepts goal as a name but holds it unless targetGoalId identifies an amendment', () => {
+    expect(DEFAULT_DRAFT_RAIL).toBe('goal');
+    expect(ACCEPTED_ROUTE_HINTS).toContain('goal');
+    const hold = DELIBERATELY_UNACCEPTED_ROUTE_HINTS.goal;
+    expect(hold).toMatchObject({ exceptWhen: 'targetGoalId' });
+    expect(typeof hold === 'object' ? hold.reason : '').toMatch(/D-006/);
   });
 });

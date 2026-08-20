@@ -140,13 +140,10 @@ export interface RecombineResult {
    * tallied by value (count desc, then value asc). Each one was coerced to
    * `undefined` and therefore falls through to `DEFAULT_ROUTING_RAIL`.
    *
-   * This tally is the ONLY place that drop is observable: every persisted
-   * proposal/routing surface downstream is POST-coercion, so no stored table can
-   * answer "how often did the model ask for rail X?" (plan
-   * blender-goal-rail-first-live-goal-2026-08-17 D-008). The live signal is the
-   * `[scout/recombine]` warn emitted alongside this field — the cycle's recombine
-   * port (cycle-deps.ts) currently keeps only `.proposals`, so a reader of the
-   * journal, not of this object, is who notices a starved rail.
+   * WI-39879 also carries the dropped value on each surviving Proposal so the
+   * artifact-backed draft queue can reconstruct it after this batch result is
+   * reduced to `.proposals`. This tally remains the batch-level count and powers
+   * the live `[scout/recombine]` warning.
    */
   droppedRouteHints: { value: string; count: number }[];
 }
@@ -163,8 +160,9 @@ export function buildRecombinePrompt(
       : 'Sharpen this single idea into a concrete proposal.',
     'Every proposal MUST name a CHEAP, FALSIFIABLE first experiment (the anti-bullshit gate): a hypothesis, the cheap method to test it, and the observable signal that would prove it WRONG.',
     'Reason briefly, then output ONLY this JSON (no prose, no fences):',
-    '{"framing": "...the problem this addresses...", "mechanism": "...the novel mechanism, how it works...", "whyNew": "...why this is new vs what already exists...", "bet": "...the upside if it works...", "experiment": {"hypothesis": "...", "method": "...the cheap first test...", "falsifiableSignal": "...the observable that would prove it WRONG..."}, "route": "plan|gym|improvement"}',
+    '{"framing": "...the problem this addresses...", "mechanism": "...the novel mechanism, how it works...", "whyNew": "...why this is new vs what already exists...", "bet": "...the upside if it works...", "experiment": {"hypothesis": "...", "method": "...the cheap first test...", "falsifiableSignal": "...the observable that would prove it WRONG..."}, "route": "plan|gym|improvement|goal", "targetGoalId": "...required only for goal amendments..."}',
     'route: "plan" for broad/architectural scope, "gym" for a small testable optimization, "improvement" for a concrete fix.',
+    'Use route: "goal" ONLY to amend a KNOWN existing goal, and include its non-empty targetGoalId. Never invent a targetGoalId. A goal route without a target would create a new autonomous goal and is deliberately held at intake.',
   ].join('\n');
 
   const ideaBlock = group.members
@@ -190,17 +188,14 @@ export function buildRecombinePrompt(
 }
 
 /**
- * The route hints this parser ACCEPTS from the model — deliberately NARROWER
- * than the `Proposal['routeHint']` union declared in types.ts, which also
- * carries 'goal' and 'instance'.
+ * Route-hint names this parser can accept from the model. `goal` is conditional:
+ * it is admitted only with a non-empty targetGoalId (an amendment). Without a
+ * target it is autonomous goal creation and remains held below.
  *
- * ⚠ Do NOT widen this here. Admitting 'goal'/'instance' at intake is an OWNER
- * decision, reserved by plan blender-goal-rail-first-live-goal-2026-08-17 D-006:
- * a routed goal spends a real budget and launches an autonomous agent. WI-39721
- * makes the resulting drop LOUD (below); it deliberately does not change which
- * hints are accepted.
+ * `instance` remains outside this list. Adding another name, or making goal
+ * creation unconditional, is still an owner-reserved intake decision (D-006).
  */
-export const ACCEPTED_ROUTE_HINTS = ['plan', 'gym', 'improvement'] as const;
+export const ACCEPTED_ROUTE_HINTS = ['plan', 'gym', 'improvement', 'goal'] as const;
 
 /**
  * WI-39724 — every member of the `Proposal['routeHint']` union, as a RUNTIME value.
@@ -235,28 +230,50 @@ export type RouteHintsAreExhaustive = AssertNever<
 >;
 
 /**
- * WI-39724 — route hints that EXIST in the union but which `parseProposal`
- * deliberately does not accept, each with the reason it is held back.
+ * WI-39724 — route hints that are wholly or conditionally held by
+ * `parseProposal`, each with the reason for the hold.
  *
- * This map is the escape valve that lets the drift guard pass TODAY without
- * forcing the owner's hand: the invariant asserted in recombine.test.ts is the
- * weaker, decision-independent one — every union member is either ACCEPTED or
- * listed HERE with a written reason — so a NEW hint added without a decision
- * fails, while the two currently-pending ones do not.
+ * A string holds the whole hint. A structured entry is a conditional hold: the
+ * hint must also appear in ACCEPTED_ROUTE_HINTS, but remains held unless its
+ * named exception is satisfied. That is how `goal` can admit zero-spend
+ * amendments while continuing to refuse autonomous goal creation.
  *
- * ⚠ Removing an entry here is how the owner's ruling gets implemented: the guard
- * then mechanically forces `ACCEPTED_ROUTE_HINTS` to be updated in the same change.
- * Do NOT remove one to "fix" a failing guard — that IS the owner-reserved decision
- * (D-006: a routed goal spends DEFAULT_GOAL_BUDGET_CENTS=20000 and launches an
- * autonomous agent).
+ * ⚠ Removing or loosening an entry here is an intake decision. The guard in
+ * recombine.test.ts requires a conditional hint to be named in
+ * ACCEPTED_ROUTE_HINTS, so the two halves cannot silently drift.
  */
+export type RouteHintHold =
+  | string
+  | Readonly<{
+      reason: string;
+      /** Admit only when the proposal names an existing goal to amend. */
+      exceptWhen: 'targetGoalId';
+    }>;
+
 export const DELIBERATELY_UNACCEPTED_ROUTE_HINTS: Partial<
-  Record<NonNullable<Proposal['routeHint']>, string>
+  Record<NonNullable<Proposal['routeHint']>, RouteHintHold>
 > = {
-  goal: 'awaiting owner intake decision, D-006 — routing a goal spends DEFAULT_GOAL_BUDGET_CENTS and launches an autonomous agent, so admitting it at intake is the owner’s call, not a maintenance fix.',
+  goal: {
+    exceptWhen: 'targetGoalId',
+    reason:
+      'D-006/P-007 — goal WITHOUT targetGoalId is creation: it spends DEFAULT_GOAL_BUDGET_CENTS and launches an autonomous agent, so it remains held. Goal WITH targetGoalId is an amendment and is admitted.',
+  },
   instance:
     'awaiting owner intake decision, D-006 — same ruling as goal; the instance rail is an eval-battery InstanceSubject and has never been reachable via a direct model hint.',
 };
+
+function acceptsRouteHint(
+  route: string,
+  targetGoalId: string,
+): route is NonNullable<Proposal['routeHint']> {
+  if (!(ACCEPTED_ROUTE_HINTS as readonly string[]).includes(route)) return false;
+  const hold = DELIBERATELY_UNACCEPTED_ROUTE_HINTS[
+    route as NonNullable<Proposal['routeHint']>
+  ];
+  if (!hold) return true;
+  if (typeof hold === 'string') return false;
+  return hold.exceptWhen === 'targetGoalId' && targetGoalId.length > 0;
+}
 
 type ParsedProposal = {
   framing: string;
@@ -284,7 +301,7 @@ function parseProposal(raw: unknown): ParsedProposal | null {
   };
   const route = str(o.route ?? o.routeHint);
   const targetGoalId = str(o.targetGoalId ?? o.target_goal_id);
-  const accepted = (ACCEPTED_ROUTE_HINTS as readonly string[]).includes(route);
+  const accepted = acceptsRouteHint(route, targetGoalId);
   const routeHint = accepted ? (route as Proposal['routeHint']) : undefined;
   return {
     framing: str(o.framing),
@@ -382,12 +399,10 @@ export async function recombineProposals(
               ...(seededByRefs.length ? { seededByRefs } : {}),
               ...(parsed.routeHint ? { routeHint: parsed.routeHint } : {}),
               ...(parsed.targetGoalId ? { targetGoalId: parsed.targetGoalId } : {}),
-              // WI-39879: the unaccepted ask rides ON the proposal too, not only in
-              // the batch tally below. Routing is UNCHANGED — classifyProposal reads
-              // `routeHint` alone, which is still undefined here — but the proposal
-              // now persists (via scout_cycle_stage_artifacts.proposals) carrying the
-              // rail it wanted, which is what makes a starved rail READABLE instead of
-              // merely countable. Widening intake stays owner-reserved (D-006).
+              // WI-39879: a rejected ask rides ON the proposal too, not only in
+              // the batch tally below. For goal creation (no target), routeHint is
+              // still undefined and routing stays unchanged; targeted amendments
+              // are accepted and therefore carry no dropped hint.
               ...(parsed.droppedRouteHint ? { droppedRouteHint: parsed.droppedRouteHint } : {}),
             }
           : { sourceIdeaIds, addressesPatternRefs, ...(seededByRefs.length ? { seededByRefs } : {}) };
@@ -425,11 +440,10 @@ export async function recombineProposals(
     }
   }
 
-  // WI-39721: make the coercion LOUD. Routing is untouched — every hint below
-  // already became `undefined` in parseProposal and will take
-  // DEFAULT_ROUTING_RAIL — but until now it left NO trace anywhere, so a rail
-  // the model keeps asking for and never reaching was indistinguishable from a
-  // rail it never asks for (D-008: every persisted surface is post-coercion).
+  // WI-39721: make rejected hints LOUD. Every hint below already became
+  // `undefined` in parseProposal and will take DEFAULT_ROUTING_RAIL. In
+  // particular, goal WITHOUT targetGoalId is creation and remains held; goal
+  // WITH targetGoalId is an accepted amendment and never enters this tally.
   // Emitted per batch rather than per group so a starved rail reads as a rate.
   const droppedRouteHints = [...hintTally.entries()]
     .map(([value, count]) => ({ value, count }))
@@ -439,9 +453,9 @@ export async function recombineProposals(
     console.warn(
       `[scout/recombine] routeHint DROPPED in ${total}/${results.length} group(s): ` +
         `${droppedRouteHints.map((d) => `${d.value}×${d.count}`).join(', ')} — ` +
-        `parseProposal accepts only ${ACCEPTED_ROUTE_HINTS.join('|')}, so each coerced to ` +
-        `undefined and takes DEFAULT_ROUTING_RAIL instead. A rail named here is being ` +
-        `ASKED FOR and never reached (WI-39721); widening intake is owner-reserved (D-006).`,
+        `the target-aware admission policy rejected each (goal requires a non-empty ` +
+        `targetGoalId; accepted names: ${ACCEPTED_ROUTE_HINTS.join('|')}), so each ` +
+        `coerces to undefined and takes DEFAULT_ROUTING_RAIL instead (WI-39721).`,
     );
   }
 
