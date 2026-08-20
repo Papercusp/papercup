@@ -258,8 +258,10 @@ describe('every surface that asks for an observation title states the rule', () 
     const description = fieldDescription(completeTool.args, 'completion');
     expect(description).toContain(HARVESTED_COORD_NOTES_RULE);
     expect(namesFirstLineIsTheTitle(description)).toBe(true);
-    // The pre-existing contract it must not have lost.
-    expect(description).toMatch(/bare STRING is also accepted/i);
+    // The structured-evidence contract it must not contradict. Bare strings were
+    // deliberately retired because they cannot carry verification or coverage.
+    expect(description).toMatch(/bare STRING is rejected/i);
+    expect(description).toMatch(/cannot carry structured evidence/i);
   });
 });
 

@@ -13,6 +13,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createTextCollector } from '../../child-output';
 import {
   PAPERCUSP_ANDROID_APP_TEMPLATE,
   PAPERCUSP_IPHONE_APP_TEMPLATE,
@@ -210,7 +211,8 @@ function runProcess(
 ): Promise<{ code: number; timedOut: boolean; tail: string }> {
   return new Promise((resolve) => {
     const child = spawn(bin, args, { cwd, env, detached: true });
-    let output = '';
+    const output = createTextCollector(child.stdout);
+    output.attach(child.stderr);
     let timedOut = false;
     const kill = (signal: NodeJS.Signals): void => {
       try {
@@ -223,15 +225,13 @@ function runProcess(
       timedOut = true;
       kill('SIGTERM');
     }, timeoutMs);
-    child.stdout?.on('data', (chunk) => (output += chunk.toString()));
-    child.stderr?.on('data', (chunk) => (output += chunk.toString()));
     child.on('error', (error) => {
       clearTimeout(timer);
-      resolve({ code: 1, timedOut, tail: `${output}\n${String(error)}`.slice(-8000) });
+      resolve({ code: 1, timedOut, tail: `${output.text()}\n${String(error)}`.slice(-8000) });
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ code: code ?? 1, timedOut, tail: output.slice(-8000) });
+      resolve({ code: code ?? 1, timedOut, tail: output.text().slice(-8000) });
     });
   });
 }
