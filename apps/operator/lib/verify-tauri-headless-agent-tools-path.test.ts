@@ -1,0 +1,79 @@
+/**
+ * Recurrence guard for EI-20742798527438103 / EI-20961560846717550.
+ *
+ * The verifier previously reached a healthy owned bridge and only then tried a
+ * bare `tauri-agent-tools` command. Codex's PATH contains the Node runtime but
+ * not the managed ~/.local/nodeNN/bin directory, so the command exited 127 and
+ * the origin guard mislabeled that dependency failure as an unreachable app.
+ */
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
+const src = readFileSync(SCRIPT, 'utf8');
+const scratch: string[] = [];
+
+afterEach(() => {
+  for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+describe('verify-tauri-headless tauri-agent-tools dependency', () => {
+  it('resolves the CLI and repairs PATH before allocating a verifier work dir', () => {
+    const resolveIdx = src.indexOf(
+      'VERIFY_TAURI_AGENT_TOOLS_BIN="$(resolve_tauri_agent_tools)"',
+    );
+    const workIdx = src.indexOf('WORK="$(mktemp -d');
+
+    expect(resolveIdx).toBeGreaterThan(-1);
+    expect(resolveIdx).toBeLessThan(workIdx);
+    expect(src).toContain('command -v tauri-agent-tools');
+    expect(src).toContain('/.local/node*/bin/tauri-agent-tools');
+    expect(src).toContain(
+      'PATH="$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}"',
+    );
+  });
+
+  it('fails with the dependency diagnosis before creating any rig resources', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'verify-tauri-agent-tools-path.'));
+    scratch.push(dir);
+    const missing = join(dir, 'missing-tauri-agent-tools');
+    const result = spawnSync('bash', [SCRIPT, '--boot-only'], {
+      cwd: resolve(__dirname, '../../..'),
+      env: {
+        ...process.env,
+        PAPERCUSP_SID: 'test-agent-tools-preflight',
+        TMPDIR: dir,
+        VERIFY_TAURI_AGENT_TOOLS_BIN: missing,
+      },
+      encoding: 'utf8',
+    });
+
+    expect(result.status).toBe(127);
+    expect(result.stderr).toContain(
+      `VERIFY_TAURI_AGENT_TOOLS_BIN is not executable: ${missing}`,
+    );
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
+  it('uses the resolved executable and preserves it in the boot-only handoff', () => {
+    const health = src.match(
+      /HEALTH_TIMEOUT=.*?origin health confirmed:[^\n]*/s,
+    )?.[0];
+
+    expect(health).toBeTruthy();
+    expect(health).toContain('"$VERIFY_TAURI_AGENT_TOOLS_BIN" eval');
+    expect(health).toContain('HEALTH_PROBE_STATUS" -eq 126');
+    expect(health).toContain(
+      'This is a verifier dependency/PATH failure, not evidence that the webview origin is unreachable.',
+    );
+    expect(src).toContain(
+      String.raw`printf 'VERIFY_TAURI_AGENT_TOOLS_BIN=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN"`,
+    );
+    expect(src).toContain(
+      'export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR',
+    );
+  });
+});

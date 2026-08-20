@@ -137,6 +137,11 @@
 #                                assertion after navigation (default 30)
 #   VERIFY_TAURI_DOM_POLL_INTERVAL
 #                               seconds between DOM assertion attempts (default 1)
+#   VERIFY_TAURI_AGENT_TOOLS_BIN
+#                               absolute tauri-agent-tools executable override.
+#                               Default: resolve it from PATH, then fall back to
+#                               the managed ~/.local/node*/bin installs. Resolution
+#                               happens before any X/display/build resources start.
 #   VERIFY_TAURI_SKIP_GL_CHECK  1 = skip the VirtualGL real-GPU sanity check
 #                                (screenshots will be blank white — DOM/eval
 #                                via the bridge still work; agent-e2e.mdx §15.4)
@@ -205,6 +210,53 @@ TAURI_OWNER_SID="${PAPERCUSP_SID:-}"
   exit 1
 }
 TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID"
+
+# EI-20742798527438103 / EI-20961560846717550: the Codex launcher PATH carries
+# the Node runtime but not the managed npm bin directory. The verifier used to
+# spend minutes booting Xvfb + Tauri, then execute a bare `tauri-agent-tools` in
+# its post-boot origin guard. Exit 127 was consequently reported as the wholly
+# different failure "owned origin unreachable". Resolve the dependency before
+# WORK is even created, preserve an explicit override for nonstandard installs,
+# and prepend its directory to PATH so caller assertions and --boot-only shells
+# inherit the same working command surface as this script.
+resolve_tauri_agent_tools() {
+  local candidate resolved
+
+  if [ -n "${VERIFY_TAURI_AGENT_TOOLS_BIN:-}" ]; then
+    if [ ! -x "$VERIFY_TAURI_AGENT_TOOLS_BIN" ]; then
+      echo "FATAL: VERIFY_TAURI_AGENT_TOOLS_BIN is not executable: $VERIFY_TAURI_AGENT_TOOLS_BIN" >&2
+      return 127
+    fi
+    printf '%s\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN"
+    return 0
+  fi
+
+  if resolved="$(command -v tauri-agent-tools 2>/dev/null)" && [ -x "$resolved" ]; then
+    printf '%s\n' "$resolved"
+    return 0
+  fi
+
+  # The managed install is version-scoped (currently ~/.local/node25/bin), so
+  # match the stable layout instead of baking today's Node major into the fix.
+  for candidate in "${HOME:-}"/.local/node*/bin/tauri-agent-tools; do
+    [ -x "$candidate" ] || continue
+    printf '%s\n' "$candidate"
+    return 0
+  done
+
+  echo "FATAL: tauri-agent-tools not found before verifier boot." >&2
+  echo "       Checked PATH and ${HOME:-<unset>}/.local/node*/bin/tauri-agent-tools." >&2
+  echo "       Install it there or set VERIFY_TAURI_AGENT_TOOLS_BIN to its executable path." >&2
+  return 127
+}
+
+VERIFY_TAURI_AGENT_TOOLS_BIN="$(resolve_tauri_agent_tools)" || exit $?
+VERIFY_TAURI_AGENT_TOOLS_BIN_DIR="$(cd "$(dirname "$VERIFY_TAURI_AGENT_TOOLS_BIN")" && pwd)"
+case ":${PATH:-}:" in
+  *":$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:"*) ;;
+  *) PATH="$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
+esac
+export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-20229366113827667: cargo compilation and bridge readiness are separate
@@ -627,6 +679,8 @@ write_boot_only_env_script() {
       printf 'VERIFY_TAURI_SCOPE_UNIT=%q\n' "${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
       printf 'VERIFY_TAURI_HEARTBEAT=%q\n' "$HEARTBEAT_FILE"
       printf 'VERIFY_TAURI_ENV_FILE=%q\n' "$BOOT_ONLY_ENV"
+      printf 'VERIFY_TAURI_AGENT_TOOLS_BIN=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN"
+      printf 'VERIFY_TAURI_AGENT_TOOLS_BIN_DIR=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR"
       cat <<'BOOT_ONLY_ENV_SCRIPT'
 
 # This file is source-only. It deliberately does not use `set -e` so sourcing
@@ -639,6 +693,10 @@ verify_tauri_assert_owned() {
   fi
   if [ -z "${VERIFY_TAURI_PID:-}" ] || ! kill -0 "$VERIFY_TAURI_PID" 2>/dev/null; then
     echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier whose bridge PID is no longer alive; boot a fresh rig." >&2
+    return 1
+  fi
+  if [ ! -x "$VERIFY_TAURI_AGENT_TOOLS_BIN" ]; then
+    echo "FATAL: verifier CLI disappeared or is no longer executable: $VERIFY_TAURI_AGENT_TOOLS_BIN" >&2
     return 1
   fi
 
@@ -663,6 +721,11 @@ if ! verify_tauri_assert_owned; then
   exit 1
 fi
 
+case ":${PATH:-}:" in
+  *":$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:"*) ;;
+  *) PATH="$VERIFY_TAURI_AGENT_TOOLS_BIN_DIR:${PATH:-/usr/local/bin:/usr/bin:/bin}" ;;
+esac
+export PATH VERIFY_TAURI_AGENT_TOOLS_BIN VERIFY_TAURI_AGENT_TOOLS_BIN_DIR
 export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DISPLAY
 export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
@@ -1467,7 +1530,7 @@ while :; do
   if [ -n "${VERIFY_TAURI_LIVENESS_CHECK:-}" ] && ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
     exit 1
   fi
-  if last_output="$(tauri-agent-tools check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
+  if last_output="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
     [ -n "$last_output" ] && printf '%s\n' "$last_output"
     exit 0
   fi
@@ -1495,18 +1558,30 @@ export VERIFY_TAURI_POLL="$POLL"
 HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-15}"
 HEALTH_DEADLINE=$((SECONDS + HEALTH_TIMEOUT))
 HEALTH_JSON=""
+HEALTH_PROBE_STATUS=0
 while :; do
   if ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
     exit 1
   fi
-  HEALTH_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
+  HEALTH_PROBE_STATUS=0
+  HEALTH_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
     Promise.all([
       fetch('/api/health').then(r => r.status).catch(e => 'ERR:' + e.message),
       fetch('/').then(r => r.status).catch(e => 'ERR:' + e.message)
     ]).then(v => JSON.stringify({ apiHealth: v[0], rootHtml: v[1] }))
-  " 2>&1)" \
+  " 2>&1)" || HEALTH_PROBE_STATUS=$?
+  if [ "$HEALTH_PROBE_STATUS" -eq 0 ] \
     && echo "$HEALTH_JSON" | grep -Eq '"apiHealth"[[:space:]]*:[[:space:]]*200' \
-    && echo "$HEALTH_JSON" | grep -Eq '"rootHtml"[[:space:]]*:[[:space:]]*200' && break
+    && echo "$HEALTH_JSON" | grep -Eq '"rootHtml"[[:space:]]*:[[:space:]]*200'; then
+    break
+  fi
+  if [ "$HEALTH_PROBE_STATUS" -eq 126 ] || [ "$HEALTH_PROBE_STATUS" -eq 127 ]; then
+    echo "FATAL: tauri-agent-tools could not execute during the owned-origin health probe (exit=$HEALTH_PROBE_STATUS)." >&2
+    echo "       Resolved executable: $VERIFY_TAURI_AGENT_TOOLS_BIN" >&2
+    echo "       This is a verifier dependency/PATH failure, not evidence that the webview origin is unreachable." >&2
+    echo "       Last result: $HEALTH_JSON" >&2
+    exit "$HEALTH_PROBE_STATUS"
+  fi
   if [ "$SECONDS" -ge "$HEALTH_DEADLINE" ]; then
     echo "FATAL: owned origin unreachable from the webview after ${HEALTH_TIMEOUT}s (pid=$BRIDGE_PID)." >&2
     echo "       The bridge/PID is alive but /api/health and/or / did not return 200 — refusing to" >&2
@@ -1526,7 +1601,7 @@ log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
 # meaningful: an ambient desktop profile must never already contain this key.
 if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_STORAGE_SENTINEL_KEY='papercusp.verify-tauri-headless.isolated-sentinel.v1'
-  ISOLATED_STORAGE_SENTINEL_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
+  ISOLATED_STORAGE_SENTINEL_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
     (function () {
       var key = '$ISOLATED_STORAGE_SENTINEL_KEY';
       var value = 'verify-tauri-headless-isolated-v1';
@@ -1564,7 +1639,7 @@ log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT disp
 # downstream. Print the booted slug + its work-item count here so it is always
 # visible in this log instead. Best-effort diagnostic only — never fails the
 # boot (every step below is guarded / `|| true`'d).
-BOOTED_SLUG_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
+BOOTED_SLUG_JSON="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" eval --pid "$BRIDGE_PID" "
   (function () {
     try {
       var u = new URL(location.href);
@@ -1640,7 +1715,7 @@ else
 
 WARN
 fi
-tauri-agent-tools probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2 || true
+"$VERIFY_TAURI_AGENT_TOOLS_BIN" probe --pid "$VERIFY_TAURI_PID" 2>&1 | sed 's/^/[probe] /' >&2 || true
 
 # EI-18805100008031244 (correct-state ask #2, "a TTL on --boot-only itself"):
 # an abandoned --boot-only session (the caller died, was compacted, or simply
