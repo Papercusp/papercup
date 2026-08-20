@@ -53,7 +53,6 @@ Recovered from the streamed assistant answer on August 19, 2026. The answer reco
    Demonstrates the behavioral contract supplied to one runtime role.
 
 9. **Plugin**
-
    - Runtime handler: [libs/papercusp/plugins/fetch-plus/index.ts](libs/papercusp/plugins/fetch-plus/index.ts#L1)
    - Companion declaration: [libs/papercusp/plugins/fetch-plus/papercusp.json](libs/papercusp/plugins/fetch-plus/papercusp.json#L1)
 
