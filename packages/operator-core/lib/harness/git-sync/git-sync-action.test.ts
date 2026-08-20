@@ -76,6 +76,12 @@ const loadHarnessRegistryMock = vi.fn(async (workspaceId?: string) => ({
 }));
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: (workspaceId?: string) => loadHarnessRegistryMock(workspaceId),
+  // EI-9039 — the same class this file's own comment on getBootedHarnessMock
+  // warns about, arriving by a different route: p2p/revocation-reaper
+  // top-level-imports this export and is reached transitively, so it resolves
+  // against THIS partial mock and its absence kills collection with an error
+  // that names revocation-reaper.ts and looks unrelated to git-sync.
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
 }));
 
 let potGitMode: 'legacy' | 'bridged' | 'p2p-only' = 'legacy';

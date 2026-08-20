@@ -24,6 +24,10 @@ vi.mock('../../../harness/upstream-repo-context', () => ({
 }));
 vi.mock('../../../harness-registry', () => ({
   mutateHarnessRegistry: mocks.mutateHarnessRegistry,
+  // EI-9039: p2p/revocation-reaper top-level-imports this export and is reached
+  // transitively from the subject, so it resolves against THIS partial mock.
+  // Nothing here calls it — the stub only keeps collection from dying.
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
 }));
 vi.mock('../../../harness/git-sync/git-sync-routine', () => ({
   seedGitSyncRoutineForMember: mocks.seedGitSyncRoutineForMember,

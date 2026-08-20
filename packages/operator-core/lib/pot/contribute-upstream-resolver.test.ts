@@ -11,7 +11,14 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const { loadHarnessRegistry } = vi.hoisted(() => ({ loadHarnessRegistry: vi.fn() }));
-vi.mock('../harness-registry', () => ({ loadHarnessRegistry }));
+// EI-9039: `deregisterEphemeralForeignHarness` is not used by this test — it is
+// top-level-imported by p2p/revocation-reaper, which the subject's graph reaches
+// transitively, and that import resolves against THIS partial mock. Without the
+// stub the file dies at collection pointing at revocation-reaper.ts.
+vi.mock('../harness-registry', () => ({
+  loadHarnessRegistry,
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
+}));
 
 import { defaultResolveSelfPotMember } from './contribute-upstream';
 

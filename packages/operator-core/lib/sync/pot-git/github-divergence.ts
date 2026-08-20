@@ -36,7 +36,6 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
-import { GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, reconcileConditions } from '../../coord/condition-bridge';
 import type { EgressResult } from './github-egress';
 import type { IngressResult } from './github-ingress';
 import type { AdmissionResult } from './github-ingress-admission';
@@ -554,6 +553,26 @@ async function deliverNeedsOwnerRecovery(potHomeSlug: string): Promise<void> {
 async function reconcileAgentActionableCondition(potHomeSlug: string, workspaceId: string, verdict: DivergenceVerdict): Promise<void> {
   const remedies = remediesFor(verdict);
   const open = hasAgentActionableResidue(verdict);
+  // LAZY ON PURPOSE — do not hoist this to a static import.
+  //
+  // This module is imported for its CONSTANTS by cheap, widely-reached callers
+  // (harness/improvements/watchdog.ts imports GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS
+  // "so the guard cannot drift from the thing it guards", explicitly on the
+  // stated grounds that github-divergence.ts costs the import graph nothing).
+  // A static `import … from '../../coord/condition-bridge'` breaks that: it
+  // drags coord/condition-bridge → work-items.ts (and its whole subgraph) into
+  // every transitive importer. Measured consequence — it put `runHybridSearch(`
+  // inside `memory:search`'s import graph, so search-surface-conformance's
+  // graph-derived `engine` read 'hybrid' against a truthful declared 'none'
+  // and red-pinned the green gate, four hops from anything about search.
+  //
+  // A dynamic import is NOT followed by that walk (search/import-graph.ts's
+  // runtimeSpecifiers matches only static `import`/`export … from` and
+  // side-effect imports), and this is a per-sweep reconcile, not a hot path —
+  // so the module still loads exactly when it is actually used.
+  const { GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, reconcileConditions } = await import(
+    '../../coord/condition-bridge'
+  );
   await reconcileConditions(
     [
       {

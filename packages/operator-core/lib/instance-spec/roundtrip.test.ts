@@ -17,6 +17,10 @@ import { join } from 'node:path';
 const projects: Array<Record<string, unknown>> = [];
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects: projects.map((p) => ({ ...p })) }),
+  // EI-9039: p2p/revocation-reaper is pulled in transitively by the subject's
+  // graph and top-level-imports this export, so a partial mock without it kills
+  // the file at collection. Not part of the round-trip under test — a stub.
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
   saveHarnessRegistry: async (reg: { projects: Array<Record<string, unknown>> }) => {
     projects.length = 0;
     projects.push(...reg.projects);

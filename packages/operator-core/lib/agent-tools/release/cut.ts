@@ -265,6 +265,13 @@ export default defineTool({
   },
   capability: 'operator:write',
   requirePrincipal: false,
+  // EI-18803497769946984: every op here shells out (bin/release-local.sh, systemd
+  // polls, sha256 collection) and none reads ctx.tx. Holding the dispatcher's
+  // ambient workspace transaction across a child process that can outlast
+  // idle_in_transaction_session_timeout (60s) gets the backend killed, and the
+  // caller sees a bare "write CONNECTION_CLOSED 127.0.0.1:6432" naming neither
+  // the tool nor the cause. A cut is minutes long, so this is not a near miss.
+  skipWorkspaceTx: true,
   // Broad allowlist (preflight/status/handoff are read-only reaches); the WRITE op (run)
   // self-gates on the operator-config-write role inside the handler — cutting a real build
   // is heavy + owner-walled, mirroring release:deploy{op:force}.

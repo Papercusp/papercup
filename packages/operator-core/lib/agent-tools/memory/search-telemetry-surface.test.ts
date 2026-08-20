@@ -48,6 +48,10 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 }));
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'papercup' }] })),
+  // EI-9039: p2p/revocation-reaper top-level-imports this export and is reached
+  // transitively from the subject, so it resolves against THIS partial mock.
+  // Unrelated to telemetry — a stub purely to keep collection alive.
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
 }));
 vi.mock('../../memory/configure', () => ({
   isOpenAiEmbedInCooldown: vi.fn(() => false),

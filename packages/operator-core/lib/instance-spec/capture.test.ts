@@ -12,6 +12,14 @@ import { stringify as stringifyYaml } from 'yaml';
 const projects: Array<Record<string, unknown>> = [];
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects }),
+  // EI-9039: this partial mock is also read by a module NOTHING here names —
+  // the subject's graph reaches p2p/revocation-reaper, whose top-level
+  // `import { deregisterEphemeralForeignHarness } from '../harness-registry'`
+  // resolves against THIS factory. Omit it and the file dies at collection with
+  // "No 'deregisterEphemeralForeignHarness' export is defined on the mock",
+  // pointing at revocation-reaper.ts — a file this test has no opinion about.
+  // Same stub the sibling suites use (sync/hyperbee/__tests__/boot-all.test.ts).
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
 }));
 
 import { captureInstanceSpec } from './capture';

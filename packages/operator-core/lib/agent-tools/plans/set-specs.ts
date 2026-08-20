@@ -51,11 +51,24 @@ const argsSchema = z
   .object({
     harness: harnessArg,
     slug: z.string().min(1).describe('Plan slug owning every supplied clause.'),
-    spec: specWriteSchema.optional().describe('Single-clause shorthand.'),
-    specs: z.array(specWriteSchema).min(1).max(200).optional().describe('Append several clause revisions.'),
+    spec: specWriteSchema.optional().describe('Single-clause shorthand (n=1 of the bulk call).'),
+    // P-007's dual-arity seam, spelled the way every sibling bulk verb spells it
+    // (plans:add-item / add-decision / audit / get-item …): the heterogeneous
+    // "many" half is `items: z.array(…)`. It was `specs:` for the first hour of
+    // this tool's life, which is a fourth spelling of a contract that already had
+    // three, and bulk-contract-sync's seam detector — the guard that keeps
+    // "one call is n=1 of the bulk call" true across ~60 verbs — correctly did
+    // not recognise it. Conforming is the fix; widening the detector per tool is
+    // how a contract stops being one.
+    items: z
+      .array(specWriteSchema)
+      .min(1)
+      .max(200)
+      .optional()
+      .describe('Append several clause revisions at once — each a full spec write.'),
   })
-  .refine((args) => Boolean(args.spec) !== Boolean(args.specs), {
-    message: 'pass exactly one of `spec` or `specs`',
+  .refine((args) => Boolean(args.spec) !== Boolean(args.items), {
+    message: 'pass exactly one of `spec` or `items`',
   });
 
 const OK = new Set(['created', 'revised', 'unchanged']);
@@ -81,7 +94,7 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
     const actorId = resolveAgentIdentity(ctx).ownerId;
-    const specs = args.specs ?? [args.spec!];
+    const specs = args.items ?? [args.spec!];
     const env = await runBulk(
       specs,
       async (spec) => {
