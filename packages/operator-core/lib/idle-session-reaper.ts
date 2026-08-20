@@ -1173,9 +1173,11 @@ export async function discoverResumeProcs(): Promise<ResumeProc[]> {
         const identity = parseReapableSessionProc(rawCmdline, rawEnviron);
         if (!identity) return null;
 
-        // Defense-in-depth: a FOREGROUND/TTY-attached proc is a live interactive
-        // session (a human), never a backgrounded leaked agent zombie.
-        if (await isForegroundTty(pid)) return null;
+        // Claude may be a human-owned foreground terminal. Papercusp's managed
+        // Codex wrapper, however, is ALWAYS the foreground process of its PTY,
+        // including ended/leaked sessions; its exact adv-session identity and
+        // the two on-desktop spares below are the applicable safety boundary.
+        if (shouldSpareForegroundSessionProc(identity, await isForegroundTty(pid))) return null;
         return { pid, ...identity } as ResumeProc;
       }),
     );
@@ -1275,6 +1277,22 @@ export function parseForegroundFromStat(stat: string): boolean {
   const ttyNr = Number(after[4]);
   const tpgid = Number(after[5]);
   return Number.isFinite(ttyNr) && ttyNr !== 0 && Number.isFinite(pgrp) && Number.isFinite(tpgid) && pgrp === tpgid;
+}
+
+/**
+ * PURE: whether a foreground-TTY process must be excluded from zombie-process
+ * discovery. Claude's native `--resume` process may be a human-owned terminal,
+ * so it keeps the historical spare. Papercusp's top-level Codex wrapper is
+ * always the foreground process of its managed PTY — including leaked wrappers
+ * whose exact adv-session row is ended — so applying the same spare to Codex
+ * makes the entire exact-ID cleanup lane inert. Codex retains the stronger
+ * exact-row plus on-desktop identity/ancestry spares in reapZombieResumeProcs.
+ */
+export function shouldSpareForegroundSessionProc(
+  identity: Omit<ResumeProc, 'pid'>,
+  foreground: boolean,
+): boolean {
+  return foreground && identity.advSessionId == null;
 }
 
 async function isForegroundTty(pid: number): Promise<boolean> {

@@ -12,6 +12,7 @@ import {
   confirmedDeadOwnerSet,
   resumableOpenSessionOwners,
   parseForegroundFromStat,
+  shouldSpareForegroundSessionProc,
   parseReapableSessionProc,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
@@ -829,6 +830,25 @@ describe('parseForegroundFromStat (slice 3: foreground/TTY spare — EI-1873 col
   it('malformed/short line → false (NaN guard; never over-spare on garbage)', () => {
     expect(parseForegroundFromStat('12345 (claude) S')).toBe(false);
     expect(parseForegroundFromStat('')).toBe(false);
+  });
+});
+
+describe('shouldSpareForegroundSessionProc (Codex managed-PTY classification)', () => {
+  it('keeps the historical foreground-TTY spare for native Claude resume processes', () => {
+    expect(
+      shouldSpareForegroundSessionProc(
+        { sessionId: '11111111-2222-4333-8444-555555555555' },
+        true,
+      ),
+    ).toBe(true);
+  });
+
+  it('does NOT exclude an exact-ID Codex wrapper merely because its managed PTY makes it foreground', () => {
+    expect(shouldSpareForegroundSessionProc({ advSessionId: 42 }, true)).toBe(false);
+  });
+
+  it('never spares a background process through the foreground-only guard', () => {
+    expect(shouldSpareForegroundSessionProc({ advSessionId: 42 }, false)).toBe(false);
   });
 });
 
