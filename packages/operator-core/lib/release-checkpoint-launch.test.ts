@@ -28,6 +28,7 @@ import {
   parseCheckpointCandidates,
   defaultReadLogTail,
   isCheckpointRunLockHeldCheap,
+  readCheckpointRunPhaseCheap,
   stopActiveCheckpointUnit,
   recordCheckpointDisplacement,
   CHECKPOINT_UNIT,
@@ -731,6 +732,24 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       const readLockOwner = vi.fn(() => ({ pid: process.pid, startedAt: new Date().toISOString() }));
       const r = isCheckpointRunLockHeldCheap('/tree', undefined, readLockOwner);
       expect(r.held).toBe(true);
+    });
+  });
+
+  describe('readCheckpointRunPhaseCheap (EI-20378004056924553)', () => {
+    it('reads phase.json from the routed per-root lock directory', () => {
+      const readRunPhase = vi.fn((lockDir: string) => ({ phase: 'delivering', at: 'now' }));
+
+      expect(readCheckpointRunPhaseCheap('/subject-root', '/subject-logs', readRunPhase)).toEqual({
+        phase: 'delivering',
+        at: 'now',
+      });
+      expect(readRunPhase).toHaveBeenCalledWith(expect.stringContaining('/subject-logs/.green-checkpoint-run-'));
+      expect(readRunPhase.mock.calls[0]?.[0]).toContain('.lock');
+    });
+
+    it('returns null when the routed phase marker is unreadable', () => {
+      const readRunPhase = vi.fn(() => null);
+      expect(readCheckpointRunPhaseCheap('/subject-root', '/subject-logs', readRunPhase)).toBeNull();
     });
   });
 
