@@ -3123,13 +3123,14 @@ export function rescueGateIdsFrom(
  *
  *  Two admissible shapes, and nothing else — an unmapped signature is never guessed at:
  *   - a `NON_TEST_GATE_SCRIPTS` key (`lint:tsc`, …), resolved through the registry;
- *   - a self-describing `<workspace> :: lint:<name>` task id, which needs no registry
- *     entry because it already names the workspace AND the script to run there.
+ *   - a self-describing `<workspace> :: lint:<name>` or `<workspace> :: gen:<name>:check`
+ *     task id, which needs no registry entry because it already names the workspace AND the
+ *     deterministic script to run there.
  *
- *  The `lint:` restriction is the registry header's own bar, applied to the unregistered
- *  case: one fast, deterministic, repo-wide script that is cheap to re-verify at tip. A
- *  `test` task is excluded because it belongs to the FILE-based rescue (runTestsAtRef),
- *  and a `build`/other task is excluded for the same reason the registry omits
+ *  The `lint:` and `gen:*:check` restrictions are the registry header's own bar, applied to
+ *  the unregistered case: one fast, deterministic, repo-wide script that is cheap to re-verify
+ *  at tip. A `test` task is excluded because it belongs to the FILE-based rescue
+ *  (runTestsAtRef), and a `build`/other task is excluded for the same reason the registry omits
  *  `@papercusp/operator-vite` — heavier and less clean to re-verify, so it keeps today's
  *  plain-red behaviour rather than being guessed at. */
 export function isRerunnableGateEntry(entry: string): boolean {
@@ -3143,7 +3144,8 @@ export function isRerunnableGateEntry(entry: string): boolean {
     task !== null &&
     (task.script === "test" ||
       task.script.startsWith("test:") ||
-      task.script.startsWith("lint:"))
+      task.script.startsWith("lint:") ||
+      (task.script.startsWith("gen:") && task.script.endsWith(":check")))
   );
 }
 

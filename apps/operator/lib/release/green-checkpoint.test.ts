@@ -3494,7 +3494,7 @@ describe("runGreenCheckpoint", () => {
       ]);
     });
 
-    it("admits ONLY lint tasks — a test/build task is never guessed at", () => {
+    it("admits lint and deterministic gen:*:check tasks — other tasks are never guessed at", () => {
       expect(isRerunnableGateEntry(INCIDENT_TASK)).toBe(true);
       expect(isRerunnableGateEntry("lint:tsc")).toBe(true);
       // A `test` task belongs to the FILE-based rescue (runTestsAtRef), not this one.
@@ -3502,6 +3502,18 @@ describe("runGreenCheckpoint", () => {
       expect(
         isRerunnableGateEntry("@papercusp/web :: test:lane-stateful"),
       ).toBe(true);
+      const GEN_CHECK_TASK =
+        "@papercusp/operator-core :: gen:tool-catalog:check";
+      expect(isRerunnableGateEntry(GEN_CHECK_TASK)).toBe(true);
+      expect(nonTestGateIdsFrom([GEN_CHECK_TASK])).toEqual([GEN_CHECK_TASK]);
+      // Only generated consistency checks are deterministic enough for this rescue; a
+      // generation/write task must remain an unmeasured red rather than being guessed at.
+      expect(
+        isRerunnableGateEntry("@papercusp/operator-core :: gen:tool-catalog"),
+      ).toBe(false);
+      expect(
+        isRerunnableGateEntry("@papercusp/operator-core :: gen:tool-catalog:write"),
+      ).toBe(false);
       expect(isRerunnableGateEntry("@papercusp/web :: build")).toBe(false);
       expect(isRerunnableGateEntry("@papercusp/web")).toBe(false);
       expect(nonTestGateIdsFrom(["@papercusp/web :: test"])).toEqual([
