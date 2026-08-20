@@ -364,3 +364,45 @@ describe('WI-37827: both column forms of issueAdmissibleWhereSql enforce every f
     expect(REFUSED.length).toBeGreaterThan(0);
   });
 });
+
+describe('EI-201069: watchdog recovery-window floor stays identical in bare and aliased issue views', () => {
+  const KEY = 'routine-failure:routine:git-sync';
+
+  it('withholds an eligible signal after exactly six newest absent ticks in BOTH forms', async () => {
+    await seedIssue('WI-WATCHDOG-CONTROL');
+    await seedIssue('WI-WATCHDOG-RECOVERING', { payload: { watchdogKey: KEY } });
+    await seedWatchdogWindow(KEY);
+    expect(await agreedAdmittedIds()).toEqual(['WI-WATCHDOG-CONTROL']);
+  });
+
+  it('ignores an older present tick when the newest six are absent', async () => {
+    await seedIssue('WI-WATCHDOG-OLDER-CONTROL');
+    await seedIssue('WI-WATCHDOG-OLDER-PRESENT', { payload: { watchdogKey: KEY } });
+    await seedWatchdogTick([KEY], new Date(Date.now() - 7_000));
+    await seedWatchdogWindow(KEY);
+    expect(await agreedAdmittedIds()).toEqual(['WI-WATCHDOG-OLDER-CONTROL']);
+  });
+
+  it.each([
+    { label: 'short history', count: 5 },
+    { label: 'a NULL known_open_keys row', count: 6, nullAt: 2 },
+    { label: 'the key is present', count: 6, presentAt: 2 },
+  ])('$label fails open and both forms admit the row', async ({ count, nullAt, presentAt }) => {
+    const id = `WI-WATCHDOG-OPEN-${count}-${nullAt ?? 'x'}-${presentAt ?? 'x'}`;
+    await seedIssue(id, { payload: { watchdogKey: KEY } });
+    await seedWatchdogWindow(KEY, { count, nullAt, presentAt });
+    expect(await agreedAdmittedIds()).toEqual([id]);
+  });
+
+  it.each([
+    { label: 'missing key', payload: undefined },
+    { label: 'blank key', payload: { watchdogKey: '' } },
+    { label: 'missing source prefix', payload: { watchdogKey: ':key' } },
+    { label: 'blank key suffix', payload: { watchdogKey: 'routine-failure:' } },
+    { label: 'ineligible source', payload: { watchdogKey: 'service-down:operator' } },
+  ])('$label is admitted by both forms', async ({ label, payload }) => {
+    const id = `WI-WATCHDOG-MALFORMED-${label.replaceAll(' ', '-')}`;
+    await seedIssue(id, { payload });
+    expect(await agreedAdmittedIds()).toEqual([id]);
+  });
+});

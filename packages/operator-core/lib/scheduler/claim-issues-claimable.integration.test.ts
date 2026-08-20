@@ -766,3 +766,80 @@ describe('filing-grace floor — the filer gets first refusal on their own filin
     }
   });
 });
+
+describe('watchdog recovery-window floor — eligible signals stay out of READY until evaluated (EI-201069)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  const KEY = 'routine-failure:routine:git-sync';
+
+  it('keeps an eligible signal in POOL but out of READY during six complete absent ticks', async () => {
+    await seedIssue('EI-WATCHDOG-WINDOW', {
+      state: 'open',
+      createdTs: 100,
+      payload: { watchdogKey: KEY },
+    });
+    await seedWatchdogWindow(KEY);
+
+    // The real claim path must refuse the row, while the miss diagnosis must still show
+    // pending pool work and zero ready work. This is the causal recovery gate, not a timer.
+    expect(await claimOne('watchdog-member')).toBeNull();
+    const diagnosis = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'watchdog-member' });
+    expect(diagnosis.pendingUnclaimed).toBeGreaterThan(0);
+    expect(diagnosis.readyUnclaimed).toBe(0);
+
+    const [attribution] = await wi.explainIssueClaimFloors(H, ['EI-WATCHDOG-WINDOW']);
+    expect(attribution).toMatchObject({
+      admissible: false,
+      refusedBy: 'watchdog-recovery-window',
+    });
+  });
+
+  it('uses only the newest six ran ticks, then admits the signal once it remains present', async () => {
+    // An older present tick does not affect the newest-six recovery window.
+    await seedIssue('EI-WATCHDOG-NEWEST', {
+      state: 'open',
+      createdTs: 100,
+      payload: { watchdogKey: KEY },
+    });
+    await seedWatchdogTick([KEY], new Date(Date.now() - 7_000));
+    await seedWatchdogWindow(KEY);
+    expect(await claimOne('watchdog-newest')).toBeNull();
+
+    // A present key in the newest six means auto-close declined to close it; it is now
+    // actionable and the same claim path must serve it.
+    await db.sql`TRUNCATE harness_shared.work_items, harness_shared.watchdog_ticks`;
+    await seedIssue('EI-WATCHDOG-SURVIVED', {
+      state: 'open',
+      createdTs: 100,
+      payload: { watchdogKey: KEY },
+    });
+    await seedWatchdogWindow(KEY, { presentAt: 5 });
+    expect(await claimOne('watchdog-survived')).toBe('EI-WATCHDOG-SURVIVED');
+  });
+
+  it.each([
+    { label: 'zero ticks', count: 0 },
+    { label: 'short history', count: 5 },
+    { label: 'a NULL known_open_keys row', count: 6, nullAt: 2 },
+    { label: 'the key is still present', count: 6, presentAt: 2 },
+  ])('$label fails open instead of hiding a real issue', async ({ count, nullAt, presentAt }) => {
+    const id = `EI-WATCHDOG-OPEN-${count}-${nullAt ?? 'x'}-${presentAt ?? 'x'}`;
+    await seedIssue(id, { state: 'open', createdTs: 100, payload: { watchdogKey: KEY } });
+    await seedWatchdogWindow(KEY, { count, nullAt, presentAt });
+    expect(await claimOne(`watchdog-open-${count}`)).toBe(id);
+  });
+
+  it.each([
+    { label: 'missing key', payload: null },
+    { label: 'blank key', payload: { watchdogKey: '' } },
+    { label: 'missing source prefix', payload: { watchdogKey: ':key' } },
+    { label: 'blank key suffix', payload: { watchdogKey: 'routine-failure:' } },
+    { label: 'ineligible source', payload: { watchdogKey: 'service-down:operator' } },
+  ])('$label fails open', async ({ label, payload }) => {
+    const id = `EI-WATCHDOG-MALFORMED-${label.replaceAll(' ', '-')}`;
+    await seedIssue(id, { state: 'open', createdTs: 100, payload });
+    expect(await claimOne(`watchdog-${label}`)).toBe(id);
+  });
+});
