@@ -246,6 +246,33 @@ function firstUnrecognizedKeyMessage(value: unknown): string | undefined {
 }
 
 /**
+ * WI-39573: the completion schema deliberately emits an actionable repair for a
+ * bare-string `completion`. Zod wraps that issue inside the union branch errors;
+ * if the union-level mapper ignores it, callers instead see the generic close
+ * contract (or a sibling unknown-key error) and the promised repair is lost.
+ * Give this narrow, value-specific issue priority while leaving every unrelated
+ * strict-key and close-shape diagnostic unchanged.
+ */
+function firstCompletionStringRejection(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const message = firstCompletionStringRejection(nested);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  const record = value as { message?: unknown; errors?: unknown };
+  if (record.message === COMPLETION_STRING_REJECTION) return COMPLETION_STRING_REJECTION;
+  if (!Array.isArray(record.errors)) return undefined;
+  for (const nested of record.errors) {
+    const message = firstCompletionStringRejection(nested);
+    if (message) return message;
+  }
+  return undefined;
+}
+
+/**
  * EI-20190168400283197: setWorkItemState rejects a terminal transition when the
  * linked plan-item is still effectively blocked. The completion record is kept
  * for the record-and-warn contract, so this exact rejection must be recognized
@@ -2685,7 +2712,10 @@ export default defineTool({
       ],
       {
         error: (issue) => ({
-          message: firstUnrecognizedKeyMessage(issue) ?? COMPLETE_CLOSE_SHAPE_MESSAGE,
+          message:
+            firstCompletionStringRejection(issue) ??
+            firstUnrecognizedKeyMessage(issue) ??
+            COMPLETE_CLOSE_SHAPE_MESSAGE,
         }),
       },
     ),
