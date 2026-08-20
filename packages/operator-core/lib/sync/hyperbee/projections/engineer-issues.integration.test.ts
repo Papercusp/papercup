@@ -506,6 +506,74 @@ describe('engineer-issues projection — writeToPg / deleteFromPg (real PG)', ()
     }
   });
 
+  it('suppresses only legacy PUTs for migration-826 merged/rekeyed sources while allowing a qualified post-829 PUT', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const p = proj();
+
+      // An identical source row was merged into this survivor by migration 826.
+      await p.writeToPg(
+        issueRow({
+          issue_id: 'EI-826-merged',
+          storage_harness_slug: SLUG,
+          payload: { _physicalTwinRepair: { migration: 826, sourceHarness: 'sibling-hive' } },
+        }),
+        { ts: 100, origin: 'remote', authorPubkey: 'peer-survivor' },
+      );
+      const mergedReplay = issueRow({
+        issue_id: 'EI-826-merged',
+        scope: 'harness:sibling-hive',
+        title: 'legacy replay must not recreate the merged source',
+      });
+      delete (mergedReplay as { storage_harness_slug?: string }).storage_harness_slug;
+      await p.writeToPg(mergedReplay, { ts: 200, origin: 'remote', authorPubkey: 'peer-sibling' });
+      expect(await getIssueBaseRows('EI-826-merged')).toEqual([
+        { feature_id: 'EI-826-merged', harness_slug: SLUG, status: 'open', origin: 'remote' },
+      ]);
+
+      // A divergent source row was rekeyed; the old bare identity is retired.
+      await p.writeToPg(
+        issueRow({
+          issue_id: 'EI-82600000000000999',
+          scope: 'harness:sibling-hive',
+          storage_harness_slug: 'sibling-hive',
+          payload: {
+            _physicalTwinRekey: {
+              migration: 826,
+              oldId: 'EI-826-rekeyed',
+              sourceHarness: 'sibling-hive',
+            },
+          },
+        }),
+        { ts: 100, origin: 'remote', authorPubkey: 'peer-sibling' },
+      );
+      const rekeyReplay = issueRow({ issue_id: 'EI-826-rekeyed', scope: 'harness:sibling-hive' });
+      delete (rekeyReplay as { storage_harness_slug?: string }).storage_harness_slug;
+      await p.writeToPg(rekeyReplay, { ts: 200, origin: 'remote', authorPubkey: 'peer-sibling' });
+      expect(await getIssueBaseRows('EI-826-rekeyed')).toHaveLength(0);
+
+      // The same identity on a qualified post-829 key is authoritative and is
+      // therefore allowed even though survivor evidence exists.
+      await p.writeToPg(
+        issueRow({
+          issue_id: 'EI-826-merged',
+          scope: 'harness:sibling-hive',
+          storage_harness_slug: 'sibling-hive',
+          title: 'current qualified source row',
+        }),
+        { ts: 300, origin: 'remote', authorPubkey: 'peer-sibling' },
+      );
+      expect(await getIssueBaseRows('EI-826-merged')).toEqual([
+        { feature_id: 'EI-826-merged', harness_slug: SLUG, status: 'open', origin: 'remote' },
+        { feature_id: 'EI-826-merged', harness_slug: 'sibling-hive', status: 'open', origin: 'remote' },
+      ]);
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('suppressing legacy replay'));
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   // WI-183/WI-2845/WI-2853: same-op DOUBLE-APPLY (a replayed/re-folded remote op —
   // e.g. a projection retry or backfill re-running the identical wire op) must be an
   // idempotent no-op on the row's federation state. This writes DIRECTLY to

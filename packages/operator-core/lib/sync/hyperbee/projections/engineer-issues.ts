@@ -191,6 +191,38 @@ async function isDistinctEntityCollision(
   return { collided: true, existingCreatedAtIso: new Date(existingMs).toISOString() };
 }
 
+/**
+ * Migration 826 retired a bounded set of same-ID source rows by either merging
+ * them into the Papercusp survivor or rekeying the divergent source entity.
+ * Pre-829 Hyperbee PUTs carry only the bare issue id, so replaying one after the
+ * repair would recreate the retired physical row.  The survivor markers are
+ * the persisted identity proof; without one we fail open so unrelated legacy
+ * history keeps converging.
+ */
+async function isRetiredLegacyTwinSource(
+  sql: postgres.Sql,
+  workspaceId: string,
+  sourceHarness: string,
+  issueId: string,
+): Promise<boolean> {
+  const rows = await sql<{ retired: boolean }[]>`
+    SELECT EXISTS (
+      SELECT 1
+        FROM harness_shared.work_items survivor
+       WHERE survivor.workspace_id = ${workspaceId}
+         AND (
+           (survivor.feature_id = ${issueId}
+            AND survivor.payload->'_physicalTwinRepair'->>'migration' = '826'
+            AND survivor.payload->'_physicalTwinRepair'->>'sourceHarness' = ${sourceHarness})
+           OR
+           (survivor.payload->'_physicalTwinRekey'->>'migration' = '826'
+            AND survivor.payload->'_physicalTwinRekey'->>'oldId' = ${issueId}
+            AND survivor.payload->'_physicalTwinRekey'->>'sourceHarness' = ${sourceHarness})
+         )
+    ) AS retired`;
+  return rows[0]?.retired === true;
+}
+
 export interface EngineerIssuesProjectionOpts {
   workspaceId: string;
   harnessSlug: string;
@@ -279,6 +311,18 @@ async function writeToPg(
     console.warn(
       `[engineer-issues projection] storage harness mismatch for issue_id=${row.issue_id}: ` +
         `wire=${row.storage_harness_slug}, scope=${vSlug}; refusing op`,
+    );
+    return;
+  }
+  // WI-40113 / migration 859: a bare pre-829 PUT has no physical identity of
+  // its own.  If migration-826 survivor evidence proves that this exact source
+  // identity was retired, applying the op would recreate the physical twin.
+  // Qualified post-829 PUTs intentionally bypass this guard: their storage key
+  // is authoritative and must remain able to represent a current source row.
+  if (!row.storage_harness_slug && (await isRetiredLegacyTwinSource(sql, opts.workspaceId, vSlug, row.issue_id))) {
+    console.warn(
+      `[engineer-issues projection] suppressing legacy replay for retired migration-826 source ` +
+        `issue_id=${row.issue_id} (harness_slug=${vSlug}); a qualified post-829 PUT is required`,
     );
     return;
   }

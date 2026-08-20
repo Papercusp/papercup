@@ -6,6 +6,11 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 const MIGRATION = join(__dirname, '../../../libs/papercusp/libs/db/sql/826-repair-work-item-physical-twins.sql');
 const SQL = readFileSync(MIGRATION, 'utf8');
+const REPLAY_MIGRATION = join(
+  __dirname,
+  '../../../libs/papercusp/libs/db/sql/859-repair-work-item-legacy-replay-twins.sql',
+);
+const REPLAY_SQL = readFileSync(REPLAY_MIGRATION, 'utf8');
 let db: FreshPgDb;
 
 beforeAll(async () => {
@@ -44,7 +49,9 @@ beforeEach(async () => {
   await db.sql.unsafe(`
     DROP TABLE IF EXISTS harness_shared.bak_20260813_work_item_physical_twins,
       harness_shared.bak_20260813_physical_twin_links,
-      harness_shared.bak_20260813_physical_twin_threads;
+      harness_shared.bak_20260813_physical_twin_threads,
+      harness_shared.bak_20260820_work_item_legacy_replay_twins,
+      harness_shared.bak_20260820_legacy_replay_twin_manifest;
     TRUNCATE harness_shared.work_items, harness_shared.coord_links,
     harness_shared.coord_threads, harness_shared.work_item_claims,
     harness_shared.feature_claims, harness_shared.claim_audit CASCADE`);
@@ -129,5 +136,129 @@ describe('migration 826 physical twin repair', () => {
     await expect(db.sql.unsafe(SQL)).resolves.toBeDefined();
     const rows = await db.sql.unsafe(`SELECT feature_id FROM harness_shared.work_items`);
     expect(rows).toEqual([{ feature_id: 'EI-UNRELATED' }]);
+  });
+});
+
+describe('migration 859 legacy replay twin repair', () => {
+  it('snapshots an exact manifest, merges current evidence, repairs merged/rekeyed recurrences, and is idempotent', async () => {
+    await insertItem('papercusp', 'EI-1', 'same one', 'open');
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'same one', 'open');
+    await insertItem('papercusp', 'EI-13237', 'same marker-erased row', 'open');
+    await insertItem('operator:papercusp-workspace', 'EI-13237', 'same marker-erased row', 'open');
+    await insertItem('papercusp', 'EI-8869', 'papercusp entity', 'open');
+    await insertItem('operator:papercusp-workspace', 'EI-8869', 'operator entity', 'open');
+    await db.sql.unsafe(SQL);
+
+    // Recreate the production recurrence: bare legacy PUTs restore the retired
+    // source rows, while a survivor replay can erase its migration-826 marker.
+    await db.sql.unsafe(`UPDATE harness_shared.work_items
+      SET payload = '{}'::jsonb
+      WHERE harness_slug='papercusp' AND feature_id='EI-13237'`);
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'same one', 'done', {
+      _completionEvidence: { testResult: 'replay-green' },
+    });
+    await insertItem('operator:papercusp-workspace', 'EI-13237', 'same marker-erased row', 'resolved', {
+      source: 'late-replay',
+    });
+    await insertItem('operator:papercusp-workspace', 'EI-8869', 'operator entity', 'done', {
+      _completionEvidence: { testResult: 'rekey-replay-green' },
+    });
+
+    await db.sql.unsafe(REPLAY_SQL);
+
+    const oldRows = await db.sql.unsafe(`SELECT harness_slug,feature_id
+      FROM harness_shared.work_items
+      WHERE (harness_slug,feature_id) IN (
+        ('operator:papercusp-workspace','EI-1'),
+        ('operator:papercusp-workspace','EI-13237'),
+        ('operator:papercusp-workspace','EI-8869'))`);
+    expect(oldRows).toHaveLength(0);
+
+    const manifest = await db.sql.unsafe(`SELECT source_harness,old_id,repair_class,target_harness,target_id
+      FROM harness_shared.bak_20260820_legacy_replay_twin_manifest ORDER BY old_id`);
+    expect(manifest).toEqual([
+      {
+        source_harness: 'operator:papercusp-workspace',
+        old_id: 'EI-1',
+        repair_class: 'merged',
+        target_harness: 'papercusp',
+        target_id: 'EI-1',
+      },
+      {
+        source_harness: 'operator:papercusp-workspace',
+        old_id: 'EI-13237',
+        repair_class: 'merged',
+        target_harness: 'papercusp',
+        target_id: 'EI-13237',
+      },
+      {
+        source_harness: 'operator:papercusp-workspace',
+        old_id: 'EI-8869',
+        repair_class: 'rekeyed',
+        target_harness: 'operator:papercusp-workspace',
+        target_id: 'EI-82600000000000011',
+      },
+    ]);
+    const backup = await db.sql.unsafe(`SELECT count(*)::int n
+      FROM harness_shared.bak_20260820_work_item_legacy_replay_twins`);
+    expect(backup[0].n).toBe(3);
+
+    const survivors = await db.sql.unsafe(`SELECT harness_slug,feature_id,status,payload
+      FROM harness_shared.work_items
+      WHERE feature_id IN ('EI-1','EI-13237','EI-82600000000000011')
+      ORDER BY feature_id`);
+    expect(survivors).toHaveLength(3);
+    expect(survivors[0].status).toBe('done');
+    expect(survivors[0].payload._completionEvidence.testResult).toBe('replay-green');
+    expect(survivors[1].payload._physicalTwinRepair).toMatchObject({
+      migration: 826,
+      sourceHarness: 'operator:papercusp-workspace',
+      reassertedByMigration: 859,
+    });
+    expect(survivors[1].payload._physicalTwinReplayRepair.migration).toBe(859);
+    expect(survivors[2].status).toBe('done');
+    expect(survivors[2].payload._physicalTwinRekey.oldId).toBe('EI-8869');
+    expect(survivors[2].payload._completionEvidence.testResult).toBe('rekey-replay-green');
+
+    await expect(db.sql.unsafe(REPLAY_SQL)).resolves.toBeDefined();
+    const rerunManifest = await db.sql.unsafe(`SELECT count(*)::int n
+      FROM harness_shared.bak_20260820_legacy_replay_twin_manifest`);
+    expect(rerunManifest[0].n).toBe(3);
+  });
+
+  it('fails closed before snapshot or mutation when replay content no longer matches its survivor', async () => {
+    await insertItem('papercusp', 'EI-1', 'frozen content', 'open');
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'frozen content', 'open');
+    await db.sql.unsafe(SQL);
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'drifted replay content', 'done');
+
+    await expect(db.sql.unsafe(REPLAY_SQL)).rejects.toThrow('859: replay classification drifted or is ambiguous');
+    const rows = await db.sql.unsafe(`SELECT harness_slug,title FROM harness_shared.work_items
+      WHERE feature_id='EI-1' ORDER BY harness_slug`);
+    expect(rows).toEqual([
+      { harness_slug: 'operator:papercusp-workspace', title: 'drifted replay content' },
+      { harness_slug: 'papercusp', title: 'frozen content' },
+    ]);
+    const backupTable = await db.sql.unsafe(`SELECT
+      to_regclass('harness_shared.bak_20260820_work_item_legacy_replay_twins')::text AS name`);
+    expect(backupTable[0].name).toBeNull();
+  });
+
+  it('fails closed when an exact source-harness claim reference appears after replay', async () => {
+    await insertItem('papercusp', 'EI-1', 'same', 'open');
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'same', 'open');
+    await db.sql.unsafe(SQL);
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'same', 'done');
+    await db.sql.unsafe(`INSERT INTO harness_shared.work_item_claims
+      (workspace_id,harness_slug,work_item_id,owner)
+      VALUES ('papercusp-workspace','operator:papercusp-workspace','EI-1','agent-holding-source')`);
+
+    await expect(db.sql.unsafe(REPLAY_SQL)).rejects.toThrow('859: exact source-harness references require audit');
+    const rows = await db.sql.unsafe(`SELECT harness_slug FROM harness_shared.work_items
+      WHERE feature_id='EI-1' ORDER BY harness_slug`);
+    expect(rows).toEqual([
+      { harness_slug: 'operator:papercusp-workspace' },
+      { harness_slug: 'papercusp' },
+    ]);
   });
 });
