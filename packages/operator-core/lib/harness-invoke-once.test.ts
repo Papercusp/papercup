@@ -29,6 +29,7 @@ import {
   roleBackendOverride,
   type InvokeOnceSpec,
 } from './harness-invoke-once';
+import { codexContextConfigArgs } from './model-context-budget.mjs';
 
 // Fixture role is deliberately one with NO committed ROLE_MODEL_DEFAULTS entry
 // (P-012 gave worker/validator/documenter/bee/scanner/judge committed tiers,
@@ -245,9 +246,22 @@ describe('applyRoleModel — per-role model override', () => {
     // window pair (plan codex-1m-context-window-2026-08-17 P-003). The two
     // gpt-5.5 cases above deliberately do NOT: that model's max equals its
     // default, so there is nothing bigger to ask for.
+    //
+    // The pair is SPREAD FROM THE CANONICAL RESOLVER rather than hardcoded, the
+    // same seam psu-launcher.test.ts pins `modelArgsFor` with. Hardcoding the
+    // numbers made this assertion HOST-DEPENDENT: codexContextWindowConfig reads
+    // the box's own `~/.codex/models_cache.json`, whose `max_context_window` is
+    // authoritative over the CODEX_EXTENDED_WINDOW_FALLBACK table (D-007). This
+    // box's cache declares 872000 for gpt-5.6-sol, so the literal 1000000 — the
+    // table value, which only applies when NO record exists — red the gate on
+    // every machine that had ever run codex. What THIS test owns is that
+    // applyRoleModel appends whatever the resolver emits, in lockstep; the
+    // resolver's own numbers are covered hermetically (with a synthetic `home`)
+    // in model-context-budget.test.ts.
+    const windowArgs = codexContextConfigArgs('gpt-5.6-sol');
+    expect(windowArgs).toHaveLength(4); // calibration: an empty pair would make the assertion vacuous
     expect(applyRoleModel('codex exec -m gpt-5.4', 'worker')).toBe(
-      'codex exec --model gpt-5.6-sol -c model_reasoning_effort="max"' +
-        ' -c model_context_window=1000000 -c model_auto_compact_token_limit=900000',
+      ['codex exec --model gpt-5.6-sol -c model_reasoning_effort="max"', ...windowArgs].join(' '),
     );
   });
 
