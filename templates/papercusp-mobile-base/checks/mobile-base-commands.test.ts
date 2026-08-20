@@ -32,6 +32,15 @@ interface MobileCommand {
 const commands = config?.mobileBase?.portableCommands as
   | MobileCommand[]
   | undefined;
+const DEFAULT_COMMAND_TIMEOUT_MS = 300_000;
+const COMMAND_TIMEOUT_GRACE_MS = 5_000;
+const commandTestTimeoutMs =
+  Math.max(
+    DEFAULT_COMMAND_TIMEOUT_MS,
+    ...(commands ?? []).map(
+      (entry) => entry.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+    ),
+  ) + COMMAND_TIMEOUT_GRACE_MS;
 const inApp = (path: string): string =>
   isAbsolute(untilde(path)) ? untilde(path) : join(appRoot!, path);
 
@@ -52,26 +61,40 @@ describe.skipIf(!commands)("mobile-base-commands", () => {
     }
   });
 
-  it.each(commands ?? [])("$id exits zero", (entry) => {
-    const [command, ...args] = entry.command;
-    expect(command, `${entry.id}: empty command`).toBeTruthy();
-    const result = spawnSync(command!, args, {
-      cwd: entry.cwd ? inApp(entry.cwd) : appRoot!,
-      env: { ...process.env, ...(entry.env ?? {}) },
-      encoding: "utf8",
-      timeout: entry.timeoutMs ?? 300_000,
-    });
-    const evidence = [result.stdout, result.stderr]
-      .filter(Boolean)
-      .join("\n")
-      .slice(-8_000);
-    expect(
-      result.error,
-      `${entry.id}: ${result.error?.message ?? "spawn error"}\n${evidence}`,
-    ).toBeUndefined();
-    expect(
-      result.status,
-      `${entry.id}: exited ${result.status}\n${evidence}`,
-    ).toBe(0);
+  it("keeps the outer Vitest window beyond every child-command budget", () => {
+    const largestChildTimeout = Math.max(
+      DEFAULT_COMMAND_TIMEOUT_MS,
+      ...(commands ?? []).map(
+        (entry) => entry.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      ),
+    );
+    expect(commandTestTimeoutMs).toBeGreaterThan(largestChildTimeout);
   });
+
+  it.each(commands ?? [])(
+    "$id exits zero",
+    (entry) => {
+      const [command, ...args] = entry.command;
+      expect(command, `${entry.id}: empty command`).toBeTruthy();
+      const result = spawnSync(command!, args, {
+        cwd: entry.cwd ? inApp(entry.cwd) : appRoot!,
+        env: { ...process.env, ...(entry.env ?? {}) },
+        encoding: "utf8",
+        timeout: entry.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS,
+      });
+      const evidence = [result.stdout, result.stderr]
+        .filter(Boolean)
+        .join("\n")
+        .slice(-8_000);
+      expect(
+        result.error,
+        `${entry.id}: ${result.error?.message ?? "spawn error"}\n${evidence}`,
+      ).toBeUndefined();
+      expect(
+        result.status,
+        `${entry.id}: exited ${result.status}\n${evidence}`,
+      ).toBe(0);
+    },
+    commandTestTimeoutMs,
+  );
 });
