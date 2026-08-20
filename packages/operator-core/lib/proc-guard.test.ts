@@ -430,6 +430,7 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       });
 
       expect(res.status).toBe('unknown');
+      if (res.status !== 'unknown') throw new Error(`expected an unknown sample, got ${res.status}`);
       expect(res.reason).toBe('cpu-stat-unreadable');
       expect(res.cores).toBeUndefined();
     });
@@ -449,6 +450,7 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       });
 
       expect(res.status).toBe('unknown');
+      if (res.status !== 'unknown') throw new Error(`expected an unknown sample, got ${res.status}`);
       expect(res.reason).toBe('budget-exhausted');
       expect(sleeps).toBe(0);
     });
