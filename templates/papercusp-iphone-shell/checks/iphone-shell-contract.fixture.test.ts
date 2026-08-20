@@ -246,7 +246,7 @@ done
 xcodebuild build-for-testing -scheme Harbor -resultBundlePath ios/build/build.xcresult
 xcodebuild test-without-building -scheme Harbor -resultBundlePath ios/build/test.xcresult
 xcrun xcresulttool get test-results tests --path ios/build/test.xcresult > ios/build/tests.json
-testsCount=$(grep -c 'testIdentifier' ios/build/tests.json)
+testsCount=$({ grep -o '"nodeIdentifier"' ios/build/tests.json || true; } | wc -l | tr -d ' ')
 test "$testsCount" -gt 0
 echo "Executed $testsCount tests"
 `,
@@ -400,6 +400,16 @@ targets:
     const errors = validateIphoneShellScaffold(root, section).join("\n");
     expect(errors).toContain("bounded headless simulator readiness");
     expect(errors).toContain("may not use GUI-dependent simctl bootstatus");
+  });
+
+  it("rejects an obsolete xcresult test-count key", () => {
+    const { root, section } = fixture();
+    const script = readFileSync(join(root, section.paths.testScript), "utf8")
+      .replace("nodeIdentifier", "testIdentifier");
+    put(root, section.paths.testScript, script);
+    expect(validateIphoneShellScaffold(root, section).join("\n")).toContain(
+      "missing 'nodeIdentifier'",
+    );
   });
 
   it("writes atomic evidence for pass, expected failure, and Linux host constraint", () => {

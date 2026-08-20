@@ -781,10 +781,10 @@ export function validateIphoneShellScaffold(
   );
   requireTokens(
     errors,
-    paths.hostPreflightScript,
-    hostPreflight,
+    "iPhone host entrypoints",
+    [hostPreflight, build, tests, release].join("\n"),
     ["uname", "Darwin", "xcodebuild", "xcodegen", "swiftformat", "simctl"],
-    "iPhone host preflight",
+    "iPhone host capability closure",
   );
   if (
     section.hostStrategy === "remote-host" &&
@@ -807,6 +807,7 @@ export function validateIphoneShellScaffold(
       "test-without-building",
       "xcresult",
       "xcresulttool",
+      "nodeIdentifier",
     ],
     "non-zero XCTest/XCUITest contract",
   );
