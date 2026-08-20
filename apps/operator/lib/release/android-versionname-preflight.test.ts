@@ -75,6 +75,45 @@ const gradlePath = mobileRoot ? join(mobileRoot, 'android/app/build.gradle.kts')
 const sibling = gradlePath && existsSync(gradlePath) ? { gradlePath } : null;
 const requireSibling = process.env.PAPERCUSP_REQUIRE_MOBILE_SIBLING === '1';
 
+function analyzeVersionNameAssignments(gradle: string): {
+  assignments: string[];
+  hardcoded: string[];
+} {
+  const lines = gradle.split('\n').map((line) => line.replace(/\/\/.*$/, ''));
+  const rows = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /versionName\s*=/.test(line));
+
+  const derivesFromReleaseEnv = ({ line, index }: { line: string; index: number }): boolean => {
+    if (line.includes(RELEASE_VERSION_ENV)) return true;
+
+    const rhs = /versionName\s*=\s*([A-Za-z_]\w*)/.exec(line)?.[1];
+    if (!rhs) return false;
+
+    for (let bindingAt = index - 1; bindingAt >= 0; bindingAt -= 1) {
+      const binding = new RegExp(`\\b(?:val|var)\\s+${rhs}\\s*=`).exec(lines[bindingAt]);
+      if (!binding) continue;
+
+      const baseIndent = lines[bindingAt].match(/^\s*/)?.[0].length ?? 0;
+      const statement = [lines[bindingAt].trim()];
+      for (let continuationAt = bindingAt + 1; continuationAt < index; continuationAt += 1) {
+        const continuation = lines[continuationAt];
+        if (!continuation.trim()) continue;
+        const indent = continuation.match(/^\s*/)?.[0].length ?? 0;
+        if (indent <= baseIndent) break;
+        statement.push(continuation.trim());
+      }
+      return statement.join(' ').includes(RELEASE_VERSION_ENV);
+    }
+    return false;
+  };
+
+  return {
+    assignments: rows.map(({ line }) => line),
+    hardcoded: rows.filter((row) => !derivesFromReleaseEnv(row)).map(({ line }) => line),
+  };
+}
+
 describe('android versionName preflight (in-repo — never skipped)', () => {
   it('the anchors this file reasons about still exist', () => {
     // CALIBRATION. indexOf() returns -1 for a renamed anchor, and `-1 < anything` is true,
@@ -126,6 +165,21 @@ describe('android versionName preflight (in-repo — never skipped)', () => {
     expect(block).toContain(RELEASE_VERSION_ENV);
     expect(block).toContain('versionName');
   });
+
+  it('follows an env-derived local binding without accepting a hardcoded binding', () => {
+    const envDerived = analyzeVersionNameAssignments(`
+      val releaseVersion =
+          System.getenv("${RELEASE_VERSION_ENV}") ?: "0.1.0"
+      versionName = releaseVersion
+    `);
+    const hardcoded = analyzeVersionNameAssignments(`
+      val releaseVersion = "0.1.0"
+      versionName = releaseVersion
+    `);
+
+    expect(envDerived.hardcoded).toEqual([]);
+    expect(hardcoded.hardcoded).toEqual(['      versionName = releaseVersion']);
+  });
 });
 
 describe('android versionName preflight (reads the sibling repo)', () => {
@@ -151,13 +205,9 @@ describe('android versionName preflight (reads the sibling repo)', () => {
     // `^\s*versionName` pattern (measured), and such an assignment overrides defaultConfig
     // in the packaged APK. Stripping `//` keeps a commented-out historical hardcode from
     // reading as a live violation.
-    const assignments = gradle
-      .split('\n')
-      .map((line) => line.replace(/\/\/.*$/, ''))
-      .filter((line) => /versionName\s*=/.test(line));
+    const { assignments, hardcoded } = analyzeVersionNameAssignments(gradle);
 
     expect(assignments.length, `no versionName assignment in ${sibling!.gradlePath}`).toBeGreaterThan(0);
-    const hardcoded = assignments.filter((line) => !line.includes(RELEASE_VERSION_ENV));
     expect(
       hardcoded,
       `every versionName assignment must derive from ${RELEASE_VERSION_ENV}; a hardcoded one ` +
