@@ -855,6 +855,13 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       'phase A canonical bootstrap did not reach strict two-host convergence within 20 minutes',
     );
     expect(physicalScenario).toContain('dev:dogfood_substrate_status');
+    expect(physicalScenario).toContain('"substrateActive"');
+    expect(physicalScenario).toContain('"reachedSubstrateOwner"');
+    expect(physicalScenario).toContain('"bootedCount"');
+    expect(physicalScenario).toContain('"harnesses[].workspaceId"');
+    expect(physicalScenario).toContain('"harnesses[].harnessSlug"');
+    expect(physicalScenario).toContain('"harnesses[].verdict"');
+    expect(physicalScenario).toContain('"harnesses[].reasons"');
     expect(physicalScenario).toContain('status?.reachedSubstrateOwner === true');
     expect(physicalScenario).toContain('status.bootedCount > 0');
     expect(physicalScenario).toContain(
@@ -873,6 +880,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     const towerIdentity = join(runDir, 'tower-identity.json');
     const vmIdentity = join(runDir, 'vm-identity.json');
     const quarantineMarker = join(runDir, 'quarantine-reached');
+    const projectionMarker = join(runDir, 'readiness-projection-received');
     const identity = (hostId: string, byte: number) => ({
       schemaVersion: 'hive-git-physical-host-identity/v1',
       hostId,
@@ -899,7 +907,15 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       `#!/bin/sh
 case "$*" in
   *shasum*) printf '%s\\n' '${producerSha}' ;;
-  *dev:dogfood_substrate_status*) printf '%s\\n' '{"substrateActive":true,"bootedCount":0,"harnesses":[],"reachedSubstrateOwner":true}' ;;
+  *dev:dogfood_substrate_status*)
+    if printf '%s\\n' "$*" | grep -F '"projection"' >/dev/null \
+      && printf '%s\\n' "$*" | grep -F '"harnesses[].harnessSlug"' >/dev/null; then
+      printf '%s\\n' received > '${projectionMarker}'
+      printf '%s\\n' '{"substrateActive":true,"bootedCount":0,"harnesses":[],"reachedSubstrateOwner":true}'
+    else
+      printf '%s\\n' '{"summary":"payload preview omitted","_projection":{"kind":"bounded-payload","truncated":true}}'
+    fi
+    ;;
   *phase-a-quarantine*) printf '%s\\n' reached > '${quarantineMarker}'; exit 90 ;;
   *) exit 91 ;;
 esac
@@ -926,6 +942,9 @@ esac
     expect(attempted.stderr).toContain(
       'phase A VM substrate readiness gate failed: papercusp-workspace::hello-world is not booted and reachable',
     );
+    // If the dispatch projection regresses away, the fake returns the same
+    // spill wrapper observed on the physical VM and this marker stays absent.
+    expect(existsSync(projectionMarker)).toBe(true);
     expect(existsSync(quarantineMarker)).toBe(false);
     expect(existsSync(output)).toBe(false);
   });
