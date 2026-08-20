@@ -16,11 +16,13 @@
  * silently rewrite an already-published changelog. `snapshotWindow` runs ONCE,
  * at the cut, and the ids are frozen in the row.
  *
- * ⚠ SCOPE EVERY QUERY BY (workspace_id, harness_slug). These tables are
- * MULTI-TENANT: this dev box alone carries `papercusp-workspace` AND `default`,
- * and harness slugs `papercusp` AND `operator:papercusp-workspace`. A filter on
- * the slug alone silently reads another tenant's rows and looks like a diverged
- * store when it isn't.
+ * ⚠ Scope each query by the tenant key of its table. Work-item and plan
+ * snapshots are harness-scoped by `(workspace_id, harness_slug)`; release rows
+ * are intentionally workspace-level and keyed by `(workspace_id, channel,
+ * version)`. Do not add `harness_slug` to release-table predicates: that column
+ * does not exist in migration 589. A filter on a harness slug alone silently
+ * reads another tenant's snapshot rows and looks like a diverged store when it
+ * isn't.
  */
 
 import type { Sql } from 'postgres';

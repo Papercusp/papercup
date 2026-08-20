@@ -95,6 +95,10 @@ import { readExternalBlockers, type ExternalBlockerRecord } from './external-blo
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
+import {
+  AUTO_CLOSE_DEFAULT_MIN_TICKS,
+  AUTO_CLOSE_ELIGIBLE_SOURCES,
+} from './harness/improvements/auto-close-sources';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,
@@ -4043,6 +4047,52 @@ export function issueCooldownExclusionSql(
              OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec}))`
       : sql`TRUE`;
   return sql`(${releaseLeg} AND ${filingGraceLeg})`;
+}
+
+/**
+ * The watchdog AUTO-CLOSE recovery-window floor for ISSUE-family self-selection
+ * (EI-20106946822538304). A watchdog-sourced item is not useful work while the
+ * auto-close sweep is still gathering enough evidence to decide whether its signal
+ * recovered. This fragment is an INCLUDE/PASS predicate: it excludes only an
+ * eligible `<source>:<key>` candidate whose exact newest six ran ticks all have
+ * non-NULL `known_open_keys` and none contain that key.
+ *
+ * Every malformed, keyless, ineligible, short, NULL-bearing, or key-present history
+ * fails OPEN. Empty arrays are valid absence evidence. The candidate's workspace is
+ * used for the tick history so one workspace cannot suppress another. Keep this in
+ * the cycle-safe work-items leaf: importing auto-close.ts here would cycle through
+ * issues-engineer.ts. The source allowlist and six-tick window are shared from the
+ * leaf constants module instead.
+ */
+export function watchdogRecoveryWindowExclusionSql(sql: OrgSql) {
+  const eligibleSources = [...AUTO_CLOSE_ELIGIBLE_SOURCES];
+  const minTicks = AUTO_CLOSE_DEFAULT_MIN_TICKS;
+  const watchdogKey = `COALESCE(wi.payload, '{}'::jsonb) ->> 'watchdogKey'`;
+  return sql`(
+    ${sql.unsafe(watchdogKey)} IS NULL
+    OR btrim(${sql.unsafe(watchdogKey)}) = ''
+    OR position(':' IN ${sql.unsafe(watchdogKey)}) <= 1
+    OR btrim(substring(
+         ${sql.unsafe(watchdogKey)}
+         FROM position(':' IN ${sql.unsafe(watchdogKey)}) + 1
+       )) = ''
+    OR split_part(${sql.unsafe(watchdogKey)}, ':', 1) <> ALL(${eligibleSources}::text[])
+    OR NOT (
+      SELECT count(*) = ${minTicks}
+         AND count(recovery_ticks.known_open_keys) = ${minTicks}
+         AND count(*) FILTER (
+               WHERE ${sql.unsafe(watchdogKey)} = ANY(recovery_ticks.known_open_keys)
+             ) = 0
+        FROM (
+          SELECT wt.known_open_keys
+            FROM harness_shared.watchdog_ticks wt
+           WHERE wt.workspace_id = wi.workspace_id
+             AND wt.status = 'ran'
+           ORDER BY wt.tick_at DESC, wt.id DESC
+           LIMIT ${minTicks}
+        ) recovery_ticks
+    )
+  )`;
 }
 
 export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
