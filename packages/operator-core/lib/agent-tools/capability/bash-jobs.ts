@@ -476,6 +476,42 @@ export interface ForegroundResult {
   durationMs: number;
 }
 
+/**
+ * Bash reports a missing executable as exit 127, but that status can be hidden
+ * by a successful outer command (for example, a command substitution piped
+ * through `head`). Keep the capability result fail-loud even when the shell's
+ * final status says that the wrapper command completed successfully.
+ *
+ * This is deliberately a diagnostic-only contract. It does not add a binary
+ * to PATH or resolve through a host-private tool directory; a missing command
+ * remains missing and the caller gets an actionable failed result instead of a
+ * false green.
+ */
+export interface MissingCommandDiagnostic {
+  command: string;
+  line: string;
+}
+
+const MISSING_COMMAND_EXIT_CODE = 127;
+const MISSING_COMMAND_RE =
+  /(?:^|\n)(?:[^:\r\n]+:\s+)*(?<command>[^\s:]+):\s+(?:command not found|not found)(?:\r?\n|$)/m;
+
+export function detectMissingCommandDiagnostic(output: string): MissingCommandDiagnostic | null {
+  const match = MISSING_COMMAND_RE.exec(output);
+  const command = match?.groups?.command;
+  if (!command) return null;
+  return { command, line: match[0].trim() };
+}
+
+function normalizeMissingCommandResult(
+  status: BashStatus,
+  exitCode: number | null,
+  output: string,
+): { status: BashStatus; exitCode: number | null } {
+  if (status !== 'completed' || !detectMissingCommandDiagnostic(output)) return { status, exitCode };
+  return { status: 'failed', exitCode: MISSING_COMMAND_EXIT_CODE };
+}
+
 export interface StreamingSecretRedactor {
   /** Consume one raw child-process chunk and return only the safe prefix. */
   push(chunk: string): string;
@@ -620,11 +656,12 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       flushRedactor();
       clearTimeout(timer);
       signal.removeEventListener('abort', onAbort);
+      const normalized = normalizeMissingCommandResult(status, exitCode, buffer);
       const truncated = buffer.length > INLINE_OUTPUT_CAP;
       const output = truncated ? headTail(buffer) : buffer;
       const result: ForegroundResult = {
-        status,
-        exitCode,
+        status: normalized.status,
+        exitCode: normalized.exitCode,
         output,
         totalBytes,
         truncated: truncated || totalBytes > Buffer.byteLength(buffer, 'utf8'),
@@ -638,7 +675,7 @@ export function runForeground(opts: RunOptions, signal: AbortSignal, timeoutMs: 
       // for a SEPARATE reader tailing `logPath` mid-run (a large build, watched
       // from another tool call) who has no other way to see this job finish.
       try {
-        logStream?.write(formatJobLogEndMarker(status, exitCode, Date.now()));
+        logStream?.write(formatJobLogEndMarker(normalized.status, normalized.exitCode, Date.now()));
       } catch {
         /* best-effort; a spill-write fault must not affect the result */
       }
@@ -831,6 +868,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     job.exitCode = code;
     job.endedAt = Date.now();
     clearTimeout(timer);
+    const normalized = normalizeMissingCommandResult(job.status, job.exitCode, job.buffer);
+    job.status = normalized.status;
+    job.exitCode = normalized.exitCode;
     // EI-18764990059061608: see formatJobLogEndMarker's doc.
     appendRawOutput(formatJobLogEndMarker(job.status, job.exitCode, job.endedAt));
     flushRedactor();

@@ -20,6 +20,7 @@ import {
   __resetBashJobs,
   createStreamingSecretRedactor,
   detectBufferingLastStage,
+  detectMissingCommandDiagnostic,
   formatBufferingPipelineAdvice,
   formatJobLogEndMarker,
   getJob,
@@ -83,6 +84,36 @@ describe('runForeground', () => {
     const r = await runForeground({ command: 'echo hello | tail -1', cwd: STATE, stateDir: STATE }, never, 10_000);
     expect(r.exitCode).toBe(0);
     expect(r.status).toBe('completed');
+  });
+
+  it('fails loudly when a missing command is hidden inside a successful outer pipeline', async () => {
+    // `pipefail` cannot see a command-substitution failure when the command
+    // consuming its output exits 0. The raw shell diagnostic is still decisive:
+    // do not let a missing tool become a false-green capability result.
+    const r = await runForeground(
+      {
+        command: `printf '%s\\n' "$(papercusp-command-that-is-not-installed)" | head -1`,
+        cwd: STATE,
+        stateDir: STATE,
+      },
+      never,
+      10_000,
+    );
+    expect(r.status).toBe('failed');
+    expect(r.exitCode).toBe(127);
+    expect(r.output).toContain('papercusp-command-that-is-not-installed: command not found');
+  });
+
+  it('recognizes Bash and POSIX missing-command diagnostics without assuming a host path', () => {
+    expect(detectMissingCommandDiagnostic('/bin/bash: line 1: rg: command not found\n')).toEqual({
+      command: 'rg',
+      line: '/bin/bash: line 1: rg: command not found',
+    });
+    expect(detectMissingCommandDiagnostic('sh: rg: not found\n')).toEqual({
+      command: 'rg',
+      line: 'sh: rg: not found',
+    });
+    expect(detectMissingCommandDiagnostic('command completed\n')).toBeNull();
   });
 
   it('spills large output to a log file and trims the inline result', async () => {
