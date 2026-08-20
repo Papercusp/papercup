@@ -4,6 +4,7 @@ import type postgres from 'postgres';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import type { SpecClauseRevision, SpecClauseWrite } from './spec-clauses-store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -50,7 +51,7 @@ const CTX = {
 
 let db: FreshPgDb;
 
-function clause(over: Partial<store.SpecClauseWrite> = {}): store.SpecClauseWrite {
+function clause(over: Partial<SpecClauseWrite> = {}): SpecClauseWrite {
   return {
     harnessSlug: HARNESS,
     planSlug: 'reconnect-plan',
@@ -172,7 +173,7 @@ describe('first-class plan spec clauses', () => {
         includeHistory: true,
       } as never,
       CTX,
-    )) as { data: { specs: store.SpecClauseRevision[] } };
+    )) as { data: { specs: SpecClauseRevision[] } };
     expect(get.data.specs).toHaveLength(1);
     expect(get.data.specs[0]).toMatchObject({
       specId: 'SPEC-003-01',
