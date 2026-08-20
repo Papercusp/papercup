@@ -177,6 +177,77 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('bridges a fully represented release main into staging ancestry without changing the staging tree', async () => {
+    git(repo, 'checkout', '-b', 'staging');
+    writeFileSync(join(repo, 'repair.txt'), 'fixed\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'canonical staging repair');
+    writeFileSync(join(repo, 'later.txt'), 'later staging work\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'later staging work');
+    git(repo, 'push', '-u', 'origin', 'staging');
+    const stagingBefore = git(repo, 'rev-parse', 'HEAD');
+    const stagingTree = git(repo, 'rev-parse', 'HEAD^{tree}');
+
+    const isolated = join(root, 'isolated-repair');
+    git(root, 'clone', originDir, isolated);
+    configUser(isolated);
+    writeFileSync(join(isolated, 'repair.txt'), 'fixed\n');
+    git(isolated, 'add', '-A');
+    git(isolated, 'commit', '--no-verify', '-m', 'isolated frozen repair');
+    const isolatedMain = git(isolated, 'rev-parse', 'HEAD');
+    git(isolated, 'push', 'origin', 'main');
+
+    const logs: string[] = [];
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: { ...cfg, branch: 'staging' },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') expect(out.merged).toContain('superproject');
+    const bridged = git(originDir, 'rev-parse', 'refs/heads/staging');
+    expect(bridged).not.toBe(stagingBefore);
+    expect(git(originDir, 'rev-parse', `${bridged}^{tree}`)).toBe(stagingTree);
+    expect(git(originDir, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([
+      stagingBefore,
+      isolatedMain,
+    ]);
+    expect(git(originDir, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
+    expect(logs.join('\n')).toMatch(/bridged fully-represented origin\/main into staging ancestry/);
+  });
+
+  it('declines the release-main ancestry bridge when a main-only blob is not identical on staging', async () => {
+    git(repo, 'checkout', '-b', 'staging');
+    writeFileSync(join(repo, 'repair.txt'), 'staging version\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'different staging change');
+    git(repo, 'push', '-u', 'origin', 'staging');
+    const stagingBefore = git(repo, 'rev-parse', 'HEAD');
+
+    const isolated = join(root, 'isolated-mismatch');
+    git(root, 'clone', originDir, isolated);
+    configUser(isolated);
+    writeFileSync(join(isolated, 'repair.txt'), 'main version\n');
+    git(isolated, 'add', '-A');
+    git(isolated, 'commit', '--no-verify', '-m', 'unrepresented main repair');
+    const isolatedMain = git(isolated, 'rev-parse', 'HEAD');
+    git(isolated, 'push', 'origin', 'main');
+
+    const logs: string[] = [];
+    await runGitSync('test', {
+      repoPath: repo,
+      config: { ...cfg, branch: 'staging' },
+      log: (message) => logs.push(message),
+    });
+
+    expect(git(originDir, 'rev-parse', 'refs/heads/staging')).toBe(stagingBefore);
+    expect(() => git(originDir, 'merge-base', '--is-ancestor', isolatedMain, stagingBefore)).toThrow();
+    expect(logs.join('\n')).toMatch(/release-main ancestry bridge declined/);
+    expect(logs.join('\n')).toMatch(/repair\.txt.*not represented exactly on staging/);
+  });
+
   it('EI-20744916065879285: excludes a protected tracked path while committing the rest of the tree', async () => {
     // Model a live peer edit: the protected file already exists in the index, while a
     // separate file is ordinary shared-tree work that this tick should still publish.
