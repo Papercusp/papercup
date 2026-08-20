@@ -387,6 +387,28 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     replacesPoll: 'polling fleet:leader-brief for burn-down delta',
   },
   {
+    family: 'fleet-member-stalled',
+    keyTemplate: 'fleet:member-stalled:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      'A live member crossed into a stalled-holder verdict — the leader can inspect or take over the claim instead of polling fleet:leader-brief.',
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — detected by the periodic fleet-transition sweep against the previous roster snapshot',
+    exists: true,
+    replacesPoll: 'polling fleet:leader-brief for stalled-holder transitions',
+  },
+  {
+    family: 'fleet-admission-blocked',
+    keyTemplate: 'fleet:admission-blocked:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'the fleet slug' }],
+    describe:
+      'A fleet claim-spec admission check blocked a member/item pair — the leader can revise placement or the spec instead of polling fleet:leader-brief.',
+    emitter:
+      'fleet-transition-events (packages/operator-core/lib/fleet-transition-events.ts) — detected by the periodic fleet-transition sweep against the previous roster snapshot',
+    exists: true,
+    replacesPoll: 'polling fleet:leader-brief for admission-blocked transitions',
+  },
+  {
     family: 'goal-drain-dead',
     keyTemplate: 'goal:drain-dead:<goalId>',
     params: [{ name: 'goalId', required: true, describe: 'the goal whose drain fleet you hold' }],

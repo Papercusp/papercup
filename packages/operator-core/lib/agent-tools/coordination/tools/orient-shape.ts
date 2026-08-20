@@ -36,6 +36,7 @@ const CAPS = {
     briefMembers: 6,
     briefLists: 5,
     briefReason: 240,
+    fleetSummaries: 12,
     recoveryItems: 6,
     recoveryCheckpoint: 1_200,
     recoveryBody: 600,
@@ -57,6 +58,7 @@ const CAPS = {
     briefMembers: 12,
     briefLists: 10,
     briefReason: 500,
+    fleetSummaries: 24,
     recoveryItems: 8,
     recoveryCheckpoint: 1_200,
     recoveryBody: 600,
@@ -66,6 +68,27 @@ const CAPS = {
 type TierName = keyof typeof CAPS;
 
 const cap = (s: unknown, n: number): unknown => (typeof s === 'string' && s.length > n ? `${s.slice(0, n - 1)}…` : s);
+
+function projectFleetSummary(row: unknown, textCap: number): unknown {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const r = row as Record<string, unknown>;
+  const summary = r.summary;
+  const boundedSummary =
+    summary && typeof summary === 'object' && !Array.isArray(summary)
+      ? Object.fromEntries(
+          Object.entries(summary as Record<string, unknown>).map(([key, value]) => [
+            key,
+            typeof value === 'string' ? cap(value, textCap) : value,
+          ]),
+        )
+      : null;
+  return {
+    fleet: r.fleet,
+    summary: boundedSummary,
+    ...(r.unavailable === true ? { unavailable: true } : {}),
+    ...(typeof r.reason === 'string' ? { reason: cap(r.reason, textCap) } : {}),
+  };
+}
 
 /** Priority for keeping a standing fact when the count is capped: owner-scope
  *  (owner-walls / unverified claims) and this harness's facts are load-bearing;
@@ -440,6 +463,7 @@ const FLOOR_CAPS: Caps = {
   briefMembers: 4,
   briefLists: 3,
   briefReason: 120,
+  fleetSummaries: 6,
   // EI: `recovery` used to be an UNCAPPED passthrough, which made the ladder
   // mathematically unable to reach budget on the ONE path where `recovery` exists
   // and is the LARGEST field. Measured on a real post-compaction payload: floor
@@ -852,6 +876,21 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
       }
     }
     out.leaderBrief = out2;
+  }
+
+  const fleetSummaries = d.fleetSummaries;
+  if (Array.isArray(fleetSummaries)) {
+    const total = fleetSummaries.length;
+    out.fleetSummaries = fleetSummaries
+      .slice(0, c.fleetSummaries)
+      .map((row) => projectFleetSummary(row, c.briefReason));
+    if (total > c.fleetSummaries) {
+      out.fleetSummariesTruncated = {
+        total,
+        shown: c.fleetSummaries,
+        more: 'coord:orient { mode: "monitor" } / fleet:leader-brief',
+      };
+    }
   }
 
   const catchUp = d.fleetCatchUp as { fleet?: unknown; total?: number; recent?: unknown[] } | null | undefined;

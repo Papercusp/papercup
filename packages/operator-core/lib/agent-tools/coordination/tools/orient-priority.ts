@@ -27,6 +27,8 @@ export const ORIENT_CORE_RESULT_KEYS = [
   'presenceDrift',
   'laneClaim',
   'leaderBrief',
+  'fleetSummaries',
+  'fleetSummariesTruncated',
 ] as const;
 
 /**

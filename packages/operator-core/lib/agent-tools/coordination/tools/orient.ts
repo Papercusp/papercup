@@ -515,6 +515,11 @@ export interface OrientResult {
    *  (fleet-reliability-verification-2026-07-10 P-007). Absent for a non-leader / non-fleet
    *  caller, or in full mode; null on a failed fold. */
   leaderBrief?: unknown | null;
+  /** Count-only summaries for every fleet led by the caller on monitor and
+   * post-compaction recovery. `null` means the led-fleet read failed; an
+   * unavailable row is kept explicit instead of reading as an all-clear. */
+  fleetSummaries?: OrientFleetSummary[] | null;
+  fleetSummariesTruncated?: { total: number; shown: number; more: string };
   /** EI-18731216945970087 / EI-20201050911711528: present ONLY when composeOrient
    *  caught a presence/registry leadership DRIFT — the caller's presence projection
    *  showed no fleet or a non-leader role, but `agent_fleets.leader_owner_id` says
@@ -583,6 +588,13 @@ export interface OrientResult {
   };
 }
 
+export interface OrientFleetSummary {
+  fleet: string;
+  summary: Record<string, unknown> | null;
+  unavailable?: true;
+  reason?: string;
+}
+
 type OrientClassifiedResultKey =
   | (typeof ORIENT_CORE_RESULT_KEYS)[number]
   | Extract<(typeof ORIENT_OPTIONAL_PRIORITY.tier4)[number]['fields'][number], keyof OrientResult>
@@ -603,6 +615,11 @@ export interface OrientRoleFolds {
   /** Reads the papercup-deep pane's unanswered directed-question thread. */
   deepWork?: () => Promise<NonNullable<OrientResult['deepWork']> | null>;
 }
+
+export type OrientFleetSummariesFold = (
+  homeFleetSlug: string,
+  homeBrief: unknown | null | undefined,
+) => Promise<OrientFleetSummary[] | null>;
 
 /**
  * Overlay the effective membership onto the caller's own fleet-assignment row.
@@ -765,6 +782,8 @@ export async function composeOrient(
     closedAt: string | null;
     sim: number;
   } | null>,
+  /** EI-203907: handler-owned, memoized all-led-fleet summary read. */
+  fleetSummariesFold?: OrientFleetSummariesFold,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // EI-18748795522559631: memory recall is independent of the roster, backlog,
@@ -1245,6 +1264,19 @@ export async function composeOrient(
       result.leaderBrief = hydrated;
     } catch {
       result.leaderBrief = null;
+    }
+  }
+
+  if (
+    foldLeaderBrief &&
+    effectiveFleetMembership?.fleetRole === 'leader' &&
+    effectiveFleetMembership.fleetSlug &&
+    fleetSummariesFold
+  ) {
+    try {
+      result.fleetSummaries = await fleetSummariesFold(effectiveFleetMembership.fleetSlug, result.leaderBrief);
+    } catch {
+      result.fleetSummaries = null;
     }
   }
 
@@ -2620,12 +2652,25 @@ export default defineTool({
     // presence resolved to NO fleet at all in monitor mode (the exact failure shape
     // reported), so every correctly-labeled member's monitor tick (the overwhelmingly
     // common case) pays no extra round-trip.
-    const presenceDriftCheck = ownerId
+    // EI-203907: memoize the registry read so presence-drift recovery and the
+    // all-led-fleet summary fold share one authoritative list in this orient.
+    const readLedFleets = ownerId
+      ? (() => {
+          let pending: Promise<Array<{ fleetSlug: string }> | null> | undefined;
+          return () => {
+            pending ??= (async () => {
+              const { listFleetsLedBy } = await import('../../../agent-fleets-store');
+              const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+              return await listFleetsLedBy(ws, ownerId);
+            })().catch(() => null);
+            return pending;
+          };
+        })()
+      : undefined;
+    const presenceDriftCheck = readLedFleets
       ? async () => {
-          const { listFleetsLedBy } = await import('../../../agent-fleets-store');
-          const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
-          const led = await listFleetsLedBy(ws, ownerId);
-          return led[0]?.fleetSlug ?? null;
+          const led = await readLedFleets();
+          return led?.[0]?.fleetSlug ?? null;
         }
       : undefined;
     // ── role-specific pane folds (voice-public-release-readiness-2026-07-12 P-016):
@@ -2698,6 +2743,47 @@ export default defineTool({
       const { fetchOrientPipeline } = await import('../pipeline-health');
       return fetchOrientPipeline(args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? undefined);
     })().catch(() => null);
+    const orientInnerCall = inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true });
+    const fleetSummariesFold = readLedFleets
+      ? async (homeFleetSlug: string, homeBrief: unknown | null | undefined) => {
+          const led = await readLedFleets();
+          if (!led) return null;
+          const summaryOf = (brief: unknown): Record<string, unknown> | null => {
+            if (!brief || typeof brief !== 'object' || Array.isArray(brief)) return null;
+            const summary = (brief as Record<string, unknown>).summary;
+            return summary && typeof summary === 'object' && !Array.isArray(summary)
+              ? { ...(summary as Record<string, unknown>) }
+              : null;
+          };
+          return await Promise.all(
+            led.map(async ({ fleetSlug }) => {
+              if (fleetSlug === homeFleetSlug) {
+                const summary = summaryOf(homeBrief);
+                return summary
+                  ? { fleet: fleetSlug, summary }
+                  : { fleet: fleetSlug, summary: null, unavailable: true as const, reason: 'home-brief-unavailable' };
+              }
+              try {
+                const brief = await orientInnerCall('fleet:leader-brief', {
+                  fleet: fleetSlug,
+                  ...(args.harness ? { harness: args.harness } : {}),
+                });
+                const summary = summaryOf(brief);
+                return summary
+                  ? { fleet: fleetSlug, summary }
+                  : { fleet: fleetSlug, summary: null, unavailable: true as const, reason: 'summary-unavailable' };
+              } catch {
+                return {
+                  fleet: fleetSlug,
+                  summary: null,
+                  unavailable: true as const,
+                  reason: 'leader-brief-read-failed',
+                };
+              }
+            }),
+          );
+        }
+      : undefined;
     const result = await composeOrient(
       args,
       // P-001 (orient-recall-quality-2026-07-12): the folded memory:search records
@@ -2711,7 +2797,7 @@ export default defineTool({
       // agent session every fold still arrived shaped — including
       // fleet:assignments projecting per-agent `claims[]` down to a NUMBER, the
       // type change behind the planNow failure (EI-20108229813877389).
-      inProcessCall(ctx, { telemetrySurface: 'orient', ignoreSessionPayloadTier: true }),
+      orientInnerCall,
       ownerId,
       driveMode,
       ownerPresent,
@@ -2754,6 +2840,7 @@ export default defineTool({
           return null;
         }
       },
+      fleetSummariesFold,
     );
     // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
     // disclosure markers this payload carried, so the HUD sessions popup can
