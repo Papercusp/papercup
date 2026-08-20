@@ -610,6 +610,220 @@ async function readCheckpointRunState(
   }
 }
 
+type GreenCheckpointStallEscalationRow = {
+  harness_slug: string;
+  workspace_id: string;
+  escalation: unknown;
+  mtime_ms: string | number | null;
+};
+
+const GREEN_CHECKPOINT_STALL_PHASE = 'green-checkpoint-stall';
+
+const recoveryBody = (
+  parsed: GreenCheckpointStallEscalation,
+  recovery: GreenCheckpointStallRecoveryMarker,
+): string => JSON.stringify({ ...parsed.raw, recovery });
+
+/**
+ * Deliver the owner/fleet signal for a recovery that could not make progress.
+ * The escalation row is already the durable evidence; these two rails are best-effort
+ * and deliberately one-shot via the recovery marker in that row.
+ */
+async function notifyGreenCheckpointStallRecovery(opts: {
+  installSlug: string;
+  workspaceId: string;
+  candidate: string;
+  failingTests: readonly string[];
+  attempts: number;
+  reason: 'no-progress' | 'max-attempts';
+}): Promise<void> {
+  const title = `green-checkpoint-stall recovery blocked on ${opts.installSlug}`;
+  const body =
+    `The green-checkpoint-stall escalation for ${opts.installSlug} remains stale and uncovered ` +
+    `(candidate ${opts.candidate.slice(0, 12)}; recovery attempts: ${opts.attempts}). ` +
+    `${opts.reason === 'max-attempts' ? 'The bounded release-fixer retry budget is exhausted.' : 'A release-fixer dispatch made no progress.'} ` +
+    `Named failing test(s): ${opts.failingTests.slice(0, 5).join(', ')}. ` +
+    `Inspect the gate row and release-fixer liveness before taking further action.`;
+  const fleetSlug = (process.env.PAPERCUSP_FLEET_SLUG ?? '').trim();
+  const route = fleetSlug
+    ? {
+        ownerSelector: `@fleet-leader:${fleetSlug}`,
+        reason: `green-checkpoint-stall recovery for ${opts.installSlug} needs fleet-leader attention`,
+      }
+    : undefined;
+
+  try {
+    const { notifyAttention } = await import('../attention-notify');
+    await notifyAttention({
+      kind: 'intervention',
+      title,
+      body,
+      importance: 'urgent',
+      workspaceId: opts.workspaceId,
+      data: {
+        installSlug: opts.installSlug,
+        candidate: opts.candidate.slice(0, 12),
+        failingTests: opts.failingTests.slice(0, 20),
+        attempts: opts.attempts,
+        reason: opts.reason,
+      },
+    });
+  } catch (e) {
+    console.warn(`[green-stall-watchdog] recovery notify failed: ${e instanceof Error ? e.message : e}`);
+  }
+
+  try {
+    await broadcastSevereEvent({
+      summary: title,
+      body,
+      category: 'severe-event',
+      conditionKey: `green-checkpoint-stall-recovery:${opts.installSlug}`,
+      oneShot: true,
+      ...(route ? { route } : {}),
+    });
+  } catch (e) {
+    console.warn(`[green-stall-watchdog] recovery broadcast failed: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * Revisit old in-routine stall rows independently of a fresh checkpoint verdict.
+ * `trackGateStall` records the exact red signature, but its normal dispatcher only
+ * runs while a verdict is being produced; this sweep closes that silent gap.
+ */
+async function recoverStaleGreenCheckpointStalls(
+  sql: Sql,
+  nowMs: number,
+  opts: GreenStallThresholds,
+): Promise<void> {
+  let rows: GreenCheckpointStallEscalationRow[];
+  try {
+    rows = await sql<GreenCheckpointStallEscalationRow[]>`
+      SELECT harness_slug, workspace_id, escalation, mtime_ms
+        FROM harness_shared.harness_escalations
+       WHERE phase = ${GREEN_CHECKPOINT_STALL_PHASE}
+         AND escalation IS NOT NULL`;
+  } catch (e) {
+    console.warn(`[green-stall-watchdog] green-checkpoint-stall recovery scan failed: ${e instanceof Error ? e.message : e}`);
+    return;
+  }
+
+  const staleMs = opts.greenCheckpointStallRecoveryStaleMs ?? DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_STALE_MS;
+  const maxAttempts = opts.greenCheckpointStallRecoveryMaxAttempts ?? DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS;
+
+  for (const row of rows) {
+    const parsed = parseGreenCheckpointStallEscalation(row.escalation);
+    if (!parsed || parsed.installSlug !== row.harness_slug) continue;
+    const mtimeMs = finiteTimestamp(row.mtime_ms);
+    const decision = decideGreenCheckpointStallRecovery({
+      mtimeMs,
+      nowMs,
+      ownershipCovered: parsed.ownershipCovered,
+      candidate: parsed.candidate,
+      failingTests: parsed.failingTests,
+      recoveryAttempts: parsed.recovery.attempts,
+      recoveryNotifiedAt: parsed.recovery.notifiedAt,
+      staleMs,
+      maxAttempts,
+    });
+    if (decision.action === 'none') continue;
+
+    const originalBody = typeof row.escalation === 'string' ? row.escalation : JSON.stringify(row.escalation);
+    if (!originalBody) continue;
+
+    const claimedRecovery: GreenCheckpointStallRecoveryMarker =
+      decision.action === 'notify'
+        ? {
+            attempts: parsed.recovery.attempts,
+            lastAttemptAt: parsed.recovery.lastAttemptAt,
+            outcome: 'max-attempts',
+            notifiedAt: nowMs,
+          }
+        : {
+            attempts: decision.nextAttempt,
+            lastAttemptAt: nowMs,
+            outcome: 'claimed',
+            notifiedAt: parsed.recovery.notifiedAt,
+          };
+    const claimedBody = recoveryBody(parsed, claimedRecovery);
+    let claimed: { count?: number };
+    try {
+      claimed = await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = ${claimedBody}
+         WHERE harness_slug = ${row.harness_slug}
+           AND phase = ${GREEN_CHECKPOINT_STALL_PHASE}
+           AND escalation IS NOT DISTINCT FROM ${originalBody}`;
+    } catch (e) {
+      console.warn(`[green-stall-watchdog] recovery claim failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
+      continue;
+    }
+    if (claimed.count !== 1) continue; // another watchdog process owns this row
+
+    if (decision.action === 'notify') {
+      if (parsed.candidate && parsed.failingTests.length > 0) {
+        await notifyGreenCheckpointStallRecovery({
+          installSlug: row.harness_slug,
+          workspaceId: row.workspace_id,
+          candidate: parsed.candidate,
+          failingTests: parsed.failingTests,
+          attempts: parsed.recovery.attempts,
+          reason: 'max-attempts',
+        });
+      }
+      continue;
+    }
+
+    let dispatched = false;
+    try {
+      const { dispatchReleaseFixer } = await import('../harness/routines/release-actions');
+      dispatched =
+        (await dispatchReleaseFixer(
+          { installSlug: row.harness_slug, workspaceId: row.workspace_id },
+          parsed.candidate!,
+          parsed.failingTests,
+        )) != null;
+    } catch (e) {
+      console.warn(`[green-stall-watchdog] recovery dispatch failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
+    }
+
+    const outcome: GreenCheckpointStallRecoveryMarker['outcome'] = dispatched ? 'dispatched' : 'no-progress';
+    const finalRecovery: GreenCheckpointStallRecoveryMarker = { ...claimedRecovery, outcome };
+    try {
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = ${recoveryBody(parsed, finalRecovery)}
+         WHERE harness_slug = ${row.harness_slug}
+           AND phase = ${GREEN_CHECKPOINT_STALL_PHASE}
+           AND escalation IS NOT DISTINCT FROM ${claimedBody}`;
+    } catch (e) {
+      console.warn(`[green-stall-watchdog] recovery result write failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
+    }
+
+    if (!dispatched && parsed.candidate && parsed.failingTests.length > 0 && parsed.recovery.notifiedAt == null) {
+      await notifyGreenCheckpointStallRecovery({
+        installSlug: row.harness_slug,
+        workspaceId: row.workspace_id,
+        candidate: parsed.candidate,
+        failingTests: parsed.failingTests,
+        attempts: decision.nextAttempt,
+        reason: 'no-progress',
+      });
+      // Best-effort one-shot latch. The marker is deliberately written without touching mtime_ms.
+      try {
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = ${recoveryBody(parsed, { ...finalRecovery, notifiedAt: nowMs })}
+           WHERE harness_slug = ${row.harness_slug}
+             AND phase = ${GREEN_CHECKPOINT_STALL_PHASE}
+             AND escalation IS NOT DISTINCT FROM ${recoveryBody(parsed, finalRecovery)}`;
+      } catch (e) {
+        console.warn(`[green-stall-watchdog] recovery notify marker failed for ${row.harness_slug}: ${e instanceof Error ? e.message : e}`);
+      }
+    }
+  }
+}
+
 /**
  * One watchdog pass: scan every ACTIVE green-checkpoint routine, alarm once per
  * stall transition (cross-process exactly-once via a conditional flag flip), and
@@ -639,6 +853,7 @@ export async function checkGreenStall(
          AND active = true`;
 
     const now = Date.now();
+    await recoverStaleGreenCheckpointStalls(sql, now, opts);
     const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
     for (const row of rows) {
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;

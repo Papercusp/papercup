@@ -61,10 +61,16 @@ const readRoutineEngineLivenessMock = vi.fn();
 vi.mock('./routine-engine-liveness', () => ({
   readRoutineEngineLiveness: (...args: unknown[]) => readRoutineEngineLivenessMock(...args),
 }));
+const dispatchReleaseFixerMock = vi.fn();
+vi.mock('../harness/routines/release-actions', () => ({
+  dispatchReleaseFixer: (...args: unknown[]) => dispatchReleaseFixerMock(...args),
+}));
 
 import {
   evaluateGreenStall,
   checkGreenStall,
+  parseGreenCheckpointStallEscalation,
+  decideGreenCheckpointStallRecovery,
   greenStallEscalationBody,
   evaluateMainBehindStaging,
   mainBehindRecoverySummary,
@@ -605,6 +611,251 @@ describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => 
       recovered: [],
       suppressed: [],
     });
+  });
+});
+
+describe('green-checkpoint-stall recovery parser + decision', () => {
+  it('parses JSON and normalizes the bounded recovery fields without losing the raw evidence', () => {
+    const raw = {
+      kind: 'green-checkpoint-stall',
+      harness_slug: ' oddsmith ',
+      candidate: '  abcdef1234567890  ',
+      failingTests: [' pkg/a.test.ts ', '', 42, 'pkg/b.test.ts'],
+      ownership: { covered: false },
+      recovery: {
+        attempts: '2',
+        lastAttemptAt: String(NOW - H),
+        outcome: 'no-progress',
+        notifiedAt: null,
+      },
+      detail: 'preserve this',
+    };
+
+    expect(parseGreenCheckpointStallEscalation(JSON.stringify(raw))).toEqual({
+      raw: expect.objectContaining({ detail: 'preserve this' }),
+      installSlug: 'oddsmith',
+      candidate: 'abcdef1234567890',
+      failingTests: ['pkg/a.test.ts', 'pkg/b.test.ts'],
+      ownershipCovered: false,
+      recovery: {
+        attempts: 2,
+        lastAttemptAt: NOW - H,
+        outcome: 'no-progress',
+        notifiedAt: null,
+      },
+    });
+  });
+
+  it.each([
+    ['malformed JSON', '{not-json'],
+    ['wrong kind', JSON.stringify({ kind: 'green-checkpoint-watchdog' })],
+    ['array input', JSON.stringify([])],
+  ])('rejects %s rather than treating it as an uncovered red', (_label, raw) => {
+    expect(parseGreenCheckpointStallEscalation(raw)).toBeNull();
+  });
+
+  it('dispatches only a stale, uncovered, actionable row and bounds retries/notification', () => {
+    const valid = {
+      mtimeMs: NOW - 4 * H,
+      nowMs: NOW,
+      ownershipCovered: false,
+      candidate: 'abcdef1234567890',
+      failingTests: ['pkg/a.test.ts'],
+      staleMs: H,
+      maxAttempts: 3,
+    } as const;
+
+    expect(decideGreenCheckpointStallRecovery({ ...valid, mtimeMs: NOW - 30 * 60 * 1000 })).toEqual({
+      action: 'none',
+      reason: 'not-stale',
+      nextAttempt: 0,
+    });
+    expect(decideGreenCheckpointStallRecovery({ ...valid, ownershipCovered: true })).toEqual({
+      action: 'none',
+      reason: 'covered',
+      nextAttempt: 0,
+    });
+    expect(decideGreenCheckpointStallRecovery({ ...valid, candidate: null })).toEqual({
+      action: 'none',
+      reason: 'invalid',
+      nextAttempt: 0,
+    });
+    expect(decideGreenCheckpointStallRecovery(valid)).toEqual({
+      action: 'dispatch',
+      reason: 'retry',
+      nextAttempt: 1,
+    });
+    expect(decideGreenCheckpointStallRecovery({ ...valid, recoveryAttempts: 3 })).toEqual({
+      action: 'notify',
+      reason: 'max-attempts',
+      nextAttempt: 3,
+    });
+    expect(
+      decideGreenCheckpointStallRecovery({ ...valid, recoveryAttempts: 3, recoveryNotifiedAt: NOW - H }),
+    ).toEqual({
+      action: 'none',
+      reason: 'max-attempts',
+      nextAttempt: 3,
+    });
+  });
+});
+
+describe('checkGreenStall stale green-checkpoint-stall recovery', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let dateNowSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    readRoutineEngineLivenessMock.mockResolvedValue({ stale: false });
+    dispatchReleaseFixerMock.mockReset();
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    resolveCheckpointRoutingMock.mockReset();
+    isCheckpointRunLockHeldCheapMock.mockReset();
+    readCheckpointRunPhaseCheapMock.mockReset();
+  });
+
+  afterEach(() => {
+    dateNowSpy.mockRestore();
+    warnSpy.mockRestore();
+    readRoutineEngineLivenessMock.mockReset();
+    dispatchReleaseFixerMock.mockReset();
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    resolveCheckpointRoutingMock.mockReset();
+    isCheckpointRunLockHeldCheapMock.mockReset();
+    readCheckpointRunPhaseCheapMock.mockReset();
+  });
+
+  function makeRecoveryFakeSql(escalations: unknown[]) {
+    const calls: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes('FROM harness_shared.routines')) return Promise.resolve([]);
+      if (text.includes('FROM harness_shared.harness_escalations')) return Promise.resolve(escalations);
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    return { sql, calls };
+  }
+
+  function recoveryRow(overrides: Record<string, unknown> = {}) {
+    return {
+      harness_slug: 'oddsmith',
+      workspace_id: 'papercusp-workspace',
+      mtime_ms: NOW - 4 * H,
+      escalation: {
+        kind: 'green-checkpoint-stall',
+        harness_slug: 'oddsmith',
+        candidate: 'abcdef1234567890',
+        failingTests: ['pkg/a.test.ts'],
+        ownership: { covered: false },
+        ...overrides,
+      },
+    };
+  }
+
+  function recoveryUpdates(calls: unknown[][]) {
+    return calls.filter((call) => String(call[0]).includes('SET escalation ='));
+  }
+
+  it('dispatches a stale uncovered escalation and records the claimed dispatch outcome', async () => {
+    dispatchReleaseFixerMock.mockResolvedValue({ spawnId: 'spawn-1', runId: 'run-1' });
+    const { sql, calls } = makeRecoveryFakeSql([recoveryRow()]);
+
+    await expect(
+      checkGreenStall(sql, {
+        greenCheckpointStallRecoveryStaleMs: H,
+        greenCheckpointStallRecoveryMaxAttempts: 3,
+      }),
+    ).resolves.toEqual({ alarmed: [], recovered: [], suppressed: [] });
+
+    expect(dispatchReleaseFixerMock).toHaveBeenCalledWith(
+      { installSlug: 'oddsmith', workspaceId: 'papercusp-workspace' },
+      'abcdef1234567890',
+      ['pkg/a.test.ts'],
+    );
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+
+    const updates = recoveryUpdates(calls);
+    expect(updates).toHaveLength(2); // conditional claim, then dispatch result
+    expect(JSON.parse(String(updates[1]![1])).recovery).toMatchObject({
+      attempts: 1,
+      outcome: 'dispatched',
+      notifiedAt: null,
+    });
+  });
+
+  it('marks a no-progress dispatch and bounds recovery notifications to 20 data tests / 5 body tests', async () => {
+    const failingTests = Array.from({ length: 25 }, (_, i) => `pkg/test-${i}.test.ts`);
+    dispatchReleaseFixerMock.mockResolvedValue(null);
+    const { sql, calls } = makeRecoveryFakeSql([
+      recoveryRow({ candidate: 'abcdef1234567890', failingTests }),
+    ]);
+
+    await checkGreenStall(sql, { greenCheckpointStallRecoveryStaleMs: H, greenCheckpointStallRecoveryMaxAttempts: 3 });
+
+    expect(dispatchReleaseFixerMock).toHaveBeenCalledTimes(1);
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    const notice = notifyAttentionMock.mock.calls[0]![0] as {
+      body: string;
+      data: { candidate: string; failingTests: string[]; attempts: number; reason: string };
+    };
+    expect(notice.data.candidate).toBe('abcdef123456');
+    expect(notice.data.failingTests).toEqual(failingTests.slice(0, 20));
+    expect(notice.body).toContain(failingTests.slice(0, 5).join(', '));
+    expect(notice.body).not.toContain(failingTests[5]!);
+    expect(notice.data.attempts).toBe(1);
+    expect(notice.data.reason).toBe('no-progress');
+    expect(broadcastSevereEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conditionKey: 'green-checkpoint-stall-recovery:oddsmith',
+        oneShot: true,
+      }),
+    );
+
+    const updates = recoveryUpdates(calls);
+    expect(updates).toHaveLength(3); // claim, no-progress result, notification latch
+    expect(JSON.parse(String(updates[2]![1])).recovery).toMatchObject({
+      attempts: 1,
+      outcome: 'no-progress',
+      notifiedAt: NOW,
+    });
+  });
+
+  it('notifies once at the retry cap and skips dispatch when the cap marker is already latched', async () => {
+    dispatchReleaseFixerMock.mockResolvedValue({ spawnId: 'should-not-fire', runId: null });
+    const first = makeRecoveryFakeSql([
+      recoveryRow({
+        recovery: { attempts: 3, lastAttemptAt: NOW - H, outcome: 'no-progress', notifiedAt: null },
+      }),
+    ]);
+
+    await checkGreenStall(first.sql, {
+      greenCheckpointStallRecoveryStaleMs: H,
+      greenCheckpointStallRecoveryMaxAttempts: 3,
+    });
+
+    expect(dispatchReleaseFixerMock).not.toHaveBeenCalled();
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventMock).toHaveBeenCalledTimes(1);
+    const marked = JSON.parse(String(recoveryUpdates(first.calls)[0]![1]));
+    expect(marked.recovery).toMatchObject({ attempts: 3, outcome: 'max-attempts', notifiedAt: NOW });
+
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    const second = makeRecoveryFakeSql([recoveryRow({ recovery: marked.recovery })]);
+    await checkGreenStall(second.sql, {
+      greenCheckpointStallRecoveryStaleMs: H,
+      greenCheckpointStallRecoveryMaxAttempts: 3,
+    });
+
+    expect(dispatchReleaseFixerMock).not.toHaveBeenCalled();
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+    expect(recoveryUpdates(second.calls)).toHaveLength(0);
   });
 });
 
