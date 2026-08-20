@@ -39,7 +39,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const migration = (name: string) => path.resolve(here, `../../../../../libs/papercusp/libs/db/sql/${name}`);
 const MIGRATION_851 = migration('851-first-class-plan-spec-clauses.sql');
 const MIGRATION_852 = migration('852-plan-spec-clause-integrity.sql');
-const MIGRATION_855 = migration('855-work-item-spec-evidence-bindings.sql.DRAFT');
+const MIGRATION_855 = migration('855-work-item-spec-evidence-bindings.sql');
 const CTX = {
   isSuperuser: true,
   uiClientId: 'su-spec-evidence-integration',
