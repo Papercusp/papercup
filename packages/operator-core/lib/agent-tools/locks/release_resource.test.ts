@@ -62,6 +62,38 @@ describe('locks:release_resource handler', () => {
     expect(backUpM).not.toHaveBeenCalled();
   });
 
+  it('surfaces an expired-before-release warning instead of a silent ok:true / released:0', async () => {
+    const lockId = '11111111-1111-1111-1111-111111111111';
+    const expiredAt = new Date('2026-08-17T23:20:00.000Z');
+    releaseM.mockResolvedValue({
+      released: 0,
+      releasedModes: [],
+      exclusiveResources: [],
+      expired: [{ lockId, resource: 'dev-server', mode: 'exclusive', expiredAt }],
+      waiters: {},
+    } as never);
+
+    const b = body(await call({ lock_id: lockId }));
+
+    expect(b).toMatchObject({
+      ok: true,
+      released: 0,
+      expired: true,
+      warning: 'resource_lock_expired_before_release',
+      note: expect.stringContaining('expired before release'),
+      expired_at: expiredAt.toISOString(),
+      expired_locks: [
+        {
+          lock_id: lockId,
+          resource: 'dev-server',
+          mode: 'exclusive',
+          expired_at: expiredAt.toISOString(),
+        },
+      ],
+    });
+    expect(backUpM).not.toHaveBeenCalled();
+  });
+
   it('wraps a single resource release through the keyed bulk envelope and broadcasts when exclusive', async () => {
     releaseM.mockResolvedValue({
       released: ['L2'], releasedModes: ['exclusive'], exclusiveResources: ['dev-server'], waiters: { 'dev-server': ['w1'] },

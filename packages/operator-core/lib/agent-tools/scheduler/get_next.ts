@@ -24,7 +24,8 @@ import {
   getClaimSpecRecord,
   readClaimConcurrency,
 } from '../../scheduler/claim-spec-store';
-import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+import { CLAIM_STATES_ALLOWLIST, releaseWorkItem } from '../../work-items';
+import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { getBuildInfo } from '../../build-info';
 import { assessClaimFreshness, type ClaimFreshnessVerdict } from '../../work-item-claim-freshness';
 import { getSessionBrief } from '../../session-brief';
@@ -924,6 +925,30 @@ export default defineTool({
       };
     }
     const { reconciliation, specOn, contendedPaths } = preflightState;
+    // P-004 / D-002 (D-007 hybrid): scheduler:get_next is the primary self-pull surface,
+    // so its local claim must be arbitrated by the same per-Hive lease as claim_next. Without
+    // this bridge the handler could return committed:true while no work_item_claims row existed,
+    // allowing another Swarm to receive the same item on its next pull (WI-39730).
+    const leaseOn = workItemClaimLeaseEnabled();
+    const arbitrateSchedulerClaim = async <T extends Awaited<ReturnType<typeof getNextForBee>>>(
+      candidate: T,
+    ): Promise<T> => {
+      if (!candidate || !leaseOn) return candidate;
+      const leased = await leaseClaimedWorkItem({
+        harness: args.harness,
+        workItemId: candidate.workItem.id,
+        owner: ident.ownerId,
+      });
+      if (leased) return candidate;
+      // The local claim is already committed when the authority lease loses. Release it before
+      // treating this as a miss; otherwise the local row remains assigned without a durable
+      // lease and can be stranded until the normal stale-claim sweep.
+      await releaseWorkItem(candidate.workItem.id, {
+        harness: args.harness,
+        expectedAssignee: ident.ownerId,
+      });
+      return null as T;
+    };
     // EI-18167154191955470: the atomic claim is the heaviest single DB op in this path — an
     // UPDATE ... FOR UPDATE SKIP LOCKED that must acquire both a pool connection and a row lock,
     // the most likely place to block under PG pool saturation. Bound it so a stall fails FAST
@@ -976,7 +1001,7 @@ export default defineTool({
         content: [{ type: 'text' as const, text: JSON.stringify(getNextTimeoutResult()) }],
       };
     }
-    let res = claim.value;
+    let res = await arbitrateSchedulerClaim(claim.value);
     // WI-6409: a caller at its CONCURRENCY CAP never had the lane evaluated — getNextForBee
     // short-circuits before the claim query (EI-12095) — so this miss says NOTHING about pool
     // admissibility. Answer it here, for EVERY caller, before the divergence machinery runs.
@@ -1080,7 +1105,7 @@ export default defineTool({
         // A degraded retry (timeout/error) proves nothing either way — leave the original
         // breakdown in place and let the miss report itself exactly as it would have.
         if (!retry.degraded && retry.value) {
-          res = retry.value;
+          res = await arbitrateSchedulerClaim(retry.value);
           divergenceRecheck = 'resolved-by-retry';
         } else if (!retry.degraded) {
           // Still nothing claimable to the claim path. Take a FRESH reading: if the pool moved
@@ -1135,7 +1160,7 @@ export default defineTool({
             { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:featureFamilyRecheck' },
           );
           if (!retry.degraded && retry.value) {
-            res = retry.value;
+            res = await arbitrateSchedulerClaim(retry.value);
             featureFamilyMatched = null; // claimed on retry — nothing left to explain
           }
         }

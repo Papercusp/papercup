@@ -25,13 +25,15 @@ describe('config:terminal-emulator', () => {
   });
 
   it('stores a workspace preference without changing the product default', async () => {
-    const result = await tool.handler({ op: 'set', terminal: 'gnome-terminal' }, {} as never) as { data: Record<string, unknown> };
+    const result = (await tool.handler({ op: 'set', terminal: 'gnome-terminal' }, {} as never)) as {
+      data: Record<string, unknown>;
+    };
     expect(writeMock).toHaveBeenCalledWith(expect.objectContaining({ terminal: 'gnome-terminal' }));
     expect(result.data).toMatchObject({ ok: true, stored: 'gnome-terminal', effective: 'gnome-terminal' });
   });
 
   it('clear restores inheritance rather than writing another terminal as a global default', async () => {
-    const result = await tool.handler({ op: 'clear' }, {} as never) as { data: Record<string, unknown> };
+    const result = (await tool.handler({ op: 'clear' }, {} as never)) as { data: Record<string, unknown> };
     expect(writeMock).toHaveBeenCalledWith(expect.objectContaining({ terminal: '' }));
     expect(result.data).toMatchObject({ ok: true, stored: null });
   });

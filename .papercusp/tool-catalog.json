@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 748,
+  "count": 749,
   "tools": [
     {
       "name": "ablation:report",
@@ -3984,6 +3984,36 @@
       "guidance": {
         "when": "Tune how large a session's context grows before it self-compacts — raise it for wide-context work, lower it to stay sharp on a tight task. As a fleet leader, pass ownerId to set a member's limit directly.",
         "notWhen": "To compact right now — use session:request_compaction. To read your usage — it is injected each turn as `context: N/limit (X%)`. To set a member you do NOT lead — you cannot (leader/queen/owner only)."
+      }
+    },
+    {
+      "name": "config:terminal-emulator",
+      "http": {
+        "path": "/api/agent-tools/config/terminal-emulator",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read, set, or clear this workspace’s preferred Linux terminal emulator for visible launches. Set values override $TERMINAL and auto-detection only in this workspace; clear restores the host/default selection chain.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "The owner wants visible agent/session windows to use a specific terminal such as gnome-terminal, konsole, or alacritty.",
+        "notWhen": "To choose headed vs headless — use the launch tool’s headless option. To target an X display — use display."
       }
     },
     {

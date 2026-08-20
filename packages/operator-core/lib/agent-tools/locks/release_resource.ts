@@ -113,6 +113,7 @@ export default defineTool({
       bulkItems,
       async (item) => {
         const r = await releaseOne(item);
+        const expiredLocks = r.expired ?? [];
         return {
           ok: true as const,
           ...(item.lock_id ? { lock_id: item.lock_id } : {}),
@@ -120,6 +121,20 @@ export default defineTool({
           released: r.released,
           released_modes: r.releasedModes,
           exclusive_resources: r.exclusiveResources,
+          expired: expiredLocks.length > 0,
+          ...(expiredLocks.length > 0
+            ? {
+                warning: 'resource_lock_expired_before_release',
+                note: 'The named-resource lock expired before release; the guarded window may have been unprotected.',
+                expired_at: expiredLocks[0].expiredAt.toISOString(),
+                expired_locks: expiredLocks.map((expired) => ({
+                  lock_id: expired.lockId,
+                  resource: expired.resource,
+                  mode: expired.mode,
+                  expired_at: expired.expiredAt.toISOString(),
+                })),
+              }
+            : {}),
         };
       },
       {

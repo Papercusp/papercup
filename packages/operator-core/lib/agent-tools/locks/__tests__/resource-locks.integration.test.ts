@@ -244,6 +244,32 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(r.exclusiveResources).toContain('dev-server');
   });
 
+  it.skipIf(!live)('release reports when the selected resource hold expired before release', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const x = await acq(ws, 'X', 'dev-server', 'exclusive');
+    expect(x.ok).toBe(true);
+    if (!x.ok) return;
+
+    // Simulate a paused holder whose TTL lapsed before it resumed to release.
+    await getTxPool()`
+      UPDATE agent_resource_locks
+         SET expires_ts = clock_timestamp() - interval '1 hour'
+       WHERE coordination_domain = ${ws} AND lock_id = ${x.lock_id}::uuid
+    `;
+
+    const r = await rel(ws, 'X', x.lock_id);
+    expect(r.released).toBe(0);
+    expect(r.expired).toHaveLength(1);
+    expect(r.expired[0]).toMatchObject({
+      lockId: x.lock_id,
+      resource: 'dev-server',
+      mode: 'exclusive',
+    });
+    expect(r.expired[0]?.expiredAt).toBeDefined();
+    expect((await readResourceQueue(getTxPool(), { coordinationDomain: ws })).holders).toEqual([]);
+  });
+
   it.skipIf(!live)('records refused acquirers as waiters; the exclusive release returns + clears them (A4)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();

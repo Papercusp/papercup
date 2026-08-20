@@ -17,7 +17,8 @@ export default defineTool({
   capability: 'operator:write',
   guidance: {
     when: 'The owner wants visible agent/session windows to use a specific terminal such as gnome-terminal, konsole, or alacritty.',
-    notWhen: 'To choose headed vs headless — use the launch tool’s headless option. To target an X display — use display.',
+    notWhen:
+      'To choose headed vs headless — use the launch tool’s headless option. To target an X display — use display.',
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
@@ -36,7 +37,13 @@ export default defineTool({
     }
     const terminal = parseTerminalEmulator(args.terminal);
     if (!terminal) {
-      return { data: { ok: false, error: 'invalid_terminal', message: 'terminal must be a binary name, not a path or shell command' } };
+      return {
+        data: {
+          ok: false,
+          error: 'invalid_terminal',
+          message: 'terminal must be a binary name, not a path or shell command',
+        },
+      };
     }
     const next = await writeAgentConfig({ ...current, terminal });
     return { data: { ok: true, stored: terminal, effective: process.env.TERMINAL || null, config: next } };

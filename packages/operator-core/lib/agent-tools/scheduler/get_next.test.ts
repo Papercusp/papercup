@@ -33,6 +33,9 @@ const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const getFlagM = vi.hoisted(() => vi.fn(async () => true));
 const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
 const readFleetPauseStateM = vi.hoisted(() => vi.fn());
+const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
+const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
+const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
@@ -46,6 +49,14 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 }));
 vi.mock('../../events/await/store', () => ({
   cancelClaimableAwaits: cancelClaimableAwaitsM,
+}));
+vi.mock('../../work-item-claim-lease-wiring', () => ({
+  workItemClaimLeaseEnabled: workItemClaimLeaseEnabledM,
+  leaseClaimedWorkItem: leaseClaimedWorkItemM,
+}));
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  releaseWorkItem: releaseWorkItemM,
 }));
 vi.mock('../locks/live-lock-paths', () => ({
   liveLockedPaths: liveLockedPathsM,
@@ -145,6 +156,9 @@ beforeEach(() => {
   }));
   getFlagM.mockResolvedValue(true);
   liveLockedPathsM.mockImplementation(async () => []);
+  workItemClaimLeaseEnabledM.mockReturnValue(false);
+  leaseClaimedWorkItemM.mockResolvedValue(true);
+  releaseWorkItemM.mockResolvedValue(undefined);
 });
 
 describe('scheduler:get_next ambient transaction reservation', () => {
@@ -722,5 +736,44 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     getNextM.mockResolvedValue(null);
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
     expect(writePresenceM).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler:get_next claim lease arbitration (WI-39730)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-lease-lost', title: 'Lease arbitration regression' } });
+    workItemClaimLeaseEnabledM.mockReturnValue(true);
+    leaseClaimedWorkItemM.mockResolvedValue(false);
+    releaseWorkItemM.mockResolvedValue(undefined);
+  });
+
+  it('releases a local claim when the Hive lease is lost and never reports it committed', async () => {
+    const out = await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(leaseClaimedWorkItemM).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      workItemId: 'WI-lease-lost',
+      owner: 'su-member',
+    });
+    expect(releaseWorkItemM).toHaveBeenCalledWith('WI-lease-lost', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-member',
+    });
+    expect(handlerPayload(out)).not.toMatchObject({
+      ok: true,
+      claimReceipt: { committed: true, workItemId: 'WI-lease-lost' },
+    });
   });
 });

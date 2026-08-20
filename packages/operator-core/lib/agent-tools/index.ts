@@ -781,6 +781,7 @@ import './config/set-compaction-limit';
 // (per-tier soft compaction limits ride the menu):
 import './config/tiers-get';
 import './config/tiers-set';
+import './config/terminal-emulator';
 // agent-managed-compaction-2026-07-01 — the agent's "compact now, at a stopping point" verb:
 import './session/request-compaction';
 import './session/carry-drill';

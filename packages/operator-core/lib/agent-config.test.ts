@@ -1,5 +1,16 @@
 import { describe, it, expect, vi } from 'vitest';
-import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseRoleBackends, parseTiers, parseTierCeilings, parseTerminalEmulator, agentCmdBootWarning, type AgentConfig } from './agent-config';
+import {
+  effectiveBackend,
+  readAgentConfig,
+  parseSurfaceModels,
+  parseBackends,
+  parseRoleBackends,
+  parseTiers,
+  parseTierCeilings,
+  parseTerminalEmulator,
+  agentCmdBootWarning,
+  type AgentConfig,
+} from './agent-config';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
 // no-row fallback without touching a database.
@@ -50,7 +61,9 @@ describe('effectiveBackend', () => {
 
   it("infers claude-code from a `claude` binary when backend is 'auto'", () => {
     expect(effectiveBackend(cfg({ backend: 'auto', cmd: 'claude -p' }))).toBe('claude-code');
-    expect(effectiveBackend(cfg({ backend: 'auto', cmd: '/usr/local/bin/claude -p --model opus' }))).toBe('claude-code');
+    expect(effectiveBackend(cfg({ backend: 'auto', cmd: '/usr/local/bin/claude -p --model opus' }))).toBe(
+      'claude-code',
+    );
   });
 
   it("infers omp from an `omp`/`pi` binary when backend is 'auto'", () => {
@@ -111,15 +124,17 @@ describe('parseRoleBackends', () => {
 
 describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', () => {
   it('keeps valid { name, spec } entries in order; drops dupes (case-insensitive), bad specs, junk', () => {
-    expect(parseTiers([
-      { name: 'quick', spec: 'haiku' },
-      { name: 'deep', spec: 'opus:high' },
-      { name: 'Quick', spec: 'sonnet' },          // dup name (case-insensitive)
-      { name: 'bad', spec: 'has space' },          // invalid spec
-      { name: '', spec: 'sonnet' },                // empty name
-      { name: 'x' },                               // missing spec
-      'junk',
-    ])).toEqual([
+    expect(
+      parseTiers([
+        { name: 'quick', spec: 'haiku' },
+        { name: 'deep', spec: 'opus:high' },
+        { name: 'Quick', spec: 'sonnet' }, // dup name (case-insensitive)
+        { name: 'bad', spec: 'has space' }, // invalid spec
+        { name: '', spec: 'sonnet' }, // empty name
+        { name: 'x' }, // missing spec
+        'junk',
+      ]),
+    ).toEqual([
       { name: 'quick', spec: 'haiku' },
       { name: 'deep', spec: 'opus:high' },
     ]);
@@ -128,10 +143,12 @@ describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', ()
   });
 
   it('keeps a known backend on a tier row; drops an unknown one (row survives as inherit)', () => {
-    expect(parseTiers([
-      { name: 'eco', spec: 'haiku', backend: 'omp' },
-      { name: 'turbo', spec: 'opus:max', backend: 'gemini' },
-    ])).toEqual([
+    expect(
+      parseTiers([
+        { name: 'eco', spec: 'haiku', backend: 'omp' },
+        { name: 'turbo', spec: 'opus:max', backend: 'gemini' },
+      ]),
+    ).toEqual([
       { name: 'eco', spec: 'haiku', backend: 'omp' },
       { name: 'turbo', spec: 'opus:max' },
     ]);
@@ -146,7 +163,10 @@ describe('parseTiers / parseTierCeilings (queen-model-tier-selection P-002)', ()
   });
 
   it('ceilings: keeps role→tier-name entries; drops names absent from a NON-EMPTY menu', () => {
-    const tiers = [{ name: 'quick', spec: 'haiku' }, { name: 'deep', spec: 'opus' }];
+    const tiers = [
+      { name: 'quick', spec: 'haiku' },
+      { name: 'deep', spec: 'opus' },
+    ];
     expect(parseTierCeilings({ bee: 'deep', worker: 'nope', '': 'deep', queen: 7 }, tiers)).toEqual({ bee: 'deep' });
     // empty menu → names can't be checked; kept as-is (resolution ignores unknowns anyway)
     expect(parseTierCeilings({ bee: 'whatever' }, [])).toEqual({ bee: 'whatever' });

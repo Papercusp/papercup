@@ -598,6 +598,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       next.start();
     }
   }
+  // A client disconnect is delivered by the HTTP event loop, while a completed
+  // inference releases its slot in a promise microtask. Yield before starting
+  // the next waiter so a response-close cancellation can remove abandoned
+  // queued work before it consumes a newly available slot.
+  const scheduleDrain = (): void => {
+    setTimeout(drainQueue, 5);
+  };
   const enqueue = <T>(work: () => Promise<T>): QueueTask<T> => {
     let resolveTask!: (value: T | PromiseLike<T>) => void;
     let rejectTask!: (reason?: unknown) => void;
@@ -617,7 +624,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
           .then(resolveTask, rejectTask)
           .finally(() => {
             active--;
-            drainQueue();
+            scheduleDrain();
           });
       },
       cancel: () => {

@@ -17,7 +17,18 @@
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
-import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseRoleBackends, parseSurfaceModels, parseTiers, parseTierCeilings, parseTerminalEmulator, type AgentConfig } from '../../../agent-config';
+import {
+  readAgentConfig,
+  writeAgentConfig,
+  effectiveBackend,
+  parseBackends,
+  parseRoleBackends,
+  parseSurfaceModels,
+  parseTiers,
+  parseTierCeilings,
+  parseTerminalEmulator,
+  type AgentConfig,
+} from '../../../agent-config';
 import { DEFAULT_MODEL_TIERS } from '../../../agent-config-constants';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -81,17 +92,13 @@ export default [
       const current = await readAgentConfig();
       const next: AgentConfig = {
         backend:
-          body.backend === 'claude-code' || body.backend === 'omp' || body.backend === 'codex'
-            ? body.backend
-            : 'auto',
+          body.backend === 'claude-code' || body.backend === 'omp' || body.backend === 'codex' ? body.backend : 'auto',
         cmd: typeof body.cmd === 'string' ? body.cmd : '',
         models:
           body.models && typeof body.models === 'object' && !Array.isArray(body.models)
             ? Object.fromEntries(
                 Object.entries(body.models)
-                  .filter(
-                    ([k, v]) => typeof k === 'string' && typeof v === 'string' && v.trim(),
-                  )
+                  .filter(([k, v]) => typeof k === 'string' && typeof v === 'string' && v.trim())
                   .map(([k, v]) => [k, (v as string).trim()]),
               )
             : {},
@@ -100,7 +107,7 @@ export default [
         surfaceModels: parseSurfaceModels(body.surfaceModels),
         tiers: parseTiers(body.tiers),
         tierCeilings: parseTierCeilings(body.tierCeilings, body.tiers),
-        terminal: body.terminal === undefined ? current.terminal ?? '' : parseTerminalEmulator(body.terminal),
+        terminal: body.terminal === undefined ? (current.terminal ?? '') : parseTerminalEmulator(body.terminal),
       };
       // Strict-save guard: persisting LESS than the body asked for is silent
       // data loss, not normalization. Count the entries the parsers kept.
@@ -116,7 +123,10 @@ export default [
       if (body.backends != null && sentCount(body.backends) !== Object.keys(next.backends ?? {}).length) {
         dropped.push('backends: unknown surface key or backend');
       }
-      if (body.surfaceModels != null && sentCount(body.surfaceModels) !== Object.keys(next.surfaceModels ?? {}).length) {
+      if (
+        body.surfaceModels != null &&
+        sentCount(body.surfaceModels) !== Object.keys(next.surfaceModels ?? {}).length
+      ) {
         dropped.push('surfaceModels: unknown surface key or empty model id');
       }
       if (body.tiers != null && sentCount(body.tiers) !== (next.tiers ?? []).length) {

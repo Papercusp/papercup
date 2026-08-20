@@ -119,13 +119,14 @@ export async function readAgentConfig(): Promise<AgentConfig> {
   return {
     backend: validBackend(raw.backend) ?? DEFAULT_CONFIG.backend,
     cmd: typeof raw.cmd === 'string' ? raw.cmd : '',
-    models: raw.models && typeof raw.models === 'object' && !Array.isArray(raw.models)
-      ? Object.fromEntries(
-          Object.entries(raw.models)
-            .filter(([k, v]) => typeof k === 'string' && typeof v === 'string')
-            .map(([k, v]) => [k, v as string]),
-        )
-      : {},
+    models:
+      raw.models && typeof raw.models === 'object' && !Array.isArray(raw.models)
+        ? Object.fromEntries(
+            Object.entries(raw.models)
+              .filter(([k, v]) => typeof k === 'string' && typeof v === 'string')
+              .map(([k, v]) => [k, v as string]),
+          )
+        : {},
     roleBackends: parseRoleBackends(raw.roleBackends),
     backends: parseBackends(raw.backends),
     surfaceModels: parseSurfaceModels(raw.surfaceModels),
@@ -169,9 +170,7 @@ export function parseTiers(raw: unknown): ModelTier[] {
     // (D-001 — the ceiling IS the model-derived default).
     const rawLimit = (entry as ModelTier).compactionLimit;
     const compactionLimit =
-      typeof rawLimit === 'number' && Number.isFinite(rawLimit)
-        ? clampCompactionLimit(rawLimit, spec)
-        : undefined;
+      typeof rawLimit === 'number' && Number.isFinite(rawLimit) ? clampCompactionLimit(rawLimit, spec) : undefined;
     out.push({
       name,
       spec,
@@ -246,7 +245,9 @@ export function parseSurfaceModels(raw: unknown): Partial<Record<SurfaceKey, str
 export async function writeAgentConfig(cfg: AgentConfig): Promise<AgentConfig> {
   await writeOperatorState('operator_agent_config', cfg);
   applyToProcessEnv(cfg);
-  await writeShellEnvFile(cfg).catch(() => { /* best-effort; non-fatal */ });
+  await writeShellEnvFile(cfg).catch(() => {
+    /* best-effort; non-fatal */
+  });
   return cfg;
 }
 
@@ -303,7 +304,9 @@ function shQuote(s: string): string {
  * ground truth: "empty config value" must mean "revert to the host's boot
  * default", not "delete whatever the host was booted with".
  */
-const BOOT_AGENT_ENV: Readonly<Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS' | 'AGENT_ROLE_BACKENDS' | 'TERMINAL', string | undefined>> = {
+const BOOT_AGENT_ENV: Readonly<
+  Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS' | 'AGENT_ROLE_BACKENDS' | 'TERMINAL', string | undefined>
+> = {
   AGENT_BACKEND: process.env.AGENT_BACKEND,
   AGENT_CMD: process.env.AGENT_CMD,
   AGENT_MODELS: process.env.AGENT_MODELS,
@@ -374,12 +377,10 @@ function validBackend(v: unknown): AgentConfig['backend'] | undefined {
  * or null out) called once at boot, right after config hydration, so a
  * misconfigured host fails LOUD before the first wake burns a turn discovering it.
  */
-export function agentCmdBootWarning(
-  env: Partial<Pick<NodeJS.ProcessEnv, 'AGENT_CMD' | 'CLAUDE'>>,
-): string | null {
+export function agentCmdBootWarning(env: Partial<Pick<NodeJS.ProcessEnv, 'AGENT_CMD' | 'CLAUDE'>>): string | null {
   if (env.AGENT_CMD || env.CLAUDE) return null;
   return (
-    "AGENT_CMD/CLAUDE are BOTH unset — autonomous agent turns on this host will fall " +
+    'AGENT_CMD/CLAUDE are BOTH unset — autonomous agent turns on this host will fall ' +
     "back to the hardcoded default 'omp -p', which is UNVERIFIED here and has been " +
     'observed to hang / produce completely empty rc=0 output when unconfigured (EI-727). ' +
     "Set AGENT_CMD (e.g. 'claude -p') via .env.local or the agent-config settings page " +
@@ -459,7 +460,12 @@ function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
   }
   if ((cfg.tiers?.length ?? 0) > 0) out.push({ key: 'tiers', effective: cfg.tiers, default: [], layer: 'pg-settings' });
   if ((cfg.terminal ?? '') !== DEFAULT_CONFIG.terminal) {
-    out.push({ key: 'terminal', effective: cfg.terminal ?? '', default: DEFAULT_CONFIG.terminal ?? '', layer: 'pg-settings' });
+    out.push({
+      key: 'terminal',
+      effective: cfg.terminal ?? '',
+      default: DEFAULT_CONFIG.terminal ?? '',
+      layer: 'pg-settings',
+    });
   }
   return out;
 }
@@ -469,7 +475,8 @@ function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
 // config:list-overrides, and config:reset-overrides reverts them to DEFAULT_CONFIG.
 registerOverrideConcern({
   name: 'agent-config',
-  description: 'agent backend + cmd + terminal + per-role/per-surface model & backend overrides (operator_agent_config)',
+  description:
+    'agent backend + cmd + terminal + per-role/per-surface model & backend overrides (operator_agent_config)',
   diff: async () => agentConfigOverrides(await readAgentConfig()),
   capture: () => readAgentConfig(),
   reset: () => resetAgentConfig(),

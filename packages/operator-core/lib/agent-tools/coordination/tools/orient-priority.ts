@@ -22,6 +22,7 @@ export const ORIENT_CORE_RESULT_KEYS = [
   'ok',
   'me',
   'claimable',
+  'claimableHarnessScope',
   'claimableTruncated',
   'inbox',
   'presenceDrift',
