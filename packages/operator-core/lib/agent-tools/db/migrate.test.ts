@@ -58,7 +58,7 @@ const h = vi.hoisted(() => ({
   ),
 }));
 
-vi.mock('node:child_process', () => ({ spawnSync: h.spawnSync }));
+vi.mock('node:child_process', () => ({ execFile: vi.fn(), spawnSync: h.spawnSync }));
 vi.mock('node:fs', () => ({ readFileSync: h.readFileSync }));
 vi.mock('../locks/identity', () => ({
   readIdentity: () => ({ ownerId: 'su-test', ownerLabel: 'su-test', coordinationDomain: 'default' }),

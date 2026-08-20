@@ -14,6 +14,7 @@ import { EventEmitter } from 'node:events';
 
 const h = vi.hoisted(() => ({ cfg: { stdout: '', stderr: '', code: 0 } }));
 vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
   spawn: vi.fn(() => {
     const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter };
     child.stdout = new EventEmitter();

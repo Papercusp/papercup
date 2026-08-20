@@ -47,6 +47,7 @@ vi.mock('@papercusp/db-org', () => ({
   // response-only schema at module load; this test never exercises that path.
   createSelectSchema: () => ({}),
   schemaOf: () => 'harness_shared',
+  setAdminPoolStatementTimeoutProvider: vi.fn(),
 }));
 
 import { registerRoute } from '../define-route';

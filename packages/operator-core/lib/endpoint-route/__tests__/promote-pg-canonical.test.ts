@@ -18,7 +18,7 @@ import { Hono } from 'hono';
 // ── side-effect mocks ────────────────────────────────────────────────────────
 const writeFile = vi.fn(async () => {});
 const appendFile = vi.fn(async () => {});
-const existsSync = vi.fn((_p: string) => true);
+const { existsSync } = vi.hoisted(() => ({ existsSync: vi.fn((_p: string) => true) }));
 vi.mock('node:fs', () => ({ existsSync: (p: string) => existsSync(p) }));
 vi.mock('node:fs/promises', () => ({
   writeFile: (...a: unknown[]) => writeFile(...(a as [])),
@@ -27,6 +27,7 @@ vi.mock('node:fs/promises', () => ({
 }));
 const execFileSync = vi.fn(() => 'deadbeef\n');
 vi.mock('node:child_process', () => ({
+  execFile: vi.fn(),
   execFileSync: (...a: unknown[]) => execFileSync(...(a as [])),
 }));
 
