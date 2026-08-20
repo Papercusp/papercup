@@ -765,7 +765,12 @@ export function lastContentAnnounceRecvMs(topicHex: string): number | null {
  */
 const announcePairingByTopic = new Map<
   string,
-  { attempts: number; firstAttemptMs: number; everPaired: boolean }
+  {
+    attempts: number;
+    firstAttemptMs: number;
+    everPaired: boolean;
+    remoteOpenObserved: boolean;
+  }
 >();
 
 /** Cumulative announce-channel pairing progress for one topic. */
@@ -788,6 +793,17 @@ export interface AnnouncePairingState {
   attempts: number;
   /** True once ANY announce channel on this topic reached `onopen` (paired). */
   everPaired: boolean;
+  /**
+   * True once a peer opened this SAME topic's announce channel toward us.
+   *
+   * A physical Hyperswarm socket is process-global and every locally joined
+   * topic's connection handler sees it, even when the remote peer joined only
+   * a different topic. Local open attempts therefore do not prove the peer is
+   * a participant in this topic. The never-paired repair rung must require
+   * this remote-intent witness or an unrelated private topic can repeatedly
+   * evict a healthy shared socket used by another topic.
+   */
+  remoteOpenObserved: boolean;
   /** ms-epoch of the FIRST open attempt, or null when we've never attempted. */
   firstAttemptMs: number | null;
 }
@@ -800,17 +816,34 @@ function recordAnnounceOpenAttempt(topicHex: string): void {
       attempts: 1,
       firstAttemptMs: Date.now(),
       everPaired: false,
+      remoteOpenObserved: false,
+    });
+}
+
+function recordAnnounceRemoteOpen(topicHex: string): void {
+  const cur = announcePairingByTopic.get(topicHex);
+  if (cur) cur.remoteOpenObserved = true;
+  else
+    announcePairingByTopic.set(topicHex, {
+      attempts: 0,
+      firstAttemptMs: Date.now(),
+      everPaired: false,
+      remoteOpenObserved: true,
     });
 }
 
 function recordAnnouncePaired(topicHex: string): void {
   const cur = announcePairingByTopic.get(topicHex);
-  if (cur) cur.everPaired = true;
+  if (cur) {
+    cur.everPaired = true;
+    cur.remoteOpenObserved = true;
+  }
   else
     announcePairingByTopic.set(topicHex, {
       attempts: 0,
       firstAttemptMs: Date.now(),
       everPaired: true,
+      remoteOpenObserved: true,
     });
 }
 
@@ -818,11 +851,19 @@ function recordAnnouncePaired(topicHex: string): void {
  *  (the default source for the pre-admission stall axis' probe). */
 export function announcePairingStateForTopic(topicHex: string): AnnouncePairingState {
   const cur = announcePairingByTopic.get(topicHex);
-  if (!cur) return { present: false, attempts: 0, everPaired: false, firstAttemptMs: null };
+  if (!cur)
+    return {
+      present: false,
+      attempts: 0,
+      everPaired: false,
+      remoteOpenObserved: false,
+      firstAttemptMs: null,
+    };
   return {
     present: true,
     attempts: cur.attempts,
     everPaired: cur.everPaired,
+    remoteOpenObserved: cur.remoteOpenObserved,
     firstAttemptMs: cur.firstAttemptMs,
   };
 }
@@ -1145,7 +1186,14 @@ export function openAnnounceChannel(
             announceDebug(`pair mux=${muxId} topic=<null>`);
             return;
           }
-          const cur = states.get(id.toString('hex'));
+          const remoteTopicHex = id.toString('hex');
+          // WI-40008: this callback is the positive witness that the REMOTE
+          // peer opened the same topic. A process-global swarm connection by
+          // itself proves only that the peer shares some topic; without this
+          // witness a private side-topic's local channel attempts can trigger
+          // the unpaired repair and tear down a healthy socket used elsewhere.
+          recordAnnounceRemoteOpen(remoteTopicHex);
+          const cur = states.get(remoteTopicHex);
           announceDebug(
             `pair mux=${muxId} topic=${id.toString('hex').slice(0, 16)} hasState=${Boolean(
               cur,
@@ -3103,6 +3151,7 @@ export async function joinHarnessSwarm(
             pairing &&
             pairing.present &&
             liveConnectionCount > 0 &&
+            pairing.remoteOpenObserved &&
             !pairing.everPaired &&
             pairing.attempts >= MIN_UNPAIRED_ATTEMPTS &&
             unpairedMs >= unpairedEscalationMs &&

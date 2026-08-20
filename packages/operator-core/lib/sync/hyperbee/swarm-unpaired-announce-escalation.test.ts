@@ -94,6 +94,7 @@ function makeProbe(over: Partial<AnnouncePairingState> = {}): () => AnnouncePair
     present: true,
     attempts: 8,
     everPaired: false,
+    remoteOpenObserved: true,
     firstAttemptMs,
     ...over,
   };
@@ -201,6 +202,34 @@ describe('joinHarnessSwarm never-paired escalation, rung (c) (EI-186629442423045
     await vi.advanceTimersByTimeAsync(5000);
     expect(onUnpairedLink).not.toHaveBeenCalled();
     expect(f.leaves).toHaveLength(0);
+  });
+
+  it('WI-40008: never escalates a local topic merely because the shared swarm has a socket for a DIFFERENT remote topic', async () => {
+    vi.useFakeTimers();
+    const f = makeFakeSwarm();
+    const onUnpairedLink = vi.fn();
+    const handle = await joinHarnessSwarm({
+      store: STORE,
+      topic: TOPIC,
+      swarm: f.swarm,
+      guard: ALLOW_GUARD,
+      refreshMs: 50,
+      fastWindowMs: 200,
+      slowRefreshMs: 500,
+      severedEscalationMs: 0,
+      unpairedEscalationMs: 1000,
+      // Local handlers opened this topic repeatedly, but the remote peer never
+      // opened it: the physical socket belongs to another shared-swarm topic.
+      announcePairingState: makeProbe({ remoteOpenObserved: false }),
+      onUnpairedLink,
+    });
+    handles.push(handle);
+
+    f.emitConnection(makeFakeSocket());
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(onUnpairedLink).not.toHaveBeenCalled();
+    expect(f.leaves).toHaveLength(0);
+    expect(f.joins).toHaveLength(1);
   });
 
   it('never escalates below MIN_UNPAIRED_ATTEMPTS (one slow pairing still in flight)', async () => {
@@ -393,6 +422,12 @@ describe('announcePairingStateForTopic (EI-18662944242304583 telemetry)', () => 
     // EI-18680482533031746: `present` is the explicit witness that this is a
     // SYNTHESISED absent-state, not a real measurement of zero attempts —
     // never rely on firstAttemptMs===null alone to tell the two apart.
-    expect(st).toEqual({ present: false, attempts: 0, everPaired: false, firstAttemptMs: null });
+    expect(st).toEqual({
+      present: false,
+      attempts: 0,
+      everPaired: false,
+      remoteOpenObserved: false,
+      firstAttemptMs: null,
+    });
   });
 });

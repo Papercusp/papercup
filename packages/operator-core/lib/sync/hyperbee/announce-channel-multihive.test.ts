@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ANNOUNCE_PROTOCOL, openAnnounceChannel } from './swarm';
+import { ANNOUNCE_PROTOCOL, announcePairingStateForTopic, openAnnounceChannel } from './swarm';
 import type { SignedAnnounce } from './announce';
 
 /**
@@ -247,6 +247,7 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
 
     expect(mux._sent.map((s) => s.value.log_core_key)).toEqual(['late-accepted-log']);
     expect(mux._channels.has(mux._key(ANNOUNCE_PROTOCOL, t1))).toBe(true);
+    expect(announcePairingStateForTopic(t1.toString('hex')).remoteOpenObserved).toBe(true);
   });
 
   it('waits for the Noise stream opened promise before opening the announce channel', async () => {
