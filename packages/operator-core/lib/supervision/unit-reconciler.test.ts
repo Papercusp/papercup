@@ -1125,10 +1125,12 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
       registry: () => [AUTORESTART_ENTRY],
     });
     await reconcileTick(deps);
+    await reconcileTick(deps);
     const summaries = deps.notify.mock.calls.map((c) => String(c[0]?.summary));
-    expect(summaries).toContain(
+    const missingUnitNotifies = summaries.filter((summary) => summary.includes('unit file is MISSING/UNREACHABLE'));
+    expect(missingUnitNotifies).toEqual([
       '⚠ supervision: `papercup-mcp-proxy` unit file is MISSING/UNREACHABLE (LoadState=not-found; check for a broken symlink in ~/.config/systemd/user) — systemd cannot start or restart it',
-    );
+    ]);
     expect(summaries.some((summary) => summary.includes('Restart= policy has drifted'))).toBe(false);
   });
 
