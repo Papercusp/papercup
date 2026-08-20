@@ -35,6 +35,9 @@ const HIVES_DDL = `
     workspace_id text NOT NULL, pot_home_slug text NOT NULL, public_key bytea NOT NULL,
     keychain_id text NOT NULL, title text, description text,
     created_at bigint NOT NULL, updated_at bigint NOT NULL DEFAULT 0,
+    -- Migration 686 adds this federated scope key; hive-store reads it on every
+    -- SELECT/RETURNING, while this owner fixture keeps it equal to pot_home_slug.
+    canonical_pot_home_slug text,
     PRIMARY KEY (workspace_id, pot_home_slug))`;
 const HIVE_SETTINGS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.pot_settings (
