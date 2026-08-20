@@ -22,6 +22,8 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   listFleetClaimSpecCandidates: vi.fn(),
   resolveClaimSpecWorkspace: (ws: string | null | undefined) => (ws && ws !== '*' ? ws : undefined),
 }));
+const hiveMocks = vi.hoisted(() => ({ potHomeSlugForHarness: vi.fn() }));
+vi.mock('../../hive-federation', () => hiveMocks);
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'probe' }),
 }));
@@ -105,6 +107,7 @@ let admittedValue: Record<string, unknown> = HEALTHY_ADMITTED;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  hiveMocks.potHomeSlugForHarness.mockResolvedValue(null);
   sampleValue = EMPTY_SAMPLE;
   admittedValue = HEALTHY_ADMITTED;
   // Stands in for the ONE snapshot read: honours breakdownOnly/sampleLimit exactly as the
@@ -120,6 +123,21 @@ beforeEach(() => {
 });
 
 describe('work_items:claimable handler', () => {
+  it('resolves member harnesses to their Hive home and discloses both scopes', async () => {
+    hiveMocks.potHomeSlugForHarness.mockResolvedValue('oddsmith-hive');
+
+    const out = await run({ harness: 'oddsmith' });
+
+    expect(hiveMocks.potHomeSlugForHarness).toHaveBeenCalledWith('ws-1', 'oddsmith');
+    expect(readM.mock.calls[0]![1]).toEqual(expect.objectContaining({ harness: 'oddsmith-hive' }));
+    expect(out.harness).toBe('oddsmith-hive');
+    expect(out.claimableHarnessScope).toEqual({
+      requested: 'oddsmith',
+      resolved: 'oddsmith-hive',
+      resolution: 'hive-home',
+    });
+  });
+
   it('no spec/kind: reads the whole lane; claimableCount === oracle survivors; rows from the lister; default provenance', async () => {
     const out = await run({ harness: 'papercup' });
     // the snapshot read was called with an EMPTY filter (whole issue-family lane), caller identity threaded.

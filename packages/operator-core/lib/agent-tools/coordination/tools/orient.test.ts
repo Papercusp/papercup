@@ -308,6 +308,23 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(listCalls[0].args).toMatchObject({ kind: 'feature' });
   });
 
+  it('preserves the oracle Hive-home scope and observes rows in the resolved lane', async () => {
+    const scope = { requested: 'oddsmith', resolved: 'oddsmith-hive', resolution: 'hive-home' as const };
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'work_items:claimable': () => ({ claimable: [{ id: 'EI-HOME', state: 'open' }], claimableHarnessScope: scope }),
+      'work_items:list': () => [],
+    });
+
+    const r = await composeOrient({ harness: 'oddsmith' }, call, 'me');
+
+    expect(r.claimableHarnessScope).toEqual(scope);
+    expect(calls.find((c) => c.name === 'work_items:observe')?.args).toMatchObject({
+      ids: ['EI-HOME'],
+      harness: 'oddsmith-hive',
+    });
+  });
+
   it('falls back to the unfiltered list when the oracle fails — never an empty backlog', async () => {
     const { call, calls } = fakeCall({
       ...CORE,

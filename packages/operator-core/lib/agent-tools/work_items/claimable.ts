@@ -32,6 +32,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { readIssueClaimability } from '../../scheduler/get-next';
+import { potHomeSlugForHarness } from '../../hive-federation';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   resolveFleetClaimSpec,
   listFleetClaimSpecCandidates,
@@ -40,6 +42,12 @@ import {
 import type { ClaimSpec, FilterNode } from '../../scheduler/claim-spec';
 
 const ISSUE_KINDS = ['bug', 'change', 'task'] as const;
+
+export interface ClaimableHarnessScope {
+  requested: string;
+  resolved: string;
+  resolution: 'requested' | 'hive-home';
+}
 
 export default defineTool({
   name: 'work_items:claimable',
@@ -116,7 +124,32 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
-    const harness = args.harness;
+    const requestedHarness = args.harness;
+    // Issue-family work is stored on the Hive home lane. A member harness is a valid
+    // session scope, but passing it directly to the oracle reads an empty sibling lane
+    // and makes "wrong scope" indistinguishable from "drained queue" (EI-20683725849634683).
+    // Fail open to the requested lane if the resolver cannot answer; the scope envelope
+    // still tells the caller exactly which lane was measured.
+    let harness = requestedHarness;
+    let claimableHarnessScope: ClaimableHarnessScope = {
+      requested: requestedHarness,
+      resolved: requestedHarness,
+      resolution: 'requested',
+    };
+    try {
+      const workspaceId = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+      const hiveHome = await potHomeSlugForHarness(workspaceId, requestedHarness);
+      if (hiveHome) {
+        harness = hiveHome;
+        claimableHarnessScope = {
+          requested: requestedHarness,
+          resolved: hiveHome,
+          resolution: hiveHome === requestedHarness ? 'requested' : 'hive-home',
+        };
+      }
+    } catch {
+      /* Resolver failure must not turn a readable requested lane into a false zero. */
+    }
     // The caller identity feeds the release-cooldown + reserved-plan-lane floors exactly
     // as the real claim path resolves them (a row THIS agent just released is on cooldown
     // for it, a plan-lane reserved for it is NOT excluded for it).
@@ -223,6 +256,7 @@ export default defineTool({
     const payload = {
       ok: true as const,
       harness,
+      claimableHarnessScope,
       /** The authoritative count: rows passing spec_match AND every claim floor. */
       claimableCount: breakdown.claimable,
       /** EI-18835176695181727: alias of `claimableCount`. Sibling read tools (e.g.

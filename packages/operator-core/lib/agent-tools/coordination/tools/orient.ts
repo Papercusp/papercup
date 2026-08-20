@@ -70,6 +70,7 @@ import {
   collectOrientDisclosures,
   recordOrientDisclosures,
 } from '../../../agent-orient-disclosures';
+import type { ClaimableHarnessScope } from '../../work_items/claimable';
 
 /**
  * WI-38349 — the pid anchor for locating a session's REAL `CLAUDE_CONFIG_DIR`.
@@ -274,6 +275,8 @@ export interface OrientResult {
    *  and is authoritative — a `not_claimable` bounce off a stale candidate is
    *  expected and cheap, not a bug to chase. */
   claimable: unknown[];
+  /** Scope envelope from work_items:claimable, preserved through this compound fold. */
+  claimableHarnessScope?: ClaimableHarnessScope;
   /** Present ONLY when the claimable list above is genuinely incomplete — absence is a
    *  positive statement that nothing was cut, which is what makes the marker readable.
    *  `total` appears only when an authoritative count was available; the fallback legs
@@ -982,6 +985,7 @@ export async function composeOrient(
    *  failure), which is why the disclosure below degrades to a boundedness marker
    *  rather than inventing a total it cannot know. */
   let claimableOracleTotal: number | undefined;
+  let claimableHarnessScope: ClaimableHarnessScope | undefined;
   if (monitor) {
     // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
     // entirely (no round-trip), not just cap its output.
@@ -1011,6 +1015,18 @@ export async function composeOrient(
     // throws away. `null` (the caught failure) must stay distinguishable from `[]`
     // (an oracle that answered with no rows), so it is not routed through unwrapRows.
     const issueRows = issueRes === null ? null : unwrapRows(issueRes);
+    const issueScope = (issueRes as { claimableHarnessScope?: unknown } | null)?.claimableHarnessScope;
+    if (
+      issueScope &&
+      typeof issueScope === 'object' &&
+      !Array.isArray(issueScope) &&
+      typeof (issueScope as Record<string, unknown>).requested === 'string' &&
+      typeof (issueScope as Record<string, unknown>).resolved === 'string' &&
+      ((issueScope as Record<string, unknown>).resolution === 'requested' ||
+        (issueScope as Record<string, unknown>).resolution === 'hive-home')
+    ) {
+      claimableHarnessScope = issueScope as ClaimableHarnessScope;
+    }
     const oracleCount = (issueRes as { claimableCount?: unknown } | null)?.claimableCount;
     if (typeof oracleCount === 'number' && Number.isFinite(oracleCount)) {
       claimableOracleTotal = oracleCount;
@@ -1092,7 +1108,9 @@ export async function composeOrient(
       if (ids.length > 0) {
         const obs = (await call('work_items:observe', {
           ids,
-          ...(args.harness ? { harness: args.harness } : {}),
+          ...(claimableHarnessScope?.resolved ?? args.harness
+            ? { harness: claimableHarnessScope?.resolved ?? args.harness }
+            : {}),
         })) as { results?: Array<{ id: string; ok?: boolean; available?: boolean }> } | undefined;
         const gatedIds = new Set(
           (obs?.results ?? []).filter((r) => r && r.ok !== false && r.available === false).map((r) => r.id),
@@ -1147,6 +1165,7 @@ export async function composeOrient(
     ok: true,
     me,
     claimable,
+    ...(claimableHarnessScope ? { claimableHarnessScope } : {}),
     ...(claimableTruncated ? { claimableTruncated } : {}),
     // EI-18667514339699744: alias `entries` alongside `recent` — coord:inbox's own
     // key name — so a caller who reads either name off this fold gets real rows
