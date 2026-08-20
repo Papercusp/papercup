@@ -1,11 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { defaultSpawnDetached, resolveResumeSpawnBin } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 
-const SERVICE_HOME = '/home/service-user';
+/**
+ * DERIVED, never hardcoded — do not substitute a literal `/home/<name>` here.
+ *
+ * check-no-box-identity.mjs fires on the CLASS `/home/<user>/…` for any user outside
+ * GENERIC_USERS, so a placeholder name is not a fix: `/home/service-user` red-ed the
+ * green gate exactly the way this box's real home did. The lint's own guidance is to
+ * derive the path rather than rename it, and deriving is also the only form that is
+ * correct on a checkout other than the one it was written on.
+ *
+ * Nothing here depends on WHICH home this resolves to. These fixtures only need a
+ * home-prefixed PATH that OMITS the node prefix the resolver has to find; the test
+ * stages that prefix itself in a tmpdir below.
+ */
+const SERVICE_HOME = homedir();
 
 /** Structure-preserving PATH fixtures for the two systemd hosts that run wake-executor. */
 const SERVICE_PATHS = [
