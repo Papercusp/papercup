@@ -507,6 +507,33 @@ async function healPresenceGap(sql: Sql, gap: PresencelessLoopOwner): Promise<bo
 // (The P-012 force-compact focus helpers lived here until P-022 retired native
 // /compact — a forced cut now delivers the full carry-doc addendum instead of a
 // summarizer focus hint, so no focus derivation is needed.)
+/**
+ * The polite soft-threshold cut still needs a REAL successor turn. The carry
+ * document is context, not a wake source: when the last owner message was already
+ * answered, RespawnLaunchSpec.firstPrompt is deliberately null. Passing that null
+ * through as an empty string boots the fresh CLI and then parks it forever unless
+ * a loop/event/human happens to wake it (WI-39942).
+ */
+function softThresholdContinueNote(): string {
+  return (
+    'The compaction watchdog moved this session onto fresh context at its configured soft ' +
+    'threshold. First re-run coord:orient { afterCompaction: true } to reconcile live ' +
+    'fleet/claim/inbox state and recover held-item checkpoints, then resume your current unit ' +
+    "of work from the carry document. Anything the carry dropped remains searchable with " +
+    "sessions:search { session:'self', mode:'verbatim' }."
+  );
+}
+
+/** Every watchdog-authored first prompt is machine-origin, never owner speech. */
+async function tagWatchdogContinuation(ownerId: string, note: string): Promise<string> {
+  try {
+    const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
+    return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: note }).taggedText;
+  } catch {
+    return note; // provenance must never strand a context boundary
+  }
+}
+
 /** Which arm of `min(limit × 1.3, window − margin | limit × 1.2)` produced forceAt —
  *  the note must name the bound that actually bound (a fixed "≈ 1.3 × soft limit"
  *  gloss renders false math whenever the window cap wins, e.g. "~190k ≈ 1.3 × 400k";
@@ -781,9 +808,16 @@ async function maybeCarryRespawn(
       );
       return false;
     }
+    // WI-39942: firstPrompt is null after an ANSWERED owner turn by design. The
+    // carry addendum alone only briefs the successor; it does not start a turn.
+    // Always synthesize a tagged continuation so an interactive one-shot session
+    // with no loop/event wake cannot respawn into a fully-briefed silent park.
+    const firstPrompt =
+      spec.firstPrompt ??
+      (await tagWatchdogContinuation(ownerId, softThresholdContinueNote()));
     const ok = await injectIntoHost(host.sock, {
       mode: 'carry-respawn',
-      data: spec.firstPrompt ?? '',
+      data: firstPrompt,
       systemPromptAddendum: spec.systemPromptAddendum,
       ownerId,
     });
@@ -927,15 +961,10 @@ async function maybeForceRespawn(
     // source. Fail-soft on any tag error.
     const firstPrompt =
       spec.firstPrompt ??
-      (await (async () => {
-        const note = forceCompactContinueNote(est, limit, forceAt, bound);
-        try {
-          const { tagTurnForInjection } = await import('../turn-provenance/turn-provenance');
-          return tagTurnForInjection({ sid: ownerId, origin: 'watchdog', text: note }).taggedText;
-        } catch {
-          return note;
-        }
-      })());
+      (await tagWatchdogContinuation(
+        ownerId,
+        forceCompactContinueNote(est, limit, forceAt, bound),
+      ));
     const ok = await injectIntoHost(host.sock, {
       mode: 'carry-respawn',
       data: firstPrompt,

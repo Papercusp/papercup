@@ -627,7 +627,7 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
     });
   });
 
-  it('re-limits from Codex effective-window telemetry and queues a Codex carry-respawn', async () => {
+  it('re-limits from Codex telemetry and opens a null-firstPrompt carry on a real continuation turn (WI-39942)', async () => {
     estimateMock.mockResolvedValue(215_000);
     contextWindowMock.mockResolvedValue(258_400);
     specMock.mockResolvedValue('gpt-5.6-sol:max');
@@ -660,6 +660,19 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
         }),
       }),
     );
+    const [, payload] = injectMock.mock.calls[0] as unknown as [
+      string,
+      { data: string; systemPromptAddendum: string; ownerId: string },
+    ];
+    // RespawnLaunchSpec.firstPrompt is null after an answered owner turn. Before
+    // WI-39942 the polite watchdog converted that to data:'', so psu-pty-host
+    // booted the successor but intentionally skipped injectTurnAtPrompt; a solo
+    // interactive session with no loop/event wake then parked until Avi typed.
+    expect(payload.data).toMatch(/^⟦turn-origin:watchdog nonce:/);
+    expect(payload.data).toContain('coord:orient { afterCompaction: true }');
+    expect(payload.data).toContain("sessions:search { session:'self', mode:'verbatim' }");
+    expect(payload.systemPromptAddendum).toBe('deterministic carry');
+    expect(payload.ownerId).toBe('hot');
   });
 
   it('is byte-identical to the prior grace-band behavior while the cutover flag is OFF', async () => {
