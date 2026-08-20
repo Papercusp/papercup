@@ -168,6 +168,7 @@ export type TestFilesCoreResult =
       error:
         | 'invalid_root'
         | 'ambiguous_workspace_path'
+        | 'aborted'
         | 'timeout'
         | 'route_error'
         | 'no_report'
@@ -184,14 +185,23 @@ export type TestFilesCoreResult =
 interface RouterOutcome {
   code: number | null;
   timedOut: boolean;
+  aborted: boolean;
   output: string;
 }
 
 /** Spawn the router, capturing its own diagnostics (TEST_FILE_* lines). */
-function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number): Promise<RouterOutcome> {
+function runRouter(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<RouterOutcome> {
   return new Promise((resolve) => {
     let output = '';
     let timedOut = false;
+    let aborted = false;
+    let settled = false;
     // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
     // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
     // `detached: true` — so that vitest process inherits THIS process's process group
@@ -223,18 +233,39 @@ function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutM
         try { child.kill(signal); } catch { /* already gone */ }
       }
     };
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const killGroupWithFallback = () => {
       killGroup('SIGTERM');
       setTimeout(() => killGroup('SIGKILL'), 5000).unref();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      killGroupWithFallback();
     }, timeoutMs);
+    const onAbort = () => {
+      if (settled) return;
+      aborted = true;
+      // code:run owns the signal passed to inner dispatches. If its worker deadline
+      // fires while this router is blocked in spawnSync-backed Vitest, the router must
+      // terminate the same process group as its own timeout path; otherwise the inner
+      // suite survives after the outer wrapper has returned (EI-20949515346526475).
+      killGroupWithFallback();
+    };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
     // Cap retained diagnostics — the router's own output is a fallback for the
     // error paths, never the success path's payload.
     const append = (b: Buffer) => { output = (output + b.toString('utf8')).slice(-8192); };
     child.stdout?.on('data', append);
     child.stderr?.on('data', append);
-    child.on('error', (e) => { clearTimeout(timer); resolve({ code: null, timedOut, output: `${output}\n[spawn-error] ${e.message}` }); });
-    child.on('close', (code) => { clearTimeout(timer); resolve({ code, timedOut, output }); });
+    const finish = (outcome: RouterOutcome) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      resolve(outcome);
+    };
+    child.on('error', (e) => finish({ code: null, timedOut, aborted, output: `${output}\n[spawn-error] ${e.message}` }));
+    child.on('close', (code) => finish({ code, timedOut, aborted, output }));
   });
 }
 
@@ -252,6 +283,7 @@ export async function runTestFilesCore(opts: {
   timeoutMs?: number;
   maxFailures?: number;
   testNamePattern?: string;
+  signal?: AbortSignal;
 }): Promise<TestFilesCoreResult> {
   const { root } = opts;
   const runId = randomUUID();
@@ -320,8 +352,19 @@ export async function runTestFilesCore(opts: {
         PAPERCUSP_TEST_ATTRIBUTION: '1',
       },
       timeoutMs,
+      opts.signal,
     );
 
+    if (outcome.aborted) {
+      return {
+        ok: false,
+        runId,
+        root,
+        error: 'aborted',
+        hint: 'the caller canceled this foreground test run; its router/Vitest process group was terminated',
+        routerOutput: outcome.output.slice(-2000),
+      };
+    }
     if (outcome.timedOut) {
       return {
         ok: false,
@@ -464,6 +507,7 @@ export default defineTool({
       files: args.files,
       root,
       timeoutMs,
+      signal: ctx.signal,
       ...(args.maxFailures !== undefined ? { maxFailures: args.maxFailures } : {}),
       ...(args.testNamePattern !== undefined ? { testNamePattern: args.testNamePattern } : {}),
     });
