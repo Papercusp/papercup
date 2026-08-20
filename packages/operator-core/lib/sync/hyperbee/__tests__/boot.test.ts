@@ -750,6 +750,8 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => null, // directory descriptor NOT yet arrived (the race)
       joinerPotHomeSlugOverride: async () => null, // hive-home UNRESOLVED — the pre-rekey window
+      potHomeSlugForHarnessOverride: async () => null,
+      scopedStoreOverride: async () => { throw new Error('scoped-log layer not exercised'); },
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());

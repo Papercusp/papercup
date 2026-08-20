@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { bootHarnessSubstrate } from '../boot';
 import { buildAnnounce } from '../announce';
@@ -176,6 +176,69 @@ describe('boot peer lifecycle persistence', () => {
       devicePubkey: device.devicePubkey,
       state: 'retired',
     });
+  });
+
+  it('serializes a channel-2 retire before a rapid active re-admission', async () => {
+    const rows = new Map<string, MergeCursorPeerLifecycle>();
+    const attempts: MergeCursorPeerLifecycleUpdate[] = [];
+    let releaseRetired!: () => void;
+    const retiredGate = new Promise<void>((resolve) => {
+      releaseRetired = resolve;
+    });
+    let retiredStarted!: () => void;
+    const retiredStartedGate = new Promise<void>((resolve) => {
+      retiredStarted = resolve;
+    });
+    const store: MergeCursorStore = {
+      load: async () => new Map(),
+      save: async () => undefined,
+      peerLifecycle: {
+        load: async () => new Map(rows),
+        upsert: async (updates) => {
+          attempts.push(...updates);
+          if (updates.some((update) => update.state === 'retired')) {
+            retiredStarted();
+            await retiredGate;
+          }
+          for (const update of updates) {
+            rows.set(update.logKeyHex, { ...update, updatedAt: new Date() });
+          }
+        },
+      },
+    };
+    let binding: 'verified' | 'fail' = 'verified';
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpDir('peer-lifecycle-order-'),
+      workspaceId: 'ws-peer-lifecycle-order',
+      harnessSlug: 'peer-lifecycle-order',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      reverifyIntervalMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => binding,
+      mergeCursorStore: store,
+    });
+    cleanups.push(() => handle.close());
+
+    const device = makeDevice();
+    const logCoreKey = 'ce'.repeat(32);
+    const frame = await makeAnnounce(device, logCoreKey);
+    await handle.onAnnounce(frame);
+
+    binding = 'fail';
+    await handle.reverifyAdmitted();
+    await handle.mergeNow();
+    await retiredStartedGate;
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
+
+    binding = 'verified';
+    const readmit = handle.onAnnounce(frame);
+    await vi.waitFor(() => expect(handle.admitted.has(logCoreKey)).toBe(true));
+    releaseRetired();
+    await readmit;
+
+    expect(attempts.map((attempt) => attempt.state)).toEqual(['active', 'retired', 'active']);
+    expect(rows.get(logCoreKey)?.state).toBe('active');
   });
 
   it('isolates lifecycle-store failures as merge_error without breaking admission or revoke', async () => {

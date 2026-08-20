@@ -1840,7 +1840,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * enqueue and drain (e.g. by `revoke()` / `applyRevocationRefresh`) is skipped
    * without a duplicate event. Does NOT add to the published `revoked` set.
    */
-  async function drainReverifyDropQueue(): Promise<void> {
+  function drainReverifyDropQueue(): void {
     while (reverifyDropQueue.length > 0) {
       const logKey = reverifyDropQueue.shift()!;
       // Never drop the own log (defensive; the producer never enqueues it).
@@ -1849,7 +1849,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       if (!admitted.has(logKey) && !admittedIdentities.has(logKey)) continue;
       const identity = admittedIdentities.get(logKey);
       if (identity?.devicePubkey) {
-        await persistPeerLifecycle(
+        void persistPeerLifecycle(
           [{ logKeyHex: logKey, devicePubkey: identity.devicePubkey, state: 'retired' }],
           'channel-2 reverify drop',
         );
@@ -1884,7 +1884,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    */
   async function maybeReverifyAdmitted(): Promise<void> {
     // Apply drops a prior off-lock verify enqueued (cheap; usually empty).
-    await drainReverifyDropQueue();
+    drainReverifyDropQueue();
     if (reverifyIntervalMs <= 0) return;
     const now = Date.now();
     if (now - lastReverifyAt < reverifyIntervalMs) return;
@@ -1989,27 +1989,44 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const currentApplyBinding = (): string | null =>
     hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug ?? null;
 
-  /**
-   * Persist identity/lifecycle evidence without making metadata availability a
-   * prerequisite for admission, revocation, or merge progress. The canonical PG
-   * cursor store exposes this seam; position-only test/in-memory stores omit it.
-   */
-  async function persistPeerLifecycle(
-    updates: readonly MergeCursorPeerLifecycleUpdate[],
+  // Keep lifecycle transitions in event order even when a caller deliberately
+  // does not await the metadata write (the channel-2 drop path must stay
+  // synchronous so it cannot perturb merge-pass scheduling). Without this
+  // chain, a slow `retired` upsert can complete after a rapid re-admission's
+  // `active` upsert and leave durable state describing the opposite of the
+  // live admitted set. The tail always resolves: metadata failures are
+  // recorded below and never poison later transitions.
+  let peerLifecycleWriteTail: Promise<void> = Promise.resolve();
+
+  function enqueuePeerLifecycleWrite(
     context: string,
+    write: () => Promise<void>,
   ): Promise<void> {
-    const lifecycle = pgMergeCursorStore?.peerLifecycle;
-    if (!lifecycle || updates.length === 0) return;
-    try {
-      await lifecycle.upsert(updates, currentApplyBinding());
-    } catch (e) {
+    const result = peerLifecycleWriteTail.then(write).catch((e) => {
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
         'merge_error',
         `peer-lifecycle ${context}: ${e instanceof Error ? e.message : String(e)}`,
       );
-    }
+    });
+    peerLifecycleWriteTail = result;
+    return result;
+  }
+
+  /**
+   * Persist identity/lifecycle evidence without making metadata availability a
+   * prerequisite for admission, revocation, or merge progress. The canonical PG
+   * cursor store exposes this seam; position-only test/in-memory stores omit it.
+   */
+  function persistPeerLifecycle(
+    updates: readonly MergeCursorPeerLifecycleUpdate[],
+    context: string,
+  ): Promise<void> {
+    const lifecycle = pgMergeCursorStore?.peerLifecycle;
+    if (!lifecycle || updates.length === 0) return Promise.resolve();
+    const applyBinding = currentApplyBinding();
+    return enqueuePeerLifecycleWrite(context, () => lifecycle.upsert(updates, applyBinding));
   }
 
   /**
@@ -2017,14 +2034,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * durable log mapping from the lifecycle store; rows without identity remain
    * unknown because silence or historical cursor presence is never evidence.
    */
-  async function persistPeerLifecycleForDevice(
+  function persistPeerLifecycleForDevice(
     devicePubkey: string,
     state: MergeCursorPeerLifecycleUpdate['state'],
     context: string,
   ): Promise<void> {
     const lifecycle = pgMergeCursorStore?.peerLifecycle;
-    if (!lifecycle) return;
-    try {
+    if (!lifecycle) return Promise.resolve();
+    const applyBinding = currentApplyBinding();
+    return enqueuePeerLifecycleWrite(context, async () => {
       const rows = await lifecycle.load();
       const updates: MergeCursorPeerLifecycleUpdate[] = [];
       for (const row of rows.values()) {
@@ -2033,16 +2051,9 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         }
       }
       if (updates.length > 0) {
-        await lifecycle.upsert(updates, currentApplyBinding());
+        await lifecycle.upsert(updates, applyBinding);
       }
-    } catch (e) {
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'merge_error',
-        `peer-lifecycle ${context}: ${e instanceof Error ? e.message : String(e)}`,
-      );
-    }
+    });
   }
 
   // A-003 apply-side determinism (su-81f2e): set by rekey() after a hive-home
@@ -3122,7 +3133,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Apply any channel-2 re-verify drops the LOCKLESS producer enqueued
       // (P-002) — mirror of drainAdmissionQueue: the GitHub I/O ran off the
       // merge lock; this only applies its conclusive-fail results under the gate.
-      await drainReverifyDropQueue();
+      drainReverifyDropQueue();
 
       // WI-3684 repair-on-detect: apply queued zombie-log session re-attaches
       // under the same gate (see drainRepairQueue above) — the liveness episode
