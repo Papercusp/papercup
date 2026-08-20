@@ -9,8 +9,25 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const H = vi.hoisted(() => {
-  const state: { booted: Array<{ workspaceId: string; harnessSlug: string }> } = { booted: [] };
-  return { state, listBootedHandles: () => state.booted };
+  const state: {
+    booted: Array<{ workspaceId: string; harnessSlug: string }>;
+    handles: Map<string, unknown>;
+    peerCounts: Map<string, number>;
+    lastAnnounce: Map<string, number>;
+  } = {
+    booted: [],
+    handles: new Map(),
+    peerCounts: new Map(),
+    lastAnnounce: new Map(),
+  };
+  return {
+    state,
+    listBootedHandles: () => state.booted,
+    getBootedHarness: (workspaceId: string, harnessSlug: string) =>
+      state.handles.get(`${workspaceId}::${harnessSlug}`) ?? null,
+    contentPeerCountForTopic: (topicHex: string) => state.peerCounts.get(topicHex) ?? 0,
+    lastContentAnnounceRecvMs: (topicHex: string) => state.lastAnnounce.get(topicHex) ?? null,
+  };
 });
 vi.mock('./boot-all', () => ({
   listBootedHandles: H.listBootedHandles,
@@ -18,7 +35,11 @@ vi.mock('./boot-all', () => ({
   // to build log stats, so the mock must expose this too. Without it the
   // collector throws INSIDE the broadcaster's best-effort catch and the beat
   // silently sends nothing at all.
-  getBootedHarness: () => null,
+  getBootedHarness: H.getBootedHarness,
+}));
+vi.mock('./swarm', () => ({
+  contentPeerCountForTopic: H.contentPeerCountForTopic,
+  lastContentAnnounceRecvMs: H.lastContentAnnounceRecvMs,
 }));
 
 import {
@@ -31,6 +52,9 @@ import {
 
 beforeEach(() => {
   H.state.booted = [];
+  H.state.handles.clear();
+  H.state.peerCounts.clear();
+  H.state.lastAnnounce.clear();
   _setCachedRemoteBootedHandlesForTests(null);
 });
 
@@ -57,7 +81,12 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
           // than omitted, because a receiver reads an ABSENT bundle as "health
           // unobservable" and an empty one as "measured, nothing stalled".
           // Every member must be present or the receiver rejects the bundle.
-          healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
+          healthInputs: {
+            replicationLiveness: [],
+            ownLogForks: [],
+            logStats: [],
+            contentConnectivity: [],
+          },
         },
       ]);
       H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'a' }, { workspaceId: 'ws1', harnessSlug: 'b' }];
@@ -70,6 +99,36 @@ describe('startBootedHandlesBroadcaster (PRIMARY side)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('publishes exact per-harness content-topic connectivity from the substrate owner', () => {
+    const topicHex = 'ab'.repeat(32);
+    H.state.booted = [{ workspaceId: 'ws1', harnessSlug: 'shared' }];
+    H.state.handles.set('ws1::shared', {
+      swarm: { topicHex },
+      ownLog: { keyHex: 'cd'.repeat(32), length: 0 },
+      admitted: new Map(),
+    });
+    H.state.peerCounts.set(topicHex, 2);
+    H.state.lastAnnounce.set(topicHex, 9_500);
+
+    const sent: Array<{ healthInputs?: { contentConnectivity?: unknown[] } }> = [];
+    const h = startBootedHandlesBroadcaster({
+      ownsSubstrate: true,
+      now: () => 10_000,
+      broadcast: (message) => sent.push(message),
+    });
+
+    expect(sent[0]?.healthInputs?.contentConnectivity).toEqual([
+      {
+        workspaceId: 'ws1',
+        harnessSlug: 'shared',
+        topicHex,
+        contentPeers: 2,
+        lastContentAnnounceRecvMs: 9_500,
+      },
+    ]);
+    h.stop();
   });
 
   it('swallows a broadcast throw (a worker mid-exit) rather than crashing the timer', () => {
