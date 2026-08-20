@@ -1507,6 +1507,12 @@ function ThreadsView({
   const listQuery = useSyncQuery<ConvRow>({
     queryName: 'conversations.questionsList',
     args: { limit: COMMS_LIST_LIMIT },
+    // UnifiedInboxView deliberately stays mounted while a source detail is
+    // open, so it already owns the warm questions list. Starting this view's
+    // second list subscription in detail-only mode duplicated the read and
+    // synchronously rebuilt topics/filters/virtualizer state on the click that
+    // mounts the detail. The detail needs only its id-scoped query.
+    enabled: !detailOnly,
     staleTime: 30_000,
   });
   const detailQuery = useSyncQuery<ConvDetailT>({
@@ -1821,6 +1827,10 @@ function DeliberationsView({
   const listQuery = useSyncQuery<ThreadRow>({
     queryName: 'conversations.deliberationList',
     args: { limit: COMMS_LIST_LIMIT },
+    // The unified parent remains mounted and already owns this list while the
+    // selected detail is visible. Avoid a duplicate subscription on the hot
+    // master/detail click path; only the id-scoped detail query is needed here.
+    enabled: !detailOnly,
     staleTime: 30_000,
   });
   const detailQuery = useSyncQuery<DeliberationDetail>({
@@ -2042,6 +2052,10 @@ function AgentChatsView({
   const listQuery = useSyncQuery<AgentChatRow>({
     queryName: 'conversations.agentChatList',
     args: listArgs,
+    // UnifiedInboxView keeps the agent-chat list warm while this detail-only
+    // child mounts. A second enabled list query needlessly rebuilt its facets
+    // and virtual rail during the measured click.
+    enabled: !detailOnly,
     staleTime: 30_000,
   });
   const detailQuery = useSyncQuery<AgentChatDetail>({

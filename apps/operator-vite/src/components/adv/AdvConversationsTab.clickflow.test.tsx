@@ -67,9 +67,11 @@ const ready = (data: unknown[] = []): Record<string, unknown> => ({
 });
 const syncKey = (q: string, a: Record<string, unknown> = {}) => `${q}:${JSON.stringify(a)}`;
 let syncResults: Record<string, Record<string, unknown>> = {};
+let syncQueryCalls: Array<{ queryName: string; enabled: boolean }> = [];
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
+    syncQueryCalls.push({ queryName, enabled });
     if (!enabled) return ready();
     return syncResults[syncKey(queryName, args)] ?? syncResults[queryName] ?? ready();
   },
@@ -98,6 +100,7 @@ beforeEach(() => {
     acharness: '', acrole: '', chat: null, opc: null,
   });
   snapCache.clear();
+  syncQueryCalls = [];
   syncResults = {
     'conversations.questionsList': ready([{
       id: 'c-1', kind: 'question', state: 'open', scope: 'harness', harness_slug: 'papercusp',
@@ -130,6 +133,33 @@ describe('curated Conversations — a row click reaches the main pane (WI-4216)'
     expect(store.conversation).toBe('c-1');
     // …and the detail lands in the main pane.
     expect(await screen.findByRole('heading', { level: 2, name: THREAD_TITLE })).toBeTruthy();
+  });
+
+  it('keeps exactly one enabled source-list subscription when a unified detail opens', async () => {
+    render(<AdvConversationsTab />);
+    syncQueryCalls = [];
+
+    fireEvent.click(screen.getByRole('button', { name: `Open ${THREAD_TITLE}` }));
+    expect(await screen.findByRole('heading', { level: 2, name: THREAD_TITLE })).toBeTruthy();
+
+    // UnifiedInboxView stays mounted and owns the one warm questions list.
+    // ThreadsView mounts as detailOnly and must not start a second enabled list
+    // read on the same click; it only enables the selected id's detail query.
+    const enabledListCalls = (queryName: string) => syncQueryCalls.filter((call) => (
+      call.queryName === queryName && call.enabled
+    )).length;
+    // React may render the mounted parent more than once. Compare it with a
+    // sibling unified-list hook from that same parent: a detail-owned duplicate
+    // questions read would make this count larger than deliberations.
+    expect(enabledListCalls('conversations.questionsList')).toBe(
+      enabledListCalls('conversations.deliberationList'),
+    );
+    expect(syncQueryCalls.some((call) => (
+      call.queryName === 'conversations.questionsList' && !call.enabled
+    ))).toBe(true);
+    expect(syncQueryCalls.some((call) => (
+      call.queryName === 'conversations.questionDetail' && call.enabled
+    ))).toBe(true);
   });
 
   it('keeps the clicked row anchored in the main pane even when its detail resolves empty', async () => {
