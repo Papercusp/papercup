@@ -321,7 +321,7 @@ export async function consultReplyCore(
       (workspace_id, post_id, conversation_id, author_id, kind, evidence)
     VALUES
       (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
-       ${req.kind}, ${req.evidence ? JSON.stringify(req.evidence) : null}::jsonb)
+       ${req.kind}, ${req.evidence ? sql.json(req.evidence as never) : null})
   `;
 
   const nextState = role === 'responder' && row.state === 'awaiting_responder' ? 'active' : row.state;
@@ -557,7 +557,7 @@ export async function consultDeclineCore(
   await sql`
     UPDATE harness_shared.consult_state
        SET state = 'declined',
-           outcome = ${JSON.stringify({
+           outcome = ${sql.json({
              reason,
              ...(declineAnswerEvents.length > 0
                ? {
@@ -565,7 +565,7 @@ export async function consultDeclineCore(
                    answered_by: [...new Set(declineAnswerEvents.map((e) => e.ownerId))],
                  }
                : {}),
-           })}::jsonb,
+           } as never)},
            closed_at = ${now}::timestamptz,
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
@@ -698,7 +698,7 @@ export async function consultCloseCore(
       (workspace_id, post_id, conversation_id, author_id, kind, evidence)
     VALUES
       (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
-       'close', ${req.evidence ? JSON.stringify(req.evidence) : null}::jsonb)
+       'close', ${req.evidence ? sql.json(req.evidence as never) : null})
   `;
   const outcome = {
     ...(answer ? { answer } : {}),
@@ -710,7 +710,7 @@ export async function consultCloseCore(
   await sql`
     UPDATE harness_shared.consult_state
        SET state = ${state},
-           outcome = ${JSON.stringify(outcome)}::jsonb,
+           outcome = ${sql.json(outcome as never)},
            closed_at = ${now}::timestamptz,
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}

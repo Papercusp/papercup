@@ -93,7 +93,7 @@ async function seedConsult(opts: {
       (${opts.workspaceId ?? WS}, ${id}, ${opts.requesterId ?? 'req-1'}, 'resp-1',
        ${opts.state ?? 'awaiting_responder'}, 'q', ${opts.latency ?? 'proceed'},
        ${opts.expiresAt === undefined ? PAST : opts.expiresAt}, ${opts.closedAt ?? null},
-       ${JSON.stringify(opts.routing ?? {})}::jsonb, ${opts.cascadeCursor ?? 0})`;
+       ${rootSql.json((opts.routing ?? {}) as never)}, ${opts.cascadeCursor ?? 0})`;
   return id;
 }
 
@@ -148,7 +148,7 @@ async function stateOf(id: string, ws = WS): Promise<{ state: string; closed_at:
 async function setDigest(id: string, digest: unknown[]) {
   await rootSql`
     UPDATE harness_shared.consult_state
-       SET cascade_digest = ${JSON.stringify(digest)}::jsonb
+       SET cascade_digest = ${rootSql.json(digest as never)}
      WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
 }
 
@@ -270,8 +270,23 @@ describe('migration 856 historical answered-expired outcome repair', () => {
     // postgres.js executes SQL directly rather than through psql; keep the
     // production safety directive in the migration and strip only that client
     // meta-command for this real-Postgres test.
-    const migrationSql = readFileSync(MIGRATION_856, 'utf8').replace(/^\\set ON_ERROR_STOP on\s*$/m, '');
-    await rootSql.unsafe(migrationSql);
+    const migrationSql = readFileSync(MIGRATION_856, 'utf8')
+      .replace(/^\\set ON_ERROR_STOP on\s*$/m, '')
+      .replace(/^BEGIN;\s*$/m, '')
+      .replace(/^COMMIT;\s*$/m, '');
+    const [candidate] = (await rootSql`
+      SELECT count(*) FILTER (WHERE entry.value ->> 'kind' = 'answer')::integer AS answers
+        FROM harness_shared.consult_state cs
+        CROSS JOIN LATERAL jsonb_array_elements(cs.cascade_digest)
+          WITH ORDINALITY AS entry(value, ordinality)
+       WHERE cs.workspace_id = ${WS}
+         AND cs.conversation_id = ${legacyAnswered}
+         AND cs.state = 'expired'
+         AND cs.outcome IS NULL
+    `) as unknown as Array<{ answers: number }>;
+    expect(candidate.answers).toBe(3);
+    const updated = await rootSql.unsafe(migrationSql);
+    expect(updated.count).toBe(1);
 
     const outcomes = (await rootSql`
       SELECT conversation_id, outcome

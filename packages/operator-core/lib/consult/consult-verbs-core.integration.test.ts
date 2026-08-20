@@ -106,7 +106,7 @@ async function seedConsult(opts: SeedOpts = {}): Promise<string> {
       (${WS}, ${id}, ${REQUESTER}, ${opts.responderId === undefined ? RESPONDER : opts.responderId},
        ${opts.state ?? 'awaiting_responder'}, 'q', ${opts.latency ?? 'proceed'},
        ${opts.maxExchanges ?? 4}, ${opts.exchangesUsed ?? 0}, ${opts.wakesUsed ?? 0},
-       ${opts.originTaskRef ?? null}, ${JSON.stringify(opts.routing ?? {})}::jsonb)
+       ${opts.originTaskRef ?? null}, ${rootSql.json((opts.routing ?? {}) as never)})
   `;
   return id;
 }
@@ -184,6 +184,34 @@ async function metaRows(conversationId: string) {
   return rows;
 }
 
+async function jsonbShapes(conversationId: string) {
+  const rows = (await rootSql`
+    SELECT jsonb_typeof(routing) AS routing_type,
+           jsonb_typeof(outcome) AS outcome_type,
+           jsonb_typeof(cascade_digest) AS cascade_digest_type
+      FROM harness_shared.consult_state
+     WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}
+  `) as unknown as Array<{
+    routing_type: string | null;
+    outcome_type: string | null;
+    cascade_digest_type: string | null;
+  }>;
+  expect(rows).toHaveLength(1);
+  return rows[0];
+}
+
+async function evidenceJsonbType(conversationId: string) {
+  const rows = (await rootSql`
+    SELECT jsonb_typeof(evidence) AS evidence_type
+      FROM harness_shared.consult_post_meta
+     WHERE workspace_id = ${WS} AND conversation_id = ${conversationId}
+     ORDER BY post_id
+     LIMIT 1
+  `) as unknown as Array<{ evidence_type: string | null }>;
+  expect(rows).toHaveLength(1);
+  return rows[0].evidence_type;
+}
+
 const EVIDENCE = [{ session_id: 'sess-r', turn_idx: 7, note: 'the debug session' }];
 
 // ── consult:reply ────────────────────────────────────────────────────────
@@ -211,11 +239,13 @@ describe('consultReplyCore — kind rules + transitions', () => {
     expect(meta[0].kind).toBe('answer');
     expect(meta[0].author_id).toBe(RESPONDER);
     expect(meta[0].evidence).toEqual(EVIDENCE);
+    expect(await evidenceJsonbType(id)).toBe('array');
 
     // State row transitioned; a perspective reply does NOT debit the cap (D-005).
     const row = await stateRow(id);
     expect(row.state).toBe('active');
     expect(row.exchanges_used).toBe(0);
+    expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: null, cascade_digest_type: 'array' });
 
     // The hard-blocked requester's park key fired, latched, addressed to them.
     expect(emits).toHaveLength(1);
@@ -382,6 +412,7 @@ describe('consultDeclineCore', () => {
     expect(row.state).toBe('declined');
     expect(row.outcome).toEqual({ reason: 'my transcript covers the file, not this subsystem' });
     expect(row.closed_at).not.toBeNull();
+    expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: 'object', cascade_digest_type: 'array' });
 
     const meta = await metaRows(id);
     expect(meta).toHaveLength(1);
@@ -438,10 +469,12 @@ describe('consultCloseCore', () => {
     expect(row.state).toBe('closed_answered');
     expect(row.outcome).toEqual({ answer: 'the pool starves under POLLING', confidence: 0.8, evidence: EVIDENCE });
     expect(row.closed_at).not.toBeNull();
+    expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: 'object', cascade_digest_type: 'array' });
 
     const meta = await metaRows(id);
     expect(meta[0].kind).toBe('close');
     expect(meta[0].evidence).toEqual(EVIDENCE);
+    expect(await evidenceJsonbType(id)).toBe('array');
 
     expect(emits).toHaveLength(1);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
@@ -627,6 +660,7 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(row.cascade_cursor).toBe(1);
     expect(row.expires_at).not.toBeNull(); // fresh latency window for the next selectee
     const digest = row.cascade_digest as Array<{ ownerId: string; kind: string; excerpt: string }>;
+    expect((await jsonbShapes(id)).cascade_digest_type).toBe('array');
     expect(digest).toHaveLength(1);
     expect(digest[0]).toMatchObject({ ownerId: RESPONDER, kind: 'answer', excerpt: 'the answer' });
 
@@ -672,6 +706,7 @@ describe('cascade advance (D-005/P-013)', () => {
     expect(row.closed_at).toBeNull();
     expect(row.responder_id).toBe('resp-2');
     const digest = row.cascade_digest as Array<{ ownerId: string; kind: string }>;
+    expect((await jsonbShapes(id)).cascade_digest_type).toBe('array');
     expect(digest).toMatchObject([{ ownerId: RESPONDER, kind: 'decline' }]);
     expect(reachCalls[0].body).toContain(`- ${RESPONDER} (decline): not my area`);
   });
@@ -712,8 +747,8 @@ describe('consultCloseCore — late disposition on an expired consult (WI-39862 
     await rootSql`
       UPDATE harness_shared.consult_state
          SET closed_at = ${NOW.toISOString()}::timestamptz,
-             cascade_digest = ${JSON.stringify(opts.digest ?? [])}::jsonb,
-             outcome = ${opts.outcome ? JSON.stringify(opts.outcome) : null}::jsonb
+             cascade_digest = ${rootSql.json((opts.digest ?? []) as never)},
+             outcome = ${opts.outcome ? rootSql.json(opts.outcome as never) : null}
        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
     return id;
   }
@@ -772,7 +807,7 @@ describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-398
     await rootSql`
       UPDATE harness_shared.consult_state
          SET cascade_cursor = 1,
-             cascade_digest = ${JSON.stringify([{ ownerId: 'ans-r', kind: 'answer', at: NOW.toISOString(), excerpt: 'real answer' }])}::jsonb
+             cascade_digest = ${rootSql.json([{ ownerId: 'ans-r', kind: 'answer', at: NOW.toISOString(), excerpt: 'real answer' }] as never)}
        WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
     const { deps } = makeDeps();
     const r = await consultDeclineCore(
@@ -785,6 +820,7 @@ describe('consultDeclineCore — exhaustion honesty + min-ANSWERS refill (WI-398
     const row = await stateRow(id);
     const outcome = typeof row.outcome === 'string' ? JSON.parse(row.outcome as string) : row.outcome;
     expect(outcome).toMatchObject({ reason: 'cannot add more', answers: 1, answered_by: ['ans-r'] });
+    expect(await jsonbShapes(id)).toEqual({ routing_type: 'object', outcome_type: 'object', cascade_digest_type: 'array' });
   });
 
   it('a decline that exhausts BELOW min triggers the refill round (trigger-independence with the expiry path)', async () => {

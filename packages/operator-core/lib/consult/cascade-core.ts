@@ -378,7 +378,7 @@ export async function advanceCascade(
                  state = ${params.stateOnAdvance},
                  expires_at = ${expiresAt}::timestamptz,
                  wakes_used = wakes_used + ${willAttempt ? 1 : 0},
-                 cascade_digest = ${JSON.stringify(digest)}::jsonb,
+                 cascade_digest = ${sql.json(digest as never)},
                  routing = ${sql.json(updatedSnap as never)},
                  updated_at = ${params.nowIso}::timestamptz
            WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
@@ -434,7 +434,7 @@ export async function advanceCascade(
       };
       const wroteTerminal = (await sql`
         UPDATE harness_shared.consult_state
-           SET cascade_digest = ${JSON.stringify(digest)}::jsonb,
+           SET cascade_digest = ${sql.json(digest as never)},
                routing = ${sql.json(terminalSnap as never)},
                updated_at = ${params.nowIso}::timestamptz
          WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
@@ -454,7 +454,7 @@ export async function advanceCascade(
     }
     const wrote = (await sql`
       UPDATE harness_shared.consult_state
-         SET cascade_digest = ${JSON.stringify(digest)}::jsonb,
+         SET cascade_digest = ${sql.json(digest as never)},
              updated_at = ${params.nowIso}::timestamptz
        WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
          AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
@@ -475,7 +475,7 @@ export async function advanceCascade(
            state = ${params.stateOnAdvance},
            expires_at = ${expiresAt}::timestamptz,
            wakes_used = wakes_used + ${willAttempt ? 1 : 0},
-           cascade_digest = ${JSON.stringify(digest)}::jsonb,
+           cascade_digest = ${sql.json(digest as never)},
            updated_at = ${params.nowIso}::timestamptz
      WHERE workspace_id = ${params.workspaceId} AND conversation_id = ${params.conversationId}
        AND cascade_cursor = ${params.cascadeCursor} AND closed_at IS NULL
