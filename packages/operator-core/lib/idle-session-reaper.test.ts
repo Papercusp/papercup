@@ -12,6 +12,7 @@ import {
   confirmedDeadOwnerSet,
   resumableOpenSessionOwners,
   parseForegroundFromStat,
+  parseReapableSessionProc,
   IDLE_SESSION_GRACE_MS,
   IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
@@ -555,6 +556,7 @@ describe('terminateIdleLiveSessions (P-011 slice 2 / WI-152: live-but-idle TERMI
 
 describe('planZombieReap (slice 3: ended-session zombie procs — EI-1873, pure)', () => {
   const p = (pid: number, sessionId: string): ResumeProc => ({ pid, sessionId });
+  const codex = (pid: number, advSessionId: number): ResumeProc => ({ pid, advSessionId });
   it('keeps ONLY procs whose session is in the ENDED set', () => {
     const procs = [p(1, 'sess-a'), p(2, 'sess-b'), p(3, 'sess-c')];
     expect(planZombieReap(procs, new Set(['sess-a', 'sess-c'])).map((z) => z.pid)).toEqual([1, 3]);
@@ -575,22 +577,82 @@ describe('planZombieReap (slice 3: ended-session zombie procs — EI-1873, pure)
   it('the on-desktop set defaults empty (2-arg callers unchanged)', () => {
     expect(planZombieReap([p(1, 'x')], new Set(['x'])).map((z) => z.pid)).toEqual([1]);
   });
+
+  it('uses the exact adv-session row for Codex and spares a different/open row', () => {
+    const procs = [codex(10, 41), codex(20, 42)];
+    expect(planZombieReap(procs, new Set(), new Set(), new Set([41])).map((z) => z.pid)).toEqual([10]);
+  });
+
+  it('SPARES an ended Codex row whose exact adv-session id is on the desktop', () => {
+    const procs = [codex(10, 41), codex(20, 42)];
+    expect(
+      planZombieReap(procs, new Set(), new Set(), new Set([41, 42]), new Set([42])).map((z) => z.pid),
+    ).toEqual([10]);
+  });
+});
+
+describe('parseReapableSessionProc (slice 3 process identity)', () => {
+  const uuid = '11111111-2222-4333-8444-555555555555';
+
+  it('preserves the historical Claude --resume UUID identity', () => {
+    expect(parseReapableSessionProc(`node\0/x/claude\0--resume\0${uuid}\0`)).toEqual({ sessionId: uuid });
+  });
+
+  it('identifies only the top-level Papercusp Codex wrapper by exact adv-session id', () => {
+    expect(
+      parseReapableSessionProc(
+        'node\0/home/u/.papercusp/bin/codex\0--dangerously-bypass-approvals-and-sandbox\0',
+        'PAPERCUSP_SID=su-live\0PAPERCUSP_ADV_SESSION_ID=42\0',
+      ),
+    ).toEqual({ advSessionId: 42 });
+  });
+
+  it('ignores the native Codex child even though it inherits the same adv-session env', () => {
+    expect(
+      parseReapableSessionProc(
+        '/pkg/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex\0',
+        'PAPERCUSP_ADV_SESSION_ID=42\0',
+      ),
+    ).toBeNull();
+  });
+
+  it('ignores a fork/untracked Codex wrapper with no exact adv-session marker', () => {
+    expect(parseReapableSessionProc('node\0/home/u/.papercusp/bin/codex\0', 'PAPERCUSP_SID=su-fork\0')).toBeNull();
+  });
+
+  it.each(['', '0', '-1', 'abc', '9007199254740992'])('rejects an unsafe adv-session marker %j', (id) => {
+    expect(
+      parseReapableSessionProc(
+        'node\0/home/u/.papercusp/bin/codex\0',
+        `PAPERCUSP_ADV_SESSION_ID=${id}\0`,
+      ),
+    ).toBeNull();
+  });
 });
 
 describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write half)', () => {
   const p = (pid: number, sessionId: string): ResumeProc => ({ pid, sessionId });
+  const codex = (pid: number, advSessionId: number): ResumeProc => ({ pid, advSessionId });
   function makeDeps(over: {
     master?: boolean;
     terminate?: boolean;
     procs?: ResumeProc[];
     ended?: string[];
+    endedAdv?: number[];
     onDesktop?: string[];
+    onDesktopAdv?: number[];
     /** Pids whose /proc ancestry sits under an open window (WI-1586 spare). */
     desktopPids?: number[];
     aliveByPid?: Record<number, boolean>;
     stillByPid?: Record<number, boolean>;
   }) {
-    const calls = { listed: 0, endedQ: [] as string[][], sigterm: [] as number[], sigkill: [] as number[] };
+    const calls = {
+      listed: 0,
+      endedQ: [] as string[][],
+      endedAdvQ: [] as number[][],
+      sigterm: [] as number[],
+      sigkill: [] as number[],
+    };
     const deps: ZombieReapDeps = {
       isFlagOn: vi.fn(async (flag) => {
         if (flag === FLAGS.IDLE_SESSION_REAPER) return over.master ?? true;
@@ -599,7 +661,11 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
       }),
       listResumeProcs: vi.fn(async () => { calls.listed += 1; return over.procs ?? []; }),
       endedSessionIds: vi.fn(async (ids: string[]) => { calls.endedQ.push(ids); return new Set(over.ended ?? []); }),
-      onDesktopSessionIds: vi.fn(async () => new Set(over.onDesktop ?? [])),
+      endedAdvSessionIds: vi.fn(async (ids: number[]) => { calls.endedAdvQ.push(ids); return new Set(over.endedAdv ?? []); }),
+      onDesktopIdentities: vi.fn(async () => ({
+        sessionIds: new Set(over.onDesktop ?? []),
+        advSessionIds: new Set(over.onDesktopAdv ?? []),
+      })),
       sigterm: vi.fn((pid: number) => { calls.sigterm.push(pid); return true; }),
       pidAlive: vi.fn((pid: number) => over.aliveByPid?.[pid] ?? false),
       sigkill: vi.fn((pid: number) => { calls.sigkill.push(pid); return true; }),
@@ -630,6 +696,33 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 1, killedPids: [11] });
     expect(calls.sigterm).toEqual([11]); // never 22 (open session)
     expect(calls.sigkill).toHaveLength(0); // exited on TERM
+  });
+
+  it('kills ONLY the exact ended Codex row; spares live/parked open rows and untracked forks', async () => {
+    const { deps, calls } = makeDeps({
+      procs: [codex(11, 101), codex(22, 102)],
+      endedAdv: [101],
+      aliveByPid: { 11: false },
+    });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(r).toMatchObject({ enabled: true, scannedProcs: 2, zombies: 1, killedPids: [11] });
+    expect(calls.endedAdvQ).toEqual([[101, 102]]);
+    expect(calls.sigterm).toEqual([11]);
+    // A fork has no PAPERCUSP_ADV_SESSION_ID, so process discovery never places
+    // it in `procs`; this write-half test proves no broad Codex fallback exists.
+    expect(calls.sigterm).not.toContain(22);
+  });
+
+  it('SPARES an exact ended Codex row currently on the desktop', async () => {
+    const { deps, calls } = makeDeps({
+      procs: [codex(11, 101), codex(22, 102)],
+      endedAdv: [101, 102],
+      onDesktopAdv: [102],
+      aliveByPid: { 11: false },
+    });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(r.killedPids).toEqual([11]);
+    expect(calls.sigterm).toEqual([11]);
   });
 
   it('SPARES an ended-session proc that is on the desktop (a live OS window), kills the rest', async () => {
@@ -700,6 +793,17 @@ describe('reapZombieResumeProcs (slice 3: zombie-proc sweep — EI-1873, write h
     const { deps, calls } = makeDeps({ procs: [p(1, 'x'), p(2, 'x')], ended: ['x'], aliveByPid: { 1: false, 2: false } });
     const r = await reapZombieResumeProcs({ deps });
     expect(calls.endedQ[0]).toEqual(['x']); // queried once, deduped
+    expect(r.zombies).toBe(2);
+  });
+
+  it('dedups exact Codex adv-session query input', async () => {
+    const { deps, calls } = makeDeps({
+      procs: [codex(1, 77), codex(2, 77)],
+      endedAdv: [77],
+      aliveByPid: { 1: false, 2: false },
+    });
+    const r = await reapZombieResumeProcs({ deps });
+    expect(calls.endedAdvQ[0]).toEqual([77]);
     expect(r.zombies).toBe(2);
   });
 });

@@ -1045,8 +1045,8 @@ export async function terminateIdleLiveSessions(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Slice 3: ZOMBIE-PROC reap — a `claude --resume <uuid>` OS process whose
-// adv_session is ENDED (exit recorded) but the process never exited (EI-1873).
+// Slice 3: ZOMBIE-PROC reap — an agent OS process whose adv_session is ENDED
+// (exit recorded) but the process never exited (EI-1873 / EI-20982995405794565).
 //
 // The dominant fleet session-leak: 32 such zombies (sessions ended 16–18h prior,
 // exit_code=0) accumulated PAST the bg-host wedge point, each holding LISTEN conns
@@ -1060,11 +1060,19 @@ export async function terminateIdleLiveSessions(
 // best-effort; Linux /proc enumeration (a no-op where /proc is absent).
 // ───────────────────────────────────────────────────────────────────────────
 
-/** A live `claude --resume <uuid>` OS process. */
-export interface ResumeProc {
-  pid: number;
-  sessionId: string;
-}
+/**
+ * A live agent process with a deterministic join back to adv_sessions.
+ *
+ * Claude keeps the historical native-session join (`--resume <uuid>`). Codex
+ * does not expose its native session id on every launch, so psu's exact
+ * `PAPERCUSP_ADV_SESSION_ID` is read from only the top-level
+ * `~/.papercusp/bin/codex` wrapper. The native Codex child inherits the same
+ * environment, but deliberately does not match the wrapper path; one session
+ * therefore yields exactly one reap candidate.
+ */
+export type ResumeProc =
+  | { pid: number; sessionId: string; advSessionId?: never }
+  | { pid: number; sessionId?: never; advSessionId: number };
 
 /** PURE: the resume-procs whose session is ENDED → the zombies to kill, MINUS
  *  any session currently on the desktop (a live OS window — never kill a proc the
@@ -1077,17 +1085,58 @@ export function planZombieReap(
   procs: ResumeProc[],
   endedSessionIds: ReadonlySet<string>,
   onDesktopSessionIds: ReadonlySet<string> = new Set(),
+  endedAdvSessionIds: ReadonlySet<number> = new Set(),
+  onDesktopAdvSessionIds: ReadonlySet<number> = new Set(),
 ): ResumeProc[] {
-  return procs.filter((p) => endedSessionIds.has(p.sessionId) && !onDesktopSessionIds.has(p.sessionId));
+  return procs.filter((p) =>
+    p.advSessionId != null
+      ? endedAdvSessionIds.has(p.advSessionId) && !onDesktopAdvSessionIds.has(p.advSessionId)
+      : endedSessionIds.has(p.sessionId) && !onDesktopSessionIds.has(p.sessionId),
+  );
 }
 
 const RESUME_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CODEX_WRAPPER_RE = /(?:^|[\\/])\.papercusp[\\/]bin[\\/]codex$/;
+const ADV_SESSION_ENV = 'PAPERCUSP_ADV_SESSION_ID=';
 
 /**
- * Discover live `claude --resume <uuid>` procs via /proc (Linux). Best-effort: a
- * non-Linux host (no /proc) or a per-pid read error yields [] (the slice no-ops).
- * A proc qualifies only when its cmdline references `claude` AND carries
- * `--resume <uuid>` — so a node/tsx wrapper around the CLI still matches.
+ * PURE process classifier used by the /proc scanner and its recurrence tests.
+ * Returns no identity for a native Codex child, an untracked plain Codex, or a
+ * psu fork (forks intentionally carry no PAPERCUSP_ADV_SESSION_ID).
+ */
+export function parseReapableSessionProc(
+  rawCmdline: string,
+  rawEnviron = '',
+): Omit<ResumeProc, 'pid'> | null {
+  const args = rawCmdline.split('\0').filter(Boolean);
+
+  if (rawCmdline.includes('claude')) {
+    const i = args.indexOf('--resume');
+    if (i >= 0 && args[i + 1] && RESUME_UUID_RE.test(args[i + 1])) {
+      return { sessionId: args[i + 1] };
+    }
+  }
+
+  // Match only the stable Papercusp top-level wrapper. The vendor-native Codex
+  // child inherits the same env marker, so accepting any `*/bin/codex` would
+  // discover and signal the same session twice.
+  if (!args.some((arg) => CODEX_WRAPPER_RE.test(arg))) return null;
+  const rawId = rawEnviron
+    .split('\0')
+    .find((entry) => entry.startsWith(ADV_SESSION_ENV))
+    ?.slice(ADV_SESSION_ENV.length);
+  if (!rawId || !/^[1-9]\d*$/.test(rawId)) return null;
+  const advSessionId = Number(rawId);
+  if (!Number.isSafeInteger(advSessionId)) return null;
+  return { advSessionId };
+}
+
+/**
+ * Discover live agent session procs via /proc (Linux). Claude is identified by
+ * `--resume <uuid>`; Codex by PAPERCUSP_ADV_SESSION_ID on the stable top-level
+ * `~/.papercusp/bin/codex` wrapper. Best-effort: a non-Linux host (no /proc) or
+ * a per-pid read error skips that pid. Reads are bounded-parallel rather than a
+ * serial /proc walk (performance.mdx A1/A19).
  */
 export async function discoverResumeProcs(): Promise<ResumeProc[]> {
   const out: ResumeProc[] = [];
@@ -1097,25 +1146,40 @@ export async function discoverResumeProcs(): Promise<ResumeProc[]> {
   } catch {
     return out; // not Linux / no /proc → no-op
   }
-  for (const ent of entries) {
-    if (!/^\d+$/.test(ent)) continue;
-    let raw = '';
-    try {
-      raw = await readFile(`/proc/${ent}/cmdline`, 'utf8');
-    } catch {
-      continue; // proc vanished / unreadable
-    }
-    if (!raw || !raw.includes('claude')) continue;
-    const args = raw.split('\0').filter(Boolean);
-    const i = args.indexOf('--resume');
-    if (i >= 0 && args[i + 1] && RESUME_UUID_RE.test(args[i + 1])) {
-      const pid = Number(ent);
-      // Defense-in-depth: a FOREGROUND/TTY-attached proc is a live interactive
-      // session (a human), never a backgrounded leaked agent zombie — never a
-      // reap candidate, regardless of its adv_session rows.
-      if (await isForegroundTty(pid)) continue;
-      out.push({ pid, sessionId: args[i + 1] });
-    }
+  const pids = entries.filter((ent) => /^\d+$/.test(ent)).map(Number);
+  const batchSize = 64;
+  for (let offset = 0; offset < pids.length; offset += batchSize) {
+    const batch = await Promise.all(
+      pids.slice(offset, offset + batchSize).map(async (pid): Promise<ResumeProc | null> => {
+        let rawCmdline = '';
+        try {
+          rawCmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+        } catch {
+          return null; // proc vanished / unreadable
+        }
+        if (!rawCmdline) return null;
+
+        // Environ is needed only for the tiny Codex-wrapper cohort. Avoid a
+        // second /proc read for every unrelated process on the host.
+        const args = rawCmdline.split('\0').filter(Boolean);
+        let rawEnviron = '';
+        if (args.some((arg) => CODEX_WRAPPER_RE.test(arg))) {
+          try {
+            rawEnviron = await readFile(`/proc/${pid}/environ`, 'utf8');
+          } catch {
+            return null; // fail closed: no exact identity, no signal
+          }
+        }
+        const identity = parseReapableSessionProc(rawCmdline, rawEnviron);
+        if (!identity) return null;
+
+        // Defense-in-depth: a FOREGROUND/TTY-attached proc is a live interactive
+        // session (a human), never a backgrounded leaked agent zombie.
+        if (await isForegroundTty(pid)) return null;
+        return { pid, ...identity } as ResumeProc;
+      }),
+    );
+    out.push(...batch.filter((proc): proc is ResumeProc => proc != null));
   }
   return out;
 }
@@ -1139,13 +1203,15 @@ export interface ZombieReapDeps {
   listResumeProcs: () => Promise<ResumeProc[]>;
   /** The subset of `sessionIds` whose adv_session is ENDED (ended_at NOT NULL). */
   endedSessionIds: (sessionIds: string[]) => Promise<Set<string>>;
-  /** Native session ids CURRENTLY on the desktop (a live OS window) — never reaped. */
-  onDesktopSessionIds: () => Promise<Set<string>>;
+  /** The subset of exact adv-session row ids whose row is ENDED. */
+  endedAdvSessionIds: (advSessionIds: number[]) => Promise<Set<number>>;
+  /** Both exact identity sets CURRENTLY on the desktop — never reaped. */
+  onDesktopIdentities: () => Promise<{ sessionIds: Set<string>; advSessionIds: Set<number> }>;
   sigterm: (pid: number) => boolean;
   pidAlive: (pid: number) => boolean;
   sigkill: (pid: number) => boolean;
-  /** PID-recycle guard: true iff pid's cmdline still carries `--resume <sessionId>`. */
-  stillTheProc: (pid: number, sessionId: string) => Promise<boolean>;
+  /** PID-recycle guard: true iff pid still carries the same exact identity. */
+  stillTheProc: (pid: number, proc: ResumeProc) => Promise<boolean>;
   /** True iff the pid sits under an open desktop window (proc ancestry, WI-1586)
    *  — the launch-capture-free on-desktop spare. Never kill a proc inside a
    *  window the user can see, whatever its adv rows say. */
@@ -1170,6 +1236,24 @@ async function defaultEndedSessionIds(sessionIds: string[]): Promise<Set<string>
      GROUP BY session_id
     HAVING COUNT(*) FILTER (WHERE ended_at IS NULL) = 0`;
   return new Set(rows.map((r) => r.session_id));
+}
+
+async function defaultEndedAdvSessionIds(advSessionIds: number[]): Promise<Set<number>> {
+  if (advSessionIds.length === 0) return new Set();
+  const { sql } = getOrgPg();
+  // Unlike the native Claude session id, PAPERCUSP_ADV_SESSION_ID names one
+  // exact row. A resumed row is reopened (ended_at cleared), so an ended exact
+  // id cannot alias a concurrently open session.
+  const rows = await sql<Array<{ id: number | string }>>`
+    SELECT id
+      FROM harness_shared.adv_sessions
+     WHERE id = ANY(${advSessionIds})
+       AND ended_at IS NOT NULL`;
+  return new Set(
+    rows
+      .map((row) => Number(row.id))
+      .filter((id) => Number.isSafeInteger(id) && id > 0),
+  );
 }
 
 /**
@@ -1201,10 +1285,16 @@ async function isForegroundTty(pid: number): Promise<boolean> {
   }
 }
 
-async function defaultStillTheProc(pid: number, sessionId: string): Promise<boolean> {
+async function defaultStillTheProc(pid: number, proc: ResumeProc): Promise<boolean> {
   try {
-    const raw = await readFile(`/proc/${pid}/cmdline`, 'utf8');
-    return raw.includes('--resume') && raw.includes(sessionId);
+    const rawCmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+    if (proc.advSessionId == null) {
+      const current = parseReapableSessionProc(rawCmdline);
+      return current?.sessionId === proc.sessionId;
+    }
+    const rawEnviron = await readFile(`/proc/${pid}/environ`, 'utf8');
+    const current = parseReapableSessionProc(rawCmdline, rawEnviron);
+    return current?.advSessionId === proc.advSessionId;
   } catch {
     return false; // gone → never signal a recycled pid
   }
@@ -1214,7 +1304,11 @@ const defaultZombieDeps: ZombieReapDeps = {
   isFlagOn: (flag) => getFlag(flag, 'system').catch(() => false),
   listResumeProcs: () => discoverResumeProcs(),
   endedSessionIds: (ids) => defaultEndedSessionIds(ids),
-  onDesktopSessionIds: () => gatherOnDesktopSessions().then((s) => s.sessionIds).catch(() => new Set<string>()),
+  endedAdvSessionIds: (ids) => defaultEndedAdvSessionIds(ids),
+  onDesktopIdentities: () =>
+    gatherOnDesktopSessions()
+      .then((sets) => ({ sessionIds: sets.sessionIds, advSessionIds: sets.advSessionIds }))
+      .catch(() => ({ sessionIds: new Set<string>(), advSessionIds: new Set<number>() })),
   sigterm: (pid) => {
     try { process.kill(pid, 'SIGTERM'); return true; } catch { return false; }
   },
@@ -1222,16 +1316,16 @@ const defaultZombieDeps: ZombieReapDeps = {
   sigkill: (pid) => {
     try { process.kill(pid, 'SIGKILL'); return true; } catch { return false; }
   },
-  stillTheProc: (pid, sessionId) => defaultStillTheProc(pid, sessionId),
+  stillTheProc: (pid, proc) => defaultStillTheProc(pid, proc),
   pidOnDesktop: (pid) => isPidUnderOpenWindow(pid).catch(() => false),
   wait: (ms) => new Promise((r) => setTimeout(r, ms)),
 };
 
 /**
- * Slice 3: reap ZOMBIE `claude --resume` procs — sessions already ENDED whose OS
- * process never exited (EI-1873). Discovers the live resume-procs, asks PG which
- * of their sessions are ended, and SIGTERM→(wait)→SIGKILLs the zombies. Re-verifies
- * each pid's cmdline immediately before EACH signal (PID-recycle guard). The
+ * Slice 3: reap ZOMBIE agent procs — sessions already ENDED whose OS process
+ * never exited (EI-1873 / EI-20982995405794565). Discovers the live session
+ * procs, asks PG which exact identities are ended, and SIGTERM→(wait)→SIGKILLs
+ * the zombies. Re-verifies each pid's identity immediately before EACH signal.
  * adv_session is already ended, so no PG write is needed. DOUBLE-GATED DEFAULT-OFF
  * (both IDLE_SESSION_REAPER + IDLE_SESSION_REAPER_TERMINATE); dryRun plans only;
  * best-effort — a per-proc failure is isolated and the sweep never throws.
@@ -1255,17 +1349,32 @@ export async function reapZombieResumeProcs(
   } catch {
     return { ...empty, enabled: true };
   }
+  const sessionIds = [...new Set(procs.flatMap((proc) => (proc.sessionId ? [proc.sessionId] : [])))];
+  const advSessionIds = [...new Set(procs.flatMap((proc) => (proc.advSessionId != null ? [proc.advSessionId] : [])))];
   let ended: Set<string>;
+  let endedAdv: Set<number>;
   try {
-    ended = await deps.endedSessionIds([...new Set(procs.map((p) => p.sessionId))]);
+    [ended, endedAdv] = await Promise.all([
+      deps.endedSessionIds(sessionIds),
+      deps.endedAdvSessionIds(advSessionIds),
+    ]);
   } catch {
     return { ...empty, enabled: true, scannedProcs: procs.length };
   }
   // On-desktop sessions (a live OS window) are spared even if their adv row reads
   // ended — best-effort → empty, so a failure only loses this extra spare (the
   // foreground-TTY guard in discoverResumeProcs still covers real terminals).
-  const onDesktopSessionIds = await deps.onDesktopSessionIds().catch(() => new Set<string>());
-  const zombies = planZombieReap(procs, ended, onDesktopSessionIds);
+  const onDesktop = await deps.onDesktopIdentities().catch(() => ({
+    sessionIds: new Set<string>(),
+    advSessionIds: new Set<number>(),
+  }));
+  const zombies = planZombieReap(
+    procs,
+    ended,
+    onDesktop.sessionIds,
+    endedAdv,
+    onDesktop.advSessionIds,
+  );
   const result: ZombieReapResult = {
     enabled: true,
     scannedProcs: procs.length,
@@ -1286,12 +1395,12 @@ export async function reapZombieResumeProcs(
         result.killedPids.push(z.pid);
         continue;
       }
-      if (!(await deps.stillTheProc(z.pid, z.sessionId))) continue; // recycle guard (pre-SIGTERM)
+      if (!(await deps.stillTheProc(z.pid, z))) continue; // recycle guard (pre-SIGTERM)
       deps.sigterm(z.pid);
       await deps.wait(TERMINATE_GRACE_MS);
       // SIGKILL survivors — re-verify the cmdline again so a pid recycled during
       // the grace pause into an unrelated process is never signalled.
-      if (deps.pidAlive(z.pid) && (await deps.stillTheProc(z.pid, z.sessionId))) deps.sigkill(z.pid);
+      if (deps.pidAlive(z.pid) && (await deps.stillTheProc(z.pid, z))) deps.sigkill(z.pid);
       result.killedPids.push(z.pid);
     } catch {
       // per-proc isolation — never break the sweep.
