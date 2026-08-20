@@ -89,7 +89,7 @@ describe('collectPriorAttempts', () => {
       terminalOwner: 'agent-a',
       closedAt: '2026-08-20T12:00:00Z',
       updatedAt: '2026-08-20T12:00:00Z',
-    } as WorkItem;
+    } as unknown as WorkItem;
     const deps = {
       getPlan: async () => ({ content: '## Decisions\n\n### D-001 — Reuse the reader\nDate: 2026-08-20\nDo not add a ledger.' }),
       specs: async () => [{
