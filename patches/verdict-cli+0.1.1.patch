@@ -1,5 +1,5 @@
 diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/bin/browse.mjs
-index a3392d2..b6ecbf5 100755
+index a3392d2..e8a9dc0 100755
 --- a/node_modules/verdict-cli/bin/browse.mjs
 +++ b/node_modules/verdict-cli/bin/browse.mjs
 @@ -20,7 +20,9 @@ const SERVER_SCRIPT = resolve(__dirname, '..', 'src', 'server.mjs');
@@ -13,7 +13,7 @@ index a3392d2..b6ecbf5 100755
  const filtered = [];
  for (let i = 0; i < rawArgs.length; i++) {
    if (rawArgs[i] === '--json') continue;
-@@ -31,6 +31,11 @@ const [command, ...args] = filtered;
+@@ -31,6 +33,11 @@ const [command, ...args] = filtered;
  
  const DATA_DIR = sessionName ? resolve(BASE_DATA_DIR, 'sessions', sessionName) : BASE_DATA_DIR;
  const STATE_FILE = resolve(DATA_DIR, 'verdict.json');
@@ -25,7 +25,7 @@ index a3392d2..b6ecbf5 100755
  
  function readState() {
    try { return existsSync(STATE_FILE) ? JSON.parse(readFileSync(STATE_FILE, 'utf8')) : null; } catch { return null; }
-@@ -43,10 +48,20 @@ function isAlive(pid) {
+@@ -43,10 +50,20 @@ function isAlive(pid) {
  async function startServer() {
    const env = { ...process.env };
    if (sessionName) env.VERDICT_SESSION = sessionName;
@@ -49,7 +49,7 @@ index a3392d2..b6ecbf5 100755
      const state = readState();
      if (state && isAlive(state.pid)) {
        // Verify the server actually responds before returning
-@@ -60,7 +75,10 @@ async function startServer() {
+@@ -60,7 +77,10 @@ async function startServer() {
        } catch {}
      }
    }
@@ -61,7 +61,7 @@ index a3392d2..b6ecbf5 100755
  }
  
  async function send(state, command, args) {
-@@ -193,9 +211,18 @@ if (!state || !isAlive(state.pid)) {
+@@ -193,9 +213,18 @@ if (!state || !isAlive(state.pid)) {
  try {
    output(await send(state, command, args));
  } catch (e) {
@@ -82,3 +82,99 @@ index a3392d2..b6ecbf5 100755
 -  } else if (command === "stop") { output("Server stopped."); } else { outputError(e.message); }
 +  } else { outputError(e.message); }
  }
+diff --git a/node_modules/verdict-cli/src/server.mjs b/node_modules/verdict-cli/src/server.mjs
+index 249847c..f5ea49d 100644
+--- a/node_modules/verdict-cli/src/server.mjs
++++ b/node_modules/verdict-cli/src/server.mjs
+@@ -62,6 +62,27 @@ let cursorRefCounter = 0;
+ let lastSnapshot = '';
+ let previousSnapshot = '';
+ const styleHistory = [];
++const consoleMessages = [];
++const networkRequests = [];
++
++function clearNavigationEvidence() {
++  consoleMessages.length = 0;
++  networkRequests.length = 0;
++}
++
++function observePage(targetPage) {
++  targetPage.on('framenavigated', frame => {
++    if (frame === targetPage.mainFrame()) clearNavigationEvidence();
++  });
++  targetPage.on('console', msg => {
++    consoleMessages.push(`[${msg.type()}] ${msg.text()}`);
++    if (consoleMessages.length > 50) consoleMessages.shift();
++  });
++  targetPage.on('response', response => {
++    networkRequests.push({ method: response.request().method(), status: response.status(), url: response.url().slice(0, 120) });
++    if (networkRequests.length > 50) networkRequests.shift();
++  });
++}
+ 
+ function resetIdle() {
+   clearTimeout(idleTimer);
+@@ -136,13 +157,14 @@ const commands = {
+   async goto(args) {
+     const url = args[0];
+     if (!url) return 'Error: URL required';
++    clearNavigationEvidence();
+     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+     await page.waitForLoadState('networkidle').catch(() => {});
+     return `Navigated to ${page.url()}`;
+   },
+-  async back() { await page.goBack({ waitUntil: 'domcontentloaded' }); return `Back to ${page.url()}`; },
+-  async forward() { await page.goForward({ waitUntil: 'domcontentloaded' }); return `Forward to ${page.url()}`; },
+-  async reload() { await page.reload({ waitUntil: 'domcontentloaded' }); return `Reloaded ${page.url()}`; },
++  async back() { clearNavigationEvidence(); await page.goBack({ waitUntil: 'domcontentloaded' }); return `Back to ${page.url()}`; },
++  async forward() { clearNavigationEvidence(); await page.goForward({ waitUntil: 'domcontentloaded' }); return `Forward to ${page.url()}`; },
++  async reload() { clearNavigationEvidence(); await page.reload({ waitUntil: 'domcontentloaded' }); return `Reloaded ${page.url()}`; },
+   async url() { return page.url(); },
+   async title() { return await page.title(); },
+ 
+@@ -405,6 +427,7 @@ const commands = {
+     browser = await chromium.launch({ headless: false });
+     context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+     page = await context.newPage();
++    observePage(page);
+     if (cookies.length) await context.addCookies(cookies);
+     if (currentUrl && currentUrl !== 'about:blank') await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {});
+     return `Switched to headed mode. Browser visible.\nURL: ${page.url()}\nComplete manual work, then run: resume`;
+@@ -419,8 +442,6 @@ const commands = {
+     page = await context.newPage();
+     if (cookies.length) await context.addCookies(cookies);
+     if (currentUrl && currentUrl !== 'about:blank') { await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); await page.evaluate((s) => { for (const [k, v] of Object.entries(s.localStorage || {})) localStorage.setItem(k, v); }, storage); }
+-    page.on('console', msg => { consoleMessages.push(`[${msg.type()}] ${msg.text()}`); if (consoleMessages.length > 50) consoleMessages.shift(); });
+-    page.on('response', r => { networkRequests.push({ method: r.request().method(), status: r.status(), url: r.url().slice(0, 120) }); if (networkRequests.length > 50) networkRequests.shift(); });
+     return `Resumed headless mode.\nURL: ${page.url()}\nCookies: ${cookies.length}\nUse auth-save <name> to persist.`;
+   },
+   async 'goto-auth'(args) {
+@@ -430,6 +451,7 @@ const commands = {
+     if (pi !== -1) { profileName = args[pi + 1]; clean.splice(pi, 2); }
+     const url = clean[0]; if (!url) return 'Error: URL required';
+     if (profileName) { const r = await commands['auth-load']([profileName]); if (r.startsWith('Error')) return r; }
++    clearNavigationEvidence();
+     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 });
+     await page.waitForLoadState('networkidle').catch(() => {});
+     const finalUrl = page.url();
+@@ -467,7 +489,7 @@ const commands = {
+ 
+   // Tabs
+   async tabs() { return context.pages().map((p, i) => `${i}: ${p.url()}${p === page ? ' (active)' : ''}`).join('\n'); },
+-  async newtab(args) { const np = await context.newPage(); await np.goto(args[0] || 'about:blank', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); page = np; return `New tab: ${page.url()}`; },
++  async newtab(args) { const np = await context.newPage(); observePage(np); await np.goto(args[0] || 'about:blank', { waitUntil: 'domcontentloaded', timeout: 15000 }).catch(() => {}); page = np; return `New tab: ${page.url()}`; },
+   async tab(args) { const i = parseInt(args[0]), ps = context.pages(); if (isNaN(i) || i < 0 || i >= ps.length) return `Invalid tab. ${ps.length} open.`; page = ps[i]; return `Tab ${i}: ${page.url()}`; },
+   async closetab() { if (context.pages().length <= 1) return 'Cannot close last tab.'; await page.close(); page = context.pages()[0]; return `Closed. Active: ${page.url()}`; },
+ 
+@@ -508,10 +530,7 @@ const commands = {
+ };
+ 
+ // Console & network collectors
+-const consoleMessages = [];
+-const networkRequests = [];
+-page.on('console', msg => { consoleMessages.push(`[${msg.type()}] ${msg.text()}`); if (consoleMessages.length > 50) consoleMessages.shift(); });
+-page.on('response', r => { networkRequests.push({ method: r.request().method(), status: r.status(), url: r.url().slice(0, 120) }); if (networkRequests.length > 50) networkRequests.shift(); });
++observePage(page);
+ 
+ // HTTP server
+ const port = parseInt(process.env.VERDICT_PORT) || (10000 + Math.floor(Math.random() * 50000));
