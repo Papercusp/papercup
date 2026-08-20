@@ -47,6 +47,10 @@ import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../relea
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
 import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
+import {
+  parseFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueue,
+} from '../../release/frozen-candidate-repair-queue';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
 import {
@@ -502,6 +506,22 @@ export interface CheckpointVerdict {
    *  plane lint). `summary` carries the thrown error; treat this as "the process crashed", not
    *  as a leg-scoped verdict — the specific failing leg is not always recoverable here. */
   crashed?: boolean;
+  /** D-001 / WI-39944: structural mirror of the serialized frozen repair queue.
+   * Presence means the gate already dispatched/owns the targeted fixer, so the legacy
+   * moving-tip dispatcher must not launch a second agent. */
+  repairQueue?: {
+    schemaVersion: 1;
+    phase: 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
+    candidate: string;
+    base: string | null;
+    repairHead: string;
+    worktreePath: string;
+    attempts: number;
+    openedAtMs: number;
+    updatedAtMs: number;
+    fixerSpawnId: string | null;
+    failingTests: string[];
+  };
 }
 
 /** The pipeline-event `detail` blob for a checkpoint verdict. Shared by BOTH recorders (the CLI's
@@ -610,6 +630,15 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   // persisted `crashed: false` would assert a clean exit that nobody actually verified.
   if (v.summary) detail.summary = v.summary.slice(0, 2000);
   if (v.crashed === true) detail.crashed = true;
+  if (v.repairQueue) {
+    detail.repairQueue = {
+      phase: v.repairQueue.phase,
+      candidate: v.repairQueue.candidate.slice(0, 12),
+      repairHead: v.repairQueue.repairHead.slice(0, 12),
+      attempts: v.repairQueue.attempts,
+      fixerSpawnId: v.repairQueue.fixerSpawnId,
+    };
+  }
   return detail;
 }
 
@@ -721,7 +750,7 @@ export async function recordCheckpointVerdict(
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
-  if (shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests)) {
+  if (!verdict.repairQueue && shouldDispatchReleaseFixer(verdict.reason, verdict.candidate, verdict.failingTests)) {
     await dispatchReleaseFixer(target, verdict.candidate, verdict.failingTests).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -873,7 +902,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // ran this exact check. Dispatching here TOO for a recordedByRun verdict would double-fire
   // the dedup'd decision for every routine tick on a modern CLI; gating on !recordedByRun
   // keeps this a pure fallback instead of a race with the producer-side dispatch.
-  if (!recordedByRun && shouldDispatchReleaseFixer(status, candidate, failingTests)) {
+  if (!recordedByRun && !parsed?.repairQueue && shouldDispatchReleaseFixer(status, candidate, failingTests)) {
     await dispatchReleaseFixer(ctx, candidate as string, failingTests).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
@@ -2129,6 +2158,46 @@ export async function checkReleaseFixerCandidateStale(
   return { candidateExists, candidatePromoted };
 }
 
+/** D-001 / WI-39944: read/write the one serialized frozen-candidate repair queue
+ * inside the green-checkpoint routine's EXISTING metadata row. This deliberately does
+ * not create a parallel table, routine, or ownership record. */
+export async function readFrozenCandidateRepairQueue(
+  target: GateVerdictTarget,
+): Promise<FrozenCandidateRepairQueue | null> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  const rows = (await sql.unsafe(
+    `SELECT metadata->'repair_queue' AS repair_queue
+       FROM harness_shared.routines
+      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+    [target.installSlug],
+  )) as Array<{ repair_queue: unknown }>;
+  return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
+}
+
+export async function writeFrozenCandidateRepairQueue(
+  target: GateVerdictTarget,
+  queue: FrozenCandidateRepairQueue | null,
+): Promise<void> {
+  const { getOrgPg } = await import('@papercusp/db-org');
+  const { sql } = getOrgPg();
+  if (queue) {
+    await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+      [target.installSlug, JSON.stringify({ repair_queue: queue })],
+    );
+  } else {
+    await sql.unsafe(
+      `UPDATE harness_shared.routines
+          SET metadata = COALESCE(metadata, '{}'::jsonb) - 'repair_queue', updated_at = now()
+        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
+      [target.installSlug],
+    );
+  }
+}
+
 /** EI-19329732364513693: how OLD is the candidate a verdict judged, and how far behind tip?
  *  See {@link measureCandidateStaleness} for why a verdict that omits this misleads. */
 export interface CandidateStaleness {
@@ -2196,7 +2265,12 @@ export async function measureCandidateStaleness(
  * call it directly. A `SystemActionCtx` still satisfies this structurally at every existing
  * call site.
  */
-async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, failingTests?: string[]): Promise<void> {
+export async function dispatchReleaseFixer(
+  ctx: GateVerdictTarget,
+  candidate: string,
+  failingTests?: string[],
+  repairQueue?: FrozenCandidateRepairQueue,
+): Promise<{ spawnId: string | null; runId: string | null } | null> {
   // EI-8718: cheap re-verify BEFORE touching dedup state — a candidate that's gone stale
   // between the checkpoint run reporting it and this dispatch call gets a no-op skip
   // instead of a wasted fixer spawn. Best-effort: a check failure (e.g. no repo at
@@ -2224,7 +2298,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
         candidatePromoted: staleCheck.candidatePromoted,
       },
     }).catch(() => {});
-    return;
+    return null;
   }
 
   const { getOrgPg } = await import('@papercusp/db-org');
@@ -2250,7 +2324,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
   const fixerAlive = sameSignature ? await releaseFixerSpawnAlive(sql, lf?.spawnId) : null;
   const now = Date.now();
   const decision = decideReleaseFixerDispatch({ lf, signature, now, fixerAlive });
-  if (!decision.dispatch) return; // a live fixer is covering this gate — the good dedup
+  if (!decision.dispatch) return null; // a live fixer is covering this gate — the good dedup
 
   // Claim the dedup slot BEFORE firing (anti double-fire across ticks): a concurrent
   // tick now sees a fresh `at` with no spawn id → fixerAlive=null → covered → skips.
@@ -2307,13 +2381,23 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
       installSlug: ctx.installSlug,
       workspaceId: ctx.workspaceId,
       kickoff:
-        `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.` +
+        (repairQueue
+          ? `green-checkpoint froze candidate ${repairQueue.candidate.slice(0, 8)} and assigned you repair attempt ${repairQueue.attempts + 1}. Work ONLY from ${repairQueue.worktreePath}, starting at ${repairQueue.repairHead}. Repair forward there, run focused tests, and apply the identical source edits to the canonical staging checkout under its normal file locks. Do NOT commit or push — the gate commits the isolated repair after your process exits and promotes only after the exact patch is observed on staging.`
+          : `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.`) +
         (flakeAnnotation ? `\n\n${flakeAnnotation}` : ''),
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
       bodyExtra: {
         releaseFixerContext: {
           candidate: candidate.slice(0, 12),
           failingTests: (failingTests ?? []).slice(0, 20),
+          ...(repairQueue
+            ? {
+                frozenCandidate: repairQueue.candidate,
+                repairHead: repairQueue.repairHead,
+                repairWorktree: repairQueue.worktreePath,
+                repairAttempt: repairQueue.attempts + 1,
+              }
+            : {}),
         },
       },
       // P-010: the fixer's reproduce→classify→fix loop (maxTurns 30) needs far more than
@@ -2337,6 +2421,7 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
     status: fired ? 'ok' : 'failed',
     detail: { candidate: candidate.slice(0, 12), reason: decision.reason, spawnId: spawnId ?? undefined },
   }).catch(() => {});
+  return { spawnId, runId };
 }
 
 /** The fixed transient-unit name for the detached auto-deploy — fixed on

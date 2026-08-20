@@ -56,6 +56,7 @@ import {
   GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
 } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
+import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -6448,6 +6449,66 @@ export async function runGreenCheckpoint(
         ...(isolationNote ? { isolationNote } : {}),
       };
     }
+    // D-001 / WI-39944 — a real code red enters (or advances) the ONE frozen repair
+    // queue before any stale-tip re-triage, auto-refire, or backward prefix salvage can
+    // move the target. Infra reds returned above and never enter this path.
+    if (
+      deps.writeFrozenRepairQueue &&
+      deps.prepareFrozenRepairWorktree &&
+      deps.dispatchFrozenRepairFixer
+    ) {
+      if (repairVerification && repairQueue) {
+        repairQueue = markFrozenRepairVerificationRed(repairQueue, {
+          repairHead: candidate,
+          failingTests,
+          nowMs: Date.now(),
+        });
+      } else if (!repairQueue) {
+        repairQueue = createFrozenCandidateRepairQueue({
+          candidate,
+          base: lastReady,
+          worktreePath: path.join(
+            cfg.integrationRoot,
+            ".papercusp",
+            "worktrees",
+            `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
+          ),
+          failingTests,
+          nowMs: Date.now(),
+        });
+      }
+      await deps.writeFrozenRepairQueue(repairQueue);
+      await deps.prepareFrozenRepairWorktree(repairQueue);
+      const fired = await deps.dispatchFrozenRepairFixer(repairQueue);
+      if (fired?.spawnId) {
+        repairQueue = markFrozenRepairFixerDispatched(repairQueue, {
+          spawnId: fired.spawnId,
+          nowMs: Date.now(),
+        });
+        await deps.writeFrozenRepairQueue(repairQueue);
+      }
+      const repairSummary =
+        `${summary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
+        `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
+        `from head ${repairQueue.repairHead.slice(0, 8)}. Moving-tip refire and backward prefix salvage were suppressed.`;
+      stampPromotion(false, "not-green");
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: false,
+        reason: "not-green",
+        summary: repairSummary,
+        failingTests,
+        failingTestNames: extractFailingTestNames(summary),
+        repairQueue,
+        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...(logPath ? { logPath } : {}),
+        ...(isolationNote ? { isolationNote } : {}),
+        ...(retriedTests ? { retriedTests } : {}),
+        ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
+      };
+    }
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
     // changed since the candidate" AND the one-line LINEAGE the owner flagged as the
     // single highest-leverage fix from the nine-detector audit — the manual git-log
@@ -7390,6 +7451,15 @@ export async function runGreenCheckpoint(
   // below), after BOTH of these, so any throw here left the early `decision-pending` line
   // standing — which reads as "died in an optional post-verdict leg" and is exactly wrong. The
   // gate had decided green; it died publishing it.
+  if (repairVerification && repairQueue) {
+    // Keep the green transition in memory until publish+advance succeeds. If this process
+    // dies in that window the durable queue remains ready-to-verify and safely re-runs the
+    // exact immutable head; it never advertises an unpromoted result as complete.
+    repairQueue = markFrozenRepairVerificationGreen(repairQueue, {
+      repairHead: candidate,
+      nowMs: Date.now(),
+    });
+  }
   if (!opts.noPush) {
     await pushGreenCandidateOrThrow(cfg, deps, candidate, lastReady).catch(
       (error: unknown) => {
@@ -7402,6 +7472,14 @@ export async function runGreenCheckpoint(
     stampPromotion(false, "advance-failed");
     throw error;
   });
+  if (repairQueue) {
+    await deps.writeFrozenRepairQueue?.(null);
+    await deps.cleanupFrozenRepairWorktree?.(repairQueue).catch((e) =>
+      deps.log(
+        `warn: promoted repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+      ),
+    );
+  }
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
   );
@@ -9426,11 +9504,89 @@ export function realCheckpointDeps(
       return { workspace, passed: false, crashedAgain: true };
     return { workspace, passed: false, realFailure: true };
   };
+  const repairTarget = gateVerdictTargetFromEnv();
   return {
     isolationRun,
     concurrentRun,
     workspaceRerun,
     runId,
+    ...(repairTarget
+      ? {
+          async readFrozenRepairQueue() {
+            const { readFrozenCandidateRepairQueue } = await import(
+              "@papercusp/operator-core/lib/harness/routines/release-actions"
+            );
+            return readFrozenCandidateRepairQueue(repairTarget);
+          },
+          async writeFrozenRepairQueue(queue: FrozenCandidateRepairQueue | null) {
+            const { writeFrozenCandidateRepairQueue } = await import(
+              "@papercusp/operator-core/lib/harness/routines/release-actions"
+            );
+            await writeFrozenCandidateRepairQueue(repairTarget, queue);
+          },
+          async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
+            if (existsSync(path.join(queue.worktreePath, ".git"))) return;
+            mkdirSync(path.dirname(queue.worktreePath), { recursive: true });
+            await exec(
+              "git",
+              ["-C", cfg.integrationRoot, "worktree", "add", "--detach", queue.worktreePath, queue.repairHead],
+              { timeoutMs: SETUP_TREE_TIMEOUT_MS },
+            );
+          },
+          async finalizeFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
+            if (!existsSync(path.join(queue.worktreePath, ".git"))) return null;
+            const dirty = await exec("git", ["-C", queue.worktreePath, "status", "--porcelain=v1"]);
+            if (dirty.stdout.trim()) {
+              await exec("git", ["-C", queue.worktreePath, "add", "-A"]);
+              await exec("git", [
+                "-C", queue.worktreePath,
+                "-c", "user.name=Papercusp Green Checkpoint",
+                "-c", "user.email=green-checkpoint@papercusp.local",
+                "commit", "-m", `Repair frozen candidate ${queue.candidate.slice(0, 12)}`,
+              ]);
+            }
+            const head = await revParse(queue.worktreePath, "HEAD");
+            if (head === queue.repairHead) return null;
+            if (!(await isAncestor(queue.worktreePath, queue.repairHead, head))) {
+              throw new Error(`repair worktree moved non-forward: ${queue.repairHead.slice(0, 8)} !<= ${head.slice(0, 8)}`);
+            }
+            return head;
+          },
+          async frozenRepairFixerAlive(spawnId: string) {
+            const { getOrgPg } = await import("@papercusp/db-org");
+            const { releaseFixerSpawnAlive } = await import(
+              "@papercusp/operator-core/lib/release/fixer-liveness"
+            );
+            return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
+          },
+          async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
+            const { dispatchReleaseFixer } = await import(
+              "@papercusp/operator-core/lib/harness/routines/release-actions"
+            );
+            return dispatchReleaseFixer(repairTarget, queue.repairHead, queue.failingTests, queue);
+          },
+          async stagingContainsFrozenRepair(queue: FrozenCandidateRepairQueue) {
+            const patchResult = spawnSync("git", [
+              "-C", queue.worktreePath, "diff", "--binary", queue.candidate, queue.repairHead,
+            ]);
+            if (patchResult.status !== 0 || !patchResult.stdout?.length) return false;
+            const check = spawnSync(
+              "git",
+              ["-C", cfg.integrationRoot, "apply", "--reverse", "--check", "--binary", "-"],
+              { input: patchResult.stdout },
+            );
+            return check.status === 0;
+          },
+          async cleanupFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
+            if (!existsSync(queue.worktreePath)) return;
+            await exec(
+              "git",
+              ["-C", cfg.integrationRoot, "worktree", "remove", "--force", queue.worktreePath],
+              { timeoutMs: SETUP_TREE_TIMEOUT_MS },
+            );
+          },
+        }
+      : {}),
     // WI-38422: the cheap candidate-scoped rejection pass. This intentionally shells
     // the SAME lint:tsc script the post-suite leg runs, with the SAME release-gate env
     // isolation and the SAME 16 GiB sequential-leg heap. The only difference is scope:
