@@ -8,6 +8,8 @@ import {
 } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
 
+type GateDeps = NonNullable<Parameters<typeof specTestAdequacyCompletionGate>[1]>;
+
 const WORK_ITEM = {
   id: 'WI-101',
   harness: 'papercusp',
@@ -142,11 +144,15 @@ const ATTESTATION = {
 };
 
 function passingDeps() {
+  const listClauses = vi.fn<NonNullable<GateDeps['listClauses']>>(async () => [clause()]);
+  const listEdges = vi.fn<NonNullable<GateDeps['listEdges']>>(async () => []);
+  const listEvidence = vi.fn<NonNullable<GateDeps['listEvidence']>>(async () => [evidence()]);
+  const listCards = vi.fn<NonNullable<GateDeps['listCards']>>(async () => [matchingCard()]);
   return {
-    listClauses: vi.fn(async () => [clause()]),
-    listEdges: vi.fn(async () => []),
-    listEvidence: vi.fn(async () => [evidence()]),
-    listCards: vi.fn(async () => [matchingCard()]),
+    listClauses,
+    listEdges,
+    listEvidence,
+    listCards,
   };
 }
 

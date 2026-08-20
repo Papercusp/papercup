@@ -2719,7 +2719,7 @@ export default defineTool({
             state: args.state,
             completion: args.completion!,
             outputPayload: args.outputPayload,
-            specAdequacy: args.specAdequacy,
+            specAdequacy: 'specAdequacy' in args ? args.specAdequacy : undefined,
             assumptions: args.assumptions,
           },
         ];

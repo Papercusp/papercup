@@ -71,6 +71,10 @@ const itemTestGate = vi.fn();
 vi.mock('../../harness-test-gate', () => ({
   itemTestGate: (...a: unknown[]) => itemTestGate(...a),
 }));
+const specTestAdequacyCompletionGate = vi.fn();
+vi.mock('./spec-test-adequacy-gate', () => ({
+  specTestAdequacyCompletionGate: (...a: unknown[]) => specTestAdequacyCompletionGate(...a),
+}));
 
 import { z } from 'zod';
 import complete, {
@@ -159,6 +163,8 @@ beforeEach(() => {
   getFlag.mockResolvedValue(false);
   itemTestGate.mockReset();
   itemTestGate.mockResolvedValue({ ok: true });
+  specTestAdequacyCompletionGate.mockReset();
+  specTestAdequacyCompletionGate.mockResolvedValue({ ok: true, applicable: false, checked: [] });
   resolveWorkItemRef.mockReset();
   linkWorkItem.mockReset();
   linkWorkItem.mockResolvedValue({ ok: true });
@@ -1100,6 +1106,154 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'fixed' } });
       expect(itemTestGate).not.toHaveBeenCalled();
       expect(r.ok).toBe(true);
+    });
+  });
+
+  // ── FIRST-CLASS SPEC TEST-ADEQUACY GATE (P-007 / D-003..D-006) ──────────────────
+  describe('spec-test-adequacy terminal gate', () => {
+    const linkedIssue = {
+      ...item,
+      id: 'WI-101',
+      kind: 'change',
+      family: 'issue',
+      state: 'wip',
+      harness: 'papercusp',
+      payload: {
+        plan_item: {
+          plan_slug: 'reconnect-plan',
+          item_id: 'P-003',
+          harness_slug: 'papercusp',
+        },
+      },
+      sourcePlanSlug: 'reconnect-plan',
+      sourcePlanItemIds: ['P-003'],
+    };
+    const specAdequacy = {
+      classRef: 'plan-class-feature-ship',
+      current: [
+        {
+          evidenceKind: 'test',
+          evidenceRef: 'test:reconnect',
+          sourceFingerprint: 'git:abc',
+          testFingerprint: 'sha256:test',
+        },
+      ],
+    };
+
+    it('publishes a strict single and per-item bulk attestation shape', () => {
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy,
+        }).success,
+      ).toBe(true);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          items: [
+            {
+              id: 'WI-101',
+              state: 'resolved',
+              assumptions: 'none',
+              completion: { summary: 'fixed' },
+              specAdequacy,
+            },
+          ],
+        }).success,
+      ).toBe(true);
+      expect(
+        (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+          id: 'WI-101',
+          state: 'resolved',
+          assumptions: 'none',
+          completion: { summary: 'fixed' },
+          specAdequacy: { ...specAdequacy, classRef: 'invented-parallel-rubric' },
+        }).success,
+      ).toBe(false);
+    });
+
+    it('does not consult the gate for a record-only completion', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+
+      const r = await one({ id: 'WI-101', completion: { summary: 'progress' } });
+
+      expect(r.ok).toBe(true);
+      expect(specTestAdequacyCompletionGate).not.toHaveBeenCalled();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('passes the exact caller attestation and reports every checked clause on success', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...linkedIssue, state: 'resolved' }));
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: true,
+        applicable: true,
+        checked: ['SPEC-003-01@1'],
+      });
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(specTestAdequacyCompletionGate).toHaveBeenCalledWith({
+        workItem: linkedIssue,
+        attestation: specAdequacy,
+      });
+      expect(r.specAdequacy).toEqual({ applicable: true, checked: ['SPEC-003-01@1'] });
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
+    it('refuses before every completion/state write when current proof is insufficient', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-003-01@1: fail [freshness, execution-integrity]',
+        checked: [],
+      });
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(r).toMatchObject({
+        ok: false,
+        specAdequacy: { applicable: true, retryable: true, checked: [] },
+      });
+      expect(r.error).toContain('freshness, execution-integrity');
+      expect(r.error).toContain('No completion record or state transition was written');
+      expect(r.completion).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+    });
+
+    it('fails closed and retryably when the gate read itself throws', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      specTestAdequacyCompletionGate.mockRejectedValue(new Error('scorecard store unavailable'));
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(r).toMatchObject({
+        ok: false,
+        specAdequacy: { applicable: true, retryable: true, checked: [] },
+      });
+      expect(r.error).toContain('scorecard store unavailable');
+      expect(r.error).toContain('retryable');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
   });
 
