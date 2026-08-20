@@ -17,7 +17,7 @@
  * Ported from app/api/agent-config/route.ts. `auth: 'public'` preserves
  * the original (un-authed) behavior.
  */
-import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseRoleBackends, parseSurfaceModels, parseTiers, parseTierCeilings, type AgentConfig } from '../../../agent-config';
+import { readAgentConfig, writeAgentConfig, effectiveBackend, parseBackends, parseRoleBackends, parseSurfaceModels, parseTiers, parseTierCeilings, parseTerminalEmulator, type AgentConfig } from '../../../agent-config';
 import { DEFAULT_MODEL_TIERS } from '../../../agent-config-constants';
 import { detectBinaries } from '../../../agent-bin-detect';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -60,6 +60,7 @@ export default [
           AGENT_BACKEND: process.env.AGENT_BACKEND ?? null,
           AGENT_CMD: process.env.AGENT_CMD ?? null,
           CLAUDE_CMD: process.env.CLAUDE_CMD ?? null,
+          TERMINAL: process.env.TERMINAL ?? null,
         },
       });
     },
@@ -73,6 +74,11 @@ export default [
       if (!body || typeof body !== 'object') {
         return Response.json({ error: 'invalid body' }, { status: 400 });
       }
+      // Older settings-page bundles know nothing about newly-added fields. Keep
+      // the stored terminal preference when such a client POSTs its legacy
+      // full-body shape; config:terminal-emulator is the explicit clear/set
+      // surface, so an unrelated model edit cannot silently reset it.
+      const current = await readAgentConfig();
       const next: AgentConfig = {
         backend:
           body.backend === 'claude-code' || body.backend === 'omp' || body.backend === 'codex'
@@ -94,6 +100,7 @@ export default [
         surfaceModels: parseSurfaceModels(body.surfaceModels),
         tiers: parseTiers(body.tiers),
         tierCeilings: parseTierCeilings(body.tierCeilings, body.tiers),
+        terminal: body.terminal === undefined ? current.terminal ?? '' : parseTerminalEmulator(body.terminal),
       };
       // Strict-save guard: persisting LESS than the body asked for is silent
       // data loss, not normalization. Count the entries the parsers kept.
@@ -117,6 +124,9 @@ export default [
       }
       if (body.tierCeilings != null && sentCount(body.tierCeilings) !== Object.keys(next.tierCeilings ?? {}).length) {
         dropped.push('tierCeilings: a ceiling names a tier absent from the menu');
+      }
+      if (body.terminal != null && !next.terminal) {
+        dropped.push('terminal: must be a binary name, not a path or shell command');
       }
       if (dropped.length > 0) {
         return Response.json(

@@ -21,13 +21,15 @@ describe('applyToProcessEnv — boot-env restore (EI-337)', () => {
     vi.stubEnv('AGENT_CMD', 'claude -p --model haiku');
     vi.stubEnv('AGENT_MODELS', '{"worker":"opus"}');
     vi.stubEnv('AGENT_BACKEND', 'claude-code');
+    vi.stubEnv('TERMINAL', 'xterm');
     const { applyToProcessEnv } = await freshModule();
 
     // A save with explicit values mutates the live env…
-    applyToProcessEnv({ backend: 'omp', cmd: 'omp -p', models: { cup: 'sonnet' } });
+    applyToProcessEnv({ backend: 'omp', cmd: 'omp -p', models: { cup: 'sonnet' }, terminal: 'gnome-terminal' });
     expect(process.env.AGENT_CMD).toBe('omp -p');
     expect(process.env.AGENT_BACKEND).toBe('omp');
     expect(process.env.AGENT_MODELS).toBe('{"cup":"sonnet"}');
+    expect(process.env.TERMINAL).toBe('gnome-terminal');
 
     // …and a save with EMPTY values reverts to what the host booted with —
     // the pre-fix behavior deleted these, silently dropping the .env.local
@@ -36,12 +38,14 @@ describe('applyToProcessEnv — boot-env restore (EI-337)', () => {
     expect(process.env.AGENT_CMD).toBe('claude -p --model haiku');
     expect(process.env.AGENT_MODELS).toBe('{"worker":"opus"}');
     expect(process.env.AGENT_BACKEND).toBe('claude-code');
+    expect(process.env.TERMINAL).toBe('xterm');
   });
 
   it('a host booted WITHOUT the vars stays unset after an empty save', async () => {
     vi.stubEnv('AGENT_CMD', undefined as unknown as string);
     vi.stubEnv('AGENT_MODELS', undefined as unknown as string);
     vi.stubEnv('AGENT_BACKEND', undefined as unknown as string);
+    vi.stubEnv('TERMINAL', undefined as unknown as string);
     const { applyToProcessEnv } = await freshModule();
 
     applyToProcessEnv({ backend: 'claude-code', cmd: 'claude -p', models: {} });
@@ -50,5 +54,6 @@ describe('applyToProcessEnv — boot-env restore (EI-337)', () => {
     expect(process.env.AGENT_CMD).toBeUndefined();
     expect(process.env.AGENT_BACKEND).toBeUndefined();
     expect(process.env.AGENT_MODELS).toBeUndefined();
+    expect(process.env.TERMINAL).toBeUndefined();
   });
 });

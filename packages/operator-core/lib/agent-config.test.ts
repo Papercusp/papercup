@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseRoleBackends, parseTiers, parseTierCeilings, agentCmdBootWarning, type AgentConfig } from './agent-config';
+import { effectiveBackend, readAgentConfig, parseSurfaceModels, parseBackends, parseRoleBackends, parseTiers, parseTierCeilings, parseTerminalEmulator, agentCmdBootWarning, type AgentConfig } from './agent-config';
 
 // Mock the PG-backed operator-state read so readAgentConfig exercises the
 // no-row fallback without touching a database.
@@ -27,6 +27,18 @@ describe('readAgentConfig default backend (no stored row)', () => {
   it('an invalid stored backend falls back to the claude-code default', async () => {
     readOperatorStateMock.mockResolvedValueOnce({ backend: 'gemini' });
     expect((await readAgentConfig()).backend).toBe('claude-code');
+  });
+});
+
+describe('parseTerminalEmulator', () => {
+  it('keeps a command-free terminal binary name', () => {
+    expect(parseTerminalEmulator(' gnome-terminal ')).toBe('gnome-terminal');
+  });
+
+  it('drops paths and shell commands so the preference cannot become execution', () => {
+    expect(parseTerminalEmulator('/usr/bin/gnome-terminal')).toBe('');
+    expect(parseTerminalEmulator('gnome-terminal; touch /tmp/nope')).toBe('');
+    expect(parseTerminalEmulator(null)).toBe('');
   });
 });
 

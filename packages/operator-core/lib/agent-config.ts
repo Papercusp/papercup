@@ -88,6 +88,11 @@ export interface AgentConfig {
       FLOOR is not configured — it derives from the role's resolved default
       model (a tier pick can escalate a role, never downgrade it). */
   tierCeilings?: Record<string, string>;
+  /** Preferred Linux terminal emulator for visible launches (for example
+      `gnome-terminal` or `alacritty`). Empty/absent = inherit the host's
+      `$TERMINAL`, then use Papercusp's existing desktop-aware auto-detection.
+      Stored per workspace; never changes another installation's default. */
+  terminal?: string;
 }
 
 const DEFAULT_CONFIG: AgentConfig = {
@@ -105,6 +110,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   surfaceModels: {},
   tiers: [],
   tierCeilings: {},
+  terminal: '',
 };
 
 export async function readAgentConfig(): Promise<AgentConfig> {
@@ -125,7 +131,16 @@ export async function readAgentConfig(): Promise<AgentConfig> {
     surfaceModels: parseSurfaceModels(raw.surfaceModels),
     tiers: parseTiers(raw.tiers),
     tierCeilings: parseTierCeilings(raw.tierCeilings, raw.tiers),
+    terminal: parseTerminalEmulator(raw.terminal),
   };
+}
+
+/** A terminal preference is a binary name, not a shell command. Keeping the
+    stored value command-free lets console-spawn safely resolve it on PATH. */
+export function parseTerminalEmulator(raw: unknown): string {
+  if (typeof raw !== 'string') return '';
+  const value = raw.trim();
+  return value.length <= 80 && /^[A-Za-z0-9._+-]+$/.test(value) ? value : '';
 }
 
 /** Validate the stored tier menu: an array of { name, spec, backend?,
@@ -269,6 +284,9 @@ export async function writeShellEnvFile(cfg: AgentConfig): Promise<string> {
   if (Object.keys(cfg.roleBackends ?? {}).length > 0) {
     lines.push(`export AGENT_ROLE_BACKENDS=${shQuote(JSON.stringify(cfg.roleBackends))}`);
   }
+  if (cfg.terminal?.trim()) {
+    lines.push(`export TERMINAL=${shQuote(cfg.terminal.trim())}`);
+  }
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, lines.join('\n') + '\n', { mode: 0o644 });
   return path;
@@ -285,11 +303,12 @@ function shQuote(s: string): string {
  * ground truth: "empty config value" must mean "revert to the host's boot
  * default", not "delete whatever the host was booted with".
  */
-const BOOT_AGENT_ENV: Readonly<Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS' | 'AGENT_ROLE_BACKENDS', string | undefined>> = {
+const BOOT_AGENT_ENV: Readonly<Record<'AGENT_BACKEND' | 'AGENT_CMD' | 'AGENT_MODELS' | 'AGENT_ROLE_BACKENDS' | 'TERMINAL', string | undefined>> = {
   AGENT_BACKEND: process.env.AGENT_BACKEND,
   AGENT_CMD: process.env.AGENT_CMD,
   AGENT_MODELS: process.env.AGENT_MODELS,
   AGENT_ROLE_BACKENDS: process.env.AGENT_ROLE_BACKENDS,
+  TERMINAL: process.env.TERMINAL,
 };
 
 function restoreBootEnv(key: keyof typeof BOOT_AGENT_ENV): void {
@@ -331,6 +350,11 @@ export function applyToProcessEnv(cfg: AgentConfig): void {
     process.env.AGENT_ROLE_BACKENDS = JSON.stringify(cfg.roleBackends);
   } else {
     restoreBootEnv('AGENT_ROLE_BACKENDS');
+  }
+  if (cfg.terminal?.trim()) {
+    process.env.TERMINAL = cfg.terminal.trim();
+  } else {
+    restoreBootEnv('TERMINAL');
   }
 }
 
@@ -434,6 +458,9 @@ function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
     if (Object.keys(v).length > 0) out.push({ key: k, effective: v, default: {}, layer: 'pg-settings' });
   }
   if ((cfg.tiers?.length ?? 0) > 0) out.push({ key: 'tiers', effective: cfg.tiers, default: [], layer: 'pg-settings' });
+  if ((cfg.terminal ?? '') !== DEFAULT_CONFIG.terminal) {
+    out.push({ key: 'terminal', effective: cfg.terminal ?? '', default: DEFAULT_CONFIG.terminal ?? '', layer: 'pg-settings' });
+  }
   return out;
 }
 
@@ -442,7 +469,7 @@ function agentConfigOverrides(cfg: AgentConfig): OverrideEntry[] {
 // config:list-overrides, and config:reset-overrides reverts them to DEFAULT_CONFIG.
 registerOverrideConcern({
   name: 'agent-config',
-  description: 'agent backend + cmd + per-role/per-surface model & backend overrides (operator_agent_config)',
+  description: 'agent backend + cmd + terminal + per-role/per-surface model & backend overrides (operator_agent_config)',
   diff: async () => agentConfigOverrides(await readAgentConfig()),
   capture: () => readAgentConfig(),
   reset: () => resetAgentConfig(),
