@@ -674,35 +674,52 @@ describe('decideReconcile', () => {
 
 describe('checkRestartPolicyDrift (P-003(b) config-drift guard)', () => {
   it('report-only entry (autoRestart:false) never warns, regardless of the live Restart= value', () => {
-    expect(checkRestartPolicyDrift(REPORT_ONLY_ENTRY, 'no', false)).toEqual({ warn: false, nextWarned: false });
-    expect(checkRestartPolicyDrift(REPORT_ONLY_ENTRY, 'no', true)).toEqual({ warn: false, nextWarned: true });
+    expect(checkRestartPolicyDrift(REPORT_ONLY_ENTRY, 'no', 'loaded', false)).toEqual({ warn: false, nextWarned: false });
+    expect(checkRestartPolicyDrift(REPORT_ONLY_ENTRY, 'no', 'loaded', true)).toEqual({ warn: false, nextWarned: true });
   });
 
   it('no drift (Restart=always, matching the applied drop-in) -> no warn, latch clears', () => {
-    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'always', false)).toEqual({ warn: false, nextWarned: false });
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'always', 'loaded', false)).toEqual({ warn: false, nextWarned: false });
     // Clears an existing latch too — a prior warn that's since been fixed should reset so a
     // future re-drift warns again instead of staying silently latched forever.
-    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'always', true)).toEqual({ warn: false, nextWarned: false });
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'always', 'loaded', true)).toEqual({ warn: false, nextWarned: false });
   });
 
-  it('unknown/unavailable Restart= (systemctl show call failed this tick) -> treated as no drift, no warn', () => {
-    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, undefined, false)).toEqual({ warn: false, nextWarned: false });
+  it('unknown/unavailable Restart=/LoadState (systemctl show call failed this tick) -> treated as no drift, no warn', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, undefined, undefined, false)).toEqual({ warn: false, nextWarned: false });
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', undefined, false)).toEqual({ warn: false, nextWarned: false });
   });
 
-  it('first drift observed (Restart=no, not yet warned) -> warns once, latches', () => {
-    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', false)).toEqual({ warn: true, nextWarned: true });
+  it('missing unit file (LoadState=not-found) -> warns with a missing-file reason, even when Restart=no is a default', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', 'not-found', false)).toEqual({
+      warn: true,
+      nextWarned: true,
+      reason: 'unit-file-missing',
+    });
+  });
+
+  it('first drift observed (LoadState=loaded + Restart=no, not yet warned) -> warns once, latches', () => {
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', 'loaded', false)).toEqual({
+      warn: true,
+      nextWarned: true,
+      reason: 'restart-policy-drift',
+    });
   });
 
   it('drift persists across ticks (already warned) -> no re-warn, latch stays set', () => {
-    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', true)).toEqual({ warn: false, nextWarned: true });
+    expect(checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', 'loaded', true)).toEqual({
+      warn: false,
+      nextWarned: true,
+      reason: 'restart-policy-drift',
+    });
   });
 
   it('drift observed fixed after having warned -> latch clears, so a future re-drift warns again', () => {
-    const fixed = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'on-failure', true);
+    const fixed = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'on-failure', 'loaded', true);
     expect(fixed).toEqual({ warn: false, nextWarned: false });
     // Simulate the drift recurring on a later tick — it warns again since the latch was cleared.
-    const redrift = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', fixed.nextWarned);
-    expect(redrift).toEqual({ warn: true, nextWarned: true });
+    const redrift = checkRestartPolicyDrift(AUTORESTART_ENTRY, 'no', 'loaded', fixed.nextWarned);
+    expect(redrift).toEqual({ warn: true, nextWarned: true, reason: 'restart-policy-drift' });
   });
 });
 
@@ -1056,7 +1073,7 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     const deps = makeDeps({
       execUser: vi.fn(async (args: string[]) => {
         if (args[0] === 'list-units') return upFixture;
-        if (args[0] === 'show') return 'Result=success\nNRestarts=0\nRestart=no\n';
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\nRestart=no\nLoadState=loaded\n';
         return '';
       }),
       registry: () => [AUTORESTART_ENTRY],
@@ -1080,7 +1097,7 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     const deps = makeDeps({
       execUser: vi.fn(async (args: string[]) => {
         if (args[0] === 'list-units') return upFixture;
-        if (args[0] === 'show') return `Result=success\nNRestarts=0\nRestart=${restartProp}\n`;
+        if (args[0] === 'show') return `Result=success\nNRestarts=0\nRestart=${restartProp}\nLoadState=loaded\n`;
         return '';
       }),
       registry: () => [AUTORESTART_ENTRY],
@@ -1092,6 +1109,27 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     await reconcileTick(deps); // re-drifted -> warns again (2)
     const driftNotifies = deps.notify.mock.calls.filter((c) => String(c[0]?.summary).includes('Restart= policy has drifted'));
     expect(driftNotifies).toHaveLength(2);
+  });
+
+  it('P-003(b): LoadState=not-found reports an unreachable unit file, not Restart= policy drift', async () => {
+    const upFixture = [
+      'papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy',
+      '',
+    ].join('\n');
+    const deps = makeDeps({
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return upFixture;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\nRestart=no\nLoadState=not-found\n';
+        return '';
+      }),
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    await reconcileTick(deps);
+    const summaries = deps.notify.mock.calls.map((c) => String(c[0]?.summary));
+    expect(summaries).toContain(
+      '⚠ supervision: `papercup-mcp-proxy` unit file is MISSING/UNREACHABLE (LoadState=not-found; check for a broken symlink in ~/.config/systemd/user) — systemd cannot start or restart it',
+    );
+    expect(summaries.some((summary) => summary.includes('Restart= policy has drifted'))).toBe(false);
   });
 
   it('EI-11344: NRestarts climbing 8→12 in four minutes pages once with the last exit cause, even with auto-restart off', async () => {

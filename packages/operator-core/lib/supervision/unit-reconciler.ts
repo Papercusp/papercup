@@ -276,21 +276,28 @@ export function initialFlapState(unit: string): UnitFlapState {
 }
 
 /**
- * P-003(b): a supervised `autoRestart:true` unit whose LIVE systemd `Restart=` policy has
- * drifted to `'no'` (someone/something removed or never applied the damping drop-in) silently
- * stops being restart-managed by systemd itself — our reconciler's OWN restart action still
- * fires, but the belt-and-suspenders systemd-level supervision is gone. PURE: given the current
- * `Restart` property value + whether we already warned, returns whether to warn THIS tick and
- * the next `restartDriftWarned` state (one-time until the drift is observed fixed).
+ * P-003(b): classify a supervised `autoRestart:true` unit's live systemd supervision state.
+ * `Restart=no` is policy drift only when systemd actually loaded the unit file; an unloaded
+ * unit reports default-looking properties that are not configuration. PURE: given the current
+ * `Restart`/`LoadState` properties + whether we already warned, returns whether to warn THIS
+ * tick, the reason, and the next `restartDriftWarned` state.
  */
+export type RestartPolicyDriftReason = 'unit-file-missing' | 'restart-policy-drift';
+
 export function checkRestartPolicyDrift(
   entry: SupervisionEntry,
   restartProp: string | undefined,
+  loadState: string | undefined,
   alreadyWarned: boolean,
-): { warn: boolean; nextWarned: boolean } {
+): { warn: boolean; nextWarned: boolean; reason?: RestartPolicyDriftReason } {
   if (!entry.autoRestart) return { warn: false, nextWarned: alreadyWarned };
-  const drifted = restartProp === 'no';
-  if (drifted) return { warn: !alreadyWarned, nextWarned: true };
+  const reason: RestartPolicyDriftReason | undefined =
+    loadState === 'not-found'
+      ? 'unit-file-missing'
+      : loadState === 'loaded' && restartProp === 'no'
+        ? 'restart-policy-drift'
+        : undefined;
+  if (reason) return { warn: !alreadyWarned, nextWarned: true, reason };
   return { warn: false, nextWarned: false }; // fixed (or unknown) — clear the latch so a future re-drift warns again.
 }
 
@@ -839,11 +846,14 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     }
 
     // P-003(b): config-drift guard, independent of up/down state.
-    const drift = checkRestartPolicyDrift(entry, show?.restart, state.restartDriftWarned);
+    const drift = checkRestartPolicyDrift(entry, show?.restart, show?.loadState, state.restartDriftWarned);
     if (drift.warn) {
       await deps
         .notify({
-          summary: `⚠ supervision: \`${entry.unit}\` systemd Restart= policy has drifted to 'no' — the unit is no longer systemd-restart-managed (config drift; re-apply the supervision drop-in)`,
+          summary:
+            drift.reason === 'unit-file-missing'
+              ? `⚠ supervision: \`${entry.unit}\` unit file is MISSING/UNREACHABLE (LoadState=not-found; check for a broken symlink in ~/.config/systemd/user) — systemd cannot start or restart it`
+              : `⚠ supervision: \`${entry.unit}\` systemd Restart= policy has drifted to 'no' — the unit is no longer systemd-restart-managed (config drift; re-apply the supervision drop-in)`,
           kind: 'escalation',
         })
         .catch(() => {});
