@@ -44,7 +44,7 @@ const computeDeployStatusMock = vi.fn();
 const integrationRootMock = vi.fn(() => '/DEFAULT');
 vi.mock('../release-deploy-launch', () => ({
   computeDeployStatus: (...args: unknown[]) => computeDeployStatusMock(...args),
-  integrationRoot: (...args: unknown[]) => integrationRootMock(...args),
+  integrationRoot: () => integrationRootMock(),
 }));
 
 const resolveCheckpointRoutingMock = vi.fn();
