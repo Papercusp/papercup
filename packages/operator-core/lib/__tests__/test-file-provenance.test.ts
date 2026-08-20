@@ -190,6 +190,28 @@ describe('fingerprint + snapshot against the real filesystem', () => {
     expect(snapshot.entries[0].fingerprint).toMatch(/^[0-9a-f]{12}$/);
   });
 
+  /**
+   * REGRESSION: the superproject stores `libs/test-config` as a gitlink, so its own `git ls-files`
+   * cannot answer for a file inside that submodule. The provenance reader must use the nested repo
+   * and carry both its HEAD and the superproject pin into the human-readable stamp.
+   */
+  it('resolves a tracked file inside a submodule and reports its commit/pointer state', () => {
+    const snapshot = snapshotProvenance([resolve(REPO_ROOT, 'libs/test-config/src/lane-split.test.ts')]);
+    const file = snapshot.entries[0];
+    expect(file.state).not.toBe('untracked');
+    expect(file.repoPath).toBe('libs/test-config');
+    expect(file.repoHead).toMatch(/^[0-9a-f]{7,40}$/);
+    expect(file.superprojectPin).toMatch(/^[0-9a-f]{40}$/);
+    expect(['matched', 'mismatch']).toContain(file.pointerState);
+
+    const banner = formatProvenanceBanner(snapshot, 'pre-run');
+    expect(banner).toContain('libs/test-config/src/lane-split.test.ts');
+    expect(banner).toContain('repo=libs/test-config');
+    expect(banner).toContain(`repoHead=${file.repoHead}`);
+    expect(banner).toContain(`superprojectPin=${file.superprojectPin}`);
+    expect(banner).toContain(`pointer=${file.pointerState}`);
+  });
+
   it('dedupes a path named twice so the before/after snapshots stay comparable entry-for-entry', () => {
     const p = resolve(REPO_ROOT, 'package.json');
     expect(snapshotProvenance([p, p]).entries).toHaveLength(1);

@@ -828,6 +828,78 @@ function gitHeadSha(root) {
 }
 
 /**
+ * Resolve the repository that owns one requested path.
+ *
+ * The superproject stores a submodule as one gitlink, so asking its `git ls-files` about a file
+ * inside that directory returns an empty answer even when the nested repository tracks the file.
+ * Ask git from the path's directory instead; this works for the superproject, checked-out
+ * submodules, and nested submodules without maintaining a second copy of `.gitmodules` parsing.
+ */
+function gitRepoRootForPath(absolute, fallbackRoot) {
+  try {
+    const res = run('git', ['-C', dirname(absolute), 'rev-parse', '--show-toplevel'], { cwd: fallbackRoot });
+    if (!res || res.error || res.status !== 0) return fallbackRoot;
+    const candidate = resolve((res.stdout ?? '').trim());
+    return isWithinRoot(candidate, fallbackRoot) ? candidate : fallbackRoot;
+  } catch {
+    return fallbackRoot;
+  }
+}
+
+/**
+ * Read the nested repository's HEAD and the gitlink commit pinned by its immediate superproject.
+ * The latter is essential evidence: a clean nested worktree at a different commit than the
+ * superproject pin is not reproducible from this checkout and must not receive a clean verdict.
+ */
+function gitRepoDetails(absolute, root) {
+  const repoRoot = gitRepoRootForPath(absolute, root);
+  const repoPath = relative(root, repoRoot) || '.';
+  const details = {
+    repoRoot,
+    repoPath,
+    repoRelativePath: relative(repoRoot, absolute),
+    repoHead: gitHeadSha(repoRoot),
+    superprojectPin: null,
+    pointerState: repoRoot === root ? 'not-applicable' : 'unknown',
+  };
+  if (repoRoot === root) return details;
+
+  try {
+    const parent = run('git', ['-C', repoRoot, 'rev-parse', '--show-superproject-working-tree'], { cwd: root });
+    if (!parent || parent.error || parent.status !== 0) return details;
+    const parentRoot = resolve((parent.stdout ?? '').trim());
+    if (!parentRoot || parentRoot === repoRoot) return details;
+    const parentRelativePath = relative(parentRoot, repoRoot);
+    if (!parentRelativePath || parentRelativePath.startsWith('..')) return details;
+    const staged = run('git', ['ls-files', '--stage', '--', parentRelativePath], { cwd: parentRoot });
+    if (!staged || staged.error || staged.status !== 0) return details;
+    const match = /^160000 ([0-9a-f]+)\s+\d+\t/.exec((staged.stdout ?? '').trim());
+    if (!match) return details;
+    details.superprojectPin = match[1];
+    details.pointerState = details.repoHead === null
+      ? 'unknown'
+      : details.superprojectPin.startsWith(details.repoHead)
+        ? 'matched'
+        : 'mismatch';
+  } catch {
+    // Diagnostics must degrade to UNKNOWN rather than manufacture a clean pointer claim.
+  }
+  return details;
+}
+
+function groupPathsByRepo(absolutePaths, root, repositories = new Map()) {
+  const groups = new Map();
+  for (const absolute of absolutePaths) {
+    const details = repositories.get(absolute) ?? gitRepoDetails(absolute, root);
+    repositories.set(absolute, details);
+    const group = groups.get(details.repoRoot) ?? { ...details, paths: [] };
+    group.paths.push(absolute);
+    groups.set(details.repoRoot, group);
+  }
+  return groups;
+}
+
+/**
  * Per-path working-tree state for exactly the paths asked about.
  *
  * `-z` (NUL-separated) deliberately over plain `--porcelain`: porcelain QUOTES and escapes paths
@@ -845,62 +917,90 @@ function gitHeadSha(root) {
  * possible state: a file that is not in git AT ALL. `ls-files` answers tracked-ness directly and
  * is immune to that collapse.
  */
-function gitPathStates(absolutePaths, root) {
-  const states = new Map(absolutePaths.map((abs) => [abs, PROVENANCE_UNKNOWN]));
-  if (absolutePaths.length === 0) return states;
-  let tracked;
-  let status;
-  try {
-    tracked = run('git', ['ls-files', '-z', '--', ...absolutePaths], { cwd: root });
-    status = run('git', ['status', '--porcelain', '-z', '--', ...absolutePaths], { cwd: root });
-  } catch {
-    return states;
-  }
-  // Either call failing leaves every path `unknown` — never `clean`.
-  if (!tracked || tracked.error || tracked.status !== 0) return states;
-  if (!status || status.error || status.status !== 0) return states;
-
-  const trackedSet = new Set(
-    (tracked.stdout ?? '')
-      .split('\0')
-      .filter(Boolean)
-      .map((p) => resolve(root, p)),
+function gitPathStates(absolutePaths, root, repositories = new Map()) {
+  const states = new Map(
+    absolutePaths.map((absolute) => {
+      const details = repositories.get(absolute) ?? gitRepoDetails(absolute, root);
+      repositories.set(absolute, details);
+      return [absolute, { state: PROVENANCE_UNKNOWN, ...details }];
+    }),
   );
-  // A path git does not track is not reproducible by a peer, whether it is merely untracked or
-  // ignored outright — both read `untracked` on the banner.
-  for (const abs of absolutePaths) states.set(abs, trackedSet.has(abs) ? 'clean' : 'untracked');
+  if (absolutePaths.length === 0) return states;
 
-  for (const record of (status.stdout ?? '').split('\0')) {
-    if (record.length < 4) continue;
-    const code = record.slice(0, 2);
-    const reported = record.slice(3);
-    if (!/^[ MADRCU?!]{2}$/.test(code)) continue; // a rename's source field — not a status record
-    const abs = resolve(root, reported);
-    if (!states.has(abs)) continue;
-    states.set(abs, code === '??' || code === '!!' ? 'untracked' : 'dirty');
+  for (const group of groupPathsByRepo(absolutePaths, root, repositories).values()) {
+    const relativePaths = group.paths.map((absolute) => relative(group.repoRoot, absolute));
+    let tracked;
+    let status;
+    try {
+      tracked = run('git', ['ls-files', '-z', '--', ...relativePaths], { cwd: group.repoRoot });
+      status = run('git', ['status', '--porcelain', '-z', '--', ...relativePaths], { cwd: group.repoRoot });
+    } catch {
+      continue;
+    }
+    // Either call failing leaves every path `unknown` — never `clean`.
+    if (!tracked || tracked.error || tracked.status !== 0) continue;
+    if (!status || status.error || status.status !== 0) continue;
+
+    const trackedSet = new Set(
+      (tracked.stdout ?? '')
+        .split('\0')
+        .filter(Boolean)
+        .map((p) => resolve(group.repoRoot, p)),
+    );
+    // A path git does not track is not reproducible by a peer, whether it is merely untracked or
+    // ignored outright — both read `untracked` on the banner.
+    for (const absolute of group.paths) {
+      const current = states.get(absolute);
+      states.set(absolute, { ...current, state: trackedSet.has(absolute) ? 'clean' : 'untracked' });
+    }
+
+    for (const record of (status.stdout ?? '').split('\0')) {
+      if (record.length < 4) continue;
+      const code = record.slice(0, 2);
+      const reported = record.slice(3);
+      if (!/^[ MADRCU?!]{2}$/.test(code)) continue; // a rename's source field — not a status record
+      const absolute = resolve(group.repoRoot, reported);
+      if (!states.has(absolute)) continue;
+      const current = states.get(absolute);
+      states.set(absolute, { ...current, state: code === '??' || code === '!!' ? 'untracked' : 'dirty' });
+    }
+  }
+
+  // A nested repository can be clean while checked out at a commit different from the
+  // superproject's gitlink. Preserve the existing state vocabulary but make that mismatch loud.
+  for (const [absolute, entry] of states) {
+    if (entry.pointerState === 'mismatch' && entry.state === 'clean') {
+      states.set(absolute, { ...entry, state: 'dirty' });
+    } else if (entry.pointerState === 'unknown' && entry.state === 'clean') {
+      states.set(absolute, { ...entry, state: PROVENANCE_UNKNOWN });
+    }
   }
   return states;
 }
 
 /** Added/deleted line counts vs HEAD (staged + unstaged), for the paths git can diff. */
-function gitLineDeltas(absolutePaths, root) {
+function gitLineDeltas(absolutePaths, root, repositories = new Map()) {
   const deltas = new Map();
   if (absolutePaths.length === 0) return deltas;
-  let res;
-  try {
-    res = run('git', ['diff', '--numstat', 'HEAD', '--', ...absolutePaths], { cwd: root });
-  } catch {
-    return deltas;
-  }
-  if (!res || res.error || res.status !== 0) return deltas;
-  for (const line of (res.stdout ?? '').split('\n')) {
-    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
-    if (!match) continue;
-    const abs = resolve(root, match[3]);
-    deltas.set(abs, {
-      added: match[1] === '-' ? null : Number(match[1]),
-      deleted: match[2] === '-' ? null : Number(match[2]),
-    });
+
+  for (const group of groupPathsByRepo(absolutePaths, root, repositories).values()) {
+    const relativePaths = group.paths.map((absolute) => relative(group.repoRoot, absolute));
+    let res;
+    try {
+      res = run('git', ['diff', '--numstat', 'HEAD', '--', ...relativePaths], { cwd: group.repoRoot });
+    } catch {
+      continue;
+    }
+    if (!res || res.error || res.status !== 0) continue;
+    for (const line of (res.stdout ?? '').split('\n')) {
+      const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+      if (!match) continue;
+      const absolute = resolve(group.repoRoot, match[3]);
+      deltas.set(absolute, {
+        added: match[1] === '-' ? null : Number(match[1]),
+        deleted: match[2] === '-' ? null : Number(match[2]),
+      });
+    }
   }
   return deltas;
 }
@@ -911,14 +1011,15 @@ function gitLineDeltas(absolutePaths, root) {
  */
 export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
   const unique = [...new Set(absolutePaths)];
-  const states = gitPathStates(unique, root);
-  const deltas = gitLineDeltas(unique, root);
+  const repositories = new Map();
+  const states = gitPathStates(unique, root, repositories);
+  const deltas = gitLineDeltas(unique, root, repositories);
   return {
     head: gitHeadSha(root),
     entries: unique.map((absolute) => ({
       absolute,
       path: relative(root, absolute) || absolute,
-      state: states.get(absolute) ?? PROVENANCE_UNKNOWN,
+      ...(states.get(absolute) ?? { state: PROVENANCE_UNKNOWN }),
       fingerprint: fileFingerprint(absolute),
       ...(deltas.get(absolute) ?? { added: null, deleted: null }),
     })),
@@ -926,15 +1027,22 @@ export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
 }
 
 /** `[DIRTY +30/-0]` / `[clean]` / `[UNTRACKED]` / `[state UNKNOWN]` — the per-path suffix. */
+function repoEvidenceLabel(entry) {
+  if (!entry.repoPath || entry.repoPath === '.') return '';
+  return ` repo=${entry.repoPath} repoHead=${entry.repoHead ?? PROVENANCE_UNKNOWN} ` +
+    `superprojectPin=${entry.superprojectPin ?? PROVENANCE_UNKNOWN} pointer=${entry.pointerState ?? 'unknown'}`;
+}
+
 function stateLabel(entry) {
-  if (entry.state === 'clean') return '[clean]';
-  if (entry.state === 'untracked') return '[UNTRACKED — exists only on this box]';
-  if (entry.state === PROVENANCE_UNKNOWN) return '[state UNKNOWN — git could not be read]';
+  const repo = repoEvidenceLabel(entry);
+  if (entry.state === 'clean') return `[clean${repo}]`;
+  if (entry.state === 'untracked') return `[UNTRACKED — exists only on this box${repo}]`;
+  if (entry.state === PROVENANCE_UNKNOWN) return `[state UNKNOWN — git could not be read${repo}]`;
   const counts =
     typeof entry.added === 'number' && typeof entry.deleted === 'number'
       ? ` +${entry.added}/-${entry.deleted}`
       : '';
-  return `[DIRTY${counts}]`;
+  return `[DIRTY${counts}${repo}]`;
 }
 
 /**

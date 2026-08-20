@@ -1646,6 +1646,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/inno-uninstall-cleanup.selftest.sh'], label: 'Windows installer UNINSTALL cleanup: login-autostart removed, sibling role + shared runtime spared (WI-39403)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rust-path-remap.selftest.sh'], label: 'Rust build-box path remap: every build entry point sets it itself + is idempotent (EI-20075266271803900)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/disk-preflight.selftest.sh'], label: 'Build disk preflight: refuses ENOSPC(28) up front, fails open when unmeasurable, and every staging entry point calls it (EI-20090527288494606)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh'], label: 'macOS fresh-install state isolation: trap-restores both Papercusp roots across PASS/FAIL/TERM and refuses stale backups (EI-20332777704574867)' },
       ],
     },
   ],
