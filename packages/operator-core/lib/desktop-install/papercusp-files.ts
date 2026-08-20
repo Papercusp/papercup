@@ -1510,6 +1510,29 @@ export async function writeShim(
         `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
         '  psu_code=$?\n' +
         `  [ "$psu_code" -eq ${runtime.reexecExitCode} ] || exit "$psu_code"\n` +
+        // EI-20994934425970874: kickoff is a ONE-SHOT launch input. The shim's
+        // host-code adoption loop deliberately re-runs the original launcher,
+        // but `$@` and exported env survive that loop unless we consume them
+        // here. The inner host handoff also nulls kickoff, but only after the
+        // successor has parsed/tagged the original input — and a rejected or
+        // missed handoff used to deliver the same first turn again. Strip both
+        // supported channels at the parent boundary before iteration two. The
+        // carry itself rides the handoff's child argv, not either kickoff input.
+        '  unset PAPERCUSP_KICKOFF_PROMPT\n' +
+        '  psu_next_args=()\n' +
+        '  psu_drop_kickoff_value=0\n' +
+        '  for psu_arg in "$@"; do\n' +
+        '    if [ "$psu_drop_kickoff_value" -eq 1 ]; then\n' +
+        '      psu_drop_kickoff_value=0\n' +
+        '      continue\n' +
+        '    fi\n' +
+        '    case "$psu_arg" in\n' +
+        '      --kickoff) psu_drop_kickoff_value=1 ;;\n' +
+        '      --kickoff=*) ;;\n' +
+        '      *) psu_next_args+=("$psu_arg") ;;\n' +
+        '    esac\n' +
+        '  done\n' +
+        '  set -- "${psu_next_args[@]}"\n' +
         '  psu_reexecs=$((psu_reexecs + 1))\n' +
         // -gt, not -ge: `psu_reexecs` counts re-execs ALREADY PERFORMED, so the
         // Nth one must be allowed to happen before the N+1th is refused.

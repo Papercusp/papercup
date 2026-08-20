@@ -70,9 +70,10 @@ async function writePlainShim(): Promise<void> {
  *  IS the subject of most of these tests. */
 async function runShim(
   extraEnv: Record<string, string> = {},
+  argv: string[] = [],
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   try {
-    const { stdout, stderr } = await run('bash', [shimPath], {
+    const { stdout, stderr } = await run('bash', [shimPath, ...argv], {
       env: {
         PATH: process.env.PATH ?? '',
         HOME: tmp,
@@ -127,6 +128,45 @@ describe('psu shim re-exec loop (WI-38292)', () => {
     const { code } = await runShim();
     expect(code).toBe(0);
     expect(await runCount()).toBe(3);
+  });
+
+  it('consumes kickoff env + argv before a host-code re-exec, while preserving ordinary launch args', async () => {
+    await writePsuShim();
+    await fs.writeFile(
+      launcherPath,
+      [
+        "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';",
+        "const counter = process.env.RUN_LOG + '.n';",
+        "let n = 0; try { n = Number(readFileSync(counter, 'utf8')); } catch {}",
+        'n += 1; writeFileSync(counter, String(n));',
+        "appendFileSync(process.env.RUN_LOG, JSON.stringify({ n, kickoffEnv: process.env.PAPERCUSP_KICKOFF_PROMPT ?? null, argv: process.argv.slice(2) }) + '\\n');",
+        `process.exit(n === 1 ? ${PSU_REEXEC_EXIT_CODE} : 0);`,
+        '',
+      ].join('\n'),
+    );
+
+    const { code } = await runShim(
+      { PAPERCUSP_KICKOFF_PROMPT: 'env kickoff' },
+      ['--resume=session-1', '--kickoff=flag kickoff', '--no-kickoff', '--model=gpt-5.6-sol'],
+    );
+
+    expect(code).toBe(0);
+    const rows = (await fs.readFile(path.join(tmp, 'runs.log'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { n: number; kickoffEnv: string | null; argv: string[] });
+    expect(rows).toEqual([
+      {
+        n: 1,
+        kickoffEnv: 'env kickoff',
+        argv: ['--resume=session-1', '--kickoff=flag kickoff', '--no-kickoff', '--model=gpt-5.6-sol'],
+      },
+      {
+        n: 2,
+        kickoffEnv: null,
+        argv: ['--resume=session-1', '--no-kickoff', '--model=gpt-5.6-sol'],
+      },
+    ]);
   });
 
   it('ADOPTS code written to disk after it started — the bug this exists to fix', async () => {
