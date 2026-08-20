@@ -184,7 +184,14 @@ export function buildCutArgv(
   const unit = cutUnitFor(platform);
   const log = cutLogFor(platform);
   const done = cutDoneFor(platform);
-  const inner = `rm -f ${done}; ` + `${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
+  // A first pass writes these version fields before cutting the seed. A retry
+  // validates that exact residue in release:cut, then restores only those files
+  // so release-local.sh starts from a clean provenance baseline and reapplies the
+  // same idempotent bump while preserving the ignored completed seed.
+  const resumeReset = runtime.reuseSeed
+    ? 'git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json && '
+    : '';
+  const inner = `rm -f ${done}; ` + `${resumeReset}${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
   return [
     '--user',
     '--collect',

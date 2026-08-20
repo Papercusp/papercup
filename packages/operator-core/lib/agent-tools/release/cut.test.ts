@@ -53,7 +53,7 @@ const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);
 const execFileSyncM = vi.mocked(execFileSync);
-const { default: tool, resolveCutRoot, isAutoManagedCutWorktree } = await import('./cut');
+const { default: tool, resolveCutRoot, isAutoManagedCutWorktree, validateReleaseResumeResidue } = await import('./cut');
 
 // The real live operator runs from an auto-managed `papercup-release` checkout,
 // which the production guard must refuse. Most handler tests exercise unrelated
@@ -163,6 +163,43 @@ describe('release:cut — constrained root selector', () => {
     });
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_clean/) });
+  });
+
+  it('accepts only the exact cutter-owned version residue for a completed-seed retry', async () => {
+    const packageHead = '{\n  "name": "desktop",\n  "version": "0.0.17"\n}\n';
+    const packageWorktree = '{\n  "name": "desktop",\n  "version": "0.0.18"\n}\n';
+    const result = validateReleaseResumeResidue({
+      superprojectStatus: ' m papercusp-desktop\n',
+      desktopStatus: ' M package.json\n',
+      version: '0.0.18',
+      files: { 'package.json': { head: packageHead, worktree: packageWorktree } },
+    });
+    expect(result).toEqual({ ok: true });
+
+    expect(validateReleaseResumeResidue({
+      superprojectStatus: ' m papercusp-desktop\n',
+      desktopStatus: ' M package.json\n M src/main.rs\n',
+      version: '0.0.18',
+      files: { 'package.json': { head: packageHead, worktree: packageWorktree } },
+    })).toMatchObject({ ok: false, reason: expect.stringMatching(/non-cutter path/) });
+
+    expect(validateReleaseResumeResidue({
+      superprojectStatus: ' m papercusp-desktop\n',
+      desktopStatus: ' M package.json\n',
+      version: '0.0.18',
+      files: { 'package.json': { head: packageHead, worktree: packageWorktree.replace('desktop', 'tampered') } },
+    })).toMatchObject({ ok: false, reason: expect.stringMatching(/changes beyond/) });
+  });
+
+  it('requires the completed seed manifest before admitting reuseSeed residue', async () => {
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => '',
+      canonicalPath: (candidate) => candidate,
+      exists: () => false,
+    }, { reuseSeedVersion: '0.0.18' });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_resume_seed_missing/) });
   });
 
   it('rejects the live deploy/checkpoint/staging roots that can move during a cut', async () => {
@@ -492,6 +529,13 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(b.wouldRun).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_OWNER_NAME='Avi'");
     expect(b.wouldRun).not.toMatch(/gh release|push origin/);
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('reuseSeed dry-run restores only validated cutter-owned version files before relaunch', async () => {
+    const b = body(await tool.handler({ ...runArgs, reuseSeed: true } as never, { role: 'operator' } as never));
+    expect(b.wouldRun).toContain('git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json &&');
+    expect(b.wouldRun).toContain("PAPERCUSP_SKIP_SEED_CUT='1'");
     expect(launchM).not.toHaveBeenCalled();
   });
 

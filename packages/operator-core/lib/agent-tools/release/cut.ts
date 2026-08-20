@@ -45,6 +45,7 @@
 
 import { z } from 'zod';
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
@@ -119,6 +120,73 @@ export interface CutRootResolutionDeps {
   listWorktrees?: (repoPath: string) => CutWorktree[];
   status?: (worktreePath: string) => string;
   canonicalPath?: (candidate: string) => string;
+  desktopStatus?: (desktopRoot: string) => string;
+  headFile?: (desktopRoot: string, relativePath: string) => string;
+  readFile?: (absolutePath: string) => string;
+  exists?: (absolutePath: string) => boolean;
+}
+
+export interface CutRootResolutionOptions {
+  /** A completed seed may be reused only when the remaining tracked edits are the
+   * exact idempotent version bump written by release-local.sh for this version. */
+  reuseSeedVersion?: string;
+}
+
+export const RELEASE_RESUME_VERSION_PATHS = [
+  'package.json',
+  'src-tauri/Cargo.toml',
+  'src-tauri/tauri.conf.json',
+] as const;
+
+function expectedVersionFile(relativePath: string, head: string, version: string): string {
+  if (relativePath === 'package.json' || relativePath === 'src-tauri/tauri.conf.json') {
+    const parsed = JSON.parse(head) as Record<string, unknown>;
+    parsed.version = version;
+    return `${JSON.stringify(parsed, null, 2)}\n`;
+  }
+  if (relativePath === 'src-tauri/Cargo.toml') {
+    return head.replace(/^version = "[^"]+"/m, `version = "${version}"`);
+  }
+  throw new Error(`unsupported release resume path: ${relativePath}`);
+}
+
+/** Validate the only dirty-tree shape that a reuseSeed retry may erase. The
+ * superproject sees a dirty submodule while the submodule itself must contain
+ * only release-local.sh's exact version-field rewrites. */
+export function validateReleaseResumeResidue(input: {
+  superprojectStatus: string;
+  desktopStatus: string;
+  version: string;
+  files: Readonly<Record<string, { head: string; worktree: string }>>;
+}): { ok: true } | { ok: false; reason: string } {
+  const desktopLines = input.desktopStatus.split('\n').filter(Boolean);
+  const expectedSuper = desktopLines.length > 0 ? ' m papercusp-desktop' : '';
+  if (input.superprojectStatus.trimEnd() !== expectedSuper) {
+    return { ok: false, reason: `superproject status is not the single expected dirty submodule (${JSON.stringify(input.superprojectStatus)})` };
+  }
+
+  const allowed = new Set<string>(RELEASE_RESUME_VERSION_PATHS);
+  for (const line of desktopLines) {
+    if (!line.startsWith(' M ')) {
+      return { ok: false, reason: `desktop status contains a non-worktree modification: ${line}` };
+    }
+    const relativePath = line.slice(3);
+    if (!allowed.has(relativePath)) {
+      return { ok: false, reason: `desktop status contains non-cutter path: ${relativePath}` };
+    }
+    const file = input.files[relativePath];
+    if (!file) return { ok: false, reason: `missing residue snapshot for ${relativePath}` };
+    let expected: string;
+    try {
+      expected = expectedVersionFile(relativePath, file.head, input.version);
+    } catch (err) {
+      return { ok: false, reason: `could not validate ${relativePath}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (file.worktree !== expected) {
+      return { ok: false, reason: `${relativePath} contains changes beyond the requested ${input.version} version bump` };
+    }
+  }
+  return { ok: true };
 }
 
 function parseWorktreeList(stdout: string): CutWorktree[] {
@@ -184,6 +252,7 @@ export function isAutoManagedCutWorktree(worktreePath: string): boolean {
 export async function resolveCutRoot(
   selector: string | undefined,
   deps: CutRootResolutionDeps = {},
+  options: CutRootResolutionOptions = {},
 ): Promise<CutRootResolution> {
   if (selector === undefined) {
     const implicitDesktopRoot = desktopRoot();
@@ -258,10 +327,42 @@ export async function resolveCutRoot(
     };
   }
   if (dirty.trim().length > 0) {
-    return {
-      ok: false,
-      reason: `root_not_clean — selected worktree '${selected.path}' has uncommitted changes; release cuts require a clean worktree`,
-    };
+    if (!options.reuseSeedVersion) {
+      return {
+        ok: false,
+        reason: `root_not_clean — selected worktree '${selected.path}' has uncommitted changes; release cuts require a clean worktree`,
+      };
+    }
+    const desktopRoot = path.join(selected.path, 'papercusp-desktop');
+    const desktopStatus = (deps.desktopStatus ?? ((root: string) => execFileSync(
+      'git', ['-C', root, 'status', '--porcelain', '--untracked-files=no'], { encoding: 'utf8' },
+    )))(desktopRoot);
+    const files: Record<string, { head: string; worktree: string }> = {};
+    const headFile = deps.headFile ?? ((root: string, relativePath: string) => execFileSync(
+      'git', ['-C', root, 'show', `HEAD:${relativePath}`], { encoding: 'utf8' },
+    ));
+    const readFile = deps.readFile ?? ((absolutePath: string) => readFileSync(absolutePath, 'utf8'));
+    for (const line of desktopStatus.split('\n').filter(Boolean)) {
+      const relativePath = line.slice(3);
+      if ((RELEASE_RESUME_VERSION_PATHS as readonly string[]).includes(relativePath)) {
+        files[relativePath] = {
+          head: headFile(desktopRoot, relativePath),
+          worktree: readFile(path.join(desktopRoot, relativePath)),
+        };
+      }
+    }
+    const residue = validateReleaseResumeResidue({
+      superprojectStatus: dirty,
+      desktopStatus,
+      version: options.reuseSeedVersion,
+      files,
+    });
+    if (!residue.ok) {
+      return {
+        ok: false,
+        reason: `root_resume_residue_invalid — selected worktree '${selected.path}' is not a safe release-owned retry: ${residue.reason}`,
+      };
+    }
   }
   if (isAutoManagedCutWorktree(selected.path)) {
     return {
@@ -270,6 +371,17 @@ export async function resolveCutRoot(
         `root_not_isolated — selected worktree '${selected.path}' is auto-managed and can be replaced during a cut; ` +
         'prepare a dedicated exact-SHA worktree with setup-release-checkout.sh',
     };
+  }
+
+  if (options.reuseSeedVersion) {
+    const seedManifest = path.join(selected.path, 'papercusp-desktop', 'src-tauri', 'seed', 'manifest.json');
+    const exists = deps.exists ?? existsSync;
+    if (!exists(seedManifest)) {
+      return {
+        ok: false,
+        reason: `root_resume_seed_missing — reuseSeed requires the completed seed manifest at '${seedManifest}'`,
+      };
+    }
   }
 
   return {
@@ -692,7 +804,11 @@ export default defineTool({
       const channel = args.channel as Channel;
       const platform = args.platform as Platform;
       const legs = legsForPlatform(platform);
-      const selected = await resolveCutRoot(args.root);
+      const selected = await resolveCutRoot(
+        args.root,
+        undefined,
+        args.reuseSeed ? { reuseSeedVersion: args.version } : undefined,
+      );
       if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
       const pre = preflightCut(legs, { platform, root: selected.desktopRoot });
@@ -811,7 +927,11 @@ export default defineTool({
     }
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
-    const selected = await resolveCutRoot(args.root);
+    const selected = await resolveCutRoot(
+      args.root,
+      undefined,
+      args.reuseSeed ? { reuseSeedVersion: args.version } : undefined,
+    );
     if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
     // Refuse to start a second cut over an in-flight one (structured, so the caller waits).
