@@ -38,10 +38,13 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { defineTool, SU_ROLES, fuzzyEnum } from '@papercusp/agent-mcp';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
+import { resolveProjectDir } from '../../spawn-config';
+import { isSuTierRole } from '../../su-role-addendum';
 import { validateCloudModelSpec, FLEET_MAX_MEMBERS } from '../../agent-config-constants';
 import {
   claimFleetLaunchSlot,
@@ -928,6 +931,62 @@ function err(text: string) {
 }
 
 /**
+ * Preflight every explicitly requested psu role through the SAME role-prompt
+ * assembler bootstrap-role will use after a terminal opens. `fleet:launch-on-plan`
+ * is otherwise able to accept an arbitrary string, open a real desktop window,
+ * and discover only inside psu that no persona exists (EI-21014432394938679:
+ * `role:"builder"` left a failed terminal plus a partial launch transaction).
+ *
+ * Plain `su` and the closed SU-tier addendum roles stay on bootstrap-su, so they
+ * deliberately bypass role-prompt resolution. Every other role must resolve in
+ * the target harness/blueprint now. This preserves blueprint-specific roles—the
+ * assembler reads the harness's real blueprint chain—instead of narrowing the
+ * open role set to a hand-maintained enum that would reject legitimate specialists.
+ */
+async function unresolvedFleetMemberRole(opts: {
+  harness: string;
+  workspaceId: string;
+  count: number;
+  role?: string;
+  members?: readonly MemberSpec[];
+}): Promise<string | null> {
+  const requested: Array<{ source: string; role: string }> = [];
+  const fleetRole = opts.role?.trim();
+  if (fleetRole) requested.push({ source: 'role', role: fleetRole });
+  for (let i = 0; i < Math.min(opts.count, opts.members?.length ?? 0); i++) {
+    const role = opts.members?.[i]?.role?.trim();
+    if (role) requested.push({ source: `members[${i}].role`, role });
+  }
+  const unique = Array.from(new Map(requested.map((entry) => [entry.role, entry])).values());
+  if (unique.length === 0) return null;
+
+  const projectDir = await resolveProjectDir(opts.harness, opts.workspaceId);
+  if (!projectDir) {
+    return `Could not preflight fleet member role(s): harness \`${opts.harness}\` is not registered in workspace \`${opts.workspaceId}\`. NO fleet was created and NO terminals were opened.`;
+  }
+
+  for (const entry of unique) {
+    if (entry.role === 'su' || isSuTierRole(entry.role)) continue;
+    try {
+      assembleRolePrompt({
+        slug: opts.harness,
+        projectDir,
+        role: entry.role,
+        mode: 'chat',
+      });
+    } catch (e: any) {
+      return (
+        `Invalid fleet member role \`${entry.role}\` from \`${entry.source}\`: ` +
+        `${e?.message ?? e}. Omit \`role\` for the standard su collaborator, pass \`role:"su"\`, ` +
+        `or choose a role whose prompt resolves in harness \`${opts.harness}\`. ` +
+        'NO fleet was created and NO terminals were opened.'
+      );
+    }
+  }
+  return null;
+}
+
+/**
  * EI-18862608742257943: extract every WI-/EI- id referenced across the composed
  * kickoff brief text(s) a launch is about to hand its members — reusing the SAME
  * id-extraction the work_items:create mirror-guard uses (WI-<n> / EI-<n>,
@@ -1320,6 +1379,26 @@ export default defineTool({
               : ''),
         );
       }
+    }
+
+    // EI-21014432394938679: validate optional role selectors BEFORE promotion,
+    // fleet creation, launch-slot mutation, or any terminal spawn. The psu child
+    // uses this exact assembler on the role path; running it here turns a late
+    // dead-window failure into a synchronous, side-effect-free tool refusal.
+    try {
+      const roleError = await unresolvedFleetMemberRole({
+        harness: planHarnessSlug,
+        workspaceId: planWorkspaceId,
+        count,
+        role: args.role,
+        members: args.members,
+      });
+      if (roleError) return err(roleError);
+    } catch (e: any) {
+      return err(
+        `Could not preflight fleet member role(s): ${e?.message ?? e}. ` +
+          'NO fleet was created and NO terminals were opened.',
+      );
     }
 
     // #3 FAILSAFE (fleet-launch-promote-workitems-failsafe, 2026-07-08): members self-pull via

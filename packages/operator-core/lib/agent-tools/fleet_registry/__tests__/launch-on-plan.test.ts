@@ -16,6 +16,8 @@ const setFleetLeaderMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
 const ensureFleetLeaderControlMock = vi.fn();
+const assembleRolePromptMock = vi.fn();
+const resolveProjectDirMock = vi.fn();
 const launchTransaction = vi.hoisted(() => ({
   verify: vi.fn(async (..._args: unknown[]) => ({
     agentStarted: true as boolean | null,
@@ -32,6 +34,16 @@ vi.mock('../../../console-launcher', () => ({
 
 vi.mock('../../../console-spawn', () => ({
   spawnConsole: (...args: unknown[]) => spawnConsoleMock(...args),
+}));
+
+vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()),
+  assembleRolePrompt: (...args: unknown[]) => assembleRolePromptMock(...args),
+}));
+
+vi.mock('../../../spawn-config', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../spawn-config')>()),
+  resolveProjectDir: (...args: unknown[]) => resolveProjectDirMock(...args),
 }));
 
 vi.mock('../../../workspace-registry', () => ({
@@ -198,6 +210,10 @@ import tool, {
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
 
 beforeEach(() => {
+  assembleRolePromptMock.mockReset();
+  assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/tmp/fleet' } });
+  resolveProjectDirMock.mockReset();
+  resolveProjectDirMock.mockResolvedValue('/tmp/fleet');
   launchTransaction.verify.mockReset();
   launchTransaction.verify.mockResolvedValue({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
   launchTransaction.persist.mockClear();
@@ -238,6 +254,33 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     }));
     fetchGatewayHeadroomMock.mockReset();
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('rejects an unresolved member role before promotion, fleet creation, or terminal spawn', async () => {
+    assembleRolePromptMock.mockImplementationOnce(() => {
+      throw new Error(
+        'assembleRolePrompt: no prompt file found for role "builder" (phase=staging, dept=none, blueprintId=none)',
+      );
+    });
+
+    const res = await tool.handler(
+      {
+        name: 'Bad Role',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        role: 'builder',
+        members: [{ role: 'builder' }],
+      } as never,
+      {} as never,
+    );
+
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toContain('Invalid fleet member role `builder`');
+    expect((res as any).content[0].text).toContain('NO fleet was created and NO terminals were opened');
+    expect(promotePlanItemsMock).not.toHaveBeenCalled();
+    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
   it('installs caller-led control immediately after the presence role and reports its health', async () => {
