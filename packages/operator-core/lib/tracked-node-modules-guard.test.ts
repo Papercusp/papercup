@@ -10,12 +10,22 @@
  * These tests pin the property that matters: the predicate FLAGS a newly-tracked
  * node_modules path, and does not merely return empty for everything.
  */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 // @ts-expect-error — .mjs guard script, no type declarations by design (as with sibling guards)
-import { ALLOWLIST, findOffenders } from '../../../scripts/check-tracked-node-modules.mjs';
+import { ALLOWLIST, discoverRepos, findOffenders } from '../../../scripts/check-tracked-node-modules.mjs';
 
 type Offender = { repo: string; paths: string[] };
+
+const REPO_ROOT = resolve(fileURLToPath(new URL('../../..', import.meta.url)));
+
+const git = (cwd: string, args: string[]): string =>
+  execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
 
 /** A lister backed by a plain map, so no real repo is needed. */
 const listerFor =
@@ -87,5 +97,42 @@ describe('check-tracked-node-modules findOffenders', () => {
 
   it('ships with an EMPTY allowlist — an entry re-arms the sync outage for that repo', () => {
     expect([...(ALLOWLIST as Set<string>)]).toEqual([]);
+  });
+
+  it('does not let an undeclared repair-worktree gitlink abort repository discovery', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'tracked-node-modules-gitlink-'));
+    try {
+      git(repo, ['init', '-q', '-b', 'main']);
+      git(repo, ['config', 'user.email', 'guard@test.invalid']);
+      git(repo, ['config', 'user.name', 'Guard Test']);
+      writeFileSync(join(repo, 'seed'), 'seed\n');
+      git(repo, ['add', 'seed']);
+      git(repo, ['commit', '-q', '-m', 'seed']);
+      const head = git(repo, ['rev-parse', 'HEAD']);
+      git(repo, [
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `160000,${head},.papercusp/worktrees/green-candidate-deadbeef`,
+      ]);
+
+      // Positive control: this is the exact command/shape that crashed the live lint.
+      expect(() =>
+        git(repo, ['submodule', 'foreach', '--quiet', '--recursive', 'echo "$sm_path"']),
+      ).toThrow(/No url found.*\.gitmodules/);
+
+      // The guard reads declared topology instead, so the unrelated gitlink is inert.
+      expect(discoverRepos(repo)).toEqual(['.']);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps gate-owned repair worktrees ignored before git-sync can record a gitlink', () => {
+    const ignore = readFileSync(join(REPO_ROOT, '.gitignore'), 'utf8');
+    expect(ignore).toMatch(/^\.papercusp\/worktrees\/$/m);
+    expect(
+      git(REPO_ROOT, ['check-ignore', '-q', '.papercusp/worktrees/green-candidate-calibration']),
+    ).toBe('');
   });
 });

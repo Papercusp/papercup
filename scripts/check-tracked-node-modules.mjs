@@ -44,7 +44,10 @@
  * merely green-on-a-clean-tree.
  */
 import { execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { declaredSubmodules, describeUnscanned } from './lib/tracked-files.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -81,22 +84,25 @@ export function findOffenders({ repos, listTracked, allowlist = ALLOWLIST }) {
 const git = (args, cwd) =>
   execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
 
-/** Every repo in the tree: the superproject plus every (recursive) submodule. */
-function discoverRepos() {
-  const repos = ['.'];
-  const out = git(
-    ['submodule', 'foreach', '--quiet', '--recursive', 'echo "$sm_path"'],
-    ROOT,
-  );
-  for (const line of out.split('\n')) {
-    const p = line.trim();
-    if (p) repos.push(p);
-  }
-  return repos;
+/**
+ * Every git-backed repo this checkout can honestly scan.
+ *
+ * Enumerate the declared topology rather than asking `git submodule foreach` to
+ * infer it from the index. A stray mode-160000 entry that is not in `.gitmodules`
+ * makes `foreach` abort the WHOLE guard before it checks a single repository. That
+ * exact shape is produced if git-sync sees a gate-owned repair worktree before its
+ * path is ignored (WI-39450). An undeclared gitlink is not a submodule and must not
+ * be allowed to disable this unrelated node_modules guard.
+ */
+export function discoverRepos(root = ROOT) {
+  return [
+    '.',
+    ...declaredSubmodules(root).filter((repo) => existsSync(join(root, repo, '.git'))),
+  ];
 }
 
 function listTrackedFromGit(repo) {
-  const cwd = repo === '.' ? ROOT : `${ROOT}${repo}`;
+  const cwd = repo === '.' ? ROOT : join(ROOT, repo);
   const out = git(['ls-files', '--', '*node_modules/*'], cwd);
   return out.split('\n').filter(Boolean);
 }
@@ -104,6 +110,8 @@ function listTrackedFromGit(repo) {
 function main() {
   const showList = process.argv.includes('--list');
   const repos = discoverRepos();
+  const unscanned = declaredSubmodules(ROOT).filter((repo) => !repos.includes(repo));
+  const coverageNote = describeUnscanned(unscanned, ROOT);
 
   // Positive control: a probe that can only ever return "clean" is not a guard. If
   // the superproject reports zero tracked files AT ALL, `git ls-files` is not doing
@@ -123,7 +131,7 @@ function main() {
 
   if (offenders.length === 0) {
     console.log(
-      `✓ check-tracked-node-modules: ${repos.length} repo(s) scanned, none tracks node_modules.`,
+      `✓ check-tracked-node-modules: ${repos.length} repo(s) scanned, none tracks node_modules.${coverageNote}`,
     );
     return;
   }
@@ -150,6 +158,7 @@ function main() {
       offenders.map(({ repo }) => `  git -C ${repo} rm -r --cached --ignore-unmatch node_modules`).join('\n') +
       '\n\nThen let git-sync commit the removal.',
   );
+  if (coverageNote) console.error(`\nCoverage:${coverageNote}`);
   process.exit(1);
 }
 

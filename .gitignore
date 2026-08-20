@@ -101,6 +101,12 @@ apps/operator/docs/plans/**/*.md
 .papercusp/openapi.json
 .papercusp/lib-api/
 
+# Gate-owned frozen-candidate repair worktrees are linked checkouts, never source.
+# Without this rule git-sync's blanket add records the checkout itself as a mode-160000
+# gitlink. The next candidate then inherits that undeclared gitlink and recursive git
+# commands fail with "No url found ... in .gitmodules" (WI-39450).
+.papercusp/worktrees/
+
 # git-sync-embedded-repo-strand fix (2026-06-30, joint w/ 2b1a8 / WI-1354): transient test-scratch
 # dirs that get a nested .git (an embedded repo). When ANY has NO commit checked out, `git add -A`
 # FATALs (exit 128) → stages nothing → the whole tree strands uncommitted silently. Ignore ALL the
