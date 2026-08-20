@@ -79,6 +79,18 @@ function watchKeys(fleetSlug: string): string[] {
   return LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:${fleetSlug}`);
 }
 
+function selfExcludingPayloadFilter(eventKey: string, fleetSlug: string, ownerId: string): unknown | undefined {
+  if (eventKey !== `fleet:member-dead:${fleetSlug}` && eventKey !== `fleet:context-critical:${fleetSlug}`) {
+    return undefined;
+  }
+  return { not: { agentId: { equals: ownerId } } };
+}
+
+function payloadFilterMatches(actual: unknown | null | undefined, expected: unknown | undefined): boolean {
+  if (expected == null) return actual == null;
+  return JSON.stringify(actual) === JSON.stringify(expected);
+}
+
 export async function ensureFleetLeaderControl(
   input: EnsureFleetLeaderControlInput,
 ): Promise<LeaderControlOutcome> {
@@ -206,8 +218,13 @@ export async function ensureFleetLeaderControl(
 
     for (const eventKey of expected) {
       const rows = current.filter((row) => row.eventKey === eventKey);
+      const payloadFilter = selfExcludingPayloadFilter(eventKey, input.fleetSlug, input.ownerId);
       const healthy = rows.find(
-        (row) => row.policy === 'wake' && row.once === false && row.wakeHandle != null,
+        (row) =>
+          row.policy === 'wake' &&
+          row.once === false &&
+          row.wakeHandle != null &&
+          payloadFilterMatches(row.payloadFilter, payloadFilter),
       );
       if (healthy) {
         watches.active.push(eventKey);
@@ -224,6 +241,7 @@ export async function ensureFleetLeaderControl(
         timeoutSec: null,
         once: false,
         minSleepSec: LEADER_MONITOR_INTERVAL_SEC,
+        ...(payloadFilter == null ? {} : { payloadFilter }),
       });
       watches.active.push(eventKey);
       if (rows.length > 0) watches.repaired.push(eventKey);

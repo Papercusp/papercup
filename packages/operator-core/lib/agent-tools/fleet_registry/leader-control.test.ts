@@ -62,6 +62,9 @@ function activeWatches() {
     policy: 'wake',
     once: false,
     wakeHandle: { kind: 'psu-socket' },
+    ...(transition === 'member-dead' || transition === 'context-critical'
+      ? { payloadFilter: { not: { agentId: { equals: input.ownerId } } } }
+      : {}),
   }));
 }
 
@@ -138,5 +141,42 @@ describe('ensureFleetLeaderControl', () => {
     expect(out.watches.added).toEqual(
       LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:alpha`),
     );
+
+    const registrations = registerAwait.mock.calls.map(([args]) => args as Record<string, unknown>);
+    expect(registrations.find((args) => args.eventKey === 'fleet:member-dead:alpha')).toMatchObject({
+      payloadFilter: { not: { agentId: { equals: 'leader-1' } } },
+    });
+    expect(registrations.find((args) => args.eventKey === 'fleet:context-critical:alpha')).toMatchObject({
+      payloadFilter: { not: { agentId: { equals: 'leader-1' } } },
+    });
+    for (const eventKey of [
+      'fleet:claim-released:alpha',
+      'fleet:item-completed:alpha',
+      'fleet:drained:alpha',
+    ]) {
+      expect(registrations.find((args) => args.eventKey === eventKey)).not.toHaveProperty('payloadFilter');
+    }
+  });
+
+  it('repairs legacy self-transition watches while preserving the other watches as unfiltered', async () => {
+    listActiveAwaits.mockResolvedValue(
+      activeWatches().map(({ payloadFilter: _payloadFilter, ...row }) => row),
+    );
+
+    const out = await ensureFleetLeaderControl(input);
+
+    expect(out.healthy).toBe(true);
+    expect(out.watches.repaired).toEqual([
+      'fleet:member-dead:alpha',
+      'fleet:context-critical:alpha',
+    ]);
+    expect(registerAwait).toHaveBeenCalledTimes(2);
+    expect(registerAwait.mock.calls.map(([args]) => args.eventKey)).toEqual([
+      'fleet:member-dead:alpha',
+      'fleet:context-critical:alpha',
+    ]);
+    expect(registerAwait.mock.calls.every(([args]) =>
+      args.payloadFilter?.not?.agentId?.equals === 'leader-1',
+    )).toBe(true);
   });
 });
