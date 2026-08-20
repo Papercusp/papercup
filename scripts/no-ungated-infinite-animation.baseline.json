@@ -18,7 +18,6 @@
     ".logoStage:not(.logoStageCompact) .swarmBeeHot",
     ".logoStage:not(.logoStageCompact) .swarmOrbitStroke",
     ".op-chat-sidebar .ask-choice-card::before",
-    ".op-chat-sidebar .oracle-empty-state-icon",
     ".operator-panel--maximal-hud .operator-panel__metric-card",
     ".operator-panel--maximal-hud .operator-panel__metric-card::before",
     ".operator-panel::before",

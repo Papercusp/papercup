@@ -162,6 +162,7 @@ describe('the real tree', () => {
       'pcSetupCodeSweep',
       'pcRuntimeBusDrift',
       'pcRuntimeStatusSweep',
+      'op-chat-empty-float',
     ]) {
       expect(css, `${name} must no longer be APPLIED (its @keyframes may remain)`).not.toMatch(
         new RegExp(`animation:[^;}]*\\b${name}\\b`),
