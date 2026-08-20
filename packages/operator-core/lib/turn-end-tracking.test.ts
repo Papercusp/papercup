@@ -120,6 +120,19 @@ describe('ephemeral terminal-deliverable reference detection', () => {
     ]);
   });
 
+  it('finds loopback presentation URLs but not lookalike hostnames', () => {
+    const refs = detectEphemeralDeliverableReferences(
+      'mockup http://localhost:8765/mockups/; preview http://127.0.0.1:4173/; ' +
+        'desktop http://[::1]:3000/app',
+    );
+    expect(refs).toEqual([
+      { kind: 'loopback-url', reference: 'http://localhost:8765/mockups/' },
+      { kind: 'loopback-url', reference: 'http://127.0.0.1:4173/' },
+      { kind: 'loopback-url', reference: 'http://[::1]:3000/app' },
+    ]);
+    expect(detectEphemeralDeliverableReferences('https://localhost.example/mockups/')).toEqual([]);
+  });
+
   it('recognises home/absolute scratch paths and papercusp scratch URIs, but not repo files', () => {
     const refs = detectEphemeralDeliverableReferences(
       '~/.papercusp/scratch/ws/report.md /home/dev/.papercusp/scratch/ws/other.txt ' +
@@ -150,6 +163,14 @@ describe('ephemeral terminal-deliverable reference detection', () => {
     expect(warning).toContain('Persist the deliverable first in committed repository, plan, or work-item storage');
     expect(warning).toContain('record its source path alongside any URL');
     expect(warning).toContain('write was recorded');
+  });
+
+  it('warns that loopback presentation reachability is transient', () => {
+    const refs = detectEphemeralDeliverableReferences('mockup: http://localhost:8765/mockups/');
+    const warning = renderEphemeralDeliverableWarning('completion for EI-20435285714990036', refs);
+    expect(warning).toContain("loopback-url 'http://localhost:8765/mockups/'");
+    expect(warning).toContain('re-verify reachability at handoff');
+    expect(warning).toContain('serving process managed/alive');
   });
 });
 

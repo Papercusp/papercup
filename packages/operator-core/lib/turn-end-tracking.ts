@@ -191,7 +191,11 @@ export function unregisteredArtifactTripwire(
 /* ------------------------------------------------------------------ */
 
 /** A textual reference that cannot be the sole durable home of a deliverable. */
-export type EphemeralDeliverableReferenceKind = 'scratch-path' | 'scratch-uri' | 'artifact-url';
+export type EphemeralDeliverableReferenceKind =
+  | 'scratch-path'
+  | 'scratch-uri'
+  | 'artifact-url'
+  | 'loopback-url';
 
 export interface EphemeralDeliverableReference {
   kind: EphemeralDeliverableReferenceKind;
@@ -216,6 +220,16 @@ const SCRATCH_URI_REFERENCE_RE =
   /(?:^|[\s"'`(<\[])(papercusp:\/\/scratch\/[A-Za-z0-9._~:@%+,-]+(?:\/[A-Za-z0-9._~:@%+,-]+)*)/gi;
 const CLAUDE_ARTIFACT_REFERENCE_RE =
   /(?:^|[\s"'`(<\[])((?:https?:\/\/)?claude\.ai\/(?:code\/)?artifacts?\/[A-Za-z0-9][A-Za-z0-9._~:\/?#@!$&+,;=%-]*)/gi;
+/**
+ * A loopback presentation URL is reachable only while the local serving
+ * process remains alive. Keep this deliberately to HTTP(S) presentation
+ * links and the common loopback host spellings; internal tool/API URLs should
+ * not be inferred from arbitrary prose as durable deliverables either, but
+ * this guard's recurrence is specifically about links an owner is expected
+ * to open after handoff.
+ */
+const LOOPBACK_URL_REFERENCE_RE =
+  /(?:^|[\s"'`(<\[])((?:https?:\/\/)(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d{1,5})?(?:[\/?#][A-Za-z0-9._~:\/?#@!$&+,;=%-]*)?)(?![A-Za-z0-9._:-])/gi;
 
 function trimEphemeralReference(reference: string): string {
   // Markdown prose commonly puts a reference immediately before punctuation.
@@ -247,6 +261,7 @@ export function detectEphemeralDeliverableReferences(text: string): EphemeralDel
 
   collect(SCRATCH_REFERENCE_RE, 'scratch-path');
   collect(SCRATCH_URI_REFERENCE_RE, 'scratch-uri');
+  collect(LOOPBACK_URL_REFERENCE_RE, 'loopback-url');
   collect(CLAUDE_ARTIFACT_REFERENCE_RE, 'artifact-url');
 
   found.sort((a, b) => a.index - b.index);
@@ -276,9 +291,15 @@ export function renderEphemeralDeliverableWarning(
     .slice(0, MAX_EPHEMERAL_DELIVERABLE_REFERENCES)
     .map(({ kind, reference }) => `${kind} '${reference}'`)
     .join(', ');
+  const hasLoopbackUrl = references.some(({ kind }) => kind === 'loopback-url');
+  const scopeNote = hasLoopbackUrl
+    ? 'These references are host/process-local, session-local, or account-local and are not durable source storage.'
+    : 'These references are session/account-local and are not durable source storage.';
+  const loopbackNote = hasLoopbackUrl
+    ? ' Loopback presentation URLs are transient: re-verify reachability at handoff and keep their serving process managed/alive.'
+    : '';
   return `${surface} names ${references.length === 1 ? 'an' : 'ephemeral'} ephemeral terminal-deliverable ` +
-    `reference${references.length === 1 ? '' : 's'}: ${listed}. These references are session/account-local ` +
-    `and are not durable source storage. Persist the deliverable first in committed repository, plan, or ` +
+    `reference${references.length === 1 ? '' : 's'}: ${listed}. ${scopeNote}${loopbackNote} Persist the deliverable first in committed repository, plan, or ` +
     `work-item storage, and record its source path alongside any URL. This warning is advisory; the write ` +
     `was recorded (deliverable-durability guard).`;
 }
