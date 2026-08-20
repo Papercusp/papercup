@@ -35,7 +35,7 @@ describe('locks:register_resource', () => {
     registerM.mockResolvedValue({ created: true, resource: row });
 
     const result = body(
-      await tool.handler(
+      await (tool.handler(
         {
           resource: row.resource,
           description: row.description,
@@ -44,7 +44,7 @@ describe('locks:register_resource', () => {
           max_holders: row.max_holders,
         } as never,
         {} as never,
-      ) as Promise<Out>,
+      ) as Promise<Out>),
     );
 
     expect(txnM).toHaveBeenCalledWith('papercusp-host-global', 'me', expect.any(Function));
@@ -61,7 +61,7 @@ describe('locks:register_resource', () => {
   it('reports an existing resource without overwriting its policy', async () => {
     registerM.mockResolvedValue({ created: false, resource: row });
 
-    const result = body(await tool.handler({ resource: row.resource } as never, {} as never) as Promise<Out>);
+    const result = body(await (tool.handler({ resource: row.resource } as never, {} as never) as Promise<Out>));
 
     expect(result).toMatchObject({ ok: true, created: false, resource: row });
   });
