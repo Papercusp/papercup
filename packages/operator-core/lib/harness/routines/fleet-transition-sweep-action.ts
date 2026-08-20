@@ -38,10 +38,14 @@ import { groupByAgent, listFleetAssignments, type AgentAssignment } from '../../
 import { reconcileWakeability } from '../../agent-tools/fleet/assignments';
 import type { SessionState } from '../../agent-tools/coordination/presence-wakeability';
 import { fetchContextPressure } from '../../agent-tools/coordination/context-pressure';
+import { fetchFleetAdmissionBlocks } from '../../agent-tools/coordination/fleet-scope-admission-blocks';
 import {
+  detectFleetAdmissionTransitions,
   detectFleetTransitions,
+  emitFleetAdmissionTransitionEdge,
   emitFleetTransitionEdge,
   indexObservations,
+  type FleetAdmissionObservation,
   type FleetMemberObservation,
   type FleetTransitionEventsDeps,
 } from '../../fleet-transition-events';
@@ -53,9 +57,13 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
  */
 let previousObservations = new Map<string, FleetMemberObservation>();
 
+/** The previous sweep's fleet-level admission-block counts. */
+let previousAdmissionObservations = new Map<string, number>();
+
 /** Test-only: forget the previous snapshot so cases don't cross-contaminate. */
 export function __resetFleetTransitionSnapshotForTests(): void {
   previousObservations = new Map();
+  previousAdmissionObservations = new Map();
 }
 
 /**
@@ -76,7 +84,14 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
     sessionState?: SessionState | null;
     confirmLiveness?: boolean | null;
   };
-  const agents: ObservableAgent[] = groupByAgent(await listFleetAssignments({}));
+  let agents: ObservableAgent[];
+  try {
+    agents = groupByAgent(await listFleetAssignments({}));
+  } catch {
+    // The sweep is a derived notification path. A transient roster read failure
+    // must not fail the routine or turn a partial read into a mass-death verdict.
+    return [];
+  }
   const fleeted = agents.filter((a) => Boolean(a.fleetSlug));
   if (fleeted.length === 0) return [];
 
@@ -96,12 +111,43 @@ export async function gatherFleetObservations(): Promise<FleetMemberObservation[
       fleetSlug: a.fleetSlug,
       sessionState: a.sessionState ?? null,
       contextPressure: pressure.get(a.agentId) ?? null,
+      stalled: a.stalled === true,
     }));
+}
+
+/**
+ * Gather one round of fleet-level admission observations. Admission blocks are
+ * already a bounded, fail-soft leader-brief read; this sweep only needs their
+ * distinct count to detect a rising block edge. Keep zeroes in the snapshot so
+ * a block that clears and later reappears is a real new crossing.
+ */
+export async function gatherFleetAdmissionObservations(): Promise<FleetAdmissionObservation[]> {
+  let agents: AgentAssignment[];
+  try {
+    agents = groupByAgent(await listFleetAssignments({}));
+  } catch {
+    return [];
+  }
+
+  const fleets = [...new Set(agents.map((agent) => agent.fleetSlug).filter((slug): slug is string => Boolean(slug)))].sort();
+  return Promise.all(
+    fleets.map(async (fleetSlug) => {
+      try {
+        const blocks = await fetchFleetAdmissionBlocks(fleetSlug);
+        return { fleetSlug, blockedCount: blocks.length };
+      } catch {
+        // `fetchFleetAdmissionBlocks` is already fail-soft in production, but
+        // preserve the boundary if a test seam or future implementation throws.
+        return { fleetSlug, blockedCount: 0 };
+      }
+    }),
+  );
 }
 
 /** Injectable seams so the sweep unit-tests without PG. */
 export interface FleetTransitionSweepDeps extends FleetTransitionEventsDeps {
   gather?: () => Promise<FleetMemberObservation[]>;
+  gatherAdmissions?: () => Promise<FleetAdmissionObservation[]>;
 }
 
 /**
@@ -114,11 +160,20 @@ export interface FleetTransitionSweepDeps extends FleetTransitionEventsDeps {
  */
 export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {}): Promise<number> {
   const gather = deps.gather ?? gatherFleetObservations;
-  const observations = await gather();
+  // Existing member-only tests inject `gather`; keep those tests hermetic by
+  // making admission gathering explicit on an injected member gather. The
+  // production action uses both default gathers.
+  const gatherAdmissions = deps.gatherAdmissions ?? (deps.gather ? async () => [] : gatherFleetAdmissionObservations);
+  const [observations, admissionObservations] = await Promise.all([gather(), gatherAdmissions()]);
   const edges = detectFleetTransitions(previousObservations, observations);
+  const admissionEdges = detectFleetAdmissionTransitions(previousAdmissionObservations, admissionObservations);
   previousObservations = indexObservations(observations);
+  previousAdmissionObservations = new Map(
+    admissionObservations.map((observation) => [observation.fleetSlug, observation.blockedCount]),
+  );
   for (const edge of edges) emitFleetTransitionEdge(edge, deps);
-  return edges.length;
+  for (const edge of admissionEdges) emitFleetAdmissionTransitionEdge(edge, deps);
+  return edges.length + admissionEdges.length;
 }
 
 /**
