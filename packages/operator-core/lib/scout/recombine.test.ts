@@ -273,6 +273,44 @@ describe('recombineProposals — dropped routeHint signal', () => {
       warn.mockRestore();
     }
   });
+
+  it('proves the recombine-to-router seam: direct goal hints stay held while plan escalation is live', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // This is the real producer path: the model asks recombine for `goal`,
+      // parseProposal drops that unaccepted hint, and the router sees the
+      // post-coercion Proposal that production would route today.
+      const held = await recombineProposals([scored({ idea: idea({ id: 'direct-goal' }) })], {
+        llmCall: fakeProposer({ ...COMPLETE_PROPOSAL, route: 'goal' }),
+      });
+      expect(held.proposals).toHaveLength(1);
+      expect(held.proposals[0].routeHint).toBeUndefined();
+      expect(held.proposals[0].droppedRouteHint).toBe('goal');
+      expect(classifyProposal(held.proposals[0])).toMatchObject({
+        rail: DEFAULT_ROUTING_RAIL,
+        followedHint: false,
+      });
+
+      // The live door is a plan hint escalated by the router's real override
+      // path; keep this alongside the held direct-hint assertion so the test
+      // never overstates the direct path as the whole goal rail.
+      const live = await recombineProposals([scored({ idea: idea({ id: 'plan-goal' }) })], {
+        llmCall: fakeProposer({
+          ...COMPLETE_PROPOSAL,
+          framing: 'a weeks-long, multi-plan campaign with a measurable end-state',
+          route: 'plan',
+        }),
+      });
+      expect(live.proposals).toHaveLength(1);
+      expect(live.proposals[0].routeHint).toBe('plan');
+      expect(classifyProposal(live.proposals[0], { override: makeGoalScaleOverride() })).toMatchObject({
+        rail: 'goal',
+        followedHint: false,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 /**
