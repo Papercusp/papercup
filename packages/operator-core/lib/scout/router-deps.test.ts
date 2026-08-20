@@ -15,6 +15,7 @@ import {
   buildGymDispatchPort,
   buildPlansNewPort,
   improvementBody,
+  type GoalUpdateDispatcher,
   type PlanDraftCreator,
 } from './router-deps';
 
@@ -124,7 +125,7 @@ describe('buildPlansNewPort', () => {
 
 describe('buildGoalAmendmentDispatchPort', () => {
   it('maps a targeted proposal onto goals:update without silently changing title or bounds', async () => {
-    const dispatch = vi.fn(async () => ({ data: { id: 'goal-existing' } }));
+    const dispatch = vi.fn<GoalUpdateDispatcher>(async () => ({ data: { id: 'goal-existing' } }));
     const port = buildGoalAmendmentDispatchPort(
       { harnessSlug: 'papercusp', workspaceId: 'papercusp-workspace' },
       dispatch,
