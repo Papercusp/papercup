@@ -168,6 +168,60 @@ function safeReaddir(dir: string): string[] {
   }
 }
 
+interface TranscriptScanCacheEntry {
+  dir: string;
+  transcript: string;
+}
+
+/**
+ * Transcript discovery is synchronous and runs once per active spawned row on
+ * every roster read. The transcript path is stable after it is written, so a
+ * validated positive hit can skip the recursive owner/project walk entirely.
+ * The key includes the root because tests and multi-home callers can resolve
+ * the same native session id against different trees.
+ */
+const transcriptScanCache = new Map<string, TranscriptScanCacheEntry>();
+
+/**
+ * A live session may not have written its first transcript yet. Keep that miss
+ * short-lived so the normal roster cadence does not re-scan every owner on each
+ * read, while a newly-created transcript becomes observable promptly.
+ */
+const transcriptScanMissCache = new Map<string, number>();
+const TRANSCRIPT_SCAN_MISS_TTL_MS = 30_000;
+const TRANSCRIPT_SCAN_CACHE_MAX = 20_000;
+
+function transcriptScanCacheKey(root: string, sessionId: string): string {
+  return `${root}\0${sessionId}`;
+}
+
+function rememberTranscriptScanHit(key: string, entry: TranscriptScanCacheEntry): void {
+  if (!transcriptScanCache.has(key) && transcriptScanCache.size >= TRANSCRIPT_SCAN_CACHE_MAX) {
+    const oldest = transcriptScanCache.keys().next().value;
+    if (oldest !== undefined) transcriptScanCache.delete(oldest);
+  }
+  transcriptScanCache.set(key, entry);
+}
+
+function rememberTranscriptScanMiss(key: string, now: number): void {
+  if (!transcriptScanMissCache.has(key) && transcriptScanMissCache.size >= TRANSCRIPT_SCAN_CACHE_MAX) {
+    for (const [cachedKey, expiresAt] of transcriptScanMissCache) {
+      if (expiresAt <= now) transcriptScanMissCache.delete(cachedKey);
+    }
+    if (transcriptScanMissCache.size >= TRANSCRIPT_SCAN_CACHE_MAX) {
+      const oldest = transcriptScanMissCache.keys().next().value;
+      if (oldest !== undefined) transcriptScanMissCache.delete(oldest);
+    }
+  }
+  transcriptScanMissCache.set(key, now + TRANSCRIPT_SCAN_MISS_TTL_MS);
+}
+
+/** Test seam: clear the module-scoped transcript discovery caches. */
+export function __resetSessionConfigDirCaches(): void {
+  transcriptScanCache.clear();
+  transcriptScanMissCache.clear();
+}
+
 /**
  * Strategy 2 — the session-claude dir whose `projects/**` holds this session's
  * transcript. The same discovery psu-launcher's `findUntrackedSession` already
@@ -175,13 +229,36 @@ function safeReaddir(dir: string): string[] {
  * gone. Measured at ~1ms across the live root.
  */
 function fromTranscriptScan(root: string, sessionId: string): string | null {
+  const now = Date.now();
+  const cacheKey = transcriptScanCacheKey(root, sessionId);
+  const cached = transcriptScanCache.get(cacheKey);
+  if (cached) {
+    // A cleanup/rotation may remove the file after a positive lookup. Re-scan
+    // in that case so the cache can never pin a dead config directory.
+    if (existsSync(cached.transcript)) return cached.dir;
+    transcriptScanCache.delete(cacheKey);
+  }
+
+  const missUntil = transcriptScanMissCache.get(cacheKey);
+  if (missUntil !== undefined) {
+    if (now < missUntil) return null;
+    transcriptScanMissCache.delete(cacheKey);
+  }
+
   const file = `${sessionId}.jsonl`;
   for (const owner of safeReaddir(root)) {
     const projects = join(root, owner, 'projects');
     for (const project of safeReaddir(projects)) {
-      if (existsSync(join(projects, project, file))) return join(root, owner);
+      const transcript = join(projects, project, file);
+      if (existsSync(transcript)) {
+        const dir = join(root, owner);
+        transcriptScanMissCache.delete(cacheKey);
+        rememberTranscriptScanHit(cacheKey, { dir, transcript });
+        return dir;
+      }
     }
   }
+  rememberTranscriptScanMiss(cacheKey, now);
   return null;
 }
 

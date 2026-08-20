@@ -12,11 +12,12 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/session-config-dir.test.ts
  */
-import { afterEach, beforeEach, describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import * as fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveSessionConfigDir } from './session-config-dir';
+import { __resetSessionConfigDirCaches, resolveSessionConfigDir } from './session-config-dir';
 
 const OWNER = 'su-e318aa48-85fb-406c-a3ca-caf8c83d883b';
 /** The dir the live process actually reads — keyed by a DIFFERENT id (the measured case). */
@@ -59,10 +60,12 @@ describe('resolveSessionConfigDir', () => {
   };
 
   beforeEach(() => {
+    __resetSessionConfigDirCaches();
     home = mkdtempSync(join(tmpdir(), 'wi38349-home-'));
     procRoot = mkdtempSync(join(tmpdir(), 'wi38349-proc-'));
   });
   afterEach(() => {
+    __resetSessionConfigDirCaches();
     rmSync(home, { recursive: true, force: true });
     rmSync(procRoot, { recursive: true, force: true });
   });
@@ -119,6 +122,43 @@ describe('resolveSessionConfigDir', () => {
     });
 
     expect(r).toMatchObject({ dir: real, source: 'transcript-scan' });
+  });
+
+  it('caches a validated transcript hit so repeated roster reads skip the directory walk', () => {
+    const sessionId = 'cached-transcript-123';
+    const real = layTranscript(REAL_KEY, sessionId);
+    const readdir = vi.spyOn(fs, 'readdirSync');
+
+    try {
+      expect(resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, sessionId })).toMatchObject({
+        dir: real,
+        source: 'transcript-scan',
+      });
+      const callsAfterFirstLookup = readdir.mock.calls.length;
+
+      expect(resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, sessionId })).toMatchObject({
+        dir: real,
+        source: 'transcript-scan',
+      });
+      expect(readdir.mock.calls.length).toBe(callsAfterFirstLookup);
+    } finally {
+      readdir.mockRestore();
+    }
+  });
+
+  it('caches a short-lived transcript miss so a pre-first-turn session does not rescan the tree', () => {
+    const sessionId = 'missing-transcript-123';
+    const readdir = vi.spyOn(fs, 'readdirSync');
+
+    try {
+      expect(resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, sessionId }).dir).toBeNull();
+      const callsAfterFirstLookup = readdir.mock.calls.length;
+
+      expect(resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, sessionId }).dir).toBeNull();
+      expect(readdir.mock.calls.length).toBe(callsAfterFirstLookup);
+    } finally {
+      readdir.mockRestore();
+    }
   });
 
   it('uses the conventional path only when it EXISTS — and only after the observations', () => {
