@@ -256,14 +256,21 @@ describe('search surface conformance (P-021)', () => {
       return seen;
     };
 
+    // These are immutable views of source on disk for the lifetime of this
+    // test file. Reuse them across the assertions instead of repeating the
+    // full import-graph and filesystem census in the CONTROL case: under the
+    // checkpoint's parallel load that duplicate work can exceed Vitest's
+    // per-test timeout even though the same census completed moments earlier.
+    const reached = covered();
+    const engineCallers = walkLib((src) => /run(?:Hybrid|FullText)Search\s*\(/.test(src));
+    const searchRoutes = walkLib((src) => /path:\s*'[^']*search[^']*'/.test(src), ROUTES);
+
     const unregistered = (found: string[], reached: Set<string>) =>
       found.filter((f) => !reached.has(f) && !(rel(f) in CENSUS_EXCLUSIONS)).map(rel);
 
     it('every module that calls the engine is registered or excluded WITH A REASON', () => {
-      const reached = covered();
-      const callers = walkLib((src) => /run(?:Hybrid|FullText)Search\s*\(/.test(src));
       expect(
-        unregistered(callers, reached),
+        unregistered(engineCallers, reached),
         'A module calls the search engine and no registry entry reaches it. Add it to ' +
           'SEARCH_SURFACES, or to CENSUS_EXCLUSIONS with the reason it is not a product surface.',
       ).toEqual([]);
@@ -274,10 +281,8 @@ describe('search surface conformance (P-021)', () => {
       // engine, so the caller census above cannot see it. A surface that is
       // unranked BY OMISSION is invisible to a check that looks for engine
       // calls — which is precisely the surface most worth finding.
-      const reached = covered();
-      const routes = walkLib((src) => /path:\s*'[^']*search[^']*'/.test(src), ROUTES);
       expect(
-        unregistered(routes, reached),
+        unregistered(searchRoutes, reached),
         'A route serves something search-shaped and no registry entry reaches it. Add it to ' +
           'SEARCH_SURFACES, or to CENSUS_EXCLUSIONS with the reason it is not one.',
       ).toEqual([]);
@@ -289,11 +294,11 @@ describe('search surface conformance (P-021)', () => {
       //
       // 1. The walk returns [] (a moved directory, a regex that stopped
       //    matching) and every assertion above passes over an empty set.
-      const callers = walkLib((s) => /run(?:Hybrid|FullText)Search\s*\(/.test(s)).map(rel);
+      const callers = engineCallers.map(rel);
       expect(callers).toContain('code-recipes-search.ts');
       expect(callers.length).toBeGreaterThanOrEqual(8);
 
-      const routes = walkLib((s) => /path:\s*'[^']*search[^']*'/.test(s), ROUTES).map(rel);
+      const routes = searchRoutes.map(rel);
       // The surface that motivated the census. It reaches no engine at all, so
       // only the ROUTE leg can see it — if this drops out, the leg has stopped
       // covering the very case it was added for.
@@ -302,12 +307,12 @@ describe('search surface conformance (P-021)', () => {
 
       // 2. `unregistered` returns [] unconditionally. Drive it with a module
       //    that is neither reachable nor excluded and require it to complain.
-      expect(unregistered([join(LIB, 'no-such-search-surface.ts')], covered())).toEqual([
+      expect(unregistered([join(LIB, 'no-such-search-surface.ts')], reached)).toEqual([
         'no-such-search-surface.ts',
       ]);
       // ...and stay quiet for one that IS excluded, so it discriminates.
       const excluded = join(LIB, Object.keys(CENSUS_EXCLUSIONS)[0]);
-      expect(unregistered([excluded], covered())).toEqual([]);
+      expect(unregistered([excluded], reached)).toEqual([]);
     });
 
     it('no exclusion is stale, and each states a reason', () => {
