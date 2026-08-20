@@ -1423,21 +1423,19 @@ export async function setLoopCarryNoteWithPrior(
 }
 
 /** Read an su AUTO loop's current carry-note (the full note), or null when none.
- *  Reads the pinned coord workspace first; on a miss, FALLS BACK to the newest
- *  row for the scope in ANY workspace — a note written by a not-yet-redeployed
- *  host still running the old ctx-workspace keying (host-version skew is real:
- *  the :3070 release, the bg-host and psu sessions restart at different times,
- *  and this exact skew is what broke cold-auto twice on 2026-07-03). */
+ *  Resolves the NEWEST row for the scope across ALL workspaces. The pinned coord
+ *  workspace is only a tie-breaker, not a precedence rule: a stale pinned row
+ *  must not mask a newer row written by a not-yet-redeployed host still using the
+ *  old ctx-workspace keying (host-version skew is real: the :3070 release,
+ *  bg-host, and psu sessions restart at different times). */
 export async function getLoopCarryNote(ref: LoopCarryNoteRef): Promise<string | null> {
   const scope = loopScope(ref.harness, ref.ownerId);
-  const pinned = await getCarryNote({ scope, workspaceId: loopCarryWs() });
-  if (pinned != null) return pinned;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ note: string | null }[]>`
       SELECT note FROM harness_shared.carry_notes
        WHERE scope = ${scope} AND note IS NOT NULL
-       ORDER BY updated_ts DESC LIMIT 1`;
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`;
     const note = (rows[0]?.note ?? '').trim();
     return note.length > 0 ? note : null;
   } catch {
@@ -1455,9 +1453,10 @@ export interface LoopCarryNoteWithMeta {
   updatedAtMs: number | null;
 }
 
-/** Read an su AUTO loop's carry-note WITH its write instant. Same pinned-then-
- *  any-workspace precedence as {@link getLoopCarryNote}, collapsed to one query
- *  (the pinned coord-workspace row wins; else the newest row for the scope). */
+/** Read an su AUTO loop's carry-note WITH its write instant. The newest row for
+ *  the scope wins across all workspaces; the pinned coord workspace only breaks
+ *  equal-timestamp ties. Keeping this ordering newest-first is critical when a
+ *  stale pinned row and a newer host-skew fallback row coexist. */
 export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<LoopCarryNoteWithMeta> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
@@ -1465,7 +1464,7 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
     const rows = await sql<{ note: string | null; updated_ts: string | number | null }[]>`
       SELECT note, updated_ts FROM harness_shared.carry_notes
        WHERE scope = ${scope} AND note IS NOT NULL
-       ORDER BY (workspace_id = ${loopCarryWs()}) DESC, updated_ts DESC LIMIT 1`;
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`;
     const note = (rows[0]?.note ?? '').trim();
     if (note.length === 0) return { note: null, updatedAtMs: null };
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
@@ -1476,17 +1475,16 @@ export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<L
 }
 
 /** Read an su AUTO loop's carry-JOURNAL (newest first) — its recent trajectory.
- *  Same pinned-then-any-workspace resolution as {@link getLoopCarryNote}. */
+ *  Resolves the newest row across all workspaces; the pinned coord workspace is
+ *  only a tie-breaker, matching {@link getLoopCarryNote}. */
 export async function getLoopCarryJournal(ref: LoopCarryNoteRef): Promise<CarryJournalEntry[]> {
   const scope = loopScope(ref.harness, ref.ownerId);
-  const pinned = await getCarryJournal({ scope, workspaceId: loopCarryWs() });
-  if (pinned.length > 0) return pinned;
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ journal: unknown }[]>`
       SELECT journal FROM harness_shared.carry_notes
        WHERE scope = ${scope}
-       ORDER BY updated_ts DESC LIMIT 1`;
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`;
     return [...normalizeJournal(rows[0]?.journal)].reverse();
   } catch {
     return [];

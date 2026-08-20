@@ -32,6 +32,7 @@ const {
   getCarryJournal,
   setLoopCarryNote,
   getLoopCarryNote,
+  getLoopCarryNoteWithMeta,
   getLoopCarryJournal,
   hiveScope,
   workItemScope,
@@ -155,6 +156,31 @@ describe('the three roles converge on ONE store, isolated by scope + workspace',
     await setLoopCarryNote({ ...LOOP, workspaceId: 'other-ws' }, 'mine');
     expect(await getLoopCarryNote(LOOP)).toBe('mine');
     expect(await getLoopCarryNote({ ...LOOP, workspaceId: 'other-ws' })).toBe('mine');
+  });
+
+  it('loop readers choose the newest host-skew row; the coord workspace only breaks timestamp ties', async () => {
+    const scope = loopScope(LOOP.harness, LOOP.ownerId);
+    await db.sql`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, journal, updated_ts)
+      VALUES
+        ('default', ${scope}, 'stale pinned checkpoint', '[{"at":1,"note":"stale"}]'::jsonb, 1700000000000),
+        ('old-host-workspace', ${scope}, 'new fallback checkpoint', '[{"at":2,"note":"new"}]'::jsonb, 1700000001000)`;
+
+    expect(await getLoopCarryNote(LOOP)).toBe('new fallback checkpoint');
+    expect(await getLoopCarryNoteWithMeta(LOOP)).toEqual({
+      note: 'new fallback checkpoint',
+      updatedAtMs: 1700000001000,
+    });
+    expect((await getLoopCarryJournal(LOOP)).map((entry) => entry.note)).toEqual(['new']);
+
+    await db.sql`
+      UPDATE harness_shared.carry_notes
+         SET updated_ts = 1700000000000
+       WHERE workspace_id = 'old-host-workspace' AND scope = ${scope}`;
+    expect(await getLoopCarryNoteWithMeta(LOOP)).toEqual({
+      note: 'stale pinned checkpoint',
+      updatedAtMs: 1700000000000,
+    });
   });
 
   it('loopScope keys by ownerId — two loops on the same harness do not collide', async () => {
