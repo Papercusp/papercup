@@ -49,6 +49,10 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   getNextForBee: mocks.getNextForBee,
   resolveClaimSpecWorkspace: mocks.resolveClaimSpecWorkspace,
 }));
+vi.mock('../../work-item-claim-lease-wiring', () => ({
+  workItemClaimLeaseEnabled: vi.fn(() => false),
+  leaseClaimedWorkItem: vi.fn(async () => true),
+}));
 
 // This is an envelope unit test, not a live coordination/PG integration test.
 // Pin every preflight and post-claim enrichment seam that get_next traverses so

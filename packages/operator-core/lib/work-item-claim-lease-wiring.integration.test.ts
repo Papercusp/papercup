@@ -41,7 +41,10 @@ const { resetWorkItemClaimAuthority } = await import('./work-item-claim-authorit
 async function setLeaseFlag(on: boolean): Promise<void> {
   setFlagOverridesForTest({ [FLAGS.WORKITEM_CLAIM_LEASE]: on });
   emitFlagChange(FLAGS.WORKITEM_CLAIM_LEASE);
-  await new Promise((r) => setTimeout(r, 0));
+  // The cache refresh is intentionally asynchronous. Wait on the observable
+  // reader instead of assuming one event-loop tick is enough under a loaded
+  // integration worker (the flag backend may itself cross an async boundary).
+  await vi.waitFor(() => expect(workItemClaimLeaseEnabled()).toBe(on));
 }
 
 const WORK_ITEM_CLAIMS_DDL = `
