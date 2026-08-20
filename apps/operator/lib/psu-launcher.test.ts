@@ -3718,10 +3718,9 @@ describe('cloud model-family/backend coupling (owner Luna→Claude incident 2026
   it('canonicalizes a user-facing Codex family before constructing fresh-launch argv', () => {
     const parsed = parseArgs(['--no-picker', '--model=sol:xhigh']);
     expect(parsed).toMatchObject({ agent: 'codex', model: 'gpt-5.6-sol:xhigh' });
-    // The trailing window pair is the canonical runtime-authoritative config
-    // (plan codex-1m-context-window-2026-08-17 D-007). The focused policy tests
-    // pin both the installed-record max and the cache-missing 1M fallback; this
-    // seam pins that psu carries whichever result the canonical resolver emits.
+    // The trailing window pair is the canonical D-008 config. The focused
+    // policy tests pin the exact 1M/900k pair even with a stale 872k cache
+    // record; this seam pins that psu carries the canonical resolver output.
     expect(modelArgsFor(parsed.agent, parsed.model)).toEqual([
       '-m',
       'gpt-5.6-sol',
