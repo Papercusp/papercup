@@ -2361,6 +2361,9 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     /** Checkpoint the census with the phase. Outer mutable state disappears on replay,
      *  turning a measured [] into null and changing the reconstructed outcome. */
     strandedSubmodules: StrandedSubmodule[] | null;
+    /** Persist the discovered repo coordinates so a resumed pointer-bump can still
+     * filter submodule-relative protected paths out of the superproject stage. */
+    submodulePaths: string[];
     didSomething: boolean;
   }
   const emptyPhase = (): PhaseCollect => ({
@@ -2372,6 +2375,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     oversized: [],
     contentErrors: [],
     strandedSubmodules: null,
+    submodulePaths: [],
     didSomething: false,
   });
 
@@ -2473,6 +2477,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
             // measures nothing — this stays null, and null never implies an all-clear.
             out.strandedSubmodules = census;
           });
+      out.submodulePaths = [...subPaths];
     }
     for (const s of subPaths) {
       // P-004: a submodule's last-resort default is its own 'main' (resolved via
@@ -2501,6 +2506,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     return out;
   });
   const strandedSubmodules = sub.strandedSubmodules;
+  // `submodulePaths` is part of the checkpointed phase output. The fallback keeps
+  // compatibility with an older in-flight checkpoint created before that field
+  // existed when the caller supplied an explicit path list.
+  const submodulePaths = sub.submodulePaths ?? opts.submodulePaths ?? [];
 
   // Superproject last. An unreconciled submodule defers its PUSH — and ONLY its push.
   // (Oversized exclusions defer nothing: the submodule's commit — without the big
@@ -2520,6 +2529,14 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const supr = emptyPhase();
   let superHeadSha: string | undefined;
   const pushBlocked = sub.conflicts.length > 0 || sub.errors.length > 0;
+  // A submodule-relative protected path is valid for `git add` inside that
+  // submodule, but Git rejects the same pathspec from the superproject with
+  // "Pathspec ... is in submodule". Keep only paths in the superproject's own
+  // coordinate space for its catch-all stage; each submodule received its mapped
+  // exclusions above.
+  const superprojectExcludePaths = protectedPaths.filter(
+    (path) => !submodulePaths.some((s) => path === s || path.startsWith(`${s}/`)),
+  );
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
@@ -2535,7 +2552,11 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         `[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`,
       );
     }
-    return commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) });
+    return commitOneRepo(runGit, repo, {
+      ...repoO,
+      excludePaths: superprojectExcludePaths,
+      attribution: attributionMapForRepo(roster, '', repo),
+    });
   });
   let repoResult: RepoSyncResult;
   if (commitRes.error) {

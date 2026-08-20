@@ -177,6 +177,25 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
+  it('EI-20744916065879285: excludes a protected tracked path while committing the rest of the tree', async () => {
+    // Model a live peer edit: the protected file already exists in the index, while a
+    // separate file is ordinary shared-tree work that this tick should still publish.
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: ['file.txt'],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(readFileSync(join(repo, 'file.txt'), 'utf8')).toBe('deliberately-protected mutation\n');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+  });
+
   it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {
     const generator = join(repo, 'scripts', 'gen-tool-catalog.ts');
     const catalog = join(repo, '.papercusp', 'tool-catalog.json');
@@ -1245,6 +1264,31 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
     });
+  });
+
+  it('EI-20744916065879285: maps protected superproject paths into submodule coordinates', async () => {
+    // The caller speaks in superproject-root-relative paths. Both a root file and a
+    // submodule file must remain unpublished, while unrelated work in each repo still
+    // advances normally.
+    writeFileSync(join(repo, 'super-protected.txt'), 'protected root mutation\n');
+    writeFileSync(join(repo, 'super-normal.txt'), 'normal root work\n');
+    writeFileSync(join(repo, 'libs/subA', 'subA.txt'), 'protected submodule mutation\n');
+    writeFileSync(join(repo, 'libs/subB', 'subB-new.txt'), 'normal submodule work\n');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      excludePaths: [' super-protected.txt ', 'libs/subA/subA.txt'],
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(superOrigin, 'show', 'main:super-normal.txt')).toBe('normal root work');
+    expect(git(superOrigin, 'ls-tree', '-r', '--name-only', 'main')).not.toContain('super-protected.txt');
+    expect(git(subBOrigin, 'show', 'main:subB-new.txt')).toBe('normal submodule work');
+    expect(git(subAOrigin, 'show', 'main:subA.txt')).toBe('subA-v1');
+    expect(readFileSync(join(repo, 'super-protected.txt'), 'utf8')).toBe('protected root mutation\n');
+    expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('protected submodule mutation\n');
+    expect(git(repo, 'status', '--porcelain', '--', 'super-protected.txt')).toMatch(/super-protected\.txt/);
+    expect(git(join(repo, 'libs/subA'), 'status', '--porcelain', '--', 'subA.txt')).toMatch(/subA\.txt/);
   });
 });
 

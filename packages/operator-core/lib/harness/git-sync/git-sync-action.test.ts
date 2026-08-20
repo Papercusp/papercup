@@ -616,6 +616,17 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync', 'git-sync:papercup']);
   });
 
+  it('EI-20744916065879285: passes live file-lock paths to the pure pipeline as protected exclusions', async () => {
+    const protectedPaths = ['packages/operator-core/lib/harness/git-sync/run-git-sync.ts', 'libs/subA/subA.txt'];
+    liveLockedPathsMock.mockResolvedValue(protectedPaths);
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(liveLockedPathsMock).toHaveBeenCalledOnce();
+    expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({ excludePaths: protectedPaths });
+  });
+
   it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {
     let firstRunStarted!: () => void;
     const firstRunStartedPromise = new Promise<void>((resolve) => {
