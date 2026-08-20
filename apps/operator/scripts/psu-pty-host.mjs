@@ -5193,16 +5193,20 @@ export function hostThroughPty(o) {
     // Raw-mode keyboard Ctrl-C remains a byte forwarded to the target. A real
     // process SIGINT (outer terminal/executor interrupt) is teardown, just like
     // SIGHUP/SIGTERM: kill the whole forkpty group so no backend descendant can
-    // survive and let child.onExit serialize the managed-port failure receipt.
+    // survive and serialize the managed-port failure receipt immediately.
     killChild = () => {
       // WI-38054: record the teardown BEFORE sending it. This host is being torn down
       // (its own SIGINT/SIGTERM/SIGHUP), so whatever happens next, the session did not
-      // choose to end — and the `if (!signalled) cleanup(0)` branch below would
-      // otherwise report a bare 0 that is indistinguishable from a clean exit.
+      // choose to end — without this, a teardown that reaches cleanup through the
+      // child-exit path can report a bare 0 indistinguishable from a clean exit.
       teardownSignal = 'SIGHUP';
-      const signalled = killPtyProcessTree(child, 'SIGHUP');
-      killPtyProcessTree(child, 'SIGKILL');
-      if (!signalled) cleanup(0, 'SIGHUP');
+      // External fleet:kill can SIGKILL this host before node-pty delivers the
+      // child's exit event. Run cleanup now so detached VTE-scope descendants are
+      // reaped even when the child is slow to report its exit. cleanup() performs
+      // the forceful process-tree kill as its first step, preserving the existing
+      // SIGHUP -> SIGKILL ordering without waiting on child.onExit.
+      killPtyProcessTree(child, 'SIGHUP');
+      cleanup(0, 'SIGHUP');
     };
     signalSource.on?.('SIGINT', killChild);
     signalSource.on?.('SIGTERM', killChild);

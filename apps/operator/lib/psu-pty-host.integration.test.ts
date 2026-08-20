@@ -303,7 +303,7 @@ describe('hostThroughPty real round-trip', () => {
   );
 
   it(
-    'SIGINT tears down the whole OMP-style process group, records one failed port disposition, and removes listeners',
+    'external SIGTERM tears down the whole OMP-style process group and reaps detached scope before child exit',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'psu-port-sigint-'));
       const hash = 'd'.repeat(64);
@@ -315,6 +315,7 @@ describe('hostThroughPty real round-trip', () => {
       const { captured, io } = fakeIo();
       const signals = new EventEmitter();
       const onKickoffPersisted = vi.fn(async () => undefined);
+      const reapScopeResidue = vi.fn(() => ({ killedPids: [4242], failedPids: [] }));
       const childCode = [
         "const {spawn}=require('child_process');",
         "const g=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});",
@@ -330,6 +331,7 @@ describe('hostThroughPty real round-trip', () => {
             ...process.env,
             PAPERCUSP_SID: ownerId,
             PAPERCUSP_AGENT: 'omp',
+            PAPERCUSP_LAUNCHED_BY: 'su-parent',
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '50',
             PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '25',
             PAPERCUSP_TURN_PROVENANCE_DIR: join(root, 'provenance'),
@@ -338,12 +340,13 @@ describe('hostThroughPty real round-trip', () => {
           },
           ownerId,
           io,
-          bridgeTty: false,
+          bridgeTty: true,
           kickoffFile: seed,
           sessionPort: { renderedHash: hash },
           onKickoffPersisted,
           nativePersistenceTimeoutMs: 5000,
           signalSource: signals,
+          reapScopeResidue,
           onExit: () => undefined,
         });
         const deadline = Date.now() + 3000;
@@ -351,7 +354,10 @@ describe('hostThroughPty real round-trip', () => {
         const grandPid = Number(captured().match(/GRAND:(\d+)/)?.[1]);
         expect(grandPid).toBeGreaterThan(1);
 
-        signals.emit('SIGINT');
+        signals.emit('SIGTERM');
+        // External kill must not wait for node-pty's asynchronous child exit
+        // event: fleet:kill may SIGKILL this host during that gap.
+        expect(reapScopeResidue).toHaveBeenCalledTimes(1);
         await done;
         expect(onKickoffPersisted).toHaveBeenCalledTimes(1);
         expect(onKickoffPersisted.mock.calls[0]?.[0]).toMatchObject({
