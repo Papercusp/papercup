@@ -423,6 +423,44 @@ export default defineTool({
       }
     }
 
+    // EI-20362893066852316: capability:launch-agent is the flexible sibling of
+    // fleet:launch-on-plan, so it must protect ad-hoc Codex launches with the
+    // same model preflight. Run it before constructing/spawning any terminal;
+    // only a definitive backend model refusal blocks, while auth, capacity,
+    // transport, and unknown responses remain fail-open diagnostics.
+    if (!isResume && foldedConfigs.some((folded) => folded.agent === 'codex' && folded.model?.trim())) {
+      try {
+        const [{ parseBridgeModel }, { preflightCodexModel, resolveCodexPreflightHome }] = await Promise.all([
+          import('../../inference-gateway/codex-cli-bridge'),
+          import('../../inference-gateway/codex-oauth-proxy'),
+        ]);
+        const preflighted = new Set<string>();
+        for (const folded of foldedConfigs) {
+          if (folded.agent !== 'codex' || !folded.model?.trim()) continue;
+          const account = folded.account?.trim() || undefined;
+          const key = `${account ?? 'default'}\u0000${folded.model.trim()}`;
+          if (preflighted.has(key)) continue;
+          preflighted.add(key);
+          const home = await resolveCodexPreflightHome(account, workspaceId);
+          if (!home) continue;
+          const bareModel = parseBridgeModel(folded.model).id;
+          const pf = await preflightCodexModel(home, bareModel);
+          if (pf.verdict === 'refused') {
+            return err(
+              `Codex model preflight REFUSED '${bareModel}' on account '${account ?? 'default'}' — the ChatGPT backend answered: ${pf.detail} ` +
+                `NO terminals were opened (a launch on this model would fail every turn). Working ids on this subscription are family-suffixed ` +
+                `(e.g. gpt-5.6-sol, gpt-5.6-terra); verify one with a 1-turn probe: codex exec -m <id> 'Reply OK'.`,
+            );
+          }
+          if (pf.verdict === 'unknown') {
+            notes.push(`codex model preflight inconclusive (${pf.detail}) — proceeding fail-open`);
+          }
+        }
+      } catch (e) {
+        notes.push(`codex model preflight errored (${(e as Error).message}) — proceeding fail-open`);
+      }
+    }
+
     const memberCommands: string[] = [];
     for (let i = 0; i < count; i++) {
       const folded = foldedConfigs[i];

@@ -17,6 +17,7 @@ import {
   buildCodexUpstreamHeaders,
   codexBackendUrl,
   normalizeCodexChatGptResponsesBody,
+  preflightCodexModel,
   jwtExpMs,
   readCodexAuth,
   refreshCodexToken,
@@ -131,6 +132,49 @@ describe('buildCodexUpstreamHeaders', () => {
     expect(h.originator).toBe('codex_cli_rs_custom');
     expect(h['OpenAI-Beta']).toBe('responses=v9');
     expect(h['chatgpt-account-id']).toBeUndefined(); // no account id → header omitted
+  });
+});
+
+describe('preflightCodexModel (EI-20362893066852316)', () => {
+  const resolveAuth = async () => ({ accessToken: 'AT', accountId: 'ACC' });
+
+  it.each(['model is not supported', 'unsupported model', 'unknown model'])(
+    'refuses a definitive 4xx matching the backend model-refusal shape (%s)',
+    async (phrase) => {
+      const body = JSON.stringify({ detail: `The 'gpt-5.6' ${phrase} when using Codex with a ChatGPT account.` });
+      const fetchImpl = vi.fn(async () => new Response(body, { status: 400 })) as unknown as typeof fetch;
+      const result = await preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl, resolveAuth });
+
+      expect(result).toEqual({ verdict: 'refused', status: 400, detail: body });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(JSON.parse((fetchImpl.mock.calls[0][1] as RequestInit).body as string)).toMatchObject({
+        model: 'gpt-5.6',
+        stream: true,
+        store: false,
+      });
+    },
+  );
+
+  it.each([
+    [400, 'invalid request'],
+    [401, "The 'gpt-5.6' model is not supported"],
+    [403, "The 'gpt-5.6' model is not supported"],
+    [429, "The 'gpt-5.6' model is not supported"],
+    [500, "The 'gpt-5.6' model is not supported"],
+  ] as const)('fails open for non-definitive response %s', async (status, body) => {
+    const fetchImpl = vi.fn(async () => new Response(body, { status })) as unknown as typeof fetch;
+    const result = await preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl, resolveAuth });
+    expect(result).toMatchObject({ verdict: 'unknown', status });
+  });
+
+  it('fails open on transport errors and accepts a successful stream', async () => {
+    const transport = vi.fn(async () => { throw new Error('socket closed'); }) as unknown as typeof fetch;
+    await expect(preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl: transport, resolveAuth }))
+      .resolves.toMatchObject({ verdict: 'unknown', detail: 'preflight transport: socket closed' });
+
+    const ok = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
+    await expect(preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl: ok, resolveAuth }))
+      .resolves.toEqual({ verdict: 'ok', status: 200 });
   });
 });
 

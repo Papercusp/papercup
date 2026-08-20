@@ -39,6 +39,14 @@ vi.mock('../../backend-bin-resolve.mjs', async (orig) => ({
   preflightBackendLaunch: vi.fn(() => ({ ok: true })),
 }));
 
+const codexPreflightHomeMock = vi.hoisted(() => vi.fn(async () => null as string | null));
+const codexPreflightModelMock = vi.hoisted(() => vi.fn());
+vi.mock('../../inference-gateway/codex-oauth-proxy', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  resolveCodexPreflightHome: (...args: unknown[]) => codexPreflightHomeMock(...args),
+  preflightCodexModel: (...args: unknown[]) => codexPreflightModelMock(...args),
+}));
+
 // Typed against the REAL SpawnConsoleResult (type-only import — not mocked away)
 // so the mocks cannot silently drift from the spawn contract again (WI-4488: the
 // EI-8289 display/desktopEnvResolvedVia refactor left inferred-shape mocks stale).
@@ -142,6 +150,8 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  codexPreflightHomeMock.mockResolvedValue(null);
+  codexPreflightModelMock.mockReset();
   claimAgentLaunchMock.mockResolvedValue({
     won: true,
     priorSummary: null,
@@ -210,6 +220,34 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     await launchAgent.handler({ brief: 'run the disposable harness check', harness: 'papercusp' }, operatorCtx);
     expect(spawnedCommand()).toContain('--harness=papercusp');
     expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toBe('run the disposable harness check');
+  });
+
+  it('refuses a fresh Codex launch before opening terminals when the backend rejects its model', async () => {
+    codexPreflightHomeMock.mockResolvedValue('/tmp/codex');
+    codexPreflightModelMock.mockResolvedValue({
+      verdict: 'refused',
+      status: 400,
+      detail: `{"detail":"The 'gpt-5.6' model is not supported when using Codex with a ChatGPT account."}`,
+    });
+
+    const res = await launchAgent.handler({ agent: 'codex', model: 'gpt-5.6:xhigh', brief: 'run the check' }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('NO terminals were opened');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(codexPreflightModelMock).toHaveBeenCalledWith('/tmp/codex', 'gpt-5.6');
+  });
+
+  it('proceeds with a warning when Codex model preflight is inconclusive', async () => {
+    codexPreflightHomeMock.mockResolvedValue('/tmp/codex');
+    codexPreflightModelMock.mockResolvedValue({ verdict: 'unknown', status: 429, detail: 'rate limited' });
+
+    const res = await launchAgent.handler({ agent: 'codex', model: 'gpt-5.6:xhigh', brief: 'run the check' }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(textOf(res)).toContain('proceeding fail-open');
   });
 });
 

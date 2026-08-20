@@ -73,6 +73,35 @@ export function codexAuthPath(home: string): string {
   return path.join(home, 'auth.json');
 }
 
+/**
+ * Resolve the CODEX_HOME whose ChatGPT credential a launch will use. A named
+ * pool account points at its `codex-cli:<home>` credential; default routing
+ * uses the local CLI home only when it has auth.json; gateway-routed accounts
+ * have no local home to preflight. Resolution is deliberately fail-open: an
+ * unavailable account registry must not turn a launch diagnostic into a
+ * launch blocker.
+ */
+export async function resolveCodexPreflightHome(account: string | undefined, workspaceId: string): Promise<string | null> {
+  try {
+    const trimmed = account?.trim();
+    if (!trimmed || trimmed === 'default') {
+      const os = await import('node:os');
+      const home = path.join(os.homedir(), '.codex');
+      await fs.access(codexAuthPath(home));
+      return home;
+    }
+    if (trimmed === 'auto') return null;
+    const [{ loadAccountPool }, { parseCodexCliRef }] = await Promise.all([
+      import('../deployment/account-pool-store'),
+      import('./codex-cli-bridge'),
+    ]);
+    const row = (await loadAccountPool(workspaceId)).accounts.find((a) => a.id === trimmed);
+    return row ? parseCodexCliRef(row.credentialRef ?? '') : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Read + validate a codex home's auth.json. Returns null if absent / malformed /
  *  not a usable ChatGPT-subscription credential (no access_token). */
 export async function readCodexAuth(home: string): Promise<CodexAuth | null> {

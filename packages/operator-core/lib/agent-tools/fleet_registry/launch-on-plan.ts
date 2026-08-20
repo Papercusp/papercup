@@ -273,37 +273,6 @@ const LATE_VERIFY_RECHECK_TIMEOUT_MS = 30_000;
 export const DEAD_WAVE_OVERRIDE_MIN_AGE_MS = 120_000;
 
 /**
- * EI-20362893066852316: resolve the CODEX_HOME to preflight a codex launch against, from the
- * launch's account routing. A named pool account resolves through its `codex-cli:<home>`
- * credentialRef; omitted/'default' routing uses the CLI's own ~/.codex (only when an auth.json
- * actually exists there); 'auto' (gateway pick) and bearer accounts resolve to null = skip
- * the preflight. Never throws.
- */
-async function resolveCodexPreflightHome(account: string | undefined, ws: string): Promise<string | null> {
-  try {
-    const trimmed = account?.trim();
-    if (!trimmed || trimmed === 'default') {
-      const os = await import('node:os');
-      const { access } = await import('node:fs/promises');
-      const home = join(os.homedir(), '.codex');
-      await access(join(home, 'auth.json'));
-      return home;
-    }
-    if (trimmed === 'auto') return null;
-    const [{ loadAccountPool }, { parseCodexCliRef }] = await Promise.all([
-      import('../../deployment/account-pool-store'),
-      import('../../inference-gateway/codex-cli-bridge'),
-    ]);
-    const pool = await loadAccountPool(ws);
-    const row = pool.accounts.find((a) => a.id === trimmed);
-    if (!row) return null;
-    return parseCodexCliRef(row.credentialRef ?? '');
-  } catch {
-    return null;
-  }
-}
-
-/**
  * PURE (EI-20361787885323735): should a LOST launch slot be overridden because the wave it
  * protects is provably dead? True only when (a) the prior launch is past the boot gap, so its
  * members would have registered presence by now, AND (b) ZERO non-leader members are live per
@@ -2123,7 +2092,7 @@ export default defineTool({
       try {
         const home = await resolveCodexPreflightHome(effAccount, workspaceId);
         if (home) {
-          const [{ parseBridgeModel }, { preflightCodexModel }] = await Promise.all([
+          const [{ parseBridgeModel }, { preflightCodexModel, resolveCodexPreflightHome }] = await Promise.all([
             import('../../inference-gateway/codex-cli-bridge'),
             import('../../inference-gateway/codex-oauth-proxy'),
           ]);
