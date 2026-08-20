@@ -548,6 +548,19 @@ export interface GitSyncConfig {
    *  installer seed look perpetually unconverted when the two histories are
    *  intentionally unrelated. Submodule origin syncing remains independent. */
   reconcileSuperprojectOrigin?: boolean;
+  /**
+   * Reconcile a fully represented release `main` commit into a commit-only
+   * `staging` worktree without importing any GitHub content (default false).
+   *
+   * Bridged hives deliberately disable `reconcileSuperprojectOrigin`: GitHub
+   * ingress/admission and the P2P worktree bridge own content flow. Frozen
+   * repair promotion can nevertheless leave `main` as a sibling whose exact
+   * tree changes are already present on staging. When this explicit knob is
+   * enabled, git-sync may record only that proven ancestry with an `ours`
+   * merge. The helper declines on an unrelated lineage or any differing tree
+   * entry, so this never bypasses admission for new content.
+   */
+  bridgeContainedReleaseMainOnCommitOnly?: boolean;
   /** Branch to sync when a repo is on a branch / for the superproject (default 'main'). */
   branch?: string;
   /** Remote name (default 'origin'). */
@@ -2447,6 +2460,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const doSubPush = cfg.pushSubmoduleOrigins !== undefined ? cfg.pushSubmoduleOrigins : doPush;
   const doSub = cfg.pushSubmodules !== false;
   const reconcileSuperprojectOrigin = cfg.reconcileSuperprojectOrigin !== false;
+  const bridgeContainedReleaseMainOnCommitOnly = cfg.bridgeContainedReleaseMainOnCommitOnly === true;
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   const maxCommitTotalBytes = cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES;
@@ -2749,16 +2763,47 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     // remote-to-worktree flow; fetching/merging origin here is both redundant
     // and unsafe for an installer seed whose local P2P lineage intentionally
     // remains unrelated to GitHub main.
+    //
+    // WI-40066: a frozen repair may still have advanced release main on a
+    // sibling commit after its exact patch already landed through canonical
+    // staging. Legacy mode repairs that ancestry inside reconcileAndPushOneRepo,
+    // but this branch deliberately never calls the origin/staging reconciler.
+    // A bridged caller can opt into the same fail-closed proof as a standalone
+    // checkpointed phase: fetch main, require every main-only tree entry to be
+    // byte-identical, then record only the ancestry. The later P2P legs publish
+    // and integrate this HEAD; this phase itself still pushes nothing.
+    const releaseBridge = bridgeContainedReleaseMainOnCommitOnly
+      ? await step('git-sync:push', () =>
+          bridgeContainedReleaseMain(runGit, repo, {
+            remote,
+            branch,
+            log,
+          }),
+        )
+      : { status: 'not-needed' as const };
     superHeadSha = await headSha(runGit, repo);
-    repoResult = commitRes.committedLocal
-      ? {
-          status: 'synced',
-          pushed: false,
-          merged: false,
-          oversized: commitRes.oversized,
-          contentErrors: commitRes.contentErrors,
-        }
-      : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    if (releaseBridge.status === 'error') {
+      repoResult = {
+        status: 'error',
+        message: releaseBridge.message,
+        oversized: commitRes.oversized,
+        contentErrors: commitRes.contentErrors,
+      };
+    } else {
+      if (releaseBridge.status === 'declined') {
+        log(`[git-sync] ${repo}: release-main ancestry bridge declined — ${releaseBridge.reason}`);
+      }
+      const bridged = releaseBridge.status === 'bridged';
+      repoResult = commitRes.committedLocal || bridged
+        ? {
+            status: 'synced',
+            pushed: false,
+            merged: bridged,
+            oversized: commitRes.oversized,
+            contentErrors: commitRes.contentErrors,
+          }
+        : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    }
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
     const pushRes = await step('git-sync:push', async () => ({

@@ -218,6 +218,54 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toMatch(/bridged fully-represented origin\/main into current ancestry/);
   });
 
+  it('WI-40066: bridges release main in commit-only bridged mode without reconciling or pushing origin/staging', async () => {
+    git(repo, 'checkout', '-b', 'staging');
+    writeFileSync(join(repo, 'repair.txt'), 'fixed\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'canonical staging repair');
+    writeFileSync(join(repo, 'later.txt'), 'later staging work\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'later staging work');
+    git(repo, 'push', '-u', 'origin', 'staging');
+    const stagingBefore = git(repo, 'rev-parse', 'HEAD');
+    const stagingTree = git(repo, 'rev-parse', 'HEAD^{tree}');
+
+    const isolated = join(root, 'isolated-commit-only-repair');
+    git(root, 'clone', originDir, isolated);
+    configUser(isolated);
+    writeFileSync(join(isolated, 'repair.txt'), 'fixed\n');
+    git(isolated, 'add', '-A');
+    git(isolated, 'commit', '--no-verify', '-m', 'isolated frozen repair');
+    const isolatedMain = git(isolated, 'rev-parse', 'HEAD');
+    git(isolated, 'push', 'origin', 'main');
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: {
+        ...cfg,
+        branch: 'staging',
+        push: false,
+        reconcileSuperprojectOrigin: false,
+        bridgeContainedReleaseMainOnCommitOnly: true,
+      },
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') {
+      expect(out.pushed).toEqual([]);
+      expect(out.merged).toEqual(['superproject']);
+    }
+    const bridged = git(repo, 'rev-parse', 'HEAD');
+    expect(bridged).not.toBe(stagingBefore);
+    expect(git(repo, 'rev-parse', 'HEAD^{tree}')).toBe(stagingTree);
+    expect(git(repo, 'show', '-s', '--format=%P', bridged).split(' ')).toEqual([
+      stagingBefore,
+      isolatedMain,
+    ]);
+    expect(git(repo, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
+    expect(git(originDir, 'rev-parse', 'refs/heads/staging')).toBe(stagingBefore);
+  });
+
   it('declines the release-main ancestry bridge when a main-only blob is not identical on staging', async () => {
     git(repo, 'checkout', '-b', 'staging');
     writeFileSync(join(repo, 'repair.txt'), 'staging version\n');

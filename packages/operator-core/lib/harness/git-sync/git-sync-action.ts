@@ -1587,6 +1587,13 @@ async function handleGitSync(
     // one-time transplant every tick eventually conflicts with ordinary local
     // git-sync commits and paints an otherwise healthy P2P writer red.
     cfg.reconcileSuperprojectOrigin = false;
+    // WI-40066: a bridged GitHub hive still needs the fail-closed release-main
+    // ancestry repair. The ordinary origin reconciler stays disabled (content
+    // continues through GitHub admission + P2P), while runGitSync may record an
+    // `ours` parent only when every main-only tree entry is already represented
+    // exactly on local staging. A p2p-only hive has no GitHub release channel
+    // and must not fetch one opportunistically.
+    cfg.bridgeContainedReleaseMainOnCommitOnly = gate.hiveGitMode === 'bridged';
     if (cfg.push) {
       console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
       cfg.push = false;

@@ -990,6 +990,7 @@ describe('clean sync outcome', () => {
           push: false,
           pushSubmoduleOrigins: true,
           reconcileSuperprojectOrigin: false,
+          bridgeContainedReleaseMainOnCommitOnly: mode === 'bridged',
         }),
       }));
     },
