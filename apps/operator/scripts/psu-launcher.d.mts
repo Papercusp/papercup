@@ -1915,6 +1915,7 @@ export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchI
  * Direct credentials are route selectors too: the explicit envelope re-adds
  * only the credential source selected for this child. */
 export function sanitizeInheritedEnv(env: any): any;
+export function applyCodexDiagnosticEnv(env: any, agent: any): any;
 /**
  * coord-delivery-residual-gaps-2026-07-11 P-002 — launch-time CC hook
  * enrollment guard, GENERALIZED (WI-4394) to any settings.json-wired CC hook,
@@ -2655,6 +2656,7 @@ export const TERMINAL_BEATS_TO_EXIT: 2;
  * genuine zombie is hours old, so waiting costs nothing it can measure.
  */
 export const MIN_UPTIME_BEFORE_SELF_EXIT_MS: number;
+export const CODEX_DIAGNOSTIC_RUST_LOG: "codex_core=info,codex_tui=info";
 export const LIVE_HOST_IDLE_THRESHOLD_MS: number;
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"

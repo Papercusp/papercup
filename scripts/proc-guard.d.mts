@@ -153,6 +153,7 @@ export function computeCoresBusy(deltaUsec: number, elapsedMs: number): number |
  * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
  *           budgetMs?: number; deadlineAt?: number;
  *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
+ * @returns {Promise<CgroupBusySample>}
  */
 export function sampleCgroupBusy(pid: number, opts?: {
     procRoot?: string;
@@ -162,33 +163,7 @@ export function sampleCgroupBusy(pid: number, opts?: {
     deadlineAt?: number;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
-}): Promise<{
-    status: string;
-    reason: string;
-    cgroupPath: any;
-    elapsedMs: number;
-} | {
-    status: string;
-    reason: string;
-    cgroupPath?: undefined;
-    cores?: undefined;
-    procs?: undefined;
-    elapsedMs?: undefined;
-} | {
-    status: string;
-    reason: string;
-    cgroupPath: string;
-    cores?: undefined;
-    procs?: undefined;
-    elapsedMs?: undefined;
-} | {
-    status: string;
-    cores: number;
-    procs: number | null;
-    elapsedMs: number;
-    cgroupPath: string;
-    reason?: undefined;
-}>;
+}): Promise<CgroupBusySample>;
 /**
  * Sample matched process cgroups concurrently under one wall-clock budget.
  *
@@ -201,7 +176,7 @@ export function sampleCgroupBusy(pid: number, opts?: {
  * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
  *           budgetMs?: number; deadlineAt?: number;
  *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
- * @returns {Promise<unknown[]>}
+ * @returns {Promise<CgroupBusySample[]>}
  */
 export function sampleBusyMatches(matches: {
     pid: number;
@@ -213,7 +188,7 @@ export function sampleBusyMatches(matches: {
     deadlineAt?: number;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
-}): Promise<unknown[]>;
+}): Promise<CgroupBusySample[]>;
 /** Render one `--busy` line (+ its falsifier when near-zero). Pure, so the
  *  wording is pinned by tests rather than by eyeballing terminal output. */
 export function formatBusy(sample: any): string[];
@@ -235,3 +210,27 @@ export type ProcRow = {
      */
     cmdline: string;
 };
+/**
+ * A successful cgroup CPU sample. The literal status is load-bearing: callers
+ * narrow on it before reading the measurement-only fields.
+ */
+export type CgroupBusyOk = {
+    status: "ok";
+    cores: number;
+    procs: number | null;
+    elapsedMs: number;
+    cgroupPath: string;
+};
+/**
+ * An indeterminate cgroup CPU sample. Missing measurement fields are explicit
+ * so callers may render them as absent without collapsing UNKNOWN into zero.
+ */
+export type CgroupBusyUnknown = {
+    status: "unknown";
+    reason: string;
+    cgroupPath?: string | null | undefined;
+    elapsedMs?: number | undefined;
+    cores?: undefined;
+    procs?: undefined;
+};
+export type CgroupBusySample = CgroupBusyOk | CgroupBusyUnknown;
