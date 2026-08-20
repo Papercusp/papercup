@@ -112,6 +112,14 @@ export function allDeclarations(repoRoot: string, dir = repoRoot, acc: string[] 
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name === 'node_modules' || entry.name === '.git') continue;
     const abs = join(dir, entry.name);
+    // Frozen-candidate repair worktrees are complete historical repo snapshots, not
+    // part of the canonical tree this check is judging. Walking them lets an older
+    // candidate's deliberately stale declaration false-red current staging. Keep
+    // this exclusion exact: the guard must still see untracked declarations in every
+    // other directory, including other dot-directories.
+    if (entry.isDirectory() && relative(repoRoot, abs) === join('.papercusp', 'worktrees')) {
+      continue;
+    }
     if (entry.isDirectory()) allDeclarations(repoRoot, abs, acc);
     else if (entry.name.endsWith('.d.mts')) acc.push(relative(repoRoot, abs));
   }

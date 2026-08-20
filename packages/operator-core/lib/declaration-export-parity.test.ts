@@ -21,9 +21,10 @@
  *    every hand-written declaration and get it switched off.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   valueExports,
   comparePair,
@@ -120,6 +121,45 @@ describe('declaration export parity — calibration', () => {
     ).toBeGreaterThan(0);
     // The declaration the filed defect lived in must be in the policed population.
     expect(unregistered).toContain('scripts/lib/typecheck-fanout.d.mts');
+  });
+
+  it('excludes frozen-candidate worktrees without hiding canonical filesystem-only drift', () => {
+    const root = mkdtempSync(join(tmpdir(), 'declaration-parity-scope-'));
+    try {
+      const canonical = join(root, 'scripts');
+      mkdirSync(canonical, { recursive: true });
+      writeFileSync(join(canonical, 'canonical.d.mts'), 'export const present: number;\n');
+      writeFileSync(
+        join(canonical, 'canonical.mjs'),
+        'export const present = 1;\nexport const newlyAdded = 2;\n',
+      );
+
+      const frozen = join(
+        root,
+        '.papercusp',
+        'worktrees',
+        'green-candidate-papercusp-old',
+        'scripts',
+      );
+      mkdirSync(frozen, { recursive: true });
+      writeFileSync(join(frozen, 'stale.d.mts'), 'export const old: number;\n');
+      writeFileSync(
+        join(frozen, 'stale.mjs'),
+        'export const old = 1;\nexport const candidateOnly = 2;\n',
+      );
+
+      expect(allDeclarations(root)).toEqual(['scripts/canonical.d.mts']);
+      expect(exportParityProblems(root, new Set())).toEqual([
+        {
+          declaration: 'scripts/canonical.d.mts',
+          source: 'scripts/canonical.mjs',
+          stranded: ['newlyAdded'],
+          phantom: [],
+        },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
