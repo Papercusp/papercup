@@ -90,6 +90,7 @@ const DEGRADATION_LADDER = {
     { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600 },
     { fullRows: 6, checkpointTotal: 600, summaryTotal: 0 },
     { fullRows: 3, checkpointTotal: 0, summaryTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0 },
   ],
   standard: [
     { fullRows: 100, checkpointTotal: 16_000, summaryTotal: 4_000 },
@@ -97,6 +98,7 @@ const DEGRADATION_LADDER = {
     { fullRows: 25, checkpointTotal: 3_000, summaryTotal: 1_200 },
     { fullRows: 12, checkpointTotal: 1_200, summaryTotal: 600 },
     { fullRows: 6, checkpointTotal: 600, summaryTotal: 0 },
+    { fullRows: 0, checkpointTotal: 0, summaryTotal: 0 },
   ],
 } as const;
 
@@ -240,16 +242,20 @@ function projectWorkItem(
   };
 }
 
-/** The degraded row: still correlatable by id, and it SAYS it is degraded. */
-function stubRow(r: Row, caps: FieldCaps): Row {
+/**
+ * The floor row preserves only correlation plus a machine-readable degradation flag.
+ *
+ * WI-39844: this used to repeat `ok` / `state` / `title` / `hasCheckpoint` and the same
+ * 66-character recovery sentence on every stub. At the supported maximum of 100 ids,
+ * those rows alone exceeded the entire MCP result door. The human-readable explanation
+ * now lives once in `_shapeNote.stubbed`; a row the caller must re-read needs only the id
+ * that makes that recovery possible.
+ */
+function stubRow(r: Row): Row {
   const w = (r.workItem ?? {}) as Row;
   return {
-    ok: r.ok ?? true,
     id: r.id ?? w.id ?? null,
-    state: w.state ?? null,
-    title: clip(w.title, Math.min(caps.title, 80)),
-    hasCheckpoint: typeof r.checkpoint === "string" && r.checkpoint.length > 0,
-    _stub: "row omitted to fit payload tier — re-read this id alone for detail",
+    _stub: true,
   };
 }
 
@@ -458,9 +464,10 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
     const projected = rows.map((r, i) =>
       i < fullRows
         ? projectRow(r, caps, checkpointChars, summaryChars, dropped)
-        : stubRow(r, caps),
+        : stubRow(r),
     );
-    if (rows.length > fullRows) dropped.add(`rows(${rows.length - fullRows} stubbed)`);
+    const stubbedCount = Math.max(0, rows.length - fullRows);
+    if (stubbedCount > 0) dropped.add(`rows(${stubbedCount} stubbed)`);
 
     out = {
       ...d,
@@ -472,6 +479,14 @@ export function shapeWorkItemsGet(data: unknown, tier: WorkItemsGetTier): unknow
               checkpointCharsPerRow: checkpointChars,
               summaryCharsPerRow: summaryChars,
               dropped: [...dropped].sort(),
+              ...(stubbedCount > 0
+                ? {
+                    stubbed: {
+                      count: stubbedCount,
+                      note: "stub rows preserve only id + _stub; re-read an id alone for detail",
+                    },
+                  }
+                : {}),
               // The generic sentence is not enough when the dropped field is the
               // item's PROSE: a reader who still has the title reads a size
               // advisory as "you got the item, just smaller" and acts on the

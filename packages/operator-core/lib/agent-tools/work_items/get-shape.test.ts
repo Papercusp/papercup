@@ -24,6 +24,7 @@ type Envelope = {
     checkpointCharsPerRow: number;
     summaryCharsPerRow: number;
     next: string;
+    stubbed?: { count: number; note: string };
   };
 };
 
@@ -164,29 +165,39 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     expect(serialized.length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
   });
 
-  it("bounds a 100-id read below the hard ceiling while preserving EVERY id", () => {
+  it("fits a 100-id floor below the MCP result door while preserving EVERY id", () => {
     const rows = Array.from({ length: 100 }, (_, i) =>
       row({
-        id: `WI-${i}`,
-        workItem: { id: `WI-${i}`, kind: "bug", state: "open", title: `t${i}`, summary: "S".repeat(3_000) },
+        id: `EI-${String(i).padStart(17, "0")}`,
+        workItem: {
+          id: `EI-${String(i).padStart(17, "0")}`,
+          kind: "bug",
+          state: "open",
+          title: `t${i}`,
+          summary: "S".repeat(3_000),
+        },
         checkpoint: "C".repeat(2_000),
       }),
     );
     const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
     const size = JSON.stringify(out).length;
 
-    // Over the ceiling, applyPayloadTier force-re-applies this shaper and, on
-    // failing to shrink, falls back to the generic projection this file exists
-    // to avoid — so exceeding it would silently undo the whole fix.
-    expect(size).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    // WI-39844: the old test asserted only PAYLOAD_TIER_HARD_CEILING_CHARS (~30k),
+    // while the real MCP door is 6k. The floor measured ~18-22k and still passed
+    // that assertion, so the generic projection silently replaced this shaper.
+    expect(size).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
     // Correlation is the one thing a caller cannot reconstruct. Every requested
     // id comes back, even when its detail does not.
     expect(out.results).toHaveLength(100);
     expect(out.results.map((r) => r.id)).toEqual(rows.map((r) => r.id));
-    // And a degraded row SAYS it is degraded rather than looking like a thin item.
+    // A degraded row stays machine-readable, while the repeated prose lives ONCE
+    // at payload level instead of consuming the door once per stub.
     const stub = out.results.at(-1) as Record<string, unknown>;
-    expect(stub._stub).toMatch(/re-read this id alone/);
-    expect(stub.hasCheckpoint).toBe(true);
+    expect(stub).toEqual({ id: "EI-00000000000000099", _stub: true });
+    expect(out._shapeNote?.stubbed).toEqual({
+      count: 100,
+      note: expect.stringMatching(/re-read an id alone/),
+    });
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
   });
 
@@ -199,7 +210,8 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     expect(out.results).toHaveLength(10);
     expect(out.results.map((r) => r.id)).toEqual(rows.map((r) => r.id));
     expect(out.results.some((r) => r._stub)).toBe(true);
-    expect(out.results.filter((r) => r.hasCheckpoint).length).toBeGreaterThan(0);
+    expect(out._shapeNote?.stubbed?.count).toBeGreaterThan(0);
+    expect(out._shapeNote?.stubbed?.note).toMatch(/re-read an id alone/);
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
   });
