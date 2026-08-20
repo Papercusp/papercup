@@ -403,6 +403,7 @@ unresolved_workspace_pkgs() {
 }
 
 need_node_modules() {
+  local copied_lock
   case "$NODE_MODULES_MODE" in
     skip) return 1 ;;
     force) return 0 ;;
@@ -433,10 +434,14 @@ need_node_modules() {
                    <(ls -1 "$RELEASE_ROOT/node_modules" 2>/dev/null | grep -v '^@' | grep -v '^\.' | sort) >/dev/null 2>&1; then
         return 0
       fi
-      # Fall back to lockfile comparison. Both files must exist; if either is missing,
-      # we assume they differ and copy (fail-safe: worse to copy unnecessarily than skip).
-      if [ -f "$INTEGRATION_ROOT/package-lock.json" ] && [ -f "$RELEASE_ROOT/package-lock.json" ]; then
-        ! cmp -s "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/package-lock.json"
+      # Fall back to the dependency-copy stamp under node_modules. NEVER use the pinned
+      # worktree's tracked package-lock.json as this stamp: copying staging's newer lock
+      # over it dirties an exact-SHA release root and destroys provenance
+      # (EI-21008606412183759). The dot-prefixed marker is gitignored with node_modules
+      # and records exactly which integration dependency state was hardlink-copied.
+      copied_lock="$RELEASE_ROOT/node_modules/.papercusp-source-package-lock.json"
+      if [ -f "$INTEGRATION_ROOT/package-lock.json" ] && [ -f "$copied_lock" ]; then
+        ! cmp -s "$INTEGRATION_ROOT/package-lock.json" "$copied_lock"
         return $?
       fi
       # If the lockfile comparison can't run, assume they differ and copy (fail-safe).
@@ -502,10 +507,11 @@ if need_node_modules; then
     rel="${nm#"$INTEGRATION_ROOT"/}"
     sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
   done < <(find "$INTEGRATION_ROOT" -name node_modules -type d -prune -print)
-  # Record WHICH dep state was just copied: package-lock.json is gitignored, so
-  # the checkout above never updates the release tree's copy — without this the
-  # `auto` cmp stays permanently dirty and every deploy re-copies node_modules.
-  [ -f "$INTEGRATION_ROOT/package-lock.json" ] && cp "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/package-lock.json"
+  # Record WHICH dep state was just copied without touching pinned tracked source.
+  # The marker is inside gitignored node_modules and is consumed by
+  # need_node_modules() above on the next auto pass.
+  [ -f "$INTEGRATION_ROOT/package-lock.json" ] \
+    && cp "$INTEGRATION_ROOT/package-lock.json" "$RELEASE_ROOT/node_modules/.papercusp-source-package-lock.json"
   log "node_modules sync complete"
 else
   log "node_modules up to date (mode=$NODE_MODULES_MODE) — skipping copy"

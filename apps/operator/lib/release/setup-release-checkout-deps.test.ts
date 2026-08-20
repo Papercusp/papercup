@@ -124,22 +124,29 @@ describe('setup-release-checkout.sh need_node_modules() — deploy staleness heu
     expect(needsCopy(int, rel)).toBe(false);
   });
 
-  it('copies when the root package-lock.json differs (deps changed, dirs unchanged)', () => {
+  it('copies when the integration lock differs from the ignored dependency-copy stamp', () => {
     writeFileSync(join(int, 'package-lock.json'), '{"lockfileVersion":3,"a":1}');
-    writeFileSync(join(rel, 'package-lock.json'), '{"lockfileVersion":3,"a":2}');
+    writeFileSync(join(rel, 'node_modules/.papercusp-source-package-lock.json'), '{"lockfileVersion":3,"a":2}');
     expect(needsCopy(int, rel)).toBe(true);
   });
 
-  it('copies (fail-safe) when the integration tree has a lockfile but the release tree does not', () => {
+  it('copies (fail-safe) when the integration tree has a lockfile but no dependency-copy stamp', () => {
     writeFileSync(join(int, 'package-lock.json'), '{"lockfileVersion":3}');
     expect(needsCopy(int, rel)).toBe(true);
   });
 
-  it('does NOT copy when package-lock.json is identical and the package set matches', () => {
+  it('does NOT copy when the dependency-copy stamp is current and the package set matches', () => {
+    const lock = '{"lockfileVersion":3,"packages":{}}';
+    writeFileSync(join(int, 'package-lock.json'), lock);
+    writeFileSync(join(rel, 'node_modules/.papercusp-source-package-lock.json'), lock);
+    expect(needsCopy(int, rel)).toBe(false);
+  });
+
+  it('never treats the pinned tracked package-lock.json as the dependency-copy stamp', () => {
     const lock = '{"lockfileVersion":3,"packages":{}}';
     writeFileSync(join(int, 'package-lock.json'), lock);
     writeFileSync(join(rel, 'package-lock.json'), lock);
-    expect(needsCopy(int, rel)).toBe(false);
+    expect(needsCopy(int, rel)).toBe(true);
   });
 
   it('ignores a difference confined to dot-prefixed entries (.bin/.package-lock.json) — not a real dep change', () => {
