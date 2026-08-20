@@ -114,6 +114,10 @@ export default defineTool({
     // F-B5 (workspace-data-isolation-leaks): agent_activity has workspace_id but
     // RLS is off + getOrgPg() bypasses it, so scope the feed to the active
     // workspace explicitly (else B's activity:recent returns A's agent activity).
+    // Keep the legacy '*' partition during the writer cutover: migration 143
+    // defaulted old rows there, while activity:report now writes concrete
+    // workspaces. The workspace-leading index serves the concrete leg; the
+    // wildcard leg is deliberately retained only for backward compatibility.
     const ws = activeWorkspaceId();
 
     // since_id present → forward-paging (oldest-first, the catch-up order a stream
@@ -124,7 +128,7 @@ export default defineTool({
                  phase, tool_use_id, summary, status, detail, cwd, created_at
           FROM harness_shared.agent_activity
           WHERE id > ${sinceId}
-            AND workspace_id = ${ws}
+            AND workspace_id IN (${ws}, '*')
             AND (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
             AND (${args.session_id ?? null}::text IS NULL OR session_id = ${args.session_id ?? null})
             AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})
@@ -141,7 +145,7 @@ export default defineTool({
           SELECT id::text AS id, owner_id, agent, session_id, harness_slug, kind, tool_name,
                  phase, tool_use_id, summary, status, detail, cwd, created_at
           FROM harness_shared.agent_activity
-          WHERE workspace_id = ${ws}
+          WHERE workspace_id IN (${ws}, '*')
             AND (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
             AND (${args.session_id ?? null}::text IS NULL OR session_id = ${args.session_id ?? null})
             AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})

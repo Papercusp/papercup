@@ -40,6 +40,16 @@ const { default: recentTool } = await import('./recent');
 // arg the hook passes. workspaceId pins the row's workspace.
 const WORKER_CTX = { isSuperuser: false, role: 'worker', principal: { workspaceId: 'ws-test', slug: 'agent:worker' } } as never;
 
+// An unscoped superuser request carries the '*' principal sentinel while the
+// request context still identifies the concrete workspace. The writer must
+// persist the latter so concrete readers and the workspace-leading index agree.
+const WILDCARD_PRINCIPAL_CTX = {
+  isSuperuser: true,
+  role: 'operator',
+  workspaceId: 'ws-concrete',
+  principal: { workspaceId: '*', slug: 'system:operator' },
+} as never;
+
 // Table + the migration-143 NOTIFY trigger, no GRANTs (no roles in the container).
 const DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.agent_activity (
@@ -146,6 +156,21 @@ describe('activity:report — write + server-side summary', () => {
     const { parsed } = await report({ tool_name: 'Read', tool_input: { file_path: '/r.md' } });
     expect(parsed.owner).toBe('agent:worker');
   });
+
+  it('stores the concrete request workspace when the principal is wildcard-scoped', async () => {
+    const { parsed } = await report(
+      { owner: 'su-concrete', tool_name: 'Read', tool_input: { file_path: '/scope.md' } },
+      WILDCARD_PRINCIPAL_CTX,
+    );
+    expect(parsed.ok).toBe(true);
+
+    const rows = await db.sql<Array<{ workspace_id: string }>>`
+      SELECT workspace_id
+        FROM harness_shared.agent_activity
+       WHERE owner_id = 'su-concrete'
+    `;
+    expect(rows).toEqual([{ workspace_id: 'ws-concrete' }]);
+  });
 });
 
 describe('activity:recent — read + filters', () => {
@@ -172,6 +197,23 @@ describe('activity:recent — read + filters', () => {
     expect((await recent({ agent: 'codex' })).count).toBe(1);
     expect((await recent({ kind: 'todos' })).count).toBe(1);
     expect((await recent({ harness: 'papercup' })).count).toBe(2);
+  });
+
+  it('keeps legacy wildcard rows visible without leaking another workspace', async () => {
+    const before = Number((await recent({ limit: 1 })).activity[0]!.id);
+    await db.sql`
+      INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, summary)
+      VALUES ('*', 'legacy-owner', 'tool', 'legacy wildcard'),
+             ('ws-other', 'other-owner', 'tool', 'other workspace')
+    `;
+
+    const latest = await recent({});
+    expect(latest.activity.some((row) => row.summary === 'legacy wildcard')).toBe(true);
+    expect(latest.activity.some((row) => row.summary === 'other workspace')).toBe(false);
+
+    const catchUp = await recent({ since_id: before });
+    expect(catchUp.activity.some((row) => row.summary === 'legacy wildcard')).toBe(true);
+    expect(catchUp.activity.some((row) => row.summary === 'other workspace')).toBe(false);
   });
 
   it('since_id pages forward oldest-first', async () => {

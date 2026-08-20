@@ -42,6 +42,7 @@ import { fileLockCoordinationDomain, lockDomainForProjectDir } from '../locks/co
 import { releaseAllOwnedLocks } from '../locks/release-all-owned';
 import { buildActivityHookBundle } from './hook-bundle';
 import { SESSION_START_MARKER, SESSION_END_MARKER } from './lifecycle-markers';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 /** Map a lifecycle-report summary to a session phase. The shared cc/ lifecycle
  *  hook sends exactly SESSION_START_MARKER (SessionStart) or SESSION_END_MARKER
@@ -184,7 +185,11 @@ export default defineTool({
         summary: args.summary ?? null,
         status: args.status ?? null,
         cwd: args.cwd ?? null,
-        workspaceId: ctx.principal?.workspaceId ?? '*',
+        // `ctx.principal.workspaceId` is '*' for an unscoped superuser request.
+        // Never persist that sentinel: concrete workspace reads (including
+        // activity:recent) cannot see it. Prefer the request context and fall
+        // back to the active workspace through the shared resolver.
+        workspaceId: resolveConcreteWorkspaceId(ctx.workspaceId, ctx.principal?.workspaceId),
       });
     } catch (e) {
       if (!isWorkspaceContended(e)) throw e; // a real fault must still surface
