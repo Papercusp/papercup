@@ -420,21 +420,80 @@ function json(res: http.ServerResponse, status: number, body: unknown): void {
   res.end(payload);
 }
 
-function readBody(req: http.IncomingMessage): Promise<string> {
+class SidecarRequestAbortedError extends Error {
+  constructor() {
+    super('request_aborted');
+    this.name = 'AbortError';
+  }
+}
+
+interface RequestCancellation {
+  signal: AbortSignal;
+  dispose: () => void;
+}
+
+/** Tie sidecar work to the response lifetime, without aborting after a response
+ * has been fully written. A client timeout closes the response before the
+ * inference finishes; that is the signal used to remove queued work. */
+function trackRequestCancellation(req: http.IncomingMessage, res: http.ServerResponse): RequestCancellation {
+  const controller = new AbortController();
+  const abort = (): void => {
+    if (!controller.signal.aborted) controller.abort();
+  };
+  const onRequestAborted = (): void => abort();
+  const onRequestClose = (): void => {
+    if (!req.complete) abort();
+  };
+  const onResponseClose = (): void => {
+    if (!res.writableEnded) abort();
+  };
+  req.once('aborted', onRequestAborted);
+  req.once('close', onRequestClose);
+  res.once('close', onResponseClose);
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      req.off('aborted', onRequestAborted);
+      req.off('close', onRequestClose);
+      res.off('close', onResponseClose);
+    },
+  };
+}
+
+function readBody(req: http.IncomingMessage, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
-    req.on('data', (c: Buffer) => {
+    let settled = false;
+    const cleanup = (): void => {
+      req.off('data', onData);
+      req.off('end', onEnd);
+      req.off('error', onError);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const finish = <T>(fn: (value: T) => void, value: T): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+    const onAbort = (): void => finish(reject, new SidecarRequestAbortedError());
+    const onData = (c: Buffer): void => {
       size += c.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error('body too large'));
+        finish(reject, new Error('body too large'));
         req.destroy();
         return;
       }
       chunks.push(c);
-    });
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', reject);
+    };
+    const onEnd = (): void => finish(resolve, Buffer.concat(chunks).toString('utf8'));
+    const onError = (error: Error): void => finish(reject, error);
+    req.on('data', onData);
+    req.on('end', onEnd);
+    req.on('error', onError);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
   });
 }
 
@@ -521,23 +580,59 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     ),
   );
   let active = 0;
-  const waiting: Array<() => void> = [];
-  const enqueue = <T>(work: () => Promise<T>): Promise<T> => {
-    const start = (): Promise<T> => {
-      active++;
-      return Promise.resolve()
-        .then(work)
-        .finally(() => {
-          active--;
-          waiting.shift()?.();
-        });
-    };
-    if (active < concurrency) return start();
-    return new Promise<T>((resolve, reject) => {
-      waiting.push(() => {
-        start().then(resolve, reject);
-      });
+  interface QueueTask<T> {
+    promise: Promise<T>;
+    cancel: () => boolean;
+  }
+  interface QueueEntry<T> {
+    started: boolean;
+    settled: boolean;
+    start: () => void;
+    cancel: () => boolean;
+  }
+  const waiting: Array<QueueEntry<unknown>> = [];
+  function drainQueue(): void {
+    while (active < concurrency && waiting.length > 0) {
+      const next = waiting.shift()!;
+      if (next.started || next.settled) continue;
+      next.start();
+    }
+  }
+  const enqueue = <T>(work: () => Promise<T>): QueueTask<T> => {
+    let resolveTask!: (value: T | PromiseLike<T>) => void;
+    let rejectTask!: (reason?: unknown) => void;
+    const promise = new Promise<T>((resolve, reject) => {
+      resolveTask = resolve;
+      rejectTask = reject;
     });
+    const entry: QueueEntry<T> = {
+      started: false,
+      settled: false,
+      start: () => {
+        if (entry.started || entry.settled) return;
+        entry.started = true;
+        active++;
+        Promise.resolve()
+          .then(work)
+          .then(resolveTask, rejectTask)
+          .finally(() => {
+            active--;
+            drainQueue();
+          });
+      },
+      cancel: () => {
+        if (entry.started || entry.settled) return false;
+        const index = waiting.indexOf(entry as QueueEntry<unknown>);
+        if (index < 0) return false;
+        waiting.splice(index, 1);
+        entry.settled = true;
+        rejectTask(new SidecarRequestAbortedError());
+        return true;
+      },
+    };
+    if (active < concurrency) entry.start();
+    else waiting.push(entry as QueueEntry<unknown>);
+    return { promise, cancel: entry.cancel };
   };
 
   // WI-4196: per-text coalescing + bounded LRU over the text→vector mapping.
@@ -551,7 +646,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // request no longer waits out a peer's giant batch.
   const cacheMax = opts.cacheMax ?? EMBED_CACHE_MAX_DEFAULT;
   const vecCache = new Map<string, number[]>(); // Map insertion order as LRU
-  const inflight = new Map<string, Promise<number[]>>();
+  const inflight = new Map<string, { task: QueueTask<number[]>; consumers: number }>();
   let cacheHits = 0;
   let cacheMisses = 0;
   const cacheGet = (key: string): number[] | undefined => {
@@ -575,40 +670,79 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   /** Cache + coalesce + enqueue one unit of ONNX work under `key`. Shared by
    *  /embed and /rerank so both get the same fairness and memory bounds, and
    *  neither can starve the other (one FIFO, not two competing ones). */
-  const computeCached = (key: string, work: () => Promise<number[]>): Promise<number[]> => {
+  const computeCached = (key: string, work: () => Promise<number[]>, signal: AbortSignal): Promise<number[]> => {
+    if (signal.aborted) return Promise.reject(new SidecarRequestAbortedError());
     const cached = cacheGet(key);
     if (cached) {
       cacheHits++;
       return Promise.resolve(cached);
     }
-    const joined = inflight.get(key);
-    if (joined) {
+    let entry = inflight.get(key);
+    if (entry) {
       cacheHits++;
-      return joined;
+    } else {
+      cacheMisses++;
+      entry = { task: enqueue(work), consumers: 0 };
+      inflight.set(key, entry);
+      const owned = entry;
+      void owned.task.promise
+        .then(
+          (value) => {
+            if (owned.consumers > 0) cachePut(key, value);
+          },
+          () => {},
+        )
+        .finally(() => {
+          if (inflight.get(key) === owned) inflight.delete(key);
+        });
     }
-    cacheMisses++;
-    const run = enqueue(async () => {
-      const value = await work();
-      cachePut(key, value);
-      return value;
+    const owned = entry;
+    owned.consumers++;
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      owned.consumers--;
+      if (owned.consumers === 0 && owned.task.cancel() && inflight.get(key) === owned) {
+        inflight.delete(key);
+      }
+    };
+    return new Promise<number[]>((resolve, reject) => {
+      const onAbort = (): void => {
+        signal.removeEventListener('abort', onAbort);
+        release();
+        reject(new SidecarRequestAbortedError());
+      };
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
+      signal.addEventListener('abort', onAbort, { once: true });
+      owned.task.promise.then(
+        (value) => {
+          signal.removeEventListener('abort', onAbort);
+          release();
+          resolve(value);
+        },
+        (error) => {
+          signal.removeEventListener('abort', onAbort);
+          release();
+          reject(error);
+        },
+      );
     });
-    inflight.set(key, run);
-    void run.then(
-      () => inflight.delete(key),
-      () => inflight.delete(key),
-    );
-    return run;
   };
 
   const embedOneCached = (
     model: EmbedSidecarModel,
     kind: GemmaEmbedKind,
     text: string,
+    signal: AbortSignal,
   ): Promise<number[]> =>
     computeCached(`${model}:${kind}\0${text}`, async () => {
       const embed = await getEmbedder(model, kind);
       return embed(text);
-    });
+    }, signal);
 
   // One PAIR per unit, matching /embed's one-text-per-unit choice. A cross-
   // encoder could score a whole batch in one forward pass, but per-pair units
@@ -618,7 +752,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // measured per-pair cost as flat in batch size, so batching would trade those
   // away for nothing. The score is boxed as a 1-element array to reuse the
   // vector cache; the model is in the key, so the namespaces cannot collide.
-  const rerankOneCached = (model: RerankSidecarModel, query: string, text: string): Promise<number> =>
+  const rerankOneCached = (model: RerankSidecarModel, query: string, text: string, signal: AbortSignal): Promise<number> =>
     computeCached(`${model}\0${query}\0${text}`, async () => {
       const rerankFn = await getReranker(model);
       const scores = await rerankFn(query, [text]);
@@ -626,13 +760,18 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
       }
       return [scores[0]];
-    }).then((boxed) => boxed[0]);
+    }, signal).then((boxed) => boxed[0]);
 
-  const handleEmbed = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+  const handleEmbed = async (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    signal: AbortSignal,
+  ): Promise<void> => {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await readBody(req));
+      parsed = JSON.parse(await readBody(req, signal));
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
       return;
     }
@@ -643,7 +782,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     }
     try {
       const vectors = await Promise.all(
-        v.texts.map((text) => embedOneCached(v.model, v.kind, text)),
+        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal)),
       );
       const body: EmbedResponse = {
         vectors,
@@ -653,15 +792,21 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       };
       json(res, 200, body);
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 500, { error: `embed_failed: ${e instanceof Error ? e.message : String(e)}` });
     }
   };
 
-  const handleRerank = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
+  const handleRerank = async (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    signal: AbortSignal,
+  ): Promise<void> => {
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await readBody(req));
+      parsed = JSON.parse(await readBody(req, signal));
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 400, { error: `invalid JSON body: ${e instanceof Error ? e.message : String(e)}` });
       return;
     }
@@ -675,7 +820,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       // any threshold are the CLIENT's job. The server never reorders — that
       // keeps the ranking policy in one place (@papercusp/rerank) instead of
       // split across a wire.
-      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text)));
+      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal)));
       const body: RerankResponse = {
         scores,
         runtime: EMBED_SIDECAR_RUNTIME,
@@ -683,9 +828,17 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       };
       json(res, 200, body);
     } catch (e) {
+      if (signal.aborted || res.destroyed || res.writableEnded) return;
       json(res, 500, { error: `rerank_failed: ${e instanceof Error ? e.message : String(e)}` });
     }
   };
+
+  const withRequestCancellation =
+    (handler: (req: http.IncomingMessage, res: http.ServerResponse, signal: AbortSignal) => Promise<void>) =>
+    (req: http.IncomingMessage, res: http.ServerResponse): void => {
+      const cancellation = trackRequestCancellation(req, res);
+      void handler(req, res, cancellation.signal).finally(cancellation.dispose);
+    };
 
   // The route table is the ONE source for both dispatch and the capability
   // list /healthz advertises — a route cannot be added without being
@@ -740,8 +893,8 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         concurrency,
       });
     },
-    [EMBED_SIDECAR_CAP_EMBED]: (req, res) => void handleEmbed(req, res),
-    [EMBED_SIDECAR_CAP_RERANK]: (req, res) => void handleRerank(req, res),
+    [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),
+    [EMBED_SIDECAR_CAP_RERANK]: withRequestCancellation(handleRerank),
   };
   const capabilities = Object.keys(handlers);
 

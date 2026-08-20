@@ -545,6 +545,46 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     expect((await req).status).toBe(200);
   });
 
+  it('an aborted request removes its queued work before it starts', async () => {
+    gated = makeGated();
+    await boot(1);
+    const controller = new AbortController();
+    // The request must carry the signal so the server observes the client
+    // disconnect while the first unit is holding the only slot.
+    const abortedReq = fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'query', texts: ['active', 'abandoned'] }),
+      signal: controller.signal,
+    });
+    await waitFor(() => gated.started.length === 1);
+    expect(gated.started).toEqual(['active']);
+    controller.abort();
+    await expect(abortedReq).rejects.toThrow();
+    gated.release.get('active')!();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(gated.started).toEqual(['active']);
+  });
+
+  it('an aborted coalesced caller does not cancel work still needed by a peer', async () => {
+    gated = makeGated();
+    await boot(1);
+    const controller = new AbortController();
+    const first = fetch(`${baseUrl}/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'query', texts: ['shared'] }),
+      signal: controller.signal,
+    });
+    await waitFor(() => gated.started.length === 1);
+    const second = post(['shared']);
+    controller.abort();
+    await expect(first).rejects.toThrow();
+    gated.release.get('shared')!();
+    expect((await second).status).toBe(200);
+    expect(gated.started).toEqual(['shared']);
+  });
+
   it('a failed unit frees its slot for the next waiter', async () => {
     gated = makeGated();
     const inner = gated.builders.gemma;
