@@ -298,6 +298,8 @@ export interface PeerSilence {
   silentForMs: number;
   /** Fold position reached before it went quiet (0 ⇒ we never folded it at all). */
   position: number;
+  /** Whether this cursor belongs to the scope's current admitted set; null = unknown. */
+  admitted: boolean | null;
 }
 
 export interface PeerFederationHealth {
@@ -508,10 +510,17 @@ export function judgePeerFederationSilence(
   const ages = judged.map((r) => Math.max(0, opts.nowMs - r.updatedAtMs));
   const freshestAdvanceMs = Math.min(...ages);
   const silent = judged
-    .map((r, i) => ({ logKeyHex: r.logKeyHex, silentForMs: ages[i]!, position: r.position }))
+    .map((r, i) => ({
+      logKeyHex: r.logKeyHex,
+      silentForMs: ages[i]!,
+      position: r.position,
+      admitted: admittedSet == null ? null : admittedSet.has(r.logKeyHex),
+    }))
     .filter((s) => s.silentForMs > opts.silentAfterMs)
     .sort((a, b) => b.silentForMs - a.silentForMs);
   const allSilent = silent.length === judged.length;
+  const admittedSilent = admittedSet == null ? null : silent.filter((s) => s.admitted === true);
+  const unadmittedSilent = admittedSet == null ? null : silent.filter((s) => s.admitted === false);
   const breaches: string[] = [];
   // Only the live-binding population is described. `strandedCursors` rides on the
   // result instead so residue stays visible without inflating a peer verdict.
@@ -519,30 +528,51 @@ export function judgePeerFederationSilence(
     strandedCursors > 0
       ? ` (${strandedCursors} further cursor(s) ignored: stranded under a superseded apply_binding — schema residue, not peers)`
       : '';
-  if (allSilent && admittedRemoteLogs === 0) {
-    // WI-39489: all silent AND not one of them is admitted. "Suspect this host's
-    // merge loop" is the WRONG SUBJECT here — the fold is fine, there is simply
-    // nothing to fold. Measured 2026-08-16: this host held 0 admitted peer logs
-    // in all 95 booted scopes and no peer had announced into ANY papercusp scope
-    // since 2026-08-15T22:36:39Z (73,420 `announce_admitted` across 41 scopes,
-    // all stopping at that instant), with ZERO rejections/errors/skew in two days
-    // — while the same admission code path on the same box kept admitting for 12
-    // OTHER workspaces. Cursors persist; admission does not. Reported as a breach
-    // rather than swallowed, because "we are not federating at all" is precisely
-    // what an operator needs told — just told about the right subject.
-    breaches.push(
-      `NO PEER ADMITTED: ${judged.length} remote log(s) have merge cursors here but NONE is in this scope's admitted set (freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms). The peers are ABSENT, not slow — nothing is being folded because nothing is announced. Suspect the announce/admission path or peer liveness, NOT this host's merge loop.${strandedNote}`,
-    );
+  if (admittedRemoteLogs != null && admittedSilent != null && unadmittedSilent != null) {
+    // EI-20666095916420554: once admission is measured, it — not every durable
+    // cursor — defines the positive-control population. WI-39489 corrected only
+    // the all-historical-logs-silent case. With one live admitted peer advancing,
+    // four departed peers' durable cursors still produced "4 of 5 peers slow".
+    // Keep those cursors visible, but call them ABSENT; and never let a recently
+    // updated *unadmitted* cursor license a local/per-peer verdict about admitted
+    // logs. A cursor outlives admission, so conflating these populations makes a
+    // permanent false major after ordinary peer churn.
+    if (admittedRemoteLogs === 0 && unadmittedSilent.length > 0) {
+      breaches.push(
+        `NO PEER ADMITTED: ${unadmittedSilent.length} of ${judged.length} durable remote cursor(s) have exceeded the ${opts.silentAfterMs}ms silence SLO, and NONE is in this scope's admitted set. The peers are ABSENT, not slow — nothing current can be folded. Suspect the announce/admission path or peer liveness, NOT this host's merge loop.${strandedNote}`,
+      );
+    } else if (admittedRemoteLogs > 0 && admittedSilent.length === admittedRemoteLogs) {
+      const freshestAdmittedAdvanceMs = admittedSilent[admittedSilent.length - 1]!.silentForMs;
+      const absentNote =
+        unadmittedSilent.length > 0
+          ? ` ${unadmittedSilent.length} further silent cursor(s) are NOT ADMITTED and represent absent/retired peers, not fold lag.`
+          : '';
+      breaches.push(
+        `LOCAL FOLD SUSPECT: all ${admittedRemoteLogs} ADMITTED remote log(s) silent — freshest admitted advance ${freshestAdmittedAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the admitted peers.${absentNote}${strandedNote}`,
+      );
+    } else if (admittedSilent.length > 0) {
+      const absentNote =
+        unadmittedSilent.length > 0
+          ? ` ${unadmittedSilent.length} further silent cursor(s) are NOT ADMITTED and represent absent/retired peers, not slow federation.`
+          : '';
+      breaches.push(
+        `${admittedSilent.length} of ${admittedRemoteLogs} ADMITTED remote log(s) have federated nothing for > SLO ${opts.silentAfterMs}ms (oldest ${admittedSilent[0]!.silentForMs}ms, log ${admittedSilent[0]!.logKeyHex.slice(0, 12)}…) while ${admittedRemoteLogs - admittedSilent.length} admitted log(s) keep advancing.${absentNote}${strandedNote}`,
+      );
+    } else if (unadmittedSilent.length > 0) {
+      breaches.push(
+        `PEERS ABSENT: ${unadmittedSilent.length} silent remote cursor(s) are NOT ADMITTED while all ${admittedRemoteLogs} admitted remote log(s) keep advancing inside the ${opts.silentAfterMs}ms SLO. The silent logs represent absent/retired peers, not slow federation; suspect peer liveness or the announce/admission path.${strandedNote}`,
+      );
+    }
   } else if (allSilent) {
-    // Every log silent while at least one IS admitted (or admission is unknown —
-    // ignorance never upgrades to the confident reading above). Withhold the
-    // per-peer reading: with no advancing log left as a control, the evidence
-    // points at our own fold, and N peer alarms would be N false positives
-    // dressed as corroboration.
+    // Admission is unknown. With no advancing raw cursor left as a control, the
+    // evidence points at our own fold; ignorance must not be upgraded to a
+    // confident absent-peer reading.
     breaches.push(
       `LOCAL FOLD SUSPECT: all ${judged.length} remote log(s) silent — freshest advance ${freshestAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the peers.${strandedNote}`,
     );
   } else if (silent.length > 0) {
+    // Admission is unknown, so retain the legacy observable instead of inventing
+    // a current-membership claim the scan did not measure.
     breaches.push(
       `${silent.length} of ${judged.length} remote log(s) have federated nothing for > SLO ${opts.silentAfterMs}ms (oldest ${silent[0]!.silentForMs}ms, log ${silent[0]!.logKeyHex.slice(0, 12)}…) while ${judged.length - silent.length} log(s) keep advancing.${strandedNote}`,
     );
