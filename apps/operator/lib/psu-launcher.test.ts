@@ -501,6 +501,16 @@ describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
 describe('routeFreshKickoff (EI-20339142329504181 OMP startup barrier)', () => {
   const KICK = 'Begin: advance the admitted work item.';
 
+  it('keeps the interactive setup reminder on the routed kickoff result', () => {
+    const src = readFileSync(join(__dirname, '..', 'scripts', 'psu-launcher.mjs'), 'utf8');
+    const reminderBlock = src.slice(
+      src.indexOf('// Owner batch #5: right before the TUI takes over the terminal'),
+      src.indexOf("// codex's superuser bearer is baked into its per-session config.toml"),
+    );
+    expect(reminderBlock).toContain('!kickoff.kickoffSeeded');
+    expect(reminderBlock).not.toContain('kickoffArgs');
+  });
+
   it('routes a fresh OMP kickoff through the managed pty instead of argv', () => {
     const provenanceDir = mkdtempSync(join(tmpdir(), 'omp-kickoff-prov-'));
     try {

@@ -8853,7 +8853,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     Boolean(process.stdout.isTTY) &&
     !brain &&
     res.agent !== 'omp' &&
-    !kickoffArgs.length &&
+    !kickoff.kickoffSeeded &&
     !args.launchContext
   ) {
     const lines = setupReminderLines(await fetchSetupStageSoft());
