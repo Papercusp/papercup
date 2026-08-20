@@ -5,15 +5,17 @@ import { join } from 'node:path';
 import { defaultSpawnDetached, resolveResumeSpawnBin } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
 
-/** Exact PATH values from the two systemd hosts that run wake-executor. */
+const SERVICE_HOME = '/home/service-user';
+
+/** Structure-preserving PATH fixtures for the two systemd hosts that run wake-executor. */
 const SERVICE_PATHS = [
   {
     service: 'papercup-dev-api',
-    value: '/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/marsh-office/.cargo/bin:/home/marsh-office/.local/bin:/home/marsh-office/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    value: `/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:${SERVICE_HOME}/.cargo/bin:${SERVICE_HOME}/.local/bin:${SERVICE_HOME}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
   },
   {
     service: 'papercup-bg-host',
-    value: '/home/marsh-office/.cargo/bin:/home/linuxbrew/.linuxbrew/bin:/home/marsh-office/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    value: `${SERVICE_HOME}/.cargo/bin:/home/linuxbrew/.linuxbrew/bin:${SERVICE_HOME}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`,
   },
 ] as const;
 
