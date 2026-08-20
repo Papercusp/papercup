@@ -21,7 +21,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdirSync,
   writeFileSync,
@@ -196,6 +196,8 @@ export interface CheckpointDeps {
      *  the early-preflight path), which a consumer must NOT read as `true`: that is exactly
      *  the reading that turns an unmeasured post-suite blocker into an apparently-clean one. */
     postSuiteMeasured?: boolean;
+    /** EI-203121: bounded identity for each post-suite leg that actually formed this verdict. */
+    postSuiteLegs?: PostSuiteLegRecord[];
     /** EI-20767792192323374: this RED run's failures are a HOST fault (the gate's own vite-node
      *  module cache was deleted mid-suite), not a verdict about the code — see
      *  {@link classifyInfraFault}. Present ⇒ `runGreenCheckpoint` renders INCONCLUSIVE
@@ -617,6 +619,8 @@ export interface CheckpointResult {
    * repair queue. Downstream recording uses it to suppress the legacy moving-tip
    * release-fixer dispatch; the queue already owns one targeted fixer. */
   repairQueue?: FrozenCandidateRepairQueue;
+  /** EI-203121: durable per-leg execution identity, capped by the producer. */
+  postSuiteLegs?: PostSuiteLegRecord[];
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -8179,6 +8183,23 @@ export interface PostSuiteLegRecord extends LegOutcome {
   id: string;
   /** End-to-end wall time for this logical leg. Parallel subcommands use their union span. */
   durationMs: number;
+  executionIdentity?: {
+    runId: string;
+    candidate: string;
+    treeDir: string;
+    cwd: string;
+    headAtStart: string;
+    dependencies: {
+      nodeModules: { hash: string | null; inode: number | null; source: string };
+    };
+    setup: { identity: string; output: string };
+    result: {
+      status: LegStatus;
+      exit: "completed" | "skipped" | "errored";
+      exitCode: number | null;
+      output: string;
+    };
+  };
 }
 
 interface PostSuiteLegs {
@@ -8312,6 +8333,13 @@ interface PostSuiteRunOptions {
   now?: () => number;
   /** Test seam only. Production always uses the fixed resource-derived ceiling. */
   lowMemoryConcurrency?: number;
+  /** EI-203121: real-path run/setup identity; optional keeps injected legacy seams valid. */
+  identity?: {
+    runId?: string;
+    candidate?: string;
+    headAtStart?: string;
+    setup?: { identity?: string; output?: string };
+  };
 }
 
 /**
@@ -8364,16 +8392,35 @@ export async function runPostSuiteLegs(
     string,
     Array<{ startedAt: number; endedAt: number }>
   >();
+  const executionResults = new Map<
+    string,
+    Array<{ code: number | null; stdout: string; stderr: string; cwd: string; errored: boolean }>
+  >();
   const exec: CheckpointExec = async (cmd, args, opts) => {
     const id = postSuiteCommandId(cmd, args);
     const commandStartedAt = now();
+    let result: Awaited<ReturnType<CheckpointExec>> | undefined;
+    let thrown: unknown;
     try {
-      return await execRaw(cmd, args, opts);
+      result = await execRaw(cmd, args, opts);
+      return result;
+    } catch (error) {
+      thrown = error;
+      throw error;
     } finally {
       const commandEndedAt = now();
       const spans = executionSpans.get(id) ?? [];
       spans.push({ startedAt: commandStartedAt, endedAt: commandEndedAt });
       executionSpans.set(id, spans);
+      const results = executionResults.get(id) ?? [];
+      results.push({
+        code: result?.code ?? null,
+        stdout: result?.stdout ?? "",
+        stderr: result?.stderr ?? (thrown instanceof Error ? thrown.message : thrown ? String(thrown) : ""),
+        cwd: opts?.cwd ?? treeDir,
+        errored: thrown !== undefined,
+      });
+      executionResults.set(id, results);
     }
   };
   // The suite env arrives pinned to GREEN_CHECKPOINT_FORK_HEAP_MB (4 GiB), which is
@@ -9284,11 +9331,62 @@ export async function runPostSuiteLegs(
             Math.min(...spans.map((span) => span.startedAt)),
         )
       : 0;
+    const commands = commandIds.flatMap(
+      (commandId) => executionResults.get(commandId) ?? [],
+    );
+    const nodeModulesPath = path.join(treeDir, "node_modules");
+    const lockfilePath = path.join(treeDir, "package-lock.json");
+    let dependencyHash: string | null = null;
+    let dependencyInode: number | null = null;
+    try {
+      dependencyHash = createHash("sha256")
+        .update(readFileSync(lockfilePath))
+        .digest("hex");
+    } catch {}
+    try {
+      dependencyInode = Number(statSync(nodeModulesPath).ino);
+    } catch {}
+    const identity = options.identity;
+    const output = commands
+      .map((command) => command.stdout + command.stderr)
+      .join("\n")
+      .slice(-2000);
+    const exitCode = commands.find((command) => command.code !== 0)?.code ??
+      commands.at(-1)?.code ??
+      null;
     return {
       id,
       status: outcome.status,
       durationMs,
       ...(outcome.skipReason ? { skipReason: outcome.skipReason } : {}),
+      ...(identity
+        ? {
+            executionIdentity: {
+              runId: (identity.runId ?? "unknown").slice(0, 128),
+              candidate: (identity.candidate ?? "unknown").slice(0, 64),
+              treeDir: treeDir.slice(0, 1000),
+              cwd: (commands.at(-1)?.cwd ?? treeDir).slice(0, 1000),
+              headAtStart: (identity.headAtStart ?? identity.candidate ?? "unknown").slice(0, 64),
+              dependencies: {
+                nodeModules: {
+                  hash: dependencyHash,
+                  inode: dependencyInode,
+                  source: (existsSync(nodeModulesPath) ? nodeModulesPath : "missing").slice(0, 1000),
+                },
+              },
+              setup: {
+                identity: (identity.setup?.identity ?? "setup-release-checkout").slice(0, 200),
+                output: (identity.setup?.output ?? "").slice(-1000),
+              },
+              result: {
+                status: outcome.status,
+                exit: outcome.status === "skipped" ? "skipped" : commands.some((c) => c.errored) ? "errored" : "completed",
+                exitCode,
+                output,
+              },
+            },
+          }
+        : {}),
     };
   };
   legs.records = [
