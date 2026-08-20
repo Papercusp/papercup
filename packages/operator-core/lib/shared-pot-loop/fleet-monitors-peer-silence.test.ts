@@ -702,6 +702,27 @@ describe('judgePeerFederationSilence — a cursor outlives admission (WI-39489)'
     expect(v.breaches[0]).not.toContain('4 of 5 remote log(s) have federated nothing');
   });
 
+  it('REPRODUCTION: hello-world reports one historical cursor ABSENT while its one admitted peer advances (EI-206131)', () => {
+    const active = 'hello-world-current-admitted';
+    const rows = [log(OWN, 0), log('hello-world-historical', 156), log(active, 0.1)];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: OWN,
+      admittedLogKeysHex: [OWN, active],
+    });
+
+    expect(v.totalLogs).toBe(2);
+    expect(v.silent).toHaveLength(1);
+    expect(v.allSilent).toBe(false);
+    expect(v.admittedRemoteLogs).toBe(1);
+    expect(v.silent[0]!.admitted).toBe(false);
+    expect(v.breaches[0]).toContain('PEERS ABSENT');
+    expect(v.breaches[0]).toContain('1 silent remote cursor(s) are NOT ADMITTED');
+    expect(v.breaches[0]).toContain('all 1 admitted remote log(s) keep advancing');
+    expect(v.breaches[0]).not.toContain('1 of 2 remote log(s) have federated nothing');
+  });
+
   it('an unadmitted fresh cursor cannot mask an all-admitted-silent local fold', () => {
     const admitted = PEERS[0]!;
     const historicalButFresh = PEERS[1]!;
