@@ -61,8 +61,16 @@ async function planTouchedFiles(workspaceId: string, planSlug: string): Promise<
 import { readCoverage } from '../testing/coverage';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
-import { clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { trackDetached } from '../../detached-imports';
+
+/**
+ * A tests-backed scorecard is intentionally a long-running write: it shells one
+ * batched Vitest run before filing.  Keep the inner run comfortably inside the
+ * tool's declared timeout so process-group settlement, the ledger write, and MCP
+ * serialization cannot lose a race to the transport deadline.
+ */
+export const SCORECARD_EMIT_TIMEOUT_SEC = 180;
+export const SCORECARD_TEST_CHECK_TIMEOUT_MS = 120_000;
 
 export const scorecardEmitArgs = z
   .object({
@@ -447,10 +455,11 @@ export async function emitScorecard(
         criteria: rubric.criteria,
         ratings,
         ...(input.checkRoot ? { root: input.checkRoot } : {}),
-        // Same foreground ceiling as testing:run, shared across ALL checks — the emit
-        // call rides the same ~55s MCP transport, so an over-budget suite must surface
-        // as an actionable refusal, not an opaque CONNECTION_CLOSED.
-        timeoutMs: clampForegroundTimeoutMs(300_000),
+        // One shared budget for the batched run. scorecards:emit declares a longer
+        // tool timeout below, so the transport gives this mutation enough time to
+        // return a typed verdict (and still leaves a full minute for process-group
+        // settlement, the ledger write, and response serialization).
+        timeoutMs: SCORECARD_TEST_CHECK_TIMEOUT_MS,
       });
       if (!checkEvaluation.ok) {
         return {
@@ -606,6 +615,11 @@ export default defineTool({
   // (60s), surfacing as a bare `write CONNECTION_CLOSED`. Same declaration as
   // testing:run, for the same reason; every DB access here manages its own connection.
   skipWorkspaceTx: true,
+  // EI-20965113106044588: the deterministic gate can legitimately exceed the flat
+  // 55s MCP deadline. Declaring the real tool budget makes effectiveMcpDeadlineMs
+  // extend the transport race instead of returning request_timeout while the
+  // mutation is still running server-side.
+  timeoutSec: SCORECARD_EMIT_TIMEOUT_SEC,
   agentRoles: [...COORD_ROLES, 'judge'],
   args: scorecardEmitArgs,
   async handler(args, ctx) {

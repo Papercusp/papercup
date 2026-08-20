@@ -50,7 +50,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
 });
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: () => {} }));
 
-import { emitScorecard } from './emit';
+import scorecardEmitTool, {
+  emitScorecard,
+  SCORECARD_EMIT_TIMEOUT_SEC,
+  SCORECARD_TEST_CHECK_TIMEOUT_MS,
+} from './emit';
 import { scorecardEvidenceFingerprint } from '../../scorecards';
 import type { ObservationRatings } from '../../harness/improvements/observation-types';
 import type { evaluateCriterionTestChecks, CriterionCheckRun } from '../../rubrics-criterion-checks';
@@ -131,6 +135,7 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     const call = evaluateChecks.mock.calls[0][0];
     expect(call.root).toBe('/tmp/fake-root');
     expect(call.criteria).toBe(CHECKED_RUBRIC.criteria);
+    expect(call.timeoutMs).toBe(SCORECARD_TEST_CHECK_TIMEOUT_MS);
     const payload = captureImprovement.mock.calls[0][0] as {
       payloadExtra: { observation: { checkRuns?: Record<string, CriterionCheckRun> } };
     };
@@ -192,5 +197,13 @@ describe('scorecards:emit deterministic criterion checks (P-011)', () => {
     expect((res as { reason?: string }).reason).toBe('unchanged-evidence');
     expect(evaluateChecks).not.toHaveBeenCalled();
     expect(captureImprovement).not.toHaveBeenCalled();
+  });
+});
+
+describe('scorecards:emit deterministic-check transport budget', () => {
+  it('declares enough outer headroom for test cleanup, the write, and serialization', () => {
+    expect(scorecardEmitTool.timeoutSec).toBe(SCORECARD_EMIT_TIMEOUT_SEC);
+    expect(SCORECARD_EMIT_TIMEOUT_SEC * 1_000 - SCORECARD_TEST_CHECK_TIMEOUT_MS)
+      .toBeGreaterThanOrEqual(60_000);
   });
 });
