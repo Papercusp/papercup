@@ -99,11 +99,46 @@ RELEASE_ROOT="$(realpath -m "$RELEASE_ROOT")"
 [ -d "$INTEGRATION_ROOT/.git" ] || { echo "[setup-release] integration root is not a git repo: $INTEGRATION_ROOT" >&2; exit 1; }
 
 # Resolve the target commit from the integration repo (refs are shared with the worktree).
-TARGET_SHA="$(git -C "$INTEGRATION_ROOT" rev-parse --verify "${REF}^{commit}")"
-log "target ref=$REF sha=$TARGET_SHA"
+# In dependency-only mode the existing checkout is the source of truth. An
+# explicit --ref remains an assertion, rather than an instruction to move the
+# checkout; without one, use the clone's current pinned HEAD.
+if [ "$PREPARE_EXISTING" = "1" ]; then
+  [ -e "$RELEASE_ROOT/.git" ] || {
+    echo "[setup-release] --prepare-existing requires an existing git checkout: $RELEASE_ROOT" >&2
+    exit 1
+  }
+  EXISTING_SHA="$(git -C "$RELEASE_ROOT" rev-parse --verify HEAD 2>/dev/null || true)"
+  [ -n "$EXISTING_SHA" ] || {
+    echo "[setup-release] --prepare-existing could not resolve HEAD in existing checkout: $RELEASE_ROOT" >&2
+    exit 1
+  }
+  if [ "$REF_WAS_SET" = "1" ]; then
+    TARGET_SHA="$(git -C "$INTEGRATION_ROOT" rev-parse --verify "${REF}^{commit}")"
+    if [ "$EXISTING_SHA" != "$TARGET_SHA" ]; then
+      echo "[setup-release] --prepare-existing checkout HEAD ($EXISTING_SHA) does not match requested ref $REF ($TARGET_SHA)" >&2
+      exit 1
+    fi
+  else
+    TARGET_SHA="$EXISTING_SHA"
+    REF="$TARGET_SHA"
+  fi
+  # The dependency stages compare integration-tree package paths against the
+  # pin. Fail closed if the integration object store cannot inspect that pin;
+  # silently treating every package as post-pin would leave a partial clone.
+  git -C "$INTEGRATION_ROOT" cat-file -e "$TARGET_SHA^{commit}" 2>/dev/null || {
+    echo "[setup-release] --prepare-existing requires the pinned commit in the integration object store: $TARGET_SHA" >&2
+    exit 1
+  }
+  log "preparing existing pinned checkout (dependency-only) ref=$REF sha=$TARGET_SHA"
+else
+  TARGET_SHA="$(git -C "$INTEGRATION_ROOT" rev-parse --verify "${REF}^{commit}")"
+  log "target ref=$REF sha=$TARGET_SHA"
+fi
 
 # 1. Worktree --------------------------------------------------------------
-if [ -e "$RELEASE_ROOT/.git" ]; then
+if [ "$PREPARE_EXISTING" = "1" ]; then
+  log "preserving existing checkout and submodules (prepare-existing)"
+elif [ -e "$RELEASE_ROOT/.git" ]; then
   log "release worktree exists; checking out $TARGET_SHA"
   git -C "$RELEASE_ROOT" checkout --detach "$TARGET_SHA" >/dev/null 2>&1 || \
     git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
@@ -273,6 +308,7 @@ clone_submodule_repo() {  # <repo-relative path> <pinned sha>
   return 0
 }
 
+if [ "$PREPARE_EXISTING" = "0" ]; then
 log "cloning submodule repos at pinned shas (local objects; real .git so --recurse-submodules works)"
 _sub_cloned=0
 _sub_fallback=0
@@ -313,6 +349,7 @@ _uninit="$(git -C "$RELEASE_ROOT" submodule status 2>/dev/null | grep -c '^-' ||
 log "submodule recursion: cloned=$_sub_cloned archive-fallback=$_sub_fallback tracked plain=$_plain recursive=$_recursive uninitialized=$_uninit"
 if [ "$_sub_cloned" -gt 0 ] && [ "$_recursive" -le "$_plain" ]; then
   log "WARN recursion added NO files despite $_sub_cloned cloned submodule repo(s) — tracked-files guards are probably scanning the superproject only"
+fi
 fi
 
 # 3. node_modules ----------------------------------------------------------

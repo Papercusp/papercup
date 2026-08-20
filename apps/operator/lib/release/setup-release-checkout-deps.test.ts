@@ -858,6 +858,84 @@ describe('assert_checkout_landed (WI-5110)', () => {
 });
 
 /**
+ * EI-20336479620858625: Route A can finish a regular pinned clone and its
+ * submodules before dependency preparation is retried. `--prepare-existing`
+ * must validate that pin and refresh dependencies without resetting, cleaning,
+ * or replacing the already-verified source checkout.
+ */
+describe('setup-release-checkout.sh --prepare-existing (EI-20336479620858625)', () => {
+  let integrationRoot: string;
+  let releaseRoot: string;
+  let targetSha: string;
+
+  const git = (cwd: string, ...args: string[]): string => {
+    const r = spawnSync(
+      'git',
+      ['-C', cwd, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args],
+      { encoding: 'utf8' },
+    );
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  beforeEach(() => {
+    integrationRoot = realpathSync(mkdtempSync(join(tmpdir(), 'prepare-int-')));
+    git(integrationRoot, 'init', '-q');
+    writeFileSync(join(integrationRoot, '.gitignore'), 'ignored-cache/\n');
+    writeFileSync(join(integrationRoot, 'tracked.txt'), 'pinned source\n');
+    git(integrationRoot, 'add', '-A');
+    git(integrationRoot, 'commit', '-q', '-m', 'pinned');
+    targetSha = git(integrationRoot, 'rev-parse', 'HEAD');
+
+    const releaseParent = realpathSync(mkdtempSync(join(tmpdir(), 'prepare-rel-')));
+    releaseRoot = join(releaseParent, 'clone');
+    const clone = spawnSync('git', ['clone', '-q', integrationRoot, releaseRoot], { encoding: 'utf8' });
+    if (clone.status !== 0) throw new Error(`git clone failed: ${clone.stderr}`);
+    writeFileSync(join(releaseRoot, 'untracked-sentinel.txt'), 'keep me\n');
+    mkdirSync(join(releaseRoot, 'ignored-cache'), { recursive: true });
+    writeFileSync(join(releaseRoot, 'ignored-cache', 'stale.txt'), 'keep me too\n');
+  });
+
+  afterEach(() => {
+    rmSync(integrationRoot, { recursive: true, force: true });
+    rmSync(join(releaseRoot, '..'), { recursive: true, force: true });
+  });
+
+  function runPrepare(args: string[] = []) {
+    return spawnSync(
+      'bash',
+      [SCRIPT_PATH, '--prepare-existing', '--integration', integrationRoot, '--release', releaseRoot, '--node-modules', 'skip', ...args],
+      { encoding: 'utf8' },
+    );
+  }
+
+  it('preserves an existing pinned clone while running dependency-only preparation', () => {
+    mkdirSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture'), { recursive: true });
+    writeFileSync(join(integrationRoot, 'node_modules', 'dependency-only-fixture', 'package.json'), '{}');
+    const r = runPrepare(['--node-modules', 'force']);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('dependency-only');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+    expect(existsSync(join(releaseRoot, 'node_modules', 'dependency-only-fixture', 'package.json'))).toBe(true);
+    expect(readFileSync(join(releaseRoot, 'untracked-sentinel.txt'), 'utf8')).toBe('keep me\n');
+    expect(readFileSync(join(releaseRoot, 'ignored-cache', 'stale.txt'), 'utf8')).toBe('keep me too\n');
+  });
+
+  it('fails closed when an explicit ref does not match the existing clone HEAD', () => {
+    writeFileSync(join(integrationRoot, 'new-tip.txt'), 'new tip\n');
+    git(integrationRoot, 'add', '-A');
+    git(integrationRoot, 'commit', '-q', '-m', 'new tip');
+
+    const r = runPrepare(['--ref', 'HEAD']);
+
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('does not match requested ref');
+    expect(git(releaseRoot, 'rev-parse', 'HEAD')).toBe(targetSha);
+  });
+});
+
+/**
  * WI-5366: the worktree-refresh clean step only ever ran plain `git clean -fdq
  * -e node_modules` — which does NOT remove gitignored files (that requires `-x`).
  * Verified live in the running papercusp-checkpoint tree: package-local
