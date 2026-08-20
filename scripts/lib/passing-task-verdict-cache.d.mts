@@ -54,6 +54,26 @@ export function hashDependencyFileSet(args: {
 }):
   | { ok: true; hash: string; fileCount: number }
   | { ok: false; reason: string };
+export function passingTaskVerdictDependencyProvenance(args: {
+  root: string;
+  taskKey: string;
+  script: string;
+  workspaceName: string;
+  workspaces: Map<string, { dir: string; deps: string[] }>;
+  trackedScan: { files: string[]; unscannedPresent: string[] };
+  repoWideTaskKeys: Set<string>;
+  digestCache?: Map<string, unknown>;
+}):
+  | { ok: true; hash: string; fileCount: number }
+  | { ok: false; reason: string };
+export function shouldStorePassingTaskVerdict(args: {
+  enabled: boolean;
+  cacheStatus?: string;
+  initialStatus?: number | null;
+  finalStatus?: number | null;
+  absorptionRan: boolean;
+  identity?: PassingTaskVerdictIdentity | null;
+}): boolean;
 export function buildPassingTaskVerdictIdentity(args: {
   taskKey: string;
   command: unknown;

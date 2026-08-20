@@ -100,9 +100,11 @@ import {
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
+  shouldStorePassingTaskVerdict,
   writePassingTaskVerdictCacheAtomic,
 } from "./lib/passing-task-verdict-cache.mjs";
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
@@ -2990,75 +2992,16 @@ const taskVerdictGuardKeys = new Set(
   ),
 );
 
-const pathInsideDir = (file, dir) => file === dir || file.startsWith(`${dir}/`);
-
-function localDependencyClosureDirs(workspaceName) {
-  const dirs = new Set();
-  const seen = new Set();
-  const queue = [workspaceName];
-  while (queue.length > 0) {
-    const name = queue.shift();
-    if (seen.has(name)) continue;
-    seen.add(name);
-    const ws = wsByName.get(name);
-    if (!ws) continue;
-    dirs.add(ws.dir);
-    for (const dep of ws.deps) if (wsByName.has(dep)) queue.push(dep);
-  }
-  return [...dirs].sort();
-}
-
 function dependencyProvenanceForTask(t) {
   if (!TASK_VERDICT_CACHE_ENABLED) return null;
-  // These tasks consume live/external state by definition. A content hash cannot establish
-  // complete provenance, so D-003 says miss rather than pretending the closure is sufficient.
-  if (t.script === "test:integration" || t.script === "test:el-suite") {
-    return {
-      ok: false,
-      reason: "provenance-incomplete:external-integration-task",
-    };
-  }
-  const scan = taskVerdictTrackedScan;
-  if (!scan || scan.files.length === 0) {
-    return {
-      ok: false,
-      reason: "provenance-incomplete:tracked-file-enumeration-empty",
-    };
-  }
-  const key = taskKey(t);
-  const wholeTree = taskVerdictGuardKeys.has(key);
-  const closureDirs = localDependencyClosureDirs(t.ws.name);
-  for (const dir of closureDirs) {
-    if (!scan.files.some((file) => pathInsideDir(file, dir))) {
-      return {
-        ok: false,
-        reason: `provenance-incomplete:workspace-not-enumerated:${dir}`,
-      };
-    }
-  }
-  // Shared gate inputs are part of every task: root manifests/config, affected runner + helpers,
-  // and the common Vitest configuration package. The task's own workspace and every transitive
-  // local dependency supply the rest. Repo-wide guards conservatively bind the whole tree.
-  const files = wholeTree
-    ? scan.files
-    : scan.files.filter(
-        (file) =>
-          !file.includes("/") ||
-          file.startsWith("scripts/") ||
-          file.startsWith("libs/test-config/") ||
-          closureDirs.some((dir) => pathInsideDir(file, dir)),
-      );
-  const unavailable = scan.unscannedPresent.filter(
-    (submodule) =>
-      wholeTree ||
-      closureDirs.some(
-        (dir) => pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
-      ),
-  );
-  return hashDependencyFileSet({
+  return passingTaskVerdictDependencyProvenance({
     root: ROOT,
-    files,
-    unavailable,
+    taskKey: taskKey(t),
+    script: t.script,
+    workspaceName: t.ws.name,
+    workspaces: wsByName,
+    trackedScan: taskVerdictTrackedScan,
+    repoWideTaskKeys: taskVerdictGuardKeys,
     digestCache: taskVerdictDigestCache,
   });
 }
@@ -3760,12 +3703,14 @@ for (const scheduled of initialPool.results) {
   // that rescued a flake is useful evidence for this candidate but deliberately not strong
   // enough to suppress the next candidate's full task. Hits retain their existing entry.
   if (
-    TASK_VERDICT_CACHE_ENABLED &&
-    scheduled.value.__cacheStatus === "miss" &&
-    scheduled.value.status === 0 &&
-    r.status === 0 &&
-    !absorptionRan &&
-    scheduled.value.__cacheIdentity
+    shouldStorePassingTaskVerdict({
+      enabled: TASK_VERDICT_CACHE_ENABLED,
+      cacheStatus: scheduled.value.__cacheStatus,
+      initialStatus: scheduled.value.status,
+      finalStatus: r.status,
+      absorptionRan,
+      identity: scheduled.value.__cacheIdentity,
+    })
   ) {
     taskVerdictCacheUpdates[taskKey(t)] = passingTaskVerdictEntry(
       scheduled.value.__cacheIdentity,

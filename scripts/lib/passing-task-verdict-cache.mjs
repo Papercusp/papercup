@@ -223,6 +223,109 @@ export function hashDependencyFileSet({
   return { ok: true, hash: hash.digest("hex"), fileCount: unique.length };
 }
 
+const pathInsideDir = (file, dir) =>
+  file === dir || file.startsWith(`${dir}/`);
+
+/**
+ * Resolve the complete content proof for one affected-test task.
+ *
+ * Kept here, beside the hash it feeds, so the production cache and its repair-chain
+ * recurrence tests exercise one policy. Integration tasks remain deliberately
+ * non-reusable; repo-wide guards bind every tracked path; ordinary tasks bind their
+ * workspace plus its transitive local dependency closure and shared gate inputs.
+ */
+export function passingTaskVerdictDependencyProvenance({
+  root,
+  taskKey,
+  script,
+  workspaceName,
+  workspaces,
+  trackedScan,
+  repoWideTaskKeys,
+  digestCache = new Map(),
+}) {
+  if (script === "test:integration" || script === "test:el-suite") {
+    return {
+      ok: false,
+      reason: "provenance-incomplete:external-integration-task",
+    };
+  }
+  if (!trackedScan || trackedScan.files.length === 0) {
+    return {
+      ok: false,
+      reason: "provenance-incomplete:tracked-file-enumeration-empty",
+    };
+  }
+
+  const closureDirs = new Set();
+  const seen = new Set();
+  const queue = [workspaceName];
+  while (queue.length > 0) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const workspace = workspaces.get(name);
+    if (!workspace) continue;
+    closureDirs.add(workspace.dir);
+    for (const dependency of workspace.deps) {
+      if (workspaces.has(dependency)) queue.push(dependency);
+    }
+  }
+  const sortedClosureDirs = [...closureDirs].sort();
+  for (const dir of sortedClosureDirs) {
+    if (!trackedScan.files.some((file) => pathInsideDir(file, dir))) {
+      return {
+        ok: false,
+        reason: `provenance-incomplete:workspace-not-enumerated:${dir}`,
+      };
+    }
+  }
+
+  const wholeTree = repoWideTaskKeys.has(taskKey);
+  const files = wholeTree
+    ? trackedScan.files
+    : trackedScan.files.filter(
+        (file) =>
+          !file.includes("/") ||
+          file.startsWith("scripts/") ||
+          file.startsWith("libs/test-config/") ||
+          sortedClosureDirs.some((dir) => pathInsideDir(file, dir)),
+      );
+  const unavailable = trackedScan.unscannedPresent.filter(
+    (submodule) =>
+      wholeTree ||
+      sortedClosureDirs.some(
+        (dir) =>
+          pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
+      ),
+  );
+  return hashDependencyFileSet({
+    root,
+    files,
+    unavailable,
+    digestCache,
+  });
+}
+
+/** A clean first pass is the only evidence strong enough to suppress a later task. */
+export function shouldStorePassingTaskVerdict({
+  enabled,
+  cacheStatus,
+  initialStatus,
+  finalStatus,
+  absorptionRan,
+  identity,
+}) {
+  return (
+    enabled &&
+    cacheStatus === "miss" &&
+    initialStatus === 0 &&
+    finalStatus === 0 &&
+    !absorptionRan &&
+    identity != null
+  );
+}
+
 export function buildPassingTaskVerdictIdentity({
   taskKey,
   command,
