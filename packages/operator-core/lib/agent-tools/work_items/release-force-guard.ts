@@ -36,6 +36,9 @@ export type ForceReleaseBasis =
   | 'queen'
   | 'leads-holder-fleet';
 
+/** A checked cross-holder mutation that can leave a forensic trail. */
+export type ForceTransition = 'release' | 'claim';
+
 /**
  * EI-18712366018708650: a fresh heartbeat is process keepalive, NOT evidence of real
  * work — a session can certify `live` via heartbeatAt alone while both REAL-activity
@@ -288,10 +291,14 @@ export function forceRefusalHint(holder: string): string {
 }
 
 /** Forensic audit row — mirrors release/deploy.ts's canonical full-column shape.
- *  Fire-and-forget; never throws (the release already happened). */
-export async function recordForceReleaseAudit(
+ * Fire-and-forget; never throws (the mutation already happened). The original
+ * release-only helper below remains as a compatibility wrapper; claims reuse the
+ * same audit path with a distinct action so a forced takeover is not misreported
+ * as a release. */
+export async function recordForceTransitionAudit(
   actor: string,
   itemId: string,
+  operation: ForceTransition,
   details: Record<string, unknown>,
 ): Promise<void> {
   try {
@@ -300,19 +307,83 @@ export async function recordForceReleaseAudit(
       import('../../workspace-registry'),
     ]);
     const { sql } = getOrgPg();
-    const id = `wi-force-release-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `wi-force-${operation}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await sql.unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)
        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
-      [id, Date.now(), actor, 'work_items:release:force', itemId, JSON.stringify(details), activeWorkspaceId()],
+      [id, Date.now(), actor, `work_items:${operation}:force`, itemId, JSON.stringify(details), activeWorkspaceId()],
     );
   } catch (err) {
-    console.warn('[work_items:release] force audit write failed:', (err as Error)?.message);
+    console.warn(`[work_items:${operation}] force audit write failed:`, (err as Error)?.message);
   }
 }
 
+/** Backward-compatible release spelling used by the release handler. */
+export async function recordForceReleaseAudit(
+  actor: string,
+  itemId: string,
+  details: Record<string, unknown>,
+): Promise<void> {
+  return recordForceTransitionAudit(actor, itemId, 'release', details);
+}
+
 /** Notify the displaced holder (coord inbox — read on resume even if dead now)
- *  and the owner (attention channel). Never throws. */
+ * and the owner (attention channel). Never throws. The operation is explicit so
+ * a force-claim takeover says what actually happened to the old holder's claim. */
+export async function notifyForceTransition(
+  ident: { ownerId: string },
+  input: {
+    itemId: string;
+    holder: string;
+    basis: ForceReleaseBasis;
+    reason: string;
+    harness?: string | null;
+    operation: ForceTransition;
+    replacementAssignee?: string;
+  },
+): Promise<void> {
+  const isClaim = input.operation === 'claim';
+  const verb = isClaim ? 'FORCE-CLAIMED' : 'FORCE-RELEASED';
+  const operationVerb = isClaim ? 'force-claimed' : 'force-released';
+  try {
+    const { sendMessage } = await import('../coordination/messages');
+    await sendMessage(ident as never, {
+      to: [input.holder],
+      summary: `⚠ Your claim on ${input.itemId} was ${verb} by ${ident.ownerId} (basis: ${input.basis}) — ${input.reason.slice(0, 140)}`,
+      harnessSlug: input.harness ?? undefined,
+      extra: {
+        auto: true,
+        lifecycle: `force_${input.operation}`,
+        work_item: input.itemId,
+        basis: input.basis,
+        ...(input.replacementAssignee ? { replacement_assignee: input.replacementAssignee } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn(`[work_items:${input.operation}] force holder-notify failed:`, (err as Error)?.message);
+  }
+  try {
+    const { notifyAttention } = await import('../../attention-notify');
+    await notifyAttention({
+      kind: 'intervention',
+      title: `work_items:${input.operation} force — ${input.itemId}`,
+      body: `${ident.ownerId} ${operationVerb} ${input.holder}'s claim on ${input.itemId} (basis: ${input.basis})${input.replacementAssignee ? `; new assignee: ${input.replacementAssignee}` : ''}: ${input.reason}`,
+      importance: 'high',
+      harnessSlug: input.harness ?? undefined,
+      data: {
+        workItem: input.itemId,
+        holder: input.holder,
+        basis: input.basis,
+        operation: input.operation,
+        ...(input.replacementAssignee ? { replacementAssignee: input.replacementAssignee } : {}),
+      },
+    });
+  } catch (err) {
+    console.warn(`[work_items:${input.operation}] force owner-notify failed:`, (err as Error)?.message);
+  }
+}
+
+/** Backward-compatible release spelling used by the release handler. */
 export async function notifyForceRelease(
   ident: { ownerId: string },
   input: {
@@ -323,28 +394,5 @@ export async function notifyForceRelease(
     harness?: string | null;
   },
 ): Promise<void> {
-  try {
-    const { sendMessage } = await import('../coordination/messages');
-    await sendMessage(ident as never, {
-      to: [input.holder],
-      summary: `⚠ Your claim on ${input.itemId} was FORCE-RELEASED by ${ident.ownerId} (basis: ${input.basis}) — ${input.reason.slice(0, 140)}`,
-      harnessSlug: input.harness ?? undefined,
-      extra: { auto: true, lifecycle: 'force_release', work_item: input.itemId, basis: input.basis },
-    });
-  } catch (err) {
-    console.warn('[work_items:release] force holder-notify failed:', (err as Error)?.message);
-  }
-  try {
-    const { notifyAttention } = await import('../../attention-notify');
-    await notifyAttention({
-      kind: 'intervention',
-      title: `work_items:release force — ${input.itemId}`,
-      body: `${ident.ownerId} force-released ${input.holder}'s claim on ${input.itemId} (basis: ${input.basis}): ${input.reason}`,
-      importance: 'high',
-      harnessSlug: input.harness ?? undefined,
-      data: { workItem: input.itemId, holder: input.holder, basis: input.basis },
-    });
-  } catch (err) {
-    console.warn('[work_items:release] force owner-notify failed:', (err as Error)?.message);
-  }
+  return notifyForceTransition(ident, { ...input, operation: 'release' });
 }

@@ -53,6 +53,13 @@ import {
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
+import {
+  assessForceRelease,
+  forceRefusalHint,
+  notifyForceTransition,
+  recordForceTransitionAudit,
+  type ForceReleaseBasis,
+} from './release-force-guard';
 // TYPE-only: erased at runtime, so it adds no import edge and cannot reintroduce an ESM
 // cycle with the scheduler (the VALUE side is dynamically imported at its use site below,
 // the same way fleet:leader-brief reaches this store).
@@ -65,6 +72,7 @@ interface ClaimItem {
   harness?: string;
   force?: boolean;
   ownerOverride?: boolean;
+  reason?: string;
 }
 
 /**
@@ -363,6 +371,42 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     };
   }
   const preClaimItem = preClaim.status === 'found' ? preClaim.item : null;
+  // EI-20417350647749715: `force:true` is a checked cross-holder takeover, not a
+  // bypass of claimWorkItem's compare-and-claim. Reuse the release force guard's
+  // liveness/authority decision, then pass the exact holder into the UPDATE as an
+  // expected-assignee CAS leg. If the holder changes after this read, the CAS
+  // refuses the claim rather than stealing the new holder's work.
+  let forced: { holder: string; basis: ForceReleaseBasis; reason: string } | undefined;
+  const currentHolder = preClaimItem?.assignee?.trim();
+  if (it.force && currentHolder && currentHolder !== identity.ownerId) {
+    const reason = (it.reason ?? '').trim();
+    if (!reason) {
+      return {
+        ok: false,
+        id: it.id,
+        error: 'force_requires_reason',
+        holder: currentHolder,
+        hint: `force would replace ${currentHolder}'s claim — pass a \`reason\` the holder and owner can audit (WI-20417350647749715).`,
+      };
+    }
+    const verdict = await assessForceRelease({
+      callerOwnerId: identity.ownerId,
+      holderOwnerId: currentHolder,
+      workspaceId: identity.workspaceId ?? '',
+      itemLastProgressAt: preClaimItem?.lastProgressAt ?? null,
+    });
+    if (!verdict.allowed) {
+      return {
+        ok: false,
+        id: it.id,
+        error: 'force_unauthorized',
+        holder: currentHolder,
+        holderLiveness: verdict.holderLiveness,
+        hint: forceRefusalHint(currentHolder),
+      };
+    }
+    forced = { holder: currentHolder, basis: verdict.basis as ForceReleaseBasis, reason };
+  }
   const claimHoldRefusal = preClaimItem
     ? assessClaimHoldGuard(preClaimItem.payload, { force: it.force, ownerOverride: it.ownerOverride })
     : null;
@@ -400,7 +444,32 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
   // `assignee` in this same compare-and-claim, instead of being refused and left with
   // release → peer-claims (which exposes the item to the whole fleet in between). When
   // no `assignee` was passed, `claimer` IS `claimerDefault`, so this is a no-op.
-  const workItem = await claimWorkItem(it.id, claimer, { harness: it.harness, fromHolder: claimerDefault });
+  const workItem = await claimWorkItem(it.id, claimer, {
+    harness: it.harness,
+    fromHolder: claimerDefault,
+    ...(forced ? { expectedAssignee: forced.holder } : {}),
+  });
+  if (workItem && forced) {
+    // The CAS has landed; leave both a durable audit row and the same holder/owner
+    // notification trail as a forced release, but identify this mutation as a claim
+    // and include the replacement assignee for an accurate forensic record.
+    await recordForceTransitionAudit(claimerDefault, it.id, 'claim', {
+      holder: forced.holder,
+      basis: forced.basis,
+      reason: forced.reason,
+      harness: workItem.harness ?? it.harness ?? null,
+      replacementAssignee: claimer,
+    });
+    await notifyForceTransition(identity, {
+      itemId: it.id,
+      holder: forced.holder,
+      basis: forced.basis,
+      reason: forced.reason,
+      harness: workItem.harness ?? it.harness ?? null,
+      operation: 'claim',
+      replacementAssignee: claimer,
+    });
+  }
   if (workItem && bypassedHold && bypassedHoldConvention) {
     // Forced past a claim-hold — leave the hold IN PLACE (this never clears it; a leader lifts
     // it explicitly via work_items:hold_open{clear:true}) but leave a forensic trail identical
@@ -553,6 +622,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ok: true,
           id: it.id,
           workItem,
+          ...(forced ? { forced } : {}),
           checkpoint: hint.checkpoint,
           checkpointAgeMs: hint.checkpointAgeMs,
           checkpointWarning:
@@ -588,6 +658,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ok: true,
           id: it.id,
           workItem,
+          ...(forced ? { forced } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
@@ -687,11 +758,11 @@ export default defineTool({
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way.',
+    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way. `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
   guidance: {
     when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
     notWhen:
-      '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.',
+      '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772).',
     seeAlso: [
@@ -727,24 +798,32 @@ export default defineTool({
             harness: z.string().max(80).optional(),
             force: z.boolean().optional(),
             ownerOverride: z.boolean().optional(),
+            reason: z.string().max(500).optional(),
           }),
         )
         .min(1)
         .max(200)
         .optional()
-        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, ownerOverride? }'),
+        .describe('claim many work-items at once — each { id, assignee?, harness?, force?, ownerOverride?, reason? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / ids / items that omit one'),
       force: z
         .boolean()
         .optional()
         .describe(
-          'default for the inline id / every id in `ids`: claim past a `payload._claimHold` exclusion (WI-2797 durable park / hold_open lease) instead of refusing with `claim_hold_blocked`. The hold is left in place (never auto-cleared) and the bypass is audited + notifies the holder and the owner (WI-5946).',
+          'default for the inline id / every id in `ids`: claim past a `payload._claimHold` exclusion (WI-2797 durable park / hold_open lease), or checked-reclaim another agent\'s claim with `reason`; holds stay in place and every cross-holder takeover is audited + notifies the holder and owner.',
         ),
       ownerOverride: z
         .boolean()
         .optional()
         .describe(
           'default for the inline id / every id in `ids`: REQUIRED in addition to `force` when the claim-hold reason names a policy-tier gate (a D-NNN decision id, `triageDecision:"gate"`, or "policy-tier") — `force` alone is refused for a policy gate (mirrors work_items:hold_open, EI-18672701535825889).',
+        ),
+      reason: z
+        .string()
+        .max(500)
+        .optional()
+        .describe(
+          'default for the inline id / every id in `ids`: required when `force:true` replaces another agent\'s claim; recorded in the forced result, audit, and holder/owner notifications.',
         ),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
@@ -771,6 +850,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           force: it.force ?? args.force,
           ownerOverride: it.ownerOverride ?? args.ownerOverride,
+          reason: it.reason ?? args.reason,
         }))
       : args.ids?.length
         ? args.ids.map((id) => ({
@@ -779,6 +859,7 @@ export default defineTool({
             harness: args.harness,
             force: args.force,
             ownerOverride: args.ownerOverride,
+            reason: args.reason,
           }))
         : [
             {
@@ -787,6 +868,7 @@ export default defineTool({
               harness: args.harness,
               force: args.force,
               ownerOverride: args.ownerOverride,
+              reason: args.reason,
             },
           ];
     const env = await runBulk(list, (it) => claimOne(it, ident, reader), {

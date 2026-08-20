@@ -6,16 +6,19 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const identity = vi.hoisted(() => ({ ownerId: 'me' }));
+const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
 const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   notify: vi.fn(),
 }));
 const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
+const forceGuard = vi.hoisted(() => ({
+  verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
+}));
 vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
-  resolveAgentIdentity: () => ({ ownerId: identity.ownerId }),
+  resolveAgentIdentity: () => ({ ownerId: identity.ownerId, workspaceId: identity.workspaceId }),
 }));
 // WI-5946: readWorkItemClaimHoldProvenance/looksLikePolicyGate are real dependencies of BOTH
 // claim.ts (the pre-read guard) and claim-hold-guard.ts's assessClaimHoldGuard (mocked at the
@@ -62,9 +65,18 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
 vi.mock('../../premises-claim-port', () => ({ getClaimTimePremises: premisePort.get }));
+// EI-20417350647749715: keep the force takeover handler tests hermetic while the
+// release-force-guard unit suite covers the real liveness/authority classifier.
+vi.mock('./release-force-guard', () => ({
+  assessForceRelease: vi.fn(async () => forceGuard.verdict),
+  forceRefusalHint: (holder: string) => `refused:${holder}`,
+  notifyForceTransition: vi.fn(async () => {}),
+  recordForceTransitionAudit: vi.fn(async () => {}),
+}));
 
 import { claimWorkItem, classifyClaimFailure, getWorkItem, readWorkItemClaimHoldProvenance } from '../../work-items';
 import { recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
+import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
 import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
@@ -72,6 +84,9 @@ const getM = vi.mocked(getWorkItem);
 const provenanceM = vi.mocked(readWorkItemClaimHoldProvenance);
 const auditM = vi.mocked(recordClaimHoldBypassAudit);
 const notifyM = vi.mocked(notifyClaimHoldBypass);
+const assessForceM = vi.mocked(assessForceRelease);
+const forceNotifyM = vi.mocked(notifyForceTransition);
+const forceAuditM = vi.mocked(recordForceTransitionAudit);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
@@ -80,6 +95,8 @@ const body = async (args: unknown) => ((await tool.handler(args as never, {} as 
 beforeEach(() => {
   vi.clearAllMocks();
   identity.ownerId = 'me';
+  identity.workspaceId = 'ws-1';
+  forceGuard.verdict = { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } };
   fleetAdmission.decision = { allowed: true, scoped: false };
   claimM.mockImplementation(async (id: string) => ({ id, assignee: 'me' }) as never);
   // WI-5946: claim.ts now pre-reads the item (getWorkItem) BEFORE every claim, purely to check
@@ -129,7 +146,7 @@ describe('work_items:claim handler (keyed-array)', () => {
         payload: { source: 'ideation' },
       },
       harness: 'papercusp',
-      workspaceId: undefined,
+      workspaceId: 'ws-1',
     });
   });
 
@@ -308,6 +325,127 @@ describe('work_items:claim handler (keyed-array)', () => {
       expect(hint).toMatch(/Already claimed by peer/);
       expect(hint).toMatch(/Coordinate with the holder via coord:send/);
       expect(hint).not.toMatch(/already hold/i);
+    });
+  });
+
+  // EI-20417350647749715 — force:true is a checked, atomic cross-holder takeover.
+  // The handler owns the pre-read/guard/audit contract; release-force-guard.test.ts
+  // owns the real liveness and authority classifier.
+  describe('cross-holder force takeover', () => {
+    it('authorizes a dead-holder takeover, passes expectedAssignee into the CAS, and reports/audits it', async () => {
+      getM.mockResolvedValue({ id: 'WI-DEAD', assignee: 'peer', lastProgressAt: '2026-08-20T08:00:00.000Z' } as never);
+      claimM.mockResolvedValue({ id: 'WI-DEAD', assignee: 'me', harness: 'papercusp' } as never);
+
+      const b = await body({ id: 'WI-DEAD', force: true, reason: 'holder session ended; reclaiming for the drain' });
+
+      expect(assessForceM).toHaveBeenCalledWith({
+        callerOwnerId: 'me',
+        holderOwnerId: 'peer',
+        workspaceId: 'ws-1',
+        itemLastProgressAt: '2026-08-20T08:00:00.000Z',
+      });
+      expect(claimM).toHaveBeenCalledWith('WI-DEAD', 'me', {
+        harness: undefined,
+        fromHolder: 'me',
+        expectedAssignee: 'peer',
+      });
+      expect(b.results[0]).toMatchObject({
+        ok: true,
+        id: 'WI-DEAD',
+        forced: {
+          holder: 'peer',
+          basis: 'holder-session-ended',
+          reason: 'holder session ended; reclaiming for the drain',
+        },
+      });
+      expect(forceAuditM).toHaveBeenCalledWith(
+        'me',
+        'WI-DEAD',
+        'claim',
+        expect.objectContaining({ holder: 'peer', replacementAssignee: 'me' }),
+      );
+      expect(forceNotifyM).toHaveBeenCalledWith(
+        expect.objectContaining({ ownerId: 'me' }),
+        expect.objectContaining({ itemId: 'WI-DEAD', holder: 'peer', operation: 'claim', replacementAssignee: 'me' }),
+      );
+    });
+
+    it('requires a reason before assessing or mutating another holder\'s claim', async () => {
+      getM.mockResolvedValue({ id: 'WI-DEAD', assignee: 'peer' } as never);
+
+      const b = await body({ id: 'WI-DEAD', force: true });
+
+      expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-DEAD', error: 'force_requires_reason', holder: 'peer' });
+      expect(assessForceM).not.toHaveBeenCalled();
+      expect(claimM).not.toHaveBeenCalled();
+      expect(forceAuditM).not.toHaveBeenCalled();
+      expect(forceNotifyM).not.toHaveBeenCalled();
+    });
+
+    it('refuses an unauthorized takeover of a live peer and leaves the claim untouched', async () => {
+      getM.mockResolvedValue({ id: 'WI-LIVE', assignee: 'peer', lastProgressAt: '2026-08-20T08:39:00.000Z' } as never);
+      forceGuard.verdict = { allowed: false, holderLiveness: { live: true } };
+
+      const b = await body({ id: 'WI-LIVE', force: true, reason: 'taking over for the drain' });
+
+      expect(b.results[0]).toMatchObject({
+        ok: false,
+        id: 'WI-LIVE',
+        error: 'force_unauthorized',
+        holder: 'peer',
+        holderLiveness: { live: true },
+        hint: 'refused:peer',
+      });
+      expect(claimM).not.toHaveBeenCalled();
+      expect(forceAuditM).not.toHaveBeenCalled();
+      expect(forceNotifyM).not.toHaveBeenCalled();
+    });
+
+    it('applies a batch reason, with a per-item reason overriding it', async () => {
+      getM.mockImplementation(async (id: string) => ({
+        id,
+        assignee: id === 'WI-A' ? 'peer-a' : 'peer-b',
+        lastProgressAt: null,
+      }) as never);
+      claimM.mockImplementation(async (id: string, assignee: string, opts?: { expectedAssignee?: string }) => ({
+        id,
+        assignee,
+        harness: 'papercusp',
+        payload: { expectedAssignee: opts?.expectedAssignee },
+      }) as never);
+
+      const b = await body({
+        items: [{ id: 'WI-A', force: true, reason: 'item-specific reason' }, { id: 'WI-B', force: true }],
+        reason: 'batch takeover reason',
+      });
+
+      expect(b.counts).toEqual({ ok: 2, failed: 0 });
+      expect(claimM).toHaveBeenNthCalledWith(1, 'WI-A', 'me', {
+        harness: undefined,
+        fromHolder: 'me',
+        expectedAssignee: 'peer-a',
+      });
+      expect(claimM).toHaveBeenNthCalledWith(2, 'WI-B', 'me', {
+        harness: undefined,
+        fromHolder: 'me',
+        expectedAssignee: 'peer-b',
+      });
+      const reasons = forceAuditM.mock.calls.map((call) => (call[3] as { reason: string }).reason).sort();
+      expect(reasons).toEqual(['batch takeover reason', 'item-specific reason']);
+      expect(b.results.map((result: { forced?: { reason: string } }) => result.forced?.reason).sort()).toEqual([
+        'batch takeover reason',
+        'item-specific reason',
+      ]);
+    });
+
+    it('skips the cross-holder guard for an unclaimed or caller-held item', async () => {
+      getM.mockResolvedValue({ id: 'WI-FREE', assignee: null } as never);
+
+      const b = await body({ id: 'WI-FREE', force: true });
+
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-FREE' });
+      expect(b.results[0].forced).toBeUndefined();
+      expect(assessForceM).not.toHaveBeenCalled();
     });
   });
 
