@@ -142,7 +142,10 @@ describe('preflightCodexModel (EI-20362893066852316)', () => {
     'refuses a definitive 4xx matching the backend model-refusal shape (%s)',
     async (phrase) => {
       const body = JSON.stringify({ detail: `The 'gpt-5.6' ${phrase} when using Codex with a ChatGPT account.` });
-      const fetchImpl = vi.fn(async () => new Response(body, { status: 400 }));
+      const fetchImpl = vi.fn(
+        async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
+          new Response(body, { status: 400 }),
+      );
       const result = await preflightCodexModel('/tmp/codex', 'gpt-5.6', {
         fetchImpl: fetchImpl as unknown as typeof fetch,
         resolveAuth,
