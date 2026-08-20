@@ -46,6 +46,17 @@ interface SetBlockedByItemResult {
   itemId?: string;
 }
 
+/** One fanned per-item `plans:set-status` result. A successful status flip can
+ * change the effective lane in either direction: notably blocked -> wip must
+ * lift the plan-lane blocker from the linked work-item in the same turn. */
+interface SetStatusItemResult {
+  ok?: boolean;
+  slug?: string;
+  itemId?: string;
+  oldStatus?: string | null;
+  newStatus?: string;
+}
+
 /**
  * The { planSlug, itemId, harnessSlug } this per-item event names, or null when
  * the call failed / the shape doesn't match (e.g. the bulk carrier itself, which
@@ -63,12 +74,47 @@ export function blockedByChangedItem(
   return null;
 }
 
+/** Extract a real status transition from the fanned per-item result. Re-sets
+ * are excluded because they cannot change the effective lane. */
+export function statusChangedItem(
+  e: ToolInvocationEvent,
+): { planSlug: string; itemId: string; harnessSlug: string | null } | null {
+  const r = e.result?.data as SetStatusItemResult | undefined;
+  if (
+    r?.ok === true &&
+    typeof r.slug === 'string' &&
+    typeof r.itemId === 'string' &&
+    typeof r.newStatus === 'string' &&
+    r.oldStatus !== r.newStatus
+  ) {
+    const harnessSlug = typeof e.ctx?.harnessSlug === 'string' ? e.ctx.harnessSlug : null;
+    return { planSlug: r.slug, itemId: r.itemId, harnessSlug };
+  }
+  return null;
+}
+
 registerReactionRule({
   id: 'plan-item-lane-sync:blocked-by-changed',
   on: 'plans:set-item-blocked-by',
   when: (e) => blockedByChangedItem(e) !== null,
   fire: PLAN_ITEM_LANE_RESYNC_ACTION,
   args: (e) => ({ items: [blockedByChangedItem(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-item-lane-sync',
+});
+
+// EI-20961278100733275: `plans:set-status` previously had a partial bespoke
+// state sync that deliberately skipped ->wip. A blocked -> wip flip therefore
+// auto-claimed the plan item while its linked work-item remained `blocked` and
+// retained the active `plan-lane:` blocker. Route every real status transition
+// through the canonical lane reconciler, which atomically restores the stashed
+// pre-park state/claim hold before clearing that provenance-tagged blocker.
+registerReactionRule({
+  id: 'plan-item-lane-sync:status-changed',
+  on: 'plans:set-status',
+  when: (e) => statusChangedItem(e) !== null,
+  fire: PLAN_ITEM_LANE_RESYNC_ACTION,
+  args: (e) => ({ items: [statusChangedItem(e)!] }),
   onlyOnSuccess: true,
   source: 'plan-item-lane-sync',
 });

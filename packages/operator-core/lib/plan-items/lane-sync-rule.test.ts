@@ -15,13 +15,14 @@
 import { describe, it, expect } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import './lane-sync-rule'; // registers plan-item-lane-sync:blocked-by-changed
-import { blockedByChangedItem } from './lane-sync-rule';
+import { blockedByChangedItem, statusChangedItem } from './lane-sync-rule';
 import { matchReactions, reactionRulesFor } from '../events/registry';
 import { fanOutBulkEvent } from '../events/engine';
 import { PLAN_ITEM_LANE_RESYNC_ACTION } from '../events/builtin-actions';
 import type { ToolInvocationEvent } from '../events/types';
 
 const RULE_ID = 'plan-item-lane-sync:blocked-by-changed';
+const STATUS_RULE_ID = 'plan-item-lane-sync:status-changed';
 const ctx = {
   uiClientId: 'agent-1',
   spawnId: 'spawn-1',
@@ -49,6 +50,16 @@ function bulkEvent(items: Record<string, unknown>[]): ToolInvocationEvent {
   return {
     tool: 'plans:set-item-blocked-by',
     args: { items: items.map((i) => ({ slug: i.slug, item: i.itemId, blockedBy: i.to })) },
+    result: { ok: true, data: { ok: true, results: items, counts: { ok, failed: items.length - ok } } },
+    ctx,
+  };
+}
+
+function statusBulkEvent(items: Record<string, unknown>[]): ToolInvocationEvent {
+  const ok = items.filter((i) => i.ok !== false).length;
+  return {
+    tool: 'plans:set-status',
+    args: { items: items.map((i) => ({ slug: i.slug, item: i.itemId, status: i.newStatus })) },
     result: { ok: true, data: { ok: true, results: items, counts: { ok, failed: items.length - ok } } },
     ctx,
   };
@@ -138,5 +149,51 @@ describe('plan-item-lane-sync:blocked-by-changed — fires on the REAL fan-out p
     const action = matchReactions(fanned![0]!).find((a) => a.ruleId === RULE_ID);
     expect(action).toBeDefined();
     expect(action!.args.items).toEqual([{ planSlug: 'p2', itemId: 'P-042', harnessSlug: 'papercusp' }]);
+  });
+});
+
+describe('plan-item-lane-sync:status-changed — blocked -> wip regression', () => {
+  const resumed = {
+    ok: true,
+    slug: 'p-resume',
+    itemId: 'P-004',
+    oldStatus: 'blocked',
+    newStatus: 'wip',
+    claim: { claimId: 'claim-1', autoClaimed: true },
+  };
+
+  it('extracts a successful real transition but ignores a status re-set', () => {
+    const [changed] = fanOutBulkEvent(statusBulkEvent([resumed]))!;
+    expect(statusChangedItem(changed!)).toEqual({
+      planSlug: 'p-resume',
+      itemId: 'P-004',
+      harnessSlug: 'papercusp',
+    });
+
+    const [reset] = fanOutBulkEvent(
+      statusBulkEvent([{ ...resumed, oldStatus: 'wip', newStatus: 'wip' }]),
+    )!;
+    expect(statusChangedItem(reset!)).toBeNull();
+  });
+
+  it('fires the canonical inline lane resync for the fanned blocked -> wip result', () => {
+    expect(reactionRulesFor('plans:set-status').map((r) => r.id)).toContain(STATUS_RULE_ID);
+    const bulk = statusBulkEvent([resumed]);
+    expect(matchReactions(bulk).find((a) => a.ruleId === STATUS_RULE_ID)).toBeUndefined();
+
+    const [fanned] = fanOutBulkEvent(bulk)!;
+    const action = matchReactions(fanned!).find((a) => a.ruleId === STATUS_RULE_ID);
+    expect(action).toBeDefined();
+    expect(action!.fire).toBe(PLAN_ITEM_LANE_RESYNC_ACTION);
+    expect(action!.args.items).toEqual([
+      { planSlug: 'p-resume', itemId: 'P-004', harnessSlug: 'papercusp' },
+    ]);
+  });
+
+  it('does not fire for a failed per-item status flip', () => {
+    const [failed] = fanOutBulkEvent(
+      statusBulkEvent([{ ...resumed, ok: false, error: 'claim_conflict' }]),
+    )!;
+    expect(matchReactions(failed!).find((a) => a.ruleId === STATUS_RULE_ID)).toBeUndefined();
   });
 });
