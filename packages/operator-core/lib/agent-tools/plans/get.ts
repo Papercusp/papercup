@@ -36,10 +36,12 @@ import { cachedRead, type CachedReadCtx } from "../../cache";
 import { shapePlansGet } from "./get-shape";
 import { decoratePlanNowBlock } from "./liveness-decoration";
 import { getAcceptanceRubricForPlan } from "../../rubrics";
+import { getLatestPlanAudit } from "../../plan-audits";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
- * Mirrors plans:list: the plan tables (harness_plans/plan_revisions/plan_runs) are
+ * Mirrors plans:list: the plan tables
+ * (harness_plans/plan_revisions/plan_runs/plan_audits) are
  * trigger-covered, so any plan write auto-invalidates the entry via the cache-ECA;
  * this short soft TTL only bounds staleness for the un-triggered DECORATIONS the
  * per-slug read folds in (issue-block overlay via coord_links, linkedFeatures via
@@ -363,7 +365,7 @@ export default defineTool({
               heading: args.heading ?? null,
               includeRaw: args.includeRaw ?? false,
             },
-            tags: ["harness_plans", "plan_revisions", "plan_runs"],
+            tags: ["harness_plans", "plan_revisions", "plan_runs", "plan_audits"],
             softTtlMs: PLANS_GET_SOFT_TTL_MS,
           },
           async () => {
@@ -590,21 +592,29 @@ export default defineTool({
             // acceptance rubric (its definition-of-done) so completion state is
             // discoverable from the plan itself. Absent = not yet authored (it is
             // authored POST-implementation, D-007; the ship gate names the recipe).
-            const acceptanceRubric = await getAcceptanceRubricForPlan(row.planSlug)
-              .then((r) =>
-                r
-                  ? {
-                      rubricId: r.rubricId,
-                      status: r.status,
-                      criteriaCount: r.criteria.length,
-                      ...(r.classRef ? { classRef: r.classRef } : {}),
-                    }
-                  : null,
-              )
-              .catch(() => null);
+            const [acceptanceRubric, latestAudit] = await Promise.all([
+              getAcceptanceRubricForPlan(row.planSlug)
+                .then((r) =>
+                  r
+                    ? {
+                        rubricId: r.rubricId,
+                        status: r.status,
+                        criteriaCount: r.criteria.length,
+                        ...(r.classRef ? { classRef: r.classRef } : {}),
+                      }
+                    : null,
+                )
+                .catch(() => null),
+              // plan-completion-audit-and-acceptance-verdict-2026-08-13 P-003:
+              // make the recorded code-truth audit discoverable from the same plan
+              // read as its definition-of-done rubric. The stored item entries carry
+              // their own auditedSha/auditedAt/blobSha provenance (D-006/D-007).
+              getLatestPlanAudit(row.planSlug),
+            ]);
             const structured = {
               ...base,
               ...(acceptanceRubric ? { acceptanceRubric } : {}),
+              ...(latestAudit ? { latestAudit } : {}),
               items:
                 mode === "full"
                   ? resolvedItems

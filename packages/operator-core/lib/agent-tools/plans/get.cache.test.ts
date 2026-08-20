@@ -25,11 +25,42 @@ const M = vi.hoisted(() => ({
       items: [],
     },
     archived: false,
-    row: { version: 1, promotePolicy: null },
+    row: {
+      planSlug: slug,
+      harnessSlug: "papercup",
+      version: 1,
+      promotePolicy: null,
+    },
   })),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
   resolveCtxHarnessSlug: vi.fn(() => "papercup"),
   resolveEffectiveHarnessSlug: vi.fn(() => "papercup"),
+  getAcceptanceRubricForPlan: vi.fn(async (slug: string) => ({
+    rubricId: `rubric-${slug}`,
+    status: "ratified",
+    criteria: [{ id: "criterion-1" }],
+    classRef: "plan-class-code",
+  })),
+  getLatestPlanAudit: vi.fn(async (slug: string) => ({
+    planSlug: slug,
+    harnessSlug: "papercup",
+    auditSeq: 7,
+    createdBy: "su-auditor",
+    createdAt: "2026-08-20T23:00:00.000Z",
+    auditedSha: "abc123",
+    items: [
+      {
+        itemId: "P-001",
+        verdict: "implemented",
+        citations: [{ kind: "code", path: "src/a.ts", blobSha: "blob-a" }],
+        auditedSha: "abc123",
+        auditedAt: "2026-08-20T23:00:00.000Z",
+        itemTextHash: "item-hash",
+      },
+    ],
+    findings: [],
+    summary: "code truth verified",
+  })),
 }));
 
 vi.mock("./source", async (orig) => {
@@ -63,6 +94,12 @@ vi.mock("@papercusp/db-org", async (orig) => {
     }),
   };
 });
+vi.mock("../../rubrics", () => ({
+  getAcceptanceRubricForPlan: M.getAcceptanceRubricForPlan,
+}));
+vi.mock("../../plan-audits", () => ({
+  getLatestPlanAudit: M.getLatestPlanAudit,
+}));
 
 import tool from "./get";
 import {
@@ -87,15 +124,18 @@ const ctx = (workspaceId: string): never =>
 const run = async (
   args: Record<string, unknown>,
   workspaceId = "ws-get",
-): Promise<void> => {
-  await tool.handler(args as never, ctx(workspaceId));
-};
+): Promise<{ results: Array<Record<string, unknown>> }> =>
+  ((await tool.handler(args as never, ctx(workspaceId))) as {
+    data: { results: Array<Record<string, unknown>> };
+  }).data;
 
 beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.readPlanBySlug.mockClear();
+  M.getAcceptanceRubricForPlan.mockClear();
+  M.getLatestPlanAudit.mockClear();
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -128,6 +168,47 @@ describe("plans:get — cache wiring", () => {
     getOperatorCache().invalidateByTags("ws-get", ["plan_revisions"]);
     await run({ slug: "alpha" });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+  });
+
+  it("a plan_audits write busts the entry so latestAudit cannot stay stale", async () => {
+    await run({ slug: "alpha" });
+    expect(M.getLatestPlanAudit).toHaveBeenCalledTimes(1);
+    getOperatorCache().invalidateByTags("ws-get", ["plan_audits"]);
+    await run({ slug: "alpha" });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+    expect(M.getLatestPlanAudit).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces latestAudit beside acceptanceRubric in the structured read", async () => {
+    const body = await run({ slug: "alpha" });
+    expect(body.results[0]).toMatchObject({
+      acceptanceRubric: {
+        rubricId: "rubric-alpha",
+        status: "ratified",
+        criteriaCount: 1,
+        classRef: "plan-class-code",
+      },
+      latestAudit: {
+        planSlug: "alpha",
+        auditSeq: 7,
+        auditedSha: "abc123",
+        items: [
+          {
+            itemId: "P-001",
+            auditedSha: "abc123",
+            citations: [{ kind: "code", path: "src/a.ts", blobSha: "blob-a" }],
+          },
+        ],
+      },
+    });
+  });
+
+  it("keeps meta reads lean and does not fetch rubric/audit decorations", async () => {
+    const body = await run({ slug: "alpha", mode: "meta" });
+    expect(body.results[0]).not.toHaveProperty("acceptanceRubric");
+    expect(body.results[0]).not.toHaveProperty("latestAudit");
+    expect(M.getAcceptanceRubricForPlan).not.toHaveBeenCalled();
+    expect(M.getLatestPlanAudit).not.toHaveBeenCalled();
   });
 
   it("different slugs do NOT share an entry (per-slug key)", async () => {
