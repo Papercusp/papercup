@@ -117,6 +117,102 @@ export function classifyProjectionBody(
   return { json: null, lineCount };
 }
 
+/**
+ * Truncation evidence that can survive in the body without the shared
+ * `_meta.payloadProjection` envelope. Custom shapers own their output shape,
+ * so they may emit camelCase/snake_case field markers, while the generic
+ * bounded projector emits `_projection` and in-band recovery markers.
+ *
+ * This is deliberately bounded and marker-shaped rather than a broad search
+ * for the word "truncated": result payloads can contain ordinary prose about
+ * truncation, but these keys/placeholders are the contracts that mean the
+ * body is partial. The result-door has a similar detector for spill wording;
+ * projection must detect the same evidence BEFORE a pipe can remove it.
+ */
+interface BodyTruncationMarker {
+  path: string;
+  detail: string;
+}
+
+const MAX_BODY_TRUNCATION_MARKERS = 8;
+const TRUNCATION_KEY_REGEX = /(?:^|_)[A-Za-z0-9]*(?:truncated|Truncated)$/;
+const TRUNCATED_BY_KEY_REGEX = /^truncatedBy[A-Z]/;
+const INLINE_TRUNCATION_MARKER_REGEX =
+  /(?:…)?\[(?:TRUNCATED\b[^\]\n]*|omitted:\s*[^\]\n]*\brecover:\s*re-call with payloadTier|payload preview omitted:[^\]\n]*)\]/gi;
+
+function truncationPath(path: string, key: string): string {
+  return path === '$' ? `$.${key}` : `${path}.${key}`;
+}
+
+function isTruncationKey(key: string): boolean {
+  return key === 'truncated' || key === 'payloadTierForced' || TRUNCATION_KEY_REGEX.test(key) || TRUNCATED_BY_KEY_REGEX.test(key);
+}
+
+function addBodyTruncationMarker(
+  markers: BodyTruncationMarker[],
+  path: string,
+  detail: string,
+): void {
+  if (markers.length >= MAX_BODY_TRUNCATION_MARKERS) return;
+  if (markers.some((marker) => marker.path === path)) return;
+  markers.push({ path, detail });
+}
+
+/** Find the marker-shaped truncation contracts in a parsed result body. */
+function detectBodyTruncationMarkers(...sources: Array<{ value: unknown; text?: string }>): BodyTruncationMarker[] {
+  const markers: BodyTruncationMarker[] = [];
+  const seen = new WeakSet<object>();
+
+  const visit = (value: unknown, path: string): void => {
+    if (markers.length >= MAX_BODY_TRUNCATION_MARKERS || value == null) return;
+    if (typeof value === 'string') {
+      INLINE_TRUNCATION_MARKER_REGEX.lastIndex = 0;
+      let match: RegExpExecArray | null;
+      while ((match = INLINE_TRUNCATION_MARKER_REGEX.exec(value)) && markers.length < MAX_BODY_TRUNCATION_MARKERS) {
+        addBodyTruncationMarker(markers, `${path} (inline)`, match[0].slice(0, 140));
+      }
+      return;
+    }
+    if (typeof value !== 'object') return;
+    if (seen.has(value)) return;
+    seen.add(value);
+
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length && markers.length < MAX_BODY_TRUNCATION_MARKERS; i += 1) {
+        visit(value[i], `${path}[${i}]`);
+      }
+      return;
+    }
+
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (markers.length >= MAX_BODY_TRUNCATION_MARKERS) break;
+      const childPath = truncationPath(path, key);
+      const markerObject = isPlainObject(child);
+      const childTruncated = markerObject && child.truncated === true;
+
+      if (key === 'payloadTierForced' && (child === true || typeof child === 'string')) {
+        addBodyTruncationMarker(markers, childPath, `${key}=${String(child)}`);
+      } else if ((key === '_projection' || key === 'projection' || key === 'payloadProjection') && childTruncated) {
+        addBodyTruncationMarker(markers, `${childPath}.truncated`, 'truncated=true');
+      } else if (
+        isTruncationKey(key) &&
+        (child === true || (markerObject && key !== 'truncated' && Object.keys(child).length > 0))
+      ) {
+        addBodyTruncationMarker(markers, childPath, key === 'truncated' ? 'truncated=true' : `${key} marker`);
+      }
+
+      visit(child, childPath);
+    }
+  };
+
+  for (const source of sources) {
+    if (markers.length >= MAX_BODY_TRUNCATION_MARKERS) break;
+    if (source.text !== undefined) visit(source.text, '$.content');
+    visit(source.value, '$');
+  }
+  return markers;
+}
+
 // ── line operators ────────────────────────────────────────────────────────────
 
 function splitLines(text: string): { lines: string[]; trailingNewline: boolean } {
