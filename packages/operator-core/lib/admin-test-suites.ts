@@ -156,6 +156,8 @@ export interface ChaosRecorderSummary {
    * which is the absent-vs-zero conflation this suite keeps rediscovering.
    */
   maxFrameAtMs?: number;
+  maxFrameTimerTicks?: number;
+  maxFrameTimerGapMs?: number;
   setupMaxFrameMs?: number;
   setupFrameDrops?: number;
   /** Last synthetic/trusted click dispatch preceding the worst frame. */
@@ -1358,7 +1360,10 @@ export function gradeChaosSummary(
     ? ' · setup=unreported (recorder predates the split)'
     : ` · setup maxFrame=${summary.setupMaxFrameMs}ms/drops=${summary.setupFrameDrops ?? 0} (excluded from grade)`;
   const contextText = summary.maxFrameContext ? ` · preceding=${summary.maxFrameContext}` : '';
-  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms${frameWhere}${setupText}${contextText}.`;
+  const timerText = summary.maxFrameTimerTicks === undefined
+    ? ' · timer-correlation=unreported'
+    : ` · timer ticks=${summary.maxFrameTimerTicks}/maxGap=${summary.maxFrameTimerGapMs ?? 0}ms inside worst frame`;
+  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms${frameWhere}${setupText}${contextText}${timerText}.`;
 
   const measures = [
     budgetMeasure(`${measurePrefix}max-frame`, summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
@@ -1707,6 +1712,8 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
       frameDrops?: number;
       maxFrameMs?: number;
       maxFrameAtMs?: number;
+      maxFrameTimerTicks?: number;
+      maxFrameTimerGapMs?: number;
       setupMaxFrameMs?: number;
       setupFrameDrops?: number;
     } | null>(
@@ -1775,6 +1782,8 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
         // Left undefined when the recorder build does not send them, so a stale
         // SPA bundle reads as "not reported" rather than "arming cost zero".
         maxFrameAtMs: typeof summary.value.maxFrameAtMs === 'number' ? summary.value.maxFrameAtMs : undefined,
+        maxFrameTimerTicks: typeof summary.value.maxFrameTimerTicks === 'number' ? summary.value.maxFrameTimerTicks : undefined,
+        maxFrameTimerGapMs: typeof summary.value.maxFrameTimerGapMs === 'number' ? summary.value.maxFrameTimerGapMs : undefined,
         setupMaxFrameMs: typeof summary.value.setupMaxFrameMs === 'number' ? summary.value.setupMaxFrameMs : undefined,
         setupFrameDrops: typeof summary.value.setupFrameDrops === 'number' ? summary.value.setupFrameDrops : undefined,
         maxFrameContext,

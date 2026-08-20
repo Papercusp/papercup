@@ -331,9 +331,16 @@ describe('gradeChaosSummary (unmeasured-INP guard)', () => {
   // go in a separate bucket, and these pin that the exclusion stays auditable.
 
   it('reports WHERE the worst graded frame landed, so a breach can be attributed', () => {
-    const res = grade({ maxFrameMs: 180, maxFrameAtMs: 2400, maxFrameContext: 'button "Save" 12ms before' });
+    const res = grade({
+      maxFrameMs: 180,
+      maxFrameAtMs: 2400,
+      maxFrameContext: 'button "Save" 12ms before',
+      maxFrameTimerTicks: 8,
+      maxFrameTimerGapMs: 19,
+    });
     expect(res.actual).toContain('@2400ms into window');
     expect(res.actual).toContain('preceding=button "Save" 12ms before');
+    expect(res.actual).toContain('timer ticks=8/maxGap=19ms inside worst frame');
   });
 
   it('reports the excluded arming cost rather than dropping it', () => {
@@ -356,7 +363,7 @@ describe('gradeChaosSummary (unmeasured-INP guard)', () => {
     // conflation the whole guard exists to prevent.
     expect(grade({ setupMaxFrameMs: undefined }).actual).toContain('setup=unreported');
     expect(grade({ setupMaxFrameMs: 0, setupFrameDrops: 0 }).actual).toContain('setup maxFrame=0ms');
-    expect(grade({ setupMaxFrameMs: 0 }).actual).not.toContain('unreported');
+    expect(grade({ setupMaxFrameMs: 0 }).actual).not.toContain('setup=unreported');
   });
 
   // Calibration: without this, an implementation that always excluded frames, or
