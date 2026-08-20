@@ -2090,12 +2090,12 @@ export default defineTool({
     let codexPreflightWarning: string | null = null;
     if (effAgent === 'codex' && effModel) {
       try {
+        const { preflightCodexModel, resolveCodexPreflightHome } = await import(
+          '../../inference-gateway/codex-oauth-proxy'
+        );
         const home = await resolveCodexPreflightHome(effAccount, workspaceId);
         if (home) {
-          const [{ parseBridgeModel }, { preflightCodexModel, resolveCodexPreflightHome }] = await Promise.all([
-            import('../../inference-gateway/codex-cli-bridge'),
-            import('../../inference-gateway/codex-oauth-proxy'),
-          ]);
+          const { parseBridgeModel } = await import('../../inference-gateway/codex-cli-bridge');
           const bareModel = parseBridgeModel(effModel).id;
           const pf = await preflightCodexModel(home, bareModel);
           if (pf.verdict === 'refused') {

@@ -39,11 +39,14 @@ vi.mock('../../backend-bin-resolve.mjs', async (orig) => ({
   preflightBackendLaunch: vi.fn(() => ({ ok: true })),
 }));
 
-const codexPreflightHomeMock = vi.hoisted(() => vi.fn(async () => null as string | null));
+const codexPreflightHomeMock = vi.hoisted(() =>
+  vi.fn(async (_account: string | undefined, _workspaceId: string) => null as string | null),
+);
 const codexPreflightModelMock = vi.hoisted(() => vi.fn());
 vi.mock('../../inference-gateway/codex-oauth-proxy', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
-  resolveCodexPreflightHome: (...args: unknown[]) => codexPreflightHomeMock(...args),
+  resolveCodexPreflightHome: (account: string | undefined, workspaceId: string) =>
+    codexPreflightHomeMock(account, workspaceId),
   preflightCodexModel: (...args: unknown[]) => codexPreflightModelMock(...args),
 }));
 

@@ -710,18 +710,21 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
 
     expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed"]);
     expect(registerAwait).toHaveBeenCalledTimes(1);
-    expect(registerAwait.mock.calls[0][0].payloadFilter).toEqual({
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toEqual({
       installSlug: "harness-a",
       workspaceId: "workspace-a",
     });
   });
 
   it("keeps an operator-scope call unfiltered when no concrete harness is available", async () => {
-    const res = await gitSyncTool.handler({}, { harnessSlug: "*", workspaceId: "workspace-a" } as never);
+    const res = await gitSyncTool.handler(
+      {} as never,
+      { harnessSlug: "*", workspaceId: "workspace-a" } as never,
+    );
 
     expect(JSON.parse(res.content[0].text).events).toEqual(["git-sync:committed"]);
     expect(registerAwait).toHaveBeenCalledTimes(1);
-    expect(registerAwait.mock.calls[0][0].payloadFilter).toBeNull();
+    expect(vi.mocked(registerAwait).mock.calls[0][0].payloadFilter).toBeNull();
   });
 });
 
