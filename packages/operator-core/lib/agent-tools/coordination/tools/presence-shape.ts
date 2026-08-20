@@ -68,6 +68,10 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       plan: r.currentPlanSlug ?? null,
       claims: claimed.length,
       lastActiveSecAgo: r.lastActiveSecAgo ?? null,
+      // P-011: the age is ambiguous without its provenance. Keep the source in
+      // every model-facing tier so live reads can distinguish transcript-derived
+      // freshness from the coord_presence heartbeat path.
+      lastActiveSource: r.lastActiveSource ?? null,
       intentStale: r.intentStale ?? null,
       // EI-8988: fresh activity + old intent text — the "busy but drifted" signal,
       // cheap enough (one bool) to keep even in the trimmed tier.

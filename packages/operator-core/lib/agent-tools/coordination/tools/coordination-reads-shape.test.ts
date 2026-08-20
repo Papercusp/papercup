@@ -48,6 +48,7 @@ function rosterRow(i: number, overrides: Record<string, unknown> = {}) {
     wakeMode: "auto",
     revoked: false,
     lastActiveSecAgo: 12,
+    lastActiveSource: "turn-parts",
     intentStale: false,
     sessionState: "live",
     wakeable: true,
@@ -86,6 +87,7 @@ describe("shapeCoordPresence (P-022)", () => {
     expect(r.state).toBe("live");
     expect(r.wakeable).toBe(true);
     expect(r.claims).toBe(2);
+    expect(r.lastActiveSource).toBe("turn-parts");
     expect(r.isSelf).toBe(true);
     expect(String(r.intent).length).toBeLessThanOrEqual(
       PRESENCE_TIER_CAPS.trimmed.intent,

@@ -775,6 +775,8 @@ export interface ReleaseGate {
 }
 
 export interface GateStatusDeps {
+  /** Desktop root whose BUILD_SHA should establish a new gate. */
+  root?: string;
   exists?: (p: string) => boolean;
   readFileSync?: (p: string) => string;
   /** Exclusive create (like `fs.writeFileSync(p, data, { flag: 'wx' })`) — MUST throw if
@@ -807,7 +809,7 @@ export function readOrCreateGate(
     return { gate: JSON.parse(read(p)) as ReleaseGate, created: false };
   }
 
-  const { sha, dirty } = derive();
+  const { sha, dirty } = derive(deps.root);
   const gate: ReleaseGate = { version, channel, buildSha: sha, dirty, derivedAt: new Date().toISOString(), derivedBy: actor };
   const write = deps.writeFileSyncExclusive ?? ((path_: string, data: string) => fs.writeFileSync(path_, data, { flag: 'wx' }));
   try {
