@@ -2164,10 +2164,18 @@ export async function claimIssue(
      * Full rationale on {@link claimWorkItem}'s opts.
      */
     fromHolder?: string;
+    /**
+     * EI-20417350647749715 — the holder the caller's force guard already proved
+     * reclaimable. This is an EXPECTED-holder CAS leg, not a general overwrite:
+     * the UPDATE may replace exactly this holder and still refuses if the row
+     * changes between the guard read and the write.
+     */
+    expectedAssignee?: string;
   } = {},
 ): Promise<EngineerIssue | null> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? issuesScopeWorkspace();
+  const expectedAssignee = opts.expectedAssignee?.trim() || null;
   const rows = await sql<IssueRowDb[]>`
     UPDATE harness_shared.engineer_issues SET assignee = ${assignee}, assigned_at = now(), origin = 'local', updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
@@ -2181,7 +2189,12 @@ export async function claimIssue(
        -- (fromHolder = the CALLER). Absent, it falls back to the assignee and is a
        -- duplicate of the disjunct before it, leaving this predicate equivalent to
        -- its pre-change behavior.
-       AND (assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned' OR assignee = ${assignee} OR assignee = ${opts.fromHolder ?? assignee})
+       AND (
+         assignee IS NULL OR btrim(assignee) = '' OR lower(btrim(assignee)) = 'unassigned'
+         OR assignee = ${assignee}
+         OR assignee = ${opts.fromHolder ?? assignee}
+         ${expectedAssignee ? sql` OR assignee = ${expectedAssignee}` : sql``}
+       )
        -- WI-5826 NOTE — deliberately NO terminal-state floor here. Claiming an
        -- already-completed row BY ID is an INTENTIONAL, tested escape hatch (EI-8972:
        -- "a completed row is STILL directly claimable by id — the floor only gates

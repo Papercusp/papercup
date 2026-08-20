@@ -3789,6 +3789,13 @@ export async function claimWorkItem(
      * a THIRD party's claim: the row still has to match `= fromHolder`.
      */
     fromHolder?: string;
+    /**
+     * EI-20417350647749715 — the holder the caller's force guard already proved
+     * reclaimable. This is an EXPECTED-holder CAS leg, not a general overwrite:
+     * the UPDATE may replace exactly this holder and still refuses if the row
+     * changes between the guard read and the write.
+     */
+    expectedAssignee?: string;
   } = {},
 ): Promise<WorkItem | null> {
   // EI-1545: resolve the issue-scope workspace ONCE, up front, and reuse that SAME
@@ -3810,12 +3817,17 @@ export async function claimWorkItem(
   const issue = await getIssueInWorkspace(issueWs, id);
   let claimed: WorkItem | null;
   if (issue) {
-    const updated = await claimIssue(id, assignee, { workspaceId: issueWs, fromHolder: opts.fromHolder });
+    const updated = await claimIssue(id, assignee, {
+      workspaceId: issueWs,
+      fromHolder: opts.fromHolder,
+      expectedAssignee: opts.expectedAssignee,
+    });
     claimed = updated ? issueToWorkItem(updated) : null;
   } else {
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
     const { sql } = getOrgPg();
+    const expectedAssignee = opts.expectedAssignee?.trim() || null;
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
     // never RLS-reliant). The UPDATE itself keys on (harness_slug, feature_id) (the PK).
     const ws = activeWorkspaceId();
@@ -3832,7 +3844,12 @@ export async function claimWorkItem(
          -- transfer leg -- see the opts doc on claimWorkItem. When it is absent it
          -- falls back to the assignee, making this disjunct a duplicate of the one
          -- before it, so the predicate stays equivalent to its pre-change behavior.
-         AND (taken_by IS NULL OR taken_by = '' OR taken_by = ${assignee} OR taken_by = ${opts.fromHolder ?? assignee})
+         AND (
+           taken_by IS NULL OR taken_by = ''
+           OR taken_by = ${assignee}
+           OR taken_by = ${opts.fromHolder ?? assignee}
+           ${expectedAssignee ? sql` OR taken_by = ${expectedAssignee}` : sql``}
+         )
          -- G2 admission (shared-hive-trust-admission P-003): an explicit named claim
          -- can't bypass the auditor either — remote, un-admitted stays unclaimable
          -- (unless its verified author is trusted — P-010 trust leg, ws-scoped).
