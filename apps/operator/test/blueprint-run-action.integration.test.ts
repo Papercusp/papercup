@@ -41,7 +41,10 @@ const WS = 'ws_test';
 // legacy routine lookup on. Was the literal 'papercup' until the papercup→papercusp rename
 // (2026-06-19); derive it from the SAME source of truth so this can't re-rot on a future rename.
 const HOME_SLUG = operatorHomeHarnessSlug();
-const coding = loadBuiltinBlueprint('coding-factory').blueprint;
+// Use the live single-agent blueprint so these dispatch tests exercise normal behavior without
+// intentionally triggering the retired coding-factory warning (which fail-on-console treats as
+// a test failure).
+const coding = loadBuiltinBlueprint('coding-solo').blueprint;
 // A blueprint whose work-item is a non-'feature' FEATURE-FAMILY kind (chunk) + payload —
 // exercises blueprint-run's generic kind/payload handling via the features view. (Named
 // `research` historically; the old `research-task` kind was merged into `task` — WI-2874.)
@@ -531,7 +534,7 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
     await dispatch({ installSlug: 'demo', workspaceId: WS, triggerConfig: {}, payloadTemplate: null });
 
     expect(fired).toHaveLength(1);
-    expect(fired[0].role).toBe('director');
+    expect(fired[0].role).toBe(coding.spine.decider);
     const wi = await sql`SELECT 1 FROM harness_shared.harness_features_consolidated WHERE harness_slug='demo'`;
     expect(wi).toHaveLength(0); // run mode touches no work-item table
   });
