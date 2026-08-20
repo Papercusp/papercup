@@ -193,6 +193,7 @@ export default defineTool({
         };
 
         let totalCost = 0;
+        let unreportedFrames = 0;
         try {
           for await (const ev of dispatchProjectedToolStream(
             operatorConverseTool,
@@ -222,8 +223,11 @@ export default defineTool({
             } else if (ev.kind === 'done') {
               try {
                 const text = (ev.result.content[0] as { text?: string })?.text ?? '{}';
-                const out = JSON.parse(text) as { totalCost: number; assembled: string };
-                totalCost = out.totalCost;
+                const out = JSON.parse(text) as { totalCost?: number; assembled?: string; unreportedFrames?: number };
+                if (typeof out.totalCost === 'number' && Number.isFinite(out.totalCost)) totalCost = out.totalCost;
+                if (typeof out.unreportedFrames === 'number' && Number.isSafeInteger(out.unreportedFrames) && out.unreportedFrames > 0) {
+                  unreportedFrames += out.unreportedFrames;
+                }
               } catch (e) {
                 console.warn('[operator-converse] tool result parse failed:', e);
               }
@@ -233,7 +237,7 @@ export default defineTool({
               return;
             }
           }
-          sink.done({ costUsd: totalCost });
+          sink.done({ costUsd: totalCost, ...(unreportedFrames > 0 ? { unreportedFrames } : {}) });
         } catch (err) {
           if (!ctrl.signal.aborted) {
             sink.event('error', { message: err instanceof Error ? err.message : String(err) });

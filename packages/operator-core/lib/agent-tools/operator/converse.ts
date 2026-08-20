@@ -381,6 +381,7 @@ export default defineTool({
 
     let totalCost = 0;
     let assembled = '';
+    let unreportedFrames = 0;
     let emittedToolCall = false;
     let firstEventAt: number | null = null;
 
@@ -483,6 +484,9 @@ export default defineTool({
             ctx.emit('tool_call', { name, input: ev.input });
           } else if (ev.type === 'result') {
             totalCost += ev.costUsd ?? 0;
+            if (typeof ev.unreportedFrames === 'number' && Number.isSafeInteger(ev.unreportedFrames) && ev.unreportedFrames > 0) {
+              unreportedFrames += ev.unreportedFrames;
+            }
           } else if (ev.type === 'error') {
             // runAgentChat yields exactly one terminal `error` event
             // when the agent backend itself failed. Log it (stderr
@@ -718,6 +722,12 @@ export default defineTool({
       console.warn('[operator-converse] spawn parse/dispatch error', err);
     }
 
-    return { data: { totalCost, assembled } };
+    return {
+      data: {
+        totalCost,
+        assembled,
+        ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
+      },
+    };
   },
 });

@@ -216,6 +216,7 @@ const converse = defineTool({
 
         let assembled = '';
         let totalCost = 0;
+        let unreportedFrames = 0;
         try {
           for await (const ev of dispatchProjectedToolStream(
             operatorConverseTool,
@@ -241,9 +242,12 @@ const converse = defineTool({
             } else if (ev.kind === 'done') {
               try {
                 const t = (ev.result.content[0] as { text?: string })?.text ?? '{}';
-                const out = JSON.parse(t) as { totalCost?: number; assembled?: string };
-                totalCost = out.totalCost ?? 0;
-                assembled = out.assembled ?? '';
+                const out = JSON.parse(t) as { totalCost?: number; assembled?: string; unreportedFrames?: number };
+                if (typeof out.totalCost === 'number' && Number.isFinite(out.totalCost)) totalCost = out.totalCost;
+                if (typeof out.assembled === 'string') assembled = out.assembled;
+                if (typeof out.unreportedFrames === 'number' && Number.isSafeInteger(out.unreportedFrames) && out.unreportedFrames > 0) {
+                  unreportedFrames += out.unreportedFrames;
+                }
               } catch (e) {
                 console.warn('[device/converse] tool result parse failed:', e);
               }
@@ -279,7 +283,7 @@ const converse = defineTool({
             }
           }
 
-          sink.done({ costUsd: totalCost, conversationId: conversation.id });
+          sink.done({ costUsd: totalCost, conversationId: conversation.id, ...(unreportedFrames > 0 ? { unreportedFrames } : {}) });
         } catch (err) {
           if (!ctrl.signal.aborted) {
             sink.event('error', { message: err instanceof Error ? err.message : String(err) });
