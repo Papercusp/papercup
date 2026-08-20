@@ -5720,6 +5720,12 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-8972: an already-genuinely-terminally-completed row is not work-queue material
          -- either — same floor the claim applies (below), so the miss diagnosis never disagrees.
          AND ${alreadyTerminallyCompletedExclusionSql(sql)}
+         -- EI-20106946822538304: while an eligible watchdog signal is inside its recovery
+         -- evidence window, the auto-close sweep still owns the decision. Keep it in POOL so
+         -- the diagnosis says work exists, but out of READY so claim_next cannot burn a wake
+         -- proving a phantom needs no action. The shared fragment fails OPEN on incomplete
+         -- history and is deliberately issue-family-only.
+         AND ${watchdogRecoveryWindowExclusionSql(sql)}
          -- Mig 499 + WI-5939: a row cooling down FOR THIS CALLER — either this caller released it
          -- recently, or someone else filed it within the filing-grace window — is likewise
          -- pending-but-gated here; same one fragment claimNextIssueWorkItem applies.
@@ -5773,6 +5779,8 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'federation-detector': 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)',
   'loop-noise': 'an AUTO-loop-iteration bookkeeping marker, not work (EI-8802)',
   'already-completed': 'already carries a terminal completion record (EI-8972)',
+  'watchdog-recovery-window':
+    'eligible watchdog signal is still inside the auto-close recovery evidence window; wait for six complete ran ticks',
   'cross-machine-rig': 'needs a ≥2-machine rig this caller does not have (WI-2796)',
   'blocked-dep': 'has a PRESENT, non-terminal blocker (work_item_deps)',
   origin:
@@ -5830,6 +5838,7 @@ export async function explainIssueClaimFloors(
       ok_federation: boolean;
       ok_loop_noise: boolean;
       ok_completed: boolean;
+      ok_watchdog_recovery: boolean;
       ok_rig: boolean;
       ok_no_blocker: boolean;
       ok_cooldown: boolean;
@@ -5848,6 +5857,7 @@ export async function explainIssueClaimFloors(
            (${federationDetectorExclusionSql(sql)})                               AS ok_federation,
            (${loopIterationNoiseExclusionSql(sql)})                               AS ok_loop_noise,
            (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
+           (${watchdogRecoveryWindowExclusionSql(sql)})                           AS ok_watchdog_recovery,
            (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig,
            (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
            (${issueCooldownExclusionSql(sql, assignee, cooldown)})                AS ok_cooldown
@@ -5882,10 +5892,12 @@ export async function explainIssueClaimFloors(
                       : !r.ok_federation
                         ? 'federation-detector'
                         : !r.ok_loop_noise
-                          ? 'loop-noise'
+                            ? 'loop-noise'
                           : !r.ok_completed
                             ? 'already-completed'
-                            : !r.ok_rig
+                            : !r.ok_watchdog_recovery
+                              ? 'watchdog-recovery-window'
+                              : !r.ok_rig
                               ? 'cross-machine-rig'
                               : !r.ok_no_blocker
                                 ? 'blocked-dep'
