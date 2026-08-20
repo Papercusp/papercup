@@ -96,12 +96,12 @@ export default defineTool({
       // lock_id only — the resource name (and therefore its domain) is unknown
       // here, so try the caller's domain first (the common case, zero extra
       // cost), falling back to the special-domain families (WI-5960) only if
-      // that finds nothing.
+      // that finds neither a release nor matching expiry evidence.
       for (const domain of candidateResourceLockDomains()) {
         const r = await inWorkspaceTxn(domain, ownerId, (tx) =>
           tryReleaseResource(tx, { coordinationDomain: domain, owner: ownerId, lockId: item.lock_id }),
         );
-        if (r.released > 0) {
+        if (r.released > 0 || (r.expired?.length ?? 0) > 0) {
           await announceBackUp(r);
           return r;
         }

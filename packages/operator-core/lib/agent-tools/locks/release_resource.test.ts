@@ -77,17 +77,24 @@ describe('locks:release_resource handler', () => {
 
     expect(b).toMatchObject({
       ok: true,
-      released: 0,
-      expired: true,
-      warning: 'resource_lock_expired_before_release',
-      note: expect.stringContaining('expired before release'),
-      expired_at: expiredAt.toISOString(),
-      expired_locks: [
+      counts: { ok: 1, failed: 0 },
+      results: [
         {
+          ok: true,
           lock_id: lockId,
-          resource: 'dev-server',
-          mode: 'exclusive',
+          released: 0,
+          expired: true,
+          warning: 'resource_lock_expired_before_release',
+          note: expect.stringContaining('expired before release'),
           expired_at: expiredAt.toISOString(),
+          expired_locks: [
+            {
+              lock_id: lockId,
+              resource: 'dev-server',
+              mode: 'exclusive',
+              expired_at: expiredAt.toISOString(),
+            },
+          ],
         },
       ],
     });
