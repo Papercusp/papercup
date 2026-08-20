@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFact, AssertFactInput, FactCapPreview } from '../../agent-facts/store';
 
 const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AgentFact>>());
+const factVersionsSpy = vi.hoisted(() => vi.fn());
 const previewSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<FactCapPreview>>());
 const resolveFactFederationSlugSpy = vi.hoisted(() => vi.fn<() => Promise<string | null>>());
 const boundedTxnHarness = vi.hoisted(() => {
@@ -41,13 +42,14 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
   return {
     ...actual,
     assertFact: assertFactSpy,
+    factVersions: factVersionsSpy,
     previewFactCapImpact: previewSpy,
     resolveFactFederationSlug: resolveFactFederationSlugSpy,
   };
 });
 vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: boundedTxnHarness.boundedOrgTxn }));
 
-import assertTool from './assert';
+import assertTool, { OVERWROTE_AUTHOR_EXCERPT_CHARS } from './assert';
 
 const ctx = { isSuperuser: true, uiClientId: 'su-test-dry-run' } as never;
 
@@ -75,6 +77,26 @@ const PREVIEW: FactCapPreview = {
   raceCaveat: 'FORECAST, NOT A RESERVATION',
 };
 
+const writtenFact = (overrides: Partial<AgentFact> = {}): AgentFact => ({
+  scope: 'owner',
+  scopeRef: 'su-test-dry-run',
+  key: 'k',
+  body: 'new body',
+  confidence: null,
+  measurement: null,
+  kind: null,
+  dependsOn: [],
+  claim: null,
+  enforcement: null,
+  sourceRef: null,
+  audienceScope: null,
+  sourceProvenance: null,
+  createdBy: 'su-test-dry-run',
+  updatedAt: '2026-01-02T00:00:00.000Z',
+  expiresAt: '2026-01-09T00:00:00.000Z',
+  ...overrides,
+});
+
 describe('facts:assert { dryRun } — forecasts the cap cost without writing', () => {
   beforeEach(() => {
     assertFactSpy.mockReset();
@@ -84,6 +106,8 @@ describe('facts:assert { dryRun } — forecasts the cap cost without writing', (
       // returning a plausible row that the payload assertions would accept.
       new Error('assertFact must NOT be called on a dryRun'),
     );
+    factVersionsSpy.mockReset();
+    factVersionsSpy.mockResolvedValue([]);
     previewSpy.mockReset();
     previewSpy.mockResolvedValue(PREVIEW);
     resolveFactFederationSlugSpy.mockReset();
@@ -164,5 +188,52 @@ describe('facts:assert { dryRun } — forecasts the cap cost without writing', (
 
     expect(assertFactSpy).toHaveBeenCalledTimes(1);
     expect(previewSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns a loud, bounded receipt when the write replaces another author\'s version', async () => {
+    const prior = writtenFact({
+      id: 1,
+      createdBy: 'su-peer',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      body: `Correct owner-gated diagnosis ${'x'.repeat(400)}`,
+    });
+    const current = writtenFact({ id: 2, supersedesId: 1 });
+    assertFactSpy.mockResolvedValue(current);
+    factVersionsSpy.mockResolvedValue([current, prior]);
+
+    const result = await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test-dry-run', key: 'k', body: 'replacement' } as never,
+      ctx,
+    );
+
+    expect(factVersionsSpy).toHaveBeenCalledWith({
+      scope: 'owner',
+      scopeRef: 'su-test-dry-run',
+      key: 'k',
+      limit: 8,
+    });
+    const payload = payloadOf(result);
+    expect(payload.overwroteAuthor).toMatchObject({
+      ownerId: 'su-peer',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    const disclosure = payload.overwroteAuthor as { bodyExcerpt: string; note: string };
+    expect(disclosure.bodyExcerpt.length).toBeLessThanOrEqual(OVERWROTE_AUTHOR_EXCERPT_CHARS);
+    expect(disclosure.bodyExcerpt).toContain('Correct owner-gated diagnosis');
+    expect(disclosure.note).toMatch(/CROSS-AUTHOR OVERWRITE/);
+  });
+
+  it('does not warn when a writer re-asserts its own predecessor', async () => {
+    const prior = writtenFact({ id: 1 });
+    const current = writtenFact({ id: 2, supersedesId: 1 });
+    assertFactSpy.mockResolvedValue(current);
+    factVersionsSpy.mockResolvedValue([current, prior]);
+
+    const result = await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test-dry-run', key: 'k', body: 'replacement' } as never,
+      ctx,
+    );
+
+    expect(payloadOf(result).overwroteAuthor).toBeUndefined();
   });
 });

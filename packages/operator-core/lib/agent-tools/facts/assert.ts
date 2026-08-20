@@ -30,6 +30,7 @@ import {
   WALL_KEY_PREFIX,
   WALL_DEFAULT_TTL_SEC,
   FACT_VOLATILE_MAX_TTL_SEC,
+  type AgentFact,
   type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
@@ -54,6 +55,50 @@ import { acquireWithContentionRetry } from '../locks/contention-retry';
  */
 /** Cap on the verbatim dropped-tail echoed back in the disclosure (P-004). */
 const TRUNCATION_TAIL_ECHO_CHARS = 240;
+
+/** Cap the prior owner's body echoed in a cross-author overwrite receipt. */
+export const OVERWROTE_AUTHOR_EXCERPT_CHARS = 240;
+
+export interface OverwroteAuthorDisclosure {
+  /** The owner who authored the version this write replaced. */
+  ownerId: string;
+  /** The prior version's last-update timestamp. */
+  updatedAt: string;
+  /** A bounded preview of the prior body, so the writer can recognize the loss. */
+  bodyExcerpt: string;
+  /** Actionable warning, intentionally loud because the write is still allowed. */
+  note: string;
+}
+
+/**
+ * Build the warn-only receipt for replacing a different author's current fact.
+ *
+ * PURE: the handler supplies the exact predecessor identified by supersedesId,
+ * so this never guesses from an older version in the chain. Same-author
+ * re-asserts stay silent, preserving the quiet common path.
+ */
+export function overwroteAuthorField(input: {
+  prior?: Pick<AgentFact, 'createdBy' | 'updatedAt' | 'body'>;
+  asserter: string;
+  key: string;
+}): OverwroteAuthorDisclosure | undefined {
+  const prior = input.prior;
+  if (!prior || !prior.createdBy || prior.createdBy === input.asserter) return undefined;
+  const body = prior.body.trim();
+  const bodyExcerpt =
+    body.length > OVERWROTE_AUTHOR_EXCERPT_CHARS
+      ? `${body.slice(0, OVERWROTE_AUTHOR_EXCERPT_CHARS - 1)}…`
+      : body;
+  return {
+    ownerId: prior.createdBy,
+    updatedAt: prior.updatedAt,
+    bodyExcerpt: bodyExcerpt || '(empty body)',
+    note:
+      `⚠ CROSS-AUTHOR OVERWRITE — this write replaced ${prior.createdBy}'s fact for key "${input.key}". ` +
+      `The prior body is included only as a bounded excerpt; if that fact was still valid, recover it ` +
+      `from facts:list/history or re-assert it before proceeding.`,
+  };
+}
 
 export function truncationField(
   rawBody: string,
@@ -554,6 +599,7 @@ export default defineTool({
     // Fail-soft by construction: an advisory that could fail a write would be a strictly
     // worse trade than the friction it prevents.
     let keyContested: KeyContestAssessment | null = null;
+    let overwroteAuthor: OverwroteAuthorDisclosure | undefined;
     if (fact.supersedesId != null) {
       try {
         const versions = await factVersions({
@@ -561,6 +607,14 @@ export default defineTool({
           scopeRef: scopeRef ?? null,
           key: slotted.key,
           limit: 8,
+        });
+        // P-008(a): use the exact predecessor pointer for authorship disclosure.
+        // Do not infer from the newest remaining row if history has been pruned or
+        // a concurrent write changes the chain before this read completes.
+        overwroteAuthor = overwroteAuthorField({
+          prior: versions.find((v) => v.id === fact.supersedesId),
+          asserter: identity.ownerId,
+          key: slotted.key,
         });
         keyContested = assessKeyContest({
           // Exclude the row THIS call just wrote — the assessment is about the ground the
@@ -610,6 +664,7 @@ export default defineTool({
                   },
                 }
               : {}),
+            ...(overwroteAuthor ? { overwroteAuthor } : {}),
             // EI-19451909636567773: the receipt above reports the fact you
             // DESTROYED. This one reports whether YOUR OWN write is going to
             // survive — the half the writer can actually act on, and the half
