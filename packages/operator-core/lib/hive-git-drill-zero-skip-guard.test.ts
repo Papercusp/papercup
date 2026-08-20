@@ -53,6 +53,10 @@ const physicalProbe = readFileSync(
 );
 const physicalScenarioPath = join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-scenario.sh');
 const physicalScenario = readFileSync(physicalScenarioPath, 'utf8');
+const gitSyncAction = readFileSync(
+  join(repoRoot(), 'packages', 'operator-core', 'lib', 'harness', 'git-sync', 'git-sync-action.ts'),
+  'utf8',
+);
 const gateMatch = drill.match(/# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)# ZERO-SKIP-RELEASE-GATE-END/);
 
 const evidenceDir = mkdtempSync(join(tmpdir(), 'hive-git-physical-evidence-'));
@@ -1005,6 +1009,24 @@ esac
     expect(physicalScenario).toContain('phase-b-verify');
     expect(physicalScenario).toContain('git-sync:run');
     expect(physicalScenario).not.toMatch(/['"]git (?:fetch|bundle)/);
+  });
+
+  it('signs integrator-authored namespace refs before the worktree bridge in the same git-sync tick', () => {
+    const publish = gitSyncAction.indexOf("runCheckpointedStep('git-sync:ref-announce'");
+    const integrate = gitSyncAction.indexOf("runCheckpointedStep('git-sync:integrator'");
+    const postIntegratorPublish = gitSyncAction.indexOf(
+      "runCheckpointedStep('git-sync:ref-announce-post-integrator'",
+    );
+    const bridge = gitSyncAction.indexOf("runCheckpointedStep('git-sync:worktree-bridge'");
+
+    expect(publish).toBeGreaterThan(-1);
+    expect(integrate).toBeGreaterThan(publish);
+    expect(postIntegratorPublish).toBeGreaterThan(integrate);
+    expect(bridge).toBeGreaterThan(postIntegratorPublish);
+
+    const postIntegratorStep = gitSyncAction.slice(postIntegratorPublish, bridge);
+    expect(postIntegratorStep).toContain('runRefAnnounceLeg(slug, workspaceId, { receive: false })');
+    expect(gitSyncAction).toContain('if (options.receive === false) return;');
   });
 
   it('pins two-host Phase C trust controls to the production sigrefs and scope-serve primitives', () => {
