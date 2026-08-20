@@ -60,8 +60,8 @@ export async function itemTestGate(
     //    so reading it alone made `itemIds` empty for every feature and this gate
     //    returned `{ ok: true }` on the very next line — structurally unable to refuse
     //    anything. EI-19435123521651527.
-    const { itemIds } = await resolvePlanItemProvenance(harness, featureId);
-    if (itemIds.length === 0) return { ok: true }; // no plan provenance ⇒ nothing to prove
+    const { planSlug, itemIds } = await resolvePlanItemProvenance(harness, featureId);
+    if (!planSlug || itemIds.length === 0) return { ok: true }; // incomplete provenance ⇒ nothing safe to prove
 
     // 2. The source plan items' inline VAL assertions.
     const assertions = await sql<RollupAssertion[]>`
@@ -69,6 +69,7 @@ export async function itemTestGate(
         FROM harness_shared.harness_plan_assertions
        WHERE workspace_id = ${ws}
          AND harness_slug = ${harness}
+         AND plan_slug = ${planSlug}
          AND item_id = ANY(${itemIds})
     `;
     if (!assertions.some((a) => a.requires_test)) return { ok: true }; // nothing requires a test

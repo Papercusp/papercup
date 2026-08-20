@@ -23,17 +23,27 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 type SqlTag = (strings: TemplateStringsArray, ...vals: unknown[]) => Promise<unknown[]>;
 
 let provenanceRows: unknown[] = [];
-let assertionRows: unknown[] = [];
+let assertionRows: Array<{
+  plan_slug: string;
+  val_id: string;
+  item_id: string;
+  requires_test: boolean;
+}> = [];
 let testRows: unknown[] = [];
 let throwOnProvenance = false;
+let assertionQueryValues: unknown[] = [];
 
-const sql: SqlTag = async (strings) => {
+const sql: SqlTag = async (strings, ...vals) => {
   const q = strings.join(' ');
   if (q.includes('harness_features_consolidated')) {
     if (throwOnProvenance) throw new Error('pg down');
     return provenanceRows;
   }
-  if (q.includes('harness_plan_assertions')) return assertionRows;
+  if (q.includes('harness_plan_assertions')) {
+    assertionQueryValues = vals;
+    if (!q.includes('plan_slug =')) return assertionRows;
+    return assertionRows.filter((row) => row.plan_slug === vals[2]);
+  }
   if (q.includes('harness_tests')) return testRows;
   throw new Error(`unexpected query in test: ${q}`);
 };
@@ -55,13 +65,19 @@ const STAMPED_ROW = {
   stamped_item_id: 'P-001',
 };
 
-const REQUIRES_TEST_ASSERTION = { val_id: 'VAL-1', item_id: 'P-001', requires_test: true };
+const REQUIRES_TEST_ASSERTION = {
+  plan_slug: 'some-plan-2026-08-03',
+  val_id: 'VAL-1',
+  item_id: 'P-001',
+  requires_test: true,
+};
 
 beforeEach(() => {
   provenanceRows = [];
   assertionRows = [];
   testRows = [];
   throwOnProvenance = false;
+  assertionQueryValues = [];
 });
 
 describe('planItemProvenanceFromRow precedence', () => {
@@ -127,6 +143,41 @@ describe('itemTestGate sees stamp-only provenance', () => {
     testRows = [{ status: 'passing', payload: { coversVALs: ['VAL-1'] } }];
 
     expect(await itemTestGate('papercusp', 'F-1')).toEqual({ ok: true });
+  });
+
+  it('ignores assertions from another plan that reuses the same item ID', async () => {
+    provenanceRows = [STAMPED_ROW];
+    assertionRows = [
+      {
+        plan_slug: 'another-plan-2026-08-20',
+        val_id: 'VAL-FOREIGN',
+        item_id: 'P-001',
+        requires_test: true,
+      },
+    ];
+
+    expect(await itemTestGate('papercusp', 'F-1')).toEqual({ ok: true });
+    expect(assertionQueryValues).toEqual([
+      'papercusp-workspace',
+      'papercusp',
+      'some-plan-2026-08-03',
+      ['P-001'],
+    ]);
+  });
+
+  it('fails open when item IDs exist without a resolvable plan slug', async () => {
+    provenanceRows = [
+      {
+        source_plan_slug: null,
+        source_plan_item_ids: ['P-001'],
+        stamped_plan_slug: null,
+        stamped_item_id: null,
+      },
+    ];
+    assertionRows = [REQUIRES_TEST_ASSERTION];
+
+    expect(await itemTestGate('papercusp', 'F-1')).toEqual({ ok: true });
+    expect(assertionQueryValues).toEqual([]);
   });
 
   it('still passes a feature with genuinely no plan provenance (nothing to prove)', async () => {
