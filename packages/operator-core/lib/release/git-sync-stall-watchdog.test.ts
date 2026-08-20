@@ -482,4 +482,27 @@ describe('stranding vs failing-leg diagnosis (2026-08-02 papercusp misdiagnosis)
     expect(strandBody.detail).toMatch(/silent stall/i);
     expect(strandBody.detail).toMatch(/executor reaping/i);
   });
+
+  it('surfaces the terminal failure in the headline instead of leading Cargo success chatter', () => {
+    const noisyPrePushFailure = [
+      'superproject: push failed: Finished `dev` profile [optimized + debuginfo] target(s) in 0.36s',
+      '    Finished `test` profile [optimized + debuginfo] target(s) in 0.25s',
+      '     Running unittests src/lib.rs (/tmp/target/debug/deps/example)',
+      'FAIL: non-macOS host should be a no-op',
+      'make: *** [Makefile:124: test-ios-host-health] Error 1',
+      "✗ pre-push: 'make check' failed — fix or bypass",
+      "error: failed to push some refs to 'github.com:Papercusp/papercup-rust-mobile.git'",
+    ].join('\n');
+    const verdict = evaluateGitSyncStall(
+      { ...base, lastError: noisyPrePushFailure, errorSweeps: 2 },
+      NOW,
+    );
+    const diagnosis = gitSyncStallDiagnosis(verdict, 'papercup-rust-mobile');
+
+    expect(verdict.errorHeadline).toBe('FAIL: non-macOS host should be a no-op');
+    expect(diagnosis.summary).toContain('Cause: FAIL: non-macOS host should be a no-op');
+    expect(diagnosis.summary).not.toContain('Finished `dev` profile');
+    expect(verdict.reason).toContain('FAIL: non-macOS host should be a no-op');
+    expect(verdict.reason).toContain("failed to push some refs");
+  });
 });

@@ -130,9 +130,56 @@ export interface GitSyncStallVerdict {
   persistentReap: boolean;
   /** human reason for the alarm body, or null when not stalled. */
   reason: string | null;
+  /** One actionable line selected from a multiline last_error for the alert headline. */
+  errorHeadline: string | null;
 }
 
 const hrs = (ms: number): number => Math.round(ms / 3_600_000);
+
+const ERROR_HEADLINE_MAX_CHARS = 240;
+const ERROR_CONTEXT_MAX_CHARS = 600;
+
+/**
+ * Pick the terminal cause from a noisy command log. Build tools commonly print many success
+ * lines before the failing assertion; taking `last_error.slice(0, n)` hid the actual failure in
+ * the fleet alert. Prefer explicit failure markers anywhere in the log, then fall back to its
+ * final non-empty line.
+ */
+function gitSyncErrorHeadline(raw: string): string | null {
+  const lines = raw
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) return null;
+
+  const priorities = [
+    /^(?:FAIL|ERROR):/,
+    /^(?:fatal:|panic(?:ked)?\b)/i,
+    /^make(?:\[\d+\])?: \*\*\*/i,
+    /^✗\s/,
+    /^error:/i,
+  ];
+  let headline = lines.at(-1)!;
+  for (const pattern of priorities) {
+    const match = [...lines].reverse().find((line) => pattern.test(line));
+    if (match) {
+      headline = match;
+      break;
+    }
+  }
+  return headline.length <= ERROR_HEADLINE_MAX_CHARS
+    ? headline
+    : `${headline.slice(0, ERROR_HEADLINE_MAX_CHARS - 1)}…`;
+}
+
+/** Keep the end of a multiline failure for the detailed diagnosis, starting on a line boundary. */
+function gitSyncErrorContext(raw: string): string {
+  const normalized = raw.replace(/\r/g, '').trim();
+  if (normalized.length <= ERROR_CONTEXT_MAX_CHARS) return normalized;
+  const tail = normalized.slice(-ERROR_CONTEXT_MAX_CHARS);
+  const firstLineEnd = tail.indexOf('\n');
+  return `…${firstLineEnd >= 0 ? tail.slice(firstLineEnd + 1) : tail}`;
+}
 
 /**
  * Pure: does this verdict mean COMMITS ARE NOT LANDING (code strands uncommitted + un-deployable),
@@ -165,9 +212,10 @@ export function gitSyncStallDiagnosis(
   verdict: GitSyncStallVerdict,
   installSlug: string,
 ): { summary: string; title: string; why: string } {
+  const cause = verdict.errorHeadline ? ` Cause: ${verdict.errorHeadline}` : '';
   if (isStrandingVerdict(verdict)) {
     return {
-      summary: `git-sync STALLED on ${installSlug} — firing but NOT committing; code is stranding uncommitted + un-deployable.`,
+      summary: `git-sync STALLED on ${installSlug} — firing but NOT committing; code is stranding uncommitted + un-deployable.${cause}`,
       title: 'git-sync STALLED — commits not landing, code stranding',
       why:
         `Why it matters: a deploy ships only COMMITTED HEAD, so stranded edits can't reach :3070 ` +
@@ -178,7 +226,7 @@ export function gitSyncStallDiagnosis(
   }
   // Pure error streak: HEAD is still advancing — say so, or the reader chases a phantom stall.
   return {
-    summary: `git-sync FAULTING on ${installSlug} — a persistent fault streak; HEAD is still advancing, so this is a FAILING LEG, not a commit stall.`,
+    summary: `git-sync FAULTING on ${installSlug} — a persistent fault streak; HEAD is still advancing, so this is a FAILING LEG, not a commit stall.${cause}`,
     title: 'git-sync FAULTING — a persistent failing leg (commits still landing)',
     why:
       `Why it matters: git-sync has recorded the SAME fault on consecutive sweeps, so one leg is ` +
@@ -245,6 +293,7 @@ export function evaluateGitSyncStall(
   const hasError = typeof s.lastError === 'string' && s.lastError.trim().length > 0;
   const errorSweeps = hasError ? (s.errorSweeps ?? 1) : 0;
   const errorStall = !rootEngineStale && errorSweeps >= errorStallMinSweeps;
+  const errorHeadline = hasError ? gitSyncErrorHeadline(s.lastError!) : null;
   const persistentReap = !rootEngineStale && (s.reapedCount ?? 0) >= persistentReapMin;
   const stalled = commitStale || fireStale || errorStall || persistentReap;
 
@@ -266,12 +315,12 @@ export function evaluateGitSyncStall(
     }
     if (errorStall) {
       parts.push(
-        `git-sync has recorded a FAULT on ${errorSweeps} consecutive watchdog sweeps (persistent, not a blip): "${s.lastError!.slice(0, 200)}"`,
+        `git-sync has recorded a FAULT on ${errorSweeps} consecutive watchdog sweeps (persistent, not a blip): "${gitSyncErrorContext(s.lastError!)}"`,
       );
     }
     reason = parts.join('; ');
   }
-  return { stalled, commitStale, fireStale, errorStall, persistentReap, reason };
+  return { stalled, commitStale, fireStale, errorStall, persistentReap, reason, errorHeadline };
 }
 
 /**
