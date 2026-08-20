@@ -55,6 +55,8 @@ export {
   type ChecksCompositionSection,
   type ChecksConfinementSection,
   type ChecksGymSection,
+  type ChecksMobileBaseSection,
+  type ChecksMobileCommand,
   type ChecksSeamSection,
   type TemplateChecksConfig,
 } from "./checks-config.js";
@@ -63,6 +65,7 @@ export {
   DESKTOP_APP_TEMPLATE,
   PAPERCUSP_DATA_LAYER_TEMPLATE,
   PAPERCUSP_DATA_SYNC_TEMPLATE,
+  PAPERCUSP_MOBILE_BASE_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   PAPERCUSP_SEARCH_TEMPLATE,
   PAPERCUSP_UI_TEMPLATE,
