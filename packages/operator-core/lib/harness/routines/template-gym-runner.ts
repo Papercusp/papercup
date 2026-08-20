@@ -364,9 +364,18 @@ function capabilityDiversityLeg(consumers: MobileConsumer[]): LegResult {
   const started = Date.now();
   const errors: string[] = [];
   for (const platform of ['android', 'iphone'] as const) {
-    const configs = consumers
-      .filter((consumer) => consumer.platform === platform)
-      .map((consumer) => effectiveConsumerConfig(consumer));
+    const configs: Record<string, any>[] = [];
+    for (const consumer of consumers.filter((candidate) => candidate.platform === platform)) {
+      try {
+        configs.push(effectiveConsumerConfig(consumer));
+      } catch (error) {
+        // Packaged/standalone sidecars do not necessarily have the sibling mobile
+        // consumer repositories.  Every other gym leg reports that as a failed leg;
+        // letting this one throw escapes runGym and can abort sidecar startup.
+        errors.push(`${consumer.id}: ${String(error)}`);
+      }
+    }
+    if (configs.length !== 2) continue;
     const key = platform === 'android' ? 'androidShell' : 'iphoneShell';
     const left = configs[0]?.[key]?.selectedCapabilities ?? [];
     const right = configs[1]?.[key]?.selectedCapabilities ?? [];

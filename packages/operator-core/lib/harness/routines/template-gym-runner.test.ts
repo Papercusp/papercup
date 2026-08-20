@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   capabilitySetsDiffer,
   diffManifestSet,
   isTemplateGymCliEntry,
   MOBILE_TEMPLATE_IDS,
+  runGym,
   validateMobileCheckUnion,
 } from './template-gym-runner';
 
@@ -44,6 +48,27 @@ describe('mobile template-gym policy', () => {
   it('treats optional-capability diversity as set diversity, not ordering', () => {
     expect(capabilitySetsDiffer(['push', 'camera'], ['camera', 'push'])).toBe(false);
     expect(capabilitySetsDiffer(['push', 'camera'], ['media-playback'])).toBe(true);
+  });
+
+  it('reports missing mobile consumer configs without throwing out of a packaged sidecar boot', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'template-gym-missing-consumers-'));
+    try {
+      const summary = await runGym({
+        papercuspMobileRoot: join(root, 'missing-papercusp-mobile'),
+        sidestageMobileRoot: join(root, 'missing-sidestage-mobile'),
+        legs: ['mobile-capability-diversity'],
+        summaryJson: join(root, 'summary.json'),
+      });
+
+      expect(summary.green).toBe(false);
+      expect(summary.legs).toHaveLength(1);
+      expect(summary.legs[0]).toMatchObject({ leg: 'mobile-capability-diversity', ok: false });
+      expect(summary.legs[0]?.detail).toContain('papercusp-android');
+      expect(summary.legs[0]?.detail).toContain('sidestage-iphone');
+      expect(summary.legs[0]?.detail).toContain('ENOENT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('runs the CLI only when the process entrypoint is the template-gym runner itself', () => {
