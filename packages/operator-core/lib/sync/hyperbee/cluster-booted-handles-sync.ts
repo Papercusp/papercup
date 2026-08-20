@@ -80,8 +80,8 @@ export interface HarnessContentConnectivity {
 }
 
 /**
- * EI-20575137548097507 (second pass): the three health inputs the assessor
- * consumes, as ONE bundle.
+ * EI-20575137548097507 (second pass): the owner-process health/readiness inputs
+ * consumers rely on, as ONE bundle.
  *
  * They travel together on purpose. The first pass published only
  * `replicationLiveness` and flipped a single "health inputs observed" marker on
@@ -134,7 +134,7 @@ export function collectHarnessContentConnectivity(): HarnessContentConnectivity[
 }
 
 /**
- * Read the owner's three health-input registries as one bundle.
+ * Read the owner's health/readiness registries as one complete bundle.
  *
  * Shared by BOTH publishing legs (cluster IPC and the PG fallback) so the rule
  * is expressed exactly once. The last time one rule here lived in two places,
@@ -177,7 +177,7 @@ export interface BootedHandlesSnapshotMessage {
    * primary mid-rolling-deploy degrades to health-unobserved (honest) rather
    * than healthy (a lie).
    *
-   * Sent as ONE bundle rather than three sibling fields: a reader must be able
+   * Sent as ONE bundle rather than independent sibling fields: a reader must be able
    * to decide "did I observe the health inputs?" with a single test that cannot
    * be true for only part of what it claims — see SubstrateHealthInputsBundle.
    */

@@ -64,6 +64,7 @@ vi.mock('../../../../sync/hyperbee/health', () => ({ assessHarnessSubstrateHealt
 vi.mock('../../../../sync/hyperbee/summary', () => ({ summariseWorkspaceSubstrate: H.summariseWorkspaceSubstrate }));
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
+  collectHarnessContentConnectivity: vi.fn(() => []),
 }));
 vi.mock('../../../../sync/hyperbee/substrate-booted-handles-pg', () => ({
   getPgBootedHandlesSnapshotFallback: H.getPgBootedHandlesSnapshotFallback,

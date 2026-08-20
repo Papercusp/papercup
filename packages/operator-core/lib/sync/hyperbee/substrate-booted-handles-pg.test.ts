@@ -71,7 +71,12 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
         // reader can ASSESS them. Present-but-empty here (nothing registered in
         // this fixture) is meaningfully different from absent: absent means the
         // reader must report health UNOBSERVED.
-        healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
+        healthInputs: {
+          replicationLiveness: [],
+          ownLogForks: [],
+          logStats: [],
+          contentConnectivity: [],
+        },
       });
       H.state.booted = [
         { workspaceId: 'ws1', harnessSlug: 'a' },
@@ -165,7 +170,12 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
     expect(H.writeOperatorState).toHaveBeenLastCalledWith('substrate_booted_handles_status', {
       handles: H.state.booted,
       sentAt: 5_000,
-      healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
+      healthInputs: {
+        replicationLiveness: [],
+        ownLogForks: [],
+        logStats: [],
+        contentConnectivity: [],
+      },
       sidecar: {
         socketPath: '/tmp/substrate-owner.sock',
         handles: [{ workspaceId: 'ws1', harnessSlug: 'relocated' }],

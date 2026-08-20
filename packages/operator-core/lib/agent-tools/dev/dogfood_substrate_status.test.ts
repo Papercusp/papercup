@@ -74,6 +74,35 @@ describe('dev:dogfood_substrate_status handler', () => {
     expect(b.probe).toMatchObject({ total: 10, won: 8, error: 1 });
   });
 
+  it('narrows every per-harness array to one exact target before result shaping', async () => {
+    const a = { workspaceId: 'ws', harnessSlug: 'a' };
+    const b = { workspaceId: 'ws', harnessSlug: 'b' };
+    statusM.mockReturnValue({
+      bootedCount: 2,
+      harnesses: [
+        { ...a, verdict: 'healthy', reasons: [] },
+        { ...b, verdict: 'healthy', reasons: [] },
+      ],
+      logStats: [{ ...a, ownLogOps: 1 }, { ...b, ownLogOps: 2 }],
+      replicationLiveness: [{ ...a, counts: {} }, { ...b, counts: {} }],
+      contentConnectivity: [
+        { ...a, topicHex: 'aa'.repeat(32), contentPeers: 0, lastContentAnnounceRecvMs: null },
+        { ...b, topicHex: 'bb'.repeat(32), contentPeers: 1, lastContentAnnounceRecvMs: 12_345 },
+      ],
+      summary: {},
+      reachedSubstrateOwner: true,
+    } as never);
+
+    const out = body(await run({ targetHarness: b }));
+    expect(out.bootedCount).toBe(2); // aggregate stays workspace-wide
+    expect(out.harnesses).toEqual([expect.objectContaining(b)]);
+    expect(out.logStats).toEqual([expect.objectContaining(b)]);
+    expect(out.replicationLiveness).toEqual([expect.objectContaining(b)]);
+    expect(out.contentConnectivity).toEqual([
+      expect.objectContaining({ ...b, contentPeers: 1 }),
+    ]);
+  });
+
   it('tolerates a claim-stat load failure (falls back to zeroed stats)', async () => {
     statusM.mockImplementation((opts: { resolveClaimStats: (w: string, s: string) => unknown }) => ({
       harnesses: [{ workspaceId: 'ws', harnessSlug: 'web' }],

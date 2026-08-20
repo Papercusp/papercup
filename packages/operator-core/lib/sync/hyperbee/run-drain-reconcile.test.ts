@@ -23,6 +23,7 @@ function fakeGetStatus(booted: Array<[string, string]>) {
       summary: {} as never,
       logStats: [],
       replicationLiveness: [],
+      contentConnectivity: [],
       reachedSubstrateOwner: true,
       // EI-20575137548097507: this fixture models the SUBSTRATE OWNER (it
       // reports harnesses from its own boot map), so its health inputs are

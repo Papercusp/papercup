@@ -45,6 +45,7 @@ vi.mock('../../orchestrator/load-claim-attempts', () => ({
 }));
 vi.mock('../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: M.getCachedRemoteBootedHandles,
+  collectHarnessContentConnectivity: vi.fn(() => []),
 }));
 vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', () => ({
   getPgBootedHandlesSnapshotFallback: M.getPgBootedHandlesSnapshotFallback,

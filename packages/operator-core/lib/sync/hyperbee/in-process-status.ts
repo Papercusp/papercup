@@ -112,8 +112,8 @@ export interface InProcessSubstrateStatus {
   contentConnectivity: HarnessContentConnectivity[];
   /**
    * EI-20575137548097507: did THIS process actually measure the process-local
-   * health inputs (`replicationLiveness`, `logStats`, own-log-fork) for the
-   * harnesses reported above?
+   * health/readiness inputs (`replicationLiveness`, `logStats`, own-log-fork,
+   * and `contentConnectivity`) for the harnesses reported above?
    *
    * `reachedSubstrateOwner` does NOT answer this and must not be read as if it
    * did: it is `true` on the owner path AND on the cached-snapshot path (see

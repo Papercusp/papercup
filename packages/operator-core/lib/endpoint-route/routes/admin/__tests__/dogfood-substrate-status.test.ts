@@ -59,6 +59,7 @@ vi.mock('../../../../background-workers', () => ({
 }));
 vi.mock('../../../../sync/hyperbee/cluster-booted-handles-sync', () => ({
   getCachedRemoteBootedHandles: H.getCachedRemoteBootedHandles,
+  collectHarnessContentConnectivity: vi.fn(() => []),
 }));
 vi.mock('../../../../sync/hyperbee/substrate-booted-handles-pg', () => ({
   getPgBootedHandlesSnapshotFallback: H.getPgBootedHandlesSnapshotFallback,

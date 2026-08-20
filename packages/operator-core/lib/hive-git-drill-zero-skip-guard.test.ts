@@ -1030,23 +1030,34 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain('dev:dogfood_substrate_status');
     expect(physicalScenario).toContain('"substrateActive"');
     expect(physicalScenario).toContain('"reachedSubstrateOwner"');
+    expect(physicalScenario).toContain('"healthInputsObserved"');
     expect(physicalScenario).toContain('"bootedCount"');
     expect(physicalScenario).toContain('"harnesses[].workspaceId"');
     expect(physicalScenario).toContain('"harnesses[].harnessSlug"');
     expect(physicalScenario).toContain('"harnesses[].verdict"');
     expect(physicalScenario).toContain('"harnesses[].reasons"');
+    expect(physicalScenario).toContain('"contentConnectivity[].topicHex"');
+    expect(physicalScenario).toContain('"contentConnectivity[].contentPeers"');
+    expect(physicalScenario).toContain('"contentConnectivity[].lastContentAnnounceRecvMs"');
+    expect(physicalScenario).toContain('"targetHarness"');
     expect(physicalScenario).toContain('status?.reachedSubstrateOwner === true');
+    expect(physicalScenario).toContain('status?.healthInputsObserved === true');
     expect(physicalScenario).toContain('status.bootedCount > 0');
+    expect(physicalScenario).toContain('content.contentPeers > 0');
+    expect(physicalScenario).toContain('announceAgeMs <= maxAnnounceAgeMs');
+    expect(physicalScenario).toContain('const sameTopic = tower.contentTopicHex === vm.contentTopicHex');
     expect(physicalScenario).toContain(
       'row?.workspaceId === workspaceId && row?.harnessSlug === harnessSlug',
     );
-    expect(phaseAScenario.indexOf('require_vm_phase_a_substrate_ready >')).toBeLessThan(
+    expect(physicalScenario).toContain('PHASE_A_TOWER_STATUS_ARGS');
+    expect(physicalScenario).toContain('PHASE_A_VM_STATUS_ARGS');
+    expect(phaseAScenario.indexOf('require_phase_a_two_host_substrate_ready >')).toBeLessThan(
       phaseAScenario.indexOf('phase-a-quarantine'),
     );
 
   });
 
-  it('fails closed before Phase A quarantine when the VM substrate has no booted hello-world handle', () => {
+  it('fails closed before Phase A quarantine when the VM handle is booted but its exact topic has zero peers', () => {
     const runDir = mkdtempSync(join(evidenceDir, 'phase-a-substrate-readiness-'));
     const fakeBin = join(runDir, 'bin');
     const output = join(runDir, 'unsigned-evidence.json');
@@ -1084,7 +1095,7 @@ case "$*" in
     if printf '%s\\n' "$*" | grep -F '"projection"' >/dev/null \
       && printf '%s\\n' "$*" | grep -F '"harnesses[].harnessSlug"' >/dev/null; then
       printf '%s\\n' received > '${projectionMarker}'
-      printf '%s\\n' '{"substrateActive":true,"bootedCount":0,"harnesses":[],"reachedSubstrateOwner":true}'
+      printf '%s\\n' '{"substrateActive":true,"reachedSubstrateOwner":true,"healthInputsObserved":true,"bootedCount":1,"harnesses":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world","verdict":"healthy","reasons":[]}],"contentConnectivity":[{"workspaceId":"papercusp-workspace","harnessSlug":"hello-world","topicHex":"${'ab'.repeat(32)}","contentPeers":0,"lastContentAnnounceRecvMs":${Date.now()}}]}'
     else
       printf '%s\\n' '{"summary":"payload preview omitted","_projection":{"kind":"bounded-payload","truncated":true}}'
     fi
@@ -1113,7 +1124,7 @@ esac
 
     expect(attempted.status).toBe(1);
     expect(attempted.stderr).toContain(
-      'phase A VM substrate readiness gate failed: papercusp-workspace::hello-world is not booted and reachable',
+      'phase A VM substrate readiness gate failed: exact topic has no live, recent remote content peer',
     );
     // If the dispatch projection regresses away, the fake returns the same
     // spill wrapper observed on the physical VM and this marker stays absent.

@@ -324,12 +324,28 @@ describe('getInProcessSubstrateStatus', () => {
         resolveRemoteBootedHandles: () => ({
           handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
           receivedAt: Date.now(),
-          healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
+          healthInputs: {
+            replicationLiveness: [],
+            ownLogForks: [],
+            logStats: [],
+            contentConnectivity: [
+              {
+                workspaceId: 'ws-1',
+                harnessSlug: 'remote-a',
+                topicHex: 'ab'.repeat(32),
+                contentPeers: 1,
+                lastContentAnnounceRecvMs: 12_345,
+              },
+            ],
+          },
         }),
       });
       expect(r.healthInputsObserved).toBe(true);
       expect(r.harnesses[0]!.verdict).toBe('healthy');
       expect(r.harnesses[0]!.reasons.join(' ')).not.toMatch(/UNOBSERVABLE/);
+      expect(r.contentConnectivity).toEqual([
+        expect.objectContaining({ harnessSlug: 'remote-a', contentPeers: 1 }),
+      ]);
     });
 
     // EI-20575137548097507, SECOND PASS — the recurrence guard for the FIX's own
@@ -375,6 +391,7 @@ describe('getInProcessSubstrateStatus', () => {
               { workspaceId: 'ws-1', harnessSlug: 'remote-a', detail: 'conflict at seq 12' },
             ],
             logStats: [],
+            contentConnectivity: [],
           },
         }),
       });
@@ -397,6 +414,7 @@ describe('getInProcessSubstrateStatus', () => {
             replicationLiveness: [],
             ownLogForks: [],
             logStats: [stat as never],
+            contentConnectivity: [],
           },
         }),
       });
@@ -421,6 +439,7 @@ describe('getInProcessSubstrateStatus', () => {
             ],
             ownLogForks: [],
             logStats: [],
+            contentConnectivity: [],
           },
         }),
       });
@@ -437,7 +456,12 @@ describe('getInProcessSubstrateStatus', () => {
         resolveRemoteBootedHandles: () => ({
           handles: [{ workspaceId: 'ws-1', harnessSlug: 'remote-a' }],
           receivedAt: Date.now() - 60 * 60 * 1_000,
-          healthInputs: { replicationLiveness: [], ownLogForks: [], logStats: [] },
+          healthInputs: {
+            replicationLiveness: [],
+            ownLogForks: [],
+            logStats: [],
+            contentConnectivity: [],
+          },
         }),
       });
       expect(r.reachedSubstrateOwner).toBe(false);

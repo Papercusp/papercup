@@ -45,13 +45,39 @@ import { getOrgPg } from '@papercusp/db-org';
  */
 const ZERO_DRAIN: SubstrateDrainStat = { undrainedCount: 0, oldestUndrainedAgeMs: null };
 
-const ownLogProbeSchema = z.object({
+const targetHarnessSchema = z.object({
   workspaceId: z.string().min(1),
   harnessSlug: z.string().min(1),
+});
+
+const ownLogProbeSchema = targetHarnessSchema.extend({
   index: z.number().int().nonnegative(),
 });
 
 type OwnLogProbe = z.infer<typeof ownLogProbeSchema>;
+type TargetHarness = z.infer<typeof targetHarnessSchema>;
+
+/**
+ * Narrow every per-harness diagnostic array before dispatch-level result
+ * shaping. Aggregate fields (`bootedCount`, `summary`) intentionally remain
+ * workspace-wide; the filter exists so a caller that needs one exact row does
+ * not lose it when a large booted set crosses the result door.
+ */
+function filterToTargetHarness(
+  status: ReturnType<typeof getInProcessSubstrateStatus>,
+  target?: TargetHarness,
+): ReturnType<typeof getInProcessSubstrateStatus> {
+  if (!target) return status;
+  const matches = (row: { workspaceId: string; harnessSlug: string }): boolean =>
+    row.workspaceId === target.workspaceId && row.harnessSlug === target.harnessSlug;
+  return {
+    ...status,
+    harnesses: status.harnesses.filter(matches),
+    logStats: status.logStats.filter(matches),
+    replicationLiveness: status.replicationLiveness.filter(matches),
+    contentConnectivity: status.contentConnectivity.filter(matches),
+  };
+}
 
 /**
  * Attach one exact indexed own-log read to the existing status diagnostic.
@@ -128,7 +154,10 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
-  args: z.object({ ownLogProbe: ownLogProbeSchema.optional() }),
+  args: z.object({
+    ownLogProbe: ownLogProbeSchema.optional(),
+    targetHarness: targetHarnessSchema.optional(),
+  }),
   async handler(args) {
     const { sql } = getOrgPg();
     const runQuery = async <T,>(
@@ -202,12 +231,14 @@ export default defineTool({
           resolveRemoteBootedHandles,
         }),
       );
-      const output = await attachOwnLogProbe(refreshed, args.ownLogProbe);
+      const filtered = filterToTargetHarness(refreshed, args.targetHarness);
+      const output = await attachOwnLogProbe(filtered, args.ownLogProbe);
       return {
         content: [{ type: 'text', text: JSON.stringify(output) }],
       };
     }
-    const output = await attachOwnLogProbe(status, args.ownLogProbe);
+    const filtered = filterToTargetHarness(status, args.targetHarness);
+    const output = await attachOwnLogProbe(filtered, args.ownLogProbe);
     return {
       content: [{ type: 'text', text: JSON.stringify(output) }],
     };
