@@ -1698,6 +1698,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     const summary = await runTauriEvalJson<{
       runId: string;
       startedAt: number;
+      windowStartedAt?: number;
       durationMs: number;
       clicks: number;
       events: Array<{ kind: string; route: string; ts?: number; target?: string; inp?: number; duration?: number }>;
@@ -1747,8 +1748,8 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
       const errors = source.filter((ev) => ev.kind === 'console-error' || ev.kind === 'unhandled-error').length;
       const longTasks = source.filter((ev) => ev.kind === 'long-task').length;
       const routes = Object.keys(summary.value.routes || {});
-      const frameAt = typeof summary.value.maxFrameAtMs === 'number'
-        ? Number(summary.value.startedAt || 0) + summary.value.maxFrameAtMs
+      const frameAt = typeof summary.value.maxFrameAtMs === 'number' && typeof summary.value.windowStartedAt === 'number'
+        ? summary.value.windowStartedAt + summary.value.maxFrameAtMs
         : null;
       const precedingClick = frameAt === null
         ? undefined
