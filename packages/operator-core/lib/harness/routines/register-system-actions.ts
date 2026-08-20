@@ -387,6 +387,9 @@ import './claim-discipline-action';
 import './unguarded-halt-rescue-action';
 import './wake-brain-action';
 import './gym-actions';
+// Official app-template anti-rot runner. The active system:template-gym row
+// must never outlive its handler again (EI-18741229858124453).
+import './template-gym-action';
 import '../../interactive-usage/interactive-usage-action';
 // owner-inbox-single-pane-2026-07-17 P-002: client-agnostic session-gate
 // transcript watcher (AskUserQuestion/ExitPlanMode tool_use with no

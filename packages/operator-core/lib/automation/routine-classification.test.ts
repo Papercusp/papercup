@@ -40,18 +40,8 @@ describe('spendForTargetRole', () => {
     }
   });
 
-  // `system:template-gym` is a live target_role with NO registered handler — the
-  // tick logs "no handler registered … skipping" and the routine silently does
-  // nothing while presenting as running (EI-18741229858124453). Leaving it
-  // unclassified routes it to Needs-you instead of laundering the bug into an
-  // ordinary row; classifying it would hide it.
-  //
-  // `system:scout-cycle` USED to be in the same boat (EI-18741240128927188,
-  // `registerScoutCycleAction()` exported but never called) — now fixed
-  // (register-scout-action.ts self-registers it), so it gets a real classification
-  // below instead of staying in this unclassified group.
-  it('leaves the one unregistered-but-live role unclassified on purpose', () => {
-    expect(spendForTargetRole('system:template-gym')).toBe('unknown');
+  it('classifies system:template-gym now that its live row has a registered handler', () => {
+    expect(spendForTargetRole('system:template-gym')).toBe('none');
   });
 
   it('classifies system:scout-cycle now that it is registered (EI-18741240128927188)', () => {
@@ -211,16 +201,12 @@ describe('isClockDriven — who can be judged late', () => {
   // judged by the cadence — so every one of them read as stalled.
   it('judges a NON-routines row by its next fire alone, never its cadence', () => {
     expect(isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: null })).toBe(false);
-    expect(
-      isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: '2026-07-26T18:00:00.000Z' }),
-    ).toBe(true);
+    expect(isClockDriven({ source: 'other', kind: 'scheduled', nextFireAt: '2026-07-26T18:00:00.000Z' })).toBe(true);
   });
 
   it('never judges a triggered row, whatever its source', () => {
     expect(isClockDriven({ source: 'routines', kind: 'triggered', cron: '0 * * * * *' })).toBe(false);
-    expect(
-      isClockDriven({ source: 'other', kind: 'triggered', nextFireAt: '2026-07-26T18:00:00.000Z' }),
-    ).toBe(false);
+    expect(isClockDriven({ source: 'other', kind: 'triggered', nextFireAt: '2026-07-26T18:00:00.000Z' })).toBe(false);
   });
 
   // End-to-end shape of the regression: a managed timer must come out RUNNING.
@@ -258,9 +244,7 @@ describe('routineNeedsAttention', () => {
   });
 
   it('does not flag an INACTIVE unclassified row — it cannot fire, so it is just dormant', () => {
-    expect(
-      routineNeedsAttention({ ...base, spend: 'unknown', active: false, liveness: 'dormant' }),
-    ).toBe(false);
+    expect(routineNeedsAttention({ ...base, spend: 'unknown', active: false, liveness: 'dormant' })).toBe(false);
   });
 
   // Narrow on purpose: 750 dormant loop rows must not flood the bucket.
@@ -314,7 +298,16 @@ describe('routineFamily', () => {
   it('partitions every family across exactly one of the two panes', () => {
     const all = [...AGENT_FAMILY_ORDER, ...SYSTEM_FAMILY_ORDER];
     expect(new Set(all).size).toBe(all.length);
-    const names = ['loop-x', 'hive-wake', 'gym-cycle', 'doc-steward', 'git-sync', 'session-dir-gc', 'p2p-perf-tier1', 'whatever'];
+    const names = [
+      'loop-x',
+      'hive-wake',
+      'gym-cycle',
+      'doc-steward',
+      'git-sync',
+      'session-dir-gc',
+      'p2p-perf-tier1',
+      'whatever',
+    ];
     for (const n of names) {
       const fam = routineFamily(n, n.startsWith('loop-') ? 'loop' : 'scheduled');
       expect(all, `${n} → ${fam}`).toContain(fam);

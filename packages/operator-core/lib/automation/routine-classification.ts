@@ -180,8 +180,7 @@ const NO_CONTROL_COPY: Record<NoControlReason, string> = {
     'A central sweep on the in-process tier — declared in code rather than as a routine row, so it has no per-row switch yet.',
   'durable-workflow':
     'A DBOS scheduled workflow — its cadence is declared in code, so there is no row to toggle. Stopping it is a code change.',
-  'event-triggered':
-    'Fires on an event rather than a clock — there is no schedule to pause.',
+  'event-triggered': 'Fires on an event rather than a clock — there is no schedule to pause.',
   unknown: 'Not a routine row, so it has no switch in this pane.',
 };
 
@@ -265,16 +264,6 @@ export const SENTINEL_TARGET_ROLES: readonly string[] = ['system:loop-wake'];
  */
 export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   // ── spends ───────────────────────────────────────────────────────────────
-  // ⚠ `system:template-gym` is deliberately ABSENT. It is a live `target_role` value
-  // in harness_shared.routines on an ACTIVE row, but nothing registers it at boot, so
-  // the tick logs "no handler registered … skipping" and the routine silently does
-  // nothing while presenting as running. Classifying it here would launder that bug
-  // into a normal row; leaving it out makes it `unknown`, which routes it to
-  // Needs-you. Filed as EI-18741229858124453 — when it is wired, the registry
-  // cross-check will demand its classification.
-  // (`system:scout-cycle` was the SAME class of bug — EI-18741240128927188,
-  // `registerScoutCycleAction()` exported but never called — fixed by
-  // register-scout-action.ts's self-registration; classified below now that it's live.)
   'system:blueprint-run': { spend: 'llm', why: 'Launches a blueprint agent (the Mug/Cup hive launch path)' },
   'system:plan-run': { spend: 'llm', why: 'Mints a plan run and dispatches its items to agents' },
   'system:overwatch-launch': { spend: 'llm', why: 'Launches the overwatch (Kettle) session' },
@@ -289,6 +278,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
   'system:foreign-git-sync': { spend: 'none', why: 'Syncs a foreign (member) clone' },
   'system:green-checkpoint': { spend: 'none', why: 'Runs the gate suite and fast-forwards main' },
+  'system:template-gym': { spend: 'none', why: 'Runs deterministic template and reference-consumer checks' },
   'system:release-trigger': { spend: 'none', why: 'Deploys the green commit' },
   'system:pr-poll': { spend: 'none', why: 'Polls GitHub for PR state' },
   'system:cargo-test': { spend: 'none', why: 'Runs the Rust test suite' },
@@ -318,10 +308,13 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:gate-canary-sweep': { spend: 'none', why: 'Sweeps stale gate canaries' },
   'system:autoloop-release-readiness-monitor': { spend: 'none', why: 'Reads release-readiness state' },
   'system:doc-anchor-reconcile': { spend: 'none', why: 'Reconciles doc anchors against HEAD (sha compare)' },
-  'system:gitnexus-reindex': { spend: 'none', why: 'Shells out to `gitnexus analyze` to refresh the code graph — subprocess CPU/FS only' },
+  'system:gitnexus-reindex': {
+    spend: 'none',
+    why: 'Shells out to `gitnexus analyze` to refresh the code graph — subprocess CPU/FS only',
+  },
   'system:project-history-refresh': {
     spend: 'none',
-    why: 'Shells out to `papercusp project-history generate` to refresh a hive\'s committed History artifact — subprocess CPU/FS plus PG reads, no model call',
+    why: "Shells out to `papercusp project-history generate` to refresh a hive's committed History artifact — subprocess CPU/FS plus PG reads, no model call",
   },
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
   'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
@@ -378,7 +371,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: 'Measures raw SQL reads and records threshold crossings — deterministic SQL/FS work, no model call',
   },
   'system:interactive-usage-ingest': { spend: 'none', why: 'Tails local transcripts into usage samples (SQL/FS only)' },
-  'system:task-reconcile': { spend: 'none', why: 'REPORT-ONLY kernel-vs-ledger reconcile — no kill/freeze path exists' },
+  'system:task-reconcile': {
+    spend: 'none',
+    why: 'REPORT-ONLY kernel-vs-ledger reconcile — no kill/freeze path exists',
+  },
   'system:token-weekly-report': { spend: 'none', why: 'Aggregates usage into a report (SQL/FS only)' },
   'system:unclaimed-work-digest': { spend: 'none', why: 'Read-only: lists unclaimed items and posts a digest' },
   'system:improvement-human-digest': { spend: 'none', why: 'Ranks the human queue and sends it — no model' },
@@ -550,7 +546,8 @@ export function routineNeedsAttention(input: {
 
 const DOCS_FAMILY = /doc|^knowledge-pack-/i;
 const WAKE_FAMILY = /(^|-)wake($|-)/i;
-const LEARNING_FAMILY = /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|prospector|^oddsmith-|^scan$/i;
+const LEARNING_FAMILY =
+  /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|prospector|^oddsmith-|^scan$/i;
 const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-/i;
 const CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|precompute|^knowledge-pack-/i;
 const FEDERATION_FAMILY = /^p2p-|hive|foreign|outbox|federation/i;
@@ -588,9 +585,4 @@ export const FAMILY_LABEL: Readonly<Record<RoutineFamily, string>> = {
 export const AGENT_FAMILY_ORDER: readonly RoutineFamily[] = ['loops', 'wake', 'learning', 'docs'];
 
 /** Families that belong to the deterministic (System) pane, in display order. */
-export const SYSTEM_FAMILY_ORDER: readonly RoutineFamily[] = [
-  'git-release',
-  'cleanup',
-  'health',
-  'federation',
-];
+export const SYSTEM_FAMILY_ORDER: readonly RoutineFamily[] = ['git-release', 'cleanup', 'health', 'federation'];
