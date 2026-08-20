@@ -10,6 +10,8 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry } from '../../harness-registry';
+import { parseGithubUrl } from '../../harness/clone-github';
+import { fetchRepoPushPermission } from '../../harness/github-repo-permissions';
 import { checkGitSyncStall } from '../../release/git-sync-stall-watchdog';
 import { getPotGitMode, readPotGitMode, setPotGitMode, type PotGitMode } from '../../harness/git-sync/hive-git-mode';
 import { BRIDGE_CANONICAL_REF, BRIDGE_REMOTE_STAGING_REF } from './github-bridge-tick';
@@ -30,6 +32,7 @@ export const PHASE_E_MUTATION_SCHEMA = 'hive-git-physical-phase-e-mutation/v1' a
 export const PHASE_E_MODE_CHANGE_SCHEMA = 'hive-git-physical-phase-e-mode-change/v1' as const;
 export const PHASE_E_WATCHDOG_SCHEMA = 'hive-git-physical-phase-e-watchdog/v1' as const;
 export const PHASE_E_RECOVERY_SCHEMA = 'hive-git-physical-phase-e-recovery/v1' as const;
+export const PHASE_E_PREFLIGHT_SCHEMA = 'hive-git-physical-phase-e-preflight/v1' as const;
 export const PHASE_E_PLAN_ITEM = 'P-306' as const;
 
 const RUN_ID = /^[A-Za-z0-9._-]{8,120}$/;
@@ -152,6 +155,22 @@ export type PhysicalPhaseEWatchdogSweep = {
   recovered: string[];
 };
 
+export type PhysicalPhaseERemotePreflight = {
+  schemaVersion: typeof PHASE_E_PREFLIGHT_SCHEMA;
+  ready: true;
+  potHomeSlug: typeof PHASE_A_POT_HOME;
+  defaultBranch: string;
+  refs: {
+    canonicalStaging: string;
+    upstreamDefault: string;
+    forkStaging: string;
+  };
+  permissions: {
+    upstreamPush: true;
+    forkPush: true;
+  };
+};
+
 export type PhysicalPhaseEInput = {
   schemaVersion: typeof PHASE_E_INPUT_SCHEMA;
   runId: string;
@@ -220,6 +239,15 @@ type PhaseEDeps = {
   sql?: OrgSql;
   runGit?: RunGit;
   remoteContext?: RemoteContext;
+  loadRegistry?: () => Promise<{
+    projects: Array<{
+      slug: string;
+      github_remote?: string;
+      fork_remote?: string;
+      github_default_branch?: string;
+    }>;
+  }>;
+  fetchPushPermission?: (owner: string, repo: string) => Promise<boolean | null>;
   getMode?: typeof getPotGitMode;
   setMode?: typeof setPotGitMode;
 };
@@ -236,7 +264,8 @@ function assertDeviceKey(deviceKey: string): void {
 
 async function fixedRemoteContext(deps: PhaseEDeps = {}): Promise<RemoteContext> {
   if (deps.remoteContext) return deps.remoteContext;
-  const entry = (await loadHarnessRegistry()).projects.find((project) => project.slug === PHASE_A_POT_HOME);
+  const loadRegistry = deps.loadRegistry ?? loadHarnessRegistry;
+  const entry = (await loadRegistry()).projects.find((project) => project.slug === PHASE_A_POT_HOME);
   if (!entry?.github_remote || !entry.fork_remote) {
     throw new Error(`physical Phase E fixed canary ${PHASE_A_POT_HOME} requires both upstream and fork remotes`);
   }
@@ -265,6 +294,57 @@ async function remoteRef(runGit: RunGit, cwd: string, remote: string, ref: strin
   if (result.code !== 0) throw new Error(`physical Phase E cannot read fixed remote ${ref}: ${result.stderr.trim()}`);
   const oid = result.stdout.trim().split(/\s+/)[0] ?? '';
   return OID.test(oid) ? oid : null;
+}
+
+/**
+ * Fail closed on every fixed Phase E remote prerequisite before the outer
+ * physical wrapper makes its first SSH call. This is intentionally read-only:
+ * registry + authenticated permission reads, local rev-parse, and ls-remote.
+ */
+export async function preflightPhysicalPhaseERemotes(
+  deps: Pick<PhaseEDeps, 'runGit' | 'remoteContext' | 'loadRegistry' | 'fetchPushPermission'> = {},
+): Promise<PhysicalPhaseERemotePreflight> {
+  const runGit = deps.runGit ?? defaultRunGit;
+  const context = await fixedRemoteContext(deps);
+  const upstreamRepo = parseGithubUrl(context.upstream);
+  const forkRepo = parseGithubUrl(context.fork);
+  if (!upstreamRepo || !forkRepo) {
+    throw new Error(`physical Phase E fixed canary ${PHASE_A_POT_HOME} requires parseable GitHub upstream and fork remotes`);
+  }
+
+  const fetchPushPermission = deps.fetchPushPermission ?? fetchRepoPushPermission;
+  const [upstreamPush, forkPush] = await Promise.all([
+    fetchPushPermission(upstreamRepo.owner, upstreamRepo.repo),
+    fetchPushPermission(forkRepo.owner, forkRepo.repo),
+  ]);
+  if (upstreamPush !== true) {
+    throw new Error(`physical Phase E upstream push permission is ${upstreamPush === false ? 'denied' : 'unverified'}`);
+  }
+  if (forkPush !== true) {
+    throw new Error(`physical Phase E fork push permission is ${forkPush === false ? 'denied' : 'unverified'}`);
+  }
+
+  const upstreamDefaultRef = `refs/heads/${context.defaultBranch}`;
+  const [canonicalStaging, upstreamDefault, forkStaging] = await Promise.all([
+    rev(runGit, context.repoPath, BRIDGE_CANONICAL_REF),
+    remoteRef(runGit, context.repoPath, context.upstream, upstreamDefaultRef),
+    remoteRef(runGit, context.repoPath, context.fork, BRIDGE_REMOTE_STAGING_REF),
+  ]);
+  if (!canonicalStaging) throw new Error('physical Phase E fixed canonical staging ref is absent');
+  if (!upstreamDefault) throw new Error(`physical Phase E fixed upstream ${upstreamDefaultRef} is absent`);
+  if (!forkStaging) throw new Error(`physical Phase E fixed fork ${BRIDGE_REMOTE_STAGING_REF} is absent`);
+  if (forkStaging !== canonicalStaging) {
+    throw new Error('physical Phase E fixed fork staging must equal canonical staging before the drill');
+  }
+
+  return {
+    schemaVersion: PHASE_E_PREFLIGHT_SCHEMA,
+    ready: true,
+    potHomeSlug: PHASE_A_POT_HOME,
+    defaultBranch: context.defaultBranch,
+    refs: { canonicalStaging, upstreamDefault, forkStaging },
+    permissions: { upstreamPush: true, forkPush: true },
+  };
 }
 
 async function routine(sql: OrgSql): Promise<PhysicalPhaseERoutine> {

@@ -751,6 +751,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_VM_SOURCE="$remote_source"');
     expect(physicalProbe).toContain("if [ \"${1:-}\" = '--source-preflight' ]");
     expect(physicalProbe).toContain('hive-git-physical-source-preflight/v1');
+    expect(physicalProbe).toContain('"$TSX" "$PRODUCER" phase-e-preflight');
+    expect(physicalProbe.indexOf('"$TSX" "$PRODUCER" phase-e-preflight')).toBeLessThan(
+      physicalProbe.indexOf('ssh "${SSH_OPTS[@]}"'),
+    );
     expect(physicalProbe.indexOf('hive-git-physical-source-preflight/v1')).toBeLessThan(
       physicalProbe.indexOf('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"'),
     );

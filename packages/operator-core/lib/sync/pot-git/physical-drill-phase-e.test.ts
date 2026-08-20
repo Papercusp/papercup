@@ -7,6 +7,7 @@ import {
   PHASE_E_OBSERVATION_SCHEMA,
   PHASE_E_RECOVERY_SCHEMA,
   PHASE_E_WATCHDOG_SCHEMA,
+  preflightPhysicalPhaseERemotes,
   setPhysicalPhaseEMode,
   validatePhysicalPhaseE,
   type PhysicalPhaseEInput,
@@ -24,6 +25,12 @@ const D = 'd'.repeat(40);
 const E = 'e'.repeat(40);
 const START = '2026-08-13T20:00:00.000Z';
 const END = '2026-08-13T21:00:00.000Z';
+const REMOTE_CONTEXT = {
+  repoPath: '/fixed/hello-world-3-pot.git',
+  upstream: 'https://github.com/papercupai/hello-world-3-pot.git',
+  fork: 'https://github.com/aviynw/hello-world-3-pot.git',
+  defaultBranch: 'staging',
+};
 
 function trigger(
   host: 'tower' | 'vm',
@@ -230,6 +237,75 @@ function validInput(): PhysicalPhaseEInput {
 }
 
 describe('validatePhysicalPhaseE', () => {
+  it('preflights fixed remotes and exact starting refs without a mutating git command', async () => {
+    const calls: string[][] = [];
+    const permissions: string[] = [];
+    const runGit = async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === 'rev-parse') return { code: 0, stdout: `${C}\n`, stderr: '' };
+      if (args[0] === 'ls-remote' && args[3] === 'refs/heads/staging') {
+        return { code: 0, stdout: `${args[2] === REMOTE_CONTEXT.fork ? C : A}\t${args[3]}\n`, stderr: '' };
+      }
+      return { code: 1, stdout: '', stderr: 'unexpected git command' };
+    };
+
+    await expect(preflightPhysicalPhaseERemotes({
+      remoteContext: REMOTE_CONTEXT,
+      runGit,
+      fetchPushPermission: async (owner, repo) => {
+        permissions.push(`${owner}/${repo}`);
+        return true;
+      },
+    })).resolves.toMatchObject({
+      ready: true,
+      defaultBranch: 'staging',
+      refs: { canonicalStaging: C, upstreamDefault: A, forkStaging: C },
+      permissions: { upstreamPush: true, forkPush: true },
+    });
+    expect(permissions).toEqual([
+      'papercupai/hello-world-3-pot',
+      'aviynw/hello-world-3-pot',
+    ]);
+    expect(calls.every((args) => args[0] === 'rev-parse' || args[0] === 'ls-remote')).toBe(true);
+  });
+
+  it('rejects a missing fixed fork before any git or permission probe', async () => {
+    let gitCalls = 0;
+    let permissionCalls = 0;
+    await expect(preflightPhysicalPhaseERemotes({
+      loadRegistry: async () => ({
+        projects: [{
+          slug: 'hello-world-3-pot',
+          github_remote: REMOTE_CONTEXT.upstream,
+          github_default_branch: 'staging',
+        }],
+      }),
+      runGit: async () => {
+        gitCalls += 1;
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      fetchPushPermission: async () => {
+        permissionCalls += 1;
+        return true;
+      },
+    })).rejects.toThrow('requires both upstream and fork remotes');
+    expect(gitCalls).toBe(0);
+    expect(permissionCalls).toBe(0);
+  });
+
+  it('rejects unverified write permission before inspecting refs', async () => {
+    let gitCalls = 0;
+    await expect(preflightPhysicalPhaseERemotes({
+      remoteContext: REMOTE_CONTEXT,
+      runGit: async () => {
+        gitCalls += 1;
+        return { code: 0, stdout: '', stderr: '' };
+      },
+      fetchPushPermission: async (owner) => owner === 'papercupai' ? true : null,
+    })).rejects.toThrow('physical Phase E fork push permission is unverified');
+    expect(gitCalls).toBe(0);
+  });
+
   it('refuses a non-Phase-E starting mode before writing the production setting', async () => {
     let writes = 0;
     await expect(setPhysicalPhaseEMode(

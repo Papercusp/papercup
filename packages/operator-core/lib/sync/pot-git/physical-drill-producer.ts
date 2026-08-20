@@ -47,6 +47,7 @@ import {
   capturePhysicalPhaseEObservation,
   createPhysicalPhaseEDivergence,
   createPhysicalPhaseEIngress,
+  preflightPhysicalPhaseERemotes,
   restorePhysicalPhaseEDivergence,
   runPhysicalPhaseEWatchdogSweep,
   setPhysicalPhaseEMode,
@@ -442,6 +443,12 @@ async function cli(argv: string[]): Promise<unknown> {
     }
     return setPhysicalPhaseEMode({ runId, mode: nextMode });
   }
+  if (mode === 'phase-e-preflight') {
+    if (args.length !== 0) {
+      throw new Error('usage: physical-drill-producer phase-e-preflight');
+    }
+    return preflightPhysicalPhaseERemotes();
+  }
   if (mode === 'phase-e-observe') {
     const [hostId, stage, deviceKey, runId] = args;
     if (
@@ -548,7 +555,7 @@ async function cli(argv: string[]): Promise<unknown> {
     return { ok: true, runId: artifacts.evidence.runId, evidencePath, trustPath };
   }
   throw new Error(
-    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, sign, or finalize',
+    'physical-drill-producer: mode must be identity, preflight, phase-a-observe, phase-a-quarantine, phase-a-verify, phase-b-observe, phase-b-commit, phase-b-verify, phase-c-run, phase-c-verify, phase-d-commit, phase-d-dirty, phase-d-request, phase-d-ratify, phase-d-event, phase-d-observe, phase-d-verify, phase-e-preflight, phase-e-mode, phase-e-observe, phase-e-ingress, phase-e-diverge, phase-e-recover, phase-e-watchdog, phase-e-verify, phase-f-run, phase-f-verify, phase-g-run, phase-g-verify, sign, or finalize',
   );
 }
 
