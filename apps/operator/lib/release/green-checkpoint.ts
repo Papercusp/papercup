@@ -3130,7 +3130,7 @@ export function inferFailingFilesFromEntries(
       entries
         .map((entry) => entry.trim())
         .filter((entry) =>
-          /^lib\/\S+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry),
+          entry.startsWith("lib/") && FAILING_TEST_FILE_SHAPE.test(entry),
         ),
     ),
   ];
