@@ -23,7 +23,9 @@
  *   1. release-local.sh's assembled-bundle gate runs AFTER every bin/stage-*.sh
  *      call (they write into the bundle) and BEFORE the first platform leg launches.
  *   2. build-desktop-sidecar.sh's release scan is the LAST thing that touches
- *      $SIDECAR_DIR — nothing is copied in after it.
+ *      payload bytes in $SIDECAR_DIR. The sole permitted post-scan write is the
+ *      fixed-schema success attestation in .sidecar-build-stamp; nothing is copied
+ *      in after the scan.
  *   3. Every gate uses the SAME scanner (audit-release-bundle.py --scan-dir), so a
  *      second, drifting identity rule cannot appear.
  *
@@ -84,6 +86,7 @@ const LEG_RE = /\[parallel\]\s+launching Linux|npx --yes -p @tauri-apps\/cli/;
 const SIDECAR_WRITE_RE =
   /(?:^|[|;&(]|\s)(?:cp|mkdir|install|tar|ln|mv|rsync|chmod|touch)\s[^\n]*\$(?:SIDECAR_DIR|HARNESS_DST)|>\s*"\$(?:SIDECAR_DIR|HARNESS_DST)/;
 const SIDECAR_SCAN_RE = /audit-release-bundle\.py"?\s+--scan-dir\s+"\$SIDECAR_DIR"/;
+const SIDECAR_AUDIT_ATTEST_RE = /stamp\.releaseIdentityAudit\s*=\s*\{/;
 
 /** Bundled resource roots (from tauri.conf.json) the gate's argument list does NOT scan. */
 const unscannedRoots = (gateLine: string, roots: string[]): string[] =>
@@ -161,7 +164,7 @@ describe('release-local.sh: the assembled-bundle identity gate is positioned to 
   });
 });
 
-describe('build-desktop-sidecar.sh: the release identity scan is the last word on the sidecar', () => {
+describe('build-desktop-sidecar.sh: the release identity scan is the last word on sidecar payload', () => {
   const src = readScript('build-desktop-sidecar.sh');
 
   it('scans the assembled sidecar, release-gated', () => {
@@ -172,7 +175,7 @@ describe('build-desktop-sidecar.sh: the release identity scan is the last word o
     expect(window, 'the scan must be fail-closed').toMatch(/exit 1/);
   });
 
-  it('has NO further write into $SIDECAR_DIR below it', () => {
+  it('has NO further payload write into $SIDECAR_DIR below it', () => {
     const scan = findLines(src, SIDECAR_SCAN_RE)[0];
     const writesAfter = findLines(src, SIDECAR_WRITE_RE).filter((n) => n > scan);
     expect(
@@ -181,6 +184,18 @@ describe('build-desktop-sidecar.sh: the release identity scan is the last word o
         'Anything copied in below the scan ships unscanned by it — the exact shape that let a leaked owner ' +
         'handle reach sidecar/harness/** unseen (EI-20304355477263736). Move the scan below the last write.',
     ).toEqual([]);
+  });
+
+  it('writes only a fixed-schema success attestation after the scan passes', () => {
+    const scan = findLines(src, SIDECAR_SCAN_RE)[0];
+    const attest = findLines(src, SIDECAR_AUDIT_ATTEST_RE);
+    expect(attest, 'the final identity scan must leave a consumer-verifiable attestation').toHaveLength(1);
+    expect(attest[0], 'an attestation written before the scan would attest intent, not success').toBeGreaterThan(scan);
+    const window = src.split('\n').slice(attest[0] - 1, attest[0] + 8).join('\n');
+    expect(window).toMatch(/schemaVersion:\s*1/);
+    expect(window).toMatch(/passed:\s*true/);
+    expect(window).toMatch(/scanner:\s*'audit-release-bundle\.py --scan-dir'/);
+    expect(window).toMatch(/fs\.renameSync\(tmpPath, stampPath\)/);
   });
 
   it('control: the write-after-scan check FAILS on a script that copies in after scanning', () => {
