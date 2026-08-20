@@ -22,8 +22,10 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+  FILE_ADAPTERS,
   parseClaudeParts,
   parseClaudeLine,
+  parseCodexParts,
   cleanPartText,
   redactPartSecrets,
   partRowsFrom,
@@ -107,6 +109,63 @@ describe('parseClaudeParts — fidelity', () => {
     expect(parseClaudeParts(JSON.stringify({ type: 'summary' }))).toEqual([]);
     expect(parseClaudeParts(JSON.stringify({ type: 'assistant' }))).toEqual([]);
     expect(parseClaudeParts(assistantLine('a plain string body'))[0].partKind).toBe('text');
+  });
+});
+
+describe('parseCodexParts — fidelity', () => {
+  const responseItem = (payload: Record<string, unknown>, timestamp = '2026-08-20T19:44:10.656Z') =>
+    JSON.stringify({ type: 'response_item', timestamp, payload });
+
+  it('stores the exact native-only assistant marker that drives P-011 freshness', () => {
+    const parts = parseCodexParts(responseItem({
+      type: 'message',
+      role: 'assistant',
+      content: [{ type: 'output_text', text: 'NATIVE_ONLY_P011_READY_3' }],
+    }));
+
+    expect(parts).toEqual([{
+      ts: new Date('2026-08-20T19:44:10.656Z'),
+      speaker: 'assistant',
+      partKind: 'text',
+      toolName: null,
+      text: 'NATIVE_ONLY_P011_READY_3',
+    }]);
+  });
+
+  it('maps tool calls, results, and readable reasoning summaries without losing speaker provenance', () => {
+    const parts = [
+      ...parseCodexParts(responseItem({
+        type: 'function_call', namespace: 'mcp__papercusp_su', name: 'coord_presence',
+        arguments: '{"owner":"su-1"}',
+      })),
+      ...parseCodexParts(responseItem({ type: 'custom_tool_call', name: 'apply_patch', input: '*** Begin Patch' })),
+      ...parseCodexParts(responseItem({ type: 'function_call_output', output: 'done' })),
+      ...parseCodexParts(responseItem({ type: 'reasoning', summary: [{ text: 'weigh the evidence' }] })),
+    ];
+
+    expect(parts.map((part) => part.partKind)).toEqual([
+      'tool_use', 'tool_use', 'tool_result', 'thinking',
+    ]);
+    expect(parts.map((part) => part.speaker)).toEqual([
+      'assistant', 'assistant', 'user', 'assistant',
+    ]);
+    expect(parts[0]).toMatchObject({ toolName: 'mcp__papercusp_su.coord_presence' });
+    expect(parts[1]).toMatchObject({ toolName: 'apply_patch', text: '*** Begin Patch' });
+    expect(parts[2].text).toBe('done');
+    expect(parts[3].text).toBe('weigh the evidence');
+  });
+
+  it('skips malformed, meta, and duplicate event_msg records', () => {
+    expect(parseCodexParts('not json')).toEqual([]);
+    expect(parseCodexParts(JSON.stringify({ type: 'session_meta', payload: {} }))).toEqual([]);
+    expect(parseCodexParts(JSON.stringify({
+      type: 'event_msg', payload: { type: 'agent_message', message: 'duplicate' },
+    }))).toEqual([]);
+  });
+
+  it('is wired into the Codex ingest adapter so the cursor cannot advance without parts', () => {
+    const codex = FILE_ADAPTERS.find((adapter) => adapter.sourceKind === 'codex');
+    expect(codex?.parseParts).toBe(parseCodexParts);
   });
 });
 

@@ -471,6 +471,117 @@ export function parseCodexLine(line: string): ParsedTurn | null {
   return { ts: parseTs(obj.timestamp), speaker, text };
 }
 
+/**
+ * Codex rollout line → FAITHFUL parts.
+ *
+ * Codex writes each renderable item as its own `response_item`: message text,
+ * tool calls, tool results, and readable reasoning summaries.  The turn parser
+ * above deliberately keeps only message text for recall; this companion keeps
+ * the full renderable stream for `session_turn_parts`, matching the Claude
+ * adapter's separation contract.
+ *
+ * `event_msg/agent_message` is intentionally ignored because it duplicates the
+ * canonical `response_item/message` record in current Codex rollouts.  Storing
+ * both would double every assistant message and make freshness appear newer
+ * than the actual model turn.
+ */
+export function parseCodexParts(line: string): ParsedPart[] {
+  let obj: Record<string, unknown>;
+  try {
+    obj = JSON.parse(line) as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  if (obj.type !== 'response_item') return [];
+
+  const payload = obj.payload as {
+    type?: string;
+    role?: string;
+    content?: unknown;
+    name?: unknown;
+    namespace?: unknown;
+    arguments?: unknown;
+    input?: unknown;
+    query?: unknown;
+    output?: unknown;
+    summary?: unknown;
+  } | undefined;
+  if (!payload || typeof payload.type !== 'string') return [];
+
+  const ts = parseTs(obj.timestamp);
+  const out: ParsedPart[] = [];
+  const push = (
+    speaker: 'user' | 'assistant',
+    partKind: PartKind,
+    raw: string,
+    toolName?: string | null,
+  ) => {
+    const text = cleanPartText(raw, partKind);
+    // Preserve an argument-less tool call: its name is still a real event.
+    if (!text.trim() && partKind !== 'tool_use') return;
+    out.push({ ts, speaker, partKind, toolName: toolName ?? null, text });
+  };
+
+  if (payload.type === 'message') {
+    const speaker = payload.role === 'user'
+      ? 'user'
+      : payload.role === 'assistant'
+        ? 'assistant'
+        : null;
+    if (!speaker) return [];
+    if (typeof payload.content === 'string') {
+      push(speaker, 'text', payload.content);
+      return out;
+    }
+    if (!Array.isArray(payload.content)) return out;
+    for (const block of payload.content) {
+      if (!block || typeof block !== 'object') continue;
+      const part = block as { type?: string; text?: unknown };
+      if (
+        (part.type === 'text' || part.type === 'input_text' || part.type === 'output_text') &&
+        typeof part.text === 'string'
+      ) {
+        push(speaker, 'text', part.text);
+      }
+    }
+    return out;
+  }
+
+  if (
+    payload.type === 'function_call' ||
+    payload.type === 'custom_tool_call' ||
+    payload.type === 'tool_search_call'
+  ) {
+    const namespace = typeof payload.namespace === 'string' && payload.namespace
+      ? `${payload.namespace}.`
+      : '';
+    const name = typeof payload.name === 'string' && payload.name
+      ? payload.name
+      : payload.type;
+    push(
+      'assistant',
+      'tool_use',
+      partPayloadText(payload.arguments ?? payload.input ?? payload.query),
+      `${namespace}${name}`,
+    );
+    return out;
+  }
+
+  if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+    push('user', 'tool_result', partPayloadText(payload.output));
+    return out;
+  }
+
+  if (payload.type === 'reasoning' && Array.isArray(payload.summary)) {
+    const summary = (payload.summary as Array<{ text?: unknown } | string>)
+      .map((part) => (typeof part === 'string' ? part : typeof part?.text === 'string' ? part.text : ''))
+      .filter(Boolean)
+      .join(' ');
+    push('assistant', 'thinking', summary);
+  }
+  return out;
+}
+
 /* ------------------------------------------------------------------ */
 /* Per-client line CLASSIFIERS (EI-9970) — every raw line, not just the  */
 /* ones parseXLine turns into a stored session_turns row.                */
@@ -640,10 +751,9 @@ interface FileAdapter {
    * the line, in order, for the FAITHFUL `session_turn_parts` companion store.
    * A strict superset of parseLine's scope.
    *
-   * Optional: only the claude adapter implements it today, because claude is
-   * the only source whose history pane is being flipped to the DB. An adapter
-   * without it simply contributes no parts — its pane keeps reading the file,
-   * exactly as before, with no behavior change and no empty-render risk.
+   * Optional: Claude and Codex implement it today. An adapter without it simply
+   * contributes no parts — its pane keeps reading the file, exactly as before,
+   * with no behavior change and no empty-render risk.
    */
   parseParts?: (line: string) => ParsedPart[];
   /** Best-effort provenance derived from the file path. */
@@ -829,6 +939,7 @@ export const FILE_ADAPTERS: FileAdapter[] = [
     ],
     parseLine: parseCodexLine,
     classifyLine: classifyCodexLine,
+    parseParts: parseCodexParts,
     meta: codexTranscriptMeta,
   },
 ];
