@@ -1620,6 +1620,24 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     },
   },
   {
+    // EI-20820551755839769 — the live-schema half of the prose-vector contract was a
+    // correct detector with no route from the change class it polices. A migration can
+    // add a harness_shared vector column at the stale width, while every unit test stays
+    // green; this integration test is the only guard that enumerates the schema produced
+    // by the committed migrations and rejects an unaccounted vector column.
+    //
+    // Run ONLY that contract, not operator-core's whole integration tier. The focused
+    // target still uses vitest.integration.config.ts, so it receives the baseline-schema
+    // globalSetup and measures the real migrated catalog.
+    workspace: "@papercusp/operator-core",
+    script: "test:integration:prose-vector-dims",
+    appliesTo: (f) =>
+      f.startsWith(`${MIGRATION_SQL_DIR}/`) &&
+      (f.endsWith(".sql") ||
+        f.endsWith(".sql.DRAFT") ||
+        f.endsWith(".sql.PENDING-CODE-DEPLOY")),
+  },
+  {
     // WI-4311 — the D-034 shape again, with the most delayed discovery of the set.
     // The canonical fix (WITH (FORCE) in makeDrop(), libs/test-config/src/pg-migrate.ts)
     // landed 2026-07-12, but four hand-rolled teardown sites kept the old

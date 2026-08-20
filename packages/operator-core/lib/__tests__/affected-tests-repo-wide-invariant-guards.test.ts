@@ -439,6 +439,53 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
 });
 
 /**
+ * EI-20820551755839769 — migration edits must run the LIVE-SCHEMA half of the
+ * prose-vector width contract. The detector already enumerates every vector column in
+ * harness_shared and rejects an unaccounted surface; this block proves the affected-test
+ * router actually places that detector where a new column enters the schema.
+ */
+describe('affected-tests: prose-vector live-schema guard (EI-20820551755839769)', () => {
+  const SCRIPT = 'test:integration:prose-vector-dims';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+  const MIGRATION_PATH = `${MIGRATION_SQL_DIR}/999-add-vector-surface.sql`;
+
+  it('attaches the focused live-schema guard for a migration SQL change', () => {
+    const out = dryTasks(MIGRATION_PATH);
+    expect(
+      out,
+      'a migration can add an unenumerated or stale-width vector column while every unit ' +
+        'test stays green; the focused integration contract must inspect the migrated catalog',
+    ).toContain(TASK);
+  });
+
+  it('STILL attaches when operator-core unit tests are selected', () => {
+    const out = dryTasks(MIGRATION_PATH);
+    expect(out, 'the host workspace should be independently affected by this path').toContain(
+      `${HOST_WORKSPACE} :: test`,
+    );
+    expect(
+      out,
+      'operator-core test excludes *.integration.test.ts, so its unit suite cannot replace ' +
+        'the focused live-schema task',
+    ).toContain(TASK);
+  });
+
+  it('does NOT attach for a migration-looking SQL file outside the migration directory', () => {
+    expect(dryTasks('apps/operator/docs/examples/999-add-vector-surface.sql')).not.toContain(TASK);
+  });
+
+  it('keeps the focused script declared with the integration config and exact contract file', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    const command = pkg.scripts?.[SCRIPT];
+    expect(command, `missing ${HOST_WORKSPACE} script ${SCRIPT}`).toBeTruthy();
+    expect(command).toContain('vitest.integration.config.ts');
+    expect(command).toContain('lib/search/prose-vector-dims.integration.test.ts');
+  });
+});
+
+/**
  * WI-38351 — the SAME class as the forward-compat guard above, on the SAME corpus, found
  * the same way: `lint:migrations` was a gate-only lint, so the author of a bad migration
  * saw a green `npm run test:affected` and the fleet learned about it hours later as a red
