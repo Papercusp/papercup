@@ -1756,6 +1756,14 @@
                 "papercusp-desktop/bin/lib/disk-preflight.selftest.sh"
               ],
               "label": "Build disk preflight: refuses ENOSPC(28) up front, fails open when unmeasurable, and every staging entry point calls it (EI-20090527288494606)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/mac-vm-fresh-state.selftest.sh"
+              ],
+              "label": "macOS fresh-install state isolation: trap-restores both Papercusp roots across PASS/FAIL/TERM and refuses stale backups (EI-20332777704574867)"
             }
           ]
         }

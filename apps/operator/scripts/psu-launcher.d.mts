@@ -284,9 +284,9 @@ export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHoo
  * improve-fleet-launch-autokickoff (EI-5503): the TRAILING POSITIONAL kickoff arg(s)
  * to append to the backend CLI argv — the first user turn that makes a SCRIPTED plan
  * launch (a fleet/automation member) start working the plan immediately instead of
- * orienting once and parking idle. All three backends take a positional prompt that
- * keeps the session interactive (claude `[prompt]`, omp `… "prompt"`, codex `[PROMPT]`),
- * so this is the same for every agent.
+ * orienting once and parking idle. All three backends have a native first-turn
+ * seam, but fresh OMP UI sessions need the managed-pty barrier because asynchronous
+ * MCP discovery can still be assembling their prompt when OMP submits argv.
  *
  * Empty (today's behavior) unless ALL hold: the server supplied `res.kickoffPrompt`
  * (a plan is bound) · this is a `--no-picker` launch (`args.picker === false`) so an
@@ -318,18 +318,41 @@ export function kickoffPositionalArgs(res: any, args: any): any[];
  */
 export function resolveKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
 /**
+ * Route a scripted FRESH launch's first turn to the backend's safe delivery
+ * seam. Claude and Codex keep their native trailing positional prompt. OMP's
+ * UI session starts asynchronous MCP discovery, so its first turn must go
+ * through the managed pty's startup/output barrier instead of being submitted
+ * by OMP while its prompt is still being assembled (EI-20339142329504181).
+ *
+ * The returned kickoff is already provenance-tagged; callers pass it to
+ * runWrapper({ kickoff }) for OMP. Pure apart from the existing provenance
+ * ledger write performed by tagKickoffProvenance.
+ */
+export function routeFreshKickoff(backend: any, res: any, args: any, env?: NodeJS.ProcessEnv): {
+    positionalArgs: never[];
+    managedKickoff: any;
+    kickoffSeeded: boolean;
+} | {
+    positionalArgs: any[];
+    managedKickoff: null;
+    kickoffSeeded: boolean;
+};
+/**
  * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
- * an empty prompt forever. Keep the positional prompt last (after every flag),
- * tag it as machine-origin, and expose whether a turn was actually seeded so
- * the caller can report the launch honestly. Pure except for the existing
- * provenance-ledger write performed by tagKickoffProvenance.
+ * an empty prompt forever. Keep the native positional prompt last for
+ * Claude/Codex (after every flag); fresh OMP uses the managed-pty kickoff
+ * returned alongside the argv. Tag machine-origin turns and expose whether a
+ * turn was actually seeded so the caller can report the launch honestly. Pure
+ * except for the existing provenance-ledger write performed by
+ * tagKickoffProvenance.
  *
  * @param {any[]} launchArgs
  */
 export function finalizeFreshRoleArgs(backend: any, launchArgs: any[], res: any, args: any, env?: NodeJS.ProcessEnv): {
     args: any[];
+    kickoff: any;
     kickoffSeeded: boolean;
 };
 /**
@@ -1443,6 +1466,18 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
         estimator: string;
     };
 };
+/**
+ * WI-39948: Codex's code-mode bridge serializes the advertised tool surface into
+ * its per-call IPC request. With `contextSize:'full'`, Papercusp's full catalog
+ * currently produces a ~128 MiB frame, above the bridge's hard 64 MiB limit, so
+ * the session boots but EVERY tool call is rejected before execution. `--force`
+ * cannot make that transport valid; fail before spawning and point at the
+ * growable trimmed seed (tools:find/tools:invoke preserve full reachability).
+ */
+export function assertCodexToolTransport({ agent, contextSize }: {
+    agent?: string | undefined;
+    contextSize: any;
+}): void;
 /** Run both preflight guards before a launch; exits/throws per policy. */
 export function runLaunchPreflight({ promptFile, contextSize, model, agent, budget, force }: {
     promptFile: any;
