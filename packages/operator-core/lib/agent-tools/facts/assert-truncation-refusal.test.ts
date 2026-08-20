@@ -178,7 +178,7 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
         ctx,
       ),
     ).rejects.toThrow(/shareable.*federation scope|harness_slug/i);
-    expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith(undefined);
+    expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith(null);
     expect(assertFactSpy).not.toHaveBeenCalled();
   });
 
