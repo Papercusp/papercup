@@ -24,6 +24,7 @@ import {
   ensurePotGitRepo,
   writeNamespaceRef,
   readNamespaceRef,
+  deleteNamespaceRef,
 } from './storage';
 import {
   serveUploadPack,
@@ -140,6 +141,30 @@ describe('pot-git fetch transport (real upload-pack ↔ fetch over a duplex)', (
     const res = await fetchOverDuplex(clientRepo, conn, [peerNamespaceRefspec(devA)], { timeoutMs: 30_000 });
     expect(res.code, res.stderr).toBe(0);
     expect(await readNamespaceRef(clientRepo, devA, 'refs/heads/work')).toBe(sha2);
+  });
+
+  it('WI-39953: authoritative peer fetch prunes a receiver-only stale namespace ref', async () => {
+    const staleSha = await mintCommit(serverRepo, 'handoff that the peer later deleted');
+    await writeNamespaceRef(serverRepo, devA, 'refs/rad/handoff', staleSha);
+
+    const initial = await fetchPeerNamespace(clientRepo, await dialClient(), devA, { timeoutMs: 30_000 });
+    expect(initial.code, initial.stderr).toBe(0);
+    expect(await readNamespaceRef(clientRepo, devA, 'refs/rad/handoff')).toBe(staleSha);
+
+    // Negative control: after the authoritative peer deletes the ref, the
+    // receiver still has the exact stale state that broke strict Phase A.
+    await deleteNamespaceRef(serverRepo, devA, 'refs/rad/handoff');
+    expect(await readNamespaceRef(serverRepo, devA, 'refs/rad/handoff')).toBeNull();
+    expect(await readNamespaceRef(clientRepo, devA, 'refs/rad/handoff')).toBe(staleSha);
+
+    const refreshed = await fetchPeerNamespace(clientRepo, await dialClient(), devA, { timeoutMs: 30_000 });
+    expect(refreshed.code, refreshed.stderr).toBe(0);
+    expect(await readNamespaceRef(clientRepo, devA, 'refs/rad/handoff')).toBeNull();
+    // Pruning is scoped to the fetched peer namespace and leaves refs that the
+    // peer still advertises intact.
+    expect(await readNamespaceRef(clientRepo, devA, 'refs/heads/work')).toBe(
+      await readNamespaceRef(serverRepo, devA, 'refs/heads/work'),
+    );
   });
 
   /**

@@ -491,6 +491,11 @@ export interface FetchOverDuplexOptions {
    *  dragging in history nobody asked for and making a shallow rung's transfer
    *  size unpredictable. */
   noTags?: boolean;
+  /** Remove destination refs covered by the supplied refspec when the peer no
+   *  longer advertises them. Use only when the fetched refspec is an
+   *  authoritative mirror: ordinary one-off fetches must not delete local
+   *  receiver state. */
+  prune?: boolean;
 }
 
 export function fetchOverDuplex(
@@ -803,6 +808,7 @@ export function fetchOverDuplex(
         // (bootstrap.ts never does — its phase machine picks exactly one).
         const ladderArgs: string[] = [];
         if (opts.noTags) ladderArgs.push('--no-tags');
+        if (opts.prune) ladderArgs.push('--prune');
         if (opts.depth !== undefined) ladderArgs.push(`--depth=${opts.depth}`);
         else if (opts.deepen !== undefined) ladderArgs.push(`--deepen=${opts.deepen}`);
         else if (opts.unshallow) ladderArgs.push('--unshallow');
@@ -880,5 +886,12 @@ export function fetchPeerNamespace(
   peerDevicePubkeyBase64: string,
   opts?: { timeoutMs?: number },
 ): Promise<TransportResult> {
-  return fetchOverDuplex(localRepoPath, duplex, [peerNamespaceRefspec(peerDevicePubkeyBase64)], opts);
+  // This forced wildcard is an authoritative mirror of the peer-owned
+  // namespace. Rewrites already win via `+`; deletions must win as well, or a
+  // receiver-only stale ref survives forever and strict signed-snapshot
+  // convergence can never succeed (WI-39953).
+  return fetchOverDuplex(localRepoPath, duplex, [peerNamespaceRefspec(peerDevicePubkeyBase64)], {
+    ...opts,
+    prune: true,
+  });
 }
