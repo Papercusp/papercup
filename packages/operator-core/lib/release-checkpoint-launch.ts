@@ -198,6 +198,12 @@ export interface LaunchCheckpointResult {
 export interface ActiveCheckpointCheck {
   active: boolean;
   unit: string;
+  /** EI-20349211793685690: whether the stable unit log was readable and contained the
+   *  CLI's exact machine-readable terminal result line. Absent means the log could not be
+   *  read; `false` is therefore a measured no-verdict condition, not an unreadable-log guess.
+   *  This is reported on trusted post-unit exits while preserving `active:false` for a unit
+   *  that really finished. */
+  terminal_marker?: boolean;
   /** Stable symlink for the active manual run's output (`/tmp/<unit>.log`). Null/absent
    *  when liveness came only from the shared run lock (for example the hourly cron), because
    *  that process does not publish its output path through the manual systemd unit. Readers
@@ -447,6 +453,42 @@ function parseSystemctlShow(stdout: string): Record<string, string> {
     out[line.slice(0, eq)] = line.slice(eq + 1);
   }
   return out;
+}
+
+/** The marker printed by green-checkpoint.ts after every terminal result. Keep this literal
+ *  aligned with the producer and release-actions' parser; importing either higher-level module
+ *  would pull side effects into this low-level launcher. */
+const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+
+/** Return true only for the standalone production result line, with valid result JSON. Captured
+ *  suite fixtures are prefixed/defanged and must not turn a finished-unit probe into a verdict. */
+function hasCheckpointResultMarker(log: string | null): boolean {
+  if (!log) return false;
+  for (const line of log.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(GREEN_CHECKPOINT_RESULT_MARKER)) continue;
+    const payload = trimmed.slice(GREEN_CHECKPOINT_RESULT_MARKER.length);
+    if (!/^\s+/.test(payload)) continue;
+    try {
+      const parsed: unknown = JSON.parse(payload.trim());
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+      const result = parsed as Record<string, unknown>;
+      if (typeof result.reason === 'string' && Object.prototype.hasOwnProperty.call(result, 'green')) return true;
+    } catch {
+      // A partial/invalid marker is not terminal evidence.
+    }
+  }
+  return false;
+}
+
+/** Read the stable unit path only for a trusted post-unit transition. Null preserves the
+ *  distinction between an unreadable log and a readable log that contains no verdict. */
+function readTerminalMarker(
+  unit: string,
+  readLogTail: (logPath: string) => string | null,
+): boolean | undefined {
+  const log = readLogTail(checkpointLatestLogPath(unit));
+  return log == null ? undefined : hasCheckpointResultMarker(log);
 }
 
 function gitOutput(root: string, args: string[], execFn: ExecSyncLike): string | null {
@@ -900,14 +942,24 @@ export function checkActiveCheckpointRun(
         held_externally: true,
       };
     }
-    return { active: false, unit };
+    const terminalMarker = readTerminalMarker(unit, readLogTail);
+    return {
+      active: false,
+      unit,
+      ...(terminalMarker === undefined ? {} : { terminal_marker: terminalMarker }),
+    };
   }
   // EI-9180 self-heal: MainPID=0 means systemd has no main process to report (nothing to
   // cross-check — fall through and trust ActiveState as before). A NONZERO MainPID that
   // `kill(pid, 0)` proves is gone means systemd's ActiveState is stale — don't trust it.
   const mainPid = Number(props.MainPID ?? '0');
   if (Number.isFinite(mainPid) && mainPid > 0 && !pidAlive(mainPid)) {
-    return { active: false, unit };
+    const terminalMarker = readTerminalMarker(unit, readLogTail);
+    return {
+      active: false,
+      unit,
+      ...(terminalMarker === undefined ? {} : { terminal_marker: terminalMarker }),
+    };
   }
   const startedAt =
     props.ExecMainStartTimestamp && props.ExecMainStartTimestamp !== '' ? props.ExecMainStartTimestamp : null;
