@@ -23,6 +23,10 @@ const h = vi.hoisted(() => ({
    *  Empty by default: "no superseding message found" (the pre-existing-
    *  behavior default). */
   supersedeRows: [] as unknown[],
+  /** EI-20760420701985610: a later unthreaded recipient message is a
+   *  reply-equivalent answer, queried from coord_event_log separately from
+   *  the due-row and sender-side supersede fixtures. */
+  recipientReplyRows: [] as unknown[],
   sqlCalls: [] as unknown[][],
   /** Per-test override of the whole dispatch (e.g. to simulate a probe
    *  failure) — null means "use the default rows/threadRows/supersedeRows
@@ -38,6 +42,7 @@ vi.mock('@papercusp/db-org', () => ({
         if (h.sqlImpl) return h.sqlImpl(strings, ...values);
         const text = strings.join('');
         if (text.includes('coord_thread_posts')) return Promise.resolve(h.threadRows);
+        if (text.includes('recipient-reply-check')) return Promise.resolve(h.recipientReplyRows);
         if (text.includes('supersede-check')) return Promise.resolve(h.supersedeRows);
         return Promise.resolve(h.rows);
       },
@@ -59,17 +64,19 @@ import {
 
 const NOW = Date.parse('2026-07-10T12:00:00Z');
 
-function row(over: Partial<{
-  workspace_id: string;
-  msg_id: string;
-  from_id: string;
-  to_ids: unknown;
-  summary: string | null;
-  body: string | null;
-  plan_slug: string | null;
-  deadline_at: string;
-  sent_at_ms: string;
-}> = {}) {
+function row(
+  over: Partial<{
+    workspace_id: string;
+    msg_id: string;
+    from_id: string;
+    to_ids: unknown;
+    summary: string | null;
+    body: string | null;
+    plan_slug: string | null;
+    deadline_at: string;
+    sent_at_ms: string;
+  }> = {},
+) {
   return {
     workspace_id: 'default',
     msg_id: 'm1',
@@ -94,11 +101,23 @@ function threadRow(over: Partial<{ thread_id: string; author_id: string; posted_
   };
 }
 
+/** EI-20760420701985610: a later fresh coord message from the awaited
+ * recipient back to the original sender, without related_msg_id. */
+function recipientReplyRow(over: Partial<{ msg_id: string; author_id: string; ts_ms: string }> = {}) {
+  return {
+    msg_id: 'm2',
+    author_id: 'su-recipient',
+    ts_ms: String(NOW - 10 * 60_000), // sent 10m ago, after the default ask
+    ...over,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.rows = [];
   h.threadRows = [];
   h.supersedeRows = [];
+  h.recipientReplyRows = [];
   h.sqlCalls = [];
   h.sqlImpl = null;
 });
@@ -189,6 +208,62 @@ describe('runReplyDeadlineSweepOnce', () => {
     expect(h.sqlCalls.length).toBeGreaterThan(0);
     expect(h.sqlCalls[0]).toContain(NOW);
     expect(REPLY_DEADLINE_SWEEP_BATCH_LIMIT).toBeGreaterThan(0);
+  });
+
+  // EI-20760420701985610: a recipient's fresh, unthreaded coord response
+  // must suppress the stale deadline alarm just like an exact threaded reply.
+  describe('unthreaded recipient reply (EI-20760420701985610)', () => {
+    it('auto-resolves — quiet note, no alarm, no wake — for a later directed response', async () => {
+      h.rows = [row()];
+      h.recipientReplyRows = [recipientReplyRow()];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 1, superseded: 0, truncated: false });
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const [identity, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(identity.ownerId).toBe(RECONCILE_REPLY_DEADLINE_OWNER);
+      expect(opts.to).toEqual(['su-sender']);
+      expect(opts.related_msg_id).toBe('m1');
+      expect(opts.summary).toContain('auto-resolved');
+      expect(opts.summary).not.toContain('no reply by deadline');
+      expect(opts.body).toContain('m2');
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('does not suppress on a stale response that predates the original ask', async () => {
+      h.rows = [row({ sent_at_ms: String(NOW - 5 * 60_000) })];
+      h.recipientReplyRows = [recipientReplyRow({ ts_ms: String(NOW - 60 * 60_000) })];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
+
+    it('passes the original send timestamp as the recipient-reply lower bound', async () => {
+      h.rows = [row({ sent_at_ms: String(NOW - 42 * 60_000) })];
+      h.recipientReplyRows = [];
+      await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      const replyQueryValues = h.sqlCalls.find((c) => c.includes(NOW - 42 * 60_000));
+      expect(replyQueryValues).toBeDefined();
+    });
+
+    it('a recipient-reply probe failure fails soft to the ordinary alarm path', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      h.rows = [row()];
+      h.sqlImpl = (strings) => {
+        const text = strings.join('');
+        if (text.includes('supersede-check')) return Promise.resolve([]);
+        if (text.includes('recipient-reply-check')) return Promise.reject(new Error('probe down'));
+        if (text.includes('coord_thread_posts')) return Promise.resolve([]);
+        return Promise.resolve(h.rows);
+      };
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result.nudged).toBe(1);
+      expect(result.autoResolved).toBe(0);
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
   });
 
   // EI-13610: reply-equivalent thread activity (the awaited recipient answered

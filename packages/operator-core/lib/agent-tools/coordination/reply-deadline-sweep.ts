@@ -120,10 +120,7 @@ interface DueReplyDeadlineRow {
  * selected at most once). Oldest-overdue first so a batch-limited sweep
  * drains the longest-waiting first.
  */
-async function findDueReplyDeadlines(
-  nowMs: number,
-  limit: number,
-): Promise<DueReplyDeadline[]> {
+async function findDueReplyDeadlines(nowMs: number, limit: number): Promise<DueReplyDeadline[]> {
   const { sql } = getOrgPg();
   const rows = await sql<DueReplyDeadlineRow[]>`
     SELECT e1.workspace_id,
@@ -161,7 +158,9 @@ async function findDueReplyDeadlines(
     .filter((r) => typeof r.from_id === 'string' && r.from_id)
     .map((r) => {
       const deadlineMs = Number(r.deadline_at);
-      const to = Array.isArray(r.to_ids) ? (r.to_ids as unknown[]).filter((t): t is string => typeof t === 'string') : [];
+      const to = Array.isArray(r.to_ids)
+        ? (r.to_ids as unknown[]).filter((t): t is string => typeof t === 'string')
+        : [];
       const sentAtMs = Number(r.sent_at_ms);
       return {
         workspaceId: r.workspace_id,
@@ -230,6 +229,67 @@ async function findSupersedingMessage(
   return { msgId: r.msg_id, sentAtMs: Number.isFinite(ts) ? ts : sentAtMs };
 }
 
+export interface UnthreadedRecipientReply {
+  /** The later message's own msg_id (for the auto-resolved note's prose). */
+  msgId: string;
+  /** The awaited recipient who authored the message. */
+  authorId: string;
+  /** When the recipient sent it (epoch ms). */
+  sentAtMs: number;
+}
+
+/**
+ * EI-20760420701985610: did an awaited recipient send a LATER, unthreaded
+ * directed message back to the original sender? The coord inbox/reply-wake
+ * path allows a recipient to answer in a fresh message (and the live incident
+ * did exactly that), so an exact `related_msg_id` anti-join alone can still
+ * alarm about an answered ask. Mirror unanswered-directed.ts's established
+ * loose-reply semantics: only a message with no `related_msg_id`, no audience
+ * selector, and the original sender in its concrete `to` array counts. A
+ * reply threaded to a DIFFERENT message is deliberately not loose evidence.
+ */
+async function findUnthreadedRecipientReply(
+  workspaceId: string,
+  originalMsgId: string,
+  from: string,
+  to: string[],
+  sentAtMs: number,
+): Promise<UnthreadedRecipientReply | null> {
+  if (!to.length) return null;
+  const { sql } = getOrgPg();
+  const rows = await sql<{ msg_id: string; author_id: string; ts_ms: string }[]>`
+    -- EI-20760420701985610 recipient-reply-check: a fresh, unthreaded
+    -- directed response is a reply-equivalent answer to the original ask.
+    SELECT e.msg_id,
+           e.body->>'from' AS author_id,
+           (extract(epoch FROM e.ts) * 1000)::bigint AS ts_ms
+      FROM harness_shared.coord_event_log e
+     WHERE e.workspace_id = ${workspaceId}
+       AND e.surface = 'messages'
+       AND e.msg_id <> ${originalMsgId}
+       AND e.body->>'from' = ANY(${to}::text[])
+       AND e.body->>'from' IS DISTINCT FROM ${from}
+       AND (e.body->>'kind' IS NULL OR e.body->>'kind' = 'message')
+       AND NOT (e.body ? 'audience')
+       AND NOT (e.body ? 'related_msg_id')
+       AND jsonb_typeof(e.body->'to') = 'array'
+       AND EXISTS (
+         SELECT 1 FROM jsonb_array_elements_text(e.body->'to') recipient
+          WHERE recipient = ${from}
+       )
+       AND e.ts > to_timestamp(${sentAtMs}::double precision / 1000)
+     ORDER BY e.ts ASC
+     LIMIT 1
+  `;
+  const r = rows[0];
+  if (!r || typeof r.msg_id !== 'string' || !r.msg_id || typeof r.author_id !== 'string' || !to.includes(r.author_id)) {
+    return null;
+  }
+  const ts = Number(r.ts_ms);
+  if (!Number.isFinite(ts) || ts <= sentAtMs) return null;
+  return { msgId: r.msg_id, authorId: r.author_id, sentAtMs: ts };
+}
+
 export interface ReplyEquivalentActivity {
   /** The WI-/EI- id whose thread carries the answer. */
   workItemId: string;
@@ -286,7 +346,9 @@ async function findReplyEquivalentActivity(
   const authorSet = new Set(authorIds);
   const threadSet = new Set(threadIds);
   return rows
-    .filter((r) => typeof r.author_id === 'string' && r.author_id && authorSet.has(r.author_id) && threadSet.has(r.thread_id))
+    .filter(
+      (r) => typeof r.author_id === 'string' && r.author_id && authorSet.has(r.author_id) && threadSet.has(r.thread_id),
+    )
     .map((r) => {
       const postedAtMs = Number(r.posted_at_ms);
       return {
@@ -301,8 +363,9 @@ async function findReplyEquivalentActivity(
 export interface ReplyDeadlineSweepResult {
   due: number;
   nudged: number;
-  /** EI-13610: due deadlines auto-resolved by reply-equivalent thread activity
-   *  (no alarm sent — a quiet, non-waking note instead). */
+  /** EI-13610/EI-20760420701985610: due deadlines auto-resolved by
+   *  reply-equivalent recipient activity (an unthreaded coord message or a
+   *  work-item thread post; no alarm sent — a quiet, non-waking note instead). */
   autoResolved: number;
   /** EI-18689956983040659: due deadlines auto-resolved because the ORIGINAL
    *  SENDER themself sent a later directed message to the same recipient(s)
@@ -321,9 +384,12 @@ export interface ReplyDeadlineSweepResult {
  *    directed message to the same recipient(s) — a supersede/retraction the
  *    sender themself issued, which means they're no longer waiting on a
  *    reply to the original ask regardless of what the recipient does.
+ *  - EI-20760420701985610: check whether any awaited recipient sent a later,
+ *    unthreaded directed message back to the ORIGINAL sender — the common
+ *    fresh-message reply shape that coord:send's exact-thread anti-join misses.
  *  - EI-13610: check whether any awaited recipient has since posted on the
- *    thread of a WI-/EI- id mentioned in the original message — reply-
- *    equivalent activity a coord-only check would miss.
+ *    thread of a WI-/EI- id mentioned in the original message — another
+ *    reply-equivalent activity a coord-only check would miss.
  * Either hit sends a quiet auto-resolved note (still carrying
  * `related_msg_id` as the idempotency marker) instead of the alarm + wake.
  * Otherwise, nudge the ORIGINAL sender once — a visible coord message + a
@@ -377,6 +443,42 @@ export async function runReplyDeadlineSweepOnce(
           related_msg_id: d.msgId,
         });
         superseded += 1;
+        continue;
+      }
+
+      // EI-20760420701985610: a recipient can answer in a fresh directed
+      // message without copying the original msg_id. Mirror the established
+      // unanswered-directed loose-reply rule, but keep it fail-soft: a probe
+      // failure must fall through to the ordinary checks rather than silently
+      // suppressing a genuinely overdue deadline.
+      let recipientReply: UnthreadedRecipientReply | null = null;
+      try {
+        recipientReply = await findUnthreadedRecipientReply(d.workspaceId, d.msgId, d.from, d.to, d.sentAtMs);
+      } catch (e) {
+        console.warn(
+          `[reply-deadline-sweep] unthreaded recipient-reply probe for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`,
+        );
+      }
+
+      if (recipientReply) {
+        // Quiet + non-waking: the awaited recipient already answered, just not
+        // by threading onto the exact ask. related_msg_id still lands as the
+        // idempotency marker so this deadline retires permanently.
+        await sendMessage(RECONCILE_IDENTITY, {
+          to: [d.from],
+          summary:
+            `✅ reply deadline auto-resolved: ${recipientReply.authorId} sent a later response (${recipientReply.msgId}) ` +
+            `to you — treating the original ask as answered (${d.summary ?? d.msgId})`,
+          body:
+            `Your message ${d.msgId}${d.to.length ? ` to ${d.to.join(', ')}` : ''}` +
+            `${d.planSlug ? ` (plan ${d.planSlug})` : ''} had a reply deadline with no threaded reply, but ` +
+            `${recipientReply.authorId} sent a later directed message (${recipientReply.msgId}) to you at ` +
+            `${new Date(recipientReply.sentAtMs).toISOString()} — treating that fresh message as the answer. ` +
+            'No action needed unless it does not actually answer the original ask.',
+          plan_slug: d.planSlug,
+          related_msg_id: d.msgId,
+        });
+        autoResolved += 1;
         continue;
       }
 
@@ -451,9 +553,7 @@ export async function runReplyDeadlineSweepOnce(
     } catch (e) {
       // A nudge failure on one message must never abort the sweep — the next
       // tick will retry it (it is still unanswered, so it stays selectable).
-      console.warn(
-        `[reply-deadline-sweep] nudge for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`,
-      );
+      console.warn(`[reply-deadline-sweep] nudge for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`);
     }
   }
 
