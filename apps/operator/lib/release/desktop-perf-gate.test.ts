@@ -5,6 +5,7 @@ import {
   runDesktopPerfGate,
   failingMeasures,
   breachedInvariants,
+  missingBudgetedInteractions,
   DEFAULT_DESKTOP_PERF_MAX_AGE_MS,
   DEFAULT_QUIET_WINDOW,
   PSI_SOME_KEY_PREFIX,
@@ -13,6 +14,7 @@ import {
   readHostPressure,
   type DesktopPerfGatePolicy,
 } from './desktop-perf-gate';
+import { DESKTOP_PERF_BUDGETS } from '@papercusp/operator-core/lib/system-health/desktop-perf-budgets';
 import type { DesktopPerfRun, DesktopPerfMeasure } from '@papercusp/operator-core/lib/system-health/desktop-perf-runs';
 
 // `createdTs` defaults to NOW because the gate now applies a freshness window: the
@@ -23,8 +25,28 @@ function run(
   measures: DesktopPerfMeasure[],
   status: DesktopPerfRun['status'] = 'pass',
   createdTs: number = Date.now(),
+  options: { includeDeclaredInteractions?: boolean } = {},
 ): DesktopPerfRun {
-  return { id: 'r1', workspaceId: 'default', createdTs, source: 'admin-suite', status, gitSha: 'abc12345', runId: 'testrun-1', measures };
+  const includeDeclaredInteractions = options.includeDeclaredInteractions ?? measures.length > 0;
+  const declaredInteractions: DesktopPerfMeasure[] = includeDeclaredInteractions
+    ? Object.entries(DESKTOP_PERF_BUDGETS.interactions).map(([name, budget]) => ({
+        key: `interaction:${name}`,
+        value: 0,
+        unit: 'ms',
+        budget,
+        ok: true,
+      }))
+    : [];
+  return {
+    id: 'r1',
+    workspaceId: 'default',
+    createdTs,
+    source: 'admin-suite',
+    status,
+    gitSha: 'abc12345',
+    runId: 'testrun-1',
+    measures: [...measures, ...declaredInteractions],
+  };
 }
 const ok: DesktopPerfMeasure = { key: 'route:harness-warm', value: 900, unit: 'ms', budget: 1500, ok: true };
 const breach: DesktopPerfMeasure = { key: 'interaction:plan-popup-open', value: 1800, unit: 'ms', budget: 1500, ok: false };
@@ -185,6 +207,20 @@ describe('evaluateDesktopPerfGate (pure)', () => {
     const d = evaluateDesktopPerfGate(run([ok], 'warn'), ARMED);
     expect(d.action).toBe('warn');
     expect(d.verdictStatus).toBe('warn');
+  });
+
+  it('a fresh run missing a declared interaction → warn/unknown, never pass', () => {
+    const incomplete = run([ok], 'pass', Date.now(), { includeDeclaredInteractions: false });
+    expect(missingBudgetedInteractions(incomplete)).toEqual(Object.keys(DESKTOP_PERF_BUDGETS.interactions));
+
+    const d = evaluateDesktopPerfGate(incomplete, ARMED);
+    expect(d.action).toBe('warn');
+    expect(d.action).not.toBe('pass');
+    expect(d.action).not.toBe('block');
+    expect(d.verdictStatus).toBe('unknown');
+    expect(d.reasons.join(' ')).toContain('interaction:learning-view-switch');
+    expect(d.summary).toContain('INCOMPLETE');
+    expect(d.summary).toContain('learning-view-switch');
   });
 
   it('formats kb (RSS) and count budgets in the reason', () => {

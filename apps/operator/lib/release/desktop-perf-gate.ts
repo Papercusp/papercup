@@ -54,6 +54,10 @@
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import {
+  DESKTOP_PERF_BUDGETS,
+  type DesktopPerfBudgets,
+} from '@papercusp/operator-core/lib/system-health/desktop-perf-budgets';
+import {
   readDesktopPerfRuns,
   type DesktopPerfRun,
   type DesktopPerfMeasure,
@@ -337,6 +341,27 @@ export function breachedInvariants(run: DesktopPerfRun): DesktopPerfMeasure[] {
   );
 }
 
+/**
+ * Return the canonical interaction budgets that a run failed to measure.
+ *
+ * A run containing only the measures it happened to collect is not a complete
+ * desktop-performance verdict: a producer can silently omit a newly-declared
+ * interaction and still look green if the gate grades presence only. Keep this
+ * check separate from {@link failingMeasures}; a missing measure is unknown data,
+ * not a measured budget breach, and must warn without blocking.
+ */
+export function missingBudgetedInteractions(
+  run: DesktopPerfRun,
+  budgets: Pick<DesktopPerfBudgets, 'interactions'> = DESKTOP_PERF_BUDGETS,
+): string[] {
+  const measured = new Set(
+    run.measures
+      .filter((m) => m.key.startsWith('interaction:'))
+      .map((m) => m.key.slice('interaction:'.length)),
+  );
+  return Object.keys(budgets.interactions).filter((name) => !measured.has(name));
+}
+
 function fmtInvariant(m: DesktopPerfMeasure): string {
   return `${m.key} = ${m.value} (invariant: must be ${m.budget ?? 0})`;
 }
@@ -355,6 +380,8 @@ function fmtUnmeasuredInvariant(m: DesktopPerfMeasure): string {
  *   an INVARIANT measure breached    → block ALWAYS (independent of policy.block)
  *   an INVARIANT never MEASURED      → warn  (unknown: a probe that did not run is not a
  *                                            breach — WI-39665 D-008)
+ *   a declared interaction is missing → warn (unknown: the run is incomplete, so it
+ *                                            cannot report a clean interaction verdict)
  *   ok (all budgeted measures met)   → pass
  *   warn (suite warned, no breach)   → warn  (surface, never block — even when armed)
  *   crit (a budgeted measure breach) → block IFF policy.block else warn
@@ -516,6 +543,27 @@ export function evaluateDesktopPerfGate(
         `🟧 desktop-perf-gate: INVARIANT UNMEASURED — ${sha} advances UNVERIFIED: ${reasons.join('; ')}. ` +
         `This is NOT a clear and NOT a breach: the probe did not run, so the gate has no evidence either way. ` +
         `Fix the producer — a correctness invariant nobody is measuring is the failure this reports.`,
+      verdictStatus: 'unknown',
+      pressure,
+    };
+  }
+
+  // A declared interaction that never appears in the run is not an implicit pass.
+  // This branch is deliberately after measured invariant/budget verdicts and the
+  // detector-absent branch above, so missing coverage cannot mask a real failure.
+  // It is still before the ordinary run-status/pass branches: a partial run must
+  // remain audible and unknown rather than silently clearing the release gate.
+  const missingInteractions = missingBudgetedInteractions(run);
+  if (missingInteractions.length > 0) {
+    const measureKeys = missingInteractions.map((name) => `interaction:${name}`);
+    const reasons = measureKeys.map((key) => `MISSING declared interaction measure: ${key}`);
+    return {
+      action: 'warn',
+      reasons,
+      summary:
+        `🟧 desktop-perf-gate: INCOMPLETE desktop-perf run — ${sha} advances UNVERIFIED: ` +
+        `${measureKeys.join(', ')} were declared but not measured. ` +
+        `A partial run is not a clean interaction verdict; fix the producer before trusting it.`,
       verdictStatus: 'unknown',
       pressure,
     };
