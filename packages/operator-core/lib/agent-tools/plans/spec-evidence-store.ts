@@ -1,6 +1,7 @@
 /** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { pgTimestampToIso } from '../../pg-timestamp';
 import { resolvePlanScope } from './source';
 
 export const SPEC_EVIDENCE_KINDS = [
@@ -336,10 +337,10 @@ interface EvidenceRow extends CurrentnessRow {
   evidence_kind: SpecEvidenceKind;
   evidence_ref: string;
   details: Record<string, unknown>;
-  observed_at: Date;
+  observed_at: Date | string;
   binding_fingerprint: string;
   created_by: string;
-  created_at: Date;
+  created_at: Date | string;
 }
 
 export interface ListSpecEvidenceOptions {
@@ -469,10 +470,10 @@ export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
       coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
       testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
       details: row.details,
-      observedAt: row.observed_at.toISOString(),
+      observedAt: pgTimestampToIso(row.observed_at),
       bindingFingerprint: row.binding_fingerprint,
       createdBy: row.created_by,
-      createdAt: row.created_at.toISOString(),
+      createdAt: pgTimestampToIso(row.created_at),
       currentness: classifySpecEvidenceCurrentness(row, current),
     };
   });
