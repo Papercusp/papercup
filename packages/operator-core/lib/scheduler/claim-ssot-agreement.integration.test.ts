@@ -63,6 +63,7 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
+  WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 
@@ -206,6 +207,7 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + hfc + engineer_issues + plan tables
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await db.sql
     .unsafe(`ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`)
