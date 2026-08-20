@@ -9352,7 +9352,7 @@
           "POST"
         ]
       },
-      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; kind:convention with no ttlSec is permanent) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.",
+      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; 90d for kind:convention) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.",
       "capabilities": [
         "coord:write"
       ],
@@ -22288,7 +22288,7 @@
           "POST"
         ]
       },
-      "description": "CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ artifacts stay LOCAL; never create a GitHub Release). Every run/run-leg requires sourceSha, the exact 40-char superproject commit the cutter must still be on; drift refuses before writes. op:prepare-tag is the separate, explicit remote-ref write required before a brand-new version: create-only force-with-lease, dry-run unless confirm:true, never overwrites a mismatched tag. Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).",
+      "description": "CUT a LOCAL Papercusp desktop release — build+sign installer(s) for the owner to upload (⛔ artifacts stay LOCAL; never create a GitHub Release). Every run/run-leg requires sourceSha, the exact 40-char superproject commit; drift refuses before writes. op:prepare-tag is the separate, explicit remote-ref write required before a brand-new version: create-only force-with-lease, dry-run unless confirm:true, never overwrites a mismatched tag. Wraps bin/release-local.sh. op:preflight (go/no-go). op:run (fire the WHOLE cut detached; dry-run unless confirm:true; operator role). op:run-leg (WI-4233: fire ONE platform leg — linux/mac/windows/arm64 — on its own unit, for a fleet-split cut; same gate). op:abort-leg (stop one leg). op:status (poll; optional `platform` for a per-leg poll). op:gate-status (read/establish the shared BUILD_SHA gate for version+channel so split legs cannot drift onto different shas). op:handoff (collect signed artifacts+sha256 — leg-agnostic).",
       "capabilities": [
         "operator:write"
       ],
