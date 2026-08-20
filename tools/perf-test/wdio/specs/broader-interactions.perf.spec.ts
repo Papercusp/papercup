@@ -22,6 +22,9 @@
  *                                harness's OWN live work items supply the row, the
  *                                same "click a real row" pattern plan-popup-open
  *                                uses.
+ *   - learning-view-switch      : /adv Learning tab Observe stage → click the
+ *                                real Observations view trigger and read the
+ *                                page-relative learning-view-switch measure.
  *
  * inbox-list-settle was RETIRED (EI-18854256403211741 / WI-6543, 2026-08-02):
  * it drove the op-chat sidebar Inbox face, which was retired 2026-07-26
@@ -57,6 +60,7 @@ const OPERATOR_SHELL_ROUTE = "/adv";
 const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
 const CONVERSATION_THREAD_LOAD_BUDGET_MS = 1500;
+const LEARNING_VIEW_SWITCH_BUDGET_MS = 1500;
 
 /** Run the shared quiet primitive inside the packaged webview. */
 async function waitForMainThreadQuietInPage(): Promise<void> {
@@ -208,6 +212,70 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     expect(measuredMs).not.toBeNull();
     expect(measuredMs as number).toBeLessThanOrEqual(
       COMMAND_PALETTE_OPEN_BUDGET_MS,
+    );
+  });
+
+  it("switches Learning views within budget", async () => {
+    const NAME = "learning-view-switch";
+    await waitForAppMount(browser);
+
+    // Start on the Observe stage so the real Observations tab is visible. The
+    // first LearningTab mount is intentionally excluded from this interaction;
+    // the click below is the measured view change (P-006).
+    const learningUrl = await browser.execute(() => {
+      const u = new URL(location.href);
+      u.pathname = "/adv";
+      u.searchParams.set("tab", "learning");
+      u.searchParams.set("lview", "signals");
+      u.searchParams.set("slug", "papercusp");
+      u.searchParams.set("scope", "self");
+      u.searchParams.set("welcome", "0");
+      return u.pathname + u.search + u.hash;
+    });
+    await spaNavigate(learningUrl);
+    await waitForAppMount(browser);
+
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          () => Boolean(document.querySelector('button[aria-label="Observations"]')),
+        ),
+      {
+        timeout: 15_000,
+        timeoutMsg: 'no Learning Observations view trigger within 15s',
+      },
+    );
+    await waitForMainThreadQuietInPage();
+
+    // Clear any stale measure immediately before the real view-switch click.
+    await browser.execute((name) => {
+      try {
+        if (performance.clearMeasures) performance.clearMeasures(name);
+      } catch {
+        /* ignore */
+      }
+      document
+        .querySelector<HTMLElement>('button[aria-label="Observations"]')
+        ?.click();
+    }, NAME);
+
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(
+          (name) => performance.getEntriesByName(name, "measure").length > 0,
+          NAME,
+        ),
+      {
+        timeout: 20_000,
+        timeoutMsg: `no "${NAME}" measure emitted within 20s of switching views`,
+      },
+    );
+
+    const measuredMs = await latestMeasure(NAME);
+    recordInteractionMs(NAME, measuredMs, LEARNING_VIEW_SWITCH_BUDGET_MS);
+    expect(measuredMs).not.toBeNull();
+    expect(measuredMs as number).toBeLessThanOrEqual(
+      LEARNING_VIEW_SWITCH_BUDGET_MS,
     );
   });
 

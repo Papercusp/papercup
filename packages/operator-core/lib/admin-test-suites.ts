@@ -888,6 +888,38 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       },
     },
     {
+      id: 'interaction-learning-view-switch',
+      label: 'Learning view switch interaction',
+      run: async () => {
+        // Start on the Observe stage so the real Observations tab is visible,
+        // then click it. This exercises LearningTab's beginInteraction on the
+        // view change and ObservationsPanel's primary-read settle point (P-006).
+        await clearPerfRecorder(ctx);
+        const result = await measureInteraction(ctx, {
+          name: 'learning-view-switch',
+          setup: `const u = new URL(location.href); u.pathname = '/adv'; u.search = '?tab=learning&lview=signals&slug=papercusp&scope=self&welcome=0'; history.pushState({}, '', u.pathname + u.search); window.dispatchEvent(new PopStateEvent('popstate'));`,
+          triggerSelector: 'button[aria-label="Observations"]',
+          settleTimeoutMs: 8_000,
+        });
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['learning-view-switch'];
+        if (!result.ok) {
+          return fail(
+            `The Learning tab view switch settles within ${budgetMs}ms in the Tauri desktop shell.`,
+            `Could not measure learning-view-switch: ${result.detail}`,
+            ['The Learning tab must render the Observe stage with its Observations view trigger.'],
+          );
+        }
+        const verdict = evaluateInteractionBudget('learning-view-switch', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `The Learning tab view switch settles within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `learning-view-switch=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [{ key: 'interaction:learning-view-switch', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+        );
+      },
+    },
+    {
       id: 'interaction-conversation-thread-load',
       label: 'Conversation thread load interaction',
       run: async () => {
