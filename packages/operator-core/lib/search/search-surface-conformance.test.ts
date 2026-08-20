@@ -103,7 +103,10 @@ function discoverSearchTools(): Array<{ id: string; file: string }> {
 /** What a surface's code actually does, derived from its import graph. */
 function derive(entry: string): { callsEngine: boolean; callsFulltext: boolean; hasFloor: boolean } {
   const g = importGraph(entry);
-  const all = [entry, ...g.modules].map((m) => readFileSync(m, 'utf8'));
+  // The graph walker already ignores comments when it derives edges; feature
+  // detection must do the same. Otherwise a rationale that merely names
+  // `runHybridSearch(` manufactures an engine call in an unrelated surface.
+  const all = [entry, ...g.modules].map((m) => stripComments(readFileSync(m, 'utf8')));
   return {
     callsEngine: all.some((src) => /runHybridSearch\s*\(/.test(src)),
     callsFulltext: all.some((src) => /runFullTextSearch\s*\(/.test(src)),

@@ -1526,11 +1526,19 @@ esac
 
 deadline=$((SECONDS + timeout))
 last_output=""
+tauri_agent_tools_bin="${VERIFY_TAURI_AGENT_TOOLS_BIN:-}"
+if [ -z "$tauri_agent_tools_bin" ]; then
+  tauri_agent_tools_bin="$(command -v tauri-agent-tools 2>/dev/null || true)"
+fi
+[ -n "$tauri_agent_tools_bin" ] || {
+  echo "FATAL: tauri-agent-tools is unavailable; set VERIFY_TAURI_AGENT_TOOLS_BIN or add it to PATH" >&2
+  exit 127
+}
 while :; do
   if [ -n "${VERIFY_TAURI_LIVENESS_CHECK:-}" ] && ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
     exit 1
   fi
-  if last_output="$("$VERIFY_TAURI_AGENT_TOOLS_BIN" check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
+  if last_output="$("$tauri_agent_tools_bin" check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
     [ -n "$last_output" ] && printf '%s\n' "$last_output"
     exit 0
   fi
