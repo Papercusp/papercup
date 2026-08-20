@@ -28,8 +28,28 @@ export interface PlanAssertion {
   requiresTest: boolean;
 }
 
+/**
+ * Non-lossy parse result used by the first-class spec compiler.
+ *
+ * `extractAssertions` intentionally preserves its historical behavior of
+ * returning only assertions with a `Verify:` field.  Compiler/migration paths
+ * need to see incomplete legacy blocks too, otherwise an ambiguous assertion
+ * silently disappears instead of remaining a reviewable draft.
+ */
+export interface PlanAssertionCandidate {
+  valId: string;
+  itemId: string;
+  /** Text written on the VAL header after the closing bracket, if any. */
+  headerText?: string;
+  verifyText?: string;
+  evidenceText?: string;
+  status?: PlanAssertion['status'];
+  /** Undefined means the legacy block omitted the field (historical default: true). */
+  requiresTest?: boolean;
+}
+
 // Accepts both canonical `**[VAL-id]**` and scoper-written `[VAL-id] description` forms.
-const VAL_HEADER_RE = /^\s{1,8}-\s+\*{0,2}\[VAL-([^\]]+)\]\*{0,2}(?:\s.*)?$/;
+const VAL_HEADER_RE = /^\s{1,8}-\s+\*{0,2}\[VAL-([^\]]+)\]\*{0,2}(?:\s+(.*?))?\s*$/;
 const VAL_FIELD_RE = /^\s{2,12}-\s+\*\*(Verify|Evidence|Status|RequiresTest):\*\*\s*(.*)/;
 const ITEM_LINE_RE = /^-\s+\*\*(P-\d{3,})\*\*/;
 
@@ -50,29 +70,19 @@ function parseRequiresTest(raw: string): boolean {
  * given item IDs. Pass `itemIds` as a Set for fast lookup; omit/pass empty
  * to extract from ALL items.
  */
-export function extractAssertions(
+export function extractAssertionCandidates(
   raw: string,
   itemIds?: Set<string>,
-): PlanAssertion[] {
+): PlanAssertionCandidate[] {
   const lines = raw.split('\n');
-  const results: PlanAssertion[] = [];
+  const results: PlanAssertionCandidate[] = [];
 
   let currentItemId: string | null = null;
-  let currentAssertion: Partial<PlanAssertion> & { valId: string; itemId: string } | null = null;
+  let currentAssertion: PlanAssertionCandidate | null = null;
 
   function flush() {
     if (!currentAssertion) return;
-    const a = currentAssertion;
-    if (a.verifyText) {
-      results.push({
-        valId: a.valId,
-        itemId: a.itemId,
-        verifyText: a.verifyText.trim(),
-        evidenceText: (a.evidenceText ?? '').trim(),
-        status: a.status ?? 'todo',
-        requiresTest: a.requiresTest ?? true,
-      });
-    }
+    results.push(currentAssertion);
     currentAssertion = null;
   }
 
@@ -92,7 +102,11 @@ export function extractAssertions(
     const valHeader = VAL_HEADER_RE.exec(line);
     if (valHeader) {
       flush();
-      currentAssertion = { valId: `VAL-${valHeader[1]}`, itemId: currentItemId };
+      currentAssertion = {
+        valId: `VAL-${valHeader[1]}`,
+        itemId: currentItemId,
+        ...(valHeader[2]?.trim() ? { headerText: valHeader[2].trim() } : {}),
+      };
       continue;
     }
 
@@ -112,4 +126,27 @@ export function extractAssertions(
 
   flush();
   return results;
+}
+
+/**
+ * Extract all complete VAL-* assertions from the raw plan markdown, scoped to
+ * the given item IDs. Pass `itemIds` as a Set for fast lookup; omit/pass empty
+ * to extract from ALL items.
+ */
+export function extractAssertions(
+  raw: string,
+  itemIds?: Set<string>,
+): PlanAssertion[] {
+  return extractAssertionCandidates(raw, itemIds)
+    .filter((candidate): candidate is PlanAssertionCandidate & { verifyText: string } =>
+      Boolean(candidate.verifyText?.trim()),
+    )
+    .map((candidate) => ({
+      valId: candidate.valId,
+      itemId: candidate.itemId,
+      verifyText: candidate.verifyText.trim(),
+      evidenceText: (candidate.evidenceText ?? '').trim(),
+      status: candidate.status ?? 'todo',
+      requiresTest: candidate.requiresTest ?? true,
+    }));
 }
