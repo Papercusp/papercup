@@ -28,6 +28,10 @@
  */
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+// Eagerly capture process identity before routines-workflow's watchdog is
+// lazily imported by the first routinesTick. The watchdog must judge the
+// executor against its real host boot, not the delayed first sweep.
+import './process-boot-identity';
 import {
   dbosOrchestratorActive,
   dbosTimersActive,

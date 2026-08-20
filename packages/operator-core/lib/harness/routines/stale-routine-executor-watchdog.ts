@@ -36,35 +36,9 @@
  * comment for the "reason must literally contain the scope key" trap this
  * avoids by routing through it rather than hand-rolling the LIKE match).
  */
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
-
-const pexec = promisify(execFile);
-
-// ── this process's boot identity (captured once, fail-soft) ───────────────────
-
-const PROCESS_BOOT_TIME_MS = Date.now();
-
-async function resolveHeadCommit(): Promise<string | null> {
-  try {
-    const { stdout } = await pexec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 });
-    const sha = stdout.trim();
-    return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
-  } catch {
-    // No git / not a checkout / any read failure — fail-soft, never throw. The
-    // decider below treats a null commit as "can't judge, don't alert."
-    return null;
-  }
-}
-
-let bootCommitPromise: Promise<string | null> | null = null;
-/** Exported for tests only — resolves once, memoized for the process lifetime. */
-export function bootCommitSha(): Promise<string | null> {
-  if (!bootCommitPromise) bootCommitPromise = resolveHeadCommit();
-  return bootCommitPromise;
-}
+import { processBootCommitSha, processBootTimeMs } from '../../dbos/process-boot-identity';
 
 // Throttled — never shell out to git on every 30s routinesTick.
 const CURRENT_HEAD_REFRESH_MS = 5 * 60_000;
@@ -311,12 +285,12 @@ export async function staleRoutineExecutorSweep(opts: {
   const identity = executorIdentity();
 
   try {
-    const [bootCommit, currentCommit] = await Promise.all([bootCommitSha(), currentHeadCommit(now)]);
+    const [bootCommit, currentCommit] = await Promise.all([processBootCommitSha(), currentHeadCommit(now)]);
     const verdict = evaluateExecutorStaleness({
       routinesEnabled: enabled,
       bootCommit,
       currentCommit,
-      bootTimeMs: PROCESS_BOOT_TIME_MS,
+      bootTimeMs: processBootTimeMs(),
       now,
       thresholdMs: thresholdSec * 1_000,
     });

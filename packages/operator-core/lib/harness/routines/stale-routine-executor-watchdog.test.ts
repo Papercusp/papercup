@@ -10,9 +10,39 @@
 import { describe, expect, it } from 'vitest';
 
 import { evaluateExecutorStaleness, executorIdentity, staleExecutorThresholdSec } from './stale-routine-executor-watchdog';
+import { captureProcessBootIdentity, processBootTimeMs } from '../../dbos/process-boot-identity';
 
 const TWO_H = 2 * 3_600_000;
 const BOOT = 1_000_000;
+
+describe('process boot identity — import timing cannot reset executor age', () => {
+  it('derives boot time from process.uptime(), not from the lazy watchdog module load', () => {
+    const now = Date.now();
+    const boot = processBootTimeMs();
+    const uptimeMs = process.uptime() * 1000;
+
+    expect(boot).toBeLessThanOrEqual(now);
+    // Allow a small scheduling window between the two uptime/clock reads while
+    // still rejecting a module-load timestamp on a long-lived test process.
+    expect(Math.abs(now - boot - uptimeMs)).toBeLessThan(2_000);
+  });
+
+  it('starts the boot-commit sample when the identity is captured', async () => {
+    let resolveCalls = 0;
+    const identity = captureProcessBootIdentity({
+      nowMs: 5_000,
+      uptimeSec: 2,
+      resolveCommit: async () => {
+        resolveCalls += 1;
+        return 'a'.repeat(40);
+      },
+    });
+
+    expect(resolveCalls).toBe(1);
+    expect(identity.bootTimeMs).toBe(3_000);
+    await expect(identity.bootCommit).resolves.toBe('a'.repeat(40));
+  });
+});
 
 describe('evaluateExecutorStaleness — the pure decider', () => {
   it('healthy when PAPERCUSP_DBOS_ROUTINES is not enabled on this process', () => {
