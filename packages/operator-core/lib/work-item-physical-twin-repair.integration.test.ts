@@ -58,25 +58,34 @@ beforeEach(async () => {
 });
 
 async function insertItem(harness: string, id: string, title: string, status: string, payload: object = {}) {
-  await db.sql.unsafe(`INSERT INTO harness_shared.work_items
+  await db.sql.unsafe(
+    `INSERT INTO harness_shared.work_items
     (workspace_id,harness_slug,feature_id,title,summary,status,payload,item_kind,updated_ts)
     VALUES ('papercusp-workspace',$1,$2,$3,$3,$4,$5::text::jsonb,'bug',1)`,
-  [harness, id, title, status, JSON.stringify(payload)]);
+    [harness, id, title, status, JSON.stringify(payload)],
+  );
 }
 
 describe('migration 826 physical twin repair', () => {
   it('merges identical evidence into the Papercusp survivor before deleting the redundant row', async () => {
     await insertItem('papercusp', 'EI-1', 'same', 'open');
-    await insertItem('operator:papercusp-workspace', 'EI-1', 'same', 'done', { _completionEvidence: { testResult: 'green' }, source: 'operator' });
+    await insertItem('operator:papercusp-workspace', 'EI-1', 'same', 'done', {
+      _completionEvidence: { testResult: 'green' },
+      source: 'operator',
+    });
     await db.sql.unsafe(SQL);
 
-    const rows = await db.sql.unsafe(`SELECT harness_slug,status,payload FROM harness_shared.work_items WHERE feature_id='EI-1'`);
+    const rows = await db.sql.unsafe(
+      `SELECT harness_slug,status,payload FROM harness_shared.work_items WHERE feature_id='EI-1'`,
+    );
     expect(rows).toHaveLength(1);
     expect(rows[0].harness_slug).toBe('papercusp');
     expect(rows[0].status).toBe('done');
     expect(rows[0].payload._completionEvidence.testResult).toBe('green');
     expect(rows[0].payload._physicalTwinRepair.sourcePayload.source).toBe('operator');
-    const backups = await db.sql.unsafe(`SELECT count(*)::int n FROM harness_shared.bak_20260813_work_item_physical_twins WHERE feature_id='EI-1'`);
+    const backups = await db.sql.unsafe(
+      `SELECT count(*)::int n FROM harness_shared.bak_20260813_work_item_physical_twins WHERE feature_id='EI-1'`,
+    );
     expect(backups[0].n).toBe(2);
   });
 
@@ -94,7 +103,9 @@ describe('migration 826 physical twin repair', () => {
       VALUES ('papercusp-workspace','issue-thread-EI-11513','issue','EI-11513','system:improvement-watchdog',1);`);
     await db.sql.unsafe(SQL);
 
-    const ids = await db.sql.unsafe(`SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`);
+    const ids = await db.sql.unsafe(
+      `SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`,
+    );
     expect(ids).toEqual([
       { harness_slug: 'operator:papercusp-workspace', feature_id: 'EI-82600000000000011' },
       { harness_slug: 'papercusp', feature_id: 'EI-11513' },
@@ -111,9 +122,13 @@ describe('migration 826 physical twin repair', () => {
     expect(thread[0].parent_ref).toBe('EI-82600000000000001');
 
     await expect(db.sql.unsafe(SQL)).resolves.toBeDefined();
-    const rerunIds = await db.sql.unsafe(`SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`);
+    const rerunIds = await db.sql.unsafe(
+      `SELECT harness_slug,feature_id FROM harness_shared.work_items ORDER BY harness_slug`,
+    );
     expect(rerunIds).toEqual(ids);
-    const backups = await db.sql.unsafe(`SELECT count(*)::int n FROM harness_shared.bak_20260813_work_item_physical_twins`);
+    const backups = await db.sql.unsafe(
+      `SELECT count(*)::int n FROM harness_shared.bak_20260813_work_item_physical_twins`,
+    );
     expect(backups[0].n).toBe(4);
   });
 
@@ -122,12 +137,16 @@ describe('migration 826 physical twin repair', () => {
     await insertItem('operator:papercusp-workspace', 'EI-1', 'drifted title', 'done');
 
     await expect(db.sql.unsafe(SQL)).rejects.toThrow('P-004 identical-twin classification drifted for EI-1');
-    const rows = await db.sql.unsafe(`SELECT harness_slug,title,status FROM harness_shared.work_items ORDER BY harness_slug`);
+    const rows = await db.sql.unsafe(
+      `SELECT harness_slug,title,status FROM harness_shared.work_items ORDER BY harness_slug`,
+    );
     expect(rows).toEqual([
       { harness_slug: 'operator:papercusp-workspace', title: 'drifted title', status: 'done' },
       { harness_slug: 'papercusp', title: 'manifest title', status: 'open' },
     ]);
-    const backupTable = await db.sql.unsafe(`SELECT to_regclass('harness_shared.bak_20260813_work_item_physical_twins')::text AS name`);
+    const backupTable = await db.sql.unsafe(
+      `SELECT to_regclass('harness_shared.bak_20260813_work_item_physical_twins')::text AS name`,
+    );
     expect(backupTable[0].name).toBeNull();
   });
 
@@ -256,9 +275,6 @@ describe('migration 859 legacy replay twin repair', () => {
     await expect(db.sql.unsafe(REPLAY_SQL)).rejects.toThrow('859: exact source-harness references require audit');
     const rows = await db.sql.unsafe(`SELECT harness_slug FROM harness_shared.work_items
       WHERE feature_id='EI-1' ORDER BY harness_slug`);
-    expect(rows).toEqual([
-      { harness_slug: 'operator:papercusp-workspace' },
-      { harness_slug: 'papercusp' },
-    ]);
+    expect(rows).toEqual([{ harness_slug: 'operator:papercusp-workspace' }, { harness_slug: 'papercusp' }]);
   });
 });
