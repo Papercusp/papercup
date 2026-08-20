@@ -361,6 +361,26 @@ export function selfFiledFalloutAdmission(
 }
 
 /**
+ * EI-203723: a fleet leader may dispatch an explicitly assigned issue-family
+ * item to a member even when the member's claim spec is narrower than that item.
+ *
+ * `assignedBy` is server-derived when the item is created or assigned, so the
+ * exception is tied to durable delegation provenance rather than a caller's
+ * claim about who authorized the work. The leader is read from the durable
+ * fleet registry on every admission; a stale former leader, a peer, or a
+ * degraded registry read never widens a member's lane.
+ */
+export async function leaderDispatchedAdmission(
+  item: Pick<WorkItem, 'assignedBy'>,
+  scope: FleetScopeContext,
+): Promise<boolean> {
+  if (!item.assignedBy) return false;
+  const { getFleet } = await import('../agent-fleets-store');
+  const fleet = await getFleet(scope.workspaceId, scope.fleetSlug).catch(() => null);
+  return Boolean(fleet?.leaderOwnerId && fleet.leaderOwnerId === item.assignedBy);
+}
+
+/**
  * EI-18862608742257943: the same feature/issue-family branch as {@link itemMatchesScope},
  * but against a RAW `ClaimSpec` rather than a live {@link FleetScopeContext} — usable
  * BEFORE any bee has joined a fleet, when there is no membership row for
@@ -475,6 +495,7 @@ export async function admitWorkItemForFleetTarget(args: {
   // which must keep precedence. See selfFiledFalloutAdmission for why `createdBy` (not
   // a caller-supplied field) and why `bug` only.
   if (selfFiledFalloutAdmission(item, scope)) return { allowed: true, scoped: true, scope };
+  if (await leaderDispatchedAdmission(item, scope)) return { allowed: true, scoped: true, scope };
   return {
     allowed: false,
     scoped: true,
@@ -496,6 +517,8 @@ export async function admitSubjectForFleetTarget(args: {
   subject: ClaimSpecSubject;
   /** Server-derived creator identity for atomic create+assign; never caller input. */
   createdBy?: string | null;
+  /** Server-derived delegator identity for atomic create+assign; never caller input. */
+  assignedBy?: string | null;
   workspaceId?: string | null;
 }): Promise<FleetScopeAdmission> {
   const scope = await resolveFleetScopeContext(args.target, args.workspaceId);
@@ -517,6 +540,9 @@ export async function admitSubjectForFleetTarget(args: {
       scope,
     )
   ) {
+    return { allowed: true, scoped: true, scope };
+  }
+  if (await leaderDispatchedAdmission({ assignedBy: args.assignedBy ?? null }, scope)) {
     return { allowed: true, scoped: true, scope };
   }
   return {
@@ -991,7 +1017,9 @@ export async function reconcileFleetScopeClaims(args: {
     // "out-of-scope" item the system itself just admitted.
     const matches =
       item && scope.record.source !== 'default'
-        ? (await itemMatchesScope(item, scope)) || selfFiledFalloutAdmission(item, scope)
+        ? (await itemMatchesScope(item, scope)) ||
+          selfFiledFalloutAdmission(item, scope) ||
+          (await leaderDispatchedAdmission(item, scope))
         : false;
     if (matches) continue;
     const released = await releaseWorkItem(id, { expectedAssignee: scope.ownerId });

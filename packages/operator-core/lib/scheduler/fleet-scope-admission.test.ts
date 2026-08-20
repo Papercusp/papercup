@@ -75,6 +75,7 @@ vi.mock('@papercusp/db-org', () => ({
 import {
   admitSubjectForFleetTarget,
   admitWorkItemForFleetTarget,
+  leaderDispatchedAdmission,
   selfFiledFalloutAdmission,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
@@ -1933,6 +1934,14 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
   });
 
   const falloutBug = aWorkItem();
+  const leaderDispatchedTask = aWorkItem({
+    id: 'WI-leader-dispatched',
+    kind: 'task',
+    title: 'Grade the acceptance artifact',
+    createdBy: 'su-leader',
+    assignedBy: 'su-leader',
+    assignee: 'su-member',
+  });
 
   /**
    * The case table IS the specification. Every claim below is asserted against the real
@@ -2000,6 +2009,64 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
       target: 'su-member',
       createdBy: 'su-member',
       subject: { ...base, kind: 'bug', plan: null, planItem: [] },
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('admits a by-id claim for an item durably dispatched by the current fleet leader', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({
+      controlState: 'active',
+      controlReason: null,
+      leaderOwnerId: 'su-leader',
+    });
+    admissionMocks.getWorkItem.mockResolvedValue(leaderDispatchedTask);
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: leaderDispatchedTask.id,
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('refuses a by-id claim whose assignedBy is not the current fleet leader', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({
+      controlState: 'active',
+      controlReason: null,
+      leaderOwnerId: 'su-current-leader',
+    });
+    admissionMocks.getWorkItem.mockResolvedValue({
+      ...leaderDispatchedTask,
+      assignedBy: 'su-former-leader',
+    });
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: leaderDispatchedTask.id,
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_violation' });
+  });
+
+  it('keeps atomic create+assign atomic for a server-attributed leader dispatch', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({
+      controlState: 'active',
+      controlReason: null,
+      leaderOwnerId: 'su-leader',
+    });
+
+    const admission = await admitSubjectForFleetTarget({
+      target: 'su-member',
+      createdBy: 'su-leader',
+      assignedBy: 'su-leader',
+      subject: { ...base, kind: 'task', plan: null, planItem: [] },
       workspaceId: 'papercusp-workspace',
     });
     expect(admission).toMatchObject({ allowed: true, scoped: true });
@@ -2108,6 +2175,37 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
     // Asserting BOTH is what makes this a test of narrowness rather than of the sweep
     // having simply stopped working.
     expect(result.quarantinedIds).toEqual(['EI-filed-by-someone-else']);
+  });
+
+  it('the reconciliation sweep KEEPS a current-leader-dispatched claim instead of quarantining it back', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({
+      controlState: 'active',
+      controlReason: null,
+      leaderOwnerId: 'su-leader',
+    });
+    admissionMocks.listFleetAssignments.mockResolvedValue([
+      { source: 'work_item_claim', workItemId: leaderDispatchedTask.id },
+      { source: 'work_item_claim', workItemId: 'EI-not-dispatched' },
+    ]);
+    admissionMocks.getWorkItem.mockImplementation(async (id: string) =>
+      id === leaderDispatchedTask.id ? leaderDispatchedTask : aWorkItem({ id, createdBy: 'su-other-member' }),
+    );
+    admissionMocks.releaseWorkItem.mockImplementation(async (id: string) => ({ id }));
+
+    const result = await reconcileFleetScopeClaims({
+      ownerId: 'su-member',
+      workspaceId: 'papercusp-workspace',
+      identity: { ownerId: 'su-member' } as never,
+    });
+
+    expect(result.quarantinedIds).toEqual(['EI-not-dispatched']);
+  });
+
+  it('leaderDispatchedAdmission fails closed when the durable leader is unavailable', async () => {
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null, leaderOwnerId: null });
+    await expect(leaderDispatchedAdmission({ assignedBy: 'su-leader' }, scope)).resolves.toBe(false);
   });
 
   /**

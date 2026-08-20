@@ -388,6 +388,10 @@ export default defineTool({
             // fleet member atomically create+claim its own out-of-spec fallout bug;
             // peer assignments and non-bugs still take the normal downgrade path.
             createdBy: ident.ownerId,
+            // EI-203723: the same server-derived identity is the durable delegator
+            // used to prove a leader-dispatched assignment. It is never read from
+            // the caller's payload or treated as an authorization claim.
+            assignedBy: ident.ownerId,
             workspaceId: ident.workspaceId,
           });
           if (!admission.allowed) {
