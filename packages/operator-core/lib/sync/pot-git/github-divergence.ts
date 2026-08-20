@@ -36,6 +36,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
+import { GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, reconcileConditions } from '../../coord/condition-bridge';
 import type { EgressResult } from './github-egress';
 import type { IngressResult } from './github-ingress';
 import type { AdmissionResult } from './github-ingress-admission';
@@ -43,6 +44,13 @@ import type { AdmissionResult } from './github-ingress-admission';
 /** The bridge's own escalation phase — never shared with git-sync's rows. */
 export const GITHUB_BRIDGE_ESCALATION_PHASE = 'github-bridge';
 export const GITHUB_BRIDGE_ESCALATION_KIND = 'github-bridge-divergence';
+export const GITHUB_BRIDGE_WORKFLOW_SCOPE_PATH = '.github/workflows/ci.yml';
+
+export interface AgentActionableRemedy {
+  kind: 'github-workflow-scope';
+  paths: string[];
+  command: string;
+}
 
 export type DivergenceSignal =
   | { kind: 'egress-non-ff'; remoteRef: string; remoteSha: string | null; localSha: string; reason: string }
@@ -56,6 +64,12 @@ export type DivergenceSignal =
     }
   | { kind: 'egress-secret-block'; remoteRef: string; findings: number; overflow: boolean }
   | { kind: 'bridge-egress-unreachable'; errors: string[]; transient: boolean }
+  | {
+      kind: 'bridge-egress-agent-actionable';
+      errors: string[];
+      transient: false;
+      remedy: AgentActionableRemedy;
+    }
   /**
    * Ingress failed for EVERY requested branch — the remote itself is
    * unreachable (repo not found / auth refused / network), not a per-branch
@@ -115,8 +129,55 @@ export interface DivergenceVerdict {
    * revoked-contributor decision) rather than just the integrator's next merge.
    */
   needsOwner: boolean;
+  /** True when a known local agent remedy exists; this does not page the owner. */
+  agentActionable?: boolean;
+  /** The concrete local remedies attached to an agent-actionable residue. */
+  agentRemedies?: AgentActionableRemedy[];
   /** One-line human summary (the escalation `detail`). */
   detail: string;
+}
+
+const WORKFLOW_SCOPE_REFUSAL = /\bworkflow(?:s)?\b[\s\S]{0,180}\bscope\b|\bscope\b[\s\S]{0,180}\bworkflow(?:s)?\b/i;
+
+/** GitHub's workflow-scope refusal is a known local repair, not an owner gate. */
+export function isWorkflowScopeRefusal(message: string): boolean {
+  return WORKFLOW_SCOPE_REFUSAL.test(message);
+}
+
+function workflowPathsFromErrors(errors: string[]): string[] {
+  const paths = new Set<string>();
+  const pathPattern = /((?:\.github\/)?workflows\/[A-Za-z0-9._/-]+\.ya?ml)/gi;
+  for (const error of errors) {
+    for (const match of error.matchAll(pathPattern)) {
+      const candidate = match[1];
+      if (!candidate) continue;
+      paths.add(candidate.startsWith('.github/') ? candidate : `.github/${candidate.replace(/^\.?\/?/, '')}`);
+    }
+  }
+  return paths.size > 0 ? [...paths] : [GITHUB_BRIDGE_WORKFLOW_SCOPE_PATH];
+}
+
+export function workflowScopeRemedy(errors: string[]): AgentActionableRemedy {
+  const paths = workflowPathsFromErrors(errors);
+  return {
+    kind: 'github-workflow-scope',
+    paths,
+    command: `git checkout origin/staging -- ${paths.join(' ')}`,
+  };
+}
+
+function agentActionableSignals(signals: DivergenceSignal[]): Extract<DivergenceSignal, { kind: 'bridge-egress-agent-actionable' }>[] {
+  return signals.filter(
+    (s): s is Extract<DivergenceSignal, { kind: 'bridge-egress-agent-actionable' }> => s.kind === 'bridge-egress-agent-actionable',
+  );
+}
+
+function hasAgentActionableResidue(verdict: DivergenceVerdict): boolean {
+  return verdict.agentActionable === true || agentActionableSignals(verdict.signals).length > 0;
+}
+
+function remediesFor(verdict: DivergenceVerdict): AgentActionableRemedy[] {
+  return verdict.agentRemedies?.length ? verdict.agentRemedies : agentActionableSignals(verdict.signals).map((s) => s.remedy);
 }
 
 /** Fold the mechanism results into divergence signals. Pure; all inputs optional
@@ -166,11 +227,17 @@ export function collectDivergenceSignals(results: {
     signals.push({ kind: 'egress-secret-block', remoteRef: b.remoteRef, findings: b.findings.length, overflow: b.overflow });
   }
   const egressRemoteErrors = results.egress?.remoteErrors ?? [];
-  if (egressRemoteErrors.length > 0) {
+  const agentActionableErrors = egressRemoteErrors.filter((e) => !e.transient && isWorkflowScopeRefusal(e.message));
+  if (agentActionableErrors.length > 0) {
+    const errors = agentActionableErrors.map((e) => e.message);
+    signals.push({ kind: 'bridge-egress-agent-actionable', errors, transient: false, remedy: workflowScopeRemedy(errors) });
+  }
+  const ownerActionableErrors = egressRemoteErrors.filter((e) => !agentActionableErrors.includes(e));
+  if (ownerActionableErrors.length > 0) {
     signals.push({
       kind: 'bridge-egress-unreachable',
-      errors: egressRemoteErrors.map((e) => e.message),
-      transient: egressRemoteErrors.every((e) => e.transient),
+      errors: ownerActionableErrors.map((e) => e.message),
+      transient: ownerActionableErrors.every((e) => e.transient),
     });
   }
   for (const n of results.ingress?.nonFF ?? []) {
@@ -192,7 +259,7 @@ export function collectDivergenceSignals(results: {
 /** Classify folded signals into the verdict the escalation writer consumes. Pure. */
 export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdict {
   if (signals.length === 0) {
-    return { action: 'clear', signals, needsOwner: false, detail: 'bridge clean — no divergence' };
+    return { action: 'clear', signals, needsOwner: false, agentActionable: false, agentRemedies: [], detail: 'bridge clean — no divergence' };
   }
   // Owner levers: a history rewrite can only be accepted via owner-authorized
   // allowNonFF; a blocked admission needs a revocation decision. An egress
@@ -209,6 +276,8 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
   for (const s of signals) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
   const parts: string[] = [];
   const c = (k: DivergenceSignal['kind']): number => counts.get(k) ?? 0;
+  const agentSignals = agentActionableSignals(signals);
+  const agentRemedies = agentSignals.map((s) => s.remedy);
   if (c('egress-non-ff') > 0)
     parts.push(
       `${c('egress-non-ff')} canonical ref(s) diverged on origin (NOT forced — the integrator merges the ingressed origin head; egress fast-forwards once canonical descends from it)`,
@@ -223,6 +292,10 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     );
   if (c('egress-secret-block') > 0)
     parts.push(`${c('egress-secret-block')} ref(s) blocked by the secrets gate (nothing left the machine — scrub + re-egress)`);
+  if (agentSignals.length > 0)
+    parts.push(
+      `${agentSignals.length} egress refusal(s) have a known agent remedy (workflow-scope block) — restore the offending path(s) with ${agentRemedies[0]?.command ?? 'the attached remedy'} and retry egress`,
+    );
   const unreachable = signals.filter(
     (s): s is Extract<DivergenceSignal, { kind: 'bridge-remote-unreachable' }> => s.kind === 'bridge-remote-unreachable',
   );
@@ -260,6 +333,8 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     action: 'escalate',
     signals,
     needsOwner,
+    agentActionable: agentSignals.length > 0,
+    agentRemedies,
     detail: `github-bridge divergence: ${parts.join('; ')}. Origin was never force-pushed and hive canonical refs are unchanged (S-4).`,
   };
 }
@@ -476,6 +551,26 @@ async function deliverNeedsOwnerRecovery(potHomeSlug: string): Promise<void> {
   }
 }
 
+async function reconcileAgentActionableCondition(potHomeSlug: string, workspaceId: string, verdict: DivergenceVerdict): Promise<void> {
+  const remedies = remediesFor(verdict);
+  const open = hasAgentActionableResidue(verdict);
+  await reconcileConditions(
+    [
+      {
+        conditionKey: `${GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX}${potHomeSlug}`,
+        open,
+        title: `GitHub bridge agent fix required on ${potHomeSlug}`,
+        summary: open
+          ? `${verdict.detail}\n\nKnown agent remedy: ${remedies.map((r) => r.command).join(' && ')}`
+          : 'The known agent-actionable GitHub bridge residue has cleared.',
+        harness: potHomeSlug,
+        severity: 'major',
+      },
+    ],
+    { workspaceId },
+  );
+}
+
 /**
  * Write/refresh the bridge divergence escalation for a hive — or clear it on a
  * clean pass. One row per (potHomeSlug, 'github-bridge'), upserted like
@@ -537,6 +632,15 @@ export async function recordDivergenceVerdict(
 
   // Deliver AFTER a successful write, and outside the store try/catch so a
   // paging failure is never mistaken for a store failure.
+  // Unit callers inject `sql`; production callers use the real writer and also
+  // reconcile the agent-actionable condition into the singleton work-item lane.
+  if (!sql) {
+    try {
+      await reconcileAgentActionableCondition(potHomeSlug, workspaceId, verdict);
+    } catch (e) {
+      console.warn(`[github-bridge] agent-actionable condition reconcile failed (${potHomeSlug}): ${e instanceof Error ? e.message : e}`);
+    }
+  }
   if (decision?.alarm && decision.cause) {
     await deliverNeedsOwnerAlarm(potHomeSlug, workspaceId, verdict, decision.cause, decision.next.sweeps);
   } else if (decision?.recovered) {

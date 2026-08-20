@@ -88,6 +88,9 @@ export interface ActionableCondition {
   severity: 'critical' | 'major' | 'minor' | 'nit';
 }
 
+/** Stable condition namespace for bridge residues with a known agent remedy. */
+export const GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX = 'github-bridge-agent-actionable:';
+
 /**
  * The opt-in catalog. See the doc above for why `harnessFrom` is explicit
  * per-entry rather than parsed.
@@ -106,6 +109,12 @@ export const ACTIONABLE_CONDITIONS: readonly ActionableCondition[] = [
   { prefix: 'release-trigger-freeze:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'release-trigger-fire-stale:', harnessFrom: 'suffix', severity: 'major' },
   { prefix: 'single-primary:', harnessFrom: 'ambient', severity: 'critical' },
+  // github-bridge divergence has a separate agent-actionable lane for known
+  // local remedies (for example restoring a workflow file when the remote
+  // OAuth token lacks the `workflow` scope). Keep it distinct from the
+  // owner-gated bridge alarm so the same condition gets one ownable item and
+  // does not page a human for a fix an agent can apply.
+  { prefix: GITHUB_BRIDGE_AGENT_ACTIONABLE_CONDITION_PREFIX, harnessFrom: 'suffix', severity: 'major' },
 ];
 
 /** The bare prefixes — derived, so the catalog stays the single source of truth. */

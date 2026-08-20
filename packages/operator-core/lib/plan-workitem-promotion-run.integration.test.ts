@@ -22,6 +22,7 @@ import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
+  WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
@@ -103,6 +104,10 @@ beforeAll(async () => {
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  // The real issue-family claim path consults watchdog recovery continuity before it
+  // serves a row. This fresh-DB fixture must therefore carry the same canonical table
+  // dependency as every other claim-path integration fixture.
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   // P-006: promotion now writes blocks-edges, so both stores must exist — coord_links (the
   // authoritative writer, created by ensureCoordCapabilityTables) AND its work_item_deps mirror.
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();

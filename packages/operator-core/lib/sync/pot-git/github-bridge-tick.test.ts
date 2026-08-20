@@ -197,6 +197,31 @@ describe('runGithubBridgeTick — composition', () => {
     expect(recorded.at(-1)?.action).toBe('escalate');
   });
 
+  it('workflow-scope egress refusal routes to the agent lane instead of needs_owner', async () => {
+    const { input, recorded } = bridgeInput(
+      {},
+      {
+        egress: async () =>
+          cleanEgress({
+            pushed: [],
+            remoteErrors: [
+              {
+                message: 'push refs/heads/staging: refusing to allow an OAuth App to update workflow without workflow scope',
+                transient: false,
+              },
+            ],
+            errors: ['push refs/heads/staging: workflow scope missing'],
+          }),
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.action).toBe('escalate');
+    expect(out.verdict.needsOwner).toBe(false);
+    expect(out.verdict.agentActionable).toBe(true);
+    expect(out.verdict.agentRemedies?.[0]?.command).toBe('git checkout origin/staging -- .github/workflows/ci.yml');
+    expect(recorded.at(-1)?.agentActionable).toBe(true);
+  });
+
   it('fork wins over upstream write (D-007b preserved)', async () => {
     const { input, egressCalls } = bridgeInput({ forkRemote: 'https://github.com/me/shop.git' });
     const out = await runGithubBridgeTick(input);

@@ -6,7 +6,7 @@ import {
   collectMobileSourceViolations,
   validateMobileScaffold,
   type MobileBaseStaticSection,
-} from "../../../../templates/papercusp-mobile-base/checks/mobile-base-contract.js";
+} from "./mobile-base-contract.js";
 
 const roots: string[] = [];
 afterEach(() => {

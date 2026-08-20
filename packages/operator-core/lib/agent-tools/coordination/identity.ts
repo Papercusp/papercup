@@ -74,6 +74,8 @@ export type IdentitySource =
   | 'static-client'
   /** In-process caller identified by its bearer principal. */
   | 'principal'
+  /** Event-reaction executor — attributable to the trigger agent, not a human UI principal. */
+  | 'event-reaction'
   /** Role-gated cup:spawn child — ownerId is the operator's durable `s-…`
    *  spawnId, baked as the signed MCP URL's `client=` param. */
   | 'fleet-spawn'
@@ -372,12 +374,16 @@ export function resolveAgentIdentity(ctx: ResolveIdentityCtx): AgentIdentity {
     // queen/overwatch running?" while both were live in the roster, 2026-07-01).
     // Labels are display-only, never keyed on (see module header).
     const sysRole = /^system:(.+)$/.exec(principal.slug)?.[1];
+    const source: IdentitySource =
+      principal.slug === 'system:event-reaction' || principal.slug.startsWith('plugin:event-reaction:')
+        ? 'event-reaction'
+        : 'principal';
     return {
       ownerId: uiClientId ?? principal.slug,
       ownerLabel: sysRole
         ? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`
         : `${principal.kind ?? 'principal'} · ${principal.slug}`,
-      source: 'principal',
+      source,
       workspaceId: principal.workspaceId,
       userId: null,
     };

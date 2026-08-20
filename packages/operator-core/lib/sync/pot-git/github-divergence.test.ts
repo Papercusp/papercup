@@ -23,6 +23,8 @@ import {
   decideNeedsOwnerAlarm,
   importWithRetry,
   EMPTY_NEEDS_OWNER_LATCH,
+  isWorkflowScopeRefusal,
+  workflowScopeRemedy,
   type NeedsOwnerLatch,
 } from './github-divergence';
 
@@ -103,6 +105,53 @@ describe('collectDivergenceSignals — folds the mechanism residues', () => {
     expect(verdict.action).toBe('escalate');
     expect(verdict.needsOwner).toBe(true);
     expect(verdict.detail).toMatch(/egress transport/i);
+  });
+
+  it('a workflow-scope refusal is agent-actionable, with the exact local remedy attached', () => {
+    const message =
+      'push refs/heads/staging: refusing to allow an OAuth App to create or update workflow without workflow scope';
+    expect(isWorkflowScopeRefusal(message)).toBe(true);
+    const signals = collectDivergenceSignals({
+      egress: { rejectedNonFF: [], blockedSecrets: [], remoteErrors: [{ message, transient: false }] },
+    });
+    expect(signals).toEqual([
+      {
+        kind: 'bridge-egress-agent-actionable',
+        errors: [message],
+        transient: false,
+        remedy: {
+          kind: 'github-workflow-scope',
+          paths: ['.github/workflows/ci.yml'],
+          command: 'git checkout origin/staging -- .github/workflows/ci.yml',
+        },
+      },
+    ]);
+    const verdict = classifyDivergence(signals);
+    expect(verdict.needsOwner).toBe(false);
+    expect(verdict.agentActionable).toBe(true);
+    expect(verdict.agentRemedies).toEqual([workflowScopeRemedy([message])]);
+    expect(verdict.detail).toMatch(/git checkout origin\/staging -- \.github\/workflows\/ci\.yml/);
+    expect(verdict.detail).not.toMatch(/fix the remote account\/credential/i);
+  });
+
+  it('mixed workflow-scope + credential failures keep both the agent remedy and owner rail', () => {
+    const workflow = 'remote rejected workflow update without workflow scope';
+    const credential = 'remote: Repository not found';
+    const verdict = classifyDivergence(
+      collectDivergenceSignals({
+        egress: {
+          rejectedNonFF: [],
+          blockedSecrets: [],
+          remoteErrors: [
+            { message: workflow, transient: false },
+            { message: credential, transient: false },
+          ],
+        },
+      }),
+    );
+    expect(verdict.needsOwner).toBe(true);
+    expect(verdict.agentActionable).toBe(true);
+    expect(verdict.signals.map((s) => s.kind)).toEqual(['bridge-egress-agent-actionable', 'bridge-egress-unreachable']);
   });
 
   it('an egress spawn failure escalates without an owner lever', () => {

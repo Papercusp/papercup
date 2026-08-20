@@ -23,6 +23,10 @@ vi.mock('@papercusp/db-org', async () => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...actual };
 });
+// The claim integration fixture predates migration 745. Loop-transition logging is
+// fail-soft instrumentation, not part of the claim behavior under test; keep its
+// fire-and-forget write from producing an unexpected-console warning here.
+vi.mock('./loop-transition-log', () => ({ recordLoopTransition: vi.fn() }));
 
 const { claimDueRoutine, claimedRoutineDispatchAllowed } = await import('./claim');
 
@@ -91,6 +95,7 @@ async function insertRoutine(o: {
     targetRole: o.targetRole ?? 'worker',
     triggerConfig: o.cfg,
     rescheduleIntervalSec: intervalSec,
+    nextFireAt: o.nextFireAt ?? null,
   } as never;
 }
 const activeOf = async (id: string) =>
@@ -107,8 +112,11 @@ const parkedOf = async (id: string) =>
     >`SELECT next_fire_at = 'infinity'::timestamptz AS parked FROM harness_shared.routines WHERE id=${id}`
   )[0]?.parked;
 // Simulate B-LOOP-2's completion-rebase: re-arm a parked loop to a DUE time.
-const rearmDue = async (id: string) =>
-  rootSql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second' WHERE id=${id}`;
+const rearmDue = async (id: string): Promise<Date> => {
+  const at = new Date(Date.now() - 1_000);
+  await rootSql`UPDATE harness_shared.routines SET next_fire_at = ${at} WHERE id=${id}`;
+  return at;
+};
 
 describe('claimDueRoutine — recurring', () => {
   it('claims a due cron routine and advances next_fire_at; a second claim then loses', async () => {
@@ -128,6 +136,26 @@ describe('claimDueRoutine — recurring', () => {
   it('does NOT claim an inactive routine', async () => {
     const r = await insertRoutine({ id: 'r3', cfg: { cron: '0 0 * * *' }, active: false, nextFireAt: null });
     expect(await claimDueRoutine(rootSql, r)).toBe(false);
+  });
+
+  it('does not let a stale tick overwrite a newly retuned due timestamp', async () => {
+    const r = await insertRoutine({ id: 'routines-set-cas', cfg: { cron: '0 0 * * *' }, nextFireAt: null });
+    const retunedAt = new Date(Date.now() - 1_000);
+
+    // The ticker listed r before routines:set replaced both the cron config and
+    // next_fire_at. The retuned timestamp is already due to make the regression
+    // deterministic; the stale snapshot must still lose the compare-and-swap.
+    await rootSql`
+      UPDATE harness_shared.routines
+         SET trigger_config = ${JSON.stringify({ cron: '* * * * *' })}::text::jsonb,
+             next_fire_at = ${retunedAt},
+             updated_at = now()
+       WHERE id = 'routines-set-cas'
+    `;
+
+    expect(await claimDueRoutine(rootSql, r)).toBe(false);
+    const preserved = await nextFireOf('routines-set-cas');
+    expect(preserved?.getTime()).toBe(retunedAt.getTime());
   });
 });
 
@@ -279,12 +307,14 @@ describe('claimDueRoutine — loop (P-003)', () => {
   });
 
   it('re-fires after the completion-rebase re-arms it (survives MANY claims, never deactivates)', async () => {
-    const r = await insertRoutine({ id: 'lp3', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null });
+    // Each engine tick lists a fresh RoutineRow. Refresh the captured timestamp
+    // after the simulated completion-rebase so the CAS models that next tick.
+    const r = (await insertRoutine({ id: 'lp3', cfg: {}, rescheduleIntervalSec: 60, nextFireAt: null })) as any;
     for (let i = 0; i < 5; i++) {
       expect(await claimDueRoutine(rootSql, r)).toBe(true); // claim
       expect(await parkedOf('lp3')).toBe(true); // parked in-flight
       expect(await activeOf('lp3')).toBe(true); // P-003 regression: a pure loop NEVER deactivates
-      await rearmDue('lp3'); // B-LOOP-2 re-arm after the turn settles
+      r.nextFireAt = await rearmDue('lp3'); // B-LOOP-2 re-arm after the turn settles
     }
     expect(await activeOf('lp3')).toBe(true);
   });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { resolveAgentIdentity } from '../agent-tools/coordination/identity';
 import { buildReactionCtx } from './dispatch-reaction';
 import type { ReactionCause } from './types';
 
@@ -34,6 +35,13 @@ describe('buildReactionCtx', () => {
     expect(c.gateBypass).toEqual({ capability: true, quota: true, role: true });
     expect(c.principal?.slug).toBe('system:event-reaction');
     expect(c.principal?.capabilities.has('*')).toBe(true);
+  });
+
+  it('remains attributable through the coordination identity resolver', () => {
+    const c = buildReactionCtx(parent, 'w1', cause);
+    const identity = resolveAgentIdentity(c);
+    expect(identity.ownerId).toBe('agent-1');
+    expect(identity.source).toBe('event-reaction');
   });
 
   it('scoped (capability) sandboxes to that one capability (D-012)', () => {

@@ -76,6 +76,39 @@ describe('resolveAgentIdentity — cup:spawn child (THE UMBILICAL)', () => {
   });
 });
 
+describe('resolveAgentIdentity — event-reaction principals', () => {
+  it('keeps a first-party reaction attributable to its trigger agent', () => {
+    const id = resolveAgentIdentity({
+      uiClientId: 'agent-1',
+      principal: { kind: 'system', slug: 'system:event-reaction', workspaceId: 'ws-1' },
+    });
+    expect(id.ownerId).toBe('agent-1');
+    expect(id.source).toBe('event-reaction');
+    expect(id.workspaceId).toBe('ws-1');
+  });
+
+  it('classifies a capability-scoped reaction principal the same way', () => {
+    const id = resolveAgentIdentity({
+      uiClientId: 'agent-1',
+      principal: {
+        kind: 'system',
+        slug: 'plugin:event-reaction:plugin:foo:emit',
+        workspaceId: 'ws-1',
+      },
+    });
+    expect(id.ownerId).toBe('agent-1');
+    expect(id.source).toBe('event-reaction');
+  });
+
+  it('does not broaden the ordinary principal exemption', () => {
+    const id = resolveAgentIdentity({
+      uiClientId: 'agent-1',
+      principal: { kind: 'system', slug: 'system:autoloop', workspaceId: 'ws-1' },
+    });
+    expect(id.source).toBe('principal');
+  });
+});
+
 describe('resolveAgentIdentity — verified signed spawn without client= (invoke-route agents, D-002 option c)', () => {
   it('attributes a VERIFIED signed spawn with no client= to the stable harness slug', () => {
     // The shape the MCP handler builds for an invoke-route agent (promote/

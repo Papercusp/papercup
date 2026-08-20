@@ -31,6 +31,7 @@ describe('isActionableConditionKey', () => {
       'single-primary:no-dedicated-primary',
       // P-005: emitted by trackGateStall (harness/routines/release-actions.ts).
       'gate-red-streak:papercusp',
+      'github-bridge-agent-actionable:papercusp',
     ]) {
       expect(isActionableConditionKey(key)).toBe(true);
     }

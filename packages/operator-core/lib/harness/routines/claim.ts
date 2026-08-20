@@ -4,9 +4,12 @@
  * registers workflows + system actions at load).
  *
  * Atomically claim a due routine: advance `next_fire_at` to its next cron time
- * ONLY if it is still active + due. The `WHERE active AND (next_fire_at IS NULL
- * OR next_fire_at <= now())` guard means exactly one racing tick wins the claim;
- * a loser sees zero rows updated and skips.
+ * ONLY if it is still active + due and the captured `next_fire_at` is unchanged.
+ * The null-safe compare-and-swap fence prevents a stale tick snapshot from
+ * overwriting a newer `routines:set` retune, even when that retuned timestamp is
+ * already due. The `WHERE active AND (next_fire_at IS NULL OR next_fire_at <= now())`
+ * guard means exactly one racing tick wins the claim; a loser sees zero rows
+ * updated and skips.
  *
  * A cron-kind routine with neither a cron nor an rrule expression is a ONE-SHOT (a self-declared
  * wake at an explicit `next_fire_at` — the pot's `pot-wake` routine,
@@ -88,6 +91,11 @@ export async function claimedRoutineDispatchAllowed(sql: Sql, routine: ClaimedRo
 
 export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<boolean> {
   const cfg = routine.triggerConfig;
+  // The due-list query hands us a snapshot. `routines:set` can replace both the
+  // cron config and next_fire_at before this claim runs; do not let this stale
+  // snapshot consume the new schedule. `IS NOT DISTINCT FROM` is intentional:
+  // NULL is a valid due value and must compare equal to the captured NULL.
+  const capturedNextFireAt = routine.nextFireAt ?? null;
   // Recurrence = a cron OR an rrule (scheduled-recurring-plans P-007).
   const hasRecurrence = !!(cfg && (cfg.cron || cfg.rrule));
   // A loop carries an interval (re-fire N sec after the turn completes). A PURE loop
@@ -105,6 +113,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
              updated_at = now()
        WHERE id = ${routine.id}
          AND active = TRUE
+         AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
          AND (next_fire_at IS NULL OR next_fire_at <= now())
       RETURNING id
     `;
@@ -141,6 +150,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
              updated_at = now()
        WHERE id = ${routine.id}
          AND active = TRUE
+         AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
          AND (next_fire_at IS NULL OR next_fire_at <= now())
       RETURNING id
     `;
@@ -184,7 +194,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
          AND plan_slug = ${templateSlug}
     `;
     if (planRow?.expires_at && planRow.expires_at.getTime() <= Date.now()) {
-      await sql`
+      const rows = await sql<{ id: string }[]>`
         UPDATE harness_shared.routines
            SET last_fired_at = now(),
                next_fire_at = NULL,
@@ -192,15 +202,19 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
                updated_at = now()
          WHERE id = ${routine.id}
            AND active = TRUE
+           AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
            AND (next_fire_at IS NULL OR next_fire_at <= now())
+        RETURNING id
       `;
-      await sql`
-        UPDATE harness_shared.harness_plans
-           SET schedule_active = FALSE, updated_at = now()
-         WHERE workspace_id = ${routine.workspaceId}
-           AND harness_slug = ${planStorageSlug}
-           AND plan_slug = ${templateSlug}
-      `;
+      if (rows.length > 0) {
+        await sql`
+          UPDATE harness_shared.harness_plans
+             SET schedule_active = FALSE, updated_at = now()
+           WHERE workspace_id = ${routine.workspaceId}
+             AND harness_slug = ${planStorageSlug}
+             AND plan_slug = ${templateSlug}
+        `;
+      }
       return false;
     }
   }
@@ -213,6 +227,7 @@ export async function claimDueRoutine(sql: Sql, routine: RoutineRow): Promise<bo
            updated_at = now()
      WHERE id = ${routine.id}
        AND active = TRUE
+       AND next_fire_at IS NOT DISTINCT FROM ${capturedNextFireAt}
        AND (next_fire_at IS NULL OR next_fire_at <= now())
     RETURNING id
   `;

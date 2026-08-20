@@ -1985,6 +1985,8 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
         last_admitted: outcome.lastAdmitted,
         divergence: outcome.verdict.action,
         needs_owner: outcome.verdict.needsOwner,
+        agent_actionable: outcome.verdict.agentActionable === true,
+        agent_remedies: outcome.verdict.agentRemedies ?? [],
         // WI-5738: the truthful egress watermark the origin-freshness watchdog
         // measures against (see GithubBridgeTickOutcome.egressHead).
         //

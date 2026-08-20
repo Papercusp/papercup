@@ -196,9 +196,29 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
+    const movingTip = await commit("c", "3", "moving staging tip");
     const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
     let queue: FrozenCandidateRepairQueue | null = null;
     const dispatchedHeads: string[] = [];
+    let tipRetests = 0;
+    deps.runGreen = async () => {
+      calls.push("runGreen");
+      return {
+        green: false,
+        summary: "1 failed",
+        failingTests: ["@papercusp/web"],
+        failingFiles: [
+          { file: "lib/broken.test.ts", workspace: "@papercusp/web" },
+        ],
+        isolationNote:
+          "isolation: 1 file STILL FAILED at the candidate — real break, gate stays red",
+      };
+    };
+    deps.resolveTip = async () => movingTip;
+    deps.runTestsAtRef = async () => {
+      tipRetests += 1;
+      return { pass: true, summary: "pass at tip" };
+    };
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
@@ -227,10 +247,20 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         fixerSpawnId: "fixer-1",
       },
     });
+    // EI-208045: the queue returns before moving-tip re-triage. Even though this fixture
+    // deliberately carries the old candidate-framed "real break" isolation note and a
+    // newer tip whose test would pass, the emitted result can never combine that note with
+    // `retriage.classification = stale-candidate` as one contradictory verdict.
+    expect(first.retriage).toBeUndefined();
+    expect(first.isolationNote).toMatch(/real break/i);
+    expect(tipRetests).toBe(0);
+    expect(
+      first.retriage?.classification === "stale-candidate" &&
+        /real break/i.test(first.isolationNote ?? ""),
+    ).toBe(false);
     expect(dispatchedHeads).toEqual([frozen]);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
 
-    const movingTip = await commit("c", "3", "moving staging tip");
     const second = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     expect(second).toMatchObject({
