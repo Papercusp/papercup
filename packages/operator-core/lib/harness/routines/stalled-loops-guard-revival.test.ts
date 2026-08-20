@@ -46,10 +46,35 @@ function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
   }) as never;
 }
 
+/**
+ * Is the placeholder that FOLLOWS `prefix` sitting inside an `unnest(...)` argument list?
+ *
+ * The guard below is about ONE binding site — the multi-arg `unnest(a, b)` that pairs each owner
+ * with its own `since`, which needs explicitly-typed arrays (`sql.array`) rather than raw JS ones.
+ * It is deliberately NOT "no raw arrays anywhere": postgres-js binds a raw JS array fine, and this
+ * repo relies on that at ~10 live call sites (`= ANY(${[...CONST]}::text[])`). A blanket rejection
+ * therefore models the driver WRONGLY, and its first victim was a legitimate change — see the
+ * calibration + CONTROL pair below.
+ */
+function bindsInsideUnnest(prefix: string): boolean {
+  const open = prefix.toLowerCase().lastIndexOf('unnest(');
+  if (open < 0) return false;
+  let depth = 0;
+  for (let i = open + 'unnest'.length; i < prefix.length; i++) {
+    if (prefix[i] === '(') depth++;
+    else if (prefix[i] === ')' && --depth === 0) return false;
+  }
+  return depth > 0;
+}
+
 function strictArraySql(rows: Array<{ id: string; target_owner_id: string }>) {
   const array = vi.fn((values: unknown[]) => ({ values }));
   const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
-    if (values.some(Array.isArray)) throw new Error('Received an instance of Array');
+    values.forEach((v, i) => {
+      if (Array.isArray(v) && bindsInsideUnnest(strings.slice(0, i + 1).join('?'))) {
+        throw new Error('Received an instance of Array');
+      }
+    });
     const statement = strings.join('?');
     if (/FROM harness_shared\.routines/i.test(statement)) return Promise.resolve(rows);
     if (/FROM unnest/i.test(statement) && /harness_shared\.tool_invocations/i.test(statement)) {
@@ -67,10 +92,14 @@ function strictArraySql(rows: Array<{ id: string; target_owner_id: string }>) {
   }) as unknown as {
     (...args: unknown[]): Promise<unknown[]>;
     array: typeof array;
-    unsafe(identifier: string): string;
+    unsafe: (fragment: string) => unknown;
   };
   sql.array = array;
-  sql.unsafe = (identifier: string) => identifier;
+  // postgres-js composes nested fragments, and `sql.unsafe` is how a predicate helper splices an
+  // identifier in (`agentToolInvocationPredicate` uses it for the table alias). A double missing it
+  // throws a TypeError that the sweep's `.catch` swallows into "no activity" — i.e. the veto silently
+  // reads as absent and the failure looks like a veto regression rather than a stale double.
+  sql.unsafe = (fragment: string) => ({ unsafe: fragment });
   return { sql: sql as never, array };
 }
 
@@ -227,6 +256,44 @@ describe('isProgressingToolActivity (WI-37546 — progress, not volume)', () => 
 
   it('CALIBRATION — the real working shape passes, so the two controls above are not just strict', () => {
     expect(isProgressingToolActivity(WORKING)).toBe(true);
+  });
+});
+
+/**
+ * The double that the `binds the default activity reader arrays…` test below leans on is itself a
+ * guard, so it needs its own falsifiability proof — kept here permanently rather than proven by a
+ * one-off mutation, because mutating the shared checkout lets git-sync commit the mutant (CLAUDE.md,
+ * "Proving a guard is falsifiable"). The pair is the point: the CONTROL shows the guard still bites
+ * on the binding it exists for, and the CALIBRATION shows it does not bite on the legitimate raw
+ * array that a blanket check wrongly rejected.
+ */
+describe('strictArraySql — the double is calibrated, so the veto test cannot pass vacuously', () => {
+  type TaggedSql = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+
+  it('CONTROL — a RAW JS array bound inside unnest(...) still throws (the guard is not vacuous)', () => {
+    const { sql } = strictArraySql([]);
+    const tagged = sql as unknown as TaggedSql;
+    expect(
+      () => tagged`
+        SELECT 1
+          FROM unnest(${['su-live']}::text[], ${['2026-08-09T17:07:00.000Z']}::timestamptz[])
+               AS b(owner_id, since)
+          JOIN harness_shared.tool_invocations t ON t.coord_owner_id = b.owner_id
+      `,
+    ).toThrow(/Received an instance of Array/);
+  });
+
+  it('CALIBRATION — a raw array bound OUTSIDE unnest is valid postgres-js and must NOT throw', () => {
+    const { sql } = strictArraySql([]);
+    const tagged = sql as unknown as TaggedSql;
+    expect(
+      () => tagged`SELECT 1 FROM harness_shared.tool_invocations t WHERE t.tool_name = ANY(${['a', 'b']}::text[])`,
+    ).not.toThrow();
+  });
+
+  it('CALIBRATION — sql.unsafe exists, so a composed predicate fragment builds instead of throwing', () => {
+    const { sql } = strictArraySql([]);
+    expect(() => (sql as unknown as { unsafe: (s: string) => unknown }).unsafe('t.call_origin')).not.toThrow();
   });
 });
 
