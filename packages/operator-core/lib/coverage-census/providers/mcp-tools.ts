@@ -24,7 +24,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { getCatalog, toJsonSchema } from '@papercusp/tooldef';
+import { listAllProjectedTools } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface, SurfaceCensusProvider } from '@papercusp/testing-shell/census';
 import { assertRegistryNonEmpty } from './_non-empty';
 
@@ -70,15 +70,6 @@ function resolveToolSourceFile(toolName: string, repoRoot: string): string | nul
   return null;
 }
 
-function schemaOf(args: unknown): unknown {
-  if (args == null) return undefined;
-  try {
-    return toJsonSchema(args);
-  } catch {
-    return undefined;
-  }
-}
-
 export const mcpToolsProvider: SurfaceCensusProvider = {
   provider: 'mcp-tools',
   kinds: [MCP_TOOL_KIND],
@@ -88,17 +79,19 @@ export const mcpToolsProvider: SurfaceCensusProvider = {
     // otherwise an empty catalog reads as "no tools exist" instead of "nothing loaded".
     await import('../../agent-tools/index');
 
-    const catalog = getCatalog();
+    // The endpoint system serves the projected registry, not the legacy catalog. `defineTool`
+    // mirrors legacy definitions into this registry and endpoint-native tools register here
+    // directly, so this is the only population that matches the MCP transport.
+    const catalog = listAllProjectedTools().filter((def) => def.expose.mcp != null);
 
     const surfaces = catalog.map((def): ObservedSurface => ({
       kind: MCP_TOOL_KIND,
-      surfaceId: def.name,
-      sourceFile: resolveToolSourceFile(def.name, ctx.repoRoot),
-      schemaRef: schemaOf(def.args),
+      surfaceId: def.expose.mcp!.name,
+      sourceFile: resolveToolSourceFile(def.expose.mcp!.name, ctx.repoRoot),
+      schemaRef: def.discoveryInputSchema ?? def.inputSchema,
       attrs: {
-        capability: def.capability ?? null,
+        capabilities: def.capabilities,
         effect: def.effect ?? null,
-        tier: def.tier ?? null,
         // A composite tool bundles other tools; its coverage question is different from a
         // primitive's, so record it rather than making the census re-derive it.
         replaces: Array.isArray(def.replaces) ? def.replaces : null,
@@ -108,7 +101,7 @@ export const mcpToolsProvider: SurfaceCensusProvider = {
 
     return assertRegistryNonEmpty(
       surfaces,
-      'getCatalog() (@papercusp/tooldef)',
+      'listAllProjectedTools() MCP projection (@papercusp/tooldef)',
       'The agent-tools barrel did not register any tool — check that lib/agent-tools/index.ts imported cleanly.',
     ) as ObservedSurface[];
   },

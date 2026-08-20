@@ -19,7 +19,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { getCatalog } from '@papercusp/tooldef';
+import { listAllProjectedTools } from '@papercusp/tooldef';
 import type { CensusContext, ObservedSurface } from '@papercusp/testing-shell/census';
 import { censusProviders } from './provider-registry';
 import { assertRegistryNonEmpty } from './providers/_non-empty';
@@ -133,8 +133,18 @@ describe('hono-routes population', () => {
 describe('mcp-tools population', () => {
   it('is exactly the live tool catalog', async () => {
     const surfaces = await mcpToolsProvider.enumerate(ctx);
-    const catalog = getCatalog().map((d) => d.name);
+    const catalog = listAllProjectedTools()
+      .flatMap((d) => (d.expose.mcp ? [d.expose.mcp.name] : []));
     expect(surfaces.map((s) => s.surfaceId).sort()).toEqual([...catalog].sort());
+  });
+
+  it('enumerates the authoritative projected registry, not the legacy catalog subset', async () => {
+    const surfaces = await mcpToolsProvider.enumerate(ctx);
+
+    // The legacy registry currently contains only a small compatibility subset. Keep a
+    // calibrated floor so a loader/module-identity regression cannot turn exact set-equality
+    // above into a vacuous comparison against the same truncated registry.
+    expect(surfaces.length).toBeGreaterThanOrEqual(500);
   });
 
   it('never asserts a sourceFile that does not exist', async () => {
