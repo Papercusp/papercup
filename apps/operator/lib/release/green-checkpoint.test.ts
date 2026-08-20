@@ -362,6 +362,109 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(cleanupCount).toBe(1);
   });
 
+  it("joins a verified patch-equivalent repair into staging history, then requires a normal fast-forward gate", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "verified repair");
+
+    // Staging absorbed the same repair as a separate commit and then kept moving. Its tree
+    // contains the repair, but its history does not contain the exact head the repair suite
+    // verified. Promoting `repaired` directly would strand this integration line behind a
+    // non-fast-forward gate on the very next tick.
+    await git(repo, ["reset", "--hard", ready]);
+    await commit("b", "fixed", "patch-equivalent staging repair");
+    const stagingTip = await commit("c", "3", "later staging work");
+    const stagingTree = await git(repo, ["rev-parse", `${stagingTip}^{tree}`]);
+
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 2,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["lib/broken.test.ts"],
+    };
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => true;
+    deps.cleanupFrozenRepairWorktree = async () => {};
+    Object.assign(deps, {
+      reconcileFrozenRepairIntoStaging: async (
+        next: FrozenCandidateRepairQueue,
+      ) => {
+        const currentStaging = await revParse(repo, "main");
+        const tree = await git(repo, [
+          "rev-parse",
+          `${currentStaging}^{tree}`,
+        ]);
+        const joined = await git(repo, [
+          "commit-tree",
+          tree,
+          "-p",
+          currentStaging,
+          "-p",
+          next.repairHead,
+          "-m",
+          "Join verified frozen repair into staging history",
+        ]);
+        await git(repo, [
+          "update-ref",
+          "refs/heads/main",
+          joined,
+          currentStaging,
+        ]);
+        return joined;
+      },
+    });
+
+    const reconciled = await runGreenCheckpoint(cfg(), deps, {
+      noPush: true,
+    });
+
+    const joinedTip = await revParse(repo, "main");
+    expect(reconciled).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+      candidate: joinedTip,
+      from: ready,
+    });
+    expect(await revParse(repo, "ready")).toBe(ready);
+    expect(await git(repo, ["rev-parse", `${joinedTip}^{tree}`])).toBe(
+      stagingTree,
+    );
+    await expect(
+      git(repo, ["merge-base", "--is-ancestor", repaired, joinedTip]),
+    ).resolves.toBe("");
+    expect(queue).toBeNull();
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(calls).not.toContain("advance");
+
+    const promoted = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(promoted).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: joinedTip,
+      from: ready,
+    });
+    expect(await revParse(repo, "ready")).toBe(joinedTip);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(2);
+  });
+
   it("retries forward from a red repair head without adopting the moving staging tip", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
