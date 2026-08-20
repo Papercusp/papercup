@@ -23,7 +23,7 @@ export default defineTool({
   name: 'scheduler:get_claim_spec',
   profile: 'engineer',
   description:
-    'Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — "bee" (a per-bee spec, always wins), "fleet" (inherited via membership, no per-bee override), or "default" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing. Pass `history: N` to also get the PRIOR versions a destructive write superseded (spec bytes + revision + cause), which is how you UNDO a spec that was overwritten or cleared.',
+    'Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — "bee" (a per-bee spec, always wins), "fleet" (inherited via membership, no per-bee override), or "default" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing. Pass `history: N` to also get up to N PRIOR versions a destructive write superseded; use `history: 0` for an explicitly bounded current-only read.',
   guidance: {
     when:
       'You just called scheduler:set_claim_spec and want to confirm the write landed (right revision, right filter/rank) — or you want to know WHAT spec a bee/fleet is currently running under before re-steering it. This is a selector-only read: pass exactly one of cupId | fleet, plus optional workspace; do not forward generic harness or planSlug context from coord:orient or fleet wake discovery because those keys are rejected.',
@@ -52,11 +52,11 @@ export default defineTool({
       history: z
         .number()
         .int()
-        .min(1)
+        .min(0)
         .max(CLAIM_SPEC_HISTORY_MAX)
         .optional()
         .describe(
-          `also return up to N (max ${CLAIM_SPEC_HISTORY_MAX}) PRIOR versions of this lane, newest first — the spec bytes a destructive write superseded, enough to rebuild it`,
+          `also return up to N (max ${CLAIM_SPEC_HISTORY_MAX}) PRIOR versions of this lane, newest first — the spec bytes a destructive write superseded, enough to rebuild it; 0 returns the current spec without prior versions`,
         ),
     })
     .refine((a) => Boolean(a.cupId) !== Boolean(a.fleet), {
@@ -90,7 +90,9 @@ export default defineTool({
       ? { subject: { kind: 'fleet-sentinel' as const, fleetSlug }, ...callerView }
       : {};
 
-    if (!args.history) return { data: { ok: true, ...record, ...subject } };
+    if (args.history === undefined || args.history === 0) {
+      return { data: { ok: true, ...record, ...subject } };
+    }
     // History is read for the target the CALLER ADDRESSED, not for whichever row answered
     // the current-spec read. Those differ in exactly the case this history exists for: a
     // CLEARED lane has no row of its own, so its current spec resolves to the fleet's or to
