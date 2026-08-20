@@ -16,7 +16,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import postgres from 'postgres';
 import { getTestPg } from '@papercusp/test-config/pg';
-import { previousCutAt } from './release-registry';
+import {
+  listReleases,
+  markReleasePublished,
+  previousCutAt,
+  recordRelease,
+} from './release-registry';
 
 let sql: postgres.Sql;
 // Unique workspace so these rows never collide with any other test's releases.
@@ -80,5 +85,50 @@ describe('previousCutAt — excludes the version being (re-)recorded', () => {
   it('the first release in a channel returns null (no prior real cut)', async () => {
     const prev = await previousCutAt(sql, WS, 'beta', at('2026-07-18T00:00:00Z'), '0.0.13');
     expect(prev).toBeNull();
+  });
+});
+
+describe('release publication finalizer writer', () => {
+  it('marks a row once and preserves the first publication timestamp on retry', async () => {
+    const first = at('2026-08-20T05:40:00Z');
+    const retry = at('2026-08-20T05:41:00Z');
+
+    const stored = await markReleasePublished(sql, WS, 'alpha', '0.0.10', first);
+    const storedAgain = await markReleasePublished(sql, WS, 'alpha', '0.0.10', retry);
+
+    expect(stored.toISOString()).toBe(first.toISOString());
+    expect(storedAgain.toISOString()).toBe(first.toISOString());
+  });
+
+  it('refuses to mark a missing registry row', async () => {
+    await expect(
+      markReleasePublished(sql, WS, 'alpha', '9.9.9', at('2026-08-20T05:42:00Z')),
+    ).rejects.toThrow('no registry row');
+  });
+
+  it('does not let a later cut re-record erase an already published timestamp', async () => {
+    const publishedAt = at('2026-08-20T05:43:00Z');
+    await sql`
+      INSERT INTO harness_shared.releases (workspace_id, version, channel, cut_at, published_at)
+      VALUES (${WS}, '0.0.12', 'alpha', ${at('2026-07-20T00:00:00Z')}, ${publishedAt})
+    `;
+
+    await recordRelease(sql, WS, {
+      version: '0.0.12',
+      channel: 'alpha',
+      cutAt: at('2026-07-20T00:00:00Z'),
+      publishedAt: null,
+      changelogMd: null,
+      workItemIds: [],
+      planSlugs: [],
+      artifacts: [],
+      gitSha: null,
+      cutBy: null,
+      notes: null,
+    });
+
+    const [row] = await listReleases(sql, WS, 'alpha');
+    expect(row?.version).toBe('0.0.12');
+    expect(row?.publishedAt?.toISOString()).toBe(publishedAt.toISOString());
   });
 });
