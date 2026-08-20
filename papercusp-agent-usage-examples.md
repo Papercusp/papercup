@@ -602,7 +602,7 @@ A custom fleet invariant is a stored read-only query whose contract is “rows r
   "name": "members-stay-on-papercusp",
   "description": "A row means a live fleet member is attached to the wrong pot; rebind or respawn it before trusting its lane.",
   "severity": "critical",
-  "sql": "SELECT owner_id, pot_slug FROM harness_shared.coord_presence WHERE workspace_id = {{workspace}} AND fleet_slug = {{fleet}} AND pot_slug IS DISTINCT FROM 'papercusp'"
+  "sql": "SELECT owner_id, pot_slug FROM harness_shared.coord_presence WHERE workspace_id = {{workspace}} AND fleet_slug = {{fleet}} AND heartbeat_at > now() - interval '10 minutes' AND pot_slug IS DISTINCT FROM 'papercusp'"
 }
 ```
 
