@@ -350,4 +350,17 @@ describe("validateChecksConfig", () => {
     );
     expect(validateChecksConfig(raw)).toEqual([]);
   });
+
+  it("the committed iPhone-app answer record validates structurally", () => {
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          TEMPLATES_DIR,
+          "papercusp-iphone-app/reference/iphone-app.checks-config.example.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(validateChecksConfig(raw)).toEqual([]);
+  });
 });
