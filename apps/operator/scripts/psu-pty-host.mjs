@@ -2361,9 +2361,15 @@ export async function runMcpReconnectMacro({
 // wakes of the same loop), while distinct sources (owner messages, other loops)
 // differ — those still deliver independently.
 
-/** Coalesce key for an injected turn: its first non-empty line, trimmed+capped.
+/** Coalesce key for an injected turn: a loop's stable instance id when present,
+ *  otherwise its first non-empty line, trimmed+capped. Loop short-form wakes
+ *  lead with `Loop wake #<fireNumber>`, so text-only keys treat every fire as a
+ *  different source and let a queued backlog spend one turn per fire. The
+ *  envelope's routineId is the stable identity we actually want to coalesce.
  *  Pure — exported for tests. */
-export function turnCoalesceKey(data) {
+export function turnCoalesceKey(data, routineId) {
+  const loopId = String(routineId ?? '').trim();
+  if (loopId) return `loop-fire:${loopId}`;
   const first = String(data ?? '')
     .split('\n')
     .find((l) => l.trim().length > 0);
@@ -2386,16 +2392,17 @@ export function renderCoalescedTurn(data, folded) {
  *  the caller became the waiter and must claim() at delivery — or on ANY early exit
  *  (defer/error), so folded wakes never black-hole behind a dead waiter. */
 export function makeTurnCoalescer() {
-  const pending = new Map(); // key -> { data, folded }
+  const pending = new Map(); // key -> { data, folded, metadata? }
   return {
-    admit(key, data) {
+    admit(key, data, metadata) {
       const p = pending.get(key);
       if (p) {
         p.data = data; // newest wins — it carries the freshest checkpoint splice
+        if (metadata !== undefined) p.metadata = metadata;
         p.folded += 1;
         return true;
       }
-      pending.set(key, { data, folded: 0 });
+      pending.set(key, metadata === undefined ? { data, folded: 0 } : { data, folded: 0, metadata });
       return false;
     },
     claim(key) {
@@ -3856,8 +3863,12 @@ export function hostThroughPty(o) {
       // P-001a: a same-source turn already waiting at the gates absorbs this one —
       // newest text wins, the waiter delivers ONE annotated turn. Only mode:'turn'
       // (never reset/recycle/compact — lifecycle verbs are not duplicates of work).
-      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data) : null;
-      if (coalesceKey != null && turnCoalescer.admit(coalesceKey, msg.data)) {
+      const coalesceKey = msg.mode === 'turn' ? turnCoalesceKey(msg.data, msg.routineId) : null;
+      const coalesceMetadata =
+        msg.routineId && msg.fireNumber != null
+          ? { routineId: msg.routineId, fireNumber: msg.fireNumber }
+          : undefined;
+      if (coalesceKey != null && turnCoalescer.admit(coalesceKey, msg.data, coalesceMetadata)) {
         try {
           process.stderr.write(
             `psu-pty-host: duplicate queued turn FOLDED for ${ownerId} (same-source coalesce, P-001a)\n`,
@@ -4280,7 +4291,16 @@ export function hostThroughPty(o) {
         let deliver = msg;
         if (coalesceKey != null) {
           const claimed = turnCoalescer.claim(coalesceKey);
-          if (claimed) deliver = { ...msg, data: renderCoalescedTurn(claimed.data, claimed.folded) };
+          if (claimed) {
+            // The folded text is the newest loop fire, so carry its fire identity
+            // forward too. Keeping the first envelope here would make the stale-
+            // fire guard commit an older number for newer text.
+            deliver = {
+              ...msg,
+              ...(claimed.metadata ?? {}),
+              data: renderCoalescedTurn(claimed.data, claimed.folded),
+            };
+          }
         }
         // Deliver as ordered steps: a turn writes its text, THEN the submit CR as
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR

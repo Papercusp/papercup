@@ -1603,6 +1603,15 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
     it('distinct sources get distinct keys', () => {
       expect(turnCoalesceKey(wake(1))).not.toBe(turnCoalesceKey('owner: please check the deploy'));
     });
+
+    it('uses a loop instance id so numbered short-form fires share one key', () => {
+      expect(turnCoalesceKey('Loop wake #1 — short form', 'routine-1')).toBe(
+        turnCoalesceKey('Loop wake #9 — short form', 'routine-1'),
+      );
+      expect(turnCoalesceKey('Loop wake #1 — short form', 'routine-1')).not.toBe(
+        turnCoalesceKey('Loop wake #1 — short form', 'routine-2'),
+      );
+    });
     it('caps the key and tolerates empty/undefined', () => {
       expect(turnCoalesceKey('x'.repeat(1000)).length).toBe(300);
       expect(turnCoalesceKey('')).toBe('');
@@ -1631,6 +1640,17 @@ describe('same-source turn coalescing (compaction-continuity-hardening P-001a)',
       const claimed = c.claim('k');
       expect(claimed).toEqual({ data: wake(3), folded: 2 });
       expect(c.size()).toBe(0);
+    });
+
+    it('preserves the newest loop fire identity when numbered fires fold', () => {
+      const c = makeTurnCoalescer();
+      expect(c.admit('loop-fire:r-1', 'Loop wake #1', { routineId: 'r-1', fireNumber: 1 })).toBe(false);
+      expect(c.admit('loop-fire:r-1', 'Loop wake #9', { routineId: 'r-1', fireNumber: 9 })).toBe(true);
+      expect(c.claim('loop-fire:r-1')).toEqual({
+        data: 'Loop wake #9',
+        folded: 1,
+        metadata: { routineId: 'r-1', fireNumber: 9 },
+      });
     });
 
     it('different keys wait independently (no cross-source folding)', () => {
