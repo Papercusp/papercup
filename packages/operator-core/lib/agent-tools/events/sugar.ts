@@ -40,6 +40,7 @@ import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/p
 import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
 import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
 import { activeWorkspaceId } from "../../workspace-registry";
+import { resolveConcreteHarnessSlug } from "../_harness-scope";
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): 30min default, matches events:await.
@@ -162,8 +163,8 @@ function gitSyncAwaitScope(ctx: Parameters<typeof resolveAgentIdentity>[0]): {
   installSlug: string;
   workspaceId: string;
 } | null {
-  const installSlug = typeof ctx.harnessSlug === "string" ? ctx.harnessSlug.trim() : "";
-  if (!installSlug || installSlug === "*") return null;
+  const installSlug = resolveConcreteHarnessSlug(undefined, ctx);
+  if (!installSlug) return null;
 
   const contextWorkspace =
     typeof ctx.workspaceId === "string" && ctx.workspaceId.trim() && ctx.workspaceId !== "*"
