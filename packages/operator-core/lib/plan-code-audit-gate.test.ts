@@ -1,0 +1,253 @@
+/**
+ * plan-code-audit-gate.test.ts — per-item ship-time audit freshness (P-004).
+ *
+ * The rubric/vetting family has a separate suite. These tests pin the earlier
+ * code-truth family: a narrow audit pass must not erase older item evidence, and
+ * only the items whose requirement or cited bytes moved are sent back for audit.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
+import { getOrgPg } from '@papercusp/db-org';
+import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
+import { getAcceptanceRubricForPlan } from './rubrics';
+import {
+  getEffectiveItemAudits,
+  getLatestPlanAudit,
+  getPlanItemStatuses,
+  gitBlobSha,
+  planItemTextHash,
+  repoCitationContextForHarness,
+  type AuditItemEntry,
+  type EffectiveItemAudit,
+  type PlanAudit,
+} from './plan-audits';
+
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+vi.mock('./rubrics', () => ({
+  getAcceptanceRubricForPlan: vi.fn(),
+  getRubric: vi.fn(),
+  getRubricPlanRevision: vi.fn(),
+  META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
+}));
+vi.mock('./scorecards', () => ({ listScorecards: vi.fn() }));
+vi.mock('./plan-audits', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./plan-audits')>();
+  return {
+    ...actual,
+    getEffectiveItemAudits: vi.fn(),
+    getLatestPlanAudit: vi.fn(),
+    getPlanItemStatuses: vi.fn(),
+    repoCitationContextForHarness: vi.fn(),
+  };
+});
+
+const mockFlag = vi.mocked(getFlag);
+const mockPg = vi.mocked(getOrgPg);
+const mockRubric = vi.mocked(getAcceptanceRubricForPlan);
+const mockLatestAudit = vi.mocked(getLatestPlanAudit);
+const mockEffectiveAudits = vi.mocked(getEffectiveItemAudits);
+const mockPlanItems = vi.mocked(getPlanItemStatuses);
+const mockCitationContext = vi.mocked(repoCitationContextForHarness);
+
+const PLAN = 'some-plan-2026-08-13';
+let files: Map<string, string>;
+
+const sqlReturning = (rows: unknown[]) => {
+  const sql = (() => Promise.resolve(rows)) as unknown as ReturnType<typeof getOrgPg>['sql'];
+  return { sql } as ReturnType<typeof getOrgPg>;
+};
+
+const audit = (over: Partial<PlanAudit> = {}): PlanAudit => ({
+  planSlug: PLAN,
+  harnessSlug: 'papercusp',
+  auditSeq: 2,
+  createdBy: 'su-implementer',
+  createdAt: '2026-08-13T12:00:00.000Z',
+  auditedSha: 'head-2',
+  items: [],
+  findings: [],
+  summary: null,
+  ...over,
+});
+
+const effective = (input: {
+  itemId: string;
+  itemText: string;
+  path?: string;
+  body?: string;
+  auditSeq?: number;
+  status?: AuditItemEntry['verdict'];
+}): EffectiveItemAudit => {
+  const path = input.path ?? `src/${input.itemId.toLowerCase().replace('-', '_')}.ts`;
+  const body = input.body ?? files.get(path) ?? `export const ${input.itemId.replace('-', '_')} = true;\n`;
+  return {
+    auditSeq: input.auditSeq ?? 1,
+    entry: {
+      itemId: input.itemId,
+      verdict: input.status ?? 'implemented',
+      citations: [{ kind: 'code', path, blobSha: gitBlobSha(body) }],
+      auditedSha: `head-${input.auditSeq ?? 1}`,
+      auditedAt: '2026-08-13T11:00:00.000Z',
+      itemTextHash: planItemTextHash(input.itemText),
+    },
+  };
+};
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  files = new Map([
+    ['src/p_001.ts', 'export const P_001 = true;\n'],
+    ['src/p_002.ts', 'export const P_002 = true;\n'],
+  ]);
+
+  // Isolate the code-audit family: audit ON, item/rubric/vetting gates OFF.
+  mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_CODE_AUDIT_GATE);
+  mockPg.mockReturnValue(sqlReturning([{ plan_slug: PLAN, template: null, template_slug: null }]));
+  mockLatestAudit.mockResolvedValue(audit());
+  mockEffectiveAudits.mockResolvedValue([]);
+  mockPlanItems.mockResolvedValue([]);
+  mockCitationContext.mockImplementation(async () => ({
+    repoRoot: '/repo',
+    deps: {
+      statFile: (rel) => (files.has(rel) ? { isFile: true } : null),
+      readFile: (rel) => files.get(rel) ?? null,
+      blobSha: (rel) => {
+        const body = files.get(rel);
+        return body == null ? null : gitBlobSha(body);
+      },
+    },
+  }));
+});
+
+describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
+  it('folds effective entries across partial passes instead of treating the latest pass as a snapshot', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', auditSeq: 1 });
+    const p2 = effective({ itemId: 'P-002', itemText: 'second requirement', auditSeq: 2 });
+    mockLatestAudit.mockResolvedValue(audit({ items: [p2.entry] }));
+    mockEffectiveAudits.mockResolvedValue([p2, p1]);
+    mockPlanItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'done', itemText: 'first requirement' },
+      { itemId: 'P-002', status: 'done', itemText: 'second requirement' },
+    ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(mockRubric).not.toHaveBeenCalled();
+  });
+
+  it('names only a new/uncovered item and teaches that every other item carries forward', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement' });
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'done', itemText: 'first requirement' },
+      { itemId: 'P-002', status: 'done', itemText: 'new requirement' },
+    ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+    expect(verdict.message).toContain('P-002: no audit entry');
+    expect(verdict.message).not.toContain('P-001:');
+    expect(verdict.message).toContain('ONLY the listed items');
+    expect(verdict.message).toContain('Every unlisted item carries forward');
+    expect(mockRubric).not.toHaveBeenCalled();
+  });
+
+  it('marks only an item whose requirement text changed', async () => {
+    mockEffectiveAudits.mockResolvedValue([
+      effective({ itemId: 'P-001', itemText: 'old requirement', auditSeq: 1 }),
+    ]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'new requirement' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+    expect(verdict.message).toContain('P-001: item text changed since audit #1');
+  });
+
+  it('marks a resolving citation stale when its current blob differs from the audited blob', async () => {
+    const p1 = effective({
+      itemId: 'P-001',
+      itemText: 'first requirement',
+      path: 'src/p_001.ts',
+      body: files.get('src/p_001.ts'),
+      auditSeq: 1,
+    });
+    files.set('src/p_001.ts', 'export const P_001 = "rewritten";\n');
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+    expect(verdict.message).toContain('P-001: src/p_001.ts changed since audit #1');
+  });
+
+  it('keeps a deleted/broken path in audit_citations_unresolved rather than calling it blob drift', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', path: 'src/p_001.ts' });
+    files.delete('src/p_001.ts');
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'first requirement' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'audit_citations_unresolved' });
+    expect(verdict.message).toContain('P-001 (audit #1) → src/p_001.ts (file_not_found)');
+    expect(verdict.message).toContain('ONLY the listed items');
+  });
+
+  it('treats a reopened item as stale even when its text and evidence are unchanged', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', auditSeq: 1 });
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'wip', itemText: 'first requirement' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'audit_coverage_stale' });
+    expect(verdict.message).toContain("P-001: status 'wip' is unfinished/reopened since audit #1");
+  });
+
+  it('does not demand a source root for an explicitly non-source item with no code/test citation', async () => {
+    const entry: EffectiveItemAudit = {
+      auditSeq: 1,
+      entry: {
+        itemId: 'P-001',
+        verdict: 'not-code',
+        citations: [{ kind: 'doc', ref: '/internal/docs/demo', reason: 'the deliverable is a runbook' }],
+        auditedSha: 'head-1',
+        auditedAt: '2026-08-13T11:00:00.000Z',
+        itemTextHash: planItemTextHash('publish the runbook'),
+      },
+    };
+    mockEffectiveAudits.mockResolvedValue([entry]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'publish the runbook' }]);
+    mockCitationContext.mockResolvedValue(null);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(mockCitationContext).not.toHaveBeenCalled();
+  });
+
+  it('force records both stale coverage and unresolved citations in refusal order', async () => {
+    const p1 = effective({ itemId: 'P-001', itemText: 'old requirement', path: 'src/p_001.ts' });
+    files.delete('src/p_001.ts');
+    mockEffectiveAudits.mockResolvedValue([p1]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'new requirement' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN, { force: { reason: 'release recovery' } });
+
+    expect(verdict).toMatchObject({
+      satisfied: true,
+      skipped: 'flag-off',
+      forcedPast: {
+        reason: 'release recovery',
+        checks: ['audit_coverage_stale', 'audit_citations_unresolved'],
+      },
+    });
+  });
+});

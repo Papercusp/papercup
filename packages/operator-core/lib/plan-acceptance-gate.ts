@@ -34,8 +34,11 @@ import {
 } from './rubrics';
 import { listScorecards } from './scorecards';
 import {
+  citationBlobSha,
+  getEffectiveItemAudits,
   getLatestPlanAudit,
   getPlanItemStatuses,
+  planItemTextHash,
   repoCitationContextForHarness,
   resolveCitation,
   UNFINISHED_ITEM_STATUSES,
@@ -176,14 +179,83 @@ export async function evaluatePlanAcceptanceGate(
         };
       }
     } else {
-      // Coverage is re-checked against the CURRENT item list, not the list as it stood
-      // when the audit ran: items added afterwards are exactly the ones nobody looked at.
-      const items = await getPlanItemStatuses(planSlug);
-      const audited = new Set(audit.items.map((i) => i.itemId));
-      const uncovered = items
-        .filter((i) => i.status !== 'dropped' && !audited.has(i.itemId))
-        .map((i) => i.itemId);
-      if (uncovered.length > 0) {
+      // D-006/D-007: a pass is NOT a full-plan snapshot. Resolve the latest entry
+      // per item across every pass, then compare only that item's requirement and
+      // evidence with the current tree. A narrow re-audit therefore cannot make all
+      // the unchanged items disappear, and carrying an item cannot re-stamp it.
+      const [items, effectiveAudits] = await Promise.all([
+        getPlanItemStatuses(planSlug),
+        getEffectiveItemAudits(planSlug),
+      ]);
+      const effectiveByItem = new Map(effectiveAudits.map((entry) => [entry.entry.itemId, entry]));
+      const stale: string[] = [];
+      const broken: string[] = [];
+      const hasVerifyingCitations = effectiveAudits.some(({ entry }) =>
+        entry.citations.some((citation) => citation.kind === 'code' || citation.kind === 'test'),
+      );
+      const citationContext = hasVerifyingCitations
+        ? await repoCitationContextForHarness(audit.harnessSlug)
+        : null;
+
+      if (hasVerifyingCitations && !citationContext) {
+        broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
+      }
+
+      for (const item of items) {
+        // A deliberate drop is the recorded exit supplied by D-002. It does not need
+        // code evidence and must not be resurrected as an audit obligation.
+        if (item.status === 'dropped') continue;
+
+        const effective = effectiveByItem.get(item.itemId);
+        if (!effective) {
+          stale.push(`${item.itemId}: no audit entry`);
+          continue;
+        }
+
+        const reasons: string[] = [];
+        const { entry, auditSeq } = effective;
+        if ((UNFINISHED_ITEM_STATUSES as readonly string[]).includes(item.status)) {
+          reasons.push(`status '${item.status}' is unfinished/reopened since audit #${auditSeq}`);
+        }
+        if (!entry.itemTextHash) {
+          reasons.push(`item-text fingerprint is missing from audit #${auditSeq}`);
+        } else if (entry.itemTextHash !== planItemTextHash(item.itemText)) {
+          reasons.push(`item text changed since audit #${auditSeq}`);
+        }
+
+        if (citationContext) {
+          for (const citation of entry.citations) {
+            // D-008: only code/test citations constitute verification. Doc/none
+            // declarations never become code-truth merely by surviving this read.
+            if (citation.kind !== 'code' && citation.kind !== 'test') continue;
+            const resolution = resolveCitation(citation, citationContext.deps);
+            if (!resolution.ok) {
+              broken.push(
+                `${item.itemId} (audit #${auditSeq}) → ${citation.path ?? '(no path)'} (${resolution.reason})`,
+              );
+              continue;
+            }
+
+            const currentBlobSha = citationBlobSha(citation, citationContext.deps);
+            if (!citation.blobSha) {
+              reasons.push(
+                `${citation.path ?? '(no path)'} has no audit-time blob fingerprint (audit #${auditSeq})`,
+              );
+            } else if (!currentBlobSha) {
+              reasons.push(`${citation.path ?? '(no path)'} cannot be fingerprinted now (audit #${auditSeq})`);
+            } else if (currentBlobSha !== citation.blobSha) {
+              reasons.push(`${citation.path ?? '(no path)'} changed since audit #${auditSeq}`);
+            }
+          }
+        }
+
+        if (reasons.length > 0) stale.push(`${item.itemId}: ${reasons.join('; ')}`);
+      }
+
+      // Keep the advertised refusal order: coverage/text/blob drift first, broken
+      // citations second, and both ahead of rubric ceremony. A force records every
+      // check it waived instead of hiding later failures behind the first one.
+      if (stale.length > 0) {
         if (force) {
           forcedChecks.push('audit_coverage_stale');
         } else {
@@ -191,44 +263,28 @@ export async function evaluatePlanAcceptanceGate(
             satisfied: false,
             code: 'audit_coverage_stale',
             message:
-              `plan '${planSlug}' cannot be marked shipped: audit #${audit.auditSeq} does not cover ` +
-              `${uncovered.length} current item(s) — ${uncovered.join(', ')}. These were added or reopened after ` +
-              `the audit ran, so nothing has checked them against the code. Re-run plans:audit covering them ` +
-              `(a fresh pass appends, it does not overwrite). To ship anyway, pass force:{ reason }.`,
+              `plan '${planSlug}' cannot be marked shipped: ${stale.length} item audit(s) are missing or stale — ` +
+              `${stale.join('; ')}. Re-run plans:audit for ONLY the listed items. Every unlisted item carries ` +
+              `forward mechanically with its original auditedSha/auditedAt, so do not resubmit unchanged items. ` +
+              `If no items are listed on a future check, no new audit pass is required. To ship anyway, pass ` +
+              `force:{ reason }.`,
           };
         }
-      } else {
-        // The tree MOVES between audit and ship, so the stored audit is not trusted:
-        // every code/test citation is resolved again, now. A citation that resolved at
-        // audit time and does not resolve today means the evidence for that item is gone.
-        const broken: string[] = [];
-        const citationContext = await repoCitationContextForHarness(audit.harnessSlug);
-        if (!citationContext) {
-          broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
+      }
+
+      if (broken.length > 0) {
+        if (force) {
+          forcedChecks.push('audit_citations_unresolved');
         } else {
-          for (const entry of audit.items) {
-            for (const c of entry.citations) {
-              if (c.kind !== 'code' && c.kind !== 'test') continue;
-              const res = resolveCitation(c, citationContext.deps);
-              if (!res.ok) broken.push(`${entry.itemId} → ${c.path ?? '(no path)'} (${res.reason})`);
-            }
-          }
-        }
-        if (broken.length > 0) {
-          if (force) {
-            forcedChecks.push('audit_citations_unresolved');
-          } else {
-            return {
-              satisfied: false,
-              code: 'audit_citations_unresolved',
-              message:
-                `plan '${planSlug}' cannot be marked shipped: ${broken.length} citation(s) in audit ` +
-                `#${audit.auditSeq} no longer resolve against the tree — ${broken.slice(0, 5).join('; ')}` +
-                `${broken.length > 5 ? ` (+${broken.length - 5} more)` : ''}. The code moved after the audit, so ` +
-                `the evidence for those items is stale. Re-run plans:audit against the current tree. To ship ` +
-                `anyway, pass force:{ reason }.`,
-            };
-          }
+          return {
+            satisfied: false,
+            code: 'audit_citations_unresolved',
+            message:
+              `plan '${planSlug}' cannot be marked shipped: ${broken.length} effective audit citation(s) no ` +
+              `longer resolve against the tree — ${broken.slice(0, 5).join('; ')}` +
+              `${broken.length > 5 ? ` (+${broken.length - 5} more)` : ''}. Re-run plans:audit for ONLY the ` +
+              `listed items; all other item audits carry forward unchanged. To ship anyway, pass force:{ reason }.`,
+          };
         }
       }
     }
