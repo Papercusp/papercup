@@ -46,6 +46,7 @@ import {
   readCheckpointRunPhaseCheap,
 } from '../release-checkpoint-launch';
 import { integrationRoot } from '../release-deploy-launch';
+import { resolveCheckpointRouting } from '../harness/routines/hive-release-env';
 import { resolveWorkspaceForHarness } from '../harness/workspace-for-harness';
 
 /** An ACTIVE green-checkpoint that hasn't FIRED in this long ⇒ the scheduler isn't
@@ -195,8 +196,16 @@ export function evaluateGreenStall(
   // it; suppress this symptom-level alarm to avoid a restart cascade being
   // triaged as independent release failures. Unknown liveness is fail-open.
   const rootEngineStale = s.routineEngineStale === true;
-  const fireStale = !rootEngineStale && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
-  const verdictStale = !rootEngineStale && s.lastGreenAt != null && now - s.lastGreenAt > noGreenMs;
+  // EI-20378004056924553: partial-green salvage publishes `delivering` only after
+  // the suite has completed and while the run is still actively publishing its
+  // bounded result. That phase is a real in-flight run, not evidence of a silent
+  // gate. Suppress only on the exact pair; a stale marker, missing lock, unknown
+  // route, or any other phase must fail open to the ordinary stall verdict.
+  const checkpointRunDelivering =
+    s.checkpointRunActive === true && s.checkpointRunPhase === 'delivering';
+  const suppressed = rootEngineStale || checkpointRunDelivering;
+  const fireStale = !suppressed && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
+  const verdictStale = !suppressed && s.lastGreenAt != null && now - s.lastGreenAt > noGreenMs;
   const stalled = fireStale || verdictStale;
 
   let reason: string | null = null;
@@ -220,7 +229,7 @@ export function evaluateGreenStall(
       reason += `. Failing verdict test(s): ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}`;
     }
   }
-  return { stalled, fireStale, verdictStale, suppressed: rootEngineStale, reason };
+  return { stalled, fireStale, verdictStale, suppressed, reason };
 }
 
 /** Pure: the `harness_escalations` body for a watchdog-detected stall (testable). */
@@ -428,6 +437,39 @@ export interface GreenStallWatchdogResult {
 }
 
 /**
+ * Resolve and read the checkpoint run state for one routine row.
+ *
+ * The watchdog runs in the operator process, while a subject hive's run-lock
+ * lives under that hive's routed integration root and log directory. Keep the
+ * routing and both cheap reads together so this path cannot accidentally inspect
+ * the operator-home lock for every hive. Any routing/read uncertainty is UNKNOWN
+ * and returns an empty partial snapshot: evaluateGreenStall deliberately fails
+ * open unless it can prove both a live lock and the exact `delivering` phase.
+ */
+async function readCheckpointRunState(
+  installSlug: string,
+  workspaceId: string,
+): Promise<Pick<GreenStallSnapshot, 'checkpointRunActive' | 'checkpointRunPhase'>> {
+  try {
+    const routing = await resolveCheckpointRouting({ installSlug, workspaceId }, integrationRoot());
+    if (routing.skip) return {};
+
+    const root = routing.extraEnv.PAPERCUSP_INTEGRATION_ROOT ?? routing.root;
+    const checkpointLogDir = routing.extraEnv.PAPERCUSP_CHECKPOINT_LOG_DIR;
+    const lock = isCheckpointRunLockHeldCheap(root, undefined, undefined, undefined, checkpointLogDir);
+    const phase = readCheckpointRunPhaseCheap(root, checkpointLogDir)?.phase ?? null;
+    return { checkpointRunActive: lock.held, checkpointRunPhase: phase };
+  } catch (error) {
+    // The alert must remain useful when registry/routing state is temporarily
+    // unreadable. Unknown is not "no run": it simply cannot suppress a stall.
+    console.warn(
+      `[green-stall-watchdog] checkpoint run state unavailable for '${installSlug}'; fail-open: ${error instanceof Error ? error.message : error}`,
+    );
+    return {};
+  }
+}
+
+/**
  * One watchdog pass: scan every ACTIVE green-checkpoint routine, alarm once per
  * stall transition (cross-process exactly-once via a conditional flag flip), and
  * clear the flag + escalation on recovery. Never throws — it rides boot + an
@@ -464,7 +506,19 @@ export async function checkGreenStall(
       // EI-7505: gate_health.failingTests, threaded through by trackGateStall
       // (release-actions.ts) on the last red green-checkpoint tick.
       const failingTests = row.gh?.failingTests ?? [];
-      const verdict = evaluateGreenStall({ lastFiredMs, lastGreenAt, watchdogAlerted, routineEngineStale: routineEngine.stale, failingTests }, now, opts);
+      const checkpointRun = await readCheckpointRunState(row.install_slug, row.workspace_id);
+      const verdict = evaluateGreenStall(
+        {
+          lastFiredMs,
+          lastGreenAt,
+          watchdogAlerted,
+          routineEngineStale: routineEngine.stale,
+          failingTests,
+          ...checkpointRun,
+        },
+        now,
+        opts,
+      );
 
       if (verdict.stalled) {
         if (watchdogAlerted) continue; // already alarmed; one-shot until recovery

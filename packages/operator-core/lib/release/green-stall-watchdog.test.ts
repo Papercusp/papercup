@@ -41,12 +41,30 @@ vi.mock('../git-pipeline-stats', () => ({
   gitPipelineSnapshot: (...args: unknown[]) => gitPipelineSnapshotMock(...args),
 }));
 const computeDeployStatusMock = vi.fn();
+const integrationRootMock = vi.fn(() => '/DEFAULT');
 vi.mock('../release-deploy-launch', () => ({
   computeDeployStatus: (...args: unknown[]) => computeDeployStatusMock(...args),
+  integrationRoot: (...args: unknown[]) => integrationRootMock(...args),
+}));
+
+const resolveCheckpointRoutingMock = vi.fn();
+vi.mock('../harness/routines/hive-release-env', () => ({
+  resolveCheckpointRouting: (...args: unknown[]) => resolveCheckpointRoutingMock(...args),
+}));
+const isCheckpointRunLockHeldCheapMock = vi.fn();
+const readCheckpointRunPhaseCheapMock = vi.fn();
+vi.mock('../release-checkpoint-launch', () => ({
+  isCheckpointRunLockHeldCheap: (...args: unknown[]) => isCheckpointRunLockHeldCheapMock(...args),
+  readCheckpointRunPhaseCheap: (...args: unknown[]) => readCheckpointRunPhaseCheapMock(...args),
+}));
+const readRoutineEngineLivenessMock = vi.fn();
+vi.mock('./routine-engine-liveness', () => ({
+  readRoutineEngineLiveness: (...args: unknown[]) => readRoutineEngineLivenessMock(...args),
 }));
 
 import {
   evaluateGreenStall,
+  checkGreenStall,
   greenStallEscalationBody,
   evaluateMainBehindStaging,
   mainBehindRecoverySummary,
@@ -208,6 +226,36 @@ describe('evaluateGreenStall', () => {
     expect(v.fireStale).toBe(false);
     expect(v.verdictStale).toBe(false);
     expect(v.reason).toBeNull();
+  });
+
+  describe('active checkpoint delivery suppression (EI-20378004056924553)', () => {
+    const STALLED = {
+      lastFiredMs: NOW - 4 * H,
+      lastGreenAt: NOW - 13 * H,
+      watchdogAlerted: false,
+    };
+
+    it('suppresses only a live run in the exact delivering phase', () => {
+      const v = evaluateGreenStall(
+        { ...STALLED, checkpointRunActive: true, checkpointRunPhase: 'delivering' },
+        NOW,
+      );
+      expect(v).toEqual({ stalled: false, fireStale: false, verdictStale: false, suppressed: true, reason: null });
+    });
+
+    it.each([
+      ['missing phase', { checkpointRunActive: true, checkpointRunPhase: undefined }],
+      ['unknown phase', { checkpointRunActive: true, checkpointRunPhase: null }],
+      ['different phase', { checkpointRunActive: true, checkpointRunPhase: 'suite' }],
+      ['no live lock', { checkpointRunActive: false, checkpointRunPhase: 'delivering' }],
+      ['unknown lock', { checkpointRunActive: undefined, checkpointRunPhase: 'delivering' }],
+    ])('%s fails open to the ordinary stall verdict', (_label, state) => {
+      const v = evaluateGreenStall({ ...STALLED, ...state }, NOW);
+      expect(v.suppressed).toBe(false);
+      expect(v.stalled).toBe(true);
+      expect(v.fireStale).toBe(true);
+      expect(v.verdictStale).toBe(true);
+    });
   });
 
   // EI-7505: the alarm reason previously never named WHICH test(s) are failing
@@ -439,6 +487,124 @@ describe('greenStallEscalationBody', () => {
       }),
     );
     expect(body.failingTests).toEqual([]);
+  });
+});
+
+describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => {
+  const staleLastFiredMs = () => Date.now() - 4 * H;
+  const recentLastGreenAt = () => Date.now() - 20 * 60 * 1000;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    readRoutineEngineLivenessMock.mockResolvedValue({ stale: false });
+    integrationRootMock.mockClear();
+    resolveCheckpointRoutingMock.mockReset();
+    isCheckpointRunLockHeldCheapMock.mockReset();
+    readCheckpointRunPhaseCheapMock.mockReset();
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    readRoutineEngineLivenessMock.mockReset();
+    resolveCheckpointRoutingMock.mockReset();
+    isCheckpointRunLockHeldCheapMock.mockReset();
+    readCheckpointRunPhaseCheapMock.mockReset();
+  });
+
+  function makeFakeSql(row: {
+    install_slug: string;
+    workspace_id: string;
+    last_fired_ms: number;
+    gh: { lastGreenAt?: number; watchdogAlerted?: boolean; failingTests?: string[] };
+  }) {
+    const calls: unknown[][] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes('FROM harness_shared.routines')) return Promise.resolve([row]);
+      return Promise.resolve(Object.assign([], { count: 1 }));
+    }) as unknown as import('postgres').Sql;
+    return { sql, calls };
+  }
+
+  it('routes lock and phase reads to the subject hive and suppresses active delivering salvage', async () => {
+    resolveCheckpointRoutingMock.mockResolvedValue({
+      root: '/DEFAULT',
+      extraEnv: {
+        PAPERCUSP_INTEGRATION_ROOT: '/hives/oddsmith',
+        PAPERCUSP_CHECKPOINT_LOG_DIR: '/logs/oddsmith',
+      },
+      clearEnv: [],
+    });
+    isCheckpointRunLockHeldCheapMock.mockReturnValue({ held: true, pid: 1234, elapsedSec: 30 });
+    readCheckpointRunPhaseCheapMock.mockReturnValue({ phase: 'delivering', at: new Date().toISOString() });
+    const { sql, calls } = makeFakeSql({
+      install_slug: 'oddsmith',
+      workspace_id: 'papercusp-workspace',
+      last_fired_ms: staleLastFiredMs(),
+      gh: { lastGreenAt: Date.now() - 13 * H, watchdogAlerted: false },
+    });
+
+    await expect(checkGreenStall(sql)).resolves.toEqual({
+      alarmed: [],
+      recovered: [],
+      suppressed: ['oddsmith'],
+    });
+    expect(resolveCheckpointRoutingMock).toHaveBeenCalledWith(
+      { installSlug: 'oddsmith', workspaceId: 'papercusp-workspace' },
+      '/DEFAULT',
+    );
+    expect(isCheckpointRunLockHeldCheapMock).toHaveBeenCalledWith(
+      '/hives/oddsmith',
+      undefined,
+      undefined,
+      undefined,
+      '/logs/oddsmith',
+    );
+    expect(readCheckpointRunPhaseCheapMock).toHaveBeenCalledWith('/hives/oddsmith', '/logs/oddsmith');
+    expect(calls.some((call) => String(call[0]).includes('UPDATE harness_shared.routines'))).toBe(false);
+  });
+
+  it('fails open when the routed lock is not live even if a stale phase says delivering', async () => {
+    resolveCheckpointRoutingMock.mockResolvedValue({
+      root: '/DEFAULT',
+      extraEnv: {
+        PAPERCUSP_INTEGRATION_ROOT: '/hives/oddsmith',
+        PAPERCUSP_CHECKPOINT_LOG_DIR: '/logs/oddsmith',
+      },
+      clearEnv: [],
+    });
+    isCheckpointRunLockHeldCheapMock.mockReturnValue({ held: false, elapsedSec: null });
+    readCheckpointRunPhaseCheapMock.mockReturnValue({ phase: 'delivering' });
+    const { sql } = makeFakeSql({
+      install_slug: 'oddsmith',
+      workspace_id: 'papercusp-workspace',
+      last_fired_ms: staleLastFiredMs(),
+      gh: { lastGreenAt: recentLastGreenAt(), watchdogAlerted: false },
+    });
+
+    await expect(checkGreenStall(sql)).resolves.toEqual({
+      alarmed: ['oddsmith'],
+      recovered: [],
+      suppressed: [],
+    });
+  });
+
+  it('fails open when routing is unknown instead of hiding a real stall', async () => {
+    resolveCheckpointRoutingMock.mockRejectedValue(new Error('registry unavailable'));
+    const { sql } = makeFakeSql({
+      install_slug: 'oddsmith',
+      workspace_id: 'papercusp-workspace',
+      last_fired_ms: staleLastFiredMs(),
+      gh: { lastGreenAt: recentLastGreenAt(), watchdogAlerted: false },
+    });
+
+    await expect(checkGreenStall(sql)).resolves.toEqual({
+      alarmed: ['oddsmith'],
+      recovered: [],
+      suppressed: [],
+    });
   });
 });
 
