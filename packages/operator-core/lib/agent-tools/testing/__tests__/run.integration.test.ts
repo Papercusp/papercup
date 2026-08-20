@@ -26,7 +26,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import runTool, { normalizeTestFilePaths, runTestFilesCore } from '../run';
+import runTool, { normalizeTestFilePaths } from '../run';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -297,11 +297,12 @@ describe('testing:run (integration)', () => {
     'kills the whole process tree when the caller aborts an in-flight run',
     async () => {
       const controller = new AbortController();
-      const runPromise = runTestFilesCore({
-        files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET],
-        timeoutMs: 30_000,
-        signal: controller.signal,
-      });
+      const runPromise = body(
+        call(
+          { files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET], timeoutMs: 30_000 },
+          { signal: controller.signal },
+        ),
+      );
       setTimeout(() => controller.abort(), 500);
 
       const out = await runPromise;
