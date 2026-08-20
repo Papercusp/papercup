@@ -53,7 +53,12 @@ const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
 const registryM = vi.mocked(loadHarnessRegistry);
 const execFileSyncM = vi.mocked(execFileSync);
-const { default: tool, resolveCutRoot } = await import('./cut');
+const { default: tool, resolveCutRoot, isAutoManagedCutWorktree } = await import('./cut');
+
+// The real live operator runs from an auto-managed `papercup-release` checkout,
+// which the production guard must refuse. Most handler tests exercise unrelated
+// routing, so give their implicit root an isolated fixture name.
+process.env.PAPERCUSP_DESKTOP_ROOT = '/tmp/release-cut-fixture/papercusp-desktop';
 
 type Out = { content: { text: string }[] };
 const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
@@ -159,6 +164,21 @@ describe('release:cut — constrained root selector', () => {
 
     expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_clean/) });
   });
+
+  it('rejects the live deploy/checkpoint/staging roots that can move during a cut', async () => {
+    expect(isAutoManagedCutWorktree('/workspace/papercup-release')).toBe(true);
+    expect(isAutoManagedCutWorktree('/workspace/papercusp-checkpoint')).toBe(true);
+    expect(isAutoManagedCutWorktree('/workspace/papercusp-staging')).toBe(true);
+    expect(isAutoManagedCutWorktree('/workspace/papercusp-relcut-0018')).toBe(false);
+
+    const result = await resolveCutRoot('/workspace/papercup-release', {
+      loadRegistry: async () => ({ projects: [{ slug: 'papercusp', path: '/workspace/papercusp' }] }),
+      listWorktrees: () => [{ path: '/workspace/papercup-release', prunable: false }],
+      status: () => '',
+      canonicalPath: (candidate) => candidate,
+    });
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_isolated/) });
+  });
 });
 
 describe('release:cut — explicit registered root routing', () => {
@@ -190,7 +210,7 @@ describe('release:cut — explicit registered root routing', () => {
 
     const b = body(
       await tool.handler(
-        { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha, root: 'isolated' } as never,
+        { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha, root: 'isolated', ownerName: 'Avi' } as never,
         { role: 'operator' } as never,
       ),
     );
@@ -206,7 +226,7 @@ describe('release:cut — explicit registered root routing', () => {
 
     const b = body(
       await tool.handler(
-        { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha, root: 'isolated' } as never,
+        { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha, root: 'isolated', ownerName: 'Avi' } as never,
         { role: 'operator' } as never,
       ),
     );
@@ -429,7 +449,7 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
 
 describe('release:cut — run (operator-gated write)', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
-  const runArgs = { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha };
+  const runArgs = { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha, ownerName: 'Avi' };
 
   it('is role-gated: a cup cannot cut, and no build fires', async () => {
     const b = body(await tool.handler({ ...runArgs, confirm: true } as never, { role: 'cup' } as never));
@@ -470,6 +490,7 @@ describe('release:cut — run (operator-gated write)', () => {
     expect(b.wouldRun).toMatch(/release-local\.sh '0\.0\.8' 'alpha'/);
     expect(b.wouldRun).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(b.wouldRun).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
+    expect(b.wouldRun).toContain("PAPERCUSP_RELEASE_OWNER_NAME='Avi'");
     expect(b.wouldRun).not.toMatch(/gh release|push origin/);
     expect(launchM).not.toHaveBeenCalled();
   });
@@ -481,6 +502,7 @@ describe('release:cut — run (operator-gated write)', () => {
       version: '0.0.8',
       channel: 'alpha',
       expectedSourceSha: sourceSha,
+      runtime: { ownerName: 'Avi', ownerEmail: undefined, reuseSeed: undefined },
       legs: { mac: true, windows: undefined, arm64: undefined },
       root: expect.any(String),
     }));
@@ -557,7 +579,7 @@ describe('release:cut — abort-leg (operator-gated)', () => {
 
 describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
-  const legArgs = { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha };
+  const legArgs = { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha, ownerName: 'Avi' };
 
   it('is role-gated: a cup cannot fire a leg', async () => {
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'cup' } as never));
@@ -605,6 +627,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
       version: '0.0.8',
       channel: 'alpha',
       expectedSourceSha: sourceSha,
+      runtime: { ownerName: 'Avi', ownerEmail: undefined, reuseSeed: undefined },
       legs: { mac: true },
       platform: 'mac',
       root: expect.any(String),
