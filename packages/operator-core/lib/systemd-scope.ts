@@ -28,6 +28,28 @@ export function agentSpawnScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env):
   return Number.isFinite(raw) && raw > 0 ? raw : 6;
 }
 
+/** Per-fork vitest heap budget (GiB) — one fork's `--max-old-space-size` worth. */
+const CHECKPOINT_FORK_HEAP_G = 4;
+
+/** Fixed scope overhead (GiB): tsx/npm plus the testcontainers helpers, and headroom. */
+const CHECKPOINT_SCOPE_OVERHEAD_G = 8;
+
+/** Vitest fork count per capacity mode. MUST track `GREEN_CHECKPOINT_MAX_FORKS` /
+ * `GREEN_CHECKPOINT_RESERVED_MAX_FORKS` in apps/operator/lib/release/green-checkpoint.ts.
+ * Duplicated rather than imported because operator-core is the LOWER layer; the
+ * release-actions-memory-cap test pins these values to the real constants. */
+export const CHECKPOINT_FORKS_BY_MODE = { shared: 2, reserved: 8 } as const;
+
+/** Memory cap (GiB) for an isolated green-checkpoint scope.
+ *
+ * Derive the cap from the fork count so the scheduled gate and detached manual
+ * launcher share one policy. The cap keeps a suite's reclaim/OOM inside its own
+ * cgroup instead of allowing it to pressure the operator host. */
+export function checkpointScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env): number {
+  const mode = env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE === 'reserved' ? 'reserved' : 'shared';
+  return CHECKPOINT_SCOPE_OVERHEAD_G + CHECKPOINT_FORKS_BY_MODE[mode] * CHECKPOINT_FORK_HEAP_G;
+}
+
 /** Build the systemd-run argv that runs `base` in a transient user SCOPE with its own
  *  memory cap. `--scope` (NOT `--unit`): the payload stays OUR CHILD — stdio piped,
  *  process-group kill + full env inheritance intact — but lands in its own cgroup

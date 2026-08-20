@@ -87,6 +87,8 @@ describe('buildCheckpointSystemdArgv', () => {
     const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
     expect(argv).toContain(`--unit=${checkpointUnitForRoot('/tree')}`); // per-root (2026-07-01): cross-root manual gates no longer serialize
     expect(argv).toContain('--no-block');
+    expect(argv).toContain('--property=MemoryMax=16G');
+    expect(argv).toContain('--property=MemorySwapMax=0');
     expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
     expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);
     expect(argv).toContain('--working-directory=/tree');
@@ -96,6 +98,21 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain('apps/operator/lib/release/green-checkpoint.ts');
     expect(inner).toContain("PAPERCUSP_INTEGRATION_ROOT='/tree'");
     expect(inner).toContain('> /tmp/cp.log 2>&1');
+  });
+
+  it('uses the periodic cap policy for reserved manual runs and does not invent TasksMax', () => {
+    const argv = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin:/bin',
+      false,
+      undefined,
+      null,
+      'reserved',
+    );
+    expect(argv).toContain('--property=MemoryMax=40G');
+    expect(argv).toContain('--property=MemorySwapMax=0');
+    expect(argv.some((arg) => arg.startsWith('--property=TasksMax='))).toBe(false);
   });
 
   it('WI-4310: forwards the dedicated DB pool cap into the detached checkpoint unit', () => {

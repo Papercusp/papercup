@@ -39,6 +39,7 @@ import {
 } from './release/green-checkpoint-schedule';
 import { quietCutSecFromEnv } from './release/quiet-cut';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
+import { checkpointScopeMemoryMaxG } from './systemd-scope';
 import {
   callerEditsInCandidate,
   containingSubmodulePath,
@@ -1143,6 +1144,13 @@ export function buildCheckpointSystemdArgv(
       ? `PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${capacityMode}' `
       : '';
   const gateEnv = `${partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : ''}${capacity}`;
+  // Keep detached manual runs under the same cgroup memory policy as the periodic gate.
+  // The capacity argument is the already-validated contract forwarded below; an omitted or
+  // unrecognised value deliberately uses the conservative shared-mode cap. TasksMax is not
+  // inferred here because no launcher-wide task budget has been established.
+  const memoryMaxG = checkpointScopeMemoryMaxG({
+    PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: capacityMode ?? 'shared',
+  });
   // Write to the per-run file and point the stable path at it (`ln -sfn`, so a symlink
   // left by a previous run is replaced, not followed into). The redirect binds to the
   // green-checkpoint command only — the symlink is created first, so a reader polling
@@ -1163,6 +1171,8 @@ export function buildCheckpointSystemdArgv(
     '--no-block',
     '--collect',
     `--unit=${checkpointUnitForRoot(root)}`,
+    `--property=MemoryMax=${memoryMaxG}G`,
+    '--property=MemorySwapMax=0',
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
