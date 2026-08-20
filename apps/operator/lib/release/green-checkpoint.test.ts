@@ -400,10 +400,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     deps.frozenRepairFixerAlive = async () => false;
     deps.stagingContainsFrozenRepair = async () => true;
     deps.cleanupFrozenRepairWorktree = async () => {};
+    let reconciliationAvailable = false;
     Object.assign(deps, {
       reconcileFrozenRepairIntoStaging: async (
         next: FrozenCandidateRepairQueue,
       ) => {
+        if (!reconciliationAvailable) return null;
         const currentStaging = await revParse(repo, "main");
         const tree = await git(repo, [
           "rev-parse",
@@ -429,9 +431,30 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       },
     });
 
-    const reconciled = await runGreenCheckpoint(cfg(), deps, {
+    const heldAfterExactGreen = await runGreenCheckpoint(cfg(), deps, {
       noPush: true,
     });
+
+    expect(heldAfterExactGreen).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-in-progress",
+      candidate: repaired,
+      from: ready,
+      repairQueue: { phase: "ready-to-promote", repairHead: repaired },
+    });
+    expect(queue).toMatchObject({
+      phase: "ready-to-promote",
+      repairHead: repaired,
+    });
+    expect(await revParse(repo, "ready")).toBe(ready);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(calls).not.toContain("advance");
+
+    // A crash/restart in the exact-green → history-join window resumes only the
+    // promotion-side reconciliation. It must not spend another full exact-repair suite.
+    reconciliationAvailable = true;
+    const reconciled = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     const joinedTip = await revParse(repo, "main");
     expect(reconciled).toMatchObject({
