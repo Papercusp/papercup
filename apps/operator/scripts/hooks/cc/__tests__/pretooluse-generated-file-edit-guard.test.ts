@@ -67,6 +67,9 @@ describe('pretooluse-generated-file-edit-guard — falsifiability in both direct
     const { denied, reason } = runHook(edit(generated));
     expect(denied).toBe(true);
     expect(reason).toMatch(/declares itself GENERATED/);
+    expect(reason).toContain('.papercusp/scratch/');
+    expect(reason).toContain('code:run');
+    expect(reason).toContain('Bash-resource gate');
   });
 
   it('ALLOWS an Edit to a hand-authored file — the guard must not fire on everything', () => {
@@ -244,6 +247,8 @@ describe('the canonical internal-docs build mirror', () => {
       expect(denied).toBe(true);
       expect(reason).toContain('apps/operator-docs/src/content/docs');
       expect(reason).toContain('docs:author');
+      expect(reason).toContain('.papercusp/scratch/');
+      expect(reason).toContain('code:run');
     },
   );
 

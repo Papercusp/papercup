@@ -68,12 +68,14 @@
 //   without a hook fighting agents at write time. This guard exists to make that
 //   loss immediate and legible instead of silent and delayed — you learn at the
 //   edit, not when your work vanishes an hour later.
-//   It follows that a determined write ROUTES AROUND it: PreToolUse fires on
-//   Claude-CLI tool calls only, so `capability:bash` with `sed -i`/a heredoc,
-//   or any other process, is unaffected. That is a deliberate accepted gap, not
-//   an oversight — closing it would mean policing every write syscall on a
-//   shared box, and the structural backstop already covers the case that matters.
-//   It is also, in practice, the escape hatch (see BYPASS).
+//   It follows that a determined write needs a separate, explicitly sanctioned
+//   route: PreToolUse fires on Claude-CLI tool calls only, while the Bash-resource
+//   gate mediates shell/interpreter writes into the tree. A hand-repair helper
+//   under `<tree>/.papercusp/scratch/` (gitignored and module-resolution-friendly),
+//   executed with `capability:bash`, or the `code:run` tool are the working routes.
+//   Direct shell writes with literal tracked targets are denied; computed-path
+//   writes remain the Bash-resource gate's advisory-only limitation. The
+//   structural backstop still covers any route that slips past both guards.
 //
 // GENERATORS ARE STRUCTURALLY UNAFFECTED — VERIFIED, NOT ASSUMED
 //   Every `gen:*` script writes with node:fs (`writeFileSync`), which is not a
@@ -87,9 +89,12 @@
 // BYPASS (documented, per the item's requirement)
 //   1. Preferred: DON'T. Edit the source and re-run the regenerator the marker
 //      line names — that is the whole point, and the edit survives.
-//   2. Per-call escape hatch: write via `capability:bash` (`node -e`, heredoc,
-//      `sed -i`). PreToolUse does not see it. Use when a generator is broken and
-//      you must repair its output by hand to unblock the fleet.
+//   2. Per-call repair route: when a generator is broken and you must repair its
+//      output by hand, create a temporary helper under `.papercusp/scratch/`
+//      inside the tree and execute it with `capability:bash`, or use `code:run`.
+//      The scratch directory is gitignored and resolves workspace imports. Direct
+//      `node -e`, heredoc, or `sed -i` writes with literal tracked targets are
+//      blocked by the Bash-resource gate.
 //   3. Session-wide: launch with `PAPERCUSP_ALLOW_GENERATED_EDIT=1`, which makes
 //      this guard warn instead of deny for the whole session. Env is read from
 //      the CLI process the hook inherits, so it cannot be set per tool call.
@@ -125,6 +130,13 @@ const DO_NOT_EDIT = /\bdo\s*n(?:o|')?t\s+edit\b/i;
 
 const BYPASS_ENV = 'PAPERCUSP_ALLOW_GENERATED_EDIT';
 const INTERNAL_DOCS_MIRROR_REL = join('apps', 'operator', 'public', 'internal', 'docs');
+const SCRATCH_REMEDY =
+  'If you genuinely must hand-repair this artifact (a broken generator blocking the fleet), ' +
+  'create a temporary helper under `.papercusp/scratch/` inside the tree and execute it with ' +
+  '`capability:bash`, or use `code:run`. The scratch directory is gitignored and resolves ' +
+  'workspace imports. Direct shell writes (`node -e`, heredoc, `sed -i`) with literal tracked ' +
+  'targets are blocked by the Bash-resource gate; computed-path writes remain advisory. Prefer ' +
+  'fixing the generator.';
 
 /**
  * Run only when executed as the hook, never when imported (a test importing the
@@ -193,11 +205,12 @@ function bypassed() {
  * The server segment is deliberately NOT pinned — renaming the MCP server must
  * not quietly re-open the hole. Matching is on the verb suffix only.
  *
- * NOT closed by this (still the documented, accepted gap in the header): a
- * write that is not a tool call at all — `capability:bash` with `sed -i`, a
- * heredoc, `node -e`, or any other process. PreToolUse cannot see those, and
- * the structural backstop (the next projection refuses to overwrite drift)
- * remains what actually enforces the invariant.
+ * NOT implemented by this hook (handled by the separate Bash-resource gate): a
+ * write that is not a Claude file-edit tool call — `capability:bash` with
+ * `sed -i`, a heredoc, `node -e`, or any other process. Direct writes targeting
+ * tracked files are denied there; use the sanctioned scratch or `code:run`
+ * route for a genuine repair. The structural backstop (the next projection
+ * refuses to overwrite drift) remains what actually enforces the invariant.
  */
 export function isFileWritingTool(tool) {
   if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit') return true;
@@ -260,10 +273,8 @@ function denyGenerated(filePath, marker, tool) {
     `Edit the SOURCE and re-run the generator that line names — that is the only edit that ` +
     `survives. This is the same rule that already governs prompts in this repo: edit the source, ` +
     `never the rendered output.\n\n` +
-    `If you genuinely must hand-repair this artifact (a broken generator blocking the fleet), the ` +
-    `documented escape hatches are: write it via \`capability:bash\` (\`node -e\`, a heredoc, ` +
-    `\`sed -i\`) — PreToolUse does not see those — or relaunch with ${BYPASS_ENV}=1 to downgrade ` +
-    `this guard to a warning for the session. Prefer fixing the generator.`;
+    SCRATCH_REMEDY +
+    ` Or relaunch with ${BYPASS_ENV}=1 to downgrade this guard to a warning for the session.`;
   deny(reason);
 }
 
@@ -277,9 +288,8 @@ function denyInternalDocsMirror(filePath, tool) {
     `For agent-insights and other datastore-authored internal docs, use \`docs:author\`. For ` +
     `filesystem-authored docs, edit \`apps/operator-docs/src/content/docs\` and rebuild the ` +
     `internal docs site. Never hand-edit the mirror.\n\n` +
-    `If a broken generator is blocking the fleet and you genuinely must repair an artifact, ` +
-    `the documented escape hatches remain \`capability:bash\` or a session launched with ` +
-    `${BYPASS_ENV}=1. Prefer fixing the generator.`;
+    `${SCRATCH_REMEDY} Or relaunch with ${BYPASS_ENV}=1 to downgrade this guard to a warning ` +
+    `for the session.`;
   deny(reason);
 }
 
