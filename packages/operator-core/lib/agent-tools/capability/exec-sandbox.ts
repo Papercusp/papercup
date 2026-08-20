@@ -55,6 +55,15 @@ export const CAPABILITY_SANDBOX_MASK_DIRS: readonly string[] = [
 ];
 
 /**
+ * Absolute executables that capability children must not invoke. Unlike the
+ * home-relative credential masks above, these are masked at their canonical
+ * host path so both PATH lookup and an explicit absolute invocation are
+ * blocked. This applies only to the wrapped paths; the flag-off and
+ * bwrap-unavailable fail-open paths remain intentionally raw.
+ */
+export const CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES: readonly string[] = ['/usr/bin/systemd-run'];
+
+/**
  * Home-relative entries in {@link CAPABILITY_SANDBOX_MASK_DIRS} that are FILES, not
  * directories. `--tmpfs DEST` needs DEST to be a directory mount point, so a file
  * credential (`~/.npmrc` holds npm auth tokens) is masked with `--ro-bind /dev/null`
@@ -212,7 +221,7 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
   // backend:'omp' ⇒ no model-endpoint domains added (a shell command talks to no
   // model); egress = the package registries/CDNs + localhost (the operator + PG).
   const settings = buildFleetSrtSettings({ cwd, backend: 'omp' }) as {
-    filesystem: { allowWrite: string[] };
+    filesystem: { allowWrite: string[]; denyRead: string[] };
   };
   // EI-12389: srt's OWN default write paths only cover `TMPDIR` (defaults to
   // `/tmp/claude`, NOT the real `/tmp`) — unlike the bwrap-only fallback below,
@@ -232,6 +241,13 @@ export function capabilitySrtSettingsPathForCwd(cwd: string): string {
     ...settings.filesystem.allowWrite,
     '/tmp',
     ...capabilityBuildCacheWritePaths(cwd),
+  ];
+  // WI-39391: keep the srt-preferred path in parity with the bwrap fallback.
+  // Without this absolute denyRead entry, a child can bypass the literal
+  // systemd-run command guard by spawning the binary directly.
+  settings.filesystem.denyRead = [
+    ...settings.filesystem.denyRead,
+    ...CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES,
   ];
   writeFileSync(path, JSON.stringify(settings), { mode: 0o600 });
   _srtSettingsByCwd.set(cwd, path);
@@ -450,6 +466,13 @@ export function buildCapabilitySandboxCommand(
     if (!maskExists(abs)) continue;
     if (CAPABILITY_SANDBOX_MASK_FILES.has(d)) argv.push('--ro-bind', '/dev/null', abs);
     else argv.push('--tmpfs', abs);
+  }
+  // WI-39391: mask the canonical systemd-run binary itself. Binding /dev/null
+  // at the real path covers both PATH-resolved and absolute-path invocations.
+  // As with credential masks, skip absent targets so bwrap does not fail the
+  // whole command while creating a mount point under its read-only root.
+  for (const abs of CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES) {
+    if (maskExists(abs)) argv.push('--ro-bind', '/dev/null', abs);
   }
   if (denyAllEgress) argv.push('--unshare-net');
   // No `--clearenv`: a capability:bash build/test needs the caller's env (PATH,

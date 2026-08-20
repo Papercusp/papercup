@@ -10,7 +10,7 @@
  * fail-CLOSES under the ro-root), the deny-all-egress lever, and credential-list
  * parity with the fleet sandbox.
  */
-import { mkdtempSync, mkdirSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, symlinkSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest';
@@ -18,7 +18,10 @@ import { FLEET_SANDBOX_DENY_READ } from '@papercusp/orchestrator';
 import {
   buildCapabilitySandboxCommand,
   capabilityBuildCacheWritePaths,
+  capabilitySrtSettingsPathForCwd,
+  __resetCapabilitySrtSettings,
   CAPABILITY_SANDBOX_MASK_DIRS,
+  CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES,
   scrubExecEnv,
   type BuildSandboxOpts,
 } from './exec-sandbox';
@@ -244,6 +247,12 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
     expect(seq(d.argv, ['--tmpfs', '/home/op/.npmrc'])).toBe(false);
   });
 
+  it('masks the absolute systemd-run binary with --ro-bind /dev/null', () => {
+    const target = '/usr/bin/systemd-run';
+    expect(CAPABILITY_SANDBOX_MASK_ABSOLUTE_FILES).toContain(target);
+    expect(seq(d.argv, ['--ro-bind', '/dev/null', target])).toBe(true);
+  });
+
   it('ends with `-- <cmd>` so the wrapped command runs last', () => {
     const dashIdx = d.argv.lastIndexOf('--');
     expect(dashIdx).toBeGreaterThan(0);
@@ -252,6 +261,23 @@ describe('buildCapabilitySandboxCommand — wrapped argv (flag ON + bwrap works)
 
   it('does NOT unshare the network by default (fs/credential containment, egress shared — domain-allowlist is the follow-up)', () => {
     expect(d.argv).not.toContain('--unshare-net');
+  });
+});
+
+describe('srt settings — absolute executable masks (WI-39391)', () => {
+  it('adds the canonical systemd-run path to filesystem.denyRead', () => {
+    const root = mkdtempSync(join(tmpdir(), 'pc-exec-srt-mask-'));
+    try {
+      __resetCapabilitySrtSettings();
+      const settingsPath = capabilitySrtSettingsPathForCwd(root);
+      const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as {
+        filesystem: { denyRead: string[] };
+      };
+      expect(settings.filesystem.denyRead).toContain('/usr/bin/systemd-run');
+    } finally {
+      __resetCapabilitySrtSettings();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

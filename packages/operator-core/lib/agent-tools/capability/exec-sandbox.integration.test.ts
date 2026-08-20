@@ -127,6 +127,27 @@ d('exec-sandbox — REAL bwrap exec (host is bwrap-capable)', () => {
     expect(out).toContain(`SRT_RAN_IN=${WORK}`);
   });
 
+  (SRT_BIN ? it : it.skip)('srt-preferred path: hides systemd-run by PATH and absolute lookup (WI-39391)', () => {
+    const settingsPath = capabilitySrtSettingsPathForCwd(WORK);
+    const { decision, r, out } = run(
+      ['/bin/sh', '-c',
+        'command -v systemd-run >/dev/null 2>&1 && echo PATH_SYSTEMD_RUN_VISIBLE || echo PATH_SYSTEMD_RUN_HIDDEN; ' +
+        'test -e /usr/bin/systemd-run && echo ABS_SYSTEMD_RUN_VISIBLE || echo ABS_SYSTEMD_RUN_HIDDEN'],
+      WORK,
+      {
+        enabled: true,
+        srtBin: SRT_BIN,
+        srtSettingsPath: settingsPath,
+        homeDir: FAKE_HOME,
+        bwrapBinary: '/usr/bin/bwrap',
+      },
+    );
+    expect(decision.mode).toBe('srt');
+    expect(r.status).toBe(0);
+    expect(out).toContain('PATH_SYSTEMD_RUN_HIDDEN');
+    expect(out).toContain('ABS_SYSTEMD_RUN_HIDDEN');
+  });
+
   // EI-12389: srt's own default write paths only cover TMPDIR (defaults to
   // /tmp/claude), NOT the real /tmp — so anything writing to a well-known /tmp
   // path (e.g. Xvfb's /tmp/.X11-unix X11 sockets, which are hardcoded by the
