@@ -428,6 +428,31 @@ export interface CheckpointVerdict {
   /** WI-4957: the full-suite output log this run wrote (structural mirror of
    *  CheckpointResult.logPath), when produced. */
   logPath?: string;
+  /** EI-203121: structural mirror of CheckpointResult.postSuiteLegs. The producer and
+   *  this storage boundary both cap the collection and every free-text field. */
+  postSuiteLegs?: Array<{
+    id: string;
+    status: 'passed' | 'failed' | 'skipped';
+    durationMs: number;
+    skipReason?: string;
+    executionIdentity?: {
+      runId: string;
+      candidate: string;
+      treeDir: string;
+      cwd: string;
+      headAtStart: string;
+      dependencies: {
+        nodeModules: { hash: string | null; inode: number | null; source: string };
+      };
+      setup: { identity: string; output: string };
+      result: {
+        status: 'passed' | 'failed' | 'skipped';
+        exit: 'completed' | 'skipped' | 'errored';
+        exitCode: number | null;
+        output: string;
+      };
+    };
+  }>;
   /** EI-13288: structural mirror of green-checkpoint.ts's `RedTriage & { tip }` (stale-candidate
    *  re-triage, 2026-07-10). Present on the not-green path whenever the CLI could re-run the named
    *  failing files at a newer tip. When `classification === 'stale-candidate'` AND
@@ -546,6 +571,42 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
   // full output directly, instead of only the de-noised failing-test names.
   if (v.runId) detail.runId = v.runId;
   if (v.logPath) detail.logPath = v.logPath;
+  if (v.postSuiteLegs?.length) {
+    detail.postSuiteLegs = v.postSuiteLegs.slice(0, 32).map((leg) => ({
+      id: leg.id.slice(0, 128),
+      status: leg.status,
+      durationMs: Math.max(0, Math.floor(leg.durationMs)),
+      ...(leg.skipReason ? { skipReason: leg.skipReason.slice(0, 500) } : {}),
+      ...(leg.executionIdentity
+        ? {
+            executionIdentity: {
+              runId: leg.executionIdentity.runId.slice(0, 128),
+              candidate: leg.executionIdentity.candidate.slice(0, 64),
+              treeDir: leg.executionIdentity.treeDir.slice(0, 1000),
+              cwd: leg.executionIdentity.cwd.slice(0, 1000),
+              headAtStart: leg.executionIdentity.headAtStart.slice(0, 64),
+              dependencies: {
+                nodeModules: {
+                  hash: leg.executionIdentity.dependencies.nodeModules.hash?.slice(0, 128) ?? null,
+                  inode: leg.executionIdentity.dependencies.nodeModules.inode,
+                  source: leg.executionIdentity.dependencies.nodeModules.source.slice(0, 1000),
+                },
+              },
+              setup: {
+                identity: leg.executionIdentity.setup.identity.slice(0, 200),
+                output: leg.executionIdentity.setup.output.slice(-1000),
+              },
+              result: {
+                status: leg.executionIdentity.result.status,
+                exit: leg.executionIdentity.result.exit,
+                exitCode: leg.executionIdentity.result.exitCode,
+                output: leg.executionIdentity.result.output.slice(-2000),
+              },
+            },
+          }
+        : {}),
+    }));
+  }
   // isolation-retry-resilience-2026-07-19 (EI-15849): persist the absorption verdict note
   // even on a red (not absorbed) — see CheckpointVerdict.isolationNote for why this closes
   // a real diagnosability gap.
@@ -1236,7 +1297,9 @@ export function classifyGateStallStatus(
     status === 'skipped-locked' ||
     status === 'migrations-pending' ||
     status === 'infra-inconclusive' ||
-    status === 'deadline-exceeded'
+    status === 'deadline-exceeded' ||
+    status === 'repair-in-progress' ||
+    status === 'repair-staging-mismatch'
   )
     return 'noop';
   // WI-39450: a pass whose own re-triage watched the failing files PASS at tip produced no
@@ -1301,6 +1364,22 @@ export function gateStallRecordOnlyLogMessage(status: string): string {
 }
 
 export function gateStallNoopLogMessage(status: string): string {
+  if (status === 'repair-in-progress') {
+    return (
+      `${orchestratorStdoutTag()} 'repair-in-progress' — the serialized frozen-candidate repair queue ` +
+      `owns this candidate and either dispatched or is waiting on its one targeted fixer; this tick ran no ` +
+      `suite and rendered no code verdict. Leaving gate_health untouched (not a red; the queue's bounded ` +
+      `attempt/wall-clock policy and the green-stall watchdog remain the progress backstops)`
+    );
+  }
+  if (status === 'repair-staging-mismatch') {
+    return (
+      `${orchestratorStdoutTag()} 'repair-staging-mismatch' — the frozen repair head is ready, but its exact ` +
+      `candidate-to-repair patch is not yet observable on canonical staging; this tick deliberately spent no ` +
+      `suite and rendered no code verdict. Leaving gate_health untouched (not a red; repair reconciliation ` +
+      `and the green-stall watchdog remain the progress backstops)`
+    );
+  }
   // EI-20767792192323374: the THIRD noop condition, and its correct operator response differs
   // from BOTH of the others — nobody holds a lock (so "wait, it resolves itself" is wrong) and
   // no migration is pending (so pointing at the migration list is wrong). The host deleted the

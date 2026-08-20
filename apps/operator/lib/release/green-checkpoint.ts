@@ -115,9 +115,20 @@ import {
   orchestratorStdoutTag,
 } from "../../../../packages/operator-core/lib/release/checkpoint-log-tags";
 
+export interface CheckpointSetupIdentity {
+  identity: string;
+  output: string;
+}
+
+export interface CheckpointExecutionContext {
+  candidate: string;
+  headAtStart?: string;
+  setup?: CheckpointSetupIdentity;
+}
+
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
-  setupTree(ref: string): Promise<void>;
+  setupTree(ref: string): Promise<void | CheckpointSetupIdentity>;
   /** load-flake-isolation-2026-06-23: re-run ONE originally-failing test file in
    *  ISOLATION (a fresh `vitest run <file>` at single concurrency, same tree+env) to
    *  decide load-flake-vs-real-break. Optional + injected so the realCheckpointDeps
@@ -157,6 +168,7 @@ export interface CheckpointDeps {
   runGreen(
     treeDir: string,
     base: string | null,
+    execution?: CheckpointExecutionContext,
   ): Promise<{
     green: boolean;
     summary: string;
@@ -6164,7 +6176,7 @@ export async function runGreenCheckpoint(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
     "suite",
   );
-  await deps.setupTree(candidate);
+  const setupIdentity = await deps.setupTree(candidate);
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused
   // by main sitting frozen (see CheckpointDeps.ensureMigrationsCurrent doc).
@@ -6420,9 +6432,14 @@ export async function runGreenCheckpoint(
     retriedTests,
     cleanGreen,
     postSuiteMeasured,
+    postSuiteLegs,
     infraFault,
   } = earlyPreflightFailure ??
-  (await deps.runGreen(cfg.checkpointRoot, lastReady));
+  (await deps.runGreen(cfg.checkpointRoot, lastReady, {
+    candidate,
+    headAtStart: candidate,
+    ...(setupIdentity ? { setup: setupIdentity } : {}),
+  }));
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -6518,6 +6535,7 @@ export async function runGreenCheckpoint(
         ...(deps.runId ? { runId: deps.runId } : {}),
         ...(logPath ? { logPath } : {}),
         ...(isolationNote ? { isolationNote } : {}),
+        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
     }
     // D-001 / WI-39944 — a real code red enters (or advances) the ONE frozen repair
@@ -6578,6 +6596,7 @@ export async function runGreenCheckpoint(
         ...(isolationNote ? { isolationNote } : {}),
         ...(retriedTests ? { retriedTests } : {}),
         ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
+        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
     }
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
@@ -6635,6 +6654,7 @@ export async function runGreenCheckpoint(
       ...(logPath ? { logPath } : {}),
       ...(isolationNote ? { isolationNote } : {}),
       ...(lineage ? { lineage } : {}),
+      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
     });
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
     // the failing file(s) — purely informational, same fail-soft shape as the
@@ -7660,6 +7680,7 @@ export async function runGreenCheckpoint(
     ...(cleanGreen === undefined ? {} : { cleanGreen }),
     ...(deps.runId ? { runId: deps.runId } : {}),
     ...(logPath ? { logPath } : {}),
+    ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
   };
 }
 
@@ -10025,7 +10046,7 @@ export function realCheckpointDeps(
       // suite path (see SETUP_TREE_TIMEOUT_MS). `killProcessGroupOnTimeout` ensures a timeout
       // reaches the script's whole subtree (git/cp/npm), not just the `bash` wrapper, so it
       // can't orphan a half-finished node_modules copy.
-      await exec(
+      const setup = await exec(
         "bash",
         [
           script,
@@ -10043,8 +10064,12 @@ export function realCheckpointDeps(
           killProcessGroupOnTimeout: true,
         },
       );
+      return {
+        identity: `setup-release-checkout:${ref.slice(0, 64)}`,
+        output: (setup.stdout + setup.stderr).slice(-1000),
+      };
     },
-    async runGreen(treeDir, base) {
+    async runGreen(treeDir, base, execution) {
       // EI-8744: nothing-to-gate short-circuit. A codeless pot (no root package.json)
       // can't run the npm green command — it dies with `Missing script` (rc=1) before any
       // test, and the gate went hard-RED with an empty failing-test signature, churning the
@@ -10075,6 +10100,18 @@ export function realCheckpointDeps(
       log(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
       );
+      const resolvedHeadAtStart = resolveCandidateSha(treeDir);
+      const postSuiteIdentity: NonNullable<PostSuiteRunOptions["identity"]> = {
+        runId,
+        candidate:
+          execution?.candidate ?? resolvedHeadAtStart ?? "unknown",
+        headAtStart:
+          resolvedHeadAtStart ??
+          execution?.headAtStart ??
+          execution?.candidate ??
+          "unknown",
+        ...(execution?.setup ? { setup: execution.setup } : {}),
+      };
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
       const r = await exec(cmd, args, {
@@ -10095,7 +10132,13 @@ export function realCheckpointDeps(
       // runPostSuiteLegs' doc for the incident this cost us.
       let legs =
         r.code === 0
-          ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace)
+          ? await runPostSuiteLegs(
+              treeDir,
+              env,
+              exec,
+              cfg.spaBuildWorkspace,
+              { identity: postSuiteIdentity },
+            )
           : legsNotRun(
               "suite red — post-suite legs deferred until the suite is considered passing",
             );
@@ -10226,6 +10269,7 @@ export function realCheckpointDeps(
             env,
             exec,
             cfg.spaBuildWorkspace,
+            { identity: postSuiteIdentity },
           );
           fullOutput += legs.output;
           green = legs.ok;
@@ -10426,6 +10470,9 @@ export function realCheckpointDeps(
         summary,
         failingTests,
         postSuiteMeasured: legs.ran,
+        ...(legs.ran
+          ? { postSuiteLegs: legs.records.slice(0, 32) }
+          : {}),
         ...(flakeSuspects?.length ? { flakeSuspects } : {}),
         ...(failingFiles.length ? { failingFiles } : {}),
         ...(logPath ? { logPath } : {}),
