@@ -2,6 +2,17 @@ diff --git a/node_modules/verdict-cli/bin/browse.mjs b/node_modules/verdict-cli/
 index a3392d2..b6ecbf5 100755
 --- a/node_modules/verdict-cli/bin/browse.mjs
 +++ b/node_modules/verdict-cli/bin/browse.mjs
+@@ -20,7 +20,9 @@ const SERVER_SCRIPT = resolve(__dirname, '..', 'src', 'server.mjs');
+ // Parse --session <name> and --json from argv early
+ const rawArgs = process.argv.slice(2);
+ const jsonFlag = rawArgs.includes('--json');
+-let sessionName = null;
++// Papercusp agents already have a stable per-session identity. Use it when
++// callers do not pass --session so concurrent agents do not share a daemon.
++let sessionName = process.env.VERDICT_SESSION || process.env.PAPERCUSP_SID || process.env.CODEX_SESSION_ID || null;
+ const filtered = [];
+ for (let i = 0; i < rawArgs.length; i++) {
+   if (rawArgs[i] === '--json') continue;
 @@ -31,6 +31,11 @@ const [command, ...args] = filtered;
  
  const DATA_DIR = sessionName ? resolve(BASE_DATA_DIR, 'sessions', sessionName) : BASE_DATA_DIR;
