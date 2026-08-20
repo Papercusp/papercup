@@ -3902,6 +3902,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),
         limit: clampedLimitOpt(500),
+        q: z.string().max(200).optional(),
+        kinds: z.array(z.enum(['bug', 'change', 'task'])).max(3).optional(),
+        severities: z.array(z.enum(['critical', 'major', 'minor', 'nit'])).max(4).optional(),
+        scopes: z.array(z.string().min(1).max(120)).max(50).optional(),
         // (per-hive-learning-loops P-040) the per-Hive lens: a Hive HOME slug
         // narrows the feed to that Hive's member-harness scopes (D-008). Omit ⇒
         // the whole workspace (papercusp + every harness).
@@ -3917,6 +3921,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const a = (args ?? {}) as {
         state?: 'open' | 'resolved' | 'closed';
         limit?: number;
+        q?: string;
+        kinds?: ('bug' | 'change' | 'task')[];
+        severities?: ('critical' | 'major' | 'minor' | 'nit')[];
+        scopes?: string[];
         hive?: string;
         scope?: 'loop' | 'all';
       };
@@ -3932,7 +3940,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // An explicit scope:'loop' is still the default variant (same bytes); only
       // scope:'all' is a genuinely different population and must miss the snapshot.
       const isDefaultVariant =
-        a.state === undefined && a.limit === undefined && a.hive === undefined && a.scope !== 'all';
+        a.state === undefined &&
+        a.limit === undefined &&
+        a.q === undefined &&
+        a.kinds === undefined &&
+        a.severities === undefined &&
+        a.scopes === undefined &&
+        a.hive === undefined &&
+        a.scope !== 'all';
       // WI-7432: ...and the PER-POT lens, which is the variant the owner is
       // actually in. The Learning tab inherits the pot lens from the top-bar
       // selector (LearningTab.tsx HIVE_AWARE_VIEWS), so a normal desktop mount
@@ -3946,7 +3961,14 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       // (`learning.improvements.hive`) computes the lensed digest per pot and we
       // read it here with harnessSlug = the requested hive.
       const isHiveLensVariant =
-        a.state === undefined && a.limit === undefined && a.hive !== undefined && a.scope !== 'all';
+        a.state === undefined &&
+        a.limit === undefined &&
+        a.q === undefined &&
+        a.kinds === undefined &&
+        a.severities === undefined &&
+        a.scopes === undefined &&
+        a.hive !== undefined &&
+        a.scope !== 'all';
       let rows: Array<Record<string, unknown>>;
       if (isDefaultVariant) {
         const { readDerivedSnapshot } = await import('../derived-reads/registry');

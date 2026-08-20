@@ -386,6 +386,9 @@ export async function countImprovementItems(
   const base: ListIssuesFilter = {
     topic: IMPROVEMENT_TOPIC,
     state: opts.state,
+    q: opts.q,
+    kinds: opts.kinds,
+    severities: opts.severities,
     signalOrigins: origins,
   };
   // Learning-loop provenance scope — resolved to the SAME `issueIds` predicate
@@ -411,13 +414,11 @@ export async function countImprovementItems(
     if (loopIds.length === 0) return 0;
     base.issueIds = loopIds;
   }
-  if (opts.harnessScopes) {
-    if (opts.harnessScopes.length === 0) return 0; // mirrors readByTopic: an empty set matches nothing
-    const counts = await Promise.all(opts.harnessScopes.map((scope) => deps.countIssues({ ...base, scope })));
+  const scopeSet = effectiveScopes(opts);
+  if (scopeSet) {
+    if (scopeSet.length === 0) return 0; // an empty requested/lens intersection matches nothing
+    const counts = await Promise.all(scopeSet.map((scope) => deps.countIssues({ ...base, scope })));
     return counts.reduce((a, b) => a + b, 0);
-  }
-  if (opts.harnessSlug) {
-    return deps.countIssues({ ...base, scope: `harness:${opts.harnessSlug}` });
   }
   return deps.countIssues(base);
 }
@@ -540,18 +541,18 @@ async function readBySelector(
     return scopedReads.flat();
   }
 
-  const requestedScope = opts.harnessScopes?.length === 1
-    ? opts.harnessScopes[0]
-    : opts.harnessSlug
-      ? `harness:${opts.harnessSlug}`
-      : undefined;
+  const requestedScope = scopeSet?.length === 1 ? scopeSet[0] : undefined;
 
   const issues = await deps.listIssues({
     ...selector,
     state: opts.state,
+    q: opts.q,
+    kinds: opts.kinds,
+    severities: opts.severities,
     limit: opts.limit ?? 500,
     signalOrigins: origins,
     ...(requestedScope ? { scope: requestedScope } : {}),
+    ...(scopeSet && scopeSet.length !== 1 ? { scopes: scopeSet } : {}),
     ...(opts.includeBody === false ? { includeBody: false } : {}),
     ...(issueIds ? { issueIds } : {}),
     ...(opts.createdBefore ? { createdBefore: opts.createdBefore } : {}),
@@ -564,20 +565,11 @@ async function readBySelector(
   // (the migration-DEFAULT backfill semantics, see provenance.ts).
   const originGated = issues.filter((issue) => originAllowed(issue.signalOrigin, origins));
 
-  // (P-040) Per-Hive lens: filter to the Hive's member-harness scope SET when
-  // given (the Hive is the tenancy unit, D-008). Takes precedence over the
-  // single-harness filter; an empty set matches nothing.
-  if (opts.harnessScopes) {
-    const allowed = new Set(opts.harnessScopes);
+  // Keep a defensive post-filter for injectable/legacy listIssues deps that may
+  // ignore the SQL scope predicate; production is bounded in SQL above.
+  if (scopeSet) {
+    const allowed = new Set(scopeSet);
     return originGated.filter((issue) => allowed.has(issue.scope)).map(issueToCandidate);
-  }
-
-  // (P-010) Filter by scope if harnessSlug is specified
-  if (opts.harnessSlug) {
-    const targetScope = `harness:${opts.harnessSlug}`;
-    return originGated
-      .filter(issue => issue.scope === targetScope)
-      .map(issueToCandidate);
   }
 
   return originGated.map(issueToCandidate);

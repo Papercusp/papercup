@@ -134,10 +134,10 @@ import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
 import {
- useColumnFilters,
+  useColumnFilters,
   parseAsColumnFilters,
- ColumnFilterBar,
- filterCountLabel,
+  ColumnFilterBar,
+  filterCountLabel,
 } from "@/app/harness/filters";
 import type { FilterableColumn } from "@papercusp/grid-core";
 import { statusToneColor } from "@/app/harness/theme";
@@ -1347,19 +1347,19 @@ function ImprovementsView({
   // The scope arg is passed ONLY for 'all' (P-002): 'loop' is the resolver's
   // default, and the derived-read producer precomputes exactly the default
   // variant. Sending `scope:'loop'` explicitly would be a different args key,
- // miss the snapshot, and pay the 0.4-0.5s inline compute on every mount.
+  // miss the snapshot, and pay the 0.4-0.5s inline compute on every mount.
   // Parse the complete impf state before the sync read so storage-backed axes
   // are bounded in SQL; presentation-only filters remain client-derived.
- const filterCols = useMemo<FilterableColumn<LoopRow>[]>(() => [
-   { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.item?.kind ?? "—" } },
-   { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.item?.severity ?? "—" } },
-   { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.item?.scope ?? "—" } },
-   { key: "stage", header: "Stage", filter: { type: "enum", accessor: (r) => PIPELINE_STATES[pipelineState(r)].label } },
-   { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.item?.ideaType ?? "—" } },
-   { key: "lens", header: "Lens", filter: { type: "enum", accessor: (r) => r.idea?.lens ?? "—" } },
-   { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.item?.score ?? 0 } },
-   { key: "ageDays", header: "Age (days)", filter: { type: "number", accessor: (r) => r.item?.ageDays ?? 0 } },
- ], []);
+  const filterCols = useMemo<FilterableColumn<LoopRow>[]>(() => [
+    { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.item?.kind ?? "—" } },
+    { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.item?.severity ?? "—" } },
+    { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.item?.scope ?? "—" } },
+    { key: "stage", header: "Stage", filter: { type: "enum", accessor: (r) => PIPELINE_STATES[pipelineState(r)].label } },
+    { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.item?.ideaType ?? "—" } },
+    { key: "lens", header: "Lens", filter: { type: "enum", accessor: (r) => r.idea?.lens ?? "—" } },
+    { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.item?.score ?? 0 } },
+    { key: "ageDays", header: "Age (days)", filter: { type: "number", accessor: (r) => r.item?.ageDays ?? 0 } },
+  ], []);
   const [filterState] = useQueryState("impf", parseAsColumnFilters(filterCols));
   const [search, setSearch] = useQueryState("impq", parseAsString.withDefault(""));
   const serverFilters = useMemo(() => {
@@ -1380,14 +1380,14 @@ function ImprovementsView({
   }, [filterState]);
   const sync = useSyncQuery<LearningImprovementsRow>({
     queryName: "learning.improvements",
-   args: {
-     ...(hive ? { hive } : {}),
-     ...(scope === "all" ? { scope: "all" } : {}),
+    args: {
+      ...(hive ? { hive } : {}),
+      ...(scope === "all" ? { scope: "all" } : {}),
       ...(serverFilters.kinds ? { kinds: serverFilters.kinds } : {}),
       ...(serverFilters.severities ? { severities: serverFilters.severities } : {}),
       ...(serverFilters.scopes ? { scopes: serverFilters.scopes } : {}),
       ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
-   },
+    },
     staleTime: 30_000,
     enabled: hiveReady,
   });
@@ -1751,10 +1751,10 @@ function ImprovementsView({
   // Working tab's Work Queue): the shared filter engine (`impf` param) over
   // the lane/source-scoped rows, plus a global substring quick-search
   // (`impq`) as its own affordance — the same split WorkItemsPanel uses.
- // Accessors read THROUGH the work-item half: an idea-only row answers "—" to
- // every work-item column, so it drops out of any such filter by itself, and
- // the lens column is the one facet an idea-only row can actually answer.
- const cf = useColumnFilters(filterCols, rows, { ns: "imp" });
+  // Accessors read THROUGH the work-item half: an idea-only row answers "—" to
+  // every work-item column, so it drops out of any such filter by itself, and
+  // the lens column is the one facet an idea-only row can actually answer.
+  const cf = useColumnFilters(filterCols, rows, { ns: "imp" });
   const visibleRows = useMemo(() => {
     const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;

@@ -19,6 +19,7 @@
  * from whatever humanQueue the read returns (snapshot or inline).
  */
 import type { ImprovementDigest, ScoredItem } from './digest';
+import type { IssueSeverity, IssueStoreKind } from '../../issues-engineer';
 
 /**
  * The humanQueue fields this read actually puts ON THE WIRE (WI-7279).
@@ -104,6 +105,10 @@ export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
 
 export interface LearningImprovementsArgs {
   state?: 'open' | 'resolved' | 'closed';
+  q?: string;
+  kinds?: readonly IssueStoreKind[];
+  severities?: readonly IssueSeverity[];
+  scopes?: readonly string[];
   limit?: number;
   /** A Hive HOME slug narrows to that Hive's member-harness scopes; omit ⇒ whole workspace. */
   hive?: string;
@@ -159,6 +164,10 @@ export async function computeLearningImprovementsSnapshot(
   }
   const readOpts = {
     state: a.state,
+    q: a.q,
+    kinds: a.kinds,
+    severities: a.severities,
+    scopes: a.scopes,
     limit: a.limit,
     ...(harnessScopes ? { harnessScopes } : {}),
     // D-002: 'loop' is the default — see LearningImprovementsArgs.scope. Passing the
