@@ -16,7 +16,6 @@ import { listSpecClauses, type SpecClauseRevision } from './agent-tools/plans/sp
 import {
   listSpecEvidence,
   listWorkItemSpecRevisionEdges,
-  type WorkItemSpecRevisionEdge,
 } from './agent-tools/plans/spec-evidence-store';
 import {
   getWorkItem,
@@ -102,6 +101,12 @@ export interface BoundedPriorAttemptBrief {
   residue: Array<{ rawRef: string; workItemId?: string | null; items: string[] }>;
   attempts: PriorAttemptBriefRecord[];
   rawRefs: string[];
+  /** Lossless authority/residue drill-down refs survive even when their inline
+   * detail must be compressed out of an extreme history. */
+  protectedRefs: {
+    authority: Array<{ authority: PriorAttemptAuthority; rawRef: string }>;
+    residue: string[];
+  };
   omission: {
     omittedRecords: number;
     omittedByAuthority: Partial<Record<PriorAttemptAuthority, number>>;
@@ -314,6 +319,10 @@ export function buildBoundedPriorAttemptBrief(
   const authority: PriorAttemptBriefRecord[] = [];
   const attempts: PriorAttemptBriefRecord[] = [];
   const rawRefs: string[] = [];
+  const protectedRefs = {
+    authority: protectedRecords.map((record) => ({ authority: record.authority, rawRef: record.rawRef })),
+    residue: residue.map((entry) => entry.rawRef),
+  };
   const omitted = new Map<PriorAttemptAuthority, number>();
   let admitted = 0;
 
@@ -326,6 +335,7 @@ export function buildBoundedPriorAttemptBrief(
     residue,
     attempts,
     rawRefs,
+    protectedRefs,
     omission: {
       omittedRecords: compilation.records.length - admitted,
       omittedByAuthority: {},
@@ -348,7 +358,7 @@ export function buildBoundedPriorAttemptBrief(
   }
   // Residue is protected independently. Bound individual residue prose but never
   // remove its rawRef or the fact that residue exists.
-  for (const entry of residue) entry.items = entry.items.map((item) => boundedLine(item, 240));
+  for (const entry of residue) entry.items = entry.items.map((item) => boundedLine(item, 160));
 
   for (const record of ordinaryRecords) {
     if (admitted >= maxRecords) {
@@ -378,6 +388,7 @@ export function buildBoundedPriorAttemptBrief(
     residue,
     attempts,
     rawRefs: [...new Set(rawRefs)],
+    protectedRefs,
     omission: {
       omittedRecords,
       omittedByAuthority: Object.fromEntries([...omitted].filter(([, count]) => count > 0)),
@@ -388,6 +399,44 @@ export function buildBoundedPriorAttemptBrief(
     estimatedTokens: 0,
     serializedChars: 0,
   };
+  const noteOmitted = (authority: PriorAttemptAuthority) => {
+    result.omission.omittedByAuthority[authority] = (result.omission.omittedByAuthority[authority] ?? 0) + 1;
+    result.omission.omittedRecords += 1;
+    result.omission.truncated = true;
+  };
+  // Enforce the advertised bound against the FINAL serialized shape. Protected
+  // facts keep lossless refs even when their inline detail is the part removed.
+  while (briefSize(result) > maxChars && result.attempts.length > 0) {
+    const removed = result.attempts.pop()!;
+    result.rawRefs = result.rawRefs.filter((ref) => ref !== removed.rawRef);
+    noteOmitted(removed.authority);
+  }
+  while (briefSize(result) > maxChars && result.residue.length > 0) {
+    const entry = result.residue[result.residue.length - 1]!;
+    if (entry.items.some((item) => item.length > 64)) {
+      entry.items = entry.items.map((item) => boundedLine(item, 64));
+    } else {
+      result.residue.pop();
+    }
+  }
+  while (briefSize(result) > maxChars && result.authority.length > 0) {
+    const entry = result.authority[result.authority.length - 1]!;
+    if (entry.text.length > 64 || entry.approach || entry.outcome || entry.rootCauses || entry.falsePremises || entry.touchedFiles || entry.tests) {
+      result.authority[result.authority.length - 1] = {
+        authority: entry.authority,
+        scope: entry.scope,
+        rawRef: entry.rawRef,
+        text: boundedLine(entry.text, 64),
+      };
+    } else {
+      result.authority.pop();
+      result.rawRefs = result.rawRefs.filter((ref) => ref !== entry.rawRef);
+      noteOmitted(entry.authority);
+    }
+  }
+  result.serializedChars = briefSize(result);
+  result.estimatedTokens = Math.ceil(result.serializedChars / 4);
+  // Updating the metrics can change their own digit width by a byte or two.
   result.serializedChars = briefSize(result);
   result.estimatedTokens = Math.ceil(result.serializedChars / 4);
   return result;
@@ -506,13 +555,15 @@ export async function collectPriorAttempts(
     }
   }
 
-  const edgePairs = await Promise.all(
-    [...candidates.values()].map(async (item) => [
-      item.id,
-      await deps.edges({ harnessSlug: harness, planSlug: options.planSlug, workItemId: item.id }).catch(() => []),
-    ] as const),
-  );
-  const edgesByItem = new Map<string, WorkItemSpecRevisionEdge[]>(edgePairs);
+  const edgeSpecsByItem = new Map<string, Set<string>>();
+  for (const entry of evidence) {
+    const set = edgeSpecsByItem.get(entry.workItemId) ?? new Set<string>();
+    set.add(entry.specId);
+    edgeSpecsByItem.set(entry.workItemId, set);
+  }
+  if (targetEdges.length) {
+    edgeSpecsByItem.set(options.workItemId, new Set(targetEdges.map((edge) => edge.specId)));
+  }
   const sources: PriorAttemptSource[] = [];
 
   for (const spec of allSpecs) {
@@ -533,16 +584,23 @@ export async function collectPriorAttempts(
 
   await Promise.all(
     [...candidates.values()].map(async (item) => {
-      const edges = edgesByItem.get(item.id) ?? [];
-      const edgeSpecs = new Set(edges.map((edge) => edge.specId));
+      const edgeSpecs = edgeSpecsByItem.get(item.id) ?? new Set<string>();
       const scope = scopeFor(item, targetSpecIds, edgeSpecs, options.planItemId);
+      // Plan-wide history is material through its structured completion record.
+      // Pulling four deep stores for every plan sibling made a 32-item claim issue
+      // 128 independent PG reads and measured at P95 20.144s. Deep history is
+      // reserved for same-spec/same-item attempts; plan-wide remains bounded and
+      // useful without turning claim enrichment into a fan-out query storm.
+      const deep = item.id === options.workItemId || scope !== 'plan-wide';
       const [thread, checkpoint, lifecycle, priorWork] = await Promise.all([
-        deps.thread(item.id, options.maxThreadPosts ?? 50, harness).catch(() => null),
-        deps.checkpoint({ harness: item.harness, workItemId: item.id }).catch(() => ({ checkpoint: null, updatedAtMs: null })),
-        workspaceId
+        deep ? deps.thread(item.id, options.maxThreadPosts ?? 50, harness).catch(() => null) : Promise.resolve(null),
+        deep
+          ? deps.checkpoint({ harness: item.harness, workItemId: item.id }).catch(() => ({ checkpoint: null, updatedAtMs: null }))
+          : Promise.resolve({ checkpoint: null, updatedAtMs: null }),
+        deep && workspaceId
           ? deps.lifecycle({ id: item.id, workspaceId, payload: item.payload, family: item.family }).catch(() => null)
           : Promise.resolve(null),
-        deps.priorWork({ harness: item.harness, workItemId: item.id }).catch(() => null),
+        deep ? deps.priorWork({ harness: item.harness, workItemId: item.id }).catch(() => null) : Promise.resolve(null),
       ]);
       if (item.terminalCompletionRef || item.terminalCompletionEvidence) {
         const evidenceText = item.terminalCompletionEvidence
@@ -636,6 +694,7 @@ function planPointer(opts: ClaimTimePriorAttemptOptions): { planSlug: string; pl
 /** Shared fail-soft claim enrichment used by every canonical claim surface. */
 export async function getClaimTimePriorAttemptBrief(
   opts: ClaimTimePriorAttemptOptions,
+  deps: CollectorDeps = DEFAULT_DEPS,
 ): Promise<BoundedPriorAttemptBrief | null> {
   const pointer = planPointer(opts);
   if (!pointer) return null;
@@ -643,14 +702,17 @@ export async function getClaimTimePriorAttemptBrief(
   const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
   try {
     const compilation = await Promise.race([
-      collectPriorAttempts({
-        harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
-        planSlug: pointer.planSlug,
-        planItemId: pointer.planItemId,
-        workItemId,
-        maxPlanWorkItems: 32,
-        maxThreadPosts: 12,
-      }),
+      collectPriorAttempts(
+        {
+          harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
+          planSlug: pointer.planSlug,
+          planItemId: pointer.planItemId,
+          workItemId,
+        maxPlanWorkItems: 16,
+          maxThreadPosts: 12,
+        },
+        deps,
+      ),
       new Promise<never>((_, reject) => {
         const timer = setTimeout(() => reject(new Error('prior-attempt-claim-timeout')), timeoutMs);
         timer.unref?.();

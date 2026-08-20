@@ -3,6 +3,7 @@ import {
   buildBoundedPriorAttemptBrief,
   collectPriorAttempts,
   compilePriorAttempts,
+  getClaimTimePriorAttemptBrief,
   type PriorAttemptSource,
 } from './prior-attempt-context';
 import type { WorkItem } from './work-items';
@@ -100,12 +101,28 @@ describe('buildBoundedPriorAttemptBrief', () => {
     expect(brief.authority.map((record) => record.rawRef)).toEqual([
       'plan#SPEC-1@3', 'plan#D-008', 'WI-2#comment:9',
     ]);
+    expect(brief.protectedRefs.authority.map((record) => record.rawRef)).toEqual([
+      'plan#SPEC-1@3', 'plan#D-008', 'WI-2#comment:9',
+    ]);
     expect(brief.residue).toEqual([{ rawRef: 'WI-2#checkpoint', workItemId: undefined, items: ['live verification remains.'] }]);
     expect(brief.omission.truncated).toBe(true);
     expect(brief.omission.omittedRecords).toBeGreaterThan(0);
     expect(brief.omission.omittedByAuthority.comment).toBeGreaterThan(0);
     expect(brief.serializedChars).toBeLessThanOrEqual(5_000);
     expect(brief.rawRefs).toEqual([...new Set(brief.rawRefs)]);
+  });
+
+  it('hard-bounds extreme protected history while retaining every protected raw ref', () => {
+    const sources = Array.from({ length: 80 }, (_, index) => source({
+      rawRef: `plan#D-${String(index + 1).padStart(3, '0')}`,
+      authority: 'plan-decision',
+      text: `Decision ${index}: ${'ruling '.repeat(100)}`,
+    }));
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxChars: 5_000 })!;
+    expect(brief.serializedChars).toBeLessThanOrEqual(5_000);
+    expect(brief.protectedRefs.authority).toHaveLength(80);
+    expect(brief.protectedRefs.authority.map((entry) => entry.rawRef)).toEqual(sources.map((entry) => entry.rawRef));
+    expect(brief.omission.truncated).toBe(true);
   });
 });
 
@@ -154,5 +171,28 @@ describe('collectPriorAttempts', () => {
     ]);
     expect(result.records.filter((record) => record.workItemId === 'WI-9').every((record) => record.scope === 'same-spec')).toBe(true);
     expect(result.records.find((record) => record.authority === 'retraction')?.rawRef).toBe('WI-9#comment:7');
+  });
+});
+
+describe('getClaimTimePriorAttemptBrief', () => {
+  it('bounds a pathological history read and fails soft without changing the claim verdict', async () => {
+    const never = () => new Promise<never>(() => {});
+    const started = performance.now();
+    const result = await getClaimTimePriorAttemptBrief({
+      planSlug: 'plan', planItemId: 'P-009', workItemId: 'WI-9', timeoutMs: 25,
+    }, {
+      getPlan: never,
+      specs: never,
+      edges: never,
+      evidence: never,
+      item: never,
+      items: never,
+      thread: never,
+      checkpoint: never,
+      lifecycle: never,
+      priorWork: never,
+    } as never);
+    expect(result).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });
