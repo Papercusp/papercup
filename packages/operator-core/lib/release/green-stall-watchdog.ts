@@ -119,6 +119,147 @@ const WATCHDOG_KIND = 'green-checkpoint-watchdog';
 export interface GreenStallThresholds {
   fireStaleMs?: number;
   noGreenMs?: number;
+  /** How long a durable green-checkpoint-stall row may sit before recovery is retried. */
+  greenCheckpointStallRecoveryStaleMs?: number;
+  /** Maximum number of bounded recovery dispatch attempts for one stall episode. */
+  greenCheckpointStallRecoveryMaxAttempts?: number;
+}
+
+/**
+ * The in-routine green-checkpoint-stall row is written at the alert edge and then
+ * deliberately stays quiet until a green tick clears it. Three hourly cycles is
+ * long enough to avoid racing the normal fixer path while still bounding an
+ * unowned red gate.
+ */
+const DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_STALE_MS = 3 * 60 * 60 * 1000;
+const DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS = 3;
+
+export interface GreenCheckpointStallRecoveryMarker {
+  attempts: number;
+  lastAttemptAt: number | null;
+  outcome: 'claimed' | 'dispatched' | 'no-progress' | 'max-attempts' | null;
+  notifiedAt: number | null;
+}
+
+export interface GreenCheckpointStallEscalation {
+  /** The original JSON object, preserved so recovery markers never discard evidence. */
+  raw: Record<string, unknown>;
+  installSlug: string | null;
+  candidate: string | null;
+  failingTests: string[];
+  ownershipCovered: boolean | null;
+  recovery: GreenCheckpointStallRecoveryMarker;
+}
+
+export interface GreenCheckpointStallRecoveryDecision {
+  action: 'none' | 'dispatch' | 'notify';
+  reason: 'not-stale' | 'covered' | 'invalid' | 'retry' | 'max-attempts';
+  nextAttempt: number;
+}
+
+const asRecord = (value: unknown): Record<string, unknown> | null =>
+  value != null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+const finiteNonNegativeInt = (value: unknown, fallback: number): number => {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+};
+
+const finiteTimestamp = (value: unknown): number | null => {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+/**
+ * Parse the existing TEXT escalation body without trusting malformed/legacy rows.
+ * A candidate and at least one named failing test are required by the recovery
+ * decision; the parser keeps those checks separate so callers can report why a
+ * row was skipped rather than treating malformed JSON as a live red.
+ */
+export function parseGreenCheckpointStallEscalation(raw: unknown): GreenCheckpointStallEscalation | null {
+  let value: unknown = raw;
+  if (typeof value === 'string') {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  const record = asRecord(value);
+  if (!record || record.kind !== 'green-checkpoint-stall') return null;
+
+  const candidateValue = typeof record.candidate === 'string' ? record.candidate.trim() : '';
+  const candidate = candidateValue.length >= 4 && candidateValue.length <= 128 ? candidateValue : null;
+  const failingTests = Array.isArray(record.failingTests)
+    ? record.failingTests
+        .filter((test): test is string => typeof test === 'string' && test.trim().length > 0)
+        .map((test) => test.trim())
+        .slice(0, 20)
+    : [];
+  const ownership = asRecord(record.ownership);
+  const recoveryRecord = asRecord(record.recovery);
+
+  return {
+    raw: record,
+    installSlug: typeof record.harness_slug === 'string' && record.harness_slug.trim() ? record.harness_slug.trim() : null,
+    candidate,
+    failingTests,
+    ownershipCovered: typeof ownership?.covered === 'boolean' ? ownership.covered : null,
+    recovery: {
+      attempts: finiteNonNegativeInt(recoveryRecord?.attempts, 0),
+      lastAttemptAt: finiteTimestamp(recoveryRecord?.lastAttemptAt),
+      outcome:
+        recoveryRecord?.outcome === 'claimed' ||
+        recoveryRecord?.outcome === 'dispatched' ||
+        recoveryRecord?.outcome === 'no-progress' ||
+        recoveryRecord?.outcome === 'max-attempts'
+          ? recoveryRecord.outcome
+          : null,
+      notifiedAt: finiteTimestamp(recoveryRecord?.notifiedAt),
+    },
+  };
+}
+
+/**
+ * Pure recovery gate for one stale in-routine escalation. It is intentionally
+ * stricter than the alarm itself: only a known uncovered owner, a usable candidate,
+ * and named failing tests may cause an automated re-dispatch. Attempts are bounded
+ * so a broken launch path becomes a loud owner/fleet signal instead of a spawn loop.
+ */
+export function decideGreenCheckpointStallRecovery(opts: {
+  mtimeMs: number | null;
+  nowMs: number;
+  ownershipCovered: boolean | null;
+  candidate: string | null;
+  failingTests: readonly string[];
+  recoveryAttempts?: number;
+  recoveryNotifiedAt?: number | null;
+  staleMs?: number;
+  maxAttempts?: number;
+}): GreenCheckpointStallRecoveryDecision {
+  const attempts = finiteNonNegativeInt(opts.recoveryAttempts, 0);
+  const staleMs = Math.max(0, opts.staleMs ?? DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_STALE_MS);
+  const maxAttempts = Math.max(
+    1,
+    finiteNonNegativeInt(opts.maxAttempts, DEFAULT_GREEN_CHECKPOINT_STALL_RECOVERY_MAX_ATTEMPTS),
+  );
+  if (opts.mtimeMs == null || !Number.isFinite(opts.mtimeMs) || opts.nowMs - opts.mtimeMs <= staleMs) {
+    return { action: 'none', reason: 'not-stale', nextAttempt: attempts };
+  }
+  if (opts.ownershipCovered !== false) {
+    return { action: 'none', reason: 'covered', nextAttempt: attempts };
+  }
+  if (!opts.candidate || opts.failingTests.length === 0) {
+    return { action: 'none', reason: 'invalid', nextAttempt: attempts };
+  }
+  if (attempts >= maxAttempts) {
+    return {
+      action: opts.recoveryNotifiedAt == null ? 'notify' : 'none',
+      reason: 'max-attempts',
+      nextAttempt: attempts,
+    };
+  }
+  return { action: 'dispatch', reason: 'retry', nextAttempt: attempts + 1 };
 }
 
 /** The bits of one green-checkpoint routine row the verdict is computed from. */
