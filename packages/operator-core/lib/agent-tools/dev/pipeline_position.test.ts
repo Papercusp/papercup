@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from 'vitest';
 import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS } from './pipeline_position';
-import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
+import {
+  gitPipelinePosition,
+  type PipelinePosition,
+  type RuntimeOwnership,
+} from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
 /**
  * P-010: the handler reads the LIVE cell registry, which the tool barrel populates via
@@ -629,13 +633,13 @@ describe('dev:pipeline_position subject disclosure', () => {
     notes: [],
   } as unknown as PipelinePosition;
 
-  const release = {
+  const release: RuntimeOwnership = {
     host: 'operator-release',
     releasePipelineApplies: true,
     restartTarget: 'staging',
     activation: 'deploy',
   };
-  const staging = {
+  const staging: RuntimeOwnership = {
     host: 'bg-host',
     releasePipelineApplies: false,
     restartTarget: 'bg-host',

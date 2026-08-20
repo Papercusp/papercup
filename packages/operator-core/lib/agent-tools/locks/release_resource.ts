@@ -106,7 +106,7 @@ export default defineTool({
           return r;
         }
       }
-      return { released: 0, releasedModes: [], exclusiveResources: [], waiters: {} };
+      return { released: 0, releasedModes: [], exclusiveResources: [], expired: [], waiters: {} };
     }
 
     const env = await runBulk(
