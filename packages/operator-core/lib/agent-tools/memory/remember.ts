@@ -177,7 +177,7 @@ export default defineTool({
     when:
       'When the user says "remember X" / "don\'t forget Y" / "next time…" / "from now on…", OR when YOU notice an error you made that would recur without persistence. ALWAYS inform the user out loud ("I\'ll remember that"). For project-specific facts, pass harness_slug — the fact then surfaces for anyone working in that harness. Write ONE self-contained fact per call, tightly phrased: it is stored EXACTLY as written (no server-side rewriting or condensing), so make it stand on its own, lead with the searchable terms/anchors (file paths, F-NNN, backticked symbols), and drop conversational preamble.',
     notWhen:
-      'Default scope is per-user. Do not pass harness_slug for personal preferences. For IN-FLIGHT / ephemeral state (what you are doing right now), use coord (coord:declare-intent / coord:send) — it is delta-delivered, not a semantic store.',
+      'Default scope is per-user. Do not pass harness_slug for personal preferences. For IN-FLIGHT / ephemeral state (what you are doing right now), use coord (coord:declare-intent / coord:send) — it is delta-delivered, not a semantic store. Lifecycle choice: use `supersede:<old-id>` when this NEW fact replaces an old fact and history matters; use memory:update to correct the SAME fact in place while preserving its id; use memory:forget only for removal (hard for privacy, soft when history should remain without a replacement).',
     chaining:
       'After writing, the persona prompt will surface this entry on the next turn\'s pre-turn injection. No need to call memory:search to verify.',
     seeAlso: [

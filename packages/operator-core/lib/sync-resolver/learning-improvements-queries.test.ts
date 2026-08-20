@@ -125,6 +125,23 @@ describe('learning.improvements resolver gate', () => {
       expect(recordQueueExposureMock).toHaveBeenCalledWith(['EI-9']);
     });
 
+    it('bounded filter args bypass the unfiltered snapshot and reach the live compute', async () => {
+      computeSnapshotMock.mockImplementation(async () => [{ humanQueue: [], flow: {} }]);
+      const args = {
+        q: 'timeout',
+        kinds: ['bug'],
+        severities: ['critical'],
+        scopes: ['harness:foo'],
+      };
+      const { resolveNamedQueryV2: r } = await import('./index');
+
+      await r('learning.improvements', args);
+
+      expect(readDerivedSnapshotMock).not.toHaveBeenCalled();
+      expect(readDerivedSnapshotRowsMock).not.toHaveBeenCalled();
+      expect(computeSnapshotMock).toHaveBeenCalledWith(args);
+    });
+
     // WI-7432 — the owner's actual variant. Both legs are pinned: a HIT must not
     // compute (that IS the fix), and a MISS must still compute (so the fix can
     // never make a cold pot worse than it was).

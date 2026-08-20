@@ -47,6 +47,15 @@
  * `execUser` + `now` + `notify` without shelling out — see the colocated `.test.ts`.
  */
 import { supervisedProcesses, type SupervisionEntry } from '../service-health';
+import {
+  BACKOFF_SEQUENCE_SEC,
+  GIVE_UP_THRESHOLD,
+  GIVE_UP_WINDOW_MS,
+  HEALTHY_RESET_MS,
+  decideFlapDamping,
+  initialFlapDampingState,
+  type FlapDampingState,
+} from './flap-damping';
 import type { SupervisionGiveUpEpisode, RecoveredSupervisionEpisode } from './give-up-ei';
 import type { SupervisionPausedEpisode, ResumedSupervisionEpisode } from './paused-unit-ei';
 import {
@@ -58,6 +67,16 @@ import {
   type PauseState,
   type PauseStoreDeps,
 } from './pause-clock';
+
+export {
+  BACKOFF_SEQUENCE_SEC,
+  GIVE_UP_THRESHOLD,
+  GIVE_UP_WINDOW_MS,
+  HEALTHY_RESET_MS,
+  decideFlapDamping,
+  initialFlapDampingState,
+  type FlapDampingState,
+} from './flap-damping';
 
 // ── Parsing (pure) ──────────────────────────────────────────────────────────
 
@@ -182,11 +201,6 @@ export function isAdministrativelyPaused(unitFileState: string | undefined): boo
 
 // ── Flap-damping decision (pure) ────────────────────────────────────────────
 
-/** Backoff ladder in SECONDS, indexed by consecutive-restart-attempt count (capped). */
-export const BACKOFF_SEQUENCE_SEC: readonly number[] = [1, 5, 15, 60];
-/** ≥ this many restarts inside GIVE_UP_WINDOW_MS → stop restarting, escalate. */
-export const GIVE_UP_THRESHOLD = 6;
-export const GIVE_UP_WINDOW_MS = 10 * 60 * 1000;
 /**
  * EI-20093844846536045: how many consecutive BUILD-STEP (control-process) give-ups we absorb as
  * "the shared tree is mid-sweep" before treating the break as real and giving up for good.
@@ -197,26 +211,12 @@ export const GIVE_UP_WINDOW_MS = 10 * 60 * 1000;
  */
 export const BUILD_STEP_RETRY_LIMIT = 5;
 
-/** Continuously healthy this long resets the restart counter + give-up latch. */
-export const HEALTHY_RESET_MS = 5 * 60 * 1000;
-
 /** Per-unit flap-damping state. In-memory / ephemeral BY DESIGN (P-004's own note: this is
  *  runtime supervision state, not durable state — the Postgres-default storage rule does not
  *  apply; a process restart legitimately resets damping history). Module-singleton map keyed
  *  by unit name, owned by `reconcileTick`'s caller (never constructed fresh per tick). */
-export interface UnitFlapState {
+export interface UnitFlapState extends FlapDampingState {
   unit: string;
-  /** Restart-attempt timestamps (epoch ms), pruned to the trailing GIVE_UP_WINDOW_MS. */
-  restarts: number[];
-  /** Index into BACKOFF_SEQUENCE_SEC for the NEXT restart attempt. */
-  backoffIndex: number;
-  lastRestartAt: number | null;
-  /** Epoch ms this unit was last freshly OBSERVED healthy (active) — null while down. Used to
-   *  compute the 5-minute continuously-healthy reset. */
-  healthySince: number | null;
-  /** True once give-up has fired (systemd start-limit-hit OR our own ≥6/10m) — no further
-   *  restart attempts until the healthy-reset clears it. */
-  gaveUp: boolean;
   /**
    * EI-20093844846536045: how many times we have declined to latch a permanent give-up because
    * the failure was a BUILD-STEP (control-process) failure — an external, self-clearing tree
@@ -260,12 +260,8 @@ export interface UnitFlapState {
 
 export function initialFlapState(unit: string): UnitFlapState {
   return {
+    ...initialFlapDampingState(),
     unit,
-    restarts: [],
-    backoffIndex: 0,
-    lastRestartAt: null,
-    healthySince: null,
-    gaveUp: false,
     buildStepRetries: 0,
     wasDown: false,
     restartDriftWarned: false,
@@ -430,15 +426,11 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
     // 2026-08-10: bg-host restarted 16:50Z, papercup-staging-api was healthy by 16:51Z, and its
     // give-up EI was still open ~25min later. Flag it so the caller can reconcile the orphan.
     const firstObservation = input.state.healthySince == null && !wasDown;
-    if (state.healthySince == null) state.healthySince = now;
+    const damping = decideFlapDamping({ healthy: true, state, now });
+    Object.assign(state, damping.nextState);
     state.wasDown = false;
     state.consecutiveDownTicks = 0;
-    // 5-minutes-continuously-healthy reset (independent of the transition notify below —
-    // a unit that never flapped just never had anything to reset).
-    if ((state.gaveUp || state.restarts.length > 0) && now - state.healthySince >= HEALTHY_RESET_MS) {
-      state.gaveUp = false;
-      state.restarts = [];
-      state.backoffIndex = 0;
+    if (damping.action.kind === 'healthy' && damping.action.reset) {
       // EI-20093844846536045: the unit has been healthy for the full reset window, so whatever
       // tree break drove the build-step retries is over — spend the patience budget fresh next time.
       state.buildStepRetries = 0;
@@ -522,32 +514,32 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
     return { action: { kind: 'escalate-start-limit-hit', unit: entry.name }, nextState: state };
   }
 
-  // Backoff spacing: too soon since the last attempt?
-  if (state.lastRestartAt != null) {
-    const waitSec = BACKOFF_SEQUENCE_SEC[Math.min(state.backoffIndex, BACKOFF_SEQUENCE_SEC.length - 1)];
-    // The backoff for THIS wait is the one recorded at the PRIOR attempt, i.e. backoffIndex-1 —
-    // backoffIndex was already advanced past it. Guard the floor at index 0.
-    const priorIdx = Math.max(0, state.backoffIndex - 1);
-    const priorWaitSec = BACKOFF_SEQUENCE_SEC[Math.min(priorIdx, BACKOFF_SEQUENCE_SEC.length - 1)];
-    void waitSec;
-    if (now - state.lastRestartAt < priorWaitSec * 1000) {
+  const damping = decideFlapDamping({ healthy: false, state, now });
+  Object.assign(state, damping.nextState);
+  switch (damping.action.kind) {
+    case 'waiting-backoff':
       return { action: { kind: 'waiting-backoff', unit: entry.name }, nextState: state };
-    }
+    case 'already-escalated':
+      return { action: { kind: 'already-escalated', unit: entry.name }, nextState: state };
+    case 'restart':
+      return {
+        action: { kind: 'restart', unit: entry.name, backoffSec: damping.action.backoffSec },
+        nextState: state,
+      };
+    case 'escalate-give-up':
+      return {
+        action: {
+          kind: 'escalate-give-up',
+          unit: entry.name,
+          restartsInWindow: damping.action.restartsInWindow,
+        },
+        nextState: state,
+      };
+    case 'healthy':
+      // The wrapper passes healthy:false here; retain a total switch so future action additions
+      // are a compile-time decision rather than an accidental fallthrough.
+      return { action: { kind: 'healthy', unit: entry.name }, nextState: state };
   }
-
-  // Prune the give-up window, then decide restart-vs-give-up on the PRUNED count.
-  const pruned = state.restarts.filter((t) => now - t < GIVE_UP_WINDOW_MS);
-  if (pruned.length >= GIVE_UP_THRESHOLD) {
-    state.gaveUp = true;
-    state.restarts = pruned;
-    return { action: { kind: 'escalate-give-up', unit: entry.name, restartsInWindow: pruned.length }, nextState: state };
-  }
-
-  const backoffSec = BACKOFF_SEQUENCE_SEC[Math.min(state.backoffIndex, BACKOFF_SEQUENCE_SEC.length - 1)];
-  state.restarts = [...pruned, now];
-  state.backoffIndex = Math.min(state.backoffIndex + 1, BACKOFF_SEQUENCE_SEC.length - 1);
-  state.lastRestartAt = now;
-  return { action: { kind: 'restart', unit: entry.name, backoffSec }, nextState: state };
 }
 
 // ── Orchestrator (impure — injected deps for testing) ───────────────────────

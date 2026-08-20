@@ -129,7 +129,7 @@ import { CORPUS_BLOCK_HEADING } from './corpus-recall';
 import { getMemoryBackend } from './backend';
 import { _resetForTests } from './bump-last-surfaced';
 
-type Row = { id: string; text: string; kind?: string };
+type Row = { id: string; text: string; kind?: string; metadata?: Record<string, unknown> };
 
 // The neutral-backend mock (generalize-memory-backend-swappable D-003):
 // `search` stamps each canned row with the scope it was queried under,
@@ -348,6 +348,44 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       if (prev === undefined) delete process.env.PAPERCUSP_MEMORY_FUSION_MODE;
       else process.env.PAPERCUSP_MEMORY_FUSION_MODE = prev;
     }
+  });
+});
+
+describe('temporal-lite recall rendering (WI-40101)', () => {
+  it('passes the explicit history opt-in and labels a superseded row before its body', async () => {
+    const backend = mockBackend([
+      {
+        id: 'old-memory',
+        text: 'Gemma is the default embedder',
+        kind: 'project',
+        metadata: {
+          validity: {
+            status: 'superseded',
+            invalid_at: '2026-07-10T15:45:00.000Z',
+            superseded_by: 'new-memory',
+          },
+        },
+      },
+      {
+        id: 'current-memory',
+        text: 'Harrier is the default embedder',
+        kind: 'project',
+        metadata: { validity: { status: 'current', invalid_at: null } },
+      },
+    ]);
+    useBackend(backend);
+
+    const block = await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'default embedder',
+      includeSuperseded: true,
+    });
+
+    expect(backend.search.mock.calls[0]![1]).toMatchObject({ includeSuperseded: true });
+    expect(block).toContain('[SUPERSEDED 2026-07-10] Gemma is the default embedder');
+    expect(block).toContain('Harrier is the default embedder');
+    expect(block).not.toContain('[SUPERSEDED date unknown] Harrier');
   });
 });
 

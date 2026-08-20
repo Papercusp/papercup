@@ -103,12 +103,12 @@ export default defineTool({
   name: 'memory:update',
   capability: 'memory:write',
   description:
-    'Edit one OR many memory entries: replace content and/or patch metadata (kind, workspaceId, scope/recall-pool) — preserving each id. Pass supersedes:<old-id> to record that this memory REPLACES an old one (the old one drops out of default recall, history preserved — temporal-lite). Metadata patches are vec-safe (no re-embed). Single: { id, content?, kind?, … }. Many same patch: { ids:[…], kind?/scope?/… }. Many heterogeneous: items:[{ id, content?, kind?, … }]. Returns { ok, results:[{ ok, id, superseded?, error? }], counts } — correlate by id, not by position; a not-found / timed-out id never fails the rest.',
+    'Edit one or many memories in place, preserving ids. Patch content or metadata (`kind`, `workspaceId`, `scope`); metadata-only patches do not re-embed. On the NEW row, `supersedes:<old-id>` records replacement and closes the old row from default recall while preserving history. Single: `{ id, … }`; homogeneous bulk: `{ ids:[…], … }`; heterogeneous bulk: `{ items:[…] }`. Results are per-id; one failure does not fail the batch.',
   guidance: {
     when:
-      'CONTENT: when the user corrects something you stored ("actually it\'s Daniel, not Dan") — pass `content`. METADATA HYGIENE: to re-tag a memory\'s `kind`, fix its `workspaceId`, or move it to the right recall `scope`/pool, pass those fields (no content needed); re-tag MANY at once via { ids:[…], kind } or items:[…]. Find the id via memory:search / memory:list first. For a content edit, tell the user ("Updating my memory: …").',
+      'CONTENT: when the user corrects the SAME stored fact in place ("actually it\'s Daniel, not Dan") — pass `content`; this preserves its id. SUPERSESSION: when an already-written NEW memory replaces a different old memory, pass the new row as `id` and the old row as `supersedes` so history records the replacement. For a one-call new replacement, use memory:remember { supersede:<old-id> }. METADATA HYGIENE: re-tag `kind`, fix `workspaceId`, or move `scope` without content. Find ids via memory:search / memory:list first. For a content edit, tell the user ("Updating my memory: …").',
     notWhen:
-      'To REMOVE a memory entirely, use memory:forget. To ADD a new memory, use memory:remember. Do not change `scope` casually — it moves which queries can recall the memory.',
+      'To REMOVE a memory, use memory:forget (hard for privacy; soft when historical truth should remain without a replacement). To ADD a new memory, use memory:remember. Do not change `scope` casually — it moves which queries can recall the memory.',
     chaining:
       'memory:search → memory:update { ids:[…], kind } (bulk metadata hygiene). Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     seeAlso: [

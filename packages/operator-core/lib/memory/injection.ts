@@ -58,6 +58,7 @@ import {
   type RecallQueryInput,
 } from './recall-query';
 import { memoryTierOf } from './two-tier';
+import { annotateSupersededMemory } from './temporal-render';
 import {
   MEMORY_INJECT_TIMEOUT_MS,
   MemoryTimeoutError,
@@ -134,6 +135,11 @@ export interface MemoryInjectionInput {
    * Defaults to INJECTION_TOTAL_LIMIT.
    */
   limit?: number;
+  /**
+   * Opt into closed validity windows. Default false keeps ordinary recall
+   * current-only; opted-in rows are visibly marked by the shared renderer.
+   */
+  includeSuperseded?: boolean;
   /** Defaults to "Operator memory (relevant entries)". */
   heading?: string;
   /**
@@ -1068,6 +1074,7 @@ async function buildBlockInner(
         : backend.search(queryText, {
             scope: scopes,
             limit: totalLimit,
+            ...(input.includeSuperseded ? { includeSuperseded: true } : {}),
             minScore,
             minLexScore,
             fusionMode,
@@ -1501,14 +1508,15 @@ async function buildBlockInner(
   for (const hit of ranked) {
     const row = (label?: string): RenderRow => {
       const fullText = hit.text ?? '';
+      const annotatedText = annotateSupersededMemory(fullText, hit.metadata);
       // WI-6870: clamp the RENDERED text to MAX_ENTRY_CHARS so a single oversized memory
       // can't blow the whole budget by itself. Dedup below still compares the FULL text
       // (not this clamped copy), so two distinct long entries that happen to share a
       // >900-char prefix are never mistaken for near-duplicates.
       const displayText =
-        fullText.length > MAX_ENTRY_CHARS
-          ? `${fullText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
-          : fullText;
+        annotatedText.length > MAX_ENTRY_CHARS
+          ? `${annotatedText.slice(0, MAX_ENTRY_CHARS)}… (truncated — memory:search for the rest)`
+          : annotatedText;
       return {
         line: `- ${fmtScope(hit, label)}${fmtId(hit)} ${displayText}`,
         id: hit.id,

@@ -26,6 +26,16 @@ export interface PassingTaskVerdictCache {
 }
 
 export function stableJson(value: unknown): string;
+export function passingTaskVerdictIdentityEnvironment(
+  environment: Record<string, unknown>,
+): {
+  environment: Record<string, unknown>;
+  proofGroupApplied: boolean;
+};
+export function formatPassingTaskVerdictSummary(
+  decisions: Array<{ status?: string; reason?: string }>,
+  options?: { proofGroupApplied?: boolean },
+): string;
 export function emptyPassingTaskVerdictCache(): PassingTaskVerdictCache;
 export function readPassingTaskVerdictCache(path: string): {
   cache: PassingTaskVerdictCache;

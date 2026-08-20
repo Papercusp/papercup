@@ -70,6 +70,8 @@ const nuqsState: Record<string, unknown> = {
   tab: null,
   grade: null,
   irail: null,
+  impf: null,
+  impq: "",
   rrubric: null,
   lretain: null,
   lhive: "",
@@ -105,6 +107,10 @@ vi.mock("nuqs", () => ({
     return [value, setter];
   },
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
+  // `parseAsColumnFilters` builds a custom parser during render; the component
+  // test's keyed state mock does not consume it, but nuqs still requires the
+  // factory export to exist.
+  createParser: () => ({ withDefault: () => ({}) }),
   parseAsString: { withDefault: () => ({}) },
   parseAsBoolean: { withDefault: () => ({}) },
 }));
@@ -708,6 +714,8 @@ beforeEach(() => {
   nuqsState.tab = null;
   nuqsState.grade = null;
   nuqsState.irail = null;
+  nuqsState.impf = null;
+  nuqsState.impq = "";
   nuqsState.itrace = null;
   nuqsState.rrubric = null;
   nuqsState.lretain = null;
@@ -883,6 +891,28 @@ describe("LearningTab — Improvements view (default)", () => {
     // than the digest's own row count.
     expect(screen.getByText(/^1 of \d+$/)).toBeTruthy();
     nuqsState.impq = "";
+  });
+
+  it("threads bounded impf storage axes and impq to the server while leaving presentation filters client-side", () => {
+    nuqsState.impf = {
+      kind: ["bug"],
+      severity: ["critical"],
+      scope: ["harness:foo"],
+      stage: ["in-flight"],
+      ideaType: ["code-bug"],
+      lens: ["risk-first"],
+    };
+    nuqsState.impq = "timeout";
+
+    render(<LearningTab />);
+
+    expect(seenArgs["learning.improvements"]).toEqual({
+      hive: "alpha-hive",
+      kinds: ["bug"],
+      severities: ["critical"],
+      scopes: ["harness:foo"],
+      q: "timeout",
+    });
   });
 
   it("shows the four-stage loop and keeps Improvements inside Improve", () => {

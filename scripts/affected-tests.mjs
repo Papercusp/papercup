@@ -97,8 +97,10 @@ import {
 import {
   buildPassingTaskVerdictIdentity,
   decidePassingTaskVerdict,
+  formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
   writePassingTaskVerdictCacheAtomic,
@@ -2957,8 +2959,13 @@ function spawnSpecFor(t, extraArgs) {
 // lives outside ROOT, but its filename is scoped to this checkout root so another pipeline/tree
 // can never consume it accidentally. It is enabled only for the real green checkpoint; local
 // affected runs remain fresh feedback. PAPERCUSP_TEST_RUN_GROUP is part of the complete child-env
-// hash below, which deliberately confines reuse to one gate run's auto-refire chain.
+// hash below, which normally confines reuse to one gate run. A frozen-repair verifier receives
+// AFFECTED_TASK_VERDICT_PROOF_GROUP from the queue; only the CACHE identity substitutes that
+// initial group while the real child keeps this verifier process's own run group.
 const TASK_VERDICT_CACHE_ENABLED = process.env.GREEN_CHECKPOINT === "1";
+const TASK_VERDICT_PROOF_GROUP_APPLIED =
+  typeof process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP === "string" &&
+  process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP.trim() !== "";
 const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash("sha256")
   .update(ROOT)
   .digest("hex")
@@ -3212,6 +3219,8 @@ function runCapturedTask(
     scriptOverride == null
   ) {
     if (context.cacheProvenance?.ok) {
+      const { environment: cacheIdentityEnvironment } =
+        passingTaskVerdictIdentityEnvironment(childEnv);
       cacheIdentity = buildPassingTaskVerdictIdentity({
         taskKey: taskKey(context.t),
         command: {
@@ -3223,7 +3232,7 @@ function runCapturedTask(
         // Hashing happens inside the helper; raw environment values (including credentials) are
         // never written to the cache. Keeping the COMPLETE env is conservative: an unfamiliar
         // variable cannot silently become relevant without invalidating reuse.
-        environment: childEnv,
+        environment: cacheIdentityEnvironment,
         gateConfig: {
           ...taskVerdictGateConfig,
           batchTimeout: {
@@ -3431,6 +3440,17 @@ for (const scheduled of initialPool.results) {
   }
 }
 outSync(formatTaskBudgetObservedMarker(initialPool.stats));
+if (TASK_VERDICT_CACHE_ENABLED) {
+  outSync(
+    formatPassingTaskVerdictSummary(
+      initialPool.results.map(({ value }) => ({
+        status: value.__cacheStatus,
+        reason: value.__cacheReason,
+      })),
+      { proofGroupApplied: TASK_VERDICT_PROOF_GROUP_APPLIED },
+    ),
+  );
+}
 try {
   // Re-read immediately before the atomic replace so a run that finished while this one was
   // active is less likely to be overwritten. Atomicity guarantees readers never parse a torn

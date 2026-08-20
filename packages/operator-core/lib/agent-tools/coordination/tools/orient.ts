@@ -48,6 +48,7 @@ import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
 import { admitRecallHits, MEMORY_TEXT_CAP } from '../../../memory/recall-admission';
+import { annotateSupersededMemory } from '../../../memory/temporal-render';
 import { readOwnerPresence } from '../../../power-user-sessions';
 import { listActiveAnnouncements } from '../../../events/await/store';
 import { announcementVisibleTo } from '../../../events/await/announce-key';
@@ -191,6 +192,8 @@ export interface OrientArgs {
   planItems?: string[];
   /** Max memory hits to fold (default 5, hard-capped 10). */
   memoryLimit?: number;
+  /** Opt into closed memory validity windows for an explicit history recall. */
+  memoryIncludeSuperseded?: boolean;
   /** Fold the recent plan-events delta (default true). */
   includePlanEvents?: boolean;
   /** Only plan-events strictly later than this ISO timestamp. */
@@ -814,6 +817,7 @@ export async function composeOrient(
                 query: memQuery,
                 ...(args.harness ? { harness_slug: args.harness } : {}),
                 limit: memLimit,
+                ...(args.memoryIncludeSuperseded ? { include_superseded: true } : {}),
               }),
             };
           } catch (error) {
@@ -1315,7 +1319,12 @@ export async function composeOrient(
       const settledMemory = await inFlightMemory;
       if (!settledMemory.ok) throw settledMemory.error;
       const mem = settledMemory.value as
-        | { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string }
+        | {
+            results?: Array<OrientMemoryHit & { metadata?: unknown }>;
+            degraded?: boolean;
+            reason?: string;
+            degraded_reason?: string;
+          }
         | undefined;
       // EI-20113865649946366: a body cut at MEMORY_TEXT_CAP (200) used to end
       // mid-sentence with NOTHING saying so, so a clipped fact read as the whole fact.
@@ -1326,7 +1335,9 @@ export async function composeOrient(
       // Per-hit stays minimal (a flag + the real length); the fetch verb rides once on
       // the fold below rather than being repeated on every hit.
       const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => {
-        const full = typeof r.memory === 'string' ? r.memory : undefined;
+        const full = typeof r.memory === 'string'
+          ? annotateSupersededMemory(r.memory, r.metadata)
+          : undefined;
         const clipped = full !== undefined && full.length > MEMORY_TEXT_CAP;
         return {
           id: r.id,
@@ -2461,6 +2472,12 @@ export default defineTool({
       .max(10)
       .optional()
       .describe('Max memory hits to fold (default 5; 0 skips memory recall).'),
+    memoryIncludeSuperseded: z
+      .boolean()
+      .optional()
+      .describe(
+        'Explicit history recall: include superseded/soft-forgotten memories in the memory fold. Default false. Returned superseded bodies are prefixed [SUPERSEDED YYYY-MM-DD].',
+      ),
     includePlanEvents: z.boolean().optional().describe('Fold the recent plan-events delta (default true).'),
     planEventsSince: z.string().optional().describe('Only plan-events strictly after this ISO timestamp.'),
     includeRecipes: z

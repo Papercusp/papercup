@@ -373,10 +373,9 @@ const defaultCountImprovementDeps: CountImprovementDeps = {
  * not an IN-list — cheap since a Hive's member-harness set is small (unlike the
  * corpus itself). `harnessSlug` (a single scope) is one direct `COUNT`.
  *
- * `loopOutputOnly` is NOT supported here (no current caller needs it for a count):
- * fails loudly rather than silently counting the whole untagged corpus under a
- * name that promises the loop's scoped output, mirroring {@link readByTopic}'s own
- * fail-loud stance on the same option.
+ * `loopOutputOnly` resolves the same learning-loop output ids as the matching
+ * read and applies them as an `issueIds` predicate; a missing resolver fails
+ * loudly rather than silently counting the whole untagged corpus.
  */
 export async function countImprovementItems(
   opts: ReadImprovementOpts = {},

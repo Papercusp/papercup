@@ -8,8 +8,10 @@ import {
   buildPassingTaskVerdictIdentity,
   decidePassingTaskVerdict,
   emptyPassingTaskVerdictCache,
+  formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
   writePassingTaskVerdictCacheAtomic,
@@ -86,6 +88,82 @@ describe('passing affected-task verdict identity', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('uses the initial proof group only for cache identity while preserving the verifier child env', () => {
+    const childEnvironment = {
+      CI: '1',
+      PAPERCUSP_TEST_RUN_GROUP: 'verifier-run',
+      AFFECTED_TASK_VERDICT_PROOF_GROUP: 'initial-run',
+    };
+    const normalized = passingTaskVerdictIdentityEnvironment(childEnvironment);
+
+    expect(normalized).toEqual({
+      environment: {
+        CI: '1',
+        PAPERCUSP_TEST_RUN_GROUP: 'initial-run',
+      },
+      proofGroupApplied: true,
+    });
+    expect(childEnvironment).toEqual({
+      CI: '1',
+      PAPERCUSP_TEST_RUN_GROUP: 'verifier-run',
+      AFFECTED_TASK_VERDICT_PROOF_GROUP: 'initial-run',
+    });
+
+    const prior = identity({ environment: normalized.environment });
+    expect(
+      decidePassingTaskVerdict({
+        enabled: true,
+        cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictEntry(prior),
+        identity: identity({
+          environment: passingTaskVerdictIdentityEnvironment(childEnvironment).environment,
+        }),
+      }),
+    ).toEqual({ hit: true, reason: 'identity-match' });
+  });
+
+  it('leaves missing or malformed proof state fail-closed on the verifier run identity', () => {
+    const prior = identity({
+      environment: { CI: '1', PAPERCUSP_TEST_RUN_GROUP: 'initial-run' },
+    });
+    for (const proof of [undefined, { corrupt: true }]) {
+      const childEnvironment = {
+        CI: '1',
+        PAPERCUSP_TEST_RUN_GROUP: 'verifier-run',
+        ...(proof === undefined
+          ? {}
+          : { AFFECTED_TASK_VERDICT_PROOF_GROUP: proof }),
+      };
+      const normalized = passingTaskVerdictIdentityEnvironment(childEnvironment);
+      expect(normalized.proofGroupApplied).toBe(false);
+      expect(
+        decidePassingTaskVerdict({
+          enabled: true,
+          cacheRead: { reason: 'cache-ready' },
+          entry: passingTaskVerdictEntry(prior),
+          identity: identity({ environment: normalized.environment }),
+        }),
+      ).toEqual({ hit: false, reason: 'environment-changed' });
+    }
+  });
+
+  it('renders bounded hit/miss counts and reasons for the composite verdict', () => {
+    expect(
+      formatPassingTaskVerdictSummary(
+        [
+          { status: 'hit', reason: 'identity-match' },
+          { status: 'miss', reason: 'environment-changed' },
+          { status: 'miss', reason: 'dependency-closure-changed' },
+          { status: 'miss', reason: 'environment-changed' },
+        ],
+        { proofGroupApplied: true },
+      ),
+    ).toBe(
+      'AFFECTED_TASK_CACHE_SUMMARY hits=1 misses=3 proofIdentity=initial-run ' +
+        'reasons={"dependency-closure-changed":1,"environment-changed":2,"identity-match":1}',
+    );
+  });
 });
 
 describe('dependency-closure hashing and persistence', () => {
@@ -140,6 +218,8 @@ describe('dependency-closure hashing and persistence', () => {
 describe('gate wiring safety contract', () => {
   it('enables reuse only under the green checkpoint and leaves downstream assurance after the suite', () => {
     expect(AFFECTED_TESTS_SRC).toContain("process.env.GREEN_CHECKPOINT === '1'");
+    expect(AFFECTED_TESTS_SRC).toContain('passingTaskVerdictIdentityEnvironment(childEnv)');
+    expect(AFFECTED_TESTS_SRC).toContain('formatPassingTaskVerdictSummary(');
     const suite = GREEN_CHECKPOINT_SRC.indexOf('const r = await exec(cmd, args');
     const postSuite = GREEN_CHECKPOINT_SRC.indexOf('runPostSuiteLegs(', suite);
     expect(suite).toBeGreaterThan(-1);

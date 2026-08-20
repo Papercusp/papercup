@@ -32,6 +32,65 @@ export function stableJson(value) {
   return JSON.stringify(normalize(value));
 }
 
+/**
+ * Build the environment component used ONLY by the passing-task cache identity.
+ *
+ * A frozen-repair verifier must retain its own PAPERCUSP_TEST_RUN_GROUP in the real child
+ * environment so reporters, watchdogs, and diagnostics describe this verifier process. The
+ * initial gate run's group is supplied separately through AFFECTED_TASK_VERDICT_PROOF_GROUP;
+ * substituting it in this cloned identity environment lets unchanged tasks compare against the
+ * original proof without falsifying the environment the child actually receives.
+ *
+ * Missing or malformed proof state leaves the current run group in place, which deliberately
+ * makes a later verifier miss. The transport-only proof variable is never itself hashed: it was
+ * absent from the initial run and would otherwise invalidate the identity it exists to recover.
+ */
+export function passingTaskVerdictIdentityEnvironment(environment) {
+  const identityEnvironment = { ...(environment ?? {}) };
+  const rawProofGroup =
+    identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
+  const proofGroup =
+    typeof rawProofGroup === "string" && rawProofGroup.trim() !== ""
+      ? rawProofGroup
+      : null;
+  delete identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
+  if (proofGroup !== null) {
+    identityEnvironment.PAPERCUSP_TEST_RUN_GROUP = proofGroup;
+  }
+  return {
+    environment: identityEnvironment,
+    proofGroupApplied: proofGroup !== null,
+  };
+}
+
+/** One bounded, machine-readable composite cache verdict for gate logs. */
+export function formatPassingTaskVerdictSummary(
+  decisions,
+  { proofGroupApplied = false } = {},
+) {
+  let hits = 0;
+  let misses = 0;
+  const reasons = new Map();
+  for (const decision of decisions ?? []) {
+    if (decision?.status === "hit") hits += 1;
+    else if (decision?.status === "miss") misses += 1;
+    else continue;
+    const reason =
+      typeof decision.reason === "string" && decision.reason
+        ? decision.reason
+        : "unknown";
+    reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+  }
+  const reasonCounts = Object.fromEntries(
+    [...reasons.entries()].sort(([a], [b]) => a.localeCompare(b)),
+  );
+  return (
+    `AFFECTED_TASK_CACHE_SUMMARY hits=${hits} misses=${misses} ` +
+    `proofIdentity=${proofGroupApplied ? "initial-run" : "current-run"} ` +
+    `reasons=${JSON.stringify(reasonCounts)}`
+  );
+}
+
 export function emptyPassingTaskVerdictCache() {
   return { version: PASSING_TASK_VERDICT_CACHE_VERSION, entries: {} };
 }

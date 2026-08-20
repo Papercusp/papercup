@@ -190,4 +190,16 @@ describe('buildLaunchMemoryBlock — multi-query merge', () => {
       }),
     );
   });
+
+  it('passes an explicit superseded-history request through to every brief query', async () => {
+    vi.mocked(buildMemoryContextBlock).mockResolvedValue(null);
+    await buildLaunchMemoryBlock({
+      profile: { rung: 'plan', queries: ['q'], harnessSlugs: ['h'], deterministicSections: [] },
+      workspaceId: 'w1',
+      includeSuperseded: true,
+    });
+    expect(buildMemoryContextBlock).toHaveBeenCalledWith(
+      expect.objectContaining({ includeSuperseded: true }),
+    );
+  });
 });

@@ -1364,7 +1364,7 @@ function ImprovementsView({
   const [search, setSearch] = useQueryState("impq", parseAsString.withDefault(""));
   const serverFilters = useMemo(() => {
     const valuesFor = (key: string): string[] => {
-      const value = filterState[key];
+      const value = filterState?.[key];
       if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
       return typeof value === "string" && value ? [value] : [];
     };

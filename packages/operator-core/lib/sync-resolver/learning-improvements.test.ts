@@ -470,6 +470,28 @@ describe('learning.improvements — digest.total is the corpus, not the window (
     expect(countImprovementItems.mock.calls[0][0]).toMatchObject({ state: 'open', loopOutputOnly: true });
   });
 
+  it('propagates bounded server filters to both the windowed read and its count', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-filtered')]);
+    countImprovementItems.mockResolvedValue(1);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+    const args = {
+      q: 'timeout',
+      kinds: ['bug'] as const,
+      severities: ['critical'] as const,
+      scopes: ['harness:foo'],
+    };
+
+    await computeLearningImprovementsSnapshot(args);
+
+    expect(readImprovementItems).toHaveBeenCalledWith(
+      expect.objectContaining({ ...args, loopOutputOnly: true }),
+    );
+    expect(countImprovementItems).toHaveBeenCalledWith(
+      expect.objectContaining({ ...args, loopOutputOnly: true }),
+    );
+    expect(countImprovementItems.mock.calls[0][0]).toEqual(readImprovementItems.mock.calls[0][0]);
+  });
+
   it('degrades to the returned-row count when the corpus COUNT fails — never sinks the tab', async () => {
     readImprovementItems.mockResolvedValue([windowRow('EI-1'), windowRow('EI-2')]);
     countImprovementItems.mockRejectedValue(new Error('count query timed out'));

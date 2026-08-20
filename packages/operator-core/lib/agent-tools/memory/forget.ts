@@ -31,7 +31,7 @@ export default defineTool({
     when:
       'When the user explicitly says "forget X" / "don\'t remember that anymore" / "that\'s wrong, drop it". Pass every id to drop at once via `ids`. Use soft:true when the fact STOPPED BEING TRUE but its history has value ("we no longer use gemma") — hard-delete (the default) when the user wants it GONE (privacy). Always inform the user out loud ("Removed that from memory").',
     notWhen:
-      'To CORRECT a memory (replace its content), use memory:update — preserves history and can record supersession (`supersedes`). Only use forget for removal.',
+      'To CORRECT the SAME memory in place, use memory:update. When a NEW fact replaces an old one, use memory:remember { supersede:<old-id> } (or memory:update { id:<new-id>, supersedes:<old-id> } if both rows already exist) so the replacement link is recorded. Only use forget for removal.',
     chaining:
       'memory:search / memory:list → memory:forget { ids:[…] } to drop several found memories in one call. Bulk: single | ids[] → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     seeAlso: [

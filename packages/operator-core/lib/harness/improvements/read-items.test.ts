@@ -151,6 +151,26 @@ describe('readImprovementItems', () => {
     expect(seen).toMatchObject({ topic: IMPROVEMENT_TOPIC, state: 'open' });
   });
 
+  it('passes bounded kind, severity, scope, and q filters through the read seam', async () => {
+    let seen: ListIssuesFilter | undefined;
+    await readImprovementItems(
+      {
+        q: 'timeout',
+        kinds: ['bug'],
+        severities: ['critical'],
+        scopes: ['harness:foo'],
+      },
+      { listIssues: async (filter) => ((seen = filter), []) },
+    );
+    expect(seen).toMatchObject({
+      topic: IMPROVEMENT_TOPIC,
+      q: 'timeout',
+      kinds: ['bug'],
+      severities: ['critical'],
+      scope: 'harness:foo',
+    });
+  });
+
   it('WI-9454: windows the newest rows independently for every discovered scope', async () => {
     const scopeCalls: ListIssuesFilter[] = [];
     const items = await readImprovementItems(
@@ -242,6 +262,28 @@ describe('readImprovementItems', () => {
 });
 
 describe('countImprovementItems (EI-18790490225750395 D2 — the TRUE corpus total, unbounded by limit)', () => {
+  it('keeps bounded kind, severity, scope, and q filters in parity with the read', async () => {
+    const calls: ListIssuesFilter[] = [];
+    await countImprovementItems(
+      {
+        q: 'timeout',
+        kinds: ['bug'],
+        severities: ['critical'],
+        scopes: ['harness:foo'],
+      },
+      { countIssues: async (filter) => (calls.push(filter), 4) },
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      topic: IMPROVEMENT_TOPIC,
+      q: 'timeout',
+      kinds: ['bug'],
+      severities: ['critical'],
+      scope: 'harness:foo',
+    });
+    expect(calls[0]).not.toHaveProperty('limit');
+  });
+
   it('counts the SAME filter readImprovementItems applies, with no `limit` in it anywhere', async () => {
     const calls: ListIssuesFilter[] = [];
     const n = await countImprovementItems(

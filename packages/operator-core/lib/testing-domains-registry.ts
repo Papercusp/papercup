@@ -1025,6 +1025,15 @@ defineTestDomain({
 });
 
 defineTestDomain({
+  id: 'dream',
+  label: 'Dreaming',
+  description:
+    'REM dreaming: cross-time, cross-type fragment sampling and the reviewed insight pipeline.',
+  tier: 'domain',
+  sections: [{ id: 'lib', label: 'Lib', globs: ['packages/operator-core/lib/dream/**/*.test.ts'] }],
+});
+
+defineTestDomain({
   id: 'dbos',
   label: 'DBOS',
   description: 'Durable workflow engine: steps, crash-replay, sweep glue.',
