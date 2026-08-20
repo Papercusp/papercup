@@ -23,6 +23,10 @@ export interface PlanContextResult {
   section: string;
   planSlug: string;
   truncated: boolean;
+  /** The exact plan snapshot represented by `section`, when the PG row exposed it. */
+  revision: number | null;
+  contentHash: string | null;
+  updatedAt: string | null;
 }
 
 interface FeatureProvenanceRow {
@@ -64,6 +68,32 @@ function truncate(text: string, maxChars: number): { text: string; truncated: bo
 }
 
 /**
+ * The Now block is a useful launch-time hint, but it is not a live status read.
+ * Keep the bounded copy for worker context while making its provenance explicit
+ * and giving the successor a deterministic re-read instruction.  Without this
+ * marker, a plan edit between prompt assembly and the agent's action makes the
+ * copied state look authoritative (the carry-drill failure this guard closes).
+ *
+ * `row` is optional only for old test seams / callers that provide a parsed plan
+ * without the PG envelope.  Real `readPlanBySlug` results always carry it; an
+ * unknown marker is safer than silently presenting an unversioned snapshot.
+ */
+function renderSnapshotNotice(
+  planSlug: string,
+  row?: { version?: number | null; contentHash?: string | null; updatedAt?: string | null },
+): string {
+  const revision = Number.isFinite(row?.version) ? String(row!.version) : 'unknown';
+  const contentHash = row?.contentHash?.trim() || 'unknown';
+  const updatedAt = row?.updatedAt?.trim() || 'unknown';
+  return (
+    `> PLAN SNAPSHOT (volatile copy, not live status): \`${planSlug}\` revision ${revision}, ` +
+    `contentHash \`${contentHash}\`, read at ${updatedAt}. Before acting on any current-state ` +
+    `claim below, re-read \`plans:get { slug: '${planSlug}', heading: 'Now' }\` and discard ` +
+    'this copy if the revision or content hash changed.'
+  );
+}
+
+/**
  * Returns a formatted `## Source Plan Context` section for the given
  * feature, or `null` when:
  *   - the feature has no `source_plan_slug` in PG
@@ -94,11 +124,13 @@ export async function getPlanContextForFeature(
   if (!planResult) return null;
 
   const { parsed } = planResult;
+  const row = planResult.row;
 
   const parts: string[] = [PLAN_CONTEXT_HEADING, ''];
 
   const planTitle = parsed.frontmatter.title ?? planSlug;
   parts.push(`**Plan:** \`${planSlug}\` — ${planTitle}`);
+  parts.push(renderSnapshotNotice(planSlug, row));
 
   // Source item body (first matching from_item id)
   if (itemIds.length > 0) {
@@ -130,7 +162,14 @@ export async function getPlanContextForFeature(
   const raw = parts.join('\n');
   const { text, truncated } = truncate(raw, PLAN_CONTEXT_CHAR_BUDGET);
 
-  return { section: text, planSlug, truncated };
+  return {
+    section: text,
+    planSlug,
+    truncated,
+    revision: Number.isFinite(row?.version) ? Number(row.version) : null,
+    contentHash: row?.contentHash ?? null,
+    updatedAt: row?.updatedAt ?? null,
+  };
 }
 
 /**
@@ -164,9 +203,10 @@ export async function getPlanContextsForFeatures(
       try { planResult = await readPlanBySlug(source_plan_slug); } catch { continue; }
       if (!planResult) continue;
 
-      const { parsed } = planResult;
+      const { parsed, row } = planResult;
       const planTitle = parsed.frontmatter.title ?? source_plan_slug;
       sections.push(`### Plan: \`${source_plan_slug}\` — ${planTitle}`, '');
+      sections.push(renderSnapshotNotice(source_plan_slug, row));
       if (parsed.now) {
         sections.push(parsed.now.state, '', `**Next:** ${parsed.now.next}`);
       }
@@ -209,10 +249,11 @@ export async function getPlanContextBySlug(
   }
   if (!planResult) return null;
 
-  const { parsed } = planResult;
+  const { parsed, row } = planResult;
   const parts: string[] = [PLAN_CONTEXT_HEADING, ''];
   const planTitle = parsed.frontmatter.title ?? planSlug;
   parts.push(`**Plan:** \`${planSlug}\` — ${planTitle}`, '');
+  parts.push(renderSnapshotNotice(planSlug, row));
 
   if (parsed.now) {
     parts.push('### Current State', '', parsed.now.state, '', `**Next:** ${parsed.now.next}`);

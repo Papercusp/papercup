@@ -45,7 +45,13 @@ type ParsedPlan = {
   decisions: Array<{ id: string; title: string; body: string }>;
 };
 
-function mockSource(result: { parsed: ParsedPlan } | null): void {
+type PlanSnapshotRow = {
+  version: number;
+  contentHash: string;
+  updatedAt: string;
+};
+
+function mockSource(result: { parsed: ParsedPlan; row?: PlanSnapshotRow } | null): void {
   vi.doMock(SOURCE_MODULE, () => ({
     readPlanBySlug: vi.fn(async () => result),
   }));
@@ -157,6 +163,42 @@ describe('getPlanContextForFeature', () => {
     expect(section).toContain('D-002');
     expect(section).not.toContain('D-001'); // 4th-oldest excluded (only last 3)
     expect(section.indexOf('D-004')).toBeLessThan(section.indexOf('D-002'));
+  });
+
+  it('marks the Now block as a volatile revisioned snapshot and requires a live re-read', async () => {
+    mockPg([{
+      source_plan_slug: 'snapshot-plan',
+      source_plan_item_ids: [],
+      title: 'F',
+    }]);
+    mockSource({
+      parsed: {
+        frontmatter: { title: 'Snapshot Plan' },
+        now: { state: 'state at revision 63', next: 'next at revision 63' },
+        items: [],
+        decisions: [],
+      },
+      row: {
+        version: 63,
+        contentHash: 'a'.repeat(64),
+        updatedAt: '2026-08-14T10:40:36.931Z',
+      },
+    });
+
+    const { getPlanContextForFeature } = await import(MODULE_PATH);
+    const result = await getPlanContextForFeature('myharness', 'F-001');
+
+    expect(result).toMatchObject({
+      revision: 63,
+      contentHash: 'a'.repeat(64),
+      updatedAt: '2026-08-14T10:40:36.931Z',
+    });
+    expect(result!.section).toContain('PLAN SNAPSHOT (volatile copy, not live status)');
+    expect(result!.section).toContain('revision 63');
+    expect(result!.section).toContain(`contentHash \`${'a'.repeat(64)}\``);
+    expect(result!.section).toContain(
+      "re-read `plans:get { slug: 'snapshot-plan', heading: 'Now' }`",
+    );
   });
 
   it('truncates content that exceeds 6 000 chars and sets truncated=true', async () => {
