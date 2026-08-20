@@ -471,6 +471,26 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
   type Plane = { note: string; cells: Array<{ path: string; cell: string; reread?: { args: { cell: string; as?: string } }; unreadable?: { needs: string } }> };
 
   const PATH = 'apps/operator/app/x.ts';
+
+  /**
+   * ⚠ THE READER IS LOAD-BEARING, so this block passes a real one.
+   *
+   * Every cell this door stamps (git.pipelinePosition, gate.greenCheckpoint.verdict/
+   * .candidate/.ownership, deploy.3070.sha, git.mainBehindStaging) is
+   * `{ kind: 'harness', ref: 'papercusp' }` — EI-20709429494940822 narrowed them so a
+   * foreign harness cannot read Papercusp's gate and deploy state as if it were its own,
+   * and cell-registrations.test.ts pins exactly that.
+   *
+   * `planeFor` stamps from `listCells(reader)`, which is audience-scoped. So the plane has
+   * cells to stamp only for a reader INSIDE the home harness — which is what a real
+   * in-harness MCP call carries, and what the cross-harness block at the bottom of this
+   * file already models. A bare `{}` ctx models no real caller: it resolves to an empty
+   * audience, `listCells` returns nothing pipeline-shaped, and the plane silently comes
+   * back undefined — which would make every assertion below pass or fail for a reason
+   * that has nothing to do with the wiring they exist to pin.
+   */
+  const CTX = { role: 'cup', harnessSlug: 'papercusp' };
+
   const full = {
     input: { path: PATH, sha: null },
     repoRoot: '/repo',
@@ -523,7 +543,7 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
   for (const [label, result] of exits) {
     it(`stamps the plane on the "${label}" exit`, async () => {
       vi.mocked(gitPipelinePosition).mockResolvedValue(result as unknown as PipelinePosition);
-      const out = (await tool.handler({ path: PATH } as never, {} as never)) as Out;
+      const out = (await tool.handler({ path: PATH } as never, CTX as never)) as Out;
       const plane = planeOf(out);
       expect(plane, 'this exit must carry the plane block').toBeDefined();
       expect(plane!.cells.length).toBeGreaterThan(0);
@@ -533,7 +553,7 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
 
   it('names the cell for each volatile value, addressed to the CALLER\'S path', async () => {
     vi.mocked(gitPipelinePosition).mockResolvedValue({ ...full, runtime: single, runtimes: [single] } as unknown as PipelinePosition);
-    const plane = planeOf((await tool.handler({ path: PATH } as never, {} as never)) as Out)!;
+    const plane = planeOf((await tool.handler({ path: PATH } as never, CTX as never)) as Out)!;
     const byCell = new Map(plane.cells.map((c) => [c.cell, c]));
 
     // The global cells: a complete handle, no subject needed.
@@ -566,7 +586,7 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
       runtimes: undefined,
     } as unknown as PipelinePosition);
 
-    const plane = planeOf((await tool.handler({} as never, {} as never)) as Out)!;
+    const plane = planeOf((await tool.handler({} as never, CTX as never)) as Out)!;
     const byCell = new Map(plane.cells.map((c) => [c.cell, c]));
 
     expect(byCell.get('deploy.3070.sha')?.reread?.args).toEqual({ cell: 'deploy.3070.sha' });
@@ -584,7 +604,7 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
       runtime: single,
       runtimes: [single],
     } as unknown as PipelinePosition);
-    const plane = planeOf((await tool.handler({ path: PATH } as never, {} as never)) as Out)!;
+    const plane = planeOf((await tool.handler({ path: PATH } as never, CTX as never)) as Out)!;
     expect(plane.cells.some((c) => c.cell === 'deploy.3070.sha')).toBe(true);
   });
 
@@ -595,7 +615,7 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
       summary: 'nothing measured',
       notes: [],
     } as unknown as PipelinePosition);
-    const out = (await tool.handler({} as never, {} as never)) as Out;
+    const out = (await tool.handler({} as never, CTX as never)) as Out;
     expect(out.data.plane).toBeUndefined();
     expect(out.data.summary).toBe('nothing measured');
   });
