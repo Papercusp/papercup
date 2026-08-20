@@ -139,6 +139,7 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     spawnManagedPty: vi.fn(() => ({ id: 'pty-1' })) as never,
     spawnDetached: vi.fn(() => 1234),
     presence: vi.fn(async () => livePresence) as never,
+    getSessionLifecycle: vi.fn(async () => null),
     alive: vi.fn(() => true),
     isLoopArmed: vi.fn(async () => false),
     // WI-6860: hermetic by default — the real getLoopStatus opens a live PG
@@ -180,6 +181,41 @@ function deps(over: Partial<ExecuteWakeDeps> = {}): ExecuteWakeDeps {
     ...over,
   };
 }
+
+describe('executeWake — durable fleet release latch (EI-203843)', () => {
+  it('drops every wake shape before any injection or resume side effect', async () => {
+    const lifecycle = {
+      released: { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' },
+    };
+    const cases = [
+      work({ wakeHandle: null }),
+      work({ wakeHandle: { kind: 'plan-run', runId: 12 } }),
+      work({ wakeHandle: advHandle() }),
+    ];
+    for (const delivery of cases) {
+      const d = deps({ getSessionLifecycle: vi.fn(async () => lifecycle) });
+      const out = await executeWake(delivery, d);
+      expect(out).toMatchObject({ kind: 'drop' });
+      expect((out as { reason: string }).reason).toContain('released');
+      expect((out as { reason: string }).reason).toContain('end now');
+      expect(d.findPsuHost).not.toHaveBeenCalled();
+      expect(d.spawnDetached).not.toHaveBeenCalled();
+      expect(d.resumePlanRun).not.toHaveBeenCalled();
+      expect(d.write).not.toHaveBeenCalled();
+    }
+  });
+
+  it('continues the normal ladder when no release marker is present', async () => {
+    const d = deps({
+      getSessionLifecycle: vi.fn(async () => null),
+      presence: vi.fn(async () => stalePresence) as never,
+    });
+    await expect(executeWake(work({ wakeHandle: null }), d)).resolves.toMatchObject({
+      kind: 'delivered',
+      channel: 'inbox',
+    });
+  });
+});
 
 describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
   const OLD_FLAG = process.env.PAPERCUSP_AMBIENT_CURSOR;

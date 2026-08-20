@@ -26,6 +26,11 @@ vi.mock('../coordination/presence', () => ({ getPresence: vi.fn(async () => null
 vi.mock('../coordination/audience-host', () => ({
   hostAudienceResolvers: { listFleetMembers: vi.fn(async () => [] as string[]) },
 }));
+vi.mock('../../session-brief', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../session-brief')>()),
+  markSessionBriefReleased: vi.fn(async () => true),
+  clearSessionBriefReleasedForFleet: vi.fn(async () => 0),
+}));
 // P-006: the drain-stamp helper hits PG (scheduler oracle) — mock it so control-core
 // unit tests stay DB-free + deterministic. Default: no stamp (fails-soft path); a
 // dedicated test overrides it to assert the auto-stamp augments the reason + result.
@@ -42,6 +47,7 @@ import { getPresence } from '../coordination/presence';
 import { hostAudienceResolvers } from '../coordination/audience-host';
 import { CUE_AUTHORITY_FIELD } from '../coordination/cue-authority';
 import { buildFleetDrainStamp } from './drain-stamp';
+import { clearSessionBriefReleasedForFleet, markSessionBriefReleased } from '../../session-brief';
 
 const getFleetM = vi.mocked(getFleet);
 const setControlM = vi.mocked(setFleetControlState);
@@ -49,6 +55,8 @@ const sendM = vi.mocked(sendMessage);
 const presenceM = vi.mocked(getPresence);
 const membersM = vi.mocked(hostAudienceResolvers.listFleetMembers);
 const drainStampM = vi.mocked(buildFleetDrainStamp);
+const markReleasedM = vi.mocked(markSessionBriefReleased);
+const clearReleasedM = vi.mocked(clearSessionBriefReleasedForFleet);
 
 function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
   return {
@@ -77,6 +85,8 @@ beforeEach(() => {
   sendM.mockResolvedValue({ msg_id: 'm-cue' } as never);
   membersM.mockResolvedValue([]);
   drainStampM.mockResolvedValue(null); // default: fails-soft, no auto-stamp
+  markReleasedM.mockResolvedValue(true);
+  clearReleasedM.mockResolvedValue(0);
   // setFleetControlState echoes the applied state back (the RETURNING row).
   setControlM.mockImplementation(async (_ws, slug, control) =>
     fleet({ fleetSlug: slug, controlState: control.state, controlReason: control.reason ?? null, controlBy: control.by ?? null, controlAt: 99 }),
@@ -139,6 +149,15 @@ describe('applyFleetControl', () => {
         scopeRef: 'backend',
       },
     });
+    expect(markReleasedM).toHaveBeenCalledTimes(2);
+    expect(markReleasedM).toHaveBeenCalledWith(
+      'm-1',
+      'ws-1',
+      expect.objectContaining({ fleet: 'backend', by: callerRef.ownerId }),
+    );
+    expect(Math.min(...markReleasedM.mock.invocationCallOrder)).toBeLessThan(
+      Math.min(...sendM.mock.invocationCallOrder),
+    );
   });
 
   it('an su session invokes as OWNER (the owner-authority proxy) even when not leader', async () => {
@@ -200,6 +219,7 @@ describe('applyFleetControl', () => {
       by: callerRef.ownerId,
     }, undefined, callerRef.ownerId);
     expect((sendM.mock.calls[0][1] as { summary: string }).summary).toContain('RESUMED');
+    expect(clearReleasedM).toHaveBeenCalledWith('ws-1', 'backend');
   });
 
   it('a cue-leg failure never fails the state flip (registry is the source of truth)', async () => {

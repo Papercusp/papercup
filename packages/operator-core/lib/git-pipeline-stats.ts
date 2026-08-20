@@ -355,8 +355,9 @@ export interface GitPipelineSnapshot {
      *  `false`/absent is NOT proof no refire happened, only that none was visible. */
     refireObserved?: boolean;
     startedAtMs: number | null;
-    /** Latest advancing checkpoint heartbeat from the run log/phase, falling back to start time. */
-    progressAtMs: number | null;
+    /** Latest advancing checkpoint heartbeat from the run log/phase, falling back to start time.
+     * Optional for snapshots persisted before this field was introduced. */
+    progressAtMs?: number | null;
     elapsedSec: number | null;
   } | null;
 }
@@ -608,6 +609,7 @@ export function mapActiveRun(r: {
   initial_candidate?: string | null;
   refire_observed?: boolean;
   started_at?: string | null;
+  progress_at?: string | null;
   elapsed_sec?: number | null;
 }): NonNullable<GitPipelineSnapshot['activeRun']> {
   const startedAtMs = r.started_at ? Date.parse(r.started_at) : NaN;

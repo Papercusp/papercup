@@ -69,6 +69,17 @@ describe('CTRL anchor wakeSource (WI-7302 part 2)', () => {
     });
   });
 
+  it('preserves the durable released lifecycle marker in the compact anchor', () => {
+    expect(
+      normalizeControlAnchorState({
+        ...state(),
+        lifecycle: { released: { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' } },
+      }),
+    ).toMatchObject({
+      lifecycle: { released: { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' } },
+    });
+  });
+
   it('stays inside the anchor token budget with wakeSource present', () => {
     // The anchor is re-delivered on every post-compaction orient, which is why
     // the prose warning lives on the recovery block and only a short enum

@@ -53,6 +53,22 @@ export interface SessionBriefInput {
   nativeSessionId?: string | null;
 }
 
+/**
+ * Durable lifecycle marker for a session that a fleet released during
+ * wind-down. This lives inside the existing control_state projection rather
+ * than in a second table, so queued wakes can make one authoritative read
+ * before attempting any reanimation.
+ */
+export interface SessionBriefReleaseMarker {
+  fleet: string;
+  at: string;
+  by: string;
+}
+
+export interface SessionBriefLifecycle {
+  released?: SessionBriefReleaseMarker;
+}
+
 export interface SessionBriefRecord {
   ownerId: string;
   workspaceId: string;
@@ -65,6 +81,7 @@ export interface SessionBriefRecord {
   potSlug: string | null;
   goalId: string | null;
   nativeSessionId: string | null;
+  lifecycle: SessionBriefLifecycle | null;
   firstSeenAt: string;
   updatedAt: string;
 }
@@ -133,6 +150,7 @@ export async function writeSessionBrief(
 }
 
 function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
+  const lifecycle = parseSessionBriefLifecycle(r.control_state);
   return {
     ownerId: String(r.owner_id),
     workspaceId: String(r.workspace_id),
@@ -145,9 +163,141 @@ function rowToRecord(r: Record<string, unknown>): SessionBriefRecord {
     potSlug: (r.pot_slug as string | null) ?? null,
     goalId: (r.goal_id as string | null) ?? null,
     nativeSessionId: (r.native_session_id as string | null) ?? null,
+    lifecycle,
     firstSeenAt: String(r.first_seen_at ?? ''),
     updatedAt: String(r.updated_at ?? ''),
   };
+}
+
+function parseSessionBriefLifecycle(value: unknown): SessionBriefLifecycle | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const lifecycle = (value as { lifecycle?: unknown }).lifecycle;
+  if (!lifecycle || typeof lifecycle !== 'object' || Array.isArray(lifecycle)) return null;
+  const released = (lifecycle as { released?: unknown }).released;
+  if (!released || typeof released !== 'object' || Array.isArray(released)) return null;
+  const marker = released as Partial<SessionBriefReleaseMarker>;
+  if (
+    typeof marker.fleet !== 'string' || !marker.fleet ||
+    typeof marker.at !== 'string' || !marker.at ||
+    typeof marker.by !== 'string' || !marker.by
+  ) return null;
+  return {
+    released: {
+      fleet: marker.fleet,
+      at: marker.at,
+      by: marker.by,
+    },
+  };
+}
+
+/**
+ * Read only the release marker used by the wake executor. Fail-soft by design:
+ * a temporary brief-store outage must not turn every ordinary wake into a
+ * permanent drop; the marker is durable when the store is available.
+ */
+export async function getSessionBriefLifecycle(ownerId: string): Promise<SessionBriefLifecycle | null> {
+  try {
+    if (!ownerId) return null;
+    const rows = await getOrgPg().sql`
+      SELECT control_state
+        FROM harness_shared.session_briefs
+       WHERE owner_id = ${ownerId}
+       LIMIT 1
+    `;
+    return parseSessionBriefLifecycle((rows[0] as Record<string, unknown> | undefined)?.control_state);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Mark one live fleet member as released before its typed wind-down cue is
+ * sent. The upsert also covers a member whose brief has not been written yet.
+ * Existing control-anchor fields are preserved; a marker change advances the
+ * anchor generation and clears its transition so the next consumer performs a
+ * full resync from the authoritative row.
+ */
+export async function markSessionBriefReleased(
+  ownerId: string,
+  workspaceId: string,
+  marker: SessionBriefReleaseMarker,
+): Promise<boolean> {
+  try {
+    if (!ownerId || !workspaceId || !marker.fleet || !marker.at || !marker.by) return false;
+    const markerJson = JSON.stringify(marker);
+    await getOrgPg().sql`
+      INSERT INTO harness_shared.session_briefs
+        (owner_id, workspace_id, control_state, control_generation, control_updated_at)
+      VALUES (
+        ${ownerId}, ${workspaceId},
+        jsonb_build_object('lifecycle', jsonb_build_object('released', ${markerJson}::text::jsonb)),
+        1, now()
+      )
+      ON CONFLICT (owner_id) DO UPDATE SET
+        workspace_id = EXCLUDED.workspace_id,
+        control_state = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,released}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,released}'
+            THEN jsonb_set(
+              COALESCE(harness_shared.session_briefs.control_state, '{}'::jsonb),
+              '{lifecycle,released}',
+              EXCLUDED.control_state #> '{lifecycle,released}',
+              true
+            )
+          ELSE harness_shared.session_briefs.control_state
+        END,
+        control_generation = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,released}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,released}'
+            THEN harness_shared.session_briefs.control_generation + 1
+          ELSE harness_shared.session_briefs.control_generation
+        END,
+        control_updated_at = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,released}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,released}'
+            THEN now()
+          ELSE harness_shared.session_briefs.control_updated_at
+        END,
+        control_transition = CASE
+          WHEN harness_shared.session_briefs.control_state #> '{lifecycle,released}'
+               IS DISTINCT FROM EXCLUDED.control_state #> '{lifecycle,released}'
+            THEN NULL
+          ELSE harness_shared.session_briefs.control_transition
+        END,
+        updated_at = now()
+    `;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Clear only this workspace/fleet's release markers when that fleet resumes. */
+export async function clearSessionBriefReleasedForFleet(
+  workspaceId: string,
+  fleet: string,
+): Promise<number> {
+  try {
+    if (!workspaceId || !fleet) return 0;
+    const rows = await getOrgPg().sql<Array<{ owner_id: string }>>`
+      UPDATE harness_shared.session_briefs
+         SET control_state = CASE
+               WHEN (control_state->'lifecycle' - 'released') = '{}'::jsonb
+                 THEN control_state - 'lifecycle'
+               ELSE control_state #- '{lifecycle,released}'
+             END,
+             control_generation = control_generation + 1,
+             control_updated_at = now(),
+             control_transition = NULL,
+             updated_at = now()
+       WHERE workspace_id = ${workspaceId}
+         AND control_state #>> '{lifecycle,released,fleet}' = ${fleet}
+       RETURNING owner_id
+    `;
+    return rows.length;
+  } catch {
+    return 0;
+  }
 }
 
 /**

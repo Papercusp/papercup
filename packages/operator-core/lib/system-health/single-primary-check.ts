@@ -101,6 +101,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { defaultIsUnitActive, readCutStatus } from '../release-cut-launch';
 import {
   openEscalation,
   resolveEscalation,
@@ -135,6 +136,14 @@ const DEFAULT_SUSTAIN_TICKS = 2;
 const ROUTINE_FRESH_SEC = 10 * 60;
 
 /**
+ * D-026's restore leg is intentionally separate from the whole-cut unit. During the
+ * protected Corestore window both units are active while bg-host is deliberately stopped;
+ * treating the zero-primary reading as an outage in that interval tells operators to break
+ * the lock containment. Keep this name aligned with the historical release-cut contract.
+ */
+export const D026_RESTORE_UNIT = 'papercup-release-cut-bg-restore-d026-v2.service';
+
+/**
  * WHY the age reads the way it does — the distinction a bare `null` destroys.
  *   • `observed`    — the read ran and returned an age. The only status that can support a
  *                     claim ABOUT routine liveness, in either direction.
@@ -156,6 +165,46 @@ export type BackgroundEvidenceStatus = 'observed' | 'absent' | 'unavailable';
 export interface BackgroundActivityEvidence {
   lastRoutineFireAgeSec: number | null;
   status?: BackgroundEvidenceStatus;
+}
+
+/** The two independent systemd signals that authorize D-026 Corestore quiescence. */
+export interface D026QuiescenceEvidence {
+  /** The authoritative detached whole-cut unit is active/activating. */
+  cutActive: boolean;
+  /** The registered D-026 restore leg is active/activating. */
+  restoreActive: boolean;
+}
+
+export interface D026QuiescenceReaderDeps {
+  /** Injectable read-cut seam; production uses release:cut's read-only status reader. */
+  readCutStatus?: typeof readCutStatus;
+  /** Injectable systemd probe for the restore leg. */
+  isUnitActive?: (unit: string) => boolean;
+}
+
+/**
+ * Read the authoritative release-cut + restore contract used by D-026.
+ *
+ * A single active unit is insufficient: an ordinary release cut does not authorize the
+ * background primary to remain absent, and a restore unit without its owning cut is stale
+ * residue. The guard therefore requires BOTH active signals before it downgrades a zero
+ * primary. The read is fail-closed for suppression: systemd/read-cut failures become false
+ * and the ordinary outage verdict remains in force.
+ */
+export function readD026QuiescenceEvidence(
+  deps: D026QuiescenceReaderDeps = {},
+): D026QuiescenceEvidence {
+  const active = deps.isUnitActive ?? defaultIsUnitActive;
+  const cut = (deps.readCutStatus ?? readCutStatus)({ isUnitActive: active });
+  return {
+    cutActive: cut.running,
+    restoreActive: active(D026_RESTORE_UNIT),
+  };
+}
+
+/** PURE: only the complete cut+restore contract protects a zero-primary reading. */
+export function d026QuiescenceIsActive(evidence?: D026QuiescenceEvidence): boolean {
+  return evidence?.cutActive === true && evidence.restoreActive === true;
 }
 
 /** PURE: is background work demonstrably alive on this evidence? Unknown ⇒ false. */
@@ -192,6 +241,7 @@ export interface PrimaryVerdict {
 export function evaluatePrimaryCount(
   count: number | null,
   evidence?: BackgroundActivityEvidence,
+  quiescence?: D026QuiescenceEvidence,
 ): PrimaryVerdict {
   // WI-7291: the count was NOT READ. This is the absence of evidence, so it can never earn
   // the routine-engine-death text — but it still pages, on the same principle as the
@@ -215,6 +265,21 @@ export function evaluatePrimaryCount(
     return { count, ok: true, severity: null, key: null, summary: 'exactly one background primary (healthy)' };
   }
   if (count === 0) {
+    // D-026: an active whole cut plus its registered restore leg proves that the missing
+    // primary is intentional Corestore quiescence. Reframe as an advisory and explicitly
+    // prohibit the old remediation; do not let stale routine timestamps turn maintenance
+    // into a restart recommendation. A partial/stale contract never suppresses the blocker.
+    if (d026QuiescenceIsActive(quiescence)) {
+      return {
+        count,
+        ok: false,
+        severity: 'advisory',
+        key: 'no-primary-quiesced',
+        evidenceNote: `observed: ${D026_RESTORE_UNIT} active with the detached release cut`,
+        summary:
+          'background primary intentionally quiesced for the authorized D-026 Corestore release cut (cut + restore units are active). Do NOT start or restart bg-host while the cut-owned Corestore lock is held; wait for the restore leg to finish, then verify the primary and routine fires recover.',
+      };
+    }
     // The consequence is CHECKED, not asserted — see the header note. Routines still
     // firing means redundancy is degraded, not that background work has stopped.
     if (routinesDemonstrablyFiring(evidence)) {
@@ -498,6 +563,9 @@ export interface PrimaryGuardDeps {
    *  that turns a count-0 blocker into an advisory when background work is demonstrably
    *  still running — see the header note. */
   routineFireAgeSec?: () => Promise<number | null>;
+  /** D-026: active cut + restore evidence. Omitted in pure/unit callers; the scheduled
+   * live guard wires readD026QuiescenceEvidence explicitly so tests never shell out. */
+  d026Quiescence?: () => D026QuiescenceEvidence | Promise<D026QuiescenceEvidence>;
   escalate?: (input: { severity: EscalationSeverity; summary: string; body?: string }) => Promise<unknown>;
   /** Resolve a previously-opened escalation by msg_id (self-clear on recovery). */
   resolve?: (input: { msg_id: string; choice: string; note?: string }) => Promise<unknown>;
@@ -595,7 +663,17 @@ export async function runSinglePrimaryCheck(
       evidence = { lastRoutineFireAgeSec: null, status: 'unavailable' };
     }
   }
-  const verdict = evaluatePrimaryCount(count, evidence);
+  let quiescence: D026QuiescenceEvidence | undefined;
+  if (count === 0 && deps.d026Quiescence) {
+    try {
+      quiescence = await deps.d026Quiescence();
+    } catch {
+      // Suppression is fail-closed: an unreadable maintenance signal must not soften an
+      // ordinary no-primary blocker.
+      quiescence = undefined;
+    }
+  }
+  const verdict = evaluatePrimaryCount(count, evidence, quiescence);
 
   // ── Healthy (exactly one primary): reset hysteresis + self-clear open alarms ──
   if (verdict.ok || !verdict.key) {
@@ -808,7 +886,11 @@ export function startSinglePrimaryGuard(opts: { intervalMs?: number } = {}): { s
       // managedSetInterval's callback is `() => void | Promise<void>` — runSinglePrimaryCheck()
       // resolves a richer { fired, verdict, selfCleared } shape, so discard it via a block body
       // (no return) rather than an expression-bodied arrow, which would leak the resolved type.
-      void runSinglePrimaryCheck(undefined, { page: defaultPage, pageResolved: defaultPageResolved }).catch(() => {});
+      void runSinglePrimaryCheck(undefined, {
+        page: defaultPage,
+        pageResolved: defaultPageResolved,
+        d026Quiescence: readD026QuiescenceEvidence,
+      }).catch(() => {});
     },
     { category: 'watchdog' },
   );

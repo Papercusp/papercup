@@ -74,6 +74,10 @@ import {
 } from './wake-executor-fresh-context';
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
+import {
+  getSessionBriefLifecycle,
+  type SessionBriefLifecycle,
+} from '../../session-brief';
 // EI-20489286325396940: `payloadIsTimeout` + `wakeSummaryHeadline` live in
 // timeout-fallback.ts (PG-free, beside the other timeout wording) so engine.ts can
 // import the summary renderer WITHOUT going through this module — engine.test.ts
@@ -1076,6 +1080,8 @@ export interface ExecuteWakeDeps {
   onResumeTurnExit?: (d: DeliveryWork, exit: ResumeTurnExitRaw) => void;
   kill?: typeof killPty;
   presence?: typeof getPresence;
+  /** EI-203843: durable release-latch read, before any wake reanimation. */
+  getSessionLifecycle?: (ownerId: string) => Promise<SessionBriefLifecycle | null>;
   alive?: (pid: number | null) => boolean;
   /** WI-666: whether this owner has an active engine loop. Only loop owners
    *  are eligible for the bounded alive-but-uninjectable recovery leg. */
@@ -1490,6 +1496,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const spawnManaged = deps.spawnManagedPty ?? spawnPty;
   const kill = deps.kill ?? killPty;
   const presence = deps.presence ?? getPresence;
+  const getSessionLifecycle = deps.getSessionLifecycle ?? getSessionBriefLifecycle;
   const alive = deps.alive ?? pidAlive;
   const isLoopArmed =
     deps.isLoopArmed ??
@@ -1506,6 +1513,21 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const rematerializeTimeoutMs = deps.rematerializeTimeoutMs ?? REMATERIALIZE_TIMEOUT_MS;
 
   try {
+    // EI-203843: this is deliberately the first delivery decision. A queued
+    // wake can outlive the stand-down cue by minutes (especially on a cold
+    // carry respawn), so every handle-less/plan-run/pty/resume path must share
+    // this terminal gate before it can inject, spawn, or resume anything.
+    const lifecycle = await getSessionLifecycle(d.subscriberId).catch(() => null);
+    const released = lifecycle?.released;
+    if (released) {
+      return {
+        kind: 'drop',
+        reason:
+          `session ${d.subscriberId} is released from fleet ${released.fleet} ` +
+          `(marked ${released.at} by ${released.by}) — end now; queued wake suppressed`,
+      };
+    }
+
     // Ambient-push delivery rail (ambient-semantic-push P-003) — DEFAULT-OFF behind
     // PAPERCUSP_AMBIENT_CURSOR. Best-effort: prepare + record the teaser block that
     // rides THIS wake's injection (capped by applyInjectionDoor below — the injection

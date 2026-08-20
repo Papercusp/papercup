@@ -4,6 +4,9 @@ import {
   countBackgroundPrimaries,
   lastRoutineFireAgeSec,
   routinesDemonstrablyFiring,
+  d026QuiescenceIsActive,
+  readD026QuiescenceEvidence,
+  D026_RESTORE_UNIT,
   runSinglePrimaryCheck,
   openSinglePrimaryConditions,
   _resetSinglePrimaryDebounce,
@@ -80,6 +83,39 @@ describe('evaluatePrimaryCount — count 0 checks its consequence against live e
     expect(routinesDemonstrablyFiring({ lastRoutineFireAgeSec: -5 })).toBe(false);
     expect(routinesDemonstrablyFiring({ lastRoutineFireAgeSec: NaN })).toBe(false);
     expect(routinesDemonstrablyFiring(undefined)).toBe(false);
+  });
+});
+
+describe('D-026 Corestore quiescence evidence', () => {
+  it('reads the authoritative cut status and the registered restore unit', () => {
+    const calls: string[] = [];
+    const evidence = readD026QuiescenceEvidence({
+      isUnitActive: (unit) => {
+        calls.push(unit);
+        return unit === 'papercup-release-cut' || unit === D026_RESTORE_UNIT;
+      },
+    });
+
+    expect(evidence).toEqual({ cutActive: true, restoreActive: true });
+    expect(calls).toEqual(['papercup-release-cut', D026_RESTORE_UNIT]);
+  });
+
+  it('requires both active signals before treating quiescence as protected', () => {
+    expect(d026QuiescenceIsActive({ cutActive: true, restoreActive: true })).toBe(true);
+    expect(d026QuiescenceIsActive({ cutActive: true, restoreActive: false })).toBe(false);
+    expect(d026QuiescenceIsActive({ cutActive: false, restoreActive: true })).toBe(false);
+  });
+
+  it('reframes a stale zero-primary reading while the D-026 cut owns the Corestore lock', () => {
+    const v = evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, { cutActive: true, restoreActive: true });
+    expect(v).toMatchObject({ ok: false, severity: 'advisory', key: 'no-primary-quiesced' });
+    expect(v.summary).toContain('Do NOT start or restart bg-host');
+    expect(v.summary).toContain('Corestore lock');
+  });
+
+  it('keeps ordinary stale zero-primary readings as blockers when either signal is absent', () => {
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, { cutActive: true, restoreActive: false }).key).toBe('no-primary');
+    expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, { cutActive: false, restoreActive: true }).key).toBe('no-primary');
   });
 });
 
@@ -770,5 +806,29 @@ describe('runSinglePrimaryCheck (hysteresis + debounce + self-clear)', () => {
     expect(r.verdict.key).toBe('no-dedicated-primary');
     expect(bodies[0]).toContain('Routine-liveness evidence');
     expect(bodies[0]).toContain('fired 42s ago');
+  });
+
+  it('sustained stale zero-primary during D-026 quiescence records advisory context and never pages', async () => {
+    const paged: unknown[] = [];
+    const escalated: Array<{ severity: string; summary: string }> = [];
+    let now = 0;
+    const deps = {
+      count: async () => 0,
+      routineFireAgeSec: async () => 4000,
+      d026Quiescence: async () => ({ cutActive: true, restoreActive: true }),
+      escalate: async (i: { severity: string; summary: string }) => { escalated.push(i); return { msg_id: 'd026-1' }; },
+      page: async (v: unknown) => { paged.push(v); },
+      now: () => now,
+    };
+
+    await runSinglePrimaryCheck('ws', deps);
+    now += 3 * 60_000;
+    const result = await runSinglePrimaryCheck('ws', deps);
+
+    expect(result.verdict.key).toBe('no-primary-quiesced');
+    expect(result.verdict.severity).toBe('advisory');
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0].summary).toContain('Do NOT start or restart bg-host');
+    expect(paged).toHaveLength(0);
   });
 });

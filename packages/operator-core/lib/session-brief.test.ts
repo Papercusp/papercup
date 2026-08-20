@@ -18,7 +18,13 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: (s: TemplateStringsArray, ...v: unknown[]) => fakeSql(s, ...v) }),
 }));
 
-import { writeSessionBrief, getSessionBrief } from './session-brief';
+import {
+  clearSessionBriefReleasedForFleet,
+  getSessionBrief,
+  getSessionBriefLifecycle,
+  markSessionBriefReleased,
+  writeSessionBrief,
+} from './session-brief';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 
 const identity: AgentIdentity = {
@@ -158,5 +164,56 @@ describe('getSessionBrief (fail-soft read)', () => {
     await getSessionBrief({ nativeSessionId: '6b161799-abcd' });
     expect(rec.calls).toHaveLength(1);
     expect(rec.calls[0]).toContain('6b161799-abcd');
+  });
+
+  it('reads a typed release marker from control_state', async () => {
+    fakeSql = recordingSql([
+      {
+        control_state: {
+          lifecycle: { released: { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' } },
+        },
+      },
+    ]).sql;
+    await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toEqual({
+      released: { fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' },
+    });
+  });
+
+  it('ignores malformed release markers', async () => {
+    fakeSql = recordingSql([{ control_state: { lifecycle: { released: { fleet: '' } } } }]).sql;
+    await expect(getSessionBriefLifecycle('su-test-ei1742')).resolves.toBeNull();
+  });
+});
+
+describe('fleet release lifecycle helpers (EI-203843)', () => {
+  it('marks a member with the durable fleet/freshness/actor tuple', async () => {
+    const rec = recordingSql();
+    fakeSql = rec.sql;
+    await expect(
+      markSessionBriefReleased('su-member', 'ws-1', {
+        fleet: 'backend',
+        at: '2026-08-20T10:00:00Z',
+        by: 'su-leader',
+      }),
+    ).resolves.toBe(true);
+    expect(rec.calls[0]).toEqual(expect.arrayContaining(['su-member', 'ws-1']));
+    expect(rec.calls[0]).toContain(
+      JSON.stringify({ fleet: 'backend', at: '2026-08-20T10:00:00Z', by: 'su-leader' }),
+    );
+  });
+
+  it('clears only rows matching the resumed workspace and fleet', async () => {
+    const rec = recordingSql([{ owner_id: 'su-member' }]);
+    fakeSql = rec.sql;
+    await expect(clearSessionBriefReleasedForFleet('ws-1', 'backend')).resolves.toBe(1);
+    expect(rec.calls[0]).toEqual(expect.arrayContaining(['ws-1', 'backend']));
+  });
+
+  it('keeps lifecycle writes fail-soft', async () => {
+    fakeSql = () => Promise.reject(new Error('db unavailable'));
+    await expect(
+      markSessionBriefReleased('su-member', 'ws-1', { fleet: 'backend', at: 'now', by: 'leader' }),
+    ).resolves.toBe(false);
+    await expect(clearSessionBriefReleasedForFleet('ws-1', 'backend')).resolves.toBe(0);
   });
 });

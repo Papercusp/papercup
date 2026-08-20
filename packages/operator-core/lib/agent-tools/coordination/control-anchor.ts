@@ -14,7 +14,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getModes } from '../../modes/store';
 import { getLoopStatus, type LoopStatus } from '../../harness/routines/loop';
 import { latestFleetMembership } from '../../fleet-membership-store';
-import { getSessionBrief } from '../../session-brief';
+import { getSessionBrief, type SessionBriefLifecycle } from '../../session-brief';
 import { notifyAgentOrdersChanged } from '../../agent-orders-notify';
 import { fetchSelfWake, type SelfWakeSignals, type SelfWakeSource } from './presence-selfwake';
 
@@ -45,6 +45,8 @@ export interface ControlAnchorState {
    */
   wakeSource?: SelfWakeSource;
   carry: 'warm' | 'cold';
+  /** EI-203843: a durable fleet release marker carried by the compact anchor. */
+  lifecycle?: SessionBriefLifecycle;
   route:
     | { kind: 'self' }
     | { kind: 'mug' }
@@ -182,6 +184,7 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
         role: cap(input.route.role),
       }
     : input.route;
+  const released = input.lifecycle?.released;
   return {
     modes: [...new Set(input.modes.map(String))].sort().map((v) => v.slice(0, 40)),
     loop: {
@@ -192,6 +195,17 @@ export function normalizeControlAnchorState(input: ControlAnchorState): ControlA
     // normalized into a `'none'` that would read as a positive finding.
     ...(input.wakeSource ? { wakeSource: input.wakeSource } : {}),
     carry: input.carry === 'cold' ? 'cold' : 'warm',
+    ...(released?.fleet && released.at && released.by
+      ? {
+          lifecycle: {
+            released: {
+              fleet: released.fleet.slice(0, MAX_ID_CHARS),
+              at: released.at.slice(0, MAX_ID_CHARS),
+              by: released.by.slice(0, MAX_ID_CHARS),
+            },
+          },
+        }
+      : {}),
     route,
     scope: {
       workspace: input.scope.workspace.slice(0, MAX_ID_CHARS),
@@ -540,6 +554,7 @@ export async function buildControlAnchorState(
     loop: { active: Boolean(loop?.active), intervalSec: loop?.intervalSec ?? null },
     wakeSource: selfWake.get(ownerId)?.selfWake,
     carry: loop?.carry ?? 'warm',
+    lifecycle: brief?.lifecycle ?? undefined,
     route,
     scope: {
       workspace: workspaceId,

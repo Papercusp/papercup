@@ -37,6 +37,10 @@ import { resolveFleetCaller } from './_shared';
 import { classifyFleetControlInvoker } from './fleet-auth';
 import type { ResolveIdentityCtx } from '../coordination/identity';
 import type { FleetPauseHoldResult } from './pause-holds';
+import {
+  clearSessionBriefReleasedForFleet,
+  markSessionBriefReleased,
+} from '../../session-brief';
 
 export type FleetControlAction = 'wind-down' | 'resume';
 
@@ -237,6 +241,34 @@ export async function applyFleetControl(
   }
   const record: AgentFleetRecord = updated ?? fleet;
 
+  // EI-203843: make the release durable BEFORE sending the cue. Queued event
+  // wakes and cold carry-respawns can arrive after this function returns, so a
+  // message alone cannot stop them from re-animating a released member.
+  let liveMembers: string[] | undefined;
+  if (action === 'wind-down') {
+    try {
+      liveMembers = (await hostAudienceResolvers.listFleetMembers(slug)).filter(
+        (id) => id !== ownerId,
+      );
+      const releasedAt = new Date().toISOString();
+      await Promise.allSettled(
+        liveMembers.map((memberOwnerId) =>
+          markSessionBriefReleased(memberOwnerId, workspaceId, {
+            fleet: slug,
+            at: releasedAt,
+            by: ownerId,
+          }),
+        ),
+      );
+    } catch {
+      /* best-effort: registry state remains authoritative for orient admission */
+    }
+  } else {
+    // Clear every matching row, including members that already left presence;
+    // clearing only today's live audience would strand their next resume.
+    await clearSessionBriefReleasedForFleet(workspaceId, slug).catch(() => 0);
+  }
+
   // 3. CUE the live member set — typed, fleet-scope-stamped, best-effort. A
   // repeat invoke that changed nothing sends no duplicate cue (spam guard);
   // the refreshed row still carries the newest reason/by/at.
@@ -244,9 +276,9 @@ export async function applyFleetControl(
   let cueMsgId: string | null = null;
   if (!alreadyInState) {
     try {
-      const members = (await hostAudienceResolvers.listFleetMembers(slug)).filter(
-        (id) => id !== ownerId,
-      );
+      const members =
+        liveMembers ??
+        (await hostAudienceResolvers.listFleetMembers(slug)).filter((id) => id !== ownerId);
       if (members.length > 0) {
         const { summary, body } = fleetControlCueText(
           action,
