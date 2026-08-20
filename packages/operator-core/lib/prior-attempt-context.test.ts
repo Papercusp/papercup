@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { collectPriorAttempts, compilePriorAttempts, type PriorAttemptSource } from './prior-attempt-context';
+import {
+  buildBoundedPriorAttemptBrief,
+  collectPriorAttempts,
+  compilePriorAttempts,
+  type PriorAttemptSource,
+} from './prior-attempt-context';
 import type { WorkItem } from './work-items';
 
 function source(overrides: Partial<PriorAttemptSource> = {}): PriorAttemptSource {
@@ -72,6 +77,35 @@ describe('compilePriorAttempts', () => {
     const a = source({ rawRef: 'a', scope: 'same-spec', text: 'A' });
     const b = source({ rawRef: 'b', authority: 'checkpoint', text: 'B' });
     expect(compilePriorAttempts([a, b]).fingerprint).toBe(compilePriorAttempts([b, a]).fingerprint);
+  });
+});
+
+describe('buildBoundedPriorAttemptBrief', () => {
+  it('keeps canonical authority and residue while disclosing large-history omissions', () => {
+    const sources: PriorAttemptSource[] = [
+      source({ rawRef: 'plan#SPEC-1@3', authority: 'current-spec', scope: 'same-spec', text: 'Current contract.' }),
+      source({ rawRef: 'plan#D-008', authority: 'plan-decision', text: 'Canonical authority wins.' }),
+      source({ rawRef: 'WI-2#comment:9', authority: 'retraction', scope: 'same-spec', text: 'False premise: the reader was absent.' }),
+      source({ rawRef: 'WI-2#checkpoint', authority: 'checkpoint', scope: 'same-spec', text: 'Residue: live verification remains.' }),
+      ...Array.from({ length: 80 }, (_, index) => source({
+        rawRef: `WI-${index + 10}#comment:1`,
+        text: `Attempt ${index} ${'x'.repeat(300)}`,
+      })),
+    ];
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), {
+      maxChars: 5_000,
+      maxRecords: 12,
+      maxTextChars: 300,
+    })!;
+    expect(brief.authority.map((record) => record.rawRef)).toEqual([
+      'plan#SPEC-1@3', 'plan#D-008', 'WI-2#comment:9',
+    ]);
+    expect(brief.residue).toEqual([{ rawRef: 'WI-2#checkpoint', workItemId: undefined, items: ['live verification remains.'] }]);
+    expect(brief.omission.truncated).toBe(true);
+    expect(brief.omission.omittedRecords).toBeGreaterThan(0);
+    expect(brief.omission.omittedByAuthority.comment).toBeGreaterThan(0);
+    expect(brief.serializedChars).toBeLessThanOrEqual(5_000);
+    expect(brief.rawRefs).toEqual([...new Set(brief.rawRefs)]);
   });
 });
 

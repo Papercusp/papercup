@@ -76,6 +76,49 @@ export interface PriorAttemptCompilation {
   fingerprint: string;
 }
 
+export interface PriorAttemptBriefRecord {
+  authority: PriorAttemptAuthority;
+  scope: PriorAttemptScope;
+  rawRef: string;
+  workItemId?: string | null;
+  specId?: string | null;
+  specRevision?: number | null;
+  at?: string | null;
+  text: string;
+  approach?: string | null;
+  outcome?: string | null;
+  rootCauses?: string[];
+  falsePremises?: string[];
+  touchedFiles?: string[];
+  tests?: string[];
+}
+
+export interface BoundedPriorAttemptBrief {
+  schemaVersion: 'prior-attempt-brief-v1';
+  fingerprint: string;
+  /** Canonical sources survive before ordinary attempt detail under pressure. */
+  authority: PriorAttemptBriefRecord[];
+  /** Residue is lifted out of records so a truncated attempt cannot hide it. */
+  residue: Array<{ rawRef: string; workItemId?: string | null; items: string[] }>;
+  attempts: PriorAttemptBriefRecord[];
+  rawRefs: string[];
+  omission: {
+    omittedRecords: number;
+    omittedByAuthority: Partial<Record<PriorAttemptAuthority, number>>;
+    sourceCount: number;
+    deduplicatedCount: number;
+    truncated: boolean;
+  };
+  estimatedTokens: number;
+  serializedChars: number;
+}
+
+export interface PriorAttemptBriefBudget {
+  maxChars?: number;
+  maxRecords?: number;
+  maxTextChars?: number;
+}
+
 const SCOPE_RANK: Record<PriorAttemptScope, number> = {
   'same-spec': 0,
   'same-plan-item': 1,
@@ -110,6 +153,18 @@ function boundedLine(text: string, max = 1200): string {
   return one.length <= max ? one : `${one.slice(0, max - 1)}…`;
 }
 
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalValue(nested)]),
+    );
+  }
+  return value;
+}
+
 function markedFragments(text: string, labels: RegExp): string[] {
   const out: string[] = [];
   for (const line of text.split(/\r?\n/)) {
@@ -140,7 +195,7 @@ function normalizedRecord(source: PriorAttemptSource): PriorAttemptRecord {
   const isCompletion = source.authority === 'verified-completion';
   const isCheckpoint = source.authority === 'checkpoint';
   const id = createHash('sha256')
-    .update(`${source.rawRef}\0${source.authority}\0${source.scope}\0${text}`)
+    .update(`${source.rawRef}\0${source.authority}\0${source.scope}\0${text}\0${JSON.stringify(canonicalValue(source.detail ?? null))}`)
     .digest('hex')
     .slice(0, 20);
   return {
@@ -209,6 +264,135 @@ export function compilePriorAttempts(sources: readonly PriorAttemptSource[]): Pr
   };
 }
 
+function briefRecord(record: PriorAttemptRecord, maxTextChars: number): PriorAttemptBriefRecord {
+  const out: PriorAttemptBriefRecord = {
+    authority: record.authority,
+    scope: record.scope,
+    rawRef: record.rawRef,
+    workItemId: record.workItemId,
+    specId: record.specId,
+    specRevision: record.specRevision,
+    at: record.at,
+    text: boundedLine(record.text, maxTextChars),
+  };
+  if (record.approach) out.approach = boundedLine(record.approach, Math.min(maxTextChars, 500));
+  if (record.outcome) out.outcome = boundedLine(record.outcome, Math.min(maxTextChars, 500));
+  if (record.rootCauses.length) out.rootCauses = record.rootCauses;
+  if (record.falsePremises.length) out.falsePremises = record.falsePremises;
+  if (record.touchedFiles.length) out.touchedFiles = record.touchedFiles;
+  if (record.tests.length) out.tests = record.tests;
+  return out;
+}
+
+function briefSize(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf8');
+}
+
+/**
+ * Bounded claim-time projection.  Budgeting is deterministic and omission is
+ * explicit.  Canonical authority and lifted residue are admitted before ordinary
+ * attempt detail.  If even the protected set is unusually large, text shrinks to
+ * short snippets but stable raw refs remain for every protected fact.
+ */
+export function buildBoundedPriorAttemptBrief(
+  compilation: PriorAttemptCompilation,
+  budget: PriorAttemptBriefBudget = {},
+): BoundedPriorAttemptBrief | null {
+  if (!compilation.records.length) return null;
+  const maxChars = Math.max(2_000, budget.maxChars ?? 14_000);
+  const maxRecords = Math.max(1, budget.maxRecords ?? 48);
+  const maxTextChars = Math.max(80, budget.maxTextChars ?? 700);
+  const protectedRecords = compilation.records.filter(
+    (record) => CANONICAL_AUTHORITY.has(record.authority),
+  );
+  const ordinaryRecords = compilation.records.filter(
+    (record) => !CANONICAL_AUTHORITY.has(record.authority),
+  );
+  const residue = compilation.records
+    .filter((record) => record.residue.length > 0)
+    .map((record) => ({ rawRef: record.rawRef, workItemId: record.workItemId, items: record.residue }));
+  const authority: PriorAttemptBriefRecord[] = [];
+  const attempts: PriorAttemptBriefRecord[] = [];
+  const rawRefs: string[] = [];
+  const omitted = new Map<PriorAttemptAuthority, number>();
+  let admitted = 0;
+
+  // Assemble against a pessimistic envelope, then fill ordinary detail from the
+  // remaining bytes. Protected rows use a compact fallback rather than omission.
+  const envelope = () => ({
+    schemaVersion: 'prior-attempt-brief-v1' as const,
+    fingerprint: compilation.fingerprint,
+    authority,
+    residue,
+    attempts,
+    rawRefs,
+    omission: {
+      omittedRecords: compilation.records.length - admitted,
+      omittedByAuthority: {},
+      sourceCount: compilation.sourceCount,
+      deduplicatedCount: compilation.deduplicatedCount,
+      truncated: admitted < compilation.records.length,
+    },
+    estimatedTokens: 0,
+    serializedChars: 0,
+  });
+
+  for (const record of protectedRecords) {
+    const full = briefRecord(record, maxTextChars);
+    authority.push(full);
+    rawRefs.push(record.rawRef);
+    admitted += 1;
+    if (briefSize(envelope()) > maxChars) {
+      authority[authority.length - 1] = briefRecord(record, 96);
+    }
+  }
+  // Residue is protected independently. Bound individual residue prose but never
+  // remove its rawRef or the fact that residue exists.
+  for (const entry of residue) entry.items = entry.items.map((item) => boundedLine(item, 240));
+
+  for (const record of ordinaryRecords) {
+    if (admitted >= maxRecords) {
+      omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
+      continue;
+    }
+    const projected = briefRecord(record, maxTextChars);
+    attempts.push(projected);
+    rawRefs.push(record.rawRef);
+    admitted += 1;
+    if (briefSize(envelope()) > maxChars) {
+      attempts.pop();
+      rawRefs.pop();
+      admitted -= 1;
+      omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
+    }
+  }
+  for (const record of ordinaryRecords) {
+    if (attempts.some((attempt) => attempt.rawRef === record.rawRef)) continue;
+    if (!omitted.has(record.authority)) omitted.set(record.authority, 0);
+  }
+  const omittedRecords = compilation.records.length - admitted;
+  const result: BoundedPriorAttemptBrief = {
+    schemaVersion: 'prior-attempt-brief-v1',
+    fingerprint: compilation.fingerprint,
+    authority,
+    residue,
+    attempts,
+    rawRefs: [...new Set(rawRefs)],
+    omission: {
+      omittedRecords,
+      omittedByAuthority: Object.fromEntries([...omitted].filter(([, count]) => count > 0)),
+      sourceCount: compilation.sourceCount,
+      deduplicatedCount: compilation.deduplicatedCount,
+      truncated: omittedRecords > 0,
+    },
+    estimatedTokens: 0,
+    serializedChars: 0,
+  };
+  result.serializedChars = briefSize(result);
+  result.estimatedTokens = Math.ceil(result.serializedChars / 4);
+  return result;
+}
+
 export interface CollectPriorAttemptsOptions {
   harnessSlug?: string;
   planSlug: string;
@@ -219,6 +403,18 @@ export interface CollectPriorAttemptsOptions {
   specIds?: string[];
   maxPlanWorkItems?: number;
   maxThreadPosts?: number;
+}
+
+export const PRIOR_ATTEMPT_CLAIM_BUDGET_MS = 2_500;
+
+export interface ClaimTimePriorAttemptOptions {
+  workItem?: Partial<Pick<WorkItem, 'id' | 'harness' | 'payload' | 'sourcePlanSlug' | 'sourcePlanItemIds'>> | null;
+  workItemId?: string | null;
+  planSlug?: string | null;
+  planItemId?: string | null;
+  harness?: string | null;
+  budget?: PriorAttemptBriefBudget;
+  timeoutMs?: number;
 }
 
 interface CollectorDeps {
@@ -419,6 +615,51 @@ export async function collectPriorAttempts(
     }),
   );
   return compilePriorAttempts(sources);
+}
+
+function planPointer(opts: ClaimTimePriorAttemptOptions): { planSlug: string; planItemId: string } | null {
+  const payload = opts.workItem?.payload && typeof opts.workItem.payload === 'object'
+    ? (opts.workItem.payload as Record<string, unknown>)
+    : null;
+  const pointer = payload?.plan_item && typeof payload.plan_item === 'object'
+    ? (payload.plan_item as Record<string, unknown>)
+    : null;
+  const planSlug = opts.planSlug
+    ?? opts.workItem?.sourcePlanSlug
+    ?? (typeof pointer?.plan_slug === 'string' ? pointer.plan_slug : null);
+  const planItemId = opts.planItemId
+    ?? opts.workItem?.sourcePlanItemIds?.[0]
+    ?? (typeof pointer?.item_id === 'string' ? pointer.item_id : null);
+  return planSlug && planItemId ? { planSlug, planItemId } : null;
+}
+
+/** Shared fail-soft claim enrichment used by every canonical claim surface. */
+export async function getClaimTimePriorAttemptBrief(
+  opts: ClaimTimePriorAttemptOptions,
+): Promise<BoundedPriorAttemptBrief | null> {
+  const pointer = planPointer(opts);
+  if (!pointer) return null;
+  const workItemId = opts.workItemId ?? opts.workItem?.id ?? `plan-item:${pointer.planSlug}#${pointer.planItemId}`;
+  const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
+  try {
+    const compilation = await Promise.race([
+      collectPriorAttempts({
+        harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
+        planSlug: pointer.planSlug,
+        planItemId: pointer.planItemId,
+        workItemId,
+        maxPlanWorkItems: 32,
+        maxThreadPosts: 12,
+      }),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('prior-attempt-claim-timeout')), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    return buildBoundedPriorAttemptBrief(compilation, opts.budget);
+  } catch {
+    return null;
+  }
 }
 
 function specSource(spec: SpecClauseRevision, targetPlanItemId: string): PriorAttemptSource {

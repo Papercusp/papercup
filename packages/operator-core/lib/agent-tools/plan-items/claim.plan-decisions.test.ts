@@ -38,6 +38,10 @@ vi.mock('../../plan-decisions-claim-port', () => ({
   getClaimTimePlanDecisions: (...a: unknown[]) => getClaimTimePlanDecisions(...a),
   renderPlanDecisionsNote: (...a: unknown[]) => renderPlanDecisionsNote(...a),
 }));
+const getClaimTimePriorAttemptBrief = vi.fn();
+vi.mock('../../prior-attempt-context', () => ({
+  getClaimTimePriorAttemptBrief: (...a: unknown[]) => getClaimTimePriorAttemptBrief(...a),
+}));
 
 let flagOn = false;
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
@@ -79,6 +83,20 @@ beforeEach(() => {
   );
   getClaimTimePlanDecisions.mockResolvedValue(null);
   renderPlanDecisionsNote.mockReturnValue('rendered note');
+  getClaimTimePriorAttemptBrief.mockResolvedValue(null);
+});
+
+describe('plan_items:claim — prior-attempt brief (P-010)', () => {
+  it('surfaces the shared bounded brief on the bare plan-item claim path', async () => {
+    const brief = { schemaVersion: 'prior-attempt-brief-v1', fingerprint: 'fp' };
+    getClaimTimePriorAttemptBrief.mockResolvedValue(brief);
+    const r = await one({ plan: 'a-plan', item: 'P-001' });
+    expect(r.ok).toBe(true);
+    expect(r.priorAttemptBrief).toEqual(brief);
+    expect(getClaimTimePriorAttemptBrief).toHaveBeenCalledWith(expect.objectContaining({
+      planSlug: 'a-plan', planItemId: 'P-001', workItemId: null,
+    }));
+  });
 });
 
 describe('plan_items:claim — plan-Decisions brief, bare-lease path (flag OFF)', () => {

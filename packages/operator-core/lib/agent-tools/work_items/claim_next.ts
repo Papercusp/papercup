@@ -344,6 +344,8 @@ export default defineTool({
       harness?: string | null;
       state?: string | null;
       payload?: unknown;
+      sourcePlanSlug?: string | null;
+      sourcePlanItemIds?: string[] | null;
     } | null =>
       c && typeof c === 'object'
         ? (('workItem' in c ? (c as { workItem: unknown }).workItem : c) as {
@@ -353,6 +355,8 @@ export default defineTool({
             harness?: string | null;
             state?: string | null;
             payload?: unknown;
+            sourcePlanSlug?: string | null;
+            sourcePlanItemIds?: string[] | null;
           })
         : null;
     // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions brief
@@ -373,6 +377,25 @@ export default defineTool({
           });
           return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
         })
+        .catch(() => null);
+    };
+    const priorAttemptsFor = async (
+      wi: {
+        id?: string;
+        payload?: unknown;
+        harness?: string | null;
+        sourcePlanSlug?: string | null;
+        sourcePlanItemIds?: string[] | null;
+      } | null,
+    ): Promise<unknown | null> => {
+      if (!wi) return null;
+      return import('../../prior-attempt-context')
+        .then((m) =>
+          m.getClaimTimePriorAttemptBrief({
+            workItem: wi,
+            harness: wi.harness ?? args.harness,
+          }),
+        )
         .catch(() => null);
     };
     // EI-18733326519945478: claim_next was the remaining claim surface that did
@@ -449,9 +472,10 @@ export default defineTool({
       // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
-      const [planDecisionsResult, premisesResult, retractionAdvisory, authorshipRevalidationResult] = await Promise.all(
+      const [planDecisionsResult, priorAttemptBrief, premisesResult, retractionAdvisory, authorshipRevalidationResult] = await Promise.all(
         [
           planDecisionsFor(wiOf(claimed)),
+          priorAttemptsFor(wiOf(claimed)),
           premisesFor(wiOf(claimed)),
           getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
           authorshipRevalidationFor(wiOf(claimed)),
@@ -467,6 +491,7 @@ export default defineTool({
               ...(planDecisionsResult
                 ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
                 : {}),
+              ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
               ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
               ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
               ...(authorshipRevalidationResult ?? {}),
@@ -501,9 +526,10 @@ export default defineTool({
     // return branch.
     const claimedWithDecisions = await Promise.all(
       claimed.map(async (c) => {
-        const [planDecisionsResult, premisesResult, retractionAdvisory, authorshipRevalidationResult] =
+        const [planDecisionsResult, priorAttemptBrief, premisesResult, retractionAdvisory, authorshipRevalidationResult] =
           await Promise.all([
             planDecisionsFor(wiOf(c)),
+            priorAttemptsFor(wiOf(c)),
             premisesFor(wiOf(c)),
             getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
             authorshipRevalidationFor(wiOf(c)),
@@ -513,6 +539,7 @@ export default defineTool({
           ...(planDecisionsResult
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
+          ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
           ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(authorshipRevalidationResult ?? {}),

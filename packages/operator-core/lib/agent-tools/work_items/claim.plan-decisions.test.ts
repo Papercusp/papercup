@@ -60,6 +60,10 @@ vi.mock('../../plan-decisions-claim-port', () => ({
   getClaimTimePlanDecisions: (...a: unknown[]) => getClaimTimePlanDecisions(...a),
   renderPlanDecisionsNote: (...a: unknown[]) => renderPlanDecisionsNote(...a),
 }));
+const getClaimTimePriorAttemptBrief = vi.fn();
+vi.mock('../../prior-attempt-context', () => ({
+  getClaimTimePriorAttemptBrief: (...a: unknown[]) => getClaimTimePriorAttemptBrief(...a),
+}));
 
 import { claimWorkItem, getWorkItem } from '../../work-items';
 const claimM = vi.mocked(claimWorkItem);
@@ -91,6 +95,18 @@ beforeEach(() => {
   planItemClaimCollision.mockResolvedValue(null);
   getClaimTimePlanDecisions.mockResolvedValue(null);
   renderPlanDecisionsNote.mockReturnValue('rendered note');
+  getClaimTimePriorAttemptBrief.mockResolvedValue(null);
+});
+
+describe('work_items:claim — prior-attempt brief (P-010)', () => {
+  it('surfaces the shared bounded brief without changing claim success', async () => {
+    const brief = { schemaVersion: 'prior-attempt-brief-v1', fingerprint: 'fp', omission: { omittedRecords: 0 } };
+    getClaimTimePriorAttemptBrief.mockResolvedValue(brief);
+    const r = await one({ id: 'F-100' });
+    expect(r.ok).toBe(true);
+    expect(r.priorAttemptBrief).toEqual(brief);
+    expect(getClaimTimePriorAttemptBrief).toHaveBeenCalledWith(expect.objectContaining({ workItem: expect.objectContaining({ id: 'F-100' }) }));
+  });
 });
 
 describe('work_items:claim — plan-Decisions brief (EI-19387745408924340)', () => {

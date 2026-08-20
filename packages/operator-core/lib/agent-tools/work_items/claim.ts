@@ -533,6 +533,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
       unresolvedBlockers,
       premises,
       planDecisionsResult,
+      priorAttemptBrief,
       retractionAdvisory,
       planContradiction,
     ] = await Promise.all([
@@ -589,6 +590,14 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           });
           return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
         })
+        .catch(() => null),
+      import('../../prior-attempt-context')
+        .then((m) =>
+          m.getClaimTimePriorAttemptBrief({
+            workItem,
+            harness: workItem.harness ?? it.harness ?? null,
+          }),
+        )
         .catch(() => null),
       getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
       // WI-39498: the plan-says-done contradiction — the linked plan item is already
@@ -654,6 +663,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(planDecisionsResult
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
+          ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
         }
       : {
           ok: true,
@@ -685,6 +695,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(planDecisionsResult
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
+          ...(priorAttemptBrief ? { priorAttemptBrief } : {}),
         };
   }
   // claimWorkItem returns a bare null for THREE distinct outcomes — re-read + classify.

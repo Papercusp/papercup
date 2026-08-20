@@ -100,6 +100,41 @@ async function claimTimePlanDecisions(
   }
 }
 
+async function claimTimePriorAttempts(
+  planSlug: string,
+  planItemId: string,
+  workItemId: string | null,
+  harness: string | undefined,
+): Promise<{ priorAttemptBrief?: unknown }> {
+  try {
+    const brief = await import('../../prior-attempt-context').then((m) =>
+      m.getClaimTimePriorAttemptBrief({
+        planSlug,
+        planItemId,
+        workItemId,
+        harness: harness ?? null,
+      }),
+    );
+    return brief ? { priorAttemptBrief: brief } : {};
+  } catch {
+    return {};
+  }
+}
+
+async function claimTimeContext(
+  planSlug: string,
+  planItemId: string,
+  workItemId: string | null,
+  harness: string | undefined,
+  workspaceId: string,
+): Promise<Record<string, unknown>> {
+  const [decisions, attempts] = await Promise.all([
+    claimTimePlanDecisions(planSlug, harness, workspaceId),
+    claimTimePriorAttempts(planSlug, planItemId, workItemId, harness),
+  ]);
+  return { ...decisions, ...attempts };
+}
+
 interface ClaimSpecItem {
   plan: string;
   item: string;
@@ -239,7 +274,13 @@ export default defineTool({
               result: { status: 'claimed', claim: conv.claim, mode: conv.mode, viaAssignment: conv.viaAssignment },
               convertStatus: conv.status,
               workItem: { id: conv.workItem.id, kind: conv.workItem.kind, harness: conv.workItem.harness ?? null },
-              ...(await claimTimePlanDecisions(it.plan, it.harness ?? args.harness, workspaceId)),
+              ...(await claimTimeContext(
+                it.plan,
+                it.item,
+                conv.workItem.id,
+                it.harness ?? args.harness,
+                workspaceId,
+              )),
             };
           }
           return {
@@ -270,7 +311,9 @@ export default defineTool({
           item: it.item,
           result,
           ...(await planItemConflictAdvisory(result, it.plan, it.item, reader)),
-          ...(result.status === 'claimed' ? await claimTimePlanDecisions(it.plan, it.harness ?? args.harness, workspaceId) : {}),
+          ...(result.status === 'claimed'
+            ? await claimTimeContext(it.plan, it.item, null, it.harness ?? args.harness, workspaceId)
+            : {}),
         };
       },
       { keyOf: (it) => ({ plan: it.plan, item: it.item }) },

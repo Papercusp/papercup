@@ -81,6 +81,10 @@ vi.mock('../../plan-decisions-claim-port', () => ({
   getClaimTimePlanDecisions: (...a: unknown[]) => getClaimTimePlanDecisions(...a),
   renderPlanDecisionsNote: (...a: unknown[]) => renderPlanDecisionsNote(...a),
 }));
+const getClaimTimePriorAttemptBrief = vi.fn();
+vi.mock('../../prior-attempt-context', () => ({
+  getClaimTimePriorAttemptBrief: (...a: unknown[]) => getClaimTimePriorAttemptBrief(...a),
+}));
 
 import { getNextForBee } from '../../scheduler/claim-spec-store';
 import { claimNextWorkItem } from '../../work-items';
@@ -117,9 +121,17 @@ beforeEach(() => {
   claimNextM.mockResolvedValue({ id: 'WI-raw', assignee: 'su-me' } as never);
   getClaimTimePlanDecisions.mockResolvedValue(null);
   renderPlanDecisionsNote.mockReturnValue('rendered note');
+  getClaimTimePriorAttemptBrief.mockResolvedValue(null);
 });
 
 describe('work_items:claim_next — plan-Decisions brief (EI-19387745408924340)', () => {
+  it('single-claim: surfaces the shared bounded prior-attempt brief', async () => {
+    const brief = { schemaVersion: 'prior-attempt-brief-v1', fingerprint: 'fp' };
+    getClaimTimePriorAttemptBrief.mockResolvedValue(brief);
+    const b = await body({ harness: 'papercusp' });
+    expect(b.ok).toBe(true);
+    expect(b.priorAttemptBrief).toEqual(brief);
+  });
   it('single-claim (count omitted): surfaces planDecisions + planDecisionsNote', async () => {
     getClaimTimePlanDecisions.mockResolvedValue(BRIEF);
     const b = await body({ harness: 'papercusp' });
@@ -162,6 +174,9 @@ describe('work_items:claim_next — plan-Decisions brief (EI-19387745408924340)'
       })
       .mockResolvedValueOnce(null);
     getClaimTimePlanDecisions.mockResolvedValueOnce(BRIEF).mockResolvedValueOnce(null);
+    getClaimTimePriorAttemptBrief
+      .mockResolvedValueOnce({ schemaVersion: 'prior-attempt-brief-v1', fingerprint: 'one' })
+      .mockResolvedValueOnce(null);
 
     const b = await body({ harness: 'papercusp', count: 3 });
     expect(b.ok).toBe(true);
@@ -169,7 +184,9 @@ describe('work_items:claim_next — plan-Decisions brief (EI-19387745408924340)'
     expect(b.claimed[0].workItem.id).toBe('WI-1');
     expect(b.claimed[0].planDecisions).toEqual(BRIEF.decisions);
     expect(b.claimed[0].planDecisionsNote).toBe('rendered note');
+    expect(b.claimed[0].priorAttemptBrief.fingerprint).toBe('one');
     expect(b.claimed[1].workItem.id).toBe('WI-2');
     expect(b.claimed[1].planDecisions).toBeUndefined();
+    expect(b.claimed[1].priorAttemptBrief).toBeUndefined();
   });
 });

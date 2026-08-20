@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   getFlag: vi.fn(),
   getNextForBee: vi.fn(),
   getClaimTimePremises: vi.fn(),
+  getClaimTimePriorAttemptBrief: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(),
 }));
@@ -97,6 +98,9 @@ vi.mock('../../plan-decisions-claim-port', () => ({
   getClaimTimePlanDecisions: vi.fn(async () => null),
   renderPlanDecisionsNote: vi.fn(() => null),
 }));
+vi.mock('../../prior-attempt-context', () => ({
+  getClaimTimePriorAttemptBrief: mocks.getClaimTimePriorAttemptBrief,
+}));
 vi.mock('../../premises-claim-port', () => ({
   getClaimTimePremises: mocks.getClaimTimePremises,
 }));
@@ -135,6 +139,7 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     mocks.resolveClaimSpecWorkspace.mockReturnValue('ws-test');
     mocks.getNextForBee.mockReset();
     mocks.getClaimTimePremises.mockReset().mockResolvedValue(null);
+    mocks.getClaimTimePriorAttemptBrief.mockReset().mockResolvedValue(null);
   });
 
   it('returns a COMMITTED claim as structured `data`, not as a door-truncatable text block', async () => {
@@ -188,6 +193,28 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
       harness: 'papercusp',
       workspaceId: 'ws-test',
     });
+  });
+
+  it('surfaces the shared bounded prior-attempt brief after a committed scheduler claim', async () => {
+    const workItem = {
+      id: 'WI-history',
+      state: 'open',
+      payload: { plan_item: { plan_slug: 'a-plan', item_id: 'P-1' } },
+      harness: 'papercusp',
+    };
+    const brief = { schemaVersion: 'prior-attempt-brief-v1', fingerprint: 'fp', omission: { omittedRecords: 2 } };
+    mocks.getNextForBee.mockResolvedValue({
+      workItem,
+      claimedUnder: { specId: 'envelope-spec', revision: 3 },
+      specSource: 'fleet',
+    });
+    mocks.getClaimTimePriorAttemptBrief.mockResolvedValue(brief);
+    const out = await callGetNext();
+    expect(out.data).toMatchObject({ priorAttemptBrief: brief });
+    expect(mocks.getClaimTimePriorAttemptBrief).toHaveBeenCalledWith(expect.objectContaining({
+      workItem: expect.objectContaining({ id: 'WI-history' }),
+      harness: 'papercusp',
+    }));
   });
 
   it('CONTROL: the predicate rejects the LEGACY text envelope this guard exists to catch', () => {

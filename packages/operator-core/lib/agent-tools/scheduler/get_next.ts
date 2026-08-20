@@ -571,6 +571,7 @@ export function assembleSchedulerClaimResult(legs: {
   planItemContradictionWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
   planDecisionsNote?: string | null;
+  priorAttemptBrief?: unknown;
   premises?: unknown;
   premisesNote?: string | null;
 }): Record<string, unknown> {
@@ -600,6 +601,7 @@ export function assembleSchedulerClaimResult(legs: {
     ...(legs.planDecisions
       ? { planDecisions: legs.planDecisions, planDecisionsNote: legs.planDecisionsNote as string }
       : {}),
+    ...(legs.priorAttemptBrief ? { priorAttemptBrief: legs.priorAttemptBrief } : {}),
     workItem: legs.workItem,
     claimedUnder: legs.claimedUnder,
     ...(legs.freshness ? { freshness: legs.freshness } : {}),
@@ -1285,6 +1287,7 @@ export default defineTool({
     // shared helper — EI-19387745408924340: extracted so this wording cannot
     // drift from work_items:claim / claim_next's copies of the same note.
     let planDecisionsNote: string | null = null;
+    let priorAttemptBrief: unknown = null;
     // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the SAME seam, for
     // the item's own load-bearing premises. planDecisions surfaces what OTHERS ruled;
     // this surfaces what THIS item's text assumes — and an unverified absence premise
@@ -1311,8 +1314,10 @@ export default defineTool({
         harness?: string | null;
         title?: string | null;
         summary?: string | null;
+        sourcePlanSlug?: string | null;
+        sourcePlanItemIds?: string[] | null;
       };
-      [[planDecisions, planDecisionsNote], premises, retractionWarning, authorshipRevalidationHint, planContradictionHint] =
+      [[planDecisions, planDecisionsNote], priorAttemptBrief, premises, retractionWarning, authorshipRevalidationHint, planContradictionHint] =
         await Promise.all([
           import('../../plan-decisions-claim-port')
             .then(async (m) => {
@@ -1324,6 +1329,14 @@ export default defineTool({
               return [brief, brief ? m.renderPlanDecisionsNote(brief) : null] as const;
             })
             .catch(() => [null, null] as const),
+          import('../../prior-attempt-context')
+            .then((m) =>
+              m.getClaimTimePriorAttemptBrief({
+                workItem: wi,
+                harness: wi.harness ?? args.harness,
+              }),
+            )
+            .catch(() => null),
           import('../../premises-claim-port')
             .then((m) =>
               m.getClaimTimePremises({
@@ -1494,6 +1507,7 @@ export default defineTool({
           // and says when older decisions are not shown.
           planDecisions: planDecisions?.decisions,
           planDecisionsNote,
+          priorAttemptBrief,
           premises: premises?.rendered,
           premisesNote: premises?.note,
         })
