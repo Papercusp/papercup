@@ -1332,7 +1332,13 @@ export default defineTool({
           import('../../prior-attempt-context')
             .then((m) =>
               m.getClaimTimePriorAttemptBrief({
-                workItem: wi,
+                workItem: {
+                  ...(wi.id ? { id: wi.id } : {}),
+                  payload: wi.payload,
+                  harness: wi.harness,
+                  sourcePlanSlug: wi.sourcePlanSlug,
+                  sourcePlanItemIds: wi.sourcePlanItemIds,
+                },
                 harness: wi.harness ?? args.harness,
               }),
             )
