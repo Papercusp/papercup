@@ -53,6 +53,10 @@ const physicalProbe = readFileSync(
 );
 const physicalScenarioPath = join(repoRoot(), 'papercusp-desktop', 'bin', 'vm-rig', 'hive-git-physical-scenario.sh');
 const physicalScenario = readFileSync(physicalScenarioPath, 'utf8');
+const capabilityBashJobs = readFileSync(
+  join(repoRoot(), 'packages', 'operator-core', 'lib', 'agent-tools', 'capability', 'bash-jobs.ts'),
+  'utf8',
+);
 const gitSyncAction = readFileSync(
   join(repoRoot(), 'packages', 'operator-core', 'lib', 'harness', 'git-sync', 'git-sync-action.ts'),
   'utf8',
@@ -659,6 +663,18 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(drill).toContain('physical-drill-evidence.ts');
     expect(drill).toContain('bin/vm-rig/hive-git-physical-probe.sh');
     expect(drill).not.toContain('HIVE_GIT_PHYSICAL_EVIDENCE_FILE');
+  });
+
+  it('requires durable capability:bash provenance before a physical probe can run', () => {
+    expect(capabilityBashJobs).toContain('CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV');
+    expect(capabilityBashJobs).toContain('enrolment.enrolled ? enrolment.taskId :');
+    expect(capabilityBashJobs).toContain('const childEnv =');
+    expect(drill).toContain('PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID');
+    expect(drill).toContain('physical E/G adapter requires a durable capability:bash background task enrollment');
+    expect(physicalProbe).toContain('physical run requires a durable capability:bash background task enrollment');
+    expect(drill.indexOf('physical E/G adapter requires a durable capability:bash background task enrollment')).toBeLessThan(
+      drill.indexOf('"$physical_probe_cmd" "$physical_evidence_file" "$physical_trust_file"'),
+    );
   });
 
   it('keeps the canonical producer pinned to the checked-in physical E/G scenario', () => {

@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV,
   CAPABILITY_SANDBOX_TMPDIR,
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
@@ -29,6 +30,7 @@ import {
   runForeground,
   startBackground,
 } from './bash-jobs';
+import { taskManagerEnabledSync } from '../../task-manager/enabled';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-'));
 const never = new AbortController().signal;
@@ -221,6 +223,24 @@ describe('integration credential output redaction (EI-20478240377353884)', () =>
 });
 
 describe('background jobs', () => {
+  it('stamps background children with durable task provenance and rejects caller overrides', async () => {
+    const enrolledAtSpawn = taskManagerEnabledSync();
+    const job = startBackground(
+      {
+        command: `printf '%s' "$${CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV}"`,
+        cwd: STATE,
+        stateDir: STATE,
+        env: { [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: 'caller-forged-task-id' },
+      },
+      10_000,
+    );
+    await waitForStatus(job.id);
+    const output = readJobOutput(getJob(job.id)!);
+    if (enrolledAtSpawn) expect(output).toContain(job.taskId);
+    else expect(output).not.toContain(job.taskId);
+    expect(output).not.toContain('caller-forged-task-id');
+  });
+
   it('runs, exposes incremental output, and reaches a terminal status', async () => {
     const job = startBackground({ command: 'echo first; sleep 0.2; echo second', cwd: STATE, stateDir: STATE }, 10_000);
     expect(job.status).toBe('running');

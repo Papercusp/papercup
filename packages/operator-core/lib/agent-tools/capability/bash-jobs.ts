@@ -75,6 +75,9 @@ export const MAX_TIMEOUT_MS = 600_000;
  */
 export const DEFAULT_BACKGROUND_TIMEOUT_MS = 4 * 60 * 60 * 1_000; // 4h
 export const MAX_BACKGROUND_TIMEOUT_MS = 12 * 60 * 60 * 1_000; // 12h
+/** Reserved child-env provenance for long-running physical drills. Only the
+ * durable background seam may mint this marker; callers cannot override it. */
+export const CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV = 'PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID';
 /**
  * Grace between SIGTERM and SIGKILL when a job hits its OWN deadline (WI-6677).
  * The deadline path used to SIGKILL outright, which no `trap`/`finally` can
@@ -738,9 +741,19 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec: Math.ceil(effectiveTimeoutMs / 1000) });
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
 
+  // Physical drills are long-running and must survive the interactive caller.
+  // Force the marker AFTER caller-provided env so a native PTY or a forged
+  // `opts.env` value cannot make an unenrolled spawn look durable. An explicit
+  // empty value when the task-manager flag is OFF keeps the reserved name from
+  // leaking a caller-supplied marker through this seam.
+  const childEnv = {
+    ...(opts.env ?? {}),
+    [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: enrolment.enrolled ? enrolment.taskId : '',
+  };
+
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
-  const child = spawnShell(opts.command, opts.cwd, opts.env, opts.sandboxEnabled, true, enrolment.wrap);
+  const child = spawnShell(opts.command, opts.cwd, childEnv, opts.sandboxEnabled, true, enrolment.wrap);
   const job: BashJob = {
     id,
     command: opts.command,
