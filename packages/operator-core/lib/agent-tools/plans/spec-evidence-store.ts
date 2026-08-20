@@ -1,0 +1,440 @@
+/** Exact work-item/spec-revision coverage and immutable evidence bindings (P-005). */
+import { createHash } from 'node:crypto';
+import { withWorkspace } from '@papercusp/db-org';
+import { resolvePlanScope } from './source';
+
+export const SPEC_EVIDENCE_KINDS = [
+  'test',
+  'fixture',
+  'coverage-census',
+  'mutation',
+  'counterexample',
+  'check',
+  'manual',
+  'operational',
+] as const;
+export type SpecEvidenceKind = (typeof SPEC_EVIDENCE_KINDS)[number];
+
+export interface EvidenceFingerprints {
+  sourceFingerprint: string;
+  testFingerprint?: string | null;
+  fixtureFingerprint?: string | null;
+  rubricFingerprint?: string | null;
+  environmentFingerprint?: string | null;
+}
+
+export interface BindSpecEvidenceInput extends EvidenceFingerprints {
+  harnessSlug?: string;
+  planSlug: string;
+  workItemId: string;
+  specId?: string;
+  sourceValId?: string;
+  specRevision?: number;
+  evidenceKind: SpecEvidenceKind;
+  evidenceRef: string;
+  coverageEvidenceRef?: number | null;
+  testRunId?: number | null;
+  details?: Record<string, unknown>;
+  observedAt?: string;
+  actorId: string;
+}
+
+export type BindSpecEvidenceResult =
+  | {
+      status: 'created' | 'unchanged';
+      id: number;
+      workItemId: string;
+      planSlug: string;
+      specId: string;
+      sourceValId: string | null;
+      specRevision: number;
+      specFingerprint: string;
+      bindingFingerprint: string;
+    }
+  | { status: 'work_item_not_found'; workItemId: string }
+  | { status: 'spec_not_found'; specId?: string; sourceValId?: string }
+  | { status: 'spec_revision_not_found'; specId: string; specRevision: number }
+  | { status: 'coverage_evidence_not_found'; coverageEvidenceRef: number }
+  | { status: 'test_run_not_found'; testRunId: number };
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalJson(nested)]),
+    );
+  }
+  return value;
+}
+
+const nullableTrimmed = (value: string | null | undefined): string | null => value?.trim() || null;
+
+interface CanonicalBinding {
+  workspaceId: string;
+  harnessSlug: string;
+  workItemId: string;
+  planSlug: string;
+  specId: string;
+  specRevision: number;
+  specFingerprint: string;
+  evidenceKind: SpecEvidenceKind;
+  evidenceRef: string;
+  sourceFingerprint: string;
+  testFingerprint: string | null;
+  fixtureFingerprint: string | null;
+  rubricFingerprint: string | null;
+  environmentFingerprint: string | null;
+  coverageEvidenceRef: number | null;
+  testRunId: number | null;
+  details: Record<string, unknown>;
+}
+
+export function specEvidenceBindingFingerprint(input: CanonicalBinding): string {
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalJson(input)))
+    .digest('hex');
+}
+
+interface SpecIdentityRow {
+  spec_id: string;
+  source_val_id: string | null;
+  current_revision: number;
+}
+
+interface SpecRevisionRow {
+  content_hash: string;
+}
+
+/** Resolve the selector and append one idempotent exact evidence binding. */
+export async function bindSpecEvidence(input: BindSpecEvidenceInput): Promise<BindSpecEvidenceResult> {
+  const scope = await resolvePlanScope({ harnessSlug: input.harnessSlug });
+  return withWorkspace(scope.workspaceId, async (tx) => {
+    const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.workItemId}:${input.planSlug}:${input.specId ?? input.sourceValId}`;
+    await tx`SELECT pg_advisory_xact_lock(hashtext('spec_evidence_binding'), hashtext(${lockKey}))`;
+
+    const workItems = await tx<{ feature_id: string }[]>`
+      SELECT feature_id
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND feature_id = ${input.workItemId}`;
+    if (!workItems[0]) return { status: 'work_item_not_found', workItemId: input.workItemId };
+
+    const identities = await tx<SpecIdentityRow[]>`
+      SELECT spec_id, source_val_id, current_revision
+        FROM harness_shared.plan_spec_clauses
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND plan_slug = ${input.planSlug}
+         AND (${input.specId ?? null}::text IS NULL OR spec_id = ${input.specId ?? null})
+         AND (${input.sourceValId ?? null}::text IS NULL OR source_val_id = ${input.sourceValId ?? null})`;
+    const identity = identities[0];
+    if (!identity) {
+      return {
+        status: 'spec_not_found',
+        ...(input.specId ? { specId: input.specId } : {}),
+        ...(input.sourceValId ? { sourceValId: input.sourceValId } : {}),
+      };
+    }
+
+    const specRevision = input.specRevision ?? Number(identity.current_revision);
+    const revisions = await tx<SpecRevisionRow[]>`
+      SELECT content_hash
+        FROM harness_shared.plan_spec_clause_revisions
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND plan_slug = ${input.planSlug}
+         AND spec_id = ${identity.spec_id}
+         AND revision = ${specRevision}`;
+    const revision = revisions[0];
+    if (!revision) return { status: 'spec_revision_not_found', specId: identity.spec_id, specRevision };
+
+    if (input.coverageEvidenceRef != null) {
+      const rows = await tx<{ id: number }[]>`
+        SELECT e.id
+          FROM harness_shared.coverage_evidence e
+          JOIN harness_shared.testing_surfaces s ON s.id = e.surface_ref
+         WHERE e.id = ${input.coverageEvidenceRef}
+           AND s.workspace_id = ${scope.workspaceId}
+           AND s.harness_slug = ${scope.harnessSlug}`;
+      if (!rows[0]) {
+        return { status: 'coverage_evidence_not_found', coverageEvidenceRef: input.coverageEvidenceRef };
+      }
+    }
+    if (input.testRunId != null) {
+      const rows = await tx<{ id: number }[]>`
+        SELECT id FROM harness_shared.test_runs
+         WHERE id = ${input.testRunId}
+           AND workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}`;
+      if (!rows[0]) return { status: 'test_run_not_found', testRunId: input.testRunId };
+    }
+
+    const canonical: CanonicalBinding = {
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      workItemId: input.workItemId,
+      planSlug: input.planSlug,
+      specId: identity.spec_id,
+      specRevision,
+      specFingerprint: revision.content_hash,
+      evidenceKind: input.evidenceKind,
+      evidenceRef: input.evidenceRef.trim(),
+      sourceFingerprint: input.sourceFingerprint.trim(),
+      testFingerprint: nullableTrimmed(input.testFingerprint),
+      fixtureFingerprint: nullableTrimmed(input.fixtureFingerprint),
+      rubricFingerprint: nullableTrimmed(input.rubricFingerprint),
+      environmentFingerprint: nullableTrimmed(input.environmentFingerprint),
+      coverageEvidenceRef: input.coverageEvidenceRef ?? null,
+      testRunId: input.testRunId ?? null,
+      details: (canonicalJson(input.details ?? {}) ?? {}) as Record<string, unknown>,
+    };
+    const bindingFingerprint = specEvidenceBindingFingerprint(canonical);
+
+    await tx`
+      INSERT INTO harness_shared.work_item_spec_revision_edges (
+        workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+        spec_revision, spec_fingerprint, created_by
+      ) VALUES (
+        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${input.planSlug},
+        ${identity.spec_id}, ${specRevision}, ${revision.content_hash}, ${input.actorId}
+      ) ON CONFLICT DO NOTHING`;
+
+    const observedAt = input.observedAt ? new Date(input.observedAt) : new Date();
+    const inserted = await tx<{ id: number }[]>`
+      INSERT INTO harness_shared.spec_evidence_bindings (
+        workspace_id, harness_slug, work_item_id, plan_slug, spec_id,
+        spec_revision, spec_fingerprint, evidence_kind, evidence_ref,
+        source_fingerprint, test_fingerprint, fixture_fingerprint,
+        rubric_fingerprint, environment_fingerprint, coverage_evidence_ref,
+        test_run_id, details, observed_at, binding_fingerprint, created_by
+      ) VALUES (
+        ${scope.workspaceId}, ${scope.harnessSlug}, ${input.workItemId}, ${input.planSlug},
+        ${identity.spec_id}, ${specRevision}, ${revision.content_hash}, ${input.evidenceKind},
+        ${canonical.evidenceRef}, ${canonical.sourceFingerprint}, ${canonical.testFingerprint},
+        ${canonical.fixtureFingerprint}, ${canonical.rubricFingerprint},
+        ${canonical.environmentFingerprint}, ${canonical.coverageEvidenceRef},
+        ${canonical.testRunId}, ${JSON.stringify(canonical.details)}::text::jsonb,
+        ${observedAt}, ${bindingFingerprint}, ${input.actorId}
+      ) ON CONFLICT (
+        workspace_id, harness_slug, work_item_id,
+        plan_slug, spec_id, spec_revision, binding_fingerprint
+      ) DO NOTHING
+      RETURNING id`;
+
+    const existing =
+      inserted[0] ??
+      (
+        await tx<{ id: number }[]>`
+      SELECT id FROM harness_shared.spec_evidence_bindings
+       WHERE workspace_id = ${scope.workspaceId}
+         AND harness_slug = ${scope.harnessSlug}
+         AND work_item_id = ${input.workItemId}
+         AND plan_slug = ${input.planSlug}
+         AND spec_id = ${identity.spec_id}
+         AND spec_revision = ${specRevision}
+         AND binding_fingerprint = ${bindingFingerprint}`
+      )[0];
+    if (!existing) throw new Error(`spec_evidence_binding_insert_failed:${bindingFingerprint}`);
+
+    return {
+      status: inserted[0] ? 'created' : 'unchanged',
+      id: Number(existing.id),
+      workItemId: input.workItemId,
+      planSlug: input.planSlug,
+      specId: identity.spec_id,
+      sourceValId: identity.source_val_id,
+      specRevision,
+      specFingerprint: revision.content_hash,
+      bindingFingerprint,
+    };
+  });
+}
+
+export type FingerprintState = 'current' | 'stale' | 'unknown' | 'not-applicable';
+export interface EvidenceCurrentInput extends EvidenceFingerprints {
+  evidenceKind: SpecEvidenceKind;
+  evidenceRef: string;
+}
+
+export interface EvidenceCurrentness {
+  overall: Exclude<FingerprintState, 'not-applicable'>;
+  dimensions: {
+    spec: Exclude<FingerprintState, 'unknown' | 'not-applicable'>;
+    source: Exclude<FingerprintState, 'not-applicable'>;
+    test: FingerprintState;
+    fixture: FingerprintState;
+    rubric: FingerprintState;
+    environment: FingerprintState;
+    coverageEvidence: FingerprintState;
+    testRun: FingerprintState;
+  };
+  staleReasons: string[];
+  unknownReasons: string[];
+}
+
+interface CurrentnessRow {
+  spec_is_current: boolean;
+  source_fingerprint: string;
+  test_fingerprint: string | null;
+  fixture_fingerprint: string | null;
+  rubric_fingerprint: string | null;
+  environment_fingerprint: string | null;
+  coverage_evidence_ref: number | null;
+  coverage_evidence_present: boolean;
+  test_run_id: number | null;
+  test_run_present: boolean;
+}
+
+function compareFingerprint(stored: string | null, current: string | null | undefined): FingerprintState {
+  if (stored === null) return 'not-applicable';
+  if (current == null) return 'unknown';
+  return stored === current ? 'current' : 'stale';
+}
+
+/** Pure, four-state currentness classifier; no drifting boolean is persisted. */
+export function classifySpecEvidenceCurrentness(
+  row: CurrentnessRow,
+  current?: EvidenceCurrentInput,
+): EvidenceCurrentness {
+  const dimensions: EvidenceCurrentness['dimensions'] = {
+    spec: row.spec_is_current ? 'current' : 'stale',
+    source: compareFingerprint(row.source_fingerprint, current?.sourceFingerprint) as 'current' | 'stale' | 'unknown',
+    test: compareFingerprint(row.test_fingerprint, current?.testFingerprint),
+    fixture: compareFingerprint(row.fixture_fingerprint, current?.fixtureFingerprint),
+    rubric: compareFingerprint(row.rubric_fingerprint, current?.rubricFingerprint),
+    environment: compareFingerprint(row.environment_fingerprint, current?.environmentFingerprint),
+    coverageEvidence:
+      row.coverage_evidence_ref === null ? 'not-applicable' : row.coverage_evidence_present ? 'current' : 'stale',
+    testRun: row.test_run_id === null ? 'not-applicable' : row.test_run_present ? 'current' : 'stale',
+  };
+  const staleReasons = Object.entries(dimensions)
+    .filter(([, state]) => state === 'stale')
+    .map(([dimension]) => `${dimension}-stale`);
+  const unknownReasons = Object.entries(dimensions)
+    .filter(([, state]) => state === 'unknown')
+    .map(([dimension]) => `${dimension}-current-fingerprint-not-supplied`);
+  return {
+    overall: staleReasons.length > 0 ? 'stale' : unknownReasons.length > 0 ? 'unknown' : 'current',
+    dimensions,
+    staleReasons,
+    unknownReasons,
+  };
+}
+
+interface EvidenceRow extends CurrentnessRow {
+  id: number;
+  work_item_id: string;
+  plan_slug: string;
+  spec_id: string;
+  source_val_id: string | null;
+  spec_revision: number;
+  current_revision: number;
+  spec_fingerprint: string;
+  evidence_kind: SpecEvidenceKind;
+  evidence_ref: string;
+  details: Record<string, unknown>;
+  observed_at: Date;
+  binding_fingerprint: string;
+  created_by: string;
+  created_at: Date;
+}
+
+export interface ListSpecEvidenceOptions {
+  harnessSlug?: string;
+  planSlug: string;
+  workItemIds?: string[];
+  specIds?: string[];
+  sourceValIds?: string[];
+  evidenceKinds?: SpecEvidenceKind[];
+  evidenceRefs?: string[];
+  current?: EvidenceCurrentInput[];
+  currentness?: Array<'current' | 'stale' | 'unknown'>;
+  limit?: number;
+}
+
+export async function listSpecEvidence(options: ListSpecEvidenceOptions) {
+  const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
+  const workItemIds = options.workItemIds ?? [];
+  const specIds = options.specIds ?? [];
+  const sourceValIds = options.sourceValIds ?? [];
+  const evidenceKinds = options.evidenceKinds ?? [];
+  const evidenceRefs = options.evidenceRefs ?? [];
+  const limit = options.limit ?? 200;
+  const rows = await withWorkspace(
+    scope.workspaceId,
+    async (tx) => tx<EvidenceRow[]>`
+    SELECT b.id, b.work_item_id, b.plan_slug, b.spec_id, c.source_val_id,
+           b.spec_revision, c.current_revision, b.spec_fingerprint,
+           b.evidence_kind, b.evidence_ref, b.source_fingerprint,
+           b.test_fingerprint, b.fixture_fingerprint, b.rubric_fingerprint,
+           b.environment_fingerprint, b.coverage_evidence_ref, b.test_run_id,
+           b.details, b.observed_at, b.binding_fingerprint, b.created_by, b.created_at,
+           (b.spec_revision = c.current_revision AND b.spec_fingerprint = r.content_hash) AS spec_is_current,
+           (b.coverage_evidence_ref IS NOT NULL AND EXISTS (
+              SELECT 1 FROM harness_shared.coverage_evidence ce
+              JOIN harness_shared.testing_surfaces s ON s.id = ce.surface_ref
+             WHERE ce.id = b.coverage_evidence_ref
+               AND s.workspace_id = b.workspace_id AND s.harness_slug = b.harness_slug
+           )) AS coverage_evidence_present,
+           (b.test_run_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM harness_shared.test_runs tr
+               WHERE tr.id = b.test_run_id
+                 AND tr.workspace_id = b.workspace_id AND tr.harness_slug = b.harness_slug
+           )) AS test_run_present
+      FROM harness_shared.spec_evidence_bindings b
+      JOIN harness_shared.plan_spec_clauses c
+        ON c.workspace_id = b.workspace_id AND c.harness_slug = b.harness_slug
+       AND c.plan_slug = b.plan_slug AND c.spec_id = b.spec_id
+      JOIN harness_shared.plan_spec_clause_revisions r
+        ON r.workspace_id = b.workspace_id AND r.harness_slug = b.harness_slug
+       AND r.plan_slug = b.plan_slug AND r.spec_id = b.spec_id
+       AND r.revision = b.spec_revision
+     WHERE b.workspace_id = ${scope.workspaceId}
+       AND b.harness_slug = ${scope.harnessSlug}
+       AND b.plan_slug = ${options.planSlug}
+       AND (${workItemIds.length} = 0 OR b.work_item_id = ANY(${workItemIds}::text[]))
+       AND (${specIds.length} = 0 OR b.spec_id = ANY(${specIds}::text[]))
+       AND (${sourceValIds.length} = 0 OR c.source_val_id = ANY(${sourceValIds}::text[]))
+       AND (${evidenceKinds.length} = 0 OR b.evidence_kind = ANY(${evidenceKinds}::text[]))
+       AND (${evidenceRefs.length} = 0 OR b.evidence_ref = ANY(${evidenceRefs}::text[]))
+     ORDER BY b.observed_at DESC, b.id DESC
+     LIMIT ${limit}`,
+  );
+
+  const currentByRef = new Map((options.current ?? []).map((c) => [`${c.evidenceKind}\0${c.evidenceRef}`, c]));
+  const classified = rows.map((row) => {
+    const current = currentByRef.get(`${row.evidence_kind}\0${row.evidence_ref}`);
+    return {
+      id: Number(row.id),
+      workItemId: row.work_item_id,
+      planSlug: row.plan_slug,
+      specId: row.spec_id,
+      sourceValId: row.source_val_id,
+      specRevision: Number(row.spec_revision),
+      currentRevision: Number(row.current_revision),
+      specFingerprint: row.spec_fingerprint,
+      evidenceKind: row.evidence_kind,
+      evidenceRef: row.evidence_ref,
+      fingerprints: {
+        sourceFingerprint: row.source_fingerprint,
+        testFingerprint: row.test_fingerprint,
+        fixtureFingerprint: row.fixture_fingerprint,
+        rubricFingerprint: row.rubric_fingerprint,
+        environmentFingerprint: row.environment_fingerprint,
+      },
+      coverageEvidenceRef: row.coverage_evidence_ref === null ? null : Number(row.coverage_evidence_ref),
+      testRunId: row.test_run_id === null ? null : Number(row.test_run_id),
+      details: row.details,
+      observedAt: row.observed_at.toISOString(),
+      bindingFingerprint: row.binding_fingerprint,
+      createdBy: row.created_by,
+      createdAt: row.created_at.toISOString(),
+      currentness: classifySpecEvidenceCurrentness(row, current),
+    };
+  });
+  const allowed = options.currentness ? new Set(options.currentness) : null;
+  return allowed ? classified.filter((row) => allowed.has(row.currentness.overall)) : classified;
+}
