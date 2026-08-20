@@ -16843,7 +16843,7 @@
           "POST"
         ]
       },
-      "description": "Record a CODE-TRUTH audit of a plan: every item traced to the code that implements it, cited, with citations RESOLVED against the real tree at write time (a path that does not exist is refused, as is a line past the end of the file or a symbol the file does not contain). THE CODE IS THE ONLY SOURCE OF TRUTH — audit the tree as it is NOW, never a doc or work-item asserting completion, and never your memory of writing it. Only `code`/`test` citations verify; `doc` never supports an `implemented` verdict. Run it AFTER implementation and BEFORE authoring the acceptance rubric — `plans:set-plan-status → shipped` refuses a plan with no audit.",
+      "description": "Record a CODE-TRUTH audit of a plan. Audit ONLY the items whose requirements or evidence changed: every unlisted item with a prior audit is carried forward mechanically with its ORIGINAL per-item sha/time, so it cannot be falsely re-stamped by a pass that did not inspect it. Submitted `code`/`test` citations resolve against the real tree and store the current blob sha. THE CODE IS THE ONLY SOURCE OF TRUTH — never a doc, work-item, or memory of writing it.",
       "capabilities": [
         "plans:write"
       ],
