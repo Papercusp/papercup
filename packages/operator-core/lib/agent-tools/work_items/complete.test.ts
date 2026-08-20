@@ -1723,8 +1723,13 @@ describe('work_items:complete (keyed-array)', () => {
 
       expect(r.ok).toBe(false);
       expect(r.verificationCoverageError).toMatch(/enumerated coverage/);
-      expect(r.stateError).toMatch(/population/);
+      expect(r.error).toMatch(/population/);
+      expect(r.stateError).toBeUndefined();
+      expect(r).not.toHaveProperty('completion');
+      expect(r).not.toHaveProperty('workItem');
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      const completionEmit = (complete as { emits?: Array<{ when: (event: unknown) => boolean }> }).emits?.[0];
+      expect(completionEmit?.when({ result: { data: r } })).toBe(false);
     });
 
     it('allows an evidence-backed non-self duplicate close without unrelated population coverage', async () => {

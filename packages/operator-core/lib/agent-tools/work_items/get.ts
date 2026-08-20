@@ -12,7 +12,12 @@
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
 import { COORD_ROLES } from "../coordination/roles";
-import { getWorkItem, getWorkItemDetail, getWorkItemThreadWindow } from "../../work-items";
+import {
+  getWorkItem,
+  getWorkItemDetail,
+  getWorkItemThreadWindow,
+  SETTLED_WORK_ITEM_STATES,
+} from "../../work-items";
 import { mergeIds, runBulk, bulkContent } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { getWorkItemCheckpointWithMeta, getWorkItemCheckpointFreshness } from "../../work-item-checkpoint";
@@ -325,7 +330,18 @@ export default defineTool({
               hasCheckpoint: checkpointReadFailed ? ('unknown' as const) : (checkpoint ?? '') !== '',
             }
           : null;
-        const priorWorkWarn = priorWorkWarning(priorWork);
+        // EI-20962447305288165: a successful terminal completion deliberately clears
+        // its carry checkpoint after storing structured completion evidence. In that
+        // state `checkpoint:null` means "finished and harvested", NOT "a checkpoint
+        // was never written". Suppress only that provable terminal shape. Open items
+        // still need the prior-work warning, and a failed checkpoint read stays
+        // UNKNOWN even if the row is terminal — neither absence can be inferred.
+        const completionSupersedesClearedCheckpoint =
+          !checkpointReadFailed &&
+          checkpoint === null &&
+          SETTLED_WORK_ITEM_STATES.includes((workItem.state ?? '').toLowerCase()) &&
+          workItem.terminalCompletionEvidence != null;
+        const priorWorkWarn = completionSupersedesClearedCheckpoint ? null : priorWorkWarning(priorWork);
         // EI-19397599078921465: the unified lifecycle history — "what actually happened to
         // this item". The filing that produced this believed the history did not exist; it
         // did, spread across audit_log + payload.reopenHistory + payload flags with nothing

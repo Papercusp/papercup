@@ -151,6 +151,7 @@ const completionSpec = z
       // asserts every harvest-fed surface still names it.
       `${HARVESTED_COORD_NOTES_RULE} ` +
       `A bare STRING is rejected because it cannot carry structured evidence. ${COMPLETION_STRING_REJECTION} ` +
+      `If verification.coverage.residue is present it must be non-empty; use ['none'] for explicit zero residue. ` +
       `Object example: ${COMPLETION_OBJECT_EXAMPLE}.`,
   );
 
@@ -1811,6 +1812,21 @@ async function completeOne(
       // fail (total partition, non-empty residue) are now in the message itself.
       `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Pass it at completion.verification.coverage = { population: string[], checked: string[], notChecked: string[], notApplicable: string[], residue: string[] }. TWO RULES, both enforced: (1) EVERY population entry must appear VERBATIM in exactly one of checked/notChecked/notApplicable — a partition, not a sample; (2) residue must be NON-EMPTY — pass residue:['none'] to state zero residue explicitly, since omitting it is never read as complete coverage. Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
     : undefined;
+  // EI-20962416980274656: this gate is deterministic from the submitted record,
+  // so reject at the completion boundary BEFORE constructing/persisting/emitting a
+  // completion. The former path converted it into `stateError` later, after enough
+  // of the completion pipeline had run for the caller to observe a recorded
+  // completion plus an open item — a non-atomic half-write requiring a second call.
+  // Match every other preflight refusal above: no `completion`/`workItem` fields means
+  // the intrinsic completion emit predicate also remains false.
+  if (verificationCoverageError) {
+    return {
+      ok: false,
+      id: it.id,
+      error: verificationCoverageError,
+      verificationCoverageError,
+    };
+  }
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
   // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
   // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
@@ -1961,8 +1977,6 @@ async function completeOne(
 
   if (assumptionsError) {
     stateError = `REJECTED — ${assumptionsError}`;
-  } else if (verificationCoverageError) {
-    stateError = verificationCoverageError;
   } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
@@ -2493,7 +2507,6 @@ async function completeOne(
     id: it.id,
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
-    ...(verificationCoverageError ? { verificationCoverageError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     ...(planGateParkWarning ? { planGateParkWarning } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.

@@ -23,6 +23,7 @@ const getWorkItemDetail = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   getWorkItemDetail: (...a: unknown[]) => getWorkItemDetail(...a),
+  SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
 }));
 
 const getWorkItemCheckpointWithMeta = vi.fn();

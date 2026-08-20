@@ -25,6 +25,7 @@ vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   getWorkItemDetail: (...a: unknown[]) => getWorkItemDetail(...a),
   getWorkItemThreadWindow: (...a: unknown[]) => getWorkItemThreadWindow(...a),
+  SETTLED_WORK_ITEM_STATES: ['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped'],
 }));
 
 const getWorkItemCheckpointWithMeta = vi.fn();
@@ -43,6 +44,12 @@ const getPresence = vi.fn();
 vi.mock('../coordination/presence', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../coordination/presence')>()),
   getPresence: (...a: unknown[]) => getPresence(...a),
+}));
+
+const getClaimTimePriorWorkHint = vi.fn();
+vi.mock('../../work-item-prior-work', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-item-prior-work')>()),
+  getClaimTimePriorWorkHint: (...a: unknown[]) => getClaimTimePriorWorkHint(...a),
 }));
 
 import get from './get';
@@ -73,6 +80,8 @@ beforeEach(() => {
   getWorkItemCheckpointFreshness.mockResolvedValue(undefined);
   getPresence.mockReset();
   getPresence.mockResolvedValue(null);
+  getClaimTimePriorWorkHint.mockReset();
+  getClaimTimePriorWorkHint.mockResolvedValue(null);
 });
 
 describe('work_items:get — checkpoint field', () => {
@@ -113,6 +122,79 @@ describe('work_items:get — checkpoint field', () => {
     const r = await one({ id: 'WI-9b' });
     expect(r).toMatchObject({ ok: true, checkpoint: null });
     expect(r.checkpointReadFailed).toBeUndefined();
+  });
+
+  it('suppresses the never-checkpointed warning after terminal evidence replaced the cleared checkpoint', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-terminal',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'finished item',
+      state: 'resolved',
+      terminalCompletionEvidence: { verifiedHow: 'unit', testResult: '3 passed' },
+    });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+    getClaimTimePriorWorkHint.mockResolvedValue({
+      lastReleasedBy: 'su-prior',
+      releasedAtMs: Date.now() - 1000,
+      attempts: 1,
+      priorWorkers: ['su-prior'],
+    });
+
+    const r = await one({ id: 'WI-terminal' });
+
+    expect(r).toMatchObject({ ok: true, checkpoint: null });
+    expect(r.priorWork).toBeUndefined();
+    expect(r.priorWorkWarning).toBeUndefined();
+  });
+
+  it('retains the never-checkpointed warning for open prior work even when evidence is present', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-open',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'open item',
+      state: 'open',
+      terminalCompletionEvidence: { verifiedHow: 'unit', testResult: 'stale evidence' },
+    });
+    getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });
+    getClaimTimePriorWorkHint.mockResolvedValue({
+      lastReleasedBy: 'su-prior',
+      releasedAtMs: Date.now() - 1000,
+      attempts: 1,
+      priorWorkers: ['su-prior'],
+    });
+
+    const r = await one({ id: 'WI-open' });
+
+    expect(r.priorWorkWarning).toMatch(/NO checkpoint was ever written/);
+  });
+
+  it('keeps prior-work checkpoint state UNKNOWN when the read fails on a terminal item', async () => {
+    getWorkItem.mockResolvedValue({
+      id: 'WI-terminal-read-failed',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'finished item',
+      state: 'resolved',
+      terminalCompletionEvidence: { verifiedHow: 'unit', testResult: '3 passed' },
+    });
+    getWorkItemCheckpointWithMeta.mockRejectedValue(new Error('pg down'));
+    getClaimTimePriorWorkHint.mockResolvedValue({
+      lastReleasedBy: 'su-prior',
+      releasedAtMs: Date.now() - 1000,
+      attempts: 1,
+      priorWorkers: ['su-prior'],
+    });
+
+    const r = await one({ id: 'WI-terminal-read-failed' });
+
+    expect(r.checkpointReadFailed).toBe(true);
+    expect(r.priorWorkWarning).toMatch(/could NOT BE READ/);
+    expect(r.priorWorkWarning).toMatch(/UNKNOWN/);
   });
 
   it('reads the checkpoint for a harness-null item (EI-8805 — no longer skipped)', async () => {
