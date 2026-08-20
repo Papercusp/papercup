@@ -56,6 +56,7 @@ export function buildInstallSpec(os: string, home: string): SpawnSpec {
   if (os === 'win32') {
     const script = `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Write-Host '==> installing Claude Code'
 Invoke-WebRequest -UseBasicParsing -Uri https://claude.ai/install.ps1 | Select-Object -ExpandProperty Content | Invoke-Expression
 Write-Host '==> bootstrapping runtime'
@@ -118,12 +119,14 @@ export function buildFrameworkInstallSpec(
     const scripts: Record<OnboardingFramework, string> = {
       claude: `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Write-Host '==> installing Claude Code'
 Invoke-WebRequest -UseBasicParsing -Uri https://claude.ai/install.ps1 | Select-Object -ExpandProperty Content | Invoke-Expression
 Write-Host '==> done'
 `,
       codex: `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $runtime = Join-Path $env:USERPROFILE '.papercusp\\runtime'
 New-Item -ItemType Directory -Force -Path $runtime | Out-Null
 if (-not (Test-Path (Join-Path $runtime 'package.json'))) {
@@ -140,6 +143,7 @@ Write-Host '==> done'
       omp: ompUrl
         ? `
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 Write-Host '==> installing oh-my-pi (omp)'
 $dir = Join-Path $env:USERPROFILE '.papercusp\\bin'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null

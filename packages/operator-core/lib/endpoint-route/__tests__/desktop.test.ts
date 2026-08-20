@@ -146,9 +146,12 @@ describe('buildFrameworkInstallSpec (per-framework onboarding installs)', () => 
     const spec = buildFrameworkInstallSpec('omp', 'win32', 'C:\\Users\\u', 'x64');
     expect(spec.command).toBe('powershell.exe');
     const script = spec.args[spec.args.indexOf('-Command') + 1];
+    const progressGuard = "$ProgressPreference = 'SilentlyContinue'";
     expect(script).toContain('omp-windows-x64.exe');
     expect(script).toContain('.papercusp\\bin');
     expect(script).toContain("SetEnvironmentVariable('Path'");
+    expect(script).toContain(progressGuard);
+    expect(script.indexOf(progressGuard)).toBeLessThan(script.indexOf('Invoke-WebRequest'));
   });
   it('claude / codex per-framework specs are unchanged (claude installer / codex npm)', () => {
     expect(buildFrameworkInstallSpec('claude', 'linux', '/home/u').args[1]).toContain(

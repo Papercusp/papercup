@@ -42,6 +42,12 @@ describe('buildFrameworkInstallSpec', () => {
     expect(buildFrameworkInstallSpec('claude', 'win32', HOME).args.join(' ')).toContain(
       'https://claude.ai/install.ps1',
     );
+    const claudeScript = buildFrameworkInstallSpec('claude', 'win32', HOME).args.join(' ');
+    const progressGuard = "$ProgressPreference = 'SilentlyContinue'";
+    expect(claudeScript).toContain(progressGuard);
+    expect(claudeScript.indexOf(progressGuard)).toBeLessThan(
+      claudeScript.indexOf('Invoke-WebRequest'),
+    );
     expect(buildFrameworkInstallSpec('codex', 'win32', HOME).args.join(' ')).toContain(
       '@openai/codex@latest',
     );
@@ -95,5 +101,12 @@ describe('buildInstallSpec (wizard all-in-one)', () => {
     expect(script).toContain('claude.ai/install.sh');
     expect(script).toContain('@openai/codex');
     expect(script).not.toContain('@rynfar/meridian');
+  });
+
+  it('windows suppresses Invoke-WebRequest progress records before downloading', () => {
+    const script = buildInstallSpec('win32', 'C:\\Users\\u').args.join(' ');
+    const progressGuard = "$ProgressPreference = 'SilentlyContinue'";
+    expect(script).toContain(progressGuard);
+    expect(script.indexOf(progressGuard)).toBeLessThan(script.indexOf('Invoke-WebRequest'));
   });
 });
