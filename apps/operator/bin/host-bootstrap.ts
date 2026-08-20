@@ -431,23 +431,34 @@ export function runBootstrap(): void {
         return;
       }
       for (const e of r.missing)
-        console.error(`[bespoke-active-seeds] MISSING: "${e.name}" has no row for "${installSlug}" — never seeded. Fix: tsx packages/operator-core/lib/harness/routines/${e.seedScript}`);
+        console.error(`[bespoke-active-seeds] MISSING: "${e.name}" has no row for "${e.installSlug}" — never seeded. Fix: tsx packages/operator-core/lib/harness/routines/${e.seedScript}`);
       for (const e of r.inactive)
-        console.error(`[bespoke-active-seeds] INACTIVE: "${e.name}" is seeded but active=false (reason: ${e.pauseReason ?? 'NONE RECORDED — flipped by an unaudited path'})`);
+        console.error(`[bespoke-active-seeds] INACTIVE: "${e.name}" is seeded but active=false for "${e.installSlug}" (reason: ${e.pauseReason ?? 'NONE RECORDED — flipped by an unaudited path'})`);
       // Only the un-re-affirmed ones wake a human; a dated `reviewBy` is a deliberate hold.
       if (r.escalatable.length === 0) return;
       const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
-      const names = r.escalatable.map((e) => e.name);
-      await notifyAttention({
-        kind: 'intervention',
-        importance: 'high',
-        harnessSlug: installSlug,
-        title: `${names.length} always-on routine(s) are not running`,
-        body:
-          `${names.join(', ')} — seeded ACTIVE by default but currently missing or paused, and ` +
-          `nothing re-arms them on their own. Detected at operator boot.`,
-        data: { routines: names.join(','), installSlug, event: 'always-on-routine-not-running' },
-      });
+      // Seed writers may target different harnesses. Keep the existing one-slug notification
+      // API and emit one alert per resolved scope rather than attributing every finding to the
+      // operator home harness (which made hive-canary findings point at the wrong owner).
+      const escalatableBySlug = new Map<string, typeof r.escalatable>();
+      for (const entry of r.escalatable) {
+        const scoped = escalatableBySlug.get(entry.installSlug);
+        if (scoped) scoped.push(entry);
+        else escalatableBySlug.set(entry.installSlug, [entry]);
+      }
+      for (const [targetInstallSlug, entries] of escalatableBySlug) {
+        const names = entries.map((e) => e.name);
+        await notifyAttention({
+          kind: 'intervention',
+          importance: 'high',
+          harnessSlug: targetInstallSlug,
+          title: `${names.length} always-on routine(s) are not running`,
+          body:
+            `${names.join(', ')} — seeded ACTIVE by default but currently missing or paused, and ` +
+            `nothing re-arms them on their own. Detected at operator boot.`,
+          data: { routines: names.join(','), installSlug: targetInstallSlug, event: 'always-on-routine-not-running' },
+        });
+      }
     } catch (e) {
       console.warn('[bespoke-active-seeds] startup validation skipped (non-fatal):', (e as Error)?.message ?? e);
     }
