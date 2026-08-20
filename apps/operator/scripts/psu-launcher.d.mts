@@ -338,6 +338,20 @@ export function routeFreshKickoff(backend: any, res: any, args: any, env?: NodeJ
     kickoffSeeded: boolean;
 };
 /**
+ * Finish a fresh SU launch with the backend-specific first-turn delivery.
+ * Claude/Codex receive the tagged prompt as the final positional argv token;
+ * OMP keeps argv unchanged and receives the prompt through the managed pty.
+ *
+ * Keep this assembly in one pure helper so the caller cannot truthfully log
+ * "kickoff seeded" while accidentally dropping routeFreshKickoff's
+ * positionalArgs before runWrapper (the live failure behind WI-39943).
+ */
+export function finalizeFreshSuArgs(backend: any, launchArgs: any, res: any, args: any, env?: NodeJS.ProcessEnv): {
+    args: any[];
+    kickoff: any;
+    kickoffSeeded: boolean;
+};
+/**
  * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
