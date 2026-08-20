@@ -11,7 +11,9 @@ import {
   pickBridgePid,
   warmRouteResult,
   gradeChaosSummary,
+  buildInteractionMeasureScript,
   type ChaosRecorderSummary,
+  type InteractionMeasureSpec,
   type RouteMeasurement,
   type RouteNavKind,
 } from './admin-test-suites';
@@ -46,6 +48,40 @@ describe('isAdminTestSuiteId', () => {
   it('accepts a registered id, rejects anything else', () => {
     expect(isAdminTestSuiteId(suites[0].id)).toBe(true);
     expect(isAdminTestSuiteId('definitely-not-a-suite')).toBe(false);
+  });
+});
+
+describe('D-003 interaction quiet precondition', () => {
+  const spec = (overrides: Partial<InteractionMeasureSpec>): InteractionMeasureSpec => ({
+    name: 'test-interaction',
+    ...overrides,
+  });
+
+  it('waits for the shared primitive after setup and before a selector click', () => {
+    const script = buildInteractionMeasureScript(
+      spec({ setup: 'document.body.dataset.ready = "1";', triggerSelector: '#trigger' }),
+    );
+    const quiet = script.indexOf('main thread did not reach the D-003 quiet precondition');
+    const click = script.indexOf('trigger.click()');
+    expect(quiet).toBeGreaterThan(-1);
+    expect(click).toBeGreaterThan(quiet);
+  });
+
+  it('waits before setup when setup itself is the interaction trigger', () => {
+    const script = buildInteractionMeasureScript(
+      spec({ setup: 'history.pushState({}, "", "?palette=true");' }),
+    );
+    const quiet = script.indexOf('main thread did not reach the D-003 quiet precondition');
+    const setup = script.indexOf('history.pushState({}, "", "?palette=true");');
+    expect(quiet).toBeGreaterThan(-1);
+    expect(setup).toBeGreaterThan(quiet);
+  });
+
+  it('embeds the generic helper source rather than a second local rAF implementation', () => {
+    const script = buildInteractionMeasureScript(spec({ setup: 'void 0;' }));
+    expect(script).toContain('requestAnimationFrame');
+    expect(script).toContain('consecutiveFrames');
+    expect(script).toContain('timeoutMs');
   });
 });
 

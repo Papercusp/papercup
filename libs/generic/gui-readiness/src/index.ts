@@ -75,3 +75,12 @@ export {
   classifyInteractionMeasure,
   describeInteractionMeasureFailure,
 } from './interaction-measure.js';
+export type {
+  MainThreadQuietOptions,
+  MainThreadQuietRuntime,
+  MainThreadQuietResult,
+} from './main-thread-quiet.js';
+export {
+  MAIN_THREAD_QUIET_DEFAULTS,
+  waitForMainThreadQuiet,
+} from './main-thread-quiet.js';

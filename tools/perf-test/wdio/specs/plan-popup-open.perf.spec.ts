@@ -24,6 +24,7 @@ import {
   classifyInteractionMeasure,
   describeInteractionMeasureFailure,
 } from "../../../../libs/generic/gui-readiness/src/interaction-measure";
+import { waitForMainThreadQuiet } from "../../../../libs/generic/gui-readiness/src/main-thread-quiet";
 
 const INTERACTION_NAME = "plan-popup-open";
 /** Mirrors perf-marks.ts STALE_START_MS — a start older than this is discarded. */
@@ -36,6 +37,29 @@ const MAX_ROWS_TO_TRY = 5;
 // is deliberately kept OUT of the npm workspace (README), so it cannot import the
 // canonical constant — keep the two in sync when the budget changes.
 const PLAN_POPUP_OPEN_BUDGET_MS = 1500;
+
+/** Run the shared quiet primitive inside the packaged webview. */
+async function waitForMainThreadQuietInPage(): Promise<void> {
+  const result = (await browser.executeAsync(
+    (source: string, done: (value: unknown) => void) => {
+      try {
+        const wait = globalThis.Function(`return (${source})`)() as () => Promise<unknown>;
+        wait().then(done, (error) => done({ ok: false, error: String(error) }));
+      } catch (error) {
+        done({ ok: false, error: String(error) });
+      }
+    },
+    waitForMainThreadQuiet.toString(),
+  )) as { ok?: boolean; elapsedMs?: number; error?: string };
+
+  if (result?.ok !== true) {
+    throw new Error(
+      `main thread did not reach the D-003 quiet precondition${
+        result?.error ? `: ${result.error}` : ''
+      }${typeof result?.elapsedMs === 'number' ? ` after ${Math.round(result.elapsedMs)}ms` : ''}`,
+    );
+  }
+}
 
 describe("Packaged Papercusp desktop — plan popup open interaction", () => {
   it("opens a plan from the sidebar within the warm-render budget", async () => {
@@ -107,6 +131,11 @@ describe("Packaged Papercusp desktop — plan popup open interaction", () => {
     let lastFailure: string | null = null;
 
     for (const candidate of candidates) {
+      // The click is the interaction trigger. Re-establish the quiet baseline
+      // for every candidate because a failed/void attempt may have left work
+      // landing before the next row is tried.
+      await waitForMainThreadQuietInPage();
+
       // Clear the previous attempt's measure + any dangling start, so a later
       // row can never be credited with an earlier row's timing.
       const clicked = await browser.execute(

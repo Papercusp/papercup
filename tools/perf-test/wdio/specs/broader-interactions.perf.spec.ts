@@ -43,6 +43,7 @@
 import { browser } from "@wdio/globals";
 import { recordInteractionMs } from "../perf-report";
 import { isNonShellOperatorRoute, waitForAppMount } from "../app-mount";
+import { waitForMainThreadQuiet } from "../../../../libs/generic/gui-readiness/src/main-thread-quiet";
 
 /**
  * The route that renders `AdvShell` — the shell every test in this file measures
@@ -57,49 +58,27 @@ const COMMAND_PALETTE_OPEN_BUDGET_MS = 400;
 const HARNESS_DOCK_OPEN_BUDGET_MS = 1500;
 const CONVERSATION_THREAD_LOAD_BUDGET_MS = 1500;
 
-/**
- * Wait for the main thread to go QUIET before measuring an interaction.
- *
- * WHY THIS EXISTS (perf-testing-sweep-2026-07-27, P-022 — measured, not guessed):
- * `waitForAppMount` above resolves as soon as `#root` has its FIRST child, i.e.
- * on the first render commit — the app is still hydrating (route data, sync
- * queries, every pane mounting). Driving an interaction at that moment measures
- * the interaction PLUS the whole remaining boot, and the boot dominates:
- *
- *   command-palette-open, opened right after waitForAppMount, RELEASE binary  = 3048ms
- *   command-palette-open, opened on a settled app, DEV build (slower chunk
- *     loading, so a strict UPPER bound on release cost), same host load       =  110ms
- *
- * A 27x gap in the wrong direction: the number was ~96% unrelated boot work.
- * That made the check both a guaranteed false alarm against its 400ms budget
- * AND useless as a regression signal, because the value swings with host load
- * rather than with the code under test.
- *
- * Quiet is detected with rAF deltas rather than PerformanceObserver('longtask'),
- * which WebKit does not implement — so a longtask-based gate would silently
- * resolve instantly here and reintroduce the same bug.
- */
-async function waitForMainThreadQuiet(): Promise<void> {
-  await browser.executeAsync((done: (v: unknown) => void) => {
-    const QUIET_FRAME_MS = 20; // a frame slower than this means work is still landing
-    const NEEDED_CONSECUTIVE = 10; // ~166ms of calm at 60fps
-    const DEADLINE_MS = 15_000; // never hang the suite waiting for calm
-    const startedAt = performance.now();
-    let calm = 0;
-    let last = performance.now();
-    const tick = () => {
-      const now = performance.now();
-      const delta = now - last;
-      last = now;
-      calm = delta <= QUIET_FRAME_MS ? calm + 1 : 0;
-      if (calm >= NEEDED_CONSECUTIVE || now - startedAt > DEADLINE_MS) {
-        done(null);
-        return;
+/** Run the shared quiet primitive inside the packaged webview. */
+async function waitForMainThreadQuietInPage(): Promise<void> {
+  const result = (await browser.executeAsync(
+    (source: string, done: (value: unknown) => void) => {
+      try {
+        const wait = globalThis.Function(`return (${source})`)() as () => Promise<unknown>;
+        wait().then(done, (error) => done({ ok: false, error: String(error) }));
+      } catch (error) {
+        done({ ok: false, error: String(error) });
       }
-      requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  });
+    },
+    waitForMainThreadQuiet.toString(),
+  )) as { ok?: boolean; elapsedMs?: number; error?: string };
+
+  if (result?.ok !== true) {
+    throw new Error(
+      `main thread did not reach the D-003 quiet precondition${
+        result?.error ? `: ${result.error}` : ''
+      }${typeof result?.elapsedMs === 'number' ? ` after ${Math.round(result.elapsedMs)}ms` : ''}`,
+    );
+  }
 }
 
 /** Read the latest page-relative measure for a named interaction, or null. */
@@ -194,7 +173,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
     const NAME = "command-palette-open";
     await waitForAppMount(browser);
     // Measure the INTERACTION, not the app boot — see waitForMainThreadQuiet.
-    await waitForMainThreadQuiet();
+    await waitForMainThreadQuietInPage();
 
     // Clear any stale measure, then open the palette via its deep-link. The
     // open transition begins the interaction; the lazy cmdk chunk mount ends it.
@@ -235,6 +214,7 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
   it("hydrates the harness dock within budget", async () => {
     const NAME = "harness-dock-open";
     await waitForAppMount(browser);
+    await waitForMainThreadQuietInPage();
 
     // The dock emits harness-dock-open on mount → API bind. Navigate to a route
     // that ACTUALLY MOUNTS HarnessDock, then read the recorded measure.
@@ -346,6 +326,8 @@ describe("Packaged Papercusp desktop — broader real interactions (P-006)", () 
           'no [data-testid="wi-detail-chat"] within 15s of selecting a work-item row',
       },
     );
+
+    await waitForMainThreadQuietInPage();
 
     // Clear any stale measure, then click Chat: openFeatureChat POSTs a real
     // agent_chats row and fires the open-chat event; HarnessesDock's drain

@@ -14,6 +14,7 @@ import {
   type DesktopPerfMeasure,
 } from './admin-test-suites-shared';
 import { DESKTOP_PERF_BUDGETS, evaluateInteractionBudget } from './system-health/desktop-perf-budgets';
+import { waitForMainThreadQuiet } from '../../../libs/generic/gui-readiness/src/main-thread-quiet';
 
 export interface AdminTestEventSink {
   suite: (payload: { suiteId: AdminTestSuiteId; label: string; startedAt: number; description: string }) => void;
@@ -1842,7 +1843,7 @@ export function warmRouteResult(
   );
 }
 
-interface InteractionMeasureSpec {
+export interface InteractionMeasureSpec {
   /** The perf-marks interaction name — the emitted performance.measure name
    *  (apps/operator/app/_components/perf/perf-marks.ts PERF_INTERACTIONS). */
   name: string;
@@ -1867,21 +1868,25 @@ interface InteractionMeasureResult {
 }
 
 /**
- * Drive a REAL user interaction in the Tauri shell and read its page-relative
- * `performance.measure` (perf-marks.ts). Unlike a warm-ROUTE settle, this clicks
- * the actual trigger so the in-app beginInteraction/endInteraction hooks fire —
- * the timing is immune to the eval-clock confound (EI-18128922194224210). One
- * self-contained script: setup → wait-for-trigger → clear stale measure → click
- * → poll for the measure → clean up. Reusable across interactions (P-005/P-006).
+ * Build the page-relative interaction driver. The quiet barrier is placed
+ * immediately before whichever operation starts timing: before `setup` when
+ * setup is the trigger, or after the trigger selector is found and before its
+ * click. Keeping the generated script in one function gives the recurrence
+ * test a seam to inspect without driving a real Tauri shell.
  */
-async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpec): Promise<InteractionMeasureResult> {
+export function buildInteractionMeasureScript(spec: InteractionMeasureSpec): string {
   const triggerTimeoutMs = spec.triggerTimeoutMs ?? 8_000;
   const settleTimeoutMs = spec.settleTimeoutMs ?? 8_000;
   const nameJson = JSON.stringify(spec.name);
-  // With a triggerSelector: setup brings the trigger into view, then a click on
-  // it STARTS the interaction. Without one: the setup IS the trigger (a
-  // ?palette=true deep-link, a route nav whose mount begins the interaction) —
-  // skip the wait+click and just poll for the measure the setup induced.
+  const quietSource = `(${waitForMainThreadQuiet.toString()})`;
+  const quietPrecondition = `
+      const quiet = await ${quietSource}();
+      if (!quiet.ok) return { stage: 'quiet', error: 'main thread did not reach the D-003 quiet precondition within ' + Math.round(quiet.elapsedMs) + 'ms' };
+  `;
+
+  // With a triggerSelector: setup brings the trigger into view, then a click
+  // on it STARTS the interaction. Without one: setup IS the trigger and must
+  // follow the quiet barrier directly.
   const clickBlock = spec.triggerSelector
     ? `
       const triggerDeadline = Date.now() + ${triggerTimeoutMs};
@@ -1892,17 +1897,24 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
         await sleep(150);
       }
       if (!trigger) return { stage: 'trigger', error: 'trigger not found: ' + ${JSON.stringify(spec.triggerSelector)} };
+      ${quietPrecondition}
       try { if (performance.clearMeasures) performance.clearMeasures(${nameJson}); } catch (e) {}
       trigger.click();`
     : '';
-  const script = `
+
+  const triggerSetup = spec.triggerSelector
+    ? `${spec.setup ? `try { ${spec.setup} } catch (e) { return { stage: 'setup', error: String((e && e.message) || e) }; }` : ''}
+      ${clickBlock}`
+    : `${quietPrecondition}
+      ${spec.setup ? `try { ${spec.setup} } catch (e) { return { stage: 'setup', error: String((e && e.message) || e) }; }` : ''}`;
+
+  return `
     (async () => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       // Clear any stale measure BEFORE setup so a no-trigger interaction (setup
       // is the trigger) reads only the fresh one it induces.
       try { if (performance.clearMeasures) performance.clearMeasures(${nameJson}); } catch (e) {}
-      ${spec.setup ? `try { ${spec.setup} } catch (e) { return { stage: 'setup', error: String((e && e.message) || e) }; }` : ''}
-      ${clickBlock}
+      ${triggerSetup}
       const settleDeadline = Date.now() + ${settleTimeoutMs};
       let measuredMs = null;
       while (Date.now() < settleDeadline) {
@@ -1910,7 +1922,7 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
         if (entries.length > 0) { measuredMs = Math.round(entries[entries.length - 1].duration); break; }
         await sleep(100);
       }
-      // Best-effort cleanup: drop the popup/palette deep-links so a modal doesn't
+      // Best-effort cleanup: drop the popup/palette deep-links so a modal does not
       // linger open and block the next check's clicks.
       try {
         const u = new URL(location.href);
@@ -1927,6 +1939,20 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
       return { measuredMs };
     })()
   `;
+}
+
+/**
+ * Drive a REAL user interaction in the Tauri shell and read its page-relative
+ * `performance.measure` (perf-marks.ts). Unlike a warm-ROUTE settle, this clicks
+ * the actual trigger so the in-app beginInteraction/endInteraction hooks fire —
+ * the timing is immune to the eval-clock confound (EI-18128922194224210). One
+ * self-contained script: setup → wait-for-trigger → clear stale measure → click
+ * → poll for the measure → clean up. Reusable across interactions (P-005/P-006).
+ */
+async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpec): Promise<InteractionMeasureResult> {
+  const triggerTimeoutMs = spec.triggerTimeoutMs ?? 8_000;
+  const settleTimeoutMs = spec.settleTimeoutMs ?? 8_000;
+  const script = buildInteractionMeasureScript(spec);
   const res = await runTauriEvalResultJson<{ measuredMs?: number; stage?: string; error?: string }>(
     ctx,
     script,
