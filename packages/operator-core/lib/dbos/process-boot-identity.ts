@@ -17,7 +17,8 @@ import { promisify } from 'node:util';
 
 const pexec = promisify(execFile);
 
-async function resolveBootCommit(): Promise<string | null> {
+/** Best-effort current checkout HEAD resolver shared by boot and refresh reads. */
+export async function resolveCurrentHeadCommit(): Promise<string | null> {
   try {
     const { stdout } = await pexec('git', ['rev-parse', 'HEAD'], { timeout: 5_000 });
     const sha = stdout.trim();
@@ -46,7 +47,7 @@ export function captureProcessBootIdentity(opts: {
   const uptimeSec = opts.uptimeSec ?? process.uptime();
   return {
     bootTimeMs: nowMs - Math.floor(uptimeSec * 1000),
-    bootCommit: (opts.resolveCommit ?? resolveBootCommit)(),
+    bootCommit: (opts.resolveCommit ?? resolveCurrentHeadCommit)(),
   };
 }
 

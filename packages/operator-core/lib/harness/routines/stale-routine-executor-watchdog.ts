@@ -38,7 +38,11 @@
  */
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
-import { processBootCommitSha, processBootTimeMs } from '../../dbos/process-boot-identity';
+import {
+  processBootCommitSha,
+  processBootTimeMs,
+  resolveCurrentHeadCommit,
+} from '../../dbos/process-boot-identity';
 
 // Throttled — never shell out to git on every 30s routinesTick.
 const CURRENT_HEAD_REFRESH_MS = 5 * 60_000;
@@ -48,7 +52,7 @@ async function currentHeadCommit(now: number): Promise<string | null> {
   if (cachedCurrentHead && now - cachedCurrentHead.atMs < CURRENT_HEAD_REFRESH_MS) {
     return cachedCurrentHead.sha;
   }
-  const sha = await resolveHeadCommit();
+  const sha = await resolveCurrentHeadCommit();
   cachedCurrentHead = { sha, atMs: now };
   return sha;
 }
