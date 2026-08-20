@@ -689,6 +689,19 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(repo, 'status', '--porcelain')).toBe(''); // tree clean
   });
 
+  it('content guard: production commit path auto-repairs raw NUL bytes before quarantine', async () => {
+    const nul = String.fromCharCode(0);
+    writeFileSync(join(repo, 'keys.ts'), `export const key = \`${'${a}'}${nul}${'${b}'}\`;\n`, 'utf8');
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(out.contentErrors).toEqual([]);
+    expect(readFileSync(join(repo, 'keys.ts'), 'utf8')).toBe('export const key = `${a}\\x00${b}`;\n');
+    expect(git(originDir, 'show', 'main:keys.ts')).toBe('export const key = `${a}\\x00${b}`;');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('content guard is a no-op when no detector matches the dirty files (clean tree commits as today)', async () => {
     writeFileSync(join(repo, 'plain.txt'), 'no detector targets .txt\n');
     const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });

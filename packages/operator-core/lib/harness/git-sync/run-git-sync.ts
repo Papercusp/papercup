@@ -710,6 +710,9 @@ export interface RunGitSyncOpts {
   /** Read a repo-relative file's working-tree text for the content guard (tests).
    *  Defaults to fs read; null on any error. */
   readText?: (repoPath: string, relPath: string) => Promise<string | null>;
+  /** Write a repo-relative file's working-tree text for deterministic content repairs (tests).
+   *  Defaults to fs write; the content guard re-checks its CAS before calling this. */
+  writeText?: (repoPath: string, relPath: string, text: string) => Promise<void>;
   log?: (m: string) => void;
   /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): the caller supplies the live roster of active
    *  agents + their declared files (built flag-gated from coord presence). When present, git-sync
@@ -738,6 +741,11 @@ const defaultReadText = async (repoPath: string, relPath: string): Promise<strin
   } catch {
     return null;
   }
+};
+
+/** Default content-guard writer — UTF-8 working-tree text for deterministic repairs. */
+const defaultWriteText = async (repoPath: string, relPath: string, text: string): Promise<void> => {
+  await writeFile(join(repoPath, relPath), text, 'utf8');
 };
 
 const isDirty = async (runGit: RunGit, repo: string): Promise<boolean> => {
@@ -1783,6 +1791,7 @@ interface CommitRepoOpts {
   contentDetectors: ContentDetector[];
   deletionGuard: boolean;
   readText: (repoPath: string, relPath: string) => Promise<string | null>;
+  writeText: (repoPath: string, relPath: string, text: string) => Promise<void>;
   log: (m: string) => void;
   staleTempPackMs: number;
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
@@ -1852,6 +1861,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
       runGit,
       repoPath,
       readText: (rel) => o.readText(repoPath, rel),
+      writeText: (rel, text) => o.writeText(repoPath, rel, text),
       detectors: o.contentDetectors,
       log: o.log,
     });
@@ -2310,6 +2320,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const contentDetectors = opts.contentDetectors ?? DEFAULT_CONTENT_DETECTORS;
   const deletionGuard = opts.deletionGuard ?? true;
   const readText = opts.readText ?? defaultReadText;
+  const writeText = opts.writeText ?? defaultWriteText;
   const toolCatalogRegenerator = opts.toolCatalogRegenerator ?? regenerateToolCatalogBeforeCommit;
   const protectedPaths = [...new Set((opts.excludePaths ?? []).map((path) => path.trim()).filter(Boolean))];
   const repoO = {
@@ -2321,6 +2332,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     contentDetectors,
     deletionGuard,
     readText,
+    writeText,
     log,
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
     isTempPackOpen: opts.isTempPackOpen,
