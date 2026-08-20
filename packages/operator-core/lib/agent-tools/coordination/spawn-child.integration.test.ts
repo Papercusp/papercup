@@ -104,8 +104,9 @@ const HARNESS_PLANS_DDL = `
     initiative text,
     -- migration 329 (plan-template-mechanism) + 331 (promote-policy): the withPlanLock
     -- seed-plan write records the spawning template + the promote policy; without these
-    -- the INSERT fails "column <name> does not exist".
-    template text, promote_policy jsonb,
+    -- the INSERT fails "column <name> does not exist". The structured plan columns are
+    -- read by every withPlanLock write and are nullable for this seed-plan fixture.
+    template text, template_data jsonb, input_schema jsonb, promote_policy jsonb,
     created_at timestamptz DEFAULT now() NOT NULL, updated_at timestamptz DEFAULT now() NOT NULL,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug))`;
 
