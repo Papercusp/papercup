@@ -101,7 +101,7 @@ describe('model-context-budget', () => {
 });
 
 /**
- * plan codex-1m-context-window-2026-08-17 D-003. The load-bearing property is
+ * plan codex-1m-context-window-2026-08-17 D-007. The load-bearing property is
  * not "big number goes in" — it is that a model with NO extended window emits
  * NOTHING, so a launch argv for gpt-5.5 stays byte-identical to before this
  * feature existed. A policy that fell back to a default on that path would
@@ -128,13 +128,13 @@ describe('codex extended-window launch config', () => {
   const MINI = { slug: 'gpt-5.4-mini', context_window: 400_000, max_context_window: 400_000 };
   const NANO = { slug: 'gpt-5.4-nano', context_window: 400_000, max_context_window: 400_000 };
 
-  it('declares exact 1M/900k for an official 1.05M model despite a stale 872k registry max', () => {
+  it('respects the runtime record max for an official 1M-class model', () => {
     const home = codexHome([SOL, GPT55], 'sol');
     expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toEqual({
       model: 'gpt-5.6-sol',
-      window: 1_000_000,
-      autoCompactLimit: 900_000,
-      source: 'codex-official-1m-policy',
+      window: 872_000,
+      autoCompactLimit: 784_800,
+      source: 'codex-model-cache-max',
     });
   });
 
@@ -154,13 +154,14 @@ describe('codex extended-window launch config', () => {
     }
   });
 
-  it('does not let an old flat registry erase the official exact-1M policy', () => {
+  it('does not bypass a readable flat runtime record with the official fallback', () => {
     const home = codexHome([{ slug: 'gpt-5.6-sol', context_window: 272_000, max_context_window: 272_000 }], 'shrink');
-    expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toMatchObject({
-      window: 1_000_000,
-      autoCompactLimit: 900_000,
-      source: 'codex-official-1m-policy',
-    });
+    expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toBeNull();
+  });
+
+  it('does not use the official fallback when the runtime record lacks a usable max', () => {
+    const home = codexHome([{ slug: 'gpt-5.6-sol', context_window: 272_000 }], 'missing-max');
+    expect(codexContextWindowConfig('gpt-5.6-sol', { home })).toBeNull();
   });
 
   it('caps a registry ceiling above 1M at exactly 1M', () => {
@@ -203,22 +204,22 @@ describe('codex extended-window launch config', () => {
     const home = codexHome([SOL], 'emit');
     expect(codexContextConfigArgs('sol', { home })).toEqual([
       '-c',
-      'model_context_window=1000000',
+      'model_context_window=872000',
       '-c',
-      'model_auto_compact_token_limit=900000',
+      'model_auto_compact_token_limit=784800',
     ]);
     expect(codexContextConfigToml('sol', { home })).toBe(
-      'model_context_window = 1000000\nmodel_auto_compact_token_limit = 900000\n',
+      'model_context_window = 872000\nmodel_auto_compact_token_limit = 784800\n',
     );
   });
 
   it('reports the window we LAUNCH with, not the registry default, to the budget math', () => {
     // Without this, a preflight would size the launch context against 272k while
-    // the session actually runs the configured 1M window.
+    // the session actually runs the configured runtime-record max.
     const home = codexHome([SOL], 'budget');
     expect(resolveModelContextWindow({ agent: 'codex', model: 'sol:high', home })).toEqual({
-      window: 1_000_000,
-      source: 'codex-official-1m-policy',
+      window: 872_000,
+      source: 'codex-model-cache-max',
     });
   });
 });

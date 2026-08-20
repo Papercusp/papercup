@@ -87,14 +87,13 @@ function recordWindow(record) {
 
 /**
  * Codex models officially documented with a 1,050,000-token context window
- * that Papercusp exposes as selectors. The configured value is deliberately
+ * that Papercusp exposes as selectors. The configured fallback is deliberately
  * 1,000,000 (not 1,050,000): that is the exact Codex guide setting and leaves
  * the native 900,000 auto-compact backstop above Papercusp's 400k/200k cuts.
  *
- * The installed registry remains useful as a capability signal, but its stale
- * 872,000 ceiling no longer caps these known 1M-class models (plan D-003).
- * Keep the historical export name for callers; it is now the first-launch
- * fallback AND the authoritative exact-window table for these model ids.
+ * A readable installed model record is runtime-authoritative, including when
+ * its max_context_window is lower than this table. This table is used only when
+ * the selected model has no installed record (plan D-007).
  */
 export const CODEX_EXTENDED_WINDOW_FALLBACK = Object.freeze({
   'gpt-5.6-sol': 1_000_000,
@@ -124,17 +123,17 @@ function codexModelRecord(id, home) {
 /**
  * The context window papercusp DECLARES to the Codex CLI for `model`, or null
  * when that model has no extended window to ask for (plan
- * codex-1m-context-window-2026-08-17 D-003).
+ * codex-1m-context-window-2026-08-17 D-007).
  *
  * NULL IS A MEANINGFUL ANSWER, not a failure: gpt-5.5, gpt-5.4-mini and
  * gpt-5.3-codex-spark report `max_context_window == context_window`, so there is
  * no bigger window to request and their launch argv must stay byte-identical to
  * today. Callers emit nothing on null — they must not substitute a default.
  *
- * Precedence: the exact 1M policy table for officially documented 1.05M models,
- * then the installed registry's `max_context_window` for every other model.
- * The latter is clamped to CODEX_MAX_CONFIGURED_WINDOW and refused unless it
- * genuinely EXCEEDS the model's own default window, so sub-1M behavior remains
+ * Precedence: an installed model record's `max_context_window`, then the exact
+ * 1M fallback table when that model has no readable record. The runtime max is
+ * clamped to CODEX_MAX_CONFIGURED_WINDOW and refused unless it genuinely
+ * EXCEEDS the model's own default window, so sub-1M behavior remains
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
@@ -153,18 +152,18 @@ export function codexContextWindowConfig(model, { home = homedir() } = {}) {
 
   let window = null;
   let source = null;
-  if (officialWindow) {
-    // D-003: the 5.6 registry's observed 872k value is a capability signal,
-    // not a cap on the guide's exact 1M declaration for official 1.05M models.
-    window = officialWindow;
-    source = 'codex-official-1m-policy';
-  } else if (declaredMax) {
-    // The registry carries this model: it is authoritative in BOTH directions.
-    // max == default means "no extended window exists" — fall through to null
-    // rather than fabricating a larger window for an unrecognised model.
+  if (record) {
+    // D-007: Codex clamps config overrides to the selected runtime record. Its
+    // max is authoritative even for an officially documented 1M-class model;
+    // falling through to the table here would recreate the unsupported D-003
+    // override. A record without a usable max therefore emits no override.
+    if (!declaredMax) return null;
     if (declaredDefault != null && declaredMax <= declaredDefault) return null;
     window = declaredMax;
     source = 'codex-model-cache-max';
+  } else if (officialWindow) {
+    window = officialWindow;
+    source = 'codex-official-1m-policy';
   } else {
     return null;
   }

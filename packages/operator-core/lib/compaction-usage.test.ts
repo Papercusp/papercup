@@ -90,6 +90,25 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
     ).toBe(156_981);
   });
 
+  it('D-007 reads the runtime-capped GPT-5.6 effective window from rollout telemetry', () => {
+    writeFileSync(
+      rollout,
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: { total_tokens: 12_345 },
+            model_context_window: 828_400,
+          },
+        },
+      }) + '\n',
+    );
+    const snapshot = codexContextSnapshotFromRollout(rollout);
+    expect(snapshot).toEqual({ tokens: 12_345, modelContextWindow: 828_400 });
+    expect(snapshot!.modelContextWindow).toBeGreaterThan(400_000);
+  });
+
   it('skips a trailing rate-limit-only event and falls back to input+output when total_tokens is absent', () => {
     writeFileSync(
       rollout,
