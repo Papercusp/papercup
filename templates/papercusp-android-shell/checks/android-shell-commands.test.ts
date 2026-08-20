@@ -30,14 +30,18 @@ const OUTER_GRACE_MS = 5_000;
 const outerTimeout =
   Math.max(
     DEFAULT_TIMEOUT_MS,
-    ...(section?.assertions ?? []).map((entry) => entry.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+    ...(section?.assertions ?? []).map(
+      (entry) => entry.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    ),
   ) + OUTER_GRACE_MS;
 
 describe.skipIf(!section)("android-shell-assertions", () => {
   it("keeps the outer Vitest budget beyond every child command", () => {
     const largestChild = Math.max(
       DEFAULT_TIMEOUT_MS,
-      ...section!.assertions.map((entry) => entry.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      ...section!.assertions.map(
+        (entry) => entry.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      ),
     );
     expect(outerTimeout).toBeGreaterThan(largestChild);
   });

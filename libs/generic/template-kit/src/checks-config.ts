@@ -534,6 +534,223 @@ export function validateChecksConfig(value: unknown): string[] {
     }
   }
 
+  if (value.androidShell !== undefined) {
+    if (!isRecord(value.androidShell))
+      errors.push("androidShell: must be an object");
+    else {
+      for (const field of [
+        "namespace",
+        "applicationId",
+        "gradleVersion",
+        "agpVersion",
+        "kotlinVersion",
+        "ndkVersion",
+        "nativeLibrary",
+        "releaseVersionInput",
+        "signingPrefix",
+        "evidenceDir",
+      ] as const) {
+        if (!isNonEmptyString(value.androidShell[field])) {
+          errors.push(`androidShell.${field}: required non-empty string`);
+        }
+      }
+      for (const field of [
+        "minSdk",
+        "compileSdk",
+        "targetSdk",
+        "javaVersion",
+      ] as const) {
+        if (
+          !Number.isInteger(value.androidShell[field]) ||
+          Number(value.androidShell[field]) <= 0
+        ) {
+          errors.push(`androidShell.${field}: required positive integer`);
+        }
+      }
+      if (typeof value.androidShell.debugCleartext !== "boolean") {
+        errors.push("androidShell.debugCleartext: required boolean");
+      }
+      requireStringArray(
+        errors,
+        "androidShell",
+        "abis",
+        value.androidShell.abis,
+        true,
+      );
+      requireStringArray(
+        errors,
+        "androidShell",
+        "signingInputNames",
+        value.androidShell.signingInputNames,
+        true,
+      );
+      requireStringArray(
+        errors,
+        "androidShell",
+        "selectedCapabilities",
+        value.androidShell.selectedCapabilities,
+        false,
+      );
+      requireStringArray(
+        errors,
+        "androidShell",
+        "allowedPermissions",
+        value.androidShell.allowedPermissions,
+        false,
+      );
+
+      if (!isRecord(value.androidShell.paths)) {
+        errors.push("androidShell.paths: required object");
+      } else {
+        for (const field of [
+          "settingsGradle",
+          "projectGradle",
+          "appGradle",
+          "wrapperProperties",
+          "manifest",
+          "packageSourceRoot",
+          "lintConfig",
+          "buildScript",
+          "abiVerifier",
+          "provenanceScript",
+          "udl",
+          "uniffiConfig",
+          "cargoLock",
+          "generatedKotlin",
+          "releaseApk",
+          "releaseAab",
+          "provenanceFile",
+        ] as const) {
+          if (!isNonEmptyString(value.androidShell.paths[field])) {
+            errors.push(
+              `androidShell.paths.${field}: required non-empty string`,
+            );
+          }
+        }
+        for (const field of [
+          "unitTestRoots",
+          "instrumentationTestRoots",
+        ] as const) {
+          requireStringArray(
+            errors,
+            "androidShell.paths",
+            field,
+            value.androidShell.paths[field],
+            true,
+          );
+        }
+      }
+
+      if (
+        !Array.isArray(value.androidShell.assertions) ||
+        value.androidShell.assertions.length === 0
+      ) {
+        errors.push(
+          "androidShell.assertions: required non-empty list of command objects",
+        );
+      } else {
+        const assertionLegs = new Set<string>();
+        value.androidShell.assertions.forEach((assertion, index) => {
+          const section = `androidShell.assertions[${index}]`;
+          if (!isRecord(assertion)) {
+            errors.push(`${section}: must be an object`);
+            return;
+          }
+          for (const field of ["assertionId", "leg"] as const) {
+            if (!isNonEmptyString(assertion[field])) {
+              errors.push(`${section}.${field}: required non-empty string`);
+            }
+          }
+          if (
+            isNonEmptyString(assertion.assertionId) &&
+            isNonEmptyString(assertion.leg)
+          ) {
+            const key = `${assertion.assertionId}/${assertion.leg}`;
+            if (assertionLegs.has(key)) {
+              errors.push(`${section}: duplicate assertion leg '${key}'`);
+            } else {
+              assertionLegs.add(key);
+            }
+          }
+          requireStringArray(
+            errors,
+            section,
+            "command",
+            assertion.command,
+            true,
+          );
+          if (assertion.cwd !== undefined && !isNonEmptyString(assertion.cwd)) {
+            errors.push(
+              `${section}.cwd: must be a non-empty string when present`,
+            );
+          }
+          if (
+            assertion.env !== undefined &&
+            (!isRecord(assertion.env) ||
+              Object.values(assertion.env).some(
+                (entry) => typeof entry !== "string",
+              ))
+          ) {
+            errors.push(`${section}.env: must be a string map when present`);
+          }
+          if (
+            assertion.timeoutMs !== undefined &&
+            (typeof assertion.timeoutMs !== "number" ||
+              !Number.isFinite(assertion.timeoutMs) ||
+              assertion.timeoutMs <= 0)
+          ) {
+            errors.push(
+              `${section}.timeoutMs: must be a positive number when present`,
+            );
+          }
+          if (assertion.unsetEnv !== undefined) {
+            requireStringArray(
+              errors,
+              section,
+              "unsetEnv",
+              assertion.unsetEnv,
+              false,
+            );
+          }
+          if (
+            assertion.expectedExit !== undefined &&
+            assertion.expectedExit !== "zero" &&
+            assertion.expectedExit !== "nonzero"
+          ) {
+            errors.push(
+              `${section}.expectedExit: must be 'zero' or 'nonzero' when present`,
+            );
+          }
+          if (
+            assertion.expectedOutputPattern !== undefined &&
+            !isNonEmptyString(assertion.expectedOutputPattern)
+          ) {
+            errors.push(
+              `${section}.expectedOutputPattern: must be a non-empty string when present`,
+            );
+          }
+          if (assertion.hostConstraintPatterns !== undefined) {
+            requireStringArray(
+              errors,
+              section,
+              "hostConstraintPatterns",
+              assertion.hostConstraintPatterns,
+              false,
+            );
+          }
+          if (
+            assertion.selectedCapability !== undefined &&
+            !isNonEmptyString(assertion.selectedCapability)
+          ) {
+            errors.push(
+              `${section}.selectedCapability: must be a non-empty string when present`,
+            );
+          }
+        });
+      }
+    }
+  }
+
   return errors;
 }
 

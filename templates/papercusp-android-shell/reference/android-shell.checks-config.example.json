@@ -53,12 +53,20 @@
         "leg": "toolchain-build",
         "command": ["bash", "tools/check-android-toolchain-build.sh"],
         "timeoutMs": 900000,
-        "hostConstraintPatterns": ["Android SDK not found", "cargo-ndk is required"]
+        "hostConstraintPatterns": [
+          "Android SDK not found",
+          "cargo-ndk is required"
+        ]
       },
       {
         "assertionId": "MOB-AND-002",
         "leg": "binding-generation",
-        "command": ["android/gradlew", "-p", "android", ":app:generateUniFfiKotlin"],
+        "command": [
+          "android/gradlew",
+          "-p",
+          "android",
+          ":app:generateUniFfiKotlin"
+        ],
         "timeoutMs": 600000,
         "hostConstraintPatterns": ["SDK location not found"]
       },
@@ -86,16 +94,29 @@
       {
         "assertionId": "MOB-AND-005",
         "leg": "unit",
-        "command": ["android/gradlew", "-p", "android", ":app:testDebugUnitTest"],
+        "command": [
+          "android/gradlew",
+          "-p",
+          "android",
+          ":app:testDebugUnitTest"
+        ],
         "timeoutMs": 600000,
         "hostConstraintPatterns": ["SDK location not found"]
       },
       {
         "assertionId": "MOB-AND-005",
         "leg": "instrumentation",
-        "command": ["android/gradlew", "-p", "android", ":app:connectedDebugAndroidTest"],
+        "command": [
+          "android/gradlew",
+          "-p",
+          "android",
+          ":app:connectedDebugAndroidTest"
+        ],
         "timeoutMs": 900000,
-        "hostConstraintPatterns": ["No connected devices", "SDK location not found"]
+        "hostConstraintPatterns": [
+          "No connected devices",
+          "SDK location not found"
+        ]
       },
       {
         "assertionId": "MOB-AND-005",

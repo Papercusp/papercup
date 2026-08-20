@@ -144,6 +144,66 @@ describe("validateChecksConfig", () => {
     );
   });
 
+  it("rejects an incomplete Android shell and duplicate assertion legs", () => {
+    const errors = validateChecksConfig({
+      app: { name: "x" },
+      androidShell: {
+        minSdk: 0,
+        compileSdk: 36,
+        targetSdk: 36,
+        javaVersion: 17,
+        abis: [],
+        signingInputNames: [],
+        selectedCapabilities: [],
+        allowedPermissions: [],
+        debugCleartext: "false",
+        paths: {
+          unitTestRoots: [],
+          instrumentationTestRoots: [],
+        },
+        assertions: [
+          {
+            assertionId: "MOB-AND-001",
+            leg: "toolchain-build",
+            command: [],
+          },
+          {
+            assertionId: "MOB-AND-001",
+            leg: "toolchain-build",
+            command: ["bash", "tools/check.sh"],
+            timeoutMs: 0,
+            expectedExit: "sometimes",
+          },
+        ],
+      },
+    });
+
+    expect(errors).toContain(
+      "androidShell.namespace: required non-empty string",
+    );
+    expect(errors).toContain("androidShell.minSdk: required positive integer");
+    expect(errors).toContain("androidShell.abis: must be non-empty");
+    expect(errors).toContain("androidShell.debugCleartext: required boolean");
+    expect(errors).toContain(
+      "androidShell.paths.appGradle: required non-empty string",
+    );
+    expect(errors).toContain(
+      "androidShell.paths.unitTestRoots: must be non-empty",
+    );
+    expect(errors).toContain(
+      "androidShell.assertions[0].command: must be non-empty",
+    );
+    expect(errors).toContain(
+      "androidShell.assertions[1]: duplicate assertion leg 'MOB-AND-001/toolchain-build'",
+    );
+    expect(errors).toContain(
+      "androidShell.assertions[1].timeoutMs: must be a positive number when present",
+    );
+    expect(errors).toContain(
+      "androidShell.assertions[1].expectedExit: must be 'zero' or 'nonzero' when present",
+    );
+  });
+
   it("parseChecksConfig throws on invalid, returns typed on valid", () => {
     expect(() => parseChecksConfig({})).toThrow(/invalid checks config/);
     expect(parseChecksConfig(valid).app.name).toBe("quartermaster");
@@ -168,6 +228,19 @@ describe("validateChecksConfig", () => {
         join(
           TEMPLATES_DIR,
           "papercusp-mobile-base/reference/mobile-base.checks-config.example.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(validateChecksConfig(raw)).toEqual([]);
+  });
+
+  it("the committed Android-shell reference config validates", () => {
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          TEMPLATES_DIR,
+          "papercusp-android-shell/reference/android-shell.checks-config.example.json",
         ),
         "utf8",
       ),

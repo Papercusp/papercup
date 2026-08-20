@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,7 +44,11 @@ function assertionPlan(): AndroidAssertionCommand[] {
       return {
         assertionId,
         leg,
-        command: [process.execPath, "-e", "console.error('missing signing identity'); process.exit(9)"],
+        command: [
+          process.execPath,
+          "-e",
+          "console.error('missing signing identity'); process.exit(9)",
+        ],
         unsetEnv: [...signingInputNames],
         expectedExit: "nonzero" as const,
         expectedOutputPattern: "missing signing identity",
@@ -103,26 +114,56 @@ android {
 }
 tasks.named("preBuild").configure { dependsOn(generateUniFfiKotlin) }
 `;
-  put(root, paths.settingsGradle, 'rootProject.name = "Harbor"\ninclude(":app")\n');
-  put(root, paths.projectGradle, `plugins {
+  put(
+    root,
+    paths.settingsGradle,
+    'rootProject.name = "Harbor"\ninclude(":app")\n',
+  );
+  put(
+    root,
+    paths.projectGradle,
+    `plugins {
   id("com.android.application") version "8.13.2" apply false
   id("org.jetbrains.kotlin.android") version "2.0.21" apply false
   id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
-}\n`);
+}\n`,
+  );
   put(root, paths.appGradle, appGradle);
-  put(root, paths.wrapperProperties, "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n");
-  put(root, paths.manifest, `<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  put(
+    root,
+    paths.wrapperProperties,
+    "distributionUrl=https\\://services.gradle.org/distributions/gradle-8.14.3-bin.zip\n",
+  );
+  put(
+    root,
+    paths.manifest,
+    `<manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET" />
   <application android:usesCleartextTraffic="false" />
-</manifest>\n`);
-  put(root, `${paths.packageSourceRoot}/MainActivity.kt`, "package dev.harbor.mobile\n");
+</manifest>\n`,
+  );
+  put(
+    root,
+    `${paths.packageSourceRoot}/MainActivity.kt`,
+    "package dev.harbor.mobile\n",
+  );
   put(root, "android/app/src/test/kotlin/dev/harbor/mobile/SmokeTest.kt");
-  put(root, "android/app/src/androidTest/kotlin/dev/harbor/mobile/LaunchTest.kt");
+  put(
+    root,
+    "android/app/src/androidTest/kotlin/dev/harbor/mobile/LaunchTest.kt",
+  );
   put(root, paths.lintConfig, "<lint />\n");
-  put(root, paths.udl, "namespace harbor {};\ninterface Harbor { string ping(); };\n");
+  put(
+    root,
+    paths.udl,
+    "namespace harbor {};\ninterface Harbor { string ping(); };\n",
+  );
   put(root, paths.uniffiConfig, "[bindings.kotlin]\n");
   put(root, paths.cargoLock, "# lock\n");
-  put(root, paths.buildScript, `#!/usr/bin/env bash
+  put(
+    root,
+    paths.buildScript,
+    `#!/usr/bin/env bash
 sdk="\${ANDROID_SDK_ROOT:-\${ANDROID_HOME:-}}"
 ndk="\${ANDROID_NDK_HOME:-$sdk/ndk/27.0.12077973}"
 command -v cargo-ndk >/dev/null || cargo ndk --version
@@ -134,9 +175,13 @@ provenance="${paths.provenanceFile}"
 version="\${HARBOR_ANDROID_RELEASE_VERSION:?}"
 llvm-objdump -p libharbor.so
 zipalign -c -P 16 -v 4 "$release_apk"
-`);
+`,
+  );
   put(root, paths.abiVerifier, "readelf -Ws libharbor.so | grep checksum\n");
-  put(root, paths.provenanceScript, `#!/usr/bin/env bash
+  put(
+    root,
+    paths.provenanceScript,
+    `#!/usr/bin/env bash
 apk="${paths.releaseApk}"
 aab="${paths.releaseAab}"
 manifest="${paths.provenanceFile}"
@@ -144,7 +189,8 @@ git status --porcelain
 version="\${HARBOR_ANDROID_RELEASE_VERSION:?}"
 sha256sum "$apk" "$aab"
 mv "$manifest.tmp" "$manifest"
-`);
+`,
+  );
 
   return {
     root,
@@ -184,11 +230,15 @@ describe("portable Android shell contract logic", () => {
 
   it("catches identity, toolchain, ABI, and incremental-binding drift", () => {
     const { root, section } = fixture();
-    put(root, section.paths.appGradle, `android {
+    put(
+      root,
+      section.paths.appGradle,
+      `android {
       namespace = "dev.wrong"
       compileSdk = 35
       defaultConfig { applicationId = "dev.wrong"; minSdk = 23; targetSdk = 35 }
-    }\n`);
+    }\n`,
+    );
     const errors = validateAndroidShellScaffold(root, section).join("\n");
     expect(errors).toContain("missing namespace dev.harbor.mobile");
     expect(errors).toContain("missing compileSdk 36");
@@ -198,30 +248,48 @@ describe("portable Android shell contract logic", () => {
 
   it("rejects release cleartext, developer-home SDK fallback, and literal signing values", () => {
     const { root, section } = fixture();
-    put(root, section.paths.manifest, `<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    put(
+      root,
+      section.paths.manifest,
+      `<manifest xmlns:android="http://schemas.android.com/apk/res/android">
       <uses-permission android:name="android.permission.INTERNET" />
       <application android:usesCleartextTraffic="true" />
-    </manifest>\n`);
+    </manifest>\n`,
+    );
     const app = readFileSync(join(root, section.paths.appGradle), "utf8");
-    put(root, section.paths.appGradle, `${app}\nval leaked = storePassword = "secret"\n`);
+    put(
+      root,
+      section.paths.appGradle,
+      `${app}\nval leaked = storePassword = "secret"\n`,
+    );
     const build = readFileSync(join(root, section.paths.buildScript), "utf8");
     put(root, section.paths.buildScript, `${build}\nsdk="$HOME/Android/Sdk"\n`);
     const errors = validateAndroidShellScaffold(root, section).join("\n");
     expect(errors).toContain("main/release cleartext may not be literal true");
-    expect(errors).toContain("developer-home Android SDK fallback is forbidden");
-    expect(errors).toContain("literal signing credential/alias value is forbidden");
+    expect(errors).toContain(
+      "developer-home Android SDK fallback is forbidden",
+    );
+    expect(errors).toContain(
+      "literal signing credential/alias value is forbidden",
+    );
   });
 
   it("rejects an incomplete or vacuously passing command plan", () => {
     const { section } = fixture();
-    section.assertions = section.assertions.filter((entry) => entry.leg !== "instrumentation");
-    const signing = section.assertions.find((entry) => entry.leg === "signing-absence")!;
+    section.assertions = section.assertions.filter(
+      (entry) => entry.leg !== "instrumentation",
+    );
+    const signing = section.assertions.find(
+      (entry) => entry.leg === "signing-absence",
+    )!;
     signing.expectedExit = "zero";
     signing.unsetEnv = [];
     const errors = validateAndroidCommandPlan(section).join("\n");
     expect(errors).toContain("MOB-AND-005/instrumentation");
     expect(errors).toContain("signing-absence must expect nonzero");
-    expect(errors).toContain(`signing-absence must unset ${signingInputNames[0]}`);
+    expect(errors).toContain(
+      `signing-absence must unset ${signingInputNames[0]}`,
+    );
   });
 
   it("writes atomic evidence for pass, expected failure, and host constraint", () => {
@@ -237,7 +305,11 @@ describe("portable Android shell contract logic", () => {
     const negative = runAndroidAssertionCommand(root, section.evidenceDir, {
       assertionId: "MOB-AND-006",
       leg: "signing-absence",
-      command: [process.execPath, "-e", "console.error('signing missing'); process.exit(4)"],
+      command: [
+        process.execPath,
+        "-e",
+        "console.error('signing missing'); process.exit(4)",
+      ],
       expectedExit: "nonzero",
       expectedOutputPattern: "signing missing",
     });
@@ -249,7 +321,8 @@ describe("portable Android shell contract logic", () => {
       command: ["papercusp-deliberately-missing-android-tool"],
     });
     expect(constrained.evidence.verdict).toBe("host-constrained");
-    expect(JSON.parse(readFileSync(constrained.evidencePath, "utf8")).verdict)
-      .toBe("host-constrained");
+    expect(
+      JSON.parse(readFileSync(constrained.evidencePath, "utf8")).verdict,
+    ).toBe("host-constrained");
   });
 });
