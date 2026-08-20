@@ -455,13 +455,51 @@ export async function recordRelease(
        ${row.gitSha}, ${row.cutBy}, ${row.notes})
     ON CONFLICT (workspace_id, channel, version) DO UPDATE SET
       cut_at        = EXCLUDED.cut_at,
-      published_at  = EXCLUDED.published_at,
+      -- Publication is a monotonic fact: a later re-record (for example, when
+      -- a late platform lands) must not turn a live release back into a draft
+      -- merely because record-release-cli constructs its cut row with NULL.
+      published_at  = COALESCE(harness_shared.releases.published_at, EXCLUDED.published_at),
       changelog_md  = EXCLUDED.changelog_md,
       work_item_ids = EXCLUDED.work_item_ids,
       plan_slugs    = EXCLUDED.plan_slugs,
       artifacts     = EXCLUDED.artifacts,
       git_sha       = EXCLUDED.git_sha,
       cut_by        = EXCLUDED.cut_by,
-      notes         = EXCLUDED.notes
+    notes         = EXCLUDED.notes
   `;
+}
+
+/**
+ * Mark a release live only after its manifest and every recorded artifact have
+ * passed the public reachability checks.
+ *
+ * Publication is intentionally separate from recordRelease: a cut is a
+ * database fact, while `published_at` is an externally verified fact. The
+ * COALESCE makes retries idempotent and preserves the first successful proof.
+ * A missing row is an invariant violation, not a successful no-op — otherwise
+ * a broken workspace/version argument would report a release as published
+ * without changing the registry at all.
+ */
+export async function markReleasePublished(
+  sql: Sql,
+  workspaceId: string,
+  channel: string,
+  version: string,
+  publishedAt: Date = new Date(),
+): Promise<Date> {
+  const rows = await sql<Array<{ published_at: Date | null }>>`
+    UPDATE harness_shared.releases
+       SET published_at = COALESCE(published_at, ${publishedAt})
+     WHERE workspace_id = ${workspaceId}
+       AND channel = ${channel}
+       AND version = ${version}
+     RETURNING published_at
+  `;
+  const stored = rows[0]?.published_at;
+  if (!stored) {
+    throw new Error(
+      `cannot mark release published: no registry row for ${workspaceId}/${channel}/${version}`,
+    );
+  }
+  return stored;
 }
