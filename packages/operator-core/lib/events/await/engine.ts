@@ -434,41 +434,33 @@ export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<Emit
 }
 
 /**
- * WI-4957 — retire every PENDING checkpoint-family (or any payload-bound) await whose
- * `payload_filter` is bound to a candidate that has just been proven DEAD (a checkpoint
- * run for it was stopped/superseded before it could produce a verdict).
+ * WI-4957 / EI-20391462658650094 — wake checkpoint awaits bound to a candidate whose
+ * run was just proven DEAD (a checkpoint run for it was stopped/superseded before it
+ * could produce a verdict).
  *
- * Why this exists on top of EI-12457's sibling/self-supersede cancellation: those cover
- * "this candidate JUST resolved, so the opposite-outcome key can never fire for it" and
- * "I'm re-arming my OWN wait, so my prior one is dead" — both scoped to subscribers an
- * emit actually woke, or to the caller's own registrations. Neither covers a THIRD case:
- * a peer parked on `checkpoint:await { candidateSha }` for a candidate whose run gets
- * KILLED (EI-9672 `replaceStale`) before any verdict is ever produced for it — nothing
- * ever fires that key for that sha, so that peer's wait would otherwise sleep to its own
- * timeout, indistinguishable from "still judging" the whole time. That indistinguishability
- * is exactly the hazard the ticket names: a late, out-of-order delivery for a sha that
- * SHOULD be dead must never be mistaken for a live verdict that could authorize a deploy.
- * Killing the wait the moment we know the run is dead makes the state explicit instead of
- * leaving a landmine that depends on nothing else ever emitting that exact sha again.
+ * The historical helper name says "cancel", but cancellation was the bug: it marked a
+ * parked one-shot await as consumed without telling its subscriber why it would never
+ * receive a verdict. A durable candidate-replaced wake gives that subscriber an
+ * actionable reason to re-orient and register a fresh await for the replacement run.
  *
  * Deliberately narrow: only rows carrying an EXPLICIT payload_filter that matches
- * `{ sha: staleCandidateSha }` are touched (via the same `payloadMatchesFilter` evaluator
- * `fireAwaitsForKey` uses, so "would this row have fired for that candidate" is answered
- * identically at both cancel- and fire-time) — an unbound "wake me on the NEXT verdict,
- * any candidate" await is left alone; it should keep waiting for the run that supersedes
- * the stale one. Best-effort/fail-soft throughout: a lookup or cancel error here must
- * never block the caller (typically a fresh checkpoint launch it runs ahead of).
+ * `{ sha: staleCandidateSha }`, and only `once` wake rows, are touched. The same
+ * `payloadMatchesFilter` evaluator used by `fireAwaitsForKey` answers whether the row
+ * was bound to this candidate. Unbound waits remain armed for the replacement run;
+ * different-candidate, notify, and standing rows are untouched. The scan, claim, and
+ * delivery path are best-effort/fail-soft so a problem here never blocks the fresh
+ * checkpoint launch it runs ahead of.
  */
 export async function cancelSupersededCandidateAwaits(input: {
-  /** The checkpoint-family key(s) to sweep (global + pipeline-scoped, green + red). */
+  /** The checkpoint-family key(s) to sweep (global + pipeline-scoped outcomes). */
   keys: readonly string[];
   /** The candidate sha whose run is now dead — matched against each row's payload_filter,
    *  the same direction `payloadMatchesFilter` evaluates at fire time (a `{startsWith}`
    *  filter matches when THIS sha starts with the filter's prefix). */
   staleCandidateSha: string;
 }): Promise<{ cancelled: number; ids: number[] }> {
-  const staleIds: number[] = [];
-  for (const key of input.keys) {
+  const staleRows = new Map<number, AwaitRow>();
+  for (const key of new Set(input.keys)) {
     let rows: AwaitRow[];
     try {
       rows = await listActiveAwaitsForKey(key);
@@ -477,24 +469,49 @@ export async function cancelSupersededCandidateAwaits(input: {
       continue;
     }
     for (const row of rows) {
-      // No payload_filter ⇒ this await wants ANY candidate's verdict on this key — the
-      // stale one dying does not make it dead, the NEXT (fresh) run's verdict is exactly
-      // what it's still waiting for. Only a row that explicitly bound itself to the now-
-      // dead candidate is a genuinely superseded wait.
-      if (row.payloadFilter == null) continue;
-      if (payloadMatchesFilter(row.payloadFilter, { sha: input.staleCandidateSha })) {
-        staleIds.push(row.id);
-      }
+      if (row.policy !== 'wake' || !row.once || row.payloadFilter == null) continue;
+      if (payloadMatchesFilter(row.payloadFilter, { sha: input.staleCandidateSha })) staleRows.set(row.id, row);
     }
   }
+
+  const staleIds = [...staleRows.keys()];
   if (staleIds.length === 0) return { cancelled: 0, ids: [] };
+
+  let claimed: AwaitRow[];
   try {
-    const cancelled = await cancelAwaitsByIds(staleIds);
-    return { cancelled, ids: staleIds };
+    // Atomic exactly-once claim: a concurrent verdict or replacement handler may have
+    // consumed one of these rows between the scan and this wake, and only the winner
+    // should enqueue a delivery.
+    claimed = await claimSpecificOnceAwaits(staleIds);
   } catch (e) {
-    log(`cancelSupersededCandidateAwaits: cancel failed: ${e instanceof Error ? e.message : e}`);
+    log(`cancelSupersededCandidateAwaits: claim failed: ${e instanceof Error ? e.message : e}`);
     return { cancelled: 0, ids: [] };
   }
+
+  if (claimed.length === 0) return { cancelled: 0, ids: [] };
+
+  try {
+    await insertDeliveries({
+      awaits: claimed,
+      payload: { reason: 'candidate-replaced', sha: input.staleCandidateSha },
+      summary: `Checkpoint candidate replacement: ${input.staleCandidateSha} was stopped before a verdict; re-evaluate the current candidate.`,
+      source: 'release:checkpoint-run:candidate-replaced',
+    });
+  } catch (e) {
+    log(`cancelSupersededCandidateAwaits: delivery enqueue failed: ${e instanceof Error ? e.message : e}`);
+    return { cancelled: 0, ids: [] };
+  }
+
+  if (autoPumpEnabled) {
+    const ws = activeWorkspaceId();
+    setImmediate(() => {
+      void pumpWakeDeliveries(ws).catch((e) => log(`candidate-replaced wake pump failed: ${e instanceof Error ? e.message : e}`));
+    });
+  }
+
+  // Keep the legacy result shape for cancelStaleCheckpointAwaits callers. `ids` now
+  // identifies rows that received the durable wake; no await was cancelled.
+  return { cancelled: 0, ids: claimed.map((row) => row.id) };
 }
 
 /**
