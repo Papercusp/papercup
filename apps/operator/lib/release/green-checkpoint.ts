@@ -11303,6 +11303,9 @@ export function runCmd(
      *  THIS process's group). */
     killProcessGroupOnTimeout?: boolean;
     relayAffectedProgress?: boolean;
+    /** Report every stdout/stderr chunk as real child-process progress. The callback is
+     *  diagnostic/liveness-only; failures in it must never change the command verdict. */
+    onProgress?: () => void;
   } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -11360,6 +11363,11 @@ export function runCmd(
       const text = chunk.toString();
       if (stream === "stdout") stdout += text;
       else stderr += text;
+      try {
+        opts.onProgress?.();
+      } catch {
+        /* progress is diagnostic/liveness-only and must never break output capture */
+      }
       if (!opts.relayAffectedProgress) return;
       const combined = (progressRemainders.get(stream) ?? "") + text;
       const lines = combined.split(/\r?\n/);
@@ -11659,8 +11667,14 @@ if (require.main === module) {
     // canceled on every normal exit path below, so it only ever fires when this run
     // misses its configured deadline (see armSelfWatchdog's doc comment).
     const selfWatchdog = selfWatchdogConfigFromEnv();
+    // The transported manual deadline is the resettable IDLE budget. Progress may extend a
+    // healthy late phase, but never beyond the independent 3h ceiling that also bounds the
+    // scheduled parent-death backstop. Keep this ceiling explicit at the CLI seam so progress
+    // can never become an unbounded keepalive.
+    const hardCeilingMs = SELF_WATCHDOG_MS;
     const watchdog = armSelfWatchdog(lock, {
       ms: selfWatchdog.ms,
+      hardCeilingMs,
       trigger: selfWatchdog.trigger,
       // WI-4528 (EI-10800 class): ASYNC + AWAITED. These two effects used to be fire-and-forget
       // `void import(...).then(emit)` — a GUARANTEED lost wake, not merely a race: armSelfWatchdog
@@ -11749,6 +11763,7 @@ if (require.main === module) {
       {
         armedAtMs: Date.now(),
         ms: selfWatchdog.ms,
+        hardCeilingMs,
         pid: process.pid,
       },
     );
@@ -11780,10 +11795,14 @@ if (require.main === module) {
     const handleTermSignal = createTerminationSignalHandler(releaseAndExit);
     process.once("SIGTERM", handleTermSignal);
     process.once("SIGINT", handleTermSignal);
-    runGreenCheckpoint(cfg, realCheckpointDeps(cfg, undefined, runId), {
-      candidate: candidateArg,
-      noPush: process.argv.includes("--no-push"),
-    })
+    runGreenCheckpoint(
+      cfg,
+      realCheckpointDeps(cfg, undefined, runId, undefined, watchdog.progress),
+      {
+        candidate: candidateArg,
+        noPush: process.argv.includes("--no-push"),
+      },
+    )
       .then(async (r) => {
         // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
         // would kill an un-awaited write. The marker then carries `recorded` so the routine knows

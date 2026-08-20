@@ -698,6 +698,35 @@ describe("armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
     expect(kill).not.toHaveBeenCalled();
   });
 
+  it("resets the idle budget on progress without extending the absolute hard ceiling", () => {
+    const release = vi.fn();
+    const kill = vi.fn();
+    const onFire = vi.fn();
+    const watchdog = armSelfWatchdog(
+      { release },
+      {
+        ms: 1000,
+        hardCeilingMs: 2500,
+        kill,
+        pid: 999,
+        log: () => {},
+        onFire,
+      },
+    );
+
+    vi.advanceTimersByTime(900);
+    watchdog.progress();
+    vi.advanceTimersByTime(900);
+    watchdog.progress();
+    vi.advanceTimersByTime(699);
+    expect(onFire).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1);
+    expect(onFire).toHaveBeenCalledWith("absolute-hard-ceiling");
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith(-999, "SIGKILL");
+  });
+
   it("releases the lock and SIGKILLs its own process GROUP (negative pid) once the deadline elapses", () => {
     const release = vi.fn();
     const kill = vi.fn();
@@ -1037,6 +1066,19 @@ describe("runGreenCheckpoint", () => {
     expect(evidence).toHaveLength(1);
     expect(evidence[0]).toContain(`integration root: ${repo}`);
     expect(evidence[0]).toContain("emitter=gate-run");
+  });
+
+  it("reports the suite phase to the progress observer before setup and execution", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const { deps } = stubDeps(true);
+    const progress = vi.fn();
+    deps.reportProgress = progress;
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(progress).toHaveBeenCalledWith("phase:suite");
   });
 
   /**
@@ -1478,6 +1520,19 @@ describe("runGreenCheckpoint", () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  it("reports child output progress while retaining stdout and stderr", async () => {
+    const onProgress = vi.fn();
+    const result = await runCmd(
+      "bash",
+      ["-c", "printf 'ordinary child output\\n'; printf 'child error\\n' >&2"],
+      { onProgress },
+    );
+
+    expect(result.stdout).toContain("ordinary child output");
+    expect(result.stderr).toContain("child error");
+    expect(onProgress).toHaveBeenCalled();
   });
 
   it("EI-13992: a THROWING ensureMigrationsCurrent is swallowed — the gate still runs + judges normally (never blocks on the preflight)", async () => {
@@ -5645,6 +5700,35 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
     const r = await realCheckpointDeps(cfg, exec).runGreen(tree, "base");
     expect(r.green).toBe(true);
     expect(ran).toBe("npm run test:affected"); // the suite really ran — no false short-circuit
+  });
+
+  it("forwards command-boundary and child-output progress through the real dependency seam", async () => {
+    writeFileSync(
+      join(tree, "package.json"),
+      JSON.stringify({ name: "x", scripts: { "test:affected": "true" } }),
+    );
+    const progress = vi.fn();
+    const exec: CheckpointExec = async (cmd, args, opts) => {
+      opts?.onProgress?.();
+      if (cmd === "git" && args[0] === "grep")
+        return { code: 1, stdout: "", stderr: "" };
+      return { code: 0, stdout: "No affected workspaces.", stderr: "" };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: "npm run test:affected",
+      spaBuildWorkspace: "",
+    });
+
+    await realCheckpointDeps(cfg, exec, "run-progress", undefined, progress).runGreen(
+      tree,
+      "base",
+    );
+
+    expect(progress).toHaveBeenCalledWith("command:start:npm");
+    expect(progress).toHaveBeenCalledWith("command:output:npm");
+    expect(progress).toHaveBeenCalledWith("command:complete:npm");
   });
 });
 
