@@ -6980,6 +6980,33 @@ describe('codexContextWindowConfigPatch (resume inherits the window)', () => {
     expect(twice.match(/model_context_window/g)).toHaveLength(1);
   });
 
+  it('migrates legacy unmarked root keys instead of producing invalid duplicate TOML', () => {
+    const legacy = [
+      'model_context_window = 1000000',
+      'model_auto_compact_token_limit = 900000',
+      'model = "gpt-5.6-sol"',
+      '',
+      '[features]',
+      'memories = false',
+      '',
+    ].join('\n');
+
+    const out = codexContextWindowConfigPatch(legacy, 'gpt-5.6-sol');
+    expect(out.match(/^model_context_window\s*=/gm)).toHaveLength(1);
+    expect(out.match(/^model_auto_compact_token_limit\s*=/gm)).toHaveLength(1);
+    expect(out).toContain('model = "gpt-5.6-sol"');
+    expect(out).toContain('[features]\nmemories = false');
+  });
+
+  it('does not rewrite same-named keys that belong to a TOML table', () => {
+    const out = codexContextWindowConfigPatch(
+      '[example]\nmodel_context_window = 123\nmodel_auto_compact_token_limit = 100\n',
+      'gpt-5.6-sol',
+    );
+    expect(out).toContain('[example]\nmodel_context_window = 123\nmodel_auto_compact_token_limit = 100');
+    expect(out.match(/model_context_window/g)).toHaveLength(2);
+  });
+
   it('REMOVES a stale block when the home moves to a model with no extended window', () => {
     // The failure this prevents: a home switched gpt-5.6-sol -> gpt-5.5 keeps an
     // 872k declaration for a 272k model, and papercusp then seeds a soft limit

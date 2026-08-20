@@ -3465,10 +3465,23 @@ const CODEX_CONTEXT_WINDOW_END = '# END PAPERCUSP_CODEX_CONTEXT_WINDOW';
  * @returns {string}
  */
 export function codexContextWindowConfigPatch(configText, model) {
-  const stripped = String(configText || '').replace(
+  const withoutManagedBlock = String(configText || '').replace(
     new RegExp(`${CODEX_CONTEXT_WINDOW_BEGIN}\\n[\\s\\S]*?${CODEX_CONTEXT_WINDOW_END}\\n?`, 'g'),
     '',
   );
+  // The first rollout of the 1M-window support wrote these as unmarked root
+  // keys. Once the managed block was introduced, prepending it without
+  // removing those legacy lines made the TOML invalid (duplicate root keys)
+  // before `codex resume` could start. Only migrate the root prefix: a key
+  // with the same name below a table header belongs to that table and is not
+  // ours to rewrite.
+  const firstTable = withoutManagedBlock.search(/^\s*\[[^\n]+\]\s*(?:#.*)?$/m);
+  const root = firstTable === -1 ? withoutManagedBlock : withoutManagedBlock.slice(0, firstTable);
+  const tables = firstTable === -1 ? '' : withoutManagedBlock.slice(firstTable);
+  const stripped = `${root.replace(
+    /^\s*(?:model_context_window|model_auto_compact_token_limit)\s*=.*(?:\n|$)/gm,
+    '',
+  )}${tables}`;
   // '' for a model with no extended window — the strip above still runs, so a
   // home that MOVED to such a model loses a stale block rather than keeping a
   // window its new model does not have.
