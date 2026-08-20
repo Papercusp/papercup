@@ -52,6 +52,30 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
+  it('uses the advancing active-run heartbeat instead of immutable startedAtMs', async () => {
+    const active = {
+      active: true,
+      candidate: 'abc123',
+      startedAtMs: 1_100,
+      progressAtMs: 9_000,
+      elapsedSec: 480,
+    };
+    const current = snapshot({ activeRun: active });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'papercusp',
+      ownerId: 'su-1',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: current,
+    });
+    expect(certificate.lastProgressAtMs).toBe(9_000);
+    await expect(observeCheckpointProducer(certificate, { snapshot: async () => current })).resolves.toMatchObject({
+      producerPresent: true,
+      lastProgressAtMs: 9_000,
+    });
+  });
+
   it('recognizes a matching verdict after the certificate was issued', async () => {
     const certificate = checkpointProducerCertificate({
       pipeline: 'papercusp', candidateSha: 'abc1', ownerId: 'su-1', issuedAtMs: 1_500,

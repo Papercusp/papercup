@@ -360,6 +360,44 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(readLogHead).toHaveBeenCalledWith(`/tmp/${checkpointUnitForRoot('/tree')}.log`);
   });
 
+  it('reports advancing log progress instead of treating started_at as the heartbeat', () => {
+    const startedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+    const logProgress = new Date(Date.now() - 15_000).toISOString();
+    const phase = vi.fn(() => ({ phase: 'suite' as const, at: new Date(Date.now() - 30_000).toISOString() }));
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      refireSetup(startedAt),
+      () => `${logProgress} checkpointing candidate 98817077 (base 94b17b25)\n`,
+      undefined,
+      undefined,
+      phase,
+      () => `${logProgress} checkpointing candidate 98817077 (base 94b17b25)\n`,
+      undefined,
+      () => null,
+    );
+
+    expect(r.progress_at).toBe(logProgress);
+    expect(Date.parse(r.progress_at!)).toBeGreaterThan(Date.parse(startedAt));
+  });
+
+  it('uses the advancing log mtime when runner output has no timestamp', () => {
+    const startedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+    const progressAt = Date.now() - 10_000;
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      refireSetup(startedAt),
+      () => '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n',
+      undefined,
+      undefined,
+      () => ({ phase: 'suite' as const, at: new Date(Date.now() - 30_000).toISOString() }),
+      () => '[green-checkpoint] checkpointing candidate 98817077 (base 94b17b25)\n',
+      undefined,
+      () => progressAt,
+    );
+
+    expect(r.progress_at).toBe(new Date(progressAt).toISOString());
+  });
+
   it('does not report the full-suite remainder as ETA after the run enters delivering', () => {
     const startedAt = new Date(Date.now() - 25 * 60_000).toISOString();
     const phase = vi.fn(() => ({ phase: 'delivering' as const, at: new Date().toISOString() }));

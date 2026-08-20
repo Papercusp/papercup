@@ -256,6 +256,12 @@ export interface ActiveCheckpointCheck {
   started_at?: string | null;
   /** Seconds since the unit started — null when systemd did not report a start timestamp. */
   elapsed_sec?: number | null;
+  /**
+   * Latest observed checkpoint progress, from the run log/phase marker (or the log mtime).
+   * This is distinct from `started_at`: a long-lived run can keep progressing after the
+   * systemd start time has become old enough to look stalled.
+   */
+  progress_at?: string | null;
   /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
    *  would kill it — a rough "how much longer" estimate, not a promise. Null when the
    *  run has reached `delivering`: the backstop remainder is no longer an honest estimate
@@ -444,6 +450,69 @@ export function parseCheckpointCandidates(text: string | null): string[] {
     for (const m of line.matchAll(/checkpointing candidate (\S+)/g)) out.push(m[1]);
   }
   return out;
+}
+
+/** The persisted orchestrator log prefixes each real line with an ISO timestamp. */
+const CHECKPOINT_LOG_TIMESTAMP =
+  /^\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\b/;
+
+function latestLogTimestampMs(...texts: Array<string | null | undefined>): number | null {
+  let latest: number | null = null;
+  for (const text of texts) {
+    if (!text) continue;
+    for (const line of text.split(/\r?\n/)) {
+      if (isFixtureLogLine(line)) continue;
+      const timestamp = line.match(CHECKPOINT_LOG_TIMESTAMP)?.[1];
+      if (!timestamp) continue;
+      const at = Date.parse(timestamp);
+      if (Number.isFinite(at) && (latest == null || at > latest)) latest = at;
+    }
+  }
+  return latest;
+}
+
+function timestampMs(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function defaultReadLogMtime(logPath: string): number | null {
+  try {
+    const mtimeMs = statSync(logPath).mtimeMs;
+    return Number.isFinite(mtimeMs) ? mtimeMs : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the newest durable progress signal available to the probe. The log mtime covers
+ * child-runner output that has no timestamp of its own; the timestamped transcript and phase
+ * marker cover scheduler/persisted logs and state transitions. `startedAtMs` is deliberately
+ * last: it is a baseline for old writers, never the preferred liveness clock.
+ */
+function checkpointProgressAtMs(input: {
+  logHead?: string | null;
+  logTail?: string | null;
+  logMtimeMs?: number | null;
+  phaseAt?: string | null;
+  startedAtMs?: number | null;
+}): number | null {
+  const candidates = [
+    latestLogTimestampMs(input.logHead, input.logTail),
+    timestampMs(input.phaseAt),
+    input.logMtimeMs != null && Number.isFinite(input.logMtimeMs) ? input.logMtimeMs : null,
+    // Keep the start baseline in the comparison so a stale log/phase artifact can never move
+    // progress backwards. It is still last in preference: any real heartbeat wins above it.
+    input.startedAtMs != null && Number.isFinite(input.startedAtMs) ? input.startedAtMs : null,
+  ].filter((value): value is number => value != null && Number.isFinite(value));
+  if (candidates.length > 0) return Math.max(...candidates);
+  return null;
+}
+
+function isoTimestampOrNull(value: number | null): string | null {
+  return value == null ? null : new Date(value).toISOString();
 }
 
 function parseSystemctlShow(stdout: string): Record<string, string> {
@@ -870,6 +939,7 @@ export function checkActiveCheckpointRun(
   // previous head-only behaviour.
   readLogTail: (logPath: string) => string | null = defaultReadLogTail,
   readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
+  readLogMtime: (logPath: string) => number | null = defaultReadLogMtime,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
   const r = execFn('systemctl', [
@@ -892,6 +962,13 @@ export function checkActiveCheckpointRun(
     // The run-lock is an INDEPENDENT oracle (a plain file read, no fork), so consult it before
     // giving up: it is what keeps a transiently-unforkable host from wedging the gate shut.
     const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
+    const runPhase = lockHeld.held
+      ? readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root))
+      : null;
+    const progressAt = checkpointProgressAtMs({
+      phaseAt: runPhase?.at,
+      startedAtMs: timestampMs(lockHeld.started_at),
+    });
     const detail =
       `systemctl show exited ${r.status ?? 'null (spawn failed)'}` +
       `${Object.prototype.hasOwnProperty.call(props, 'ActiveState') ? '' : ' without an ActiveState property'}` +
@@ -902,7 +979,12 @@ export function checkActiveCheckpointRun(
       probe_failed: true,
       probe_detail: detail,
       ...(lockHeld.held
-        ? { started_at: lockHeld.started_at ?? null, elapsed_sec: lockHeld.elapsed_sec ?? null, held_externally: true }
+        ? {
+            started_at: lockHeld.started_at ?? null,
+            elapsed_sec: lockHeld.elapsed_sec ?? null,
+            ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
+            held_externally: true,
+          }
         : {}),
       // Never replaceable: `candidate_stale` is what unlocks a stop, and we cannot know the
       // candidate when we could not even read the unit's state.
@@ -919,6 +1001,10 @@ export function checkActiveCheckpointRun(
     if (lockHeld.held) {
       const current = currentCheckpointCandidate(root, execFn);
       const runPhase = readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root));
+      const progressAt = checkpointProgressAtMs({
+        phaseAt: runPhase?.at,
+        startedAtMs: timestampMs(lockHeld.started_at),
+      });
       const eta = checkpointEta(lockHeld.elapsed_sec ?? null, runPhase?.phase === 'delivering');
       // EI-18695275971973546: resolve the REAL in-flight candidate from the isolated
       // checkpoint checkout's own HEAD (see checkpointRootMirror's doc comment) instead of
@@ -938,6 +1024,7 @@ export function checkActiveCheckpointRun(
         candidate_stale: false,
         started_at: lockHeld.started_at ?? null,
         elapsed_sec: lockHeld.elapsed_sec ?? null,
+        ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
         ...eta,
         ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
         held_externally: true,
@@ -974,7 +1061,8 @@ export function checkActiveCheckpointRun(
   // yields nothing (unreadable/mid-rotation/short log) this degrades to the head's first
   // match, i.e. exactly the pre-EI behaviour.
   const headCandidates = parseCheckpointCandidates(logHead);
-  const tailCandidates = parseCheckpointCandidates(readLogTail(logPath));
+  const logTail = readLogTail(logPath);
+  const tailCandidates = parseCheckpointCandidates(logTail);
   const firstCandidate = headCandidates[0] ?? tailCandidates[0] ?? null;
   const candidate = tailCandidates[tailCandidates.length - 1] ?? firstCandidate;
   // Only report provenance when the run demonstrably MOVED. Note `candidate` may be an
@@ -985,6 +1073,13 @@ export function checkActiveCheckpointRun(
   // EI-18757156963245979: read the run's OWN published phase. A run past its suite is in the
   // verdict path (re-triage -> auto-refire -> salvage) and must not be replaced at any age.
   const runPhase = readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root));
+  const progressAt = checkpointProgressAtMs({
+    logHead,
+    logTail,
+    logMtimeMs: readLogMtime(logPath),
+    phaseAt: runPhase?.at,
+    startedAtMs: Number.isFinite(startedMs) ? startedMs : null,
+  });
   const eta = checkpointEta(elapsedSec, runPhase?.phase === 'delivering');
   return {
     active: true,
@@ -1000,6 +1095,7 @@ export function checkActiveCheckpointRun(
     ),
     started_at: startedAt,
     elapsed_sec: elapsedSec,
+    ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
     ...eta,
     ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
   };

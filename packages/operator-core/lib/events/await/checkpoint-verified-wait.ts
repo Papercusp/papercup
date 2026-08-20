@@ -8,6 +8,15 @@ export interface CheckpointProducerDetails extends Record<string, unknown> {
   runId?: string;
 }
 
+function checkpointProgressAtMs(snapshot: GitPipelineSnapshot): number | null {
+  return (
+    snapshot.activeRun?.progressAtMs ??
+    snapshot.activeRun?.startedAtMs ??
+    snapshot.routines?.greenCheckpoint?.lastFiredAtMs ??
+    null
+  );
+}
+
 function matchingVerdict(
   snapshot: GitPipelineSnapshot,
   issuedAtMs: number,
@@ -44,8 +53,7 @@ export function checkpointProducerCertificate(input: {
     },
     owner: { ownerId: input.ownerId, workItemId: input.workItemId ?? null },
     issuedAtMs: input.issuedAtMs,
-    lastProgressAtMs:
-      input.snapshot.activeRun?.startedAtMs ?? input.snapshot.routines?.greenCheckpoint?.lastFiredAtMs ?? null,
+    lastProgressAtMs: checkpointProgressAtMs(input.snapshot),
     lastFireAtMs: matchingVerdict(input.snapshot, 0, input)?.createdAtMs ?? null,
     expectedCadenceMs: input.expectedCadenceMs,
     verificationDeadlineMs: input.verificationDeadlineMs,
@@ -71,7 +79,7 @@ export async function observeCheckpointProducer(
   return {
     checkedAtMs: snapshot.generatedAtMs,
     producerPresent,
-    lastProgressAtMs: snapshot.activeRun?.startedAtMs ?? snapshot.routines?.greenCheckpoint?.lastFiredAtMs ?? null,
+    lastProgressAtMs: checkpointProgressAtMs(snapshot),
     lastFireAtMs: verdict?.createdAtMs ?? null,
     completedAtMs: verdict?.createdAtMs ?? null,
     evidence: {

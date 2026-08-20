@@ -355,6 +355,8 @@ export interface GitPipelineSnapshot {
      *  `false`/absent is NOT proof no refire happened, only that none was visible. */
     refireObserved?: boolean;
     startedAtMs: number | null;
+    /** Latest advancing checkpoint heartbeat from the run log/phase, falling back to start time. */
+    progressAtMs: number | null;
     elapsedSec: number | null;
   } | null;
 }
@@ -590,6 +592,7 @@ export interface GitPipelineSnapshotOpts {
     log_path?: string | null;
     candidate?: string | null;
     started_at?: string | null;
+    progress_at?: string | null;
     elapsed_sec?: number | null;
   };
 }
@@ -608,6 +611,7 @@ export function mapActiveRun(r: {
   elapsed_sec?: number | null;
 }): NonNullable<GitPipelineSnapshot['activeRun']> {
   const startedAtMs = r.started_at ? Date.parse(r.started_at) : NaN;
+  const progressAtMs = r.progress_at ? Date.parse(r.progress_at) : NaN;
   return {
     active: r.active,
     ...(r.log_path ? { logPath: r.log_path } : {}),
@@ -615,6 +619,11 @@ export function mapActiveRun(r: {
     // Emitted ONLY on an actual refire, so the common reply shape is unchanged.
     ...(r.refire_observed ? { initialCandidate: r.initial_candidate ?? null, refireObserved: true } : {}),
     startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+    progressAtMs: Number.isFinite(progressAtMs)
+      ? progressAtMs
+      : Number.isFinite(startedAtMs)
+        ? startedAtMs
+        : null,
     elapsedSec: r.elapsed_sec ?? null,
   };
 }

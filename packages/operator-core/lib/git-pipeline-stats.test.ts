@@ -165,6 +165,7 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
       logPath: '/tmp/papercup-green-checkpoint-manual-demo.log',
       candidate: '06a0eb9577deadbeef',
       startedAtMs: Date.parse('2026-07-20T04:00:00.000Z'),
+      progressAtMs: Date.parse('2026-07-20T04:00:00.000Z'),
       elapsedSec: 840,
     });
   });
@@ -174,12 +175,24 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
       active: false,
       candidate: null,
       startedAtMs: null,
+      progressAtMs: null,
       elapsedSec: null,
     });
   });
 
   it('nulls an unparseable systemd timestamp instead of NaN', () => {
     expect(mapActiveRun({ active: true, started_at: 'not-a-date' }).startedAtMs).toBeNull();
+    expect(mapActiveRun({ active: true, started_at: 'not-a-date' }).progressAtMs).toBeNull();
+  });
+
+  it('maps an advancing log/phase heartbeat and does not reuse the immutable start time', () => {
+    const m = mapActiveRun({
+      active: true,
+      started_at: '2026-08-20T09:00:00.000Z',
+      progress_at: '2026-08-20T09:24:00.000Z',
+    });
+    expect(m.startedAtMs).toBe(Date.parse('2026-08-20T09:00:00.000Z'));
+    expect(m.progressAtMs).toBe(Date.parse('2026-08-20T09:24:00.000Z'));
   });
 
   /**
