@@ -108,19 +108,54 @@ export interface CutLegs {
   arm64?: boolean;
 }
 
+/** Runtime-only identity and retry controls for a release cut. The owner identity
+ * is deliberately never persisted in the tree: the finished-byte identity audit
+ * needs it as a search literal, but writing it into release source would create
+ * the exact leak that audit is meant to catch. */
+export interface CutRuntimeEnv {
+  ownerName: string;
+  ownerEmail?: string;
+  /** Explicit retry-only fast path: reuse a seed already cut in this isolated root. */
+  reuseSeed?: boolean;
+}
+
+function requiredOwnerName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(
+      'release_owner_name_required — pass the human owner name at run time so the finished-byte identity audit can certify the cut',
+    );
+  }
+  return trimmed;
+}
+
+/** Shell-safe single-quoted literal. Owner names may contain apostrophes; interpolating
+ * them directly into the systemd wrapper would otherwise corrupt the command. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\"'\"'`)}'`;
+}
+
 /** Pure: the env the detached cut runs release-local.sh with — LOCAL-only ENFORCED
  *  (PAPERCUSP_PUBLISH_GITHUB=0, never publish to GitHub) plus the requested optional
  *  platform legs. Exported for unit testing. */
-export function buildCutEnv(legs: CutLegs, expectedSourceSha: string): Record<string, string> {
+export function buildCutEnv(
+  legs: CutLegs,
+  expectedSourceSha: string,
+  runtime: CutRuntimeEnv,
+): Record<string, string> {
   const env: Record<string, string> = {
     PAPERCUSP_PUBLISH_GITHUB: '0',
     PAPERCUSP_EXPECTED_SOURCE_SHA: expectedSourceSha,
+    PAPERCUSP_RELEASE_OWNER_NAME: requiredOwnerName(runtime.ownerName),
     // This is the desktop release cutter. release-local.sh otherwise auto-enables
     // Android whenever a sibling mobile checkout + SDK happen to exist, which makes
     // an explicitly Linux/macOS/Windows cut depend on ambient fourth-product state.
     // Mobile has its own release rail; declare the desktop-only scope explicitly.
     PAPERCUSP_SKIP_MOBILE: '1',
   };
+  const ownerEmail = runtime.ownerEmail?.trim();
+  if (ownerEmail) env.PAPERCUSP_RELEASE_OWNER_EMAIL = ownerEmail;
+  if (runtime.reuseSeed) env.PAPERCUSP_SKIP_SEED_CUT = '1';
   if (legs.mac) env.WITH_MAC = '1';
   if (legs.windows) env.WITH_WINDOWS = '1';
   if (legs.arm64) env.WITH_ARM64 = '1';
@@ -139,11 +174,12 @@ export function buildCutArgv(
   legs: CutLegs,
   expectedSourceSha: string,
   pathEnv: string,
+  runtime: CutRuntimeEnv,
   platform?: Platform,
 ): string[] {
-  const env = buildCutEnv(legs, expectedSourceSha);
+  const env = buildCutEnv(legs, expectedSourceSha, runtime);
   const envPrefix = Object.entries(env)
-    .map(([k, v]) => `${k}='${v}'`)
+    .map(([k, v]) => `${k}=${shellSingleQuote(v)}`)
     .join(' ');
   const unit = cutUnitFor(platform);
   const log = cutLogFor(platform);
@@ -168,6 +204,7 @@ export interface LaunchCutOpts {
   channel: Channel;
   /** Exact 40-char superproject commit this cut is authorized to package. */
   expectedSourceSha: string;
+  runtime: CutRuntimeEnv;
   legs?: CutLegs;
   /** papercusp-desktop root (default desktopRoot()). */
   root?: string;
@@ -201,7 +238,16 @@ export interface LaunchCutResult {
 export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spawn): Promise<LaunchCutResult> {
   const root = opts.root ?? desktopRoot();
   const legs = opts.legs ?? {};
-  const argv = buildCutArgv(root, opts.version, opts.channel, legs, opts.expectedSourceSha, process.env.PATH ?? '', opts.platform);
+  const argv = buildCutArgv(
+    root,
+    opts.version,
+    opts.channel,
+    legs,
+    opts.expectedSourceSha,
+    process.env.PATH ?? '',
+    opts.runtime,
+    opts.platform,
+  );
   return new Promise<LaunchCutResult>((resolve) => {
     const base: LaunchCutResult = {
       launched: false,
