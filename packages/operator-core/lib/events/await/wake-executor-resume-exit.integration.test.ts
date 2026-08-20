@@ -8,11 +8,12 @@ import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-ou
 /**
  * DERIVED, never hardcoded — do not substitute a literal `/home/<name>` here.
  *
- * check-no-box-identity.mjs fires on the CLASS `/home/<user>/…` for any user outside
- * GENERIC_USERS, so a placeholder name is not a fix: `/home/service-user` red-ed the
- * green gate exactly the way this box's real home did. The lint's own guidance is to
- * derive the path rather than rename it, and deriving is also the only form that is
- * correct on a checkout other than the one it was written on.
+ * check-no-box-identity.mjs fires on the CLASS of an absolute home-directory path for
+ * any account outside GENERIC_USERS, so renaming to an invented placeholder account is
+ * NOT a fix — one red-ed the green gate here exactly the way this box's real home did.
+ * (Writing such a path in a COMMENT trips it too: the lint scans source text, prose
+ * included.) The lint's own guidance is to derive the path rather than rename it, and
+ * deriving is also the only form that is correct on a checkout other than this one.
  *
  * Nothing here depends on WHICH home this resolves to. These fixtures only need a
  * home-prefixed PATH that OMITS the node prefix the resolver has to find; the test
