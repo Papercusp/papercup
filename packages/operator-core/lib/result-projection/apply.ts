@@ -568,7 +568,7 @@ export function applyResultProjection<T extends ProjectableResult>(
     // impossible to mistake for an item-level finding. `pick` is the explicit
     // structured form and runs before `pipe` when the caller wants item counts.
     if ((spec.pipe?.length ?? 0) > 0 && !spec.pick && json) {
-      const hasCount = spec.pipe.some((stage) => stage.op === 'count');
+      const hasCount = spec.pipe?.some((stage) => stage.op === 'count') ?? false;
       note(
         `pipe applied directly to structured JSON: these operators inspect rendered ` +
           `JSON lines, not array/object items${hasCount ? '; `count` reports rendered line count, not matching item count' : ''}. ` +
