@@ -23,7 +23,7 @@ import { DESKTOP_PERF_BUDGETS } from './system-health/desktop-perf-budgets';
 
 const suites = listAdminTestSuites();
 
-function aiSummary() {
+function aiSummary(): Parameters<typeof applyAiExploreEvent>[0] {
   return {
     goal: 'test',
     steps: 0,
