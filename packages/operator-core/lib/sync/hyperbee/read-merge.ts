@@ -622,6 +622,38 @@ export async function seedCursorFromSnapshots(
  * are keyed by (workspaceId, harnessSlug) that the store closes over, so this
  * interface speaks only the per-log keyHex→position map.
  */
+/**
+ * Durable lifecycle attached to one peer log. `unknown` is deliberately a real
+ * state: cursor rows predate durable identity metadata, and silence alone is
+ * never evidence that an operator intentionally retired a peer.
+ */
+export type MergeCursorPeerLifecycleState = 'unknown' | 'active' | 'retired';
+
+export interface MergeCursorPeerLifecycle {
+  logKeyHex: string;
+  devicePubkey: string | null;
+  state: MergeCursorPeerLifecycleState;
+  updatedAt: Date | null;
+}
+
+/** Only explicit identity-bearing events may move a row out of `unknown`. */
+export interface MergeCursorPeerLifecycleUpdate {
+  logKeyHex: string;
+  devicePubkey: string;
+  state: Exclude<MergeCursorPeerLifecycleState, 'unknown'>;
+}
+
+export interface MergeCursorPeerLifecycleStore {
+  /** Load lifecycle independently of apply binding; identity is not projection-scoped. */
+  load(): Promise<Map<string, MergeCursorPeerLifecycle>>;
+  /**
+   * Persist explicit active/retired evidence. A missing cursor row is created at
+   * position 0 under the current binding; an existing row keeps its position and
+   * binding so a lifecycle transition can never rewind or re-scope a fold.
+   */
+  upsert(updates: readonly MergeCursorPeerLifecycleUpdate[], applyBinding: string | null): Promise<void>;
+}
+
 export interface MergeCursorStore {
   /**
    * Persisted positions for this (workspace, harness) that are VALID under
@@ -637,6 +669,11 @@ export interface MergeCursorStore {
    * under. Best-effort; may throw — the caller isolates it.
    */
   save(positions: ReadonlyMap<string, number>, applyBinding: string | null): Promise<void>;
+  /**
+   * Optional while non-PG/in-memory fakes retain the position-only contract.
+   * The canonical PG implementation always provides this nested store.
+   */
+  peerLifecycle?: MergeCursorPeerLifecycleStore;
 }
 
 /**

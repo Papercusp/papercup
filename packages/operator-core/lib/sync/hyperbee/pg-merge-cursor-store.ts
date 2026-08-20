@@ -19,7 +19,7 @@
  */
 
 import { getLongLivedAdminPool } from '../../long-lived-admin-pool';
-import type { MergeCursorStore } from './read-merge';
+import type { MergeCursorPeerLifecycle, MergeCursorPeerLifecycleState, MergeCursorStore } from './read-merge';
 
 /** Process-lived shared pool. `max: 2` is ample — the cursor does one load at boot + a
  *  small periodic upsert per fold, never a hot query path. Re-resolves the admin URL on
@@ -29,6 +29,8 @@ import type { MergeCursorStore } from './read-merge';
  *  it reset: it had zero callers in the tree, and the registry-wide
  *  `_resetLongLivedAdminPoolsForTests()` now covers the same need centrally. */
 const sql = () => getLongLivedAdminPool('pg-merge-cursor-store', { max: 2, prepare: false });
+type CursorSql = ReturnType<typeof sql>;
+type CursorSqlProvider = () => CursorSql;
 
 /**
  * WI-2105 — a `MergeCursorStore` scoped to one `(workspaceId, harnessSlug)`,
@@ -62,6 +64,7 @@ const sql = () => getLongLivedAdminPool('pg-merge-cursor-store', { max: 2, prepa
 export function createPgMergeCursorStore(
   workspaceId: string,
   harnessSlug: string,
+  sqlProvider: CursorSqlProvider = sql,
 ): MergeCursorStore {
   return {
     async load(applyBinding: string | null): Promise<Map<string, number>> {
@@ -70,7 +73,7 @@ export function createPgMergeCursorStore(
       // instead of the `= NULL` three-valued miss that would silently re-fold every
       // such harness on every boot. The ::text cast pins the parameter type for the
       // NULL case (postgres cannot infer it from a bare NULL parameter).
-      const rows = await sql()<{ log_keyhex: string; position: string | number }[]>`
+      const rows = await sqlProvider()<{ log_keyhex: string; position: string | number }[]>`
         SELECT log_keyhex, position
         FROM harness_shared.substrate_merge_cursor
         WHERE workspace_id = ${workspaceId}
@@ -83,7 +86,7 @@ export function createPgMergeCursorStore(
     },
     async save(positions: ReadonlyMap<string, number>, applyBinding: string | null): Promise<void> {
       if (positions.size === 0) return;
-      const s = sql();
+      const s = sqlProvider();
       const now = new Date();
       const values = [...positions].map(([log_keyhex, position]) => ({
         workspace_id: workspaceId,
@@ -111,6 +114,74 @@ export function createPgMergeCursorStore(
                       apply_binding = EXCLUDED.apply_binding,
                       updated_at = EXCLUDED.updated_at
       `;
+    },
+    peerLifecycle: {
+      async load(): Promise<Map<string, MergeCursorPeerLifecycle>> {
+        const rows = await sqlProvider()<
+          {
+            log_keyhex: string;
+            peer_device_pubkey: string | null;
+            peer_lifecycle_state: MergeCursorPeerLifecycleState;
+            peer_lifecycle_updated_at: Date | string | null;
+          }[]
+        >`
+          SELECT log_keyhex,
+                 peer_device_pubkey,
+                 peer_lifecycle_state,
+                 peer_lifecycle_updated_at
+          FROM harness_shared.substrate_merge_cursor
+          WHERE workspace_id = ${workspaceId}
+            AND harness_slug = ${harnessSlug}
+        `;
+        const out = new Map<string, MergeCursorPeerLifecycle>();
+        for (const row of rows) {
+          out.set(row.log_keyhex, {
+            logKeyHex: row.log_keyhex,
+            devicePubkey: row.peer_device_pubkey,
+            state: row.peer_lifecycle_state,
+            updatedAt: row.peer_lifecycle_updated_at === null ? null : new Date(row.peer_lifecycle_updated_at),
+          });
+        }
+        return out;
+      },
+      async upsert(updates, applyBinding): Promise<void> {
+        if (updates.length === 0) return;
+        const s = sqlProvider();
+        const now = new Date();
+        const values = updates.map((update) => ({
+          workspace_id: workspaceId,
+          harness_slug: harnessSlug,
+          log_keyhex: update.logKeyHex,
+          // A lifecycle event can precede the first fold. Position 0 is the only
+          // safe seed for a newly materialized row; conflict updates below never
+          // touch an existing row's position or apply binding.
+          position: 0,
+          apply_binding: applyBinding,
+          peer_device_pubkey: update.devicePubkey,
+          peer_lifecycle_state: update.state,
+          peer_lifecycle_updated_at: now,
+          updated_at: now,
+        }));
+        await s`
+          INSERT INTO harness_shared.substrate_merge_cursor ${s(
+            values,
+            'workspace_id',
+            'harness_slug',
+            'log_keyhex',
+            'position',
+            'apply_binding',
+            'peer_device_pubkey',
+            'peer_lifecycle_state',
+            'peer_lifecycle_updated_at',
+            'updated_at',
+          )}
+          ON CONFLICT (workspace_id, harness_slug, log_keyhex)
+          DO UPDATE SET peer_device_pubkey = EXCLUDED.peer_device_pubkey,
+                        peer_lifecycle_state = EXCLUDED.peer_lifecycle_state,
+                        peer_lifecycle_updated_at = EXCLUDED.peer_lifecycle_updated_at,
+                        updated_at = EXCLUDED.updated_at
+        `;
+      },
     },
   };
 }
