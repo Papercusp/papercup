@@ -10,6 +10,20 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Keep the registry hermetic. Importing the real process-global registry lets
+// concerns registered by unrelated modules leak into all:true; some of those
+// concerns capture their state from the real operator PG, which a unit test
+// must never reach.
+const registryState = vi.hoisted(() => ({ concerns: new Map<string, any>() }));
+
+vi.mock('../../config-overrides/registry', () => ({
+  registerOverrideConcern: (concern: any) => {
+    registryState.concerns.set(concern.name, concern);
+  },
+  listOverrideConcerns: () => [...registryState.concerns.values()],
+  getOverrideConcern: (name: string) => registryState.concerns.get(name),
+}));
+
 // Fake harness: exercise the spec without the real audit/PG write.
 vi.mock('../../gateway-control/control-harness', () => ({
   runControlMutation: vi.fn(async (spec: any, opts: any = {}) => {
@@ -46,6 +60,7 @@ const fakeConcern = (name: string): OverrideConcern => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  registryState.concerns.clear();
   resetSpy = vi.fn(async () => ({}));
   diffSpy = vi.fn(async () => []); // post-reset: no overrides remain
   registerOverrideConcern(fakeConcern('fake-concern'));

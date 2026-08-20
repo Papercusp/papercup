@@ -34,8 +34,9 @@ const execSyncSpy = vi.fn();
 const installPapercuspFilesSpy = vi.fn(async () => ({ playbookWritten: true, extensionWritten: true }));
 const installOmpIntegrationSpy = vi.fn(async () => ({ changed: false, actions: [], reason: undefined }));
 // Holder so a single os mock can be flipped to throw from homedir() per-test
-// (the rejection-hold case) — no per-test re-mock, so nothing leaks.
-const homeState = { throws: false };
+// after the bootstrap installer has actually run (the rejection-hold case) —
+// no per-test re-mock, so nothing leaks.
+const homeState = { throwAfterInstall: false };
 
 beforeEach(() => {
   vi.resetModules();
@@ -43,7 +44,7 @@ beforeEach(() => {
   execSyncSpy.mockReset();
   installPapercuspFilesSpy.mockClear();
   installOmpIntegrationSpy.mockClear();
-  homeState.throws = false;
+  homeState.throwAfterInstall = false;
   tmpHome = mkdtempSync(join(tmpdir(), 'ensure-omp-su-cache-'));
 
   // The source resolves `omp` by scanning process.env.PATH with pure-Node
@@ -61,7 +62,9 @@ beforeEach(() => {
     return {
       ...actual,
       homedir: () => {
-        if (homeState.throws) throw new Error('home blown up');
+        if (homeState.throwAfterInstall && installPapercuspFilesSpy.mock.calls.length > 0) {
+          throw new Error('home blown up');
+        }
         return tmpHome;
       },
     };
@@ -141,7 +144,7 @@ describe('ensureOmpSuInstalled — single-flight cache', () => {
     // Force the cached run to REJECT after the heavy bootstrap: homedir() (the
     // default arg of readEngineerOmpBootstrapState, called unguarded at the
     // tail of the IIFE) throws via the per-test holder flag.
-    homeState.throws = true;
+    homeState.throwAfterInstall = true;
     const mod = await import('./ensure-omp-su');
 
     const p1 = mod.ensureOmpSuInstalled();
