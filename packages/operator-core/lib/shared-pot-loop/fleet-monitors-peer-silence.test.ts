@@ -387,6 +387,64 @@ describe('judgePeerFederationSilence — EI-20617273180156712 (apply_binding res
   });
 });
 
+describe('judgePeerFederationSilence — durable peer lifecycle (WI-40017)', () => {
+  it('keeps explicitly active and historical unknown peers alertable', () => {
+    const rows = [
+      log('active-silent', 48, 1, LIVE_BINDING, 'active'),
+      log('unknown-silent', 72, 2, LIVE_BINDING, 'unknown'),
+      log('active-fresh', 0.1, 3, LIVE_BINDING, 'active'),
+    ];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: null,
+      admittedLogKeysHex: [],
+    });
+
+    expect(v.totalLogs).toBe(3);
+    expect(v.retiredCursors).toBe(0);
+    expect(v.silent.map(({ logKeyHex, lifecycleState }) => ({ logKeyHex, lifecycleState }))).toEqual([
+      { logKeyHex: 'unknown-silent', lifecycleState: 'unknown' },
+      { logKeyHex: 'active-silent', lifecycleState: 'active' },
+    ]);
+    expect(v.breaches[0]).toContain('NO PEER ADMITTED');
+  });
+
+  it('excludes retired peers before selecting the live binding', () => {
+    const rows = [
+      log('retired-freshest', 0, 99, 'retired-binding', 'retired'),
+      log('unknown-silent', 48, 1, LIVE_BINDING, 'unknown'),
+      log('active-fresh', 0.1, 2, LIVE_BINDING, 'active'),
+    ];
+    const v = judgePeerFederationSilence(rows, {
+      silentAfterMs: SLO,
+      nowMs: NOW,
+      ownLogKeyHex: null,
+    });
+
+    expect(v.liveApplyBinding).toBe(LIVE_BINDING);
+    expect(v.totalLogs).toBe(2);
+    expect(v.retiredCursors).toBe(1);
+    expect(v.strandedCursors).toBe(0);
+    expect(v.silent.map((s) => s.logKeyHex)).toEqual(['unknown-silent']);
+    expect(v.silent.some((s) => s.logKeyHex === 'retired-freshest')).toBe(false);
+  });
+
+  it('reports an all-retired cursor set as unmeasured while retaining the exclusion count', () => {
+    const v = judgePeerFederationSilence(
+      [log('retired-a', 48, 1, LIVE_BINDING, 'retired'), log('retired-b', 72, 2, 'old-binding', 'retired')],
+      { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null },
+    );
+
+    expect(v.measured).toBe(false);
+    expect(v.unmeasuredReason).toBe('no-remote-logs');
+    expect(v.totalLogs).toBe(0);
+    expect(v.retiredCursors).toBe(2);
+    expect(v.silent).toEqual([]);
+    expect(v.breaches).toEqual([]);
+  });
+});
+
 /**
  * THE OWN LOG IS NOT A PEER.
  *

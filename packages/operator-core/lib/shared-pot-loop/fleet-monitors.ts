@@ -295,6 +295,10 @@ export interface MergeCursorRow {
   applyBinding: string | null;
 }
 
+type MonitorableMergeCursorRow = MergeCursorRow & {
+  lifecycleState: Exclude<MergeCursorPeerLifecycleState, 'retired'>;
+};
+
 export interface PeerSilence {
   logKeyHex: string;
   /** How long since we last folded anything new from this log. */
@@ -414,7 +418,9 @@ export function judgePeerFederationSilence(
   // active rows remain alertable even when they are not currently admitted.
   // Filter before choosing the live binding: a lifecycle transition has its own
   // timestamp and must never make a retired row's binding the monitor authority.
-  const monitorableRows = rows.filter((r) => r.lifecycleState !== 'retired');
+  const monitorableRows = rows.filter(
+    (r): r is MonitorableMergeCursorRow => r.lifecycleState !== 'retired',
+  );
   const retiredCursors = rows.length - monitorableRows.length;
   if (monitorableRows.length === 0) {
     return {
