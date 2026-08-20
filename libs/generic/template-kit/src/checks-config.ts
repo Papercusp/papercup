@@ -86,6 +86,8 @@ export interface ChecksGymSection {
 /** `composition-integrity` — the app's CHOSEN template set (else sibling dirs). */
 export interface ChecksCompositionSection {
   templateYamls: string[];
+  /** Tagged `<template-id>:<decision-point-id>` build disclosures. */
+  decisionPointAnswers?: Record<string, string>;
 }
 
 /**
@@ -350,7 +352,7 @@ export function validateChecksConfig(value: unknown): string[] {
   if (value.composition !== undefined) {
     if (!isRecord(value.composition))
       errors.push("composition: must be an object");
-    else
+    else {
       requireStringArray(
         errors,
         "composition",
@@ -358,6 +360,22 @@ export function validateChecksConfig(value: unknown): string[] {
         value.composition.templateYamls,
         true,
       );
+      if (value.composition.decisionPointAnswers !== undefined) {
+        if (!isRecord(value.composition.decisionPointAnswers)) {
+          errors.push("composition.decisionPointAnswers: must be an object");
+        } else {
+          for (const [key, answer] of Object.entries(
+            value.composition.decisionPointAnswers,
+          )) {
+            if (!isNonEmptyString(key) || !isNonEmptyString(answer)) {
+              errors.push(
+                `composition.decisionPointAnswers.${key}: must be a non-empty string`,
+              );
+            }
+          }
+        }
+      }
+    }
   }
 
   if (value.components !== undefined) {

@@ -1256,6 +1256,73 @@ export const PAPERCUSP_ANDROID_SHELL_TEMPLATE: TemplateManifest = {
   ],
 };
 
+/** App: the thin official Android composition root. */
+export const PAPERCUSP_ANDROID_APP_TEMPLATE: TemplateManifest = {
+  id: "papercusp-android-app",
+  version: "0.1.0",
+  scope: "app",
+  category: "app",
+  summary:
+    "The official whole-app root for a Papercusp-style Android app: a thin pure composition that hard-requires " +
+    "papercusp-mobile-base and papercusp-android-shell at 0.1.0, records every decision-point answer in the exact " +
+    "closure, and runs the additive union of portable and Android-native checks. It adds no product component or " +
+    "platform behavior of its own.",
+  components: [],
+  contracts: [],
+  decisionPoints: [
+    {
+      id: "android-app-purpose",
+      prompt:
+        "What product is this Android app, and which answers are supplied to every decision point in its exact dependency closure?",
+    },
+  ],
+  composesWith: ["papercusp-mobile-base", "papercusp-android-shell"],
+  requires: [
+    { id: "papercusp-mobile-base", version: "0.1.0" },
+    { id: "papercusp-android-shell", version: "0.1.0" },
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
+  checks: [
+    {
+      id: "composition-integrity",
+      run: "checks/composition-integrity.test.ts",
+      summary:
+        "the root resolves exactly to the pinned mobile-base and Android-shell closure, every tagged decision point has a non-empty answer, and the additive union retains every closure check",
+    },
+  ],
+  musts: [
+    {
+      id: "thin-app-template",
+      rule: "The Android app root adds purpose and composition guidance only; reusable behavior belongs in the mobile-base or Android-shell aspects and product behavior stays in the consumer",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "exact-mobile-closure",
+      rule: "The root hard-requires exactly papercusp-mobile-base@0.1.0 and papercusp-android-shell@0.1.0 with no unpinned or substitute chassis",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "complete-decision-record",
+      rule: "The materialized checks config records one non-empty template-id:decision-id answer for every decision point in the exact closure",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "full-union-green",
+      rule: "The composed Android app passes the full additive union of root, shared-base, and Android-shell checks; the root never duplicates or weakens aspect assertions",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "product-behavior-stays-owned",
+      rule: "Domain flows, endpoints, routes, copy, brand, assets, and selected optional capability implementations remain owned by the consuming product",
+      enforcedBy: "prose-only",
+    },
+  ],
+};
+
 /** The reference template set — validateTemplateSet(REFERENCE_TEMPLATES) must stay green. */
 export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PAPERCUSP_OPS_HIVES_TEMPLATE,
@@ -1272,4 +1339,5 @@ export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PAPERCUSP_WEBAPP_TEMPLATE,
   PAPERCUSP_MOBILE_BASE_TEMPLATE,
   PAPERCUSP_ANDROID_SHELL_TEMPLATE,
+  PAPERCUSP_ANDROID_APP_TEMPLATE,
 ];

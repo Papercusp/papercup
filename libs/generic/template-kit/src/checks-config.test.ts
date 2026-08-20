@@ -113,6 +113,29 @@ describe("validateChecksConfig", () => {
     expect(errors).toContain("seam.invalidOutput: required object fixture");
   });
 
+  it("validates tagged composition decision answers when present", () => {
+    expect(
+      validateChecksConfig({
+        app: { name: "x" },
+        composition: {
+          templateYamls: ["template.yaml"],
+          decisionPointAnswers: { "root:purpose": "A complete answer" },
+        },
+      }),
+    ).toEqual([]);
+    expect(
+      validateChecksConfig({
+        app: { name: "x" },
+        composition: {
+          templateYamls: ["template.yaml"],
+          decisionPointAnswers: { "root:purpose": "" },
+        },
+      }),
+    ).toContain(
+      "composition.decisionPointAnswers.root:purpose: must be a non-empty string",
+    );
+  });
+
   it("rejects an incomplete mobile base and duplicate command ids", () => {
     const errors = validateChecksConfig({
       app: { name: "x" },
@@ -241,6 +264,19 @@ describe("validateChecksConfig", () => {
         join(
           TEMPLATES_DIR,
           "papercusp-android-shell/reference/android-shell.checks-config.example.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(validateChecksConfig(raw)).toEqual([]);
+  });
+
+  it("the committed Android-app answer record validates structurally", () => {
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          TEMPLATES_DIR,
+          "papercusp-android-app/reference/android-app.checks-config.example.json",
         ),
         "utf8",
       ),

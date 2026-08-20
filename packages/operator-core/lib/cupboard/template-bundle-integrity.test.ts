@@ -91,11 +91,11 @@ function listTemplateRefs(): string[] {
     .sort();
 }
 
-function listCheckFiles(ref: string): string[] {
+function listExecutableCheckFiles(ref: string): string[] {
   const dir = join(TEMPLATES_DIR, ref, 'checks');
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((f) => f.endsWith('.ts'))
+    .filter((f) => f.endsWith('.test.ts'))
     .map((f) => join(dir, f))
     .sort();
 }
@@ -200,7 +200,9 @@ export function findUnvendoredImports(templatesDir: string): string[] {
     if (!statSync(join(templatesDir, ref)).isDirectory()) continue;
     const checksDir = join(templatesDir, ref, 'checks');
     if (!existsSync(checksDir)) continue;
-    for (const f of readdirSync(checksDir).filter((x) => x.endsWith('.ts')).sort()) {
+    for (const f of readdirSync(checksDir)
+      .filter((x) => x.endsWith('.ts'))
+      .sort()) {
       const file = join(checksDir, f);
       for (const spec of externalImportsOf(readFileSync(file, 'utf8'))) {
         if (PUBLIC_DEVDEPS.has(spec)) continue;
@@ -269,11 +271,13 @@ describe('template bundle integrity — a materialized app can run the checks it
     expect(listTemplateRefs().length).toBeGreaterThan(0);
   });
 
-  it('every check file has at least one import (proves the extractor is not silently matching nothing)', () => {
-    // Falsifier for the extractor itself. If externalImportsOf ever stops working,
-    // the invariant below would pass vacuously for every file — the exact failure
-    // mode (an absence "proved" by a search that never matched) this guards against.
-    const checks = listTemplateRefs().flatMap(listCheckFiles);
+  it('every executable check has at least one external import (proves the extractor is not silently matching nothing)', () => {
+    // Falsifier for the extractor itself. `template.yaml` runs `*.test.ts` files;
+    // sibling `checks/*.ts` files may be pure support modules whose only imports
+    // are deliberately ignored `node:*` built-ins. The real invariant below still
+    // scans every TypeScript file, so an unvendored import in a support module is
+    // not hidden by this executable-check inventory.
+    const checks = listTemplateRefs().flatMap(listExecutableCheckFiles);
     expect(checks.length, 'no template check files found at all').toBeGreaterThan(0);
     const withImports = checks.filter((f) => externalImportsOf(readFileSync(f, 'utf8')).length > 0);
     expect(withImports.length).toBe(checks.length);
@@ -288,9 +292,7 @@ describe('template bundle integrity — a materialized app can run the checks it
     // Each of these used to be invisible to the `from`-only matcher, and each fails
     // in the silent direction: an unvendored package reported as clean.
     expect(externalImportsOf('import "@papercusp/side-effect";\n')).toEqual(['@papercusp/side-effect']);
-    expect(externalImportsOf('const m = await import("@papercusp/dynamic");\n')).toEqual([
-      '@papercusp/dynamic',
-    ]);
+    expect(externalImportsOf('const m = await import("@papercusp/dynamic");\n')).toEqual(['@papercusp/dynamic']);
     expect(externalImportsOf('const m = require("@papercusp/cjs");\n')).toEqual(['@papercusp/cjs']);
   });
 
