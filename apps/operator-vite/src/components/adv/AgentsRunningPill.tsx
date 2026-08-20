@@ -59,6 +59,10 @@ export interface RosterAgent {
   feature: string | null;
   currentPlanSlug: string | null;
   liveness: 'live' | 'idle' | 'stale' | string;
+  /** Authoritative session-lifecycle verdict from the shared server oracle.
+   *  Unlike `liveness`, this distinguishes a genuinely live turn from a parked
+   *  or ended process that is still emitting keepalive heartbeats. */
+  sessionState?: 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded' | string | null;
   heartbeatAt: string;
   /** Genuine-activity timestamp (last real turn/tool dispatch, coord_presence.last_active_at)
    *  — the "since last turn" clock and the basis for activity-liveness. NOT the keepalive
@@ -411,14 +415,15 @@ export function displayName(
 }
 
 /**
- * Whether a roster entry counts as RUNNING — present (not heartbeat-stale) OR
- * loop-armed. A loop-armed agent keeps working on a cadence even while parked
- * between wakes, so it belongs on the roster even if its presence heartbeat has
- * gone stale.
+ * Whether a roster entry belongs on the BROADER active/wakeable roster — present
+ * (not heartbeat-stale) OR loop-armed. A loop-armed agent keeps working on a
+ * cadence even while parked between wakes, so broader fleet/ask surfaces retain
+ * it even if its presence heartbeat has gone stale.
  *
- * Exported so every roster surface shares ONE membership rule: this pill AND the
- * left-sidebar Fleet pane (SwarmTab) both filter through it, so the two can't
- * drift into disagreeing about who is running. Pure — exported for tests.
+ * The "agents running" pill deliberately does NOT use this broader predicate:
+ * its wording promises agents running right now, so it filters on the server's
+ * authoritative `sessionState === 'live'` verdict below. Pure — exported for
+ * the roster surfaces that intentionally include parked/wakeable agents.
  */
 export function isRunningAgent(a: Pick<RosterAgent, 'liveness' | 'loopArmed'>): boolean {
   return a.liveness !== 'stale' || Boolean(a.loopArmed);
@@ -487,12 +492,13 @@ export default function AgentsRunningPill() {
   // popover closes so the next manual open starts neutral.
   const [focusOwnerRaw, setFocusOwner] = useQueryState('agentsFocus');
   const focusOwner = typeof focusOwnerRaw === 'string' && focusOwnerRaw ? focusOwnerRaw : null;
-  // Shown = isRunningAgent (present OR loop-armed) — the SAME predicate the
-  // left-sidebar Fleet pane filters through, so the two rosters agree. Memoed on
-  // `data` so the identities stay stable across the 1s nowMs ticks while the
-  // popover is open.
+  // The pill says "running", so membership comes from the authoritative shared
+  // session-lifecycle oracle — NOT heartbeat freshness and NOT an armed loop.
+  // Parked/ended processes may keep heartbeating for hours; counting those is
+  // what produced the owner-visible "65 running" while only 3 were live.
+  // Memoed on `data` so identities stay stable across the 1s nowMs ticks.
   const running = useMemo(
-    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter(isRunningAgent),
+    () => ((data?.[0]?.active ?? []) as RosterAgent[]).filter((a) => a.sessionState === 'live'),
     [data],
   );
   const activeOwnerIds = useMemo(() => new Set(running.map((a) => a.ownerId)), [running]);

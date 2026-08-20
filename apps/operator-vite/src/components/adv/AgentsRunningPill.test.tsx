@@ -78,7 +78,8 @@ import AgentsRunningPill, { groupByFleet, agentGlyph, shortOwner, displayName, h
 function agent(over: Partial<RosterAgent> = {}): RosterAgent {
   return {
     ownerId: 'o1', label: 'a1', agent: 'a1', role: 'bee', intent: 'working', feature: null,
-    currentPlanSlug: null, liveness: 'live', heartbeatAt: '', fleetSlug: null, fleetColor: null, ...over,
+    currentPlanSlug: null, liveness: 'live', sessionState: 'live', heartbeatAt: '',
+    fleetSlug: null, fleetColor: null, ...over,
   };
 }
 
@@ -88,7 +89,7 @@ beforeEach(() => {
   H.active = [
     agent({ ownerId: 'q1', agent: 'queen', role: 'queen', fleetSlug: null }),
     agent({ ownerId: 'b1', agent: 'gizmo', role: 'bee', fleetSlug: 'atlas-fleet', fleetColor: '#d8b4fe', feature: 'F-1' }),
-    agent({ ownerId: 'b2', agent: 'nova', role: 'bee', fleetSlug: 'atlas-fleet', fleetColor: '#d8b4fe', liveness: 'stale' }),
+    agent({ ownerId: 'b2', agent: 'nova', role: 'bee', fleetSlug: 'atlas-fleet', fleetColor: '#d8b4fe', liveness: 'stale', sessionState: 'ended' }),
     agent({ ownerId: 's1', agent: 'sky', role: 'planner', fleetSlug: 'zzz-fleet', fleetColor: '#86efac' }),
   ];
   nuqs.open = false;
@@ -286,8 +287,8 @@ describe('<AgentsRunningPill>', () => {
     });
   });
 
-  it('renders nothing when no non-stale agents are present', () => {
-    H.active = [agent({ liveness: 'stale' })];
+  it('renders nothing when no authoritatively-live agents are present', () => {
+    H.active = [agent({ liveness: 'live', sessionState: 'parked' })];
     const { container } = render(<Pill />);
     expect(container.innerHTML).toBe('');
   });
@@ -313,11 +314,15 @@ describe('<AgentsRunningPill>', () => {
     expect(row.querySelector('.pc-agents-roster__age')?.textContent).toMatch(/^\d+s$/);
   });
 
-  it('shows the running count excluding stale rows', () => {
+  it('uses authoritative sessionState for membership, regardless of heartbeat or loop state', () => {
+    H.active = [
+      agent({ ownerId: 'live-stale-heartbeat', liveness: 'stale', sessionState: 'live' }),
+      agent({ ownerId: 'parked-fresh-heartbeat', liveness: 'live', sessionState: 'parked' }),
+      agent({ ownerId: 'ended-loop', liveness: 'live', loopArmed: true, sessionState: 'ended' }),
+    ];
     render(<Pill />);
     const pill = screen.getByTestId('agents-running-pill');
-    // 4 agents, one stale → 3 running.
-    expect(pill.textContent).toContain('3 agents running');
+    expect(pill.textContent).toContain('1 agent running');
   });
 
   it('opens the fleet-grouped roster popover with headers + rows', () => {
