@@ -127,6 +127,12 @@ export interface CheckpointExecutionContext {
 }
 
 export interface CheckpointDeps {
+  /**
+   * Report forward progress from the real checkpoint process. This is deliberately
+   * separate from `log`: child output can be noisy or silent, while phase transitions
+   * and command boundaries are the liveness signal consumed by the self-watchdog.
+   */
+  reportProgress?(detail?: string): void;
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
   setupTree(ref: string): Promise<void | CheckpointSetupIdentity>;
   /** load-flake-isolation-2026-06-23: re-run ONE originally-failing test file in
@@ -882,6 +888,11 @@ export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
  *  lock) before a peer attempt would need to force-reclaim it. */
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
+/** The two ways a progress-aware self-watchdog can terminate a run. */
+export type SelfWatchdogFireReason =
+  | "idle-timeout"
+  | "absolute-hard-ceiling";
+
 /** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
  * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
  * backstop. The lower bound is the scheduled parent's COMPLETE kill window — SIGTERM at
@@ -1217,7 +1228,10 @@ async function awaitBounded(
 export function armSelfWatchdog(
   lock: { release: () => void },
   opts: {
+    /** Maximum permitted idle interval between real phase/command/output progress. */
     ms?: number;
+    /** Absolute wall-clock ceiling. Progress can never extend this deadline. */
+    hardCeilingMs?: number;
     kill?: (pid: number, signal: NodeJS.Signals) => void;
     pid?: number;
     log?: (msg: string) => void;
@@ -1234,13 +1248,17 @@ export function armSelfWatchdog(
      *  targets our OWN process group on the very next synchronous line, so the event loop never
      *  turns again and the emit's continuation never runs. (A sync/absent onFire keeps the
      *  original fully-synchronous kill path.) */
-    onFire?: () => void | Promise<void>;
+    onFire?: (reason: SelfWatchdogFireReason) => void | Promise<void>;
     /** Max wait for an async `onFire` to settle before the guaranteed kill (injected in tests).
      *  Defaults to SELF_WATCHDOG_ONFIRE_GRACE_MS. */
     onFireGraceMs?: number;
   } = {},
-): { cancel: () => void } {
-  const ms = opts.ms ?? SELF_WATCHDOG_MS;
+): { cancel: () => void; progress: () => void } {
+  const ms = Math.max(1, opts.ms ?? SELF_WATCHDOG_MS);
+  const hardCeilingMs = Math.max(
+    1,
+    opts.hardCeilingMs ?? SELF_WATCHDOG_MS,
+  );
   const pid = opts.pid ?? process.pid;
   const kill =
     opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
@@ -1254,15 +1272,39 @@ export function armSelfWatchdog(
         ? resolveCheckpointProcessGroupId(candidatePid)
         : null);
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
-  const timer = setTimeout(() => {
+  const startedAtMs = Date.now();
+  const hardDeadlineAtMs = startedAtMs + hardCeilingMs;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let hardTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelled = false;
+  let firedAlready = false;
+
+  const clearTimers = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (hardTimer) clearTimeout(hardTimer);
+    idleTimer = undefined;
+    hardTimer = undefined;
+  };
+  const unref = (timer: ReturnType<typeof setTimeout>) => {
+    (timer as unknown as { unref?: () => void }).unref?.();
+  };
+  const fire = (reason: SelfWatchdogFireReason) => {
+    if (cancelled || firedAlready) return;
+    firedAlready = true;
+    clearTimers();
     const processGroupId = resolveProcessGroupId(pid) ?? pid;
     const triggerDetail =
       opts.trigger === "manual-run-deadline"
         ? "manual checkpoint deadline elapsed (this timer does not imply parent loss)"
         : "presumed-dead parent (release-actions.ts's runScript never landed its SIGTERM+SIGKILL)";
+    const deadlineDetail =
+      reason === "absolute-hard-ceiling"
+        ? `absolute hard ceiling elapsed after ${formatSelfWatchdogDuration(hardCeilingMs)}`
+        : `idle progress budget elapsed after ${formatSelfWatchdogDuration(ms)}`;
     log(
-      `self-watchdog fired after ${formatSelfWatchdogDuration(ms)} with no normal exit — ` +
-        `${triggerDetail}; ` +
+      `self-watchdog fired after ${formatSelfWatchdogDuration(
+        reason === "absolute-hard-ceiling" ? hardCeilingMs : ms,
+      )} with no normal exit — ${deadlineDetail}; ${triggerDetail}; ` +
         `releasing the run-lock and killing this process's ACTUAL group ` +
         `(pid ${pid}, pgid ${processGroupId}) so no orphan can outlive it`,
     );
@@ -1290,7 +1332,7 @@ export function armSelfWatchdog(
     };
     let fired: void | Promise<void>;
     try {
-      fired = opts.onFire?.();
+      fired = opts.onFire?.(reason);
     } catch {
       /* best-effort — emit the loud red verdict first, even if the hook fails */
       fired = undefined;
@@ -1307,9 +1349,42 @@ export function armSelfWatchdog(
     } else {
       doKill();
     }
-  }, ms);
-  timer.unref();
-  return { cancel: () => clearTimeout(timer) };
+  };
+  const scheduleIdleTimer = () => {
+    if (cancelled || firedAlready) return;
+    const remainingMs = hardDeadlineAtMs - Date.now();
+    if (remainingMs <= 0) {
+      fire("absolute-hard-ceiling");
+      return;
+    }
+    idleTimer = setTimeout(
+      () =>
+        fire(
+          hardDeadlineAtMs - Date.now() <= ms
+            ? "absolute-hard-ceiling"
+            : "idle-timeout",
+        ),
+      Math.min(ms, remainingMs),
+    );
+    unref(idleTimer);
+  };
+  // Arm the absolute timer first so an exact tie cannot be misclassified as an idle timeout.
+  hardTimer = setTimeout(() => fire("absolute-hard-ceiling"), hardCeilingMs);
+  unref(hardTimer);
+  scheduleIdleTimer();
+  return {
+    cancel: () => {
+      if (cancelled) return;
+      cancelled = true;
+      clearTimers();
+    },
+    progress: () => {
+      if (cancelled || firedAlready) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = undefined;
+      scheduleIdleTimer();
+    },
+  };
 }
 
 /** PER-ROOT run-lock dir (2026-07-02): the bare `.green-checkpoint-run.lock` made every
@@ -1403,7 +1478,12 @@ export function writeCheckpointRunPhase(
  *  this question, never to a crash. */
 export function writeSelfWatchdogArmMarker(
   lockDir: string,
-  info: { armedAtMs: number; ms: number; pid: number },
+  info: {
+    armedAtMs: number;
+    ms: number;
+    hardCeilingMs: number;
+    pid: number;
+  },
 ): void {
   try {
     writeFileSync(
@@ -1411,7 +1491,13 @@ export function writeSelfWatchdogArmMarker(
       JSON.stringify({
         armedAt: new Date(info.armedAtMs).toISOString(),
         deadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
+        idleDeadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
+        hardDeadlineAt: new Date(
+          info.armedAtMs + info.hardCeilingMs,
+        ).toISOString(),
         ms: info.ms,
+        idleMs: info.ms,
+        hardCeilingMs: info.hardCeilingMs,
         pid: info.pid,
       }),
     );
@@ -6176,6 +6262,7 @@ export async function runGreenCheckpoint(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
     "suite",
   );
+  deps.reportProgress?.("phase:suite");
   const setupIdentity = await deps.setupTree(candidate);
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused
@@ -6897,6 +6984,7 @@ export async function runGreenCheckpoint(
       checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
       "delivering",
     );
+    deps.reportProgress?.("phase:delivering");
     const tip = (await deps.resolveTip?.().catch(() => null)) ?? null;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
     // WI-7290: hoisted out of the rescue block below so the skip-reason synthesis after it
@@ -7711,6 +7799,8 @@ export type CheckpointExec = (
      * complete child output for the verdict. Without this seam a multi-hour child is healthy
      * and busy while the checkpoint transcript remains byte-for-byte silent. */
     relayAffectedProgress?: boolean;
+    /** Report that the child produced output so a progress-aware watchdog can reset its idle budget. */
+    onProgress?: () => void;
   },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -9488,7 +9578,7 @@ export async function runPostSuiteLegs(
 
 export function realCheckpointDeps(
   cfg: ReleaseConfig,
-  exec: CheckpointExec = runCmd,
+  execRaw: CheckpointExec = runCmd,
   /** WI-4957: this process's own run identity — defaults to a fresh randomUUID() so every
    *  real invocation is self-identifying without the CLI having to remember to generate
    *  one; the CLI still passes its OWN pre-generated id explicitly (see the entrypoint
@@ -9506,16 +9596,54 @@ export function realCheckpointDeps(
    *  break" / "fail-safe: re-run throws" cases (they retry a deterministically-still-
    *  failing file once, so ran a real 5s setTimeout on every invocation). */
   flakeAbsorptionOpts?: Parameters<typeof attemptFlakeAbsorption>[3],
+  reportProgress?: (detail?: string) => void,
 ): CheckpointDeps {
+  const notifyProgress = (detail?: string) => {
+    try {
+      reportProgress?.(detail);
+    } catch {
+      /* progress is diagnostic/liveness only and must never change the gate verdict */
+    }
+  };
   // EI-19346606967082413: tee every orchestrator line into the run transcript as well as stdout.
   // stdout is durable only for a MANUAL run (redirected to /tmp); the buffer is what gets the
   // same lines into the persisted log for a scheduler-fired one.
   const log = (s: string) => {
+    notifyProgress("log");
     recordOrchestratorLine(s);
     // WI-7274: tag resolved per-call, not hoisted — the whole point is that it reflects the
     // EMITTING process. See ORCHESTRATOR_STDOUT_TAG_UNDER_TEST for why this is the one place
     // it can be decided correctly.
     console.log(`${orchestratorStdoutTag()} ${s}`);
+  };
+  /**
+   * Feed every real command boundary and output chunk into the watchdog seam. Keeping this
+   * wrapper at the real dependency boundary covers the suite, post-suite legs, isolation,
+   * rescue, setup, and publish helpers without requiring each caller to remember a separate
+   * progress hook.
+   */
+  const exec: CheckpointExec = async (cmd, args, opts) => {
+    notifyProgress(`command:start:${cmd}`);
+    if (!reportProgress) return execRaw(cmd, args, opts);
+    const forwarded = {
+      ...opts,
+      onProgress: () => {
+        try {
+          opts?.onProgress?.();
+        } catch {
+          /* an injected observer cannot break the child process */
+        }
+        notifyProgress(`command:output:${cmd}`);
+      },
+    };
+    try {
+      const result = await execRaw(cmd, args, forwarded);
+      notifyProgress(`command:complete:${cmd}`);
+      return result;
+    } catch (error) {
+      notifyProgress(`command:error:${cmd}`);
+      throw error;
+    }
   };
   // load-flake-isolation-2026-06-23: re-run ONE originally-failing file in isolation —
   // a fresh `vitest run <file>` scoped to its workspace, at SINGLE concurrency
