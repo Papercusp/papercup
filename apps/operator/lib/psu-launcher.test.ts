@@ -6056,6 +6056,34 @@ describe('launch preflight guards (context-trimming-tiers P-016 / P-018)', () =>
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('runLaunchPreflight: Codex full context is refused before spawn even with --force (WI-39948)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'psu-wi39948-'));
+    const persona = join(dir, 'persona.md');
+    writeFileSync(persona, 'x'.repeat(5_000));
+
+    expect(() =>
+      runLaunchPreflight({
+        promptFile: persona,
+        contextSize: 'full',
+        model: 'gpt-5.6-luna:max',
+        agent: 'codex',
+        force: true,
+      }),
+    ).toThrow(/64 MiB frame cap.*--context-size=trimmed.*--force cannot bypass/i);
+
+    expect(() =>
+      runLaunchPreflight({
+        promptFile: persona,
+        contextSize: 'trimmed',
+        model: 'gpt-5.6-luna:max',
+        agent: 'codex',
+        force: false,
+      }),
+    ).not.toThrow();
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
   it('parseArgs: --persona-tier + --force parse (P-017/P-018)', () => {
     expect(parseArgs([]).personaTier).toBeNull();
     expect(parseArgs(['--persona-tier=fleet']).personaTier).toBe('fleet');

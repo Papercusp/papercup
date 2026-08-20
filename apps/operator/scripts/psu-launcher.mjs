@@ -4520,8 +4520,24 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent =
   };
 }
 
+/**
+ * WI-39948: Codex's code-mode bridge serializes the advertised tool surface into
+ * its per-call IPC request. With `contextSize:'full'`, Papercusp's full catalog
+ * currently produces a ~128 MiB frame, above the bridge's hard 64 MiB limit, so
+ * the session boots but EVERY tool call is rejected before execution. `--force`
+ * cannot make that transport valid; fail before spawning and point at the
+ * growable trimmed seed (tools:find/tools:invoke preserve full reachability).
+ */
+export function assertCodexToolTransport({ agent = 'claude', contextSize }) {
+  if (agent !== 'codex' || contextSize !== 'full') return;
+  throw new Error(
+    'psu: Codex --context-size=full is not launchable: the full Papercusp tool catalog exceeds the code-mode IPC bridge\'s 64 MiB frame cap, so every tool call would fail before execution. Use --context-size=trimmed (the growable tools:find/tools:invoke seed retains full capability reachability). --force cannot bypass a transport frame limit (WI-39948).',
+  );
+}
+
 /** Run both preflight guards before a launch; exits/throws per policy. */
 export function runLaunchPreflight({ promptFile, contextSize, model, agent = 'claude', budget = null, force }) {
+  assertCodexToolTransport({ agent, contextSize });
   const personaBytes = assertLaunchPersona(promptFile);
   const guard = preflightWindowGuard({ personaBytes, contextSize, model, agent, budget });
   if (guard.level === 'refuse' && !force) {
