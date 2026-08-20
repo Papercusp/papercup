@@ -34,6 +34,10 @@ const HIVES_DDL = `
     workspace_id text NOT NULL, pot_home_slug text NOT NULL, public_key bytea NOT NULL,
     keychain_id text NOT NULL, title text, description text,
     created_at bigint NOT NULL, updated_at bigint NOT NULL DEFAULT 0,
+    -- hive-store reads this migration-686 scope key on every SELECT/RETURNING.
+    -- Production backfills it from pot_home_slug; the fixture only needs the
+    -- column because its row is an owner Hive whose canonical slug is identical.
+    canonical_pot_home_slug text,
     PRIMARY KEY (workspace_id, pot_home_slug))`;
 const HIVE_SETTINGS_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.pot_settings (
