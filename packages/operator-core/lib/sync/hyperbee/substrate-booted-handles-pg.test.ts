@@ -44,6 +44,7 @@ import {
   getPgBootedHandlesSnapshotFallback,
   getPgRelocatedHarnessEndpoint,
 } from './substrate-booted-handles-pg';
+import { getManaged } from '@papercusp/scheduled-registry';
 
 beforeEach(() => {
   H.state.booted = [];
@@ -111,13 +112,44 @@ describe('startBootedHandlesPgPublisher (SUBSTRATE-OWNER side)', () => {
 
   it('swallows a write rejection rather than crashing the timer', async () => {
     vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       H.writeOperatorState.mockRejectedValueOnce(new Error('pg hiccup'));
       const h = startBootedHandlesPgPublisher({ intervalMs: 1_000, ownsSubstrate: true });
       await expect(vi.advanceTimersByTimeAsync(3_000)).resolves.not.toThrow();
       expect(H.writeOperatorState.mock.calls.length).toBeGreaterThan(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('initial publish failed'));
       h.stop();
     } finally {
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('surfaces interval write failures in the managed timer and clears the error after recovery', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      H.writeOperatorState.mockRejectedValue(new Error('pg unavailable'));
+      const h = startBootedHandlesPgPublisher({ intervalMs: 1_000, ownsSubstrate: true });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(getManaged('booted-handles-pg-publish')).toMatchObject({
+        fires: 1,
+        lastError: 'pg unavailable',
+        running: false,
+      });
+
+      H.writeOperatorState.mockResolvedValue(undefined);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(getManaged('booted-handles-pg-publish')).toMatchObject({
+        fires: 2,
+        lastError: null,
+        running: false,
+      });
+      h.stop();
+    } finally {
+      warn.mockRestore();
       vi.useRealTimers();
     }
   });

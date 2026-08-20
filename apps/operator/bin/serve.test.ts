@@ -1356,3 +1356,41 @@ describe("boot-time background-task safety net (WI-5654)", () => {
     expect(handlerIdx).toBeLessThan(runBootstrapCallIdx);
   });
 });
+
+// EI-20952729544817284 recurrence guard: the desktop sidecar is bundled from
+// serve.ts, while the original cross-service booted-handles wiring lived only
+// in hono-host.ts. Bundle reachability was a false-positive because read routes
+// kept the publisher module's bytes in serve.mjs without ever invoking it.
+describe("packaged booted-handles publisher lifecycle (EI-20952729544817284)", () => {
+  const source = () => readFileSync(new URL("./serve.ts", import.meta.url), "utf8");
+
+  it("starts the publisher after bootstrap and before accepting HTTP traffic", () => {
+    const src = source();
+    const bootstrapIdx = src.indexOf("runBootstrap();");
+    const publisherIdx = src.indexOf(
+      "bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});",
+    );
+    const serveIdx = src.indexOf("server = serve(");
+
+    expect(bootstrapIdx).toBeGreaterThan(-1);
+    expect(publisherIdx).toBeGreaterThan(bootstrapIdx);
+    expect(serveIdx).toBeGreaterThan(publisherIdx);
+  });
+
+  it("stops the publisher in both signal cleanup and startup-failure cleanup", () => {
+    const src = source();
+    const syncCleanupIdx = src.indexOf("syncCleanup: () => {");
+    const firstStopIdx = src.indexOf("bootedHandlesPgPublisher?.stop();", syncCleanupIdx);
+    const publisherIdx = src.indexOf(
+      "bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});",
+    );
+    const catchIdx = src.indexOf("\n  } catch (e) {", publisherIdx);
+    const catchStopIdx = src.indexOf("bootedHandlesPgPublisher?.stop();", catchIdx);
+
+    expect(syncCleanupIdx).toBeGreaterThan(-1);
+    expect(firstStopIdx).toBeGreaterThan(syncCleanupIdx);
+    expect(firstStopIdx).toBeLessThan(publisherIdx);
+    expect(catchIdx).toBeGreaterThan(publisherIdx);
+    expect(catchStopIdx).toBeGreaterThan(catchIdx);
+  });
+});

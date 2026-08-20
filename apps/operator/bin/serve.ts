@@ -1522,6 +1522,7 @@ async function main(): Promise<void> {
 
   let pg: PgHandle | null = null;
   let server: { close?: () => void } | null = null;
+  let bootedHandlesPgPublisher: { stop(): void } | null = null;
   let shuttingDown = false;
 
   // ⚠ The critical cleanup below is SYNCHRONOUS by design. The async
@@ -1556,6 +1557,11 @@ async function main(): Promise<void> {
       onForceExit: () =>
         log(`${sig} — shutdown deadline exceeded; force-exiting`),
       syncCleanup: () => {
+        // EI-20952729544817284: this packaged entrypoint owns the cross-service
+        // booted-handles publisher it starts below. Stop it synchronously before
+        // PG teardown so no new heartbeat write races the shutdown path.
+        bootedHandlesPgPublisher?.stop();
+        bootedHandlesPgPublisher = null;
         try {
           server?.close?.();
         } catch {
@@ -1624,6 +1630,16 @@ async function main(): Promise<void> {
 
     runBootstrap();
 
+    // EI-20952729544817284: the desktop bundle is built from THIS entrypoint,
+    // not hono-host.ts. The latter already starts this publisher, but keeping
+    // the library in serve.mjs through read-side imports did not execute it —
+    // packaged substrate owners therefore never wrote their diagnostic row.
+    // Start only after embedded PG is ready and bootstrap has installed the
+    // substrate-owner state; the publisher self-gates on ownership every beat.
+    const { startBootedHandlesPgPublisher } =
+      await import("@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg");
+    bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});
+
     server = serve({ fetch: handler, port, hostname }, async (info) => {
       log(
         `listening on http://${hostname}:${info.port} (UI ${process.env.PAPERCUSP_SERVE_UI === "0" ? "OFF" : "ON"})`,
@@ -1663,6 +1679,8 @@ async function main(): Promise<void> {
       }
     }) as unknown as { close?: () => void };
   } catch (e) {
+    bootedHandlesPgPublisher?.stop();
+    bootedHandlesPgPublisher = null;
     if (pg) {
       if (!ENV_OPERATOR_ID) {
         removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);

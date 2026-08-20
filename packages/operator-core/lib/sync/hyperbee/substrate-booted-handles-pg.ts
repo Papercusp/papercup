@@ -122,7 +122,7 @@ export function startBootedHandlesPgPublisher(opts: {
 }): BootedHandlesPgPublisherHandle {
   const intervalMs = opts.intervalMs ?? 10_000;
   const now = opts.now ?? (() => Date.now());
-  const beat = (): void => {
+  const beat = (): void | Promise<void> => {
     if (!(opts.ownsSubstrate ?? isSubstrateOwnerProcess())) return;
     const handles = listBootedHandles();
     const relocated = listRelocatedBootedHandles();
@@ -141,13 +141,26 @@ export function startBootedHandlesPgPublisher(opts: {
           }
         : {}),
     };
-    void writeOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload).catch(() => {
-      /* best-effort — a transient PG hiccup here must never crash boot; the
-       * next beat retries, and a reader falling back to this row already
-       * treats "row missing/stale" as an honest reachedSubstrateOwner:false. */
-    });
+    // Return the write Promise to managedSetInterval. Swallowing it here made
+    // the timer look healthy (`lastError:null`) while every PG write failed —
+    // exactly the observability gap that prolonged EI-20952729544817284. The
+    // managed timer records/logs a rejection and still retries next interval.
+    return writeOperatorState<PgBootedHandlesPayload>('substrate_booted_handles_status', payload);
   };
-  beat();
+  // Preserve the publisher's existing synchronous first-attempt semantics:
+  // writeOperatorState is invoked before this function returns. This attempt
+  // is outside the managed interval, so contain + name its failure explicitly;
+  // subsequent failures are visible through the timer's lastError field.
+  const initialBeat = beat();
+  if (initialBeat) {
+    void initialBeat.catch((error: unknown) => {
+      console.warn(
+        `[booted-handles-pg] initial publish failed; next interval retries: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
   // D-004: 'must-sample' — the PRODUCER half of a liveness probe. Publishing only on
   // change is unsound here because ROW AGE is the signal: readers treat a row older than
   // DEFAULT_PG_SNAPSHOT_MAX_AGE_MS (3x this cadence) as "owner not reached", so an
