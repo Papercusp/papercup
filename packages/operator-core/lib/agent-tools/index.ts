@@ -532,6 +532,7 @@ import './locks/cancel_wait';
 import './locks/queue';
 // Named-resource locks with drain semantics — plan named-resource-locks-drain
 import './locks/acquire_resource';
+import './locks/register_resource';
 import './locks/release_resource';
 import './locks/heartbeat_resource';
 // Multi-granularity intention locks (Gray IS/IX/S/SIX/X) — locks-correctness-hardening D-005
