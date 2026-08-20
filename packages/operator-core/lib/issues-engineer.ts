@@ -881,6 +881,8 @@ export interface ListIssuesFilter {
   /** Durable delegator filter (collapse-delegate D-002): items this owner assigned. */
   assignedBy?: string;
   severity?: IssueSeverity;
+  /** Explicit severity set; `severity` wins when both are supplied. */
+  severities?: readonly IssueSeverity[];
   kind?: IssueStoreKind; // bug | change | task
   /** Explicit kind set. Overrides the default (which restricts to the bug|change
    *  issue surface — `task` items never leak into issues:* unless asked for). */
@@ -1521,7 +1523,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-       AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+       AND ${filter.severity ? sql`severity = ${filter.severity}` : filter.severities ? sql`severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1575,6 +1577,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
  */
 export async function countIssues(filter: ListIssuesFilter = {}): Promise<number> {
   const { sql } = getOrgPg();
+  const q = filter.q?.trim();
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
   if (filter.topic) {
     const rows = await sql<{ n: number }[]>`
@@ -1590,6 +1593,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        WHERE ei.workspace_id = ${issuesScopeWorkspace()}
          AND ei.kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+         AND ${q ? sql`(COALESCE(ei.title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(ei.body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${
            filter.scope
              ? sql`ei.scope = ${filter.scope}`
@@ -1599,7 +1603,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
+         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : filter.severities ? sql`ei.severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1630,6 +1634,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
+       AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
        AND ${
          filter.scope
            ? sql`scope = ${filter.scope}`
@@ -1639,7 +1644,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-       AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+       AND ${filter.severity ? sql`severity = ${filter.severity}` : filter.severities ? sql`severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
