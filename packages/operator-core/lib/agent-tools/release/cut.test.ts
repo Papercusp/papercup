@@ -33,15 +33,27 @@ vi.mock('../locks/identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../locks/identity')>()),
   readIdentity: () => ({ ownerId: 'o', ownerLabel: 'tester', coordinationDomain: 'd' }) as never,
 }));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness-registry')>()),
+  loadHarnessRegistry: vi.fn(),
+}));
+vi.mock('node:child_process', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:child_process')>()),
+  execFileSync: vi.fn(),
+}));
 
 import { launchDetachedCut, readCutStatus, collectHandoff, preflightCut, abortLeg, readOrCreateGate } from '../../release-cut-launch';
+import { loadHarnessRegistry } from '../../harness-registry';
+import { execFileSync } from 'node:child_process';
 const launchM = vi.mocked(launchDetachedCut);
 const statusM = vi.mocked(readCutStatus);
 const handoffM = vi.mocked(collectHandoff);
 const preflightM = vi.mocked(preflightCut);
 const abortLegM = vi.mocked(abortLeg);
 const gateM = vi.mocked(readOrCreateGate);
-const tool = (await import('./cut')).default;
+const registryM = vi.mocked(loadHarnessRegistry);
+const execFileSyncM = vi.mocked(execFileSync);
+const { default: tool, resolveCutRoot } = await import('./cut');
 
 type Out = { content: { text: string }[] };
 const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
@@ -62,6 +74,7 @@ function mkPreflight(over: Partial<PreflightResult> = {}, inFlight = false): Pre
 
 beforeEach(() => {
   vi.clearAllMocks();
+  registryM.mockResolvedValue({ projects: [] });
   preflightM.mockReturnValue(mkPreflight());
   launchM.mockResolvedValue({
     launched: true,
@@ -72,6 +85,176 @@ beforeEach(() => {
     argv: [],
     logPath: '/tmp/papercup-release-cut.log',
     donePath: '/tmp/papercup-release-cut.done',
+  });
+});
+
+describe('release:cut — constrained root selector', () => {
+  const worktreeRoot = '/registered/isolated-worktree';
+  const desktopRoot = `${worktreeRoot}/papercusp-desktop`;
+
+  it('resolves a registered project slug to a clean linked worktree desktop root', async () => {
+    const loadRegistry = vi.fn(async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }));
+    const listWorktrees = vi.fn(() => [{ path: worktreeRoot, prunable: false }]);
+    const status = vi.fn(() => '');
+
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry,
+      listWorktrees,
+      status,
+      canonicalPath: (candidate) => candidate,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      selector: 'isolated',
+      worktreeRoot,
+      desktopRoot,
+    });
+    expect(loadRegistry).toHaveBeenCalledWith('test-ws');
+    expect(listWorktrees).toHaveBeenCalledWith(worktreeRoot);
+    expect(status).toHaveBeenCalledWith(worktreeRoot);
+  });
+
+  it('accepts the selected worktree\'s papercusp-desktop child path', async () => {
+    const result = await resolveCutRoot(desktopRoot, {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => '',
+      canonicalPath: (candidate) => candidate,
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      selector: desktopRoot,
+      worktreeRoot,
+      desktopRoot,
+    });
+  });
+
+  it('rejects prunable worktrees and paths outside registered worktrees', async () => {
+    const deps = {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: true }],
+      status: () => '',
+      canonicalPath: (candidate: string) => candidate,
+    };
+
+    const prunable = await resolveCutRoot('isolated', deps);
+    expect(prunable).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_registered/) });
+
+    const outside = await resolveCutRoot('/unregistered/worktree', {
+      ...deps,
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+    });
+    expect(outside).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_registered/) });
+  });
+
+  it('rejects a selected worktree with uncommitted changes', async () => {
+    const result = await resolveCutRoot('isolated', {
+      loadRegistry: async () => ({ projects: [{ slug: 'isolated', path: worktreeRoot }] }),
+      listWorktrees: () => [{ path: worktreeRoot, prunable: false }],
+      status: () => ' M packages/operator-core/lib/release-cut-launch.ts\n',
+      canonicalPath: (candidate) => candidate,
+    });
+
+    expect(result).toMatchObject({ ok: false, reason: expect.stringMatching(/root_not_clean/) });
+  });
+});
+
+describe('release:cut — explicit registered root routing', () => {
+  const worktreeRoot = '/registered/isolated-worktree';
+  const desktopRoot = `${worktreeRoot}/papercusp-desktop`;
+  const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+
+  function useRegisteredRoot() {
+    registryM.mockResolvedValue({ projects: [{ slug: 'isolated', path: worktreeRoot }] });
+    execFileSyncM.mockImplementation(((command: string, args: readonly string[]) => {
+      if (command !== 'git') throw new Error(`unexpected command ${command}`);
+      if (args[2] === 'worktree') return `worktree ${worktreeRoot}\nHEAD deadbeef\n\n`;
+      if (args[2] === 'status') return '';
+      throw new Error(`unexpected git args: ${args.join(' ')}`);
+    }) as never);
+  }
+
+  it('routes preflight through the selected desktop root', async () => {
+    useRegisteredRoot();
+
+    const b = body(await tool.handler({ op: 'preflight', root: 'isolated' } as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({ ok: true, op: 'preflight', root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
+    expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
+  });
+
+  it('routes run dry-run command construction through the selected desktop root', async () => {
+    useRegisteredRoot();
+
+    const b = body(
+      await tool.handler(
+        { op: 'run', version: '0.0.8', channel: 'alpha', sourceSha, root: 'isolated' } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+
+    expect(b).toMatchObject({ ok: true, op: 'run', dry_run: true, root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
+    expect(b.wouldRun).toContain(`--working-directory=${desktopRoot}`);
+    expect(launchM).not.toHaveBeenCalled();
+    expect(preflightM).toHaveBeenCalledWith({}, { root: desktopRoot });
+  });
+
+  it('routes run-leg through the selected desktop root', async () => {
+    useRegisteredRoot();
+
+    const b = body(
+      await tool.handler(
+        { op: 'run-leg', platform: 'mac', version: '0.0.8', channel: 'alpha', sourceSha, root: 'isolated' } as never,
+        { role: 'operator' } as never,
+      ),
+    );
+
+    expect(b).toMatchObject({ ok: true, op: 'run-leg', dry_run: true, root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
+    expect(b.wouldRun).toContain(`--working-directory=${desktopRoot}`);
+    expect(preflightM).toHaveBeenCalledWith({ mac: true }, { platform: 'mac', root: desktopRoot });
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('routes gate-status through the selected desktop root', async () => {
+    useRegisteredRoot();
+    gateM.mockReturnValue({
+      gate: {
+        version: '0.0.8',
+        channel: 'alpha',
+        buildSha: 'abc1234',
+        dirty: false,
+        derivedAt: '2026-07-11T00:00:00.000Z',
+        derivedBy: 'tester (role:cup)',
+      },
+      created: true,
+    });
+
+    const b = body(await tool.handler({ op: 'gate-status', version: '0.0.8', channel: 'alpha', root: 'isolated' } as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({ ok: true, op: 'gate-status', root: desktopRoot, rootSelector: 'isolated', worktreeRoot });
+    expect(gateM).toHaveBeenCalledWith('0.0.8', 'alpha', 'tester', { root: desktopRoot });
+  });
+
+  it('routes handoff through the selected desktop root', async () => {
+    useRegisteredRoot();
+    handoffM.mockReturnValue({
+      version: '0.0.8',
+      targetRoot: `${desktopRoot}/src-tauri/target`,
+      scannedRoots: [`${desktopRoot}/src-tauri/target`],
+      found: false,
+      artifacts: [],
+      manifests: [],
+      provenance: [],
+      unsignedNames: [],
+      unsignedInfoNames: [],
+    });
+
+    const b = body(await tool.handler({ op: 'handoff', version: '0.0.8', root: 'isolated' } as never, { role: 'cup' } as never));
+
+    expect(b).toMatchObject({ ok: false, op: 'handoff', root: desktopRoot, targetRoot: `${desktopRoot}/src-tauri/target` });
+    expect(handoffM).toHaveBeenCalledWith('0.0.8', { root: desktopRoot });
   });
 });
 
