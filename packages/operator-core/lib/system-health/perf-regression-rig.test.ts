@@ -8,6 +8,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { startEventLoopLagMonitor } from '../event-loop-lag-monitor';
 import {
   PERF_REGRESSION_BUDGETS,
   PERF_REGRESSION_DISABLED_NOTE,
@@ -18,6 +19,7 @@ import {
   dispatchOrphanAggregateFromRows,
   dispatchOrphanRateFromAggregate,
   evaluatePerfRegression,
+  readCurrentLoopLagP95Ms,
 } from './perf-regression-rig';
 
 const B = PERF_REGRESSION_BUDGETS;
@@ -285,6 +287,18 @@ function depsWith(over: Partial<PerfRegressionDeps>): PerfRegressionDeps {
     ...over,
   };
 }
+
+describe('readCurrentLoopLagP95Ms — process-local monitor guard', () => {
+  it('arms an idempotent monitor before reading the gauge', () => {
+    try {
+      expect(readCurrentLoopLagP95Ms()).toEqual(expect.any(Number));
+    } finally {
+      // The production monitor is unref'd, but stop it so this unit test leaves
+      // the shared module state exactly as it found it.
+      startEventLoopLagMonitor().stop();
+    }
+  });
+});
 
 describe('collectPerfRegressionSnapshot — flag gate', () => {
   it('flag OFF → disabled note, zero signals, zero IO', async () => {

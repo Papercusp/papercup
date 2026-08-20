@@ -39,7 +39,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
-import { currentLoopLag } from '../event-loop-lag-monitor';
+import { currentLoopLag, startEventLoopLagMonitor } from '../event-loop-lag-monitor';
 import { pgHealth } from '../dev-data';
 import { PERF_BUDGETS } from './perf-budgets';
 import type { CollectorResult, WatchdogSignal } from '../harness/improvements/watchdog';
@@ -307,13 +307,22 @@ export interface PerfRegressionDeps {
   readConnSaturationPct: () => Promise<number | null>;
 }
 
+/**
+ * Read the process-local lag gauge after ensuring this process has one monitor.
+ * The watchdog can execute in a background process that does not boot the request
+ * plane, so relying on host-bootstrap's conditional monitor startup leaves this
+ * writer permanently null on that process.
+ */
+export function readCurrentLoopLagP95Ms(): number | null {
+  startEventLoopLagMonitor();
+  const lag = currentLoopLag();
+  return lag ? lag.p95Ms : null;
+}
+
 const defaultDeps: PerfRegressionDeps = {
   isEnabled: () => getFlag(FLAGS.PERF_REGRESSION_RIG, 'perf-regression-rig'),
   sql: () => getOrgPg().sql as unknown as Sql,
-  readLoopLagP95Ms: () => {
-    const lag = currentLoopLag();
-    return lag ? lag.p95Ms : null;
-  },
+  readLoopLagP95Ms: readCurrentLoopLagP95Ms,
   readConnSaturationPct: async () => {
     try {
       return (await pgHealth()).saturationPct;
