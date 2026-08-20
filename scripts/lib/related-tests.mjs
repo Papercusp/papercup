@@ -196,25 +196,97 @@ export function buildIndex({ rootDir, aliases = {}, fs = defaultFs() } = {}) {
   return { files, deps, unresolved };
 }
 
-/** Transitive forward closure with memoization and a cycle guard. */
+/**
+ * Exact transitive forward closure, including cyclic import graphs.
+ *
+ * A plain DFS cannot safely memoize while it is breaking a cycle: the first root
+ * through a strongly-connected component sees a stack-truncated closure and
+ * poisons every later lookup with that partial set. Test selection then depends
+ * on file enumeration order and can silently miss a test. Collapse SCCs first;
+ * their condensation graph is acyclic, so memoization is exact.
+ */
 export function transitiveDeps(index) {
-  const memo = new Map();
   const { deps } = index;
-  const visit = (f, stack) => {
-    const cached = memo.get(f);
-    if (cached) return cached;
-    if (stack.has(f)) return new Set();
-    stack.add(f);
-    const out = new Set();
-    for (const d of deps.get(f) ?? []) {
-      out.add(d);
-      for (const x of visit(d, stack)) out.add(x);
+
+  // Tarjan's algorithm: assign every file to one strongly-connected component.
+  const nodes = new Set(deps.keys());
+  for (const targets of deps.values()) {
+    for (const target of targets) nodes.add(target);
+  }
+  const discovered = new Map();
+  const lowlink = new Map();
+  const stack = [];
+  const onStack = new Set();
+  const componentOf = new Map();
+  const components = [];
+  let nextIndex = 0;
+
+  const connect = (file) => {
+    const fileIndex = nextIndex++;
+    discovered.set(file, fileIndex);
+    lowlink.set(file, fileIndex);
+    stack.push(file);
+    onStack.add(file);
+
+    for (const target of deps.get(file) ?? []) {
+      if (!discovered.has(target)) {
+        connect(target);
+        lowlink.set(file, Math.min(lowlink.get(file), lowlink.get(target)));
+      } else if (onStack.has(target)) {
+        lowlink.set(file, Math.min(lowlink.get(file), discovered.get(target)));
+      }
     }
-    stack.delete(f);
-    memo.set(f, out);
+
+    if (lowlink.get(file) !== discovered.get(file)) return;
+    const componentId = components.length;
+    const members = [];
+    while (stack.length > 0) {
+      const member = stack.pop();
+      onStack.delete(member);
+      componentOf.set(member, componentId);
+      members.push(member);
+      if (member === file) break;
+    }
+    components.push(members);
+  };
+
+  for (const file of nodes) {
+    if (!discovered.has(file)) connect(file);
+  }
+
+  // The component graph is a DAG. Memoizing its closure is therefore complete,
+  // unlike memoizing a DFS that is still inside an import cycle.
+  const componentDeps = components.map(() => new Set());
+  for (const [file, targets] of deps) {
+    const from = componentOf.get(file);
+    for (const target of targets) {
+      const to = componentOf.get(target);
+      if (from !== undefined && to !== undefined && from !== to) componentDeps[from].add(to);
+    }
+  }
+  const componentMemo = new Map();
+  const visitComponent = (componentId) => {
+    const cached = componentMemo.get(componentId);
+    if (cached) return cached;
+    const out = new Set();
+    for (const target of componentDeps[componentId]) {
+      out.add(target);
+      for (const reachable of visitComponent(target)) out.add(reachable);
+    }
+    componentMemo.set(componentId, out);
     return out;
   };
-  return (f) => visit(f, new Set());
+
+  return (file) => {
+    const componentId = componentOf.get(file);
+    if (componentId === undefined) return new Set();
+    const out = new Set(components[componentId]);
+    out.delete(file);
+    for (const reachable of visitComponent(componentId)) {
+      for (const member of components[reachable]) out.add(member);
+    }
+    return out;
+  };
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   classifySpecifier,
   isTestFile,
   selectRelatedTests,
+  transitiveDeps,
 } from '../../../../scripts/lib/related-tests.mjs';
 
 /**
@@ -252,6 +253,32 @@ describe('buildIndex', () => {
     const r = selectRelatedTests({ rootDir: ROOT, changedPaths: [`${ROOT}/b.ts`], fs });
     expect(r.mode).toBe('related');
     expect(r.selected).toEqual([`${ROOT}/a.test.ts`]);
+  });
+});
+
+describe('transitiveDeps', () => {
+  it('returns the same complete closure for every entry point through an import cycle', () => {
+    const fs = vfs({
+      [`${ROOT}/a.ts`]: `import './b'; import './left';`,
+      [`${ROOT}/b.ts`]: `import './a'; import './right';`,
+      [`${ROOT}/left.ts`]: 'export const left = 1;',
+      [`${ROOT}/right.ts`]: 'export const right = 1;',
+    });
+    const index = buildIndex({ rootDir: ROOT, fs });
+
+    // Prime through A first. The former stack-guarded memoization cached B's
+    // partial closure at this point and permanently omitted left.ts from B.
+    const aFirst = transitiveDeps(index);
+    expect([...aFirst(`${ROOT}/a.ts`)].sort()).toEqual(
+      [`${ROOT}/b.ts`, `${ROOT}/left.ts`, `${ROOT}/right.ts`].sort(),
+    );
+    expect([...aFirst(`${ROOT}/b.ts`)].sort()).toEqual(
+      [`${ROOT}/a.ts`, `${ROOT}/left.ts`, `${ROOT}/right.ts`].sort(),
+    );
+
+    // A fresh resolver primed through B must produce the identical B closure.
+    const bFirst = transitiveDeps(index);
+    expect([...bFirst(`${ROOT}/b.ts`)].sort()).toEqual([...aFirst(`${ROOT}/b.ts`)].sort());
   });
 });
 
