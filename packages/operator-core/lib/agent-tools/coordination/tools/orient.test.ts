@@ -130,14 +130,17 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ intent: 'planless wake', planSlug: null, planItems: [] }).success).toBe(true);
   });
 
-  it('teaches that fleet membership is session-inferred instead of accepting fleet scope', () => {
+  it('accepts a fleet compatibility hint without allowing it to override session-inferred membership', () => {
     const description = String((orientTool as { description?: unknown }).description ?? '');
 
     // e3597dcb shortened the catalog prose to satisfy the hard guidance budget;
     // pin the load-bearing semantics rather than the retired long wording.
     expect(description).toContain('Fleet and workspace are inferred');
+    expect(description).toContain('`fleet` is a compatibility hint only');
     expect(description).toContain('pass `harness` only for explicit harness scope');
-    expect(orientTool.args.safeParse({ fleet: 'nonp2p-bug-drain-headless-0812' }).success).toBe(false);
+    const parsed = orientTool.args.safeParse({ fleet: 'nonp2p-bug-drain-headless-0812' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.fleet).toBe('nonp2p-bug-drain-headless-0812');
   });
 
   it('accepts claimableLimit=0 for a lean bootstrap', () => {

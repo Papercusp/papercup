@@ -144,6 +144,12 @@ const ORIENT_COMPACTION_RECOVERY_TIMEOUT_MS = 15_000;
 
 export interface OrientArgs {
   harness?: string;
+  /**
+   * Legacy launch/checkpoint callers may still provide the fleet they believe
+   * they are joining.  Membership remains session-inferred; this annotation
+   * is accepted for wire compatibility and does not scope the read.
+   */
+  fleet?: string;
   claimableState?: string;
   claimableLimit?: number;
   inboxLimit?: number;
@@ -2322,7 +2328,8 @@ export default defineTool({
   description:
     'Wake/session bootstrap in one read: assignments and load, claimable work, inbox, plan events, ' +
     'and fleet health. With `intent`, it also recalls memory and declares the intent. Fleet and ' +
-    'workspace are inferred; pass `harness` only for explicit harness scope.',
+    'workspace are inferred; an optional `fleet` is a compatibility hint only and does not override ' +
+    'session membership; pass `harness` only for explicit harness scope.',
   guidance: {
     when:
       'At turn start or wake. Pass `intent` to recall memory and declare it. For repeating leader ' +
@@ -2375,6 +2382,11 @@ export default defineTool({
       .max(80)
       .optional()
       .describe('Scope assignments + claimable + recall + declare to this harness.'),
+    fleet: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Optional compatibility hint from older launch/checkpoint callers; membership remains session-inferred.'),
     claimableState: z
       .string()
       .max(40)
