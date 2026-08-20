@@ -1688,6 +1688,49 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     );
   });
 
+  it('WI-39944: a queue-owned red records its queue but never launches the legacy moving-tip fixer', async () => {
+    spawnMock.mockImplementation(() => fakeSpawn('', 1));
+    const repairQueue: FrozenCandidateRepairQueue = {
+      schemaVersion: 1,
+      phase: 'awaiting-fixer',
+      candidate: 'a'.repeat(40),
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      worktreePath: '/tmp/frozen-repair',
+      attempts: 1,
+      openedAtMs: 1,
+      updatedAtMs: 2,
+      fixerSpawnId: 'fixer-1',
+      failingTests: ['lib/y.test.ts'],
+    };
+
+    const recorded = await recordCheckpointVerdict(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      {
+        reason: 'not-green',
+        green: false,
+        candidate: repairQueue.repairHead,
+        failingTests: repairQueue.failingTests,
+        repairQueue,
+      },
+    );
+
+    expect(recorded).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'not-green',
+        detail: expect.objectContaining({
+          repairQueue: expect.objectContaining({
+            candidate: 'a'.repeat(12),
+            repairHead: 'c'.repeat(12),
+            fixerSpawnId: 'fixer-1',
+          }),
+        }),
+      }),
+    );
+    expect(fireLaunchBlueprintForEvent).not.toHaveBeenCalled();
+  });
+
   it('does NOT double-dispatch when the routine ALSO sees a recorded:true verdict — recordCheckpointVerdict already covered it', async () => {
     const GREEN_MARKER = '__GREEN_CHECKPOINT_RESULT__';
     // Modern CLI: self-records (recorded:true) — the routine's OWN post-processing must defer
