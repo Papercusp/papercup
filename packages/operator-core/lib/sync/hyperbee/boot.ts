@@ -69,6 +69,7 @@ import {
   findLatestSnapshotIndex,
   DEFAULT_GET_TIMEOUT_MS,
   type AdmittedLog,
+  type MergeCursorPeerLifecycleUpdate,
   type MergeCursorStore,
 } from './read-merge';
 import { produceLogSnapshot, shouldCompactOwnLog, type ProduceSnapshotResult } from './log-snapshot';
@@ -1630,6 +1631,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // If the peer is currently admitted, drop its log.
         const logKey = pubkeyToLogKey.get(pk);
         if (logKey) {
+          await persistPeerLifecycle(
+            [{ logKeyHex: logKey, devicePubkey: pk, state: 'retired' }],
+            'published revoke',
+          );
           admitted.delete(logKey);
           replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
           void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
@@ -1648,6 +1653,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // Un-revoke reconciliation (G8): only refresh-sourced entries are eligible.
     for (const pk of [...revokedViaRefresh]) {
       if (!refreshed.has(pk)) {
+        await persistPeerLifecycleForDevice(pk, 'active', 'published un-revoke');
         revoked.delete(pk);
         revokedViaRefresh.delete(pk);
         recordBootEvent(
@@ -1834,7 +1840,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * enqueue and drain (e.g. by `revoke()` / `applyRevocationRefresh`) is skipped
    * without a duplicate event. Does NOT add to the published `revoked` set.
    */
-  function drainReverifyDropQueue(): void {
+  async function drainReverifyDropQueue(): Promise<void> {
     while (reverifyDropQueue.length > 0) {
       const logKey = reverifyDropQueue.shift()!;
       // Never drop the own log (defensive; the producer never enqueues it).
@@ -1842,6 +1848,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Already gone (revoked / refreshed away since enqueue) → skip silently.
       if (!admitted.has(logKey) && !admittedIdentities.has(logKey)) continue;
       const identity = admittedIdentities.get(logKey);
+      if (identity?.devicePubkey) {
+        await persistPeerLifecycle(
+          [{ logKeyHex: logKey, devicePubkey: identity.devicePubkey, state: 'retired' }],
+          'channel-2 reverify drop',
+        );
+      }
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
       void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
@@ -1872,7 +1884,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    */
   async function maybeReverifyAdmitted(): Promise<void> {
     // Apply drops a prior off-lock verify enqueued (cheap; usually empty).
-    drainReverifyDropQueue();
+    await drainReverifyDropQueue();
     if (reverifyIntervalMs <= 0) return;
     const now = Date.now();
     if (now - lastReverifyAt < reverifyIntervalMs) return;
@@ -1976,6 +1988,62 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // re-fold forever (stamp never matches) or resume across a real scope change.
   const currentApplyBinding = (): string | null =>
     hiveHomeProjectionSlug ?? ownPotHomeSlug ?? memberHomeRebindSlug ?? null;
+
+  /**
+   * Persist identity/lifecycle evidence without making metadata availability a
+   * prerequisite for admission, revocation, or merge progress. The canonical PG
+   * cursor store exposes this seam; position-only test/in-memory stores omit it.
+   */
+  async function persistPeerLifecycle(
+    updates: readonly MergeCursorPeerLifecycleUpdate[],
+    context: string,
+  ): Promise<void> {
+    const lifecycle = pgMergeCursorStore?.peerLifecycle;
+    if (!lifecycle || updates.length === 0) return;
+    try {
+      await lifecycle.upsert(updates, currentApplyBinding());
+    } catch (e) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'merge_error',
+        `peer-lifecycle ${context}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /**
+   * An explicit published-list un-revoke names only a device. Recover its
+   * durable log mapping from the lifecycle store; rows without identity remain
+   * unknown because silence or historical cursor presence is never evidence.
+   */
+  async function persistPeerLifecycleForDevice(
+    devicePubkey: string,
+    state: MergeCursorPeerLifecycleUpdate['state'],
+    context: string,
+  ): Promise<void> {
+    const lifecycle = pgMergeCursorStore?.peerLifecycle;
+    if (!lifecycle) return;
+    try {
+      const rows = await lifecycle.load();
+      const updates: MergeCursorPeerLifecycleUpdate[] = [];
+      for (const row of rows.values()) {
+        if (row.devicePubkey === devicePubkey) {
+          updates.push({ logKeyHex: row.logKeyHex, devicePubkey, state });
+        }
+      }
+      if (updates.length > 0) {
+        await lifecycle.upsert(updates, currentApplyBinding());
+      }
+    } catch (e) {
+      recordBootEvent(
+        opts.workspaceId,
+        opts.harnessSlug,
+        'merge_error',
+        `peer-lifecycle ${context}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 
   // A-003 apply-side determinism (su-81f2e): set by rekey() after a hive-home
   // projection rebind to force ONE full re-fold of all admitted logs through the
@@ -2624,6 +2692,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
           emitAdmitted(frame.log_core_key);
         }
+        await persistPeerLifecycle(
+          [{
+            logKeyHex: frame.log_core_key,
+            devicePubkey: frame.device_pubkey,
+            state: 'active',
+          }],
+          'verified admission',
+        );
         // The frame reached this point only after real signature verification,
         // identity/scope admission, the revoke-before-drain recheck, and a
         // successful remote-log open. Re-announces may arrive out of order, so
@@ -3046,7 +3122,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // Apply any channel-2 re-verify drops the LOCKLESS producer enqueued
       // (P-002) — mirror of drainAdmissionQueue: the GitHub I/O ran off the
       // merge lock; this only applies its conclusive-fail results under the gate.
-      drainReverifyDropQueue();
+      await drainReverifyDropQueue();
 
       // WI-3684 repair-on-detect: apply queued zombie-log session re-attaches
       // under the same gate (see drainRepairQueue above) — the liveness episode
@@ -4108,6 +4184,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // (b) Drop the already-admitted log for this pubkey, if any.
     const logKey = pubkeyToLogKey.get(devicePubkey);
     if (logKey) {
+      await persistPeerLifecycle(
+        [{ logKeyHex: logKey, devicePubkey, state: 'retired' }],
+        'explicit revoke',
+      );
       const revokedLog = admitted.get(logKey);
       admitted.delete(logKey);
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
