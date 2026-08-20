@@ -375,9 +375,7 @@ export function validateIphoneShellConfig(value: unknown): string[] {
   }
   if (
     isNonEmptyString(value.exportMethod) &&
-    !["development", "ad-hoc", "app-store-connect"].includes(
-      value.exportMethod,
-    )
+    !["development", "ad-hoc", "app-store-connect"].includes(value.exportMethod)
   ) {
     errors.push(
       "iphoneShell.exportMethod: required development|ad-hoc|app-store-connect",
@@ -509,7 +507,9 @@ function treeHasSwift(path: string, requireXCTest = false): boolean {
   if (stat.isSymbolicLink()) return false;
   if (!stat.isDirectory()) {
     if (!path.endsWith(".swift")) return false;
-    return !requireXCTest || /\bimport\s+XCTest\b/.test(readFileSync(path, "utf8"));
+    return (
+      !requireXCTest || /\bimport\s+XCTest\b/.test(readFileSync(path, "utf8"))
+    );
   }
   return readdirSync(path, { withFileTypes: true }).some((entry) => {
     if (entry.isSymbolicLink()) return false;
@@ -524,7 +524,10 @@ function targetBlock(project: string, target: string): string {
   const start = match.index;
   const rest = project.slice(start + match[0].length);
   const next = /^  [A-Za-z_][A-Za-z0-9_]*:\s*$/m.exec(rest);
-  return project.slice(start, next ? start + match[0].length + next.index : undefined);
+  return project.slice(
+    start,
+    next ? start + match[0].length + next.index : undefined,
+  );
 }
 
 function plistKeys(plist: string): string[] {
@@ -594,9 +597,7 @@ export function validateIphoneShellScaffold(
     ["ui", paths.uiTestRoots],
   ] as const) {
     if (!roots.some((path) => treeHasSwift(inRoot(root, path), true)))
-      errors.push(
-        `iphoneShell.paths.${kind}TestRoots: no XCTest source found`,
-      );
+      errors.push(`iphoneShell.paths.${kind}TestRoots: no XCTest source found`);
   }
 
   requireTokens(
@@ -629,39 +630,64 @@ export function validateIphoneShellScaffold(
 
   const app = targetBlock(project, section.productName);
   if (!app) {
-    errors.push(`${paths.projectSpec}: missing app target ${section.productName}`);
+    errors.push(
+      `${paths.projectSpec}: missing app target ${section.productName}`,
+    );
   } else {
     if (!/type:\s*application\b/.test(app))
-      errors.push(`${paths.projectSpec}: ${section.productName} must be an application target`);
+      errors.push(
+        `${paths.projectSpec}: ${section.productName} must be an application target`,
+      );
     if (!new RegExp(`target:\\s*${escaped(section.coreModule)}\\b`).test(app))
-      errors.push(`${paths.projectSpec}: app target must depend on ${section.coreModule}`);
+      errors.push(
+        `${paths.projectSpec}: app target must depend on ${section.coreModule}`,
+      );
     if (app.includes(paths.generatedSwift.replace(/^ios\//, "")))
-      errors.push(`${paths.projectSpec}: app target may not compile generated Swift directly`);
+      errors.push(
+        `${paths.projectSpec}: app target may not compile generated Swift directly`,
+      );
   }
 
   const core = targetBlock(project, section.coreModule);
   if (!core) {
-    errors.push(`${paths.projectSpec}: missing generated boundary target ${section.coreModule}`);
+    errors.push(
+      `${paths.projectSpec}: missing generated boundary target ${section.coreModule}`,
+    );
   } else {
     if (!/type:\s*(static\.)?framework\b/.test(core))
-      errors.push(`${paths.projectSpec}: ${section.coreModule} must be a framework target`);
+      errors.push(
+        `${paths.projectSpec}: ${section.coreModule} must be a framework target`,
+      );
     for (const path of [paths.coreSourceRoot, paths.generatedSwift]) {
       if (!core.includes(path.replace(/^ios\//, "")))
-        errors.push(`${paths.projectSpec}: ${section.coreModule} missing ${path.replace(/^ios\//, "")}`);
+        errors.push(
+          `${paths.projectSpec}: ${section.coreModule} missing ${path.replace(/^ios\//, "")}`,
+        );
     }
     if (!core.includes(paths.xcframework.replace(/^ios\//, "")))
-      errors.push(`${paths.projectSpec}: ${section.coreModule} missing XCFramework dependency`);
+      errors.push(
+        `${paths.projectSpec}: ${section.coreModule} missing XCFramework dependency`,
+      );
   }
 
   const generatedProject = slash(paths.generatedProject);
-  if (!gitignore.split(/\r?\n/).some((line) => {
-    const normalized = line.trim().replace(/^\//, "");
-    return normalized === generatedProject || normalized === generatedProject.replace(/^ios\//, "");
-  })) {
-    errors.push(`${paths.gitignore}: must ignore generated project ${paths.generatedProject}`);
+  if (
+    !gitignore.split(/\r?\n/).some((line) => {
+      const normalized = line.trim().replace(/^\//, "");
+      return (
+        normalized === generatedProject ||
+        normalized === generatedProject.replace(/^ios\//, "")
+      );
+    })
+  ) {
+    errors.push(
+      `${paths.gitignore}: must ignore generated project ${paths.generatedProject}`,
+    );
   }
   if (project.includes(paths.generatedProject))
-    errors.push(`${paths.projectSpec}: generated .xcodeproj may not be template source`);
+    errors.push(
+      `${paths.projectSpec}: generated .xcodeproj may not be template source`,
+    );
 
   const actualEntitlements = plistKeys(entitlements).filter(
     (key) => key !== "DOCTYPE",
@@ -698,13 +724,17 @@ export function validateIphoneShellScaffold(
   const entitlementsSet = new Set(section.entitlementKeys);
   const usage = new Set(section.privacyUsageDescriptionKeys);
   if (selected.has("push") && !entitlementsSet.has("aps-environment"))
-    errors.push("iphoneShell.selectedCapabilities: push requires aps-environment entitlement");
+    errors.push(
+      "iphoneShell.selectedCapabilities: push requires aps-environment entitlement",
+    );
   if (
     selected.has("deep-links") &&
     !entitlementsSet.has("com.apple.developer.associated-domains") &&
     !info.includes("CFBundleURLTypes")
   ) {
-    errors.push("iphoneShell.selectedCapabilities: deep-links requires URL types or associated domains");
+    errors.push(
+      "iphoneShell.selectedCapabilities: deep-links requires URL types or associated domains",
+    );
   }
   for (const [capability, key] of [
     ["camera", "NSCameraUsageDescription"],
@@ -712,10 +742,17 @@ export function validateIphoneShellScaffold(
     ["local-networking", "NSLocalNetworkUsageDescription"],
   ] as const) {
     if (selected.has(capability) && !usage.has(key))
-      errors.push(`iphoneShell.selectedCapabilities: ${capability} requires ${key}`);
+      errors.push(
+        `iphoneShell.selectedCapabilities: ${capability} requires ${key}`,
+      );
   }
-  if (selected.has("media-playback") && !section.backgroundModes.includes("audio"))
-    errors.push("iphoneShell.selectedCapabilities: media-playback requires UIBackgroundModes audio");
+  if (
+    selected.has("media-playback") &&
+    !section.backgroundModes.includes("audio")
+  )
+    errors.push(
+      "iphoneShell.selectedCapabilities: media-playback requires UIBackgroundModes audio",
+    );
 
   requireTokens(
     errors,
@@ -774,7 +811,9 @@ export function validateIphoneShellScaffold(
     "non-zero XCTest/XCUITest contract",
   );
   if (!/(testsCount|test count|executed)/i.test(tests))
-    errors.push(`${paths.testScript}: must verify a non-zero executed test count`);
+    errors.push(
+      `${paths.testScript}: must verify a non-zero executed test count`,
+    );
 
   requireTokens(
     errors,
@@ -799,18 +838,28 @@ export function validateIphoneShellScaffold(
   );
   for (const input of section.signingInputNames) {
     if (!release.includes(input))
-      errors.push(`${paths.releaseScript}: missing external signing input name ${input}`);
+      errors.push(
+        `${paths.releaseScript}: missing external signing input name ${input}`,
+      );
   }
   if (/\b(altool|iTMSTransporter|notarytool)\b|--upload\b/.test(release))
-    errors.push(`${paths.releaseScript}: upload invocation is forbidden in shell preflight`);
+    errors.push(
+      `${paths.releaseScript}: upload invocation is forbidden in shell preflight`,
+    );
   if (/DEVELOPMENT_TEAM\s*[:=]\s*["']?[A-Z0-9]{10}\b/.test(project + release))
-    errors.push("iPhone shell source contains a literal Apple development team id");
-  if (/CODE_SIGN_IDENTITY\s*[:=]\s*["'][^$"'][^"']*["']/.test(project + release))
+    errors.push(
+      "iPhone shell source contains a literal Apple development team id",
+    );
+  if (
+    /CODE_SIGN_IDENTITY\s*[:=]\s*["'][^$"'][^"']*["']/.test(project + release)
+  )
     errors.push("iPhone shell source contains a literal code-sign identity");
 
   for (const token of [paths.udl, paths.uniffiConfig, paths.cargoLock]) {
     if (!build.includes(token))
-      errors.push(`${paths.buildScript}: generated boundary input missing '${token}'`);
+      errors.push(
+        `${paths.buildScript}: generated boundary input missing '${token}'`,
+      );
   }
   return errors;
 }
@@ -846,7 +895,8 @@ export function validateIphoneCommandPlan(
     }
     requireStringArray(errors, `${prefix}.command`, entry.command);
     const key = assertionKey(entry as unknown as IphoneAssertionCommand);
-    if (seen.has(key)) errors.push(`${prefix}: duplicate assertion leg '${key}'`);
+    if (seen.has(key))
+      errors.push(`${prefix}: duplicate assertion leg '${key}'`);
     seen.add(key);
     if (entry.cwd !== undefined && !isSafeRelativePath(String(entry.cwd)))
       errors.push(`${prefix}.cwd: must be a safe app-relative path`);
@@ -869,13 +919,17 @@ export function validateIphoneCommandPlan(
       entry.expectedExit === "nonzero" &&
       !isNonEmptyString(entry.expectedOutputPattern)
     ) {
-      errors.push(`${prefix}.expectedOutputPattern: required for nonzero expectation`);
+      errors.push(
+        `${prefix}.expectedOutputPattern: required for nonzero expectation`,
+      );
     }
     if (isNonEmptyString(entry.expectedOutputPattern)) {
       try {
         new RegExp(entry.expectedOutputPattern, "i");
       } catch {
-        errors.push(`${prefix}.expectedOutputPattern: invalid regular expression`);
+        errors.push(
+          `${prefix}.expectedOutputPattern: invalid regular expression`,
+        );
       }
     }
     if (entry.hostConstraintPatterns !== undefined) {
@@ -890,7 +944,9 @@ export function validateIphoneCommandPlan(
           try {
             new RegExp(pattern, "i");
           } catch {
-            errors.push(`${prefix}.hostConstraintPatterns: invalid '${pattern}'`);
+            errors.push(
+              `${prefix}.hostConstraintPatterns: invalid '${pattern}'`,
+            );
           }
         }
       }
@@ -945,7 +1001,9 @@ export function validateIphoneCommandPlan(
   );
   if (signingAbsence) {
     if (signingAbsence.expectedExit !== "nonzero")
-      errors.push("iphoneShell.assertions: signing-absence must expect nonzero");
+      errors.push(
+        "iphoneShell.assertions: signing-absence must expect nonzero",
+      );
     for (const input of section.signingInputNames) {
       if (!signingAbsence.unsetEnv?.includes(input))
         errors.push(
@@ -956,7 +1014,9 @@ export function validateIphoneCommandPlan(
   const archive = section.assertions.find(
     (entry) => assertionKey(entry) === "MOB-IOS-006/archive-preflight",
   );
-  if (archive?.command.some((part) => /upload|altool|iTMSTransporter/i.test(part)))
+  if (
+    archive?.command.some((part) => /upload|altool|iTMSTransporter/i.test(part))
+  )
     errors.push("iphoneShell.assertions: archive-preflight may not upload");
   return errors;
 }

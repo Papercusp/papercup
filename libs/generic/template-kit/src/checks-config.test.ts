@@ -256,9 +256,7 @@ describe("validateChecksConfig", () => {
       },
     });
 
-    expect(errors).toContain(
-      "iphoneShell.bundleId: required non-empty string",
-    );
+    expect(errors).toContain("iphoneShell.bundleId: required non-empty string");
     expect(errors).toContain(
       "iphoneShell.remoteHost: required non-empty string for remote-host strategy",
     );

@@ -894,10 +894,7 @@ export function validateChecksConfig(value: unknown): string[] {
           "iphoneShell.remoteHost: must be a non-empty string when present",
         );
       }
-      for (const field of [
-        "simulatorTargets",
-        "signingInputNames",
-      ] as const) {
+      for (const field of ["simulatorTargets", "signingInputNames"] as const) {
         requireStringArray(
           errors,
           "iphoneShell",

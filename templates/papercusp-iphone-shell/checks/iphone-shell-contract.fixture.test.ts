@@ -160,7 +160,11 @@ schemes:
         - HarborUITests
 `,
   );
-  put(root, paths.gitignore, "ios/Harbor.xcodeproj\nios/build\nios/*.xcframework\n");
+  put(
+    root,
+    paths.gitignore,
+    "ios/Harbor.xcodeproj\nios/build\nios/*.xcframework\n",
+  );
   put(
     root,
     paths.infoPlist,
@@ -193,7 +197,11 @@ schemes:
   put(root, `${paths.coreSourceRoot}/.gitkeep`, "");
   put(root, `${paths.unitTestRoots[0]}/SmokeTests.swift`, "import XCTest\n");
   put(root, `${paths.uiTestRoots[0]}/LaunchTests.swift`, "import XCTest\n");
-  put(root, paths.udl, "namespace harbor {};\ninterface Harbor { string ping(); };\n");
+  put(
+    root,
+    paths.udl,
+    "namespace harbor {};\ninterface Harbor { string ping(); };\n",
+  );
   put(root, paths.uniffiConfig, "[bindings.swift]\n");
   put(root, paths.cargoLock, "# lock\n");
   put(
@@ -315,13 +323,15 @@ targets:
 `,
     );
     const build = readFileSync(join(root, section.paths.buildScript), "utf8")
-      .replace("aarch64-apple-ios-sim", "arm64-simulator-missing")
+      .replaceAll("aarch64-apple-ios-sim", "arm64-simulator-missing")
       .replace("xcodebuild -create-xcframework", "echo omitted");
     put(root, section.paths.buildScript, build);
     const errors = validateIphoneShellScaffold(root, section).join("\n");
     expect(errors).toContain("name: Harbor");
     expect(errors).toContain("missing generated boundary target HarborCore");
-    expect(errors).toContain("app target may not compile generated Swift directly");
+    expect(errors).toContain(
+      "app target may not compile generated Swift directly",
+    );
     expect(errors).toContain("aarch64-apple-ios-sim");
     expect(errors).toContain("-create-xcframework");
   });
@@ -335,8 +345,15 @@ targets:
       section.paths.projectSpec,
       `${project}\nsettings:\n  DEVELOPMENT_TEAM: ABCDE12345\n`,
     );
-    const release = readFileSync(join(root, section.paths.releaseScript), "utf8");
-    put(root, section.paths.releaseScript, `${release}\nxcrun altool --upload-app\n`);
+    const release = readFileSync(
+      join(root, section.paths.releaseScript),
+      "utf8",
+    );
+    put(
+      root,
+      section.paths.releaseScript,
+      `${release}\nxcrun altool --upload-app\n`,
+    );
     const errors = validateIphoneShellScaffold(root, section).join("\n");
     expect(errors).toContain("push requires aps-environment entitlement");
     expect(errors).toContain("camera requires NSCameraUsageDescription");
@@ -346,7 +363,9 @@ targets:
 
   it("rejects an incomplete or vacuously passing command plan", () => {
     const { section } = fixture();
-    section.assertions = section.assertions.filter((entry) => entry.leg !== "ui");
+    section.assertions = section.assertions.filter(
+      (entry) => entry.leg !== "ui",
+    );
     const unit = section.assertions.find((entry) => entry.leg === "unit")!;
     delete unit.expectedOutputPattern;
     const signing = section.assertions.find(
@@ -356,9 +375,13 @@ targets:
     signing.unsetEnv = [];
     const errors = validateIphoneCommandPlan(section).join("\n");
     expect(errors).toContain("MOB-IOS-005/ui");
-    expect(errors).toContain("unit must declare a non-zero test-count output pattern");
+    expect(errors).toContain(
+      "unit must declare a non-zero test-count output pattern",
+    );
     expect(errors).toContain("signing-absence must expect nonzero");
-    expect(errors).toContain(`signing-absence must unset ${signingInputNames[0]}`);
+    expect(errors).toContain(
+      `signing-absence must unset ${signingInputNames[0]}`,
+    );
   });
 
   it("writes atomic evidence for pass, expected failure, and Linux host constraint", () => {
@@ -397,8 +420,8 @@ targets:
     expect(local.evidence.verdict).toBe(
       platform() === "darwin" ? "pass" : "host-constrained",
     );
-    expect(
-      JSON.parse(readFileSync(local.evidencePath, "utf8")).verdict,
-    ).toBe(local.evidence.verdict);
+    expect(JSON.parse(readFileSync(local.evidencePath, "utf8")).verdict).toBe(
+      local.evidence.verdict,
+    );
   });
 });

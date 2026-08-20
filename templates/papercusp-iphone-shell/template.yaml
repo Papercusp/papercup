@@ -57,8 +57,8 @@ checks:
       every MOB-IOS host leg runs directly, writes an atomic machine evidence
       record, and proves deterministic project generation, XCFramework and
       module compilation, host health, non-zero XCTest/XCUITest execution,
-      privacy/capability agreement, archive/export preflight, and missing-
-      signing rejection
+      privacy/capability agreement, archive/export preflight, and
+      signing-absence rejection
 musts:
   - id: xcodegen-source-chassis
     rule: "One thin SwiftUI app pins iOS 17.0 or higher and Swift 5.9, keeps ios/project.yml as the XcodeGen source of truth, and treats the generated .xcodeproj as ignored build output"

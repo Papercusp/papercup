@@ -10,10 +10,7 @@
     "deploymentTarget": "17.0",
     "swiftVersion": "5.9",
     "deviceTarget": "aarch64-apple-ios",
-    "simulatorTargets": [
-      "aarch64-apple-ios-sim",
-      "x86_64-apple-ios"
-    ],
+    "simulatorTargets": ["aarch64-apple-ios-sim", "x86_64-apple-ios"],
     "rustLibrary": "libharbor.a",
     "ffiModule": "harborFFI",
     "hostStrategy": "local-mac",
@@ -63,27 +60,16 @@
       {
         "assertionId": "MOB-IOS-001",
         "leg": "project-generation",
-        "command": [
-          "xcodegen",
-          "generate",
-          "--spec",
-          "ios/project.yml"
-        ],
+        "command": ["xcodegen", "generate", "--spec", "ios/project.yml"],
         "timeoutMs": 120000,
-        "hostConstraintPatterns": [
-          "macOS is required",
-          "xcodegen is required"
-        ]
+        "hostConstraintPatterns": ["macOS is required", "xcodegen is required"]
       },
       {
         "assertionId": "MOB-IOS-002",
         "leg": "xcframework",
         "command": ["bash", "tools/build-ios.sh"],
         "timeoutMs": 1200000,
-        "hostConstraintPatterns": [
-          "macOS is required",
-          "iOS SDK is required"
-        ]
+        "hostConstraintPatterns": ["macOS is required", "iOS SDK is required"]
       },
       {
         "assertionId": "MOB-IOS-003",
@@ -142,10 +128,7 @@
         "leg": "archive-preflight",
         "command": ["bash", "tools/ios-release-preflight.sh"],
         "timeoutMs": 1200000,
-        "hostConstraintPatterns": [
-          "macOS is required",
-          "Xcode is required"
-        ]
+        "hostConstraintPatterns": ["macOS is required", "Xcode is required"]
       },
       {
         "assertionId": "MOB-IOS-006",
