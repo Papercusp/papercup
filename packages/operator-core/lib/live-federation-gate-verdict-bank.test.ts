@@ -153,6 +153,27 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     expect(decl).toContain('$STATE_DIR/');
   });
 
+  it('retains stamped run evidence without counting immutable self-snapshots as runs', () => {
+    const retentionLine = gate
+      .split('\n')
+      .find((line) => line.includes('GATE_KEEP_RUNS + 1'));
+    expect(retentionLine, 'could not find the run-retention command').toBeTruthy();
+
+    // Permanent pre-fix control: the former broad glob matches BOTH populations. Enough
+    // hourly snapshot re-execs therefore rotated a still-current RED run out of /tmp even
+    // while the verdict bank pointed at it and fresh-red deliberately deferred reproduction.
+    expect('live-fed-gate-snapshot.ABC123').toMatch(/^live-fed-gate-/);
+    expect('live-fed-gate-20260819-174217').toMatch(/^live-fed-gate-/);
+
+    // The shipped retention selector must name the stamped-run population only. Pin both the
+    // exclusion and the positive case so replacing it with a pattern that matches nothing
+    // cannot satisfy the guard vacuously.
+    expect(retentionLine).toContain('/tmp/live-fed-gate-[0-9]*');
+    expect(retentionLine).not.toContain('/tmp/live-fed-gate-*');
+    expect('live-fed-gate-snapshot.ABC123').not.toMatch(/^live-fed-gate-[0-9]/);
+    expect('live-fed-gate-20260819-174217').toMatch(/^live-fed-gate-[0-9]/);
+  });
+
   it('never lets a banking failure fail the gate', () => {
     const fn = gate.match(/^bank_verdict\(\) \{[\s\S]*?^\}$/m)?.[0];
     expect(fn, 'could not extract bank_verdict()').toBeTruthy();
