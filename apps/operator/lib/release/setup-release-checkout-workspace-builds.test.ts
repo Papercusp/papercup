@@ -182,6 +182,13 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
     const trace = join(root, 'npm-trace');
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(
+      join(packageRoot, 'package.json'),
+      JSON.stringify({
+        name: '@papercusp/sse',
+        devDependencies: { typescript: '~6.0.0' },
+      }),
+    );
 
     const fakeNpm = join(fakeBin, 'npm');
     writeFileSync(
@@ -189,10 +196,25 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       [
         '#!/usr/bin/env bash',
         'set -euo pipefail',
-        'test "$*" = "--workspace @papercusp/sse run build"',
-        'printf "%s|%s\\n" "$PWD" "$*" > "$NPM_TRACE"',
-        'mkdir -p "$PWD/libs/generic/sse/dist"',
-        'printf "rebuilt-after-install\\n" > "$PWD/libs/generic/sse/dist/index.js"',
+        'trace_npm() { printf "%s|%s\\n" "$PWD" "$(printf "%s" "$1" | tr "\\n" " ")" >> "$NPM_TRACE"; }',
+        'case "$*" in',
+        '  "install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/sse")',
+        '    trace_npm "$*"',
+        '    mkdir -p "$PWD/libs/generic/sse/node_modules/typescript"',
+        '    printf "typescript-6.0.3\\n" > "$PWD/libs/generic/sse/node_modules/PINNED_TOOLCHAIN"',
+        '    printf \'{"version":"6.0.3"}\\n\' > "$PWD/libs/generic/sse/node_modules/typescript/package.json"',
+        '    ;;',
+        '  "--workspace=@papercusp/sse exec -- node -e "*)',
+        '    trace_npm "$*"',
+        '    printf "  ✓ @papercusp/sse: TypeScript 6.0.3 satisfies ~6.0.0\\n"',
+        '    ;;',
+        '  "--workspace @papercusp/sse run build")',
+        '    trace_npm "$*"',
+        '    mkdir -p "$PWD/libs/generic/sse/dist"',
+        '    printf "rebuilt-after-install\\n" > "$PWD/libs/generic/sse/dist/index.js"',
+        '    ;;',
+        '  *) echo "unexpected fake npm invocation: $*" >&2; exit 1 ;;',
+        'esac',
       ].join('\n'),
     );
     chmodSync(fakeNpm, 0o755);
@@ -213,8 +235,15 @@ describe('setup-release-checkout pinned workspace runtime builds', () => {
       encoding: 'utf8',
     });
     expect(run.status, run.stderr).toBe(0);
-    expect(readFileSync(trace, 'utf8').trim()).toBe(
-      `${root}|--workspace @papercusp/sse run build`,
+    const traceLines = readFileSync(trace, 'utf8').trim().split('\n');
+    expect(traceLines).toHaveLength(3);
+    expect(traceLines[0]).toBe(
+      `${root}|install --legacy-peer-deps --no-audit --no-fund --ignore-scripts --include=dev --workspace=@papercusp/sse`,
+    );
+    expect(traceLines[1]).toContain(`${root}|--workspace=@papercusp/sse exec -- node -e `);
+    expect(traceLines[2]).toBe(`${root}|--workspace @papercusp/sse run build`);
+    expect(readFileSync(join(packageRoot, 'node_modules/PINNED_TOOLCHAIN'), 'utf8')).toBe(
+      'typescript-6.0.3\n',
     );
     expect(readFileSync(join(packageRoot, 'dist/index.js'), 'utf8')).toBe(
       'rebuilt-after-install\n',
