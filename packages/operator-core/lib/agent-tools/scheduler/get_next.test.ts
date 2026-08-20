@@ -771,7 +771,7 @@ describe('scheduler:get_next claim lease arbitration (WI-39730)', () => {
       harness: 'papercusp',
       expectedAssignee: 'su-member',
     });
-    expect(handlerPayload(out)).not.toMatchObject({
+    expect(handlerPayload(out as { data?: unknown; content?: Array<{ text?: string }> })).not.toMatchObject({
       ok: true,
       claimReceipt: { committed: true, workItemId: 'WI-lease-lost' },
     });
