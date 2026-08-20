@@ -23,6 +23,106 @@ import {
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
+import { readOutbox } from '../coordination/messages';
+
+/**
+ * A completion assertion is intentionally a narrow, advisory signal. It is not
+ * a substitute for the item's terminal state: it catches the dangerous shape
+ * where a holder says the work is finished over coord and then releases an open
+ * item without calling work_items:complete.
+ *
+ * Keep the prose matcher affirmative and local to the item reference. A broad
+ * "message contains complete" check would turn questions, negated findings, and
+ * completion claims about a different item into false alarms.
+ */
+const COMPLETION_ASSERTION_PATTERNS = [
+  /\b(?:is|was|has been|already|now)\s+(?:fully\s+)?(?:complete|completed|done|finished|resolved|closed)\b/i,
+  /\b(?:completed|finished|implemented|landed|shipped)\s+(?:it|the work|this item|everything|the fix)\b/i,
+  /\b(?:nothing|no work)\s+(?:is|was|remains|left)\b/i,
+  /\b(?:do not|don't|never)\s+(?:take|redo|rebuild|pick up|reclaim)\b/i,
+  /\b(?:work|fix|item|task)\s+(?:is|was)\s+(?:all\s+)?(?:done|complete|finished)\b/i,
+] as const;
+
+const NON_COMPLETION_PATTERNS = [
+  /\b(?:not|isn't|isnt|wasn't|wasnt)\s+(?:yet\s+)?(?:complete|completed|done|finished|resolved|closed)\b/i,
+  /\b(?:still|currently|actively)\s+(?:working|running|investigating|in progress)\b/i,
+  /\b(?:will|would|should|might|may|could)\s+(?:be\s+)?(?:complete|completed|done|finished|resolved|closed)\b/i,
+] as const;
+
+function escapedRegExp(value: string): RegExp {
+  return new RegExp(`(?:^|[^A-Za-z0-9])${value.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}(?:$|[^A-Za-z0-9])`, 'i');
+}
+
+function sectionText(section: unknown): string {
+  if (!section || typeof section !== 'object') return '';
+  const record = section as Record<string, unknown>;
+  const parts: string[] = [];
+  if (typeof record.text === 'string') parts.push(record.text);
+  if (typeof record.premises === 'string') parts.push(record.premises);
+  if (Array.isArray(record.premises)) parts.push(...record.premises.filter((v): v is string => typeof v === 'string'));
+  const relation = record.forYouBecause;
+  if (relation && typeof relation === 'object') {
+    const relationRecord = relation as Record<string, unknown>;
+    for (const key of ['ref', 'note', 'relation']) {
+      if (typeof relationRecord[key] === 'string') parts.push(relationRecord[key] as string);
+    }
+  }
+  return parts.join('\n');
+}
+
+function completionAssertionText(message: unknown): string[] {
+  if (!message || typeof message !== 'object') return [];
+  const record = message as Record<string, unknown>;
+  const parts: string[] = [];
+  for (const key of ['summary', 'body']) {
+    if (typeof record[key] === 'string') parts.push(record[key] as string);
+  }
+  if (Array.isArray(record.sections)) parts.push(...record.sections.map(sectionText).filter(Boolean));
+  return parts;
+}
+
+function hasStructuredCompletionPremise(message: unknown, itemId: string): boolean {
+  if (!message || typeof message !== 'object') return false;
+  const record = message as Record<string, unknown>;
+  const refs: string[] = [];
+  const collect = (value: unknown): void => {
+    if (typeof value === 'string') refs.push(value);
+    else if (Array.isArray(value)) value.forEach(collect);
+    else if (value && typeof value === 'object') {
+      const nested = value as Record<string, unknown>;
+      if (typeof nested.ref === 'string') refs.push(nested.ref);
+      if (nested.premises !== undefined) collect(nested.premises);
+      if (nested.premisesClassified !== undefined) collect(nested.premisesClassified);
+    }
+  };
+  collect(record.premises);
+  collect(record.premisesClassified);
+  const ref = new RegExp(`^(?:wi:)?${itemId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}#completion$`, 'i');
+  return refs.some((candidate) => ref.test(candidate.trim()));
+}
+
+function assertsCompletionForItem(message: unknown, itemId: string): boolean {
+  if (hasStructuredCompletionPremise(message, itemId)) return true;
+  const itemRef = escapedRegExp(itemId);
+  return completionAssertionText(message).some((segment) => {
+    if (!itemRef.test(segment)) return false;
+    if (!COMPLETION_ASSERTION_PATTERNS.some((pattern) => pattern.test(segment))) return false;
+    return !NON_COMPLETION_PATTERNS.some((pattern) => pattern.test(segment));
+  });
+}
+
+async function readPriorCompletionAssertion(holder: string, itemId: string): Promise<{ msgId: string; ts: string } | null> {
+  try {
+    const messages = await readOutbox(holder);
+    const match = messages.find(
+      (message) => message.from === holder && assertsCompletionForItem(message, itemId),
+    );
+    return match ? { msgId: match.msg_id, ts: match.ts } : null;
+  } catch {
+    // A coord read outage must never turn a voluntary release into a failed release.
+    return null;
+  }
+}
 
 const itemSpec = z.object({
   id: z.string().min(1),
