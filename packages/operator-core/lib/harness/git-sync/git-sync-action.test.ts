@@ -55,6 +55,11 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
   tryReleaseResource: (...a: unknown[]) => tryReleaseResourceMock(a[0], a[1] as Record<string, unknown>),
 }));
 
+const liveLockedPathsMock = vi.fn(async (): Promise<string[]> => []);
+vi.mock('../../agent-tools/locks/live-lock-paths', () => ({
+  liveLockedPaths: () => liveLockedPathsMock(),
+}));
+
 // inWorkspaceTxn hands the callback a CALLABLE tagged-template fake tx — the lock
 // store is mocked anyway, but the P-006 auto-register INSERT runs through the tx
 // itself, so record those queries.
@@ -342,6 +347,8 @@ const action = getSystemAction('git-sync')!;
 beforeEach(() => {
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
+  liveLockedPathsMock.mockReset();
+  liveLockedPathsMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
   appendPipelineEventMock.mockReset();
   resolveLaunchTargetForEventMock.mockReset();

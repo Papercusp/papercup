@@ -693,6 +693,12 @@ export interface RunGitSyncOpts {
   config?: GitSyncConfig;
   /** Override submodule discovery (tests). Repo-relative paths. */
   submodulePaths?: string[];
+  /**
+   * Caller-supplied paths that must remain outside this tick's commits. Paths are
+   * superproject-root-relative, matching the live roster/current_files contract;
+   * submodule paths are mapped to that repo's relative coordinate space below.
+   */
+  excludePaths?: string[];
   /** Override the content-guard detector registry (tests / future extension).
    *  Defaults to DEFAULT_CONTENT_DETECTORS (mdx + smart-quotes). Pass [] to disable. */
   contentDetectors?: ContentDetector[];
@@ -1780,6 +1786,8 @@ interface CommitRepoOpts {
   log: (m: string) => void;
   staleTempPackMs: number;
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
+  /** Caller-supplied protected paths in THIS repo's relative coordinate space. */
+  excludePaths: string[];
   /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
    *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical
@@ -1899,7 +1907,13 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // Exclude BOTH oversized + content offenders (incl. unsafe deletions + quarantined
     // importers) from the auto-commit (deduped — a file can be both). Everything else
     // still syncs this tick.
-    const excludePaths = [...new Set([...oversized.map((f) => f.path), ...contentErrors.map((c) => c.file)])];
+    const excludePaths = [
+      ...new Set([
+        ...o.excludePaths,
+        ...oversized.map((f) => f.path),
+        ...contentErrors.map((c) => c.file),
+      ]),
+    ];
     let committedAny = false;
     // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel
     // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
@@ -2297,6 +2311,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const deletionGuard = opts.deletionGuard ?? true;
   const readText = opts.readText ?? defaultReadText;
   const toolCatalogRegenerator = opts.toolCatalogRegenerator ?? regenerateToolCatalogBeforeCommit;
+  const protectedPaths = [...new Set((opts.excludePaths ?? []).map((path) => path.trim()).filter(Boolean))];
   const repoO = {
     remote,
     message,
@@ -2310,6 +2325,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
     isTempPackOpen: opts.isTempPackOpen,
     diffSubjects: opts.diffSubjects ?? true,
+    excludePaths: protectedPaths,
   };
 
   const repo = opts.repoPath === undefined ? await projectDirForSlug(slug) : opts.repoPath;
@@ -2471,6 +2487,13 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
           ...repoO,
           doPush: doSubPush,
           defaultBranch: 'main',
+          // The caller supplies workspace/superproject-root-relative paths, while
+          // git commands inside a submodule use that submodule's own root. This is
+          // the same coordinate mapping used by git-sync attribution.
+          excludePaths: protectedPaths
+            .filter((path) => path.startsWith(`${s}/`))
+            .map((path) => path.slice(s.length + 1))
+            .filter(Boolean),
           attribution: attributionMapForRepo(roster, s, repo),
         }),
       );

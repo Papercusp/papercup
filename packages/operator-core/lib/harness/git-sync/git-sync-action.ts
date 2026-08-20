@@ -34,6 +34,7 @@ import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
 import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
+import { liveLockedPaths } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
@@ -1668,6 +1669,10 @@ async function handleGitSync(
   // WI-38594: diff-derived commit subjects (default ON) — subject = the staged diff,
   // intent line demoted to the body. OFF = pre-WI-38594 subjects, no deploy needed.
   const diffSubjectsOn = await getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug);
+  // File locks are the automatic edit-plane authority. Keep git-sync's broad
+  // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
+  // maps these superproject-root-relative paths into each submodule before add.
+  const liveLockPaths = await liveLockedPaths();
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
@@ -1681,6 +1686,7 @@ async function handleGitSync(
       contentDetectors: contentGuardOn ? undefined : [],
       deletionGuard: deletionGuardOn,
       diffSubjects: diffSubjectsOn,
+      ...(liveLockPaths.length > 0 ? { excludePaths: liveLockPaths } : {}),
       loadRoster: attributionOn ? () => loadAttributionRosterMerged(workspaceId) : undefined,
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
