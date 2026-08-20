@@ -35,11 +35,11 @@
  */
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
-import { lstat, readFile, readlink, readdir, realpath, unlink } from 'node:fs/promises';
+import { lstat, readFile, readlink, readdir, realpath, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
-import { detectContentOffenders, type ContentOffender } from './content-guard';
+import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions } from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { detectQuarantineImporters } from './quarantine-import-guard';
@@ -294,6 +294,150 @@ export const runGitBounded = async (
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
 const defaultRunGit: RunGit = (args, cwd) => runGitBounded(args, cwd, gitTimeoutMsFor(args));
+
+const TOOL_CATALOG_GENERATOR_PATH = 'scripts/gen-tool-catalog.ts';
+const TOOL_CATALOG_ARTIFACT_PATH = '.papercusp/tool-catalog.json';
+const TOOL_CATALOG_TRACKED_PATHS = [TOOL_CATALOG_GENERATOR_PATH, TOOL_CATALOG_ARTIFACT_PATH] as const;
+
+/** The exact source surface guarded by affected-tests.mjs's gen:tool-catalog:check entry. */
+export function affectsToolCatalog(path: string): boolean {
+  return (
+    (path.startsWith('packages/operator-core/lib/agent-tools/') && !path.endsWith('.test.ts')) ||
+    (path.startsWith('packages/agent-mcp/src/') && !path.endsWith('.test.ts')) ||
+    (path.startsWith('libs/generic/tooldef/src/') && !path.endsWith('.test.ts')) ||
+    path === TOOL_CATALOG_GENERATOR_PATH ||
+    path === TOOL_CATALOG_ARTIFACT_PATH
+  );
+}
+
+export interface ToolCatalogGeneratorResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type RunToolCatalogGenerator = (repoPath: string) => Promise<ToolCatalogGeneratorResult>;
+
+export interface ToolCatalogRegeneratorContext {
+  runGit: RunGit;
+  repoPath: string;
+  log: (message: string) => void;
+}
+
+export type ToolCatalogRegenerator = (context: ToolCatalogRegeneratorContext) => Promise<void>;
+
+/**
+ * Run the catalog writer in a bounded child. The generator cold-imports the full
+ * registry, so a peer's half-written tool module can make that import hang or
+ * fail; neither condition may wedge the fleet-wide git-sync commit path.
+ */
+const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath) =>
+  new Promise((resolve) => {
+    const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_TOOL_CATALOG_TIMEOUT_MS', 60_000);
+    const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_CATALOG_GENERATOR_PATH], {
+      cwd: repoPath,
+      env: process.env,
+    });
+    const out = collectChildOutput(child);
+    let settled = false;
+    let timedOut = false;
+    let closeFallback: ReturnType<typeof setTimeout> | null = null;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      if (closeFallback) clearTimeout(closeFallback);
+      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
+    };
+    const killer = setTimeout(() => {
+      timedOut = true;
+      out.stderr.append(
+        `${out.stderr.peek() ? '\n' : ''}tool-catalog regeneration timed out after ${timeoutMs}ms`,
+      );
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      // A broken child implementation must not defeat the timeout by never
+      // emitting close after the kill.
+      closeFallback = setTimeout(() => finish(-1), 5_000);
+      closeFallback.unref?.();
+    }, timeoutMs);
+    killer.unref?.();
+    child.on('error', (e) => {
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}${String(e)}`);
+      finish(-1);
+    });
+    child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
+  });
+
+/**
+ * Regenerate the tracked tool catalog immediately before the superproject
+ * commit when a dirty source path can affect it. This is intentionally
+ * FAIL-SOFT: status/tracking checks, generator throws, nonzero exits, and
+ * timeouts are logged and return normally so a transient registry refactor can
+ * never stop git-sync from committing the rest of the shared tree.
+ */
+export async function regenerateToolCatalogBeforeCommit(
+  context: ToolCatalogRegeneratorContext,
+  runGenerator: RunToolCatalogGenerator = defaultRunToolCatalogGenerator,
+): Promise<void> {
+  const { runGit, repoPath, log } = context;
+  try {
+    const status = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+    if (status.code !== 0) {
+      log(`[git-sync] ${repoPath}: could not inspect dirty paths for tool-catalog regeneration — skipping fail-soft`);
+      return;
+    }
+    const affected = parseDirtyPaths(status.stdout).filter(affectsToolCatalog);
+    if (affected.length === 0) return;
+
+    // Do not run this papercusp-specific generator in arbitrary repositories
+    // that merely happen to contain a similarly named dirty path.
+    const tracked = await runGit(['ls-files', '--', ...TOOL_CATALOG_TRACKED_PATHS], repoPath);
+    const trackedPaths = new Set(tracked.stdout.split('\n').map((p) => p.trim()).filter(Boolean));
+    if (tracked.code !== 0 || !TOOL_CATALOG_TRACKED_PATHS.every((path) => trackedPaths.has(path))) return;
+
+    const artifactPath = join(repoPath, TOOL_CATALOG_ARTIFACT_PATH);
+    let original: string | null = null;
+    try {
+      original = await readFile(artifactPath, 'utf8');
+    } catch {
+      /* missing artifact is restored to missing if the writer fails */
+    }
+
+    let result: ToolCatalogGeneratorResult;
+    try {
+      result = await runGenerator(repoPath);
+    } catch (e) {
+      result = { code: -1, stdout: '', stderr: String(e) };
+    }
+    if (result.code !== 0) {
+      // A synchronous write can truncate before throwing. Restore the pre-run
+      // artifact so a failed repair never turns a merely stale catalog into a
+      // corrupt one that the catch-all commit could publish.
+      try {
+        if (original == null) await unlink(artifactPath).catch(() => {});
+        else await writeFile(artifactPath, original, 'utf8');
+      } catch (e) {
+        log(`[git-sync] ${repoPath}: failed to restore tool catalog after generator failure: ${String(e)}`);
+      }
+      const detail = (result.stderr || result.stdout || `exit ${result.code}`).trim().slice(0, 300);
+      log(
+        `[git-sync] ${repoPath}: tool-catalog regeneration failed (${detail}) — continuing with the commit fail-soft; the downstream catalog check remains the detector`,
+      );
+      return;
+    }
+    log(
+      `[git-sync] ${repoPath}: regenerated ${TOOL_CATALOG_ARTIFACT_PATH} before commit (${affected.length} catalog-affecting dirty path(s))`,
+    );
+  } catch (e) {
+    log(
+      `[git-sync] ${repoPath}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`,
+    );
+  }
+}
 
 const GITHUB_HTTPS_INSTEAD_OF_ARGS = ['-c', 'url.https://github.com/.insteadOf=git@github.com:'] as const;
 
@@ -566,6 +710,9 @@ export interface RunGitSyncOpts {
   /** Test seam for proving whether a candidate temp pack is still open by a process.
    *  `null` means the state is unknown; unknown is always preserved. */
   isTempPackOpen?: (path: string) => Promise<boolean | null>;
+  /** WI-39922: pre-superproject-commit repair for the tracked tool catalog.
+   *  Defaults to the conditional, bounded, fail-soft regenerator above. */
+  toolCatalogRegenerator?: ToolCatalogRegenerator;
 }
 
 /** Default content-guard file reader — the working-tree bytes that `add -A` would
@@ -2129,6 +2276,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const contentDetectors = opts.contentDetectors ?? DEFAULT_CONTENT_DETECTORS;
   const deletionGuard = opts.deletionGuard ?? true;
   const readText = opts.readText ?? defaultReadText;
+  const toolCatalogRegenerator = opts.toolCatalogRegenerator ?? regenerateToolCatalogBeforeCommit;
   const repoO = {
     remote,
     message,
@@ -2328,9 +2476,20 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
 
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
-  const commitRes = await step('git-sync:pointer-bump', () =>
-    commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) }),
-  );
+  const commitRes = await step('git-sync:pointer-bump', async () => {
+    // WI-39922: close the edit→auto-commit window that let a stale tracked catalog
+    // reach the green gate hours later. Keep the catch HERE even though the default
+    // implementation is defensive: an injected/future regenerator must never turn
+    // this repair into a fleet-wide commit wedge.
+    try {
+      await toolCatalogRegenerator({ runGit, repoPath: repo, log });
+    } catch (e) {
+      log(
+        `[git-sync] ${repo}: tool-catalog pre-commit repair threw (${String(e)}) — continuing with the commit fail-soft`,
+      );
+    }
+    return commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) });
+  });
   let repoResult: RepoSyncResult;
   if (commitRes.error) {
     repoResult = {

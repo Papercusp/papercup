@@ -30,6 +30,7 @@ import {
   STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
+  regenerateToolCatalogBeforeCommit,
   type RunGit,
 } from './run-git-sync';
 import type { ContentDetector } from '../../content-lint/registry';
@@ -58,6 +59,60 @@ describe('git-sync commit identity', () => {
     expect(GIT_SYNC_BOT_NAME).toBe('papercusp-git-sync');
     expect(GIT_SYNC_BOT_EMAIL).toBe('papercupai@users.noreply.github.com');
     expect(GIT_SYNC_BOT_EMAIL).not.toMatch(/@papercusp\.local$/);
+  });
+});
+
+describe('WI-39922 tool-catalog pre-commit regeneration', () => {
+  it('runs the generator for a catalog-affecting dirty source when the canonical surfaces are tracked', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      if (args[0] === 'status') {
+        return {
+          code: 0,
+          stdout: ' M packages/operator-core/lib/agent-tools/example.ts\0',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout: 'scripts/gen-tool-catalog.ts\n.papercusp/tool-catalog.json\n',
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: 'wrote catalog', stderr: '' }));
+    const logs: string[] = [];
+
+    await regenerateToolCatalogBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      runGenerator,
+    );
+
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(calls.map((args) => args[0])).toEqual(['status', 'ls-files']);
+    expect(logs.join('\n')).toMatch(/regenerated \.papercusp\/tool-catalog\.json before commit/);
+  });
+
+  it('does nothing for irrelevant dirty paths, including adjacent tool test files', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      return {
+        code: 0,
+        stdout: ' M README.md\0 M packages/operator-core/lib/agent-tools/example.test.ts\0',
+        stderr: '',
+      };
+    };
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    await regenerateToolCatalogBeforeCommit({ runGit, repoPath: '/fake', log: () => {} }, runGenerator);
+
+    expect(runGenerator).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe('status');
   });
 });
 
@@ -100,6 +155,43 @@ describe('runGitSync (real git, no submodule)', () => {
     // origin received the auto-commit
     expect(originLog()).toMatch(/auto-commit test/);
     // working tree is clean after sync
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('WI-39922: a generator failure remains fail-soft and the tool source still commits', async () => {
+    const generator = join(repo, 'scripts', 'gen-tool-catalog.ts');
+    const catalog = join(repo, '.papercusp', 'tool-catalog.json');
+    const tool = join(repo, 'packages', 'operator-core', 'lib', 'agent-tools', 'example.ts');
+    mkdirSync(join(repo, 'scripts'), { recursive: true });
+    mkdirSync(join(repo, '.papercusp'), { recursive: true });
+    mkdirSync(join(repo, 'packages', 'operator-core', 'lib', 'agent-tools'), { recursive: true });
+    writeFileSync(generator, '// generator fixture\n');
+    writeFileSync(catalog, '{"count":0}\n');
+    writeFileSync(tool, 'export const version = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed catalog fixture');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(tool, 'export const version = 2;\n');
+    const logs: string[] = [];
+    const runGenerator = vi.fn(async () => ({
+      code: 1,
+      stdout: '',
+      stderr: 'registry import failed on a half-written peer module',
+    }));
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      log: (message) => logs.push(message),
+      toolCatalogRegenerator: (context) => regenerateToolCatalogBeforeCommit(context, runGenerator),
+    });
+
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(out.status).toBe('synced');
+    expect(logs.join('\n')).toMatch(/tool-catalog regeneration failed.*continuing with the commit fail-soft/);
+    expect(git(originDir, 'show', 'main:packages/operator-core/lib/agent-tools/example.ts')).toContain(
+      'version = 2',
+    );
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 

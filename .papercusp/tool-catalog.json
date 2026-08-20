@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 741,
+  "count": 742,
   "tools": [
     {
       "name": "ablation:report",
@@ -14093,6 +14093,80 @@
       }
     },
     {
+      "name": "locks:register_resource",
+      "http": {
+        "path": "/api/agent-tools/locks/register_resource",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Register a named resource for locks:acquire_resource. Registration is create-if-absent: an existing resource policy is never overwritten, so concurrent agents converge on one serializer.",
+      "capabilities": [
+        "locks:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Before authoring or executing a locks:acquire_resource protocol for a resource that locks:list does not show.",
+        "notWhen": "For an existing resource, use locks:list to discover its exact policy and locks:acquire_resource to hold it. Do not invent a second spelling for an existing resource.",
+        "chaining": "locks:register_resource → locks:list → locks:acquire_resource { resource, mode } → use/act → locks:release_resource."
+      }
+    },
+    {
       "name": "locks:release",
       "http": {
         "path": "/api/agent-tools/locks/release",
@@ -22547,7 +22621,7 @@
           "POST"
         ]
       },
-      "description": "Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — \"bee\" (a per-bee spec, always wins), \"fleet\" (inherited via membership, no per-bee override), or \"default\" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing. Pass `history: N` to also get the PRIOR versions a destructive write superseded (spec bytes + revision + cause), which is how you UNDO a spec that was overwritten or cleared.",
+      "description": "Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — \"bee\" (a per-bee spec, always wins), \"fleet\" (inherited via membership, no per-bee override), or \"default\" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing. Pass `history: N` to also get up to N PRIOR versions a destructive write superseded; use `history: 0` for an explicitly bounded current-only read.",
       "capabilities": [
         "work_items:read"
       ],
@@ -24310,7 +24384,7 @@
           "POST"
         ]
       },
-      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
+      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); commit rollups default to `source:\"ci\"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
       "capabilities": [
         "operator:read"
       ],
@@ -24373,7 +24447,7 @@
       "guidance": {
         "when": "Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:\"commit\" answers \"is this sha green\" in one call.",
         "notWhen": "To decide whether a red is a known FLAKE rather than your change, use testing:flakiness (cross-run flip rate — same table, different question). To RUN tests use testing:run. For \"is my change live/what is blocking it\" use dev:pipeline_position.",
-        "chaining": "rollup:\"commit\" to find the red sha → rows with that commitSha + status:[\"fail\",\"error\"] for the failing files and their output tails → testing:flakiness on a file before assuming the red is yours."
+        "chaining": "rollup:\"commit\" to find the red sha (CI rows by default; pass source:\"local\" or source:\"admin-ui\" for another writer) → rows with that commitSha + status:[\"fail\",\"error\"] for the failing files and their output tails → testing:flakiness on a file before assuming the red is yours."
       }
     },
     {
@@ -25477,7 +25551,7 @@
           "POST"
         ]
       },
-      "description": "Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way.",
+      "description": "Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way. `force:true` on another agent's claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.",
       "capabilities": [
         "work_items:write"
       ],
@@ -25501,7 +25575,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.",
-        "notWhen": "`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.",
+        "notWhen": "`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `force_unauthorized` = the checked cross-holder takeover was refused. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.",
         "chaining": "work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772)."
       }
     },

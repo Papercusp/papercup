@@ -21,15 +21,14 @@
  * and `gen:tool-catalog:check` is a genuine wire candidate (it sits in this repo's
  * ACKNOWLEDGED_UNREACHABLE set), NOT the category error its openapi sibling was.
  *
- * NOT CI-gated, and reason 1 is what still blocks wiring it — it cold-imports the
- * FULL ~300-tool registry, which is repeatedly broken mid-flight by concurrent tool
- * refactors on the shared tree (an unreliable CI gate today, and the documented
- * reason the doc-projections umbrella needed a per-child SIGKILL timeout). That is a
- * COST objection, so measure it on a quiet box before deciding. Reason 2 — the
- * catalog churns on every tool add/remove fleet-wide — is an argument against
- * committing it at all, which is a separate call from whether to guard what IS
- * committed today. The stable, low-churn derived surfaces (BORROWABLE, the
- * testing-domains contract) ARE CI-gated.
+ * CI-gated since WI-38239, with the edit→commit drift window closed by WI-39922:
+ * git-sync conditionally runs this writer immediately before its superproject
+ * commit whenever a dirty path can affect the catalog. The import cost was measured
+ * at ~10s (3/3 completions), with no database or network dependency. Because the
+ * shared tree can expose a peer's half-written tool module during that cold import,
+ * git-sync bounds the child and treats every throw/nonzero/timeout as fail-soft: it
+ * logs and continues the commit, leaving this downstream check as the final detector
+ * rather than letting a projection repair wedge all fleet commits.
  *
  * Importing the agent-tools barrel registers every operator-core + agent-mcp tool
  * (side-effect imports); `listAllProjectedTools()` then reads the populated registry.
