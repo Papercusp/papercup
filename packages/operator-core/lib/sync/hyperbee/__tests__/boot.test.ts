@@ -71,6 +71,13 @@ function makeFakeSwarm(): HyperswarmLike {
   };
 }
 
+const joinUnitIsolation = {
+  potHomeSlugForHarnessOverride: async () => null,
+  scopedStoreOverride: async () => {
+    throw new Error('scoped-log layer not exercised');
+  },
+};
+
 function makeAnnounceIdentityOverride(githubLogin: string, githubUserId: number, keychainId: string) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const devicePubkey = rawPubkeyBase64(publicKey);
@@ -750,8 +757,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => null, // directory descriptor NOT yet arrived (the race)
       joinerPotHomeSlugOverride: async () => null, // hive-home UNRESOLVED — the pre-rekey window
-      potHomeSlugForHarnessOverride: async () => null,
-      scopedStoreOverride: async () => { throw new Error('scoped-log layer not exercised'); },
+      ...joinUnitIsolation,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -863,6 +869,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
       joinerPotHomeSlugOverride: async () => null,
+      ...joinUnitIsolation,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -917,6 +924,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
       joinerPotHomeSlugOverride: async () => null,
+      ...joinUnitIsolation,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -1002,6 +1010,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => ownerDevice,
       joinerPotHomeSlugOverride: async () => null,
+      ...joinUnitIsolation,
       announceIdentityOverride: joiner.override,
       openRemoteLogOverride,
     });
@@ -1076,6 +1085,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: async () => ownerDevice,
       joinerPotHomeSlugOverride: async () => null,
+      ...joinUnitIsolation,
       announceIdentityOverride: joiner.override,
       openRemoteLogOverride,
     });
@@ -1133,6 +1143,7 @@ describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
       loadHiveMembersOverride: async () => [],
       ownerDeviceForTopicOverride: ownerDeviceForTopic,
       joinerPotHomeSlugOverride: async () => null,
+      ...joinUnitIsolation,
       announceIdentityOverride: joiner.override,
     });
     cleanups.push(() => handle.close());
@@ -2285,6 +2296,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       openRemoteLogOverride,
       swarmBinding: { kind: 'topic', topic_hex: 'cd'.repeat(32) },
       swarmOverride: swarm,
+      ...joinUnitIsolation,
     });
     cleanups.push(() => handle.close());
 
@@ -2399,6 +2411,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       openRemoteLogOverride,
       swarmBinding: { kind: 'topic', topic_hex: 'de'.repeat(32) },
       swarmOverride: swarm,
+      ...joinUnitIsolation,
     });
     cleanups.push(() => handle.close());
 
@@ -2497,6 +2510,7 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       openRemoteLogOverride,
       swarmBinding: { kind: 'topic', topic_hex: 'fa'.repeat(32) },
       swarmOverride: swarm,
+      ...joinUnitIsolation,
     });
     cleanups.push(() => handle.close());
 

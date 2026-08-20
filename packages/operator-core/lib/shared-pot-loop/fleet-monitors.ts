@@ -48,6 +48,7 @@ import {
   STALE_CLAIM_GRACE_MS,
   STALE_CLAIM_PARKED_GRACE_MS,
 } from '../work-items-stale-claims';
+import type { MergeCursorPeerLifecycleState } from '../sync/hyperbee/read-merge';
 
 /** Feature-family terminal states (work-items.ts settled list). */
 export const TERMINAL_STATUSES = ['passed', 'deprecated'] as const;
@@ -283,6 +284,8 @@ export interface MergeCursorRow {
   logKeyHex: string;
   position: number;
   updatedAtMs: number;
+  /** Durable explicit lifecycle evidence; historical rows remain `unknown`. */
+  lifecycleState: MergeCursorPeerLifecycleState;
   /**
    * The pot-home projection scope this row was folded under (migration 685).
    * REQUIRED because it decides whether the row is live at all: the fold only
@@ -300,6 +303,8 @@ export interface PeerSilence {
   position: number;
   /** Whether this cursor belongs to the scope's current admitted set; null = unknown. */
   admitted: boolean | null;
+  /** Active/unknown remain alertable; retired rows never enter this list. */
+  lifecycleState: Exclude<MergeCursorPeerLifecycleState, 'retired'>;
 }
 
 export interface PeerFederationHealth {
@@ -330,6 +335,8 @@ export interface PeerFederationHealth {
    * schema residue to clean up, not peers to chase.
    */
   strandedCursors: number;
+  /** Explicitly retired cursors excluded from every silence verdict. */
+  retiredCursors: number;
   /** The binding the judged population shares — null is a legitimate value. */
   liveApplyBinding: string | null;
   /**
@@ -391,6 +398,7 @@ export function judgePeerFederationSilence(
       freshestAdvanceMs: null,
       allSilent: false,
       strandedCursors: 0,
+      retiredCursors: 0,
       liveApplyBinding: null,
       ownLogSilentForMs: null,
       admittedRemoteLogs: admittedSet ? 0 : null,
@@ -399,6 +407,29 @@ export function judgePeerFederationSilence(
       // that knows federation IS in use (outbox rows exist) can escalate it,
       // and one that does not cannot mistake it for a clean bill of health.
       breaches: [],
+    };
+  }
+  // D-001 / WI-40017: ONLY explicit durable retirement removes a cursor from
+  // the peer-silence population. Historical rows (`unknown`) and explicitly
+  // active rows remain alertable even when they are not currently admitted.
+  // Filter before choosing the live binding: a lifecycle transition has its own
+  // timestamp and must never make a retired row's binding the monitor authority.
+  const monitorableRows = rows.filter((r) => r.lifecycleState !== 'retired');
+  const retiredCursors = rows.length - monitorableRows.length;
+  if (monitorableRows.length === 0) {
+    return {
+      totalLogs: 0,
+      measured: false,
+      unmeasuredReason: 'no-remote-logs',
+      silent: [],
+      freshestAdvanceMs: null,
+      allSilent: false,
+      breaches: [],
+      strandedCursors: 0,
+      retiredCursors,
+      liveApplyBinding: null,
+      ownLogSilentForMs: null,
+      admittedRemoteLogs: admittedSet ? 0 : null,
     };
   }
   // EI-20617273180156712: a cursor only means anything under the `apply_binding`
@@ -418,10 +449,10 @@ export function judgePeerFederationSilence(
   //
   // ⚠ A null binding is a LEGITIMATE live value (a non-hive harness folds with
   // applyBinding=null), so this must compare bindings, never truthiness.
-  const freshestRow = rows.reduce((a, b) => (b.updatedAtMs > a.updatedAtMs ? b : a));
+  const freshestRow = monitorableRows.reduce((a, b) => (b.updatedAtMs > a.updatedAtMs ? b : a));
   const liveApplyBinding = freshestRow.applyBinding;
-  const underLiveBinding = rows.filter((r) => r.applyBinding === liveApplyBinding);
-  const strandedCursors = rows.length - underLiveBinding.length;
+  const underLiveBinding = monitorableRows.filter((r) => r.applyBinding === liveApplyBinding);
+  const strandedCursors = monitorableRows.length - underLiveBinding.length;
 
   // OUR OWN LOG IS NOT A PEER. `substrate_merge_cursor` holds a row for it too,
   // and it is re-stamped by our own writes — so while this host is active it is
@@ -449,6 +480,7 @@ export function judgePeerFederationSilence(
       allSilent: false,
       breaches: [],
       strandedCursors,
+      retiredCursors,
       liveApplyBinding,
       ownLogSilentForMs: null,
       admittedRemoteLogs: null,
@@ -480,6 +512,7 @@ export function judgePeerFederationSilence(
       allSilent: false,
       breaches: [],
       strandedCursors,
+      retiredCursors,
       liveApplyBinding,
       ownLogSilentForMs,
       admittedRemoteLogs,
@@ -502,6 +535,7 @@ export function judgePeerFederationSilence(
       allSilent: false,
       breaches: [],
       strandedCursors,
+      retiredCursors,
       liveApplyBinding,
       ownLogSilentForMs,
       admittedRemoteLogs,
@@ -515,6 +549,7 @@ export function judgePeerFederationSilence(
       silentForMs: ages[i]!,
       position: r.position,
       admitted: admittedSet == null ? null : admittedSet.has(r.logKeyHex),
+      lifecycleState: r.lifecycleState,
     }))
     .filter((s) => s.silentForMs > opts.silentAfterMs)
     .sort((a, b) => b.silentForMs - a.silentForMs);
@@ -545,7 +580,7 @@ export function judgePeerFederationSilence(
       const freshestAdmittedAdvanceMs = admittedSilent[admittedSilent.length - 1]!.silentForMs;
       const absentNote =
         unadmittedSilent.length > 0
-          ? ` ${unadmittedSilent.length} further silent cursor(s) are NOT ADMITTED and represent absent/retired peers, not fold lag.`
+          ? ` ${unadmittedSilent.length} further silent cursor(s) are NOT ADMITTED and represent absent active/unknown peers, not fold lag.`
           : '';
       breaches.push(
         `LOCAL FOLD SUSPECT: all ${admittedRemoteLogs} ADMITTED remote log(s) silent — freshest admitted advance ${freshestAdmittedAdvanceMs}ms ago > SLO ${opts.silentAfterMs}ms. Suspect this host's merge loop, NOT the admitted peers.${absentNote}${strandedNote}`,
@@ -553,14 +588,14 @@ export function judgePeerFederationSilence(
     } else if (admittedSilent.length > 0) {
       const absentNote =
         unadmittedSilent.length > 0
-          ? ` ${unadmittedSilent.length} further silent cursor(s) are NOT ADMITTED and represent absent/retired peers, not slow federation.`
+          ? ` ${unadmittedSilent.length} further silent cursor(s) are NOT ADMITTED and represent absent active/unknown peers, not slow federation.`
           : '';
       breaches.push(
         `${admittedSilent.length} of ${admittedRemoteLogs} ADMITTED remote log(s) have federated nothing for > SLO ${opts.silentAfterMs}ms (oldest ${admittedSilent[0]!.silentForMs}ms, log ${admittedSilent[0]!.logKeyHex.slice(0, 12)}…) while ${admittedRemoteLogs - admittedSilent.length} admitted log(s) keep advancing.${absentNote}${strandedNote}`,
       );
     } else if (unadmittedSilent.length > 0) {
       breaches.push(
-        `PEERS ABSENT: ${unadmittedSilent.length} silent remote cursor(s) are NOT ADMITTED while all ${admittedRemoteLogs} admitted remote log(s) keep advancing inside the ${opts.silentAfterMs}ms SLO. The silent logs represent absent/retired peers, not slow federation; suspect peer liveness or the announce/admission path.${strandedNote}`,
+        `PEERS ABSENT: ${unadmittedSilent.length} silent remote cursor(s) are NOT ADMITTED while all ${admittedRemoteLogs} admitted remote log(s) keep advancing inside the ${opts.silentAfterMs}ms SLO. The silent logs represent absent active/unknown peers, not slow federation; suspect peer liveness or the announce/admission path.${strandedNote}`,
       );
     }
   } else if (allSilent) {
@@ -586,6 +621,7 @@ export function judgePeerFederationSilence(
     allSilent,
     breaches,
     strandedCursors,
+    retiredCursors,
     liveApplyBinding,
     ownLogSilentForMs,
     admittedRemoteLogs,
@@ -619,6 +655,7 @@ export async function scanPeerFederationSilence(
       allSilent: false,
       breaches: [],
       strandedCursors: 0,
+      retiredCursors: 0,
       liveApplyBinding: null,
       ownLogSilentForMs: null,
       admittedRemoteLogs: null,
@@ -641,9 +678,10 @@ async function readAndJudgePeerSilence(
       position: string | number;
       updated_at_ms: string;
       apply_binding: string | null;
+      peer_lifecycle_state: MergeCursorPeerLifecycleState;
     }>
   >`
-    SELECT log_keyhex, position, apply_binding,
+    SELECT log_keyhex, position, apply_binding, peer_lifecycle_state,
            (extract(epoch FROM updated_at) * 1000)::bigint::text AS updated_at_ms
       FROM harness_shared.substrate_merge_cursor
      WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harness}`;
@@ -707,6 +745,7 @@ async function readAndJudgePeerSilence(
       position: Number(r.position),
       updatedAtMs: Number(r.updated_at_ms),
       applyBinding: r.apply_binding,
+      lifecycleState: r.peer_lifecycle_state,
     })),
     {
       silentAfterMs: opts.silentAfterMs,

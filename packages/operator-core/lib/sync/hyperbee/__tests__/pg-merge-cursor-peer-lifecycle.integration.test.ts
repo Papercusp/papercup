@@ -58,6 +58,11 @@ describe('migration 854 + pg merge cursor peer lifecycle', () => {
 
   it('persists explicit lifecycle without rewinding or re-scoping an existing cursor', async () => {
     const store = createPgMergeCursorStore('w', 'h', () => sql);
+    const [before] = await sql<{ updated_at: Date }[]>`
+      SELECT updated_at
+      FROM harness_shared.substrate_merge_cursor
+      WHERE workspace_id = 'w' AND harness_slug = 'h' AND log_keyhex = 'historical-log'
+    `;
     await store.peerLifecycle!.upsert(
       [{ logKeyHex: 'historical-log', devicePubkey: 'device-base64', state: 'active' }],
       'different-binding',
@@ -69,9 +74,10 @@ describe('migration 854 + pg merge cursor peer lifecycle', () => {
         apply_binding: string | null;
         peer_device_pubkey: string | null;
         peer_lifecycle_state: string;
+        updated_at: Date;
       }[]
     >`
-      SELECT position, apply_binding, peer_device_pubkey, peer_lifecycle_state
+      SELECT position, apply_binding, peer_device_pubkey, peer_lifecycle_state, updated_at
       FROM harness_shared.substrate_merge_cursor
       WHERE workspace_id = 'w' AND harness_slug = 'h' AND log_keyhex = 'historical-log'
     `;
@@ -80,6 +86,7 @@ describe('migration 854 + pg merge cursor peer lifecycle', () => {
       apply_binding: 'original-binding',
       peer_device_pubkey: 'device-base64',
       peer_lifecycle_state: 'active',
+      updated_at: before!.updated_at,
     });
   });
 

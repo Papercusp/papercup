@@ -23,6 +23,7 @@
 import { describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { judgePeerFederationSilence, scanPeerFederationSilence, type MergeCursorRow } from './fleet-monitors';
+import type { MergeCursorPeerLifecycleState } from '../sync/hyperbee/read-merge';
 
 const NOW = 1_700_000_000_000;
 const SLO = 6 * 60 * 60_000; // 6h
@@ -36,8 +37,15 @@ function log(
   hoursAgo: number,
   position = 42,
   applyBinding: string | null = LIVE_BINDING,
+  lifecycleState: MergeCursorPeerLifecycleState = 'unknown',
 ): MergeCursorRow {
-  return { logKeyHex: keyHex, position, updatedAtMs: NOW - hoursAgo * 60 * 60_000, applyBinding };
+  return {
+    logKeyHex: keyHex,
+    position,
+    updatedAtMs: NOW - hoursAgo * 60 * 60_000,
+    applyBinding,
+    lifecycleState,
+  };
 }
 
 /**
@@ -206,12 +214,14 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
       position: 1,
       updatedAtMs: NOW - SLO,
       applyBinding: LIVE_BINDING,
+      lifecycleState: 'unknown',
     };
     const over: MergeCursorRow = {
       logKeyHex: 'bbbb',
       position: 1,
       updatedAtMs: NOW - SLO - 1,
       applyBinding: LIVE_BINDING,
+      lifecycleState: 'unknown',
     };
     expect(judgePeerFederationSilence([exact], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null }).silent).toEqual([]);
     expect(judgePeerFederationSilence([over], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null }).silent).toHaveLength(1);
@@ -259,6 +269,7 @@ describe('judgePeerFederationSilence — EI-20579195481991931', () => {
       position: 1,
       updatedAtMs: NOW + 60_000,
       applyBinding: LIVE_BINDING,
+      lifecycleState: 'unknown',
     };
     const v = judgePeerFederationSilence([future], { silentAfterMs: SLO, nowMs: NOW, ownLogKeyHex: null });
     expect(v.freshestAdvanceMs).toBe(0);

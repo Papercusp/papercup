@@ -178,8 +178,7 @@ export function createPgMergeCursorStore(
           ON CONFLICT (workspace_id, harness_slug, log_keyhex)
           DO UPDATE SET peer_device_pubkey = EXCLUDED.peer_device_pubkey,
                         peer_lifecycle_state = EXCLUDED.peer_lifecycle_state,
-                        peer_lifecycle_updated_at = EXCLUDED.peer_lifecycle_updated_at,
-                        updated_at = EXCLUDED.updated_at
+                        peer_lifecycle_updated_at = EXCLUDED.peer_lifecycle_updated_at
         `;
       },
     },
