@@ -9990,7 +9990,6 @@ export function realCheckpointDeps(
         process.env,
         runId,
         cfg.greenCheckpointCapacityMode,
-        execution?.affectedTestProofGroup,
       );
       env.NODE_OPTIONS = sanitizeForkNodeOptions(
         env.NODE_OPTIONS,
@@ -10238,6 +10237,7 @@ export function realCheckpointDeps(
         process.env,
         runId,
         cfg.greenCheckpointCapacityMode,
+        execution?.affectedTestProofGroup,
       );
       log(
         greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),

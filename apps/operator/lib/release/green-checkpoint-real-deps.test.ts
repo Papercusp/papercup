@@ -473,6 +473,27 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     );
   });
 
+  it("threads a frozen repair proof group into the candidate suite without replacing the verifier run id", async () => {
+    // suite green → marker grep has no match → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec, "repair-verifier-run").runGreen(
+      cpTree,
+      "base-sha",
+      {
+        candidate: "c".repeat(40),
+        affectedTestProofGroup: "initial-proof-run",
+      },
+    );
+
+    expect(r.green).toBe(true);
+    expect(calls[0].opts?.env?.PAPERCUSP_TEST_RUN_GROUP).toBe(
+      "repair-verifier-run",
+    );
+    expect(calls[0].opts?.env?.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBe(
+      "initial-proof-run",
+    );
+  });
+
   it("runs the Papercusp lint:tsc leg before the SPA build when the candidate provides it", async () => {
     // suite green → typecheck green → marker grep clean → SPA build green.
     const { exec, calls } = makeExec([
