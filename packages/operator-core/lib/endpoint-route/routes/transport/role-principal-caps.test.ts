@@ -66,7 +66,8 @@ describe('loadRoleCapabilities', () => {
     async () => {
       const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
       expect(caps.has('coord:write')).toBe(true);
-      expect(caps.has('operator:write')).toBe(true);
+      expect(caps.has('testing:run')).toBe(true);
+      expect(caps.has('operator:write')).toBe(false);
       expect(caps.has('capability:fs-read')).toBe(true);
       expect(caps.has('capability:fs-write')).toBe(false);
       expect(caps.has('capability:bash')).toBe(false);

@@ -598,7 +598,7 @@ export default defineTool({
     notWhen: 'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
     chaining: 'testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression.',
   },
-  capability: 'operator:write',
+  capability: 'testing:run',
   requirePrincipal: false,
   // EI-18803497769946984: the handler shells out to Vitest and blocks for the whole
   // run without ever reading `ctx.tx`. Holding the ambient workspace transaction
@@ -606,7 +606,7 @@ export default defineTool({
   // bare `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
   // Acceptance judges must independently reproduce rubric checks before emitting a
-  // verdict. The capability grant stays inert for every other operator:write tool.
+  // verdict. The dedicated capability grant stays inert for every other tool.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
     files: z.array(z.string().min(1)).min(1).max(50)

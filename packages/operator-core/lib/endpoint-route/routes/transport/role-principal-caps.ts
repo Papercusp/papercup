@@ -27,7 +27,7 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   // run the rubric's named checks, read the files those checks cite, and capture a
   // defect they encounter. Each tool independently allowlists `judge`, so these
   // capabilities do not admit the role to broader operator/fs/coord surfaces.
-  judge: ['coord:write', 'operator:write', 'capability:fs-read'],
+  judge: ['coord:write', 'testing:run', 'capability:fs-read'],
   // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
   // split out of the overloaded "operator"). READ-MOSTLY: it observes fleet
   // health (intel: dev diagnostics, activity), harness health, the coord
