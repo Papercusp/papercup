@@ -605,7 +605,9 @@ export default defineTool({
   // across that wait trips idle_in_transaction_session_timeout (60s), surfacing as a
   // bare `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
   skipWorkspaceTx: true,
-  agentRoles: [...AGENT_ROLES],
+  // Acceptance judges must independently reproduce rubric checks before emitting a
+  // verdict. The capability grant stays inert for every other operator:write tool.
+  agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
     files: z.array(z.string().min(1)).min(1).max(50)
       .describe('Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.'),

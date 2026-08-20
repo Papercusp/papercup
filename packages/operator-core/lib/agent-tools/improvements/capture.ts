@@ -288,7 +288,9 @@ export default defineTool({
   // capability gate) was what kept the spawned scanner from landing its
   // findings (it has coord:write via BLUEPRINT_ROLE_CAPS, but wasn't in
   // this list, so the tool never appeared in its projected surface).
-  agentRoles: [...COORD_ROLES, 'scanner'],
+  // A judge that discovers a broken acceptance check must be able to preserve that
+  // defect instead of losing it in an ephemeral grader log.
+  agentRoles: [...COORD_ROLES, 'scanner', 'judge'],
   // WI-1974: normalise a mis-used top-level `kind` (observation / null / an observation
   // sub-kind / a free-form label) to intent BEFORE validation, so a captured insight is
   // never rejected+lost on the enum. Only `kind` is touched; the .strict() observation

@@ -60,14 +60,26 @@ describe('loadRoleCapabilities', () => {
     expect(caps.has('search:read')).toBe(true);
   });
 
-  test('judge gets only the capability needed by its narrowly allowlisted scorecard writer', async () => {
-    const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
-    expect(caps.has('coord:write')).toBe(true);
-    expect(caps.has('capability:fs-write')).toBe(false);
-    expect(caps.has('capability:bash')).toBe(false);
-    const { default: emit } = await import('../../../agent-tools/scorecards/emit.js');
-    expect(emit.agentRoles).toContain('judge');
-  });
+  test(
+    'judge can emit, verify, read evidence, and capture defects without gaining implementation powers',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'judge');
+      expect(caps.has('coord:write')).toBe(true);
+      expect(caps.has('operator:write')).toBe(true);
+      expect(caps.has('capability:fs-read')).toBe(true);
+      expect(caps.has('capability:fs-write')).toBe(false);
+      expect(caps.has('capability:bash')).toBe(false);
+
+      const [{ default: emit }, { default: run }, { default: read }, { default: capture }] = await Promise.all([
+        import('../../../agent-tools/scorecards/emit.js'),
+        import('../../../agent-tools/testing/run.js'),
+        import('../../../agent-tools/capability/read.js'),
+        import('../../../agent-tools/improvements/capture.js'),
+      ]);
+      for (const tool of [emit, run, read, capture]) expect(tool.agentRoles).toContain('judge');
+    },
+  );
 
   // ── bee — the generic fleet IMPLEMENTER (OWNER-PRIORITY fs-write/bash fix, 2026-06-15) ──
   describe('bee — the IMPLEMENTER surface (can write code + run bash)', () => {

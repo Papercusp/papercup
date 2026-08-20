@@ -105,7 +105,9 @@ export default defineTool({
   },
   capability: 'capability:fs-read',
   requirePrincipal: false,
-  agentRoles: [...AGENT_ROLES],
+  // Evidence-only acceptance judges may read cited files, but remain outside every
+  // fs-write/bash tool allowlist and capability grant.
+  agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
     file_path: z.string().min(1).describe('Absolute path, ~/-relative, or relative to the project dir.'),
     offset: z.number().int().nonnegative().optional().describe('1-based line to start from.'),

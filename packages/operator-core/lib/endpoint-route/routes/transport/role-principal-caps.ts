@@ -23,10 +23,11 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
-  // Dedicated plan-acceptance judges have one write: scorecards:emit. That tool
-  // independently allowlists `judge`, so this capability does not admit the
-  // role to the broader COORD_ROLES surface.
-  judge: ['coord:write'],
+  // Dedicated plan-acceptance judges are evidence-only: they may emit the verdict,
+  // run the rubric's named checks, read the files those checks cite, and capture a
+  // defect they encounter. Each tool independently allowlists `judge`, so these
+  // capabilities do not admit the role to broader operator/fs/coord surfaces.
+  judge: ['coord:write', 'operator:write', 'capability:fs-read'],
   // The SENTINEL — the fleet WATCHER (unify-launch-mechanics-2026-06-09 D-004,
   // split out of the overloaded "operator"). READ-MOSTLY: it observes fleet
   // health (intel: dev diagnostics, activity), harness health, the coord
