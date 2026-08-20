@@ -34,7 +34,12 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WATCHDOG_TICKS_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilities';
 import { FLAGS } from '@papercusp/flags';
 import { setFlagOverridesForTest } from '@papercusp/flags/test';
@@ -89,6 +94,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   // The by-id issue claim auto-subscribes the claimer (coord_entity_subscriptions).
   await ensureCoordCapabilityTables(db.sql);
 }, 180_000);
@@ -98,7 +104,7 @@ afterAll(async () => {
 beforeEach(async () => {
   // harness_features_consolidated is a VIEW over work_items (see _work-items-schema.ts) —
   // TRUNCATE only works on real tables, and truncating work_items already clears the view.
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.watchdog_ticks`;
   h.activeWs = 'default';
   setFlagOverridesForTest({
     [FLAGS.SCHEDULER_ISSUES_CLAIMABLE]: true,
