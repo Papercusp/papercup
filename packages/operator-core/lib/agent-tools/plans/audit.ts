@@ -28,8 +28,11 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import {
   AUDIT_VERDICTS,
   CITATION_KINDS,
+  citationBlobSha,
+  getEffectiveItemAudits,
   getPlanItemStatuses,
   isVerifyingCitation,
+  prepareAuditPassEntries,
   recordPlanAudit,
   repoCitationContextForHarness,
   resolveCitation,
@@ -98,11 +101,11 @@ function resolveHeadSha(repoRoot: string): string | null {
 export default defineTool({
   name: 'plans:audit',
   description:
-    "Record a CODE-TRUTH audit of a plan: every item traced to the code that implements it, cited, with citations RESOLVED against the real tree at write time (a path that does not exist is refused, as is a line past the end of the file or a symbol the file does not contain). THE CODE IS THE ONLY SOURCE OF TRUTH — audit the tree as it is NOW, never a doc or work-item asserting completion, and never your memory of writing it. Only `code`/`test` citations verify; `doc` never supports an `implemented` verdict. Run it AFTER implementation and BEFORE authoring the acceptance rubric — `plans:set-plan-status → shipped` refuses a plan with no audit.",
+    "Record a CODE-TRUTH audit of a plan. Audit ONLY the items whose requirements or evidence changed: every unlisted item with a prior audit is carried forward mechanically with its ORIGINAL per-item sha/time, so it cannot be falsely re-stamped by a pass that did not inspect it. Submitted `code`/`test` citations resolve against the real tree and store the current blob sha. THE CODE IS THE ONLY SOURCE OF TRUTH — never a doc, work-item, or memory of writing it.",
   guidance: {
     when: "You have finished implementing a plan and are heading for `shipped`. Compare every item to the ACTUAL CODE — not the plan text, not the work-item records, not your memory of writing it — then file what you found. Gaps inside the plan's scope get fixed or the item gets dropped with a reason; bugs outside it go in `findings` with a filed work-item ref.",
     returns:
-      'Returns { ok, auditSeq, coverage, uncoveredItems }. Every validation problem is returned together rather than one at a time, so a single fix-up pass clears them. `coverage.verifiedRatio` (items with >=1 resolving code/test citation ÷ items audited) is THE number the independent grader reads to judge whether the audit did real work — it cannot be inflated by `doc` citations. `coverage.unverifiedItemIds` names the items carrying no code evidence, and `coverage.notCodeItems` names those whose verdict exempts them from code verification; both are surfaced because they are the design\'s widest escape hatches. `uncoveredItems` are plan items this pass did not touch — reported, not refused, since the ship gate is where coverage becomes a condition.',
+      'Returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }. Unlisted items with a prior entry carry forward automatically; uncoveredItems therefore names only items with NO audit history. Every submitted code/test citation records a blobSha, and each submitted item records auditedSha/auditedAt/itemTextHash. `coverage.verifiedRatio` is computed over the full effective item set.',
     notWhen:
       "Mid-implementation — the audit is post-implementation by design and a mid-flight one just goes stale. Grading a plan against its acceptance rubric — that is scorecards:emit. Recording a decision — plans:add-decision.",
     chaining:
@@ -154,9 +157,19 @@ export default defineTool({
     const deps = citationContext.deps;
     const problems: Problem[] = [];
     const entries: AuditItemEntry[] = [];
+    const seenItems = new Set<string>();
     let citationsChecked = 0;
 
     for (const it of args.items) {
+      if (seenItems.has(it.itemId)) {
+        problems.push({
+          itemId: it.itemId,
+          code: 'duplicate_item',
+          detail: `'${it.itemId}' appears more than once in this audit pass`,
+        });
+        continue;
+      }
+      seenItems.add(it.itemId);
       if (!known.has(it.itemId)) {
         problems.push({
           itemId: it.itemId,
@@ -209,6 +222,7 @@ export default defineTool({
         });
       }
 
+      const storedCitations: AuditCitation[] = [];
       for (const c of citations) {
         citationsChecked += 1;
         const res = resolveCitation(c, deps);
@@ -218,10 +232,32 @@ export default defineTool({
             code: `citation_${res.reason}`,
             detail: res.detail ?? `${c.kind} citation did not resolve (${res.reason})`,
           });
+          storedCitations.push(c);
+          continue;
+        }
+        if (isVerifyingCitation(c)) {
+          const blobSha = citationBlobSha(c, deps);
+          if (!blobSha) {
+            problems.push({
+              itemId: it.itemId,
+              code: 'citation_blob_unreadable',
+              detail: `${c.kind} citation '${c.path ?? ''}' resolved but its bytes could not be fingerprinted`,
+            });
+            storedCitations.push(c);
+            continue;
+          }
+          storedCitations.push({ ...c, blobSha });
+        } else {
+          storedCitations.push(c);
         }
       }
 
-      entries.push({ itemId: it.itemId, verdict: it.verdict, citations, ...(it.note ? { note: it.note } : {}) });
+      entries.push({
+        itemId: it.itemId,
+        verdict: it.verdict,
+        citations: storedCitations,
+        ...(it.note ? { note: it.note } : {}),
+      });
     }
 
     for (const f of args.findings ?? []) {
@@ -246,6 +282,21 @@ export default defineTool({
       } };
     }
 
+    const auditedSha = args.auditedSha ?? resolveHeadSha(citationContext.repoRoot);
+    const auditedAt = new Date().toISOString();
+    const previous = await getEffectiveItemAudits(args.slug);
+    const effectiveEntries = prepareAuditPassEntries({
+      planItems,
+      submitted: entries,
+      previous,
+      auditedSha,
+      auditedAt,
+    });
+    const submittedIds = new Set(entries.map((entry) => entry.itemId));
+    const carriedItemIds = effectiveEntries
+      .filter((entry) => !submittedIds.has(entry.itemId))
+      .map((entry) => entry.itemId);
+
     const audit = await recordPlanAudit({
       planSlug: args.slug,
       harnessSlug: harnessSlug ?? '',
@@ -254,17 +305,17 @@ export default defineTool({
       // defineTool overload supplies — the whole call then fails overload resolution with
       // a TS2769 that points at `handler` and says nothing about identity.
       createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
-      auditedSha: args.auditedSha ?? resolveHeadSha(citationContext.repoRoot),
-      items: entries,
+      auditedSha,
+      items: effectiveEntries,
       findings: args.findings ?? [],
       summary: args.summary ?? null,
     });
 
-    const coverage = summarizeCoverage(entries);
-    const audited = new Set(entries.map((e) => e.itemId));
-    // Items the plan HAS but the audit did not touch. Reported rather than refused:
-    // the gate is where coverage becomes a ship condition, and a partial audit that
-    // is honest about being partial is more useful than one refused into non-existence.
+    const coverage = summarizeCoverage(effectiveEntries);
+    const audited = new Set(effectiveEntries.map((e) => e.itemId));
+    // Items with no current OR historical audit entry. Unlisted prior entries were
+    // carried by the verb with their original provenance, so callers never have to
+    // copy them forward and accidentally re-stamp them at this pass's sha (D-006).
     const uncoveredItems = planItems
       .filter((i) => !audited.has(i.itemId) && i.status !== 'dropped')
       .map((i) => i.itemId);
@@ -281,14 +332,19 @@ export default defineTool({
       slug: args.slug,
       auditSeq: audit.auditSeq,
       auditedSha: audit.auditedSha,
+      auditedAt,
       citationsChecked,
+      itemsAuditedThisPass: entries.length,
+      itemsCarriedForward: carriedItemIds.length,
+      carriedItemIds,
       coverage,
       uncoveredItems,
       ...(uncoveredItems.length > 0
         ? {
             note:
-              `${uncoveredItems.length} non-dropped item(s) are not covered by this audit. The completion ` +
-              `gate requires full coverage, so audit them or drop them with a reason before shipping.`,
+              `${uncoveredItems.length} non-dropped item(s) have no audit entry. Audit ONLY those listed ` +
+              `items (or drop them with a reason); every other unlisted item already carried forward with ` +
+              `its original provenance.`,
           }
         : {}),
     } };

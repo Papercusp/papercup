@@ -17,7 +17,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import {
+  citationBlobSha,
+  foldEffectiveItemAudits,
+  gitBlobSha,
   harnessCitationRepoRoot,
+  planItemTextHash,
+  prepareAuditPassEntries,
   resolveCitation,
   repoCitationDeps,
   type AuditCitation,
@@ -235,5 +240,67 @@ describe('resolveCitation — a miss says WHERE it looked (EI-20449557927956357)
       readFile: () => null,
     });
     expect(res).toEqual({ ok: false, reason: 'file_not_found', detail: 'apps/operator/nope.ts' });
+  });
+});
+
+describe('per-item audit provenance (plan D-006/D-007)', () => {
+  it('stores a Git-compatible blob sha for code evidence only', () => {
+    expect(gitBlobSha('hello\n')).toBe('ce013625030ba8dba906f756967f9e9ca394464a');
+    const deps = repoCitationDeps(repoRoot);
+    const citation = code('apps/operator/in-repo.ts');
+    expect(citationBlobSha(citation, deps)).toBe(gitBlobSha('export const inRepo = 1;\n'));
+    expect(citationBlobSha({ kind: 'doc', path: 'apps/operator/in-repo.ts' }, deps)).toBeNull();
+  });
+
+  it('folds newest entries per item across partial passes', () => {
+    const older = { itemId: 'P-001', verdict: 'implemented' as const, citations: [] };
+    const newer = { itemId: 'P-001', verdict: 'partial' as const, citations: [] };
+    const second = { itemId: 'P-002', verdict: 'implemented' as const, citations: [] };
+    expect(
+      foldEffectiveItemAudits([
+        { auditSeq: 3, items: [newer] },
+        { auditSeq: 2, items: [older, second] },
+      ]),
+    ).toEqual([
+      { entry: newer, auditSeq: 3 },
+      { entry: second, auditSeq: 2 },
+    ]);
+  });
+
+  it('carries an unlisted item without re-stamping its original provenance', () => {
+    const original = {
+      itemId: 'P-001',
+      verdict: 'implemented' as const,
+      citations: [{ kind: 'code' as const, path: 'old.ts', blobSha: 'old-blob' }],
+      auditedSha: 'old-head',
+      auditedAt: '2026-08-13T10:00:00.000Z',
+      itemTextHash: planItemTextHash('old requirement'),
+    };
+    const fresh = {
+      itemId: 'P-002',
+      verdict: 'implemented' as const,
+      citations: [{ kind: 'test' as const, path: 'new.test.ts', blobSha: 'new-blob' }],
+    };
+    const result = prepareAuditPassEntries({
+      planItems: [
+        { itemId: 'P-001', status: 'done', itemText: 'old requirement' },
+        { itemId: 'P-002', status: 'done', itemText: 'fresh requirement' },
+        { itemId: 'P-003', status: 'todo', itemText: 'never audited' },
+      ],
+      submitted: [fresh],
+      previous: [{ entry: original, auditSeq: 4 }],
+      auditedSha: 'new-head',
+      auditedAt: '2026-08-20T12:00:00.000Z',
+    });
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({ ...original, carriedFrom: 4 });
+    expect(result[1]).toEqual({
+      ...fresh,
+      auditedSha: 'new-head',
+      auditedAt: '2026-08-20T12:00:00.000Z',
+      itemTextHash: planItemTextHash('fresh requirement'),
+    });
+    expect(result.some((entry) => entry.itemId === 'P-003')).toBe(false);
   });
 });

@@ -39,6 +39,7 @@
  * files that exist, which is a strictly weaker and still useful claim.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { activeWorkspaceId } from './workspace-registry';
@@ -98,6 +99,11 @@ export interface AuditCitation {
    *  while a doc ref demanded only a non-empty string, so the honest escape cost MORE than
    *  the dodge. */
   reason?: string;
+  /** Git-compatible blob hash of the cited file's bytes at audit time. Written by
+   *  `plans:audit` for every `code`/`test` citation; never accepted on the wire from
+   *  the auditor. D-007 compares this with the current blob so a rewritten file is
+   *  stale even when its path and symbol still resolve. */
+  blobSha?: string;
 }
 
 export interface AuditItemEntry {
@@ -106,6 +112,15 @@ export interface AuditItemEntry {
   citations: AuditCitation[];
   /** REQUIRED when verdict is `dropped` — the intentional-departure reason (D-002). */
   note?: string;
+  /** Per-item provenance (D-006). Optional only for legacy rows written before the
+   *  per-item shape landed; every new `plans:audit` write supplies all three fields. */
+  auditedSha?: string | null;
+  auditedAt?: string;
+  itemTextHash?: string;
+  /** Immediate audit pass this unchanged entry was mechanically carried from. The
+   *  original auditedSha/auditedAt remain untouched, so carrying cannot re-stamp work
+   *  the auditor did not inspect. */
+  carriedFrom?: number;
 }
 
 export interface AuditFinding {
@@ -161,6 +176,29 @@ export interface CitationDeps {
    * Optional so injected/pure test deps stay a two-field object.
    */
   describeRoots?: (rel: string) => string | null;
+  /** Repo-relative → Git-compatible blob hash of the file's current bytes. Optional
+   *  only so small injected resolver tests remain a two-function fixture. */
+  blobSha?: (rel: string) => string | null;
+}
+
+/** Git's SHA-1 object id for a blob, without writing it into the object database. */
+export function gitBlobSha(body: string | Buffer): string {
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  return createHash('sha1')
+    .update(`blob ${bytes.length}\0`)
+    .update(bytes)
+    .digest('hex');
+}
+
+/** Fingerprint only citations that constitute code verification. */
+export function citationBlobSha(citation: AuditCitation, deps: CitationDeps): string | null {
+  if (!isVerifyingCitation(citation)) return null;
+  const rel = citation.path?.trim();
+  if (!rel) return null;
+  const direct = deps.blobSha?.(rel);
+  if (direct) return direct;
+  const body = deps.readFile(rel);
+  return body == null ? null : gitBlobSha(body);
 }
 
 /** `file_not_found` detail: the path the caller wrote, plus where we actually looked. */
@@ -327,6 +365,15 @@ export function repoCitationDeps(repoRoot: string = REPO_ROOT): CitationDeps {
       if (!abs) return null;
       try {
         return fs.readFileSync(abs, 'utf8');
+      } catch {
+        return null;
+      }
+    },
+    blobSha: (rel) => {
+      const abs = within(rel);
+      if (!abs) return null;
+      try {
+        return gitBlobSha(fs.readFileSync(abs));
       } catch {
         return null;
       }
@@ -502,10 +549,102 @@ export async function getLatestPlanAudit(planSlug: string): Promise<PlanAudit | 
   }
 }
 
+export interface EffectiveItemAudit {
+  entry: AuditItemEntry;
+  /** The pass row in which this effective copy currently lives. A later carry writes
+   *  this value into carriedFrom, forming an auditable chain without changing the
+   *  entry's original auditedSha/auditedAt. */
+  auditSeq: number;
+}
+
+/** Pure newest-first fold used by the database read and by the regression guard. */
+export function foldEffectiveItemAudits(
+  passes: ReadonlyArray<{ auditSeq: number; items: AuditItemEntry[] }>,
+): EffectiveItemAudit[] {
+  const seen = new Set<string>();
+  const effective: EffectiveItemAudit[] = [];
+  for (const pass of passes) {
+    for (const entry of pass.items) {
+      if (!entry?.itemId || seen.has(entry.itemId)) continue;
+      seen.add(entry.itemId);
+      effective.push({ entry, auditSeq: pass.auditSeq });
+    }
+  }
+  return effective;
+}
+
+/**
+ * Resolve the latest entry for every item across ALL passes (D-006). Newest pass
+ * first, first itemId wins. This deliberately does not assume a pass is a full-plan
+ * snapshot: early rows and interrupted/concurrent writers may contain only a subset.
+ */
+export async function getEffectiveItemAudits(planSlug: string): Promise<EffectiveItemAudit[]> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<PlanAuditRow[]>`
+      SELECT plan_slug, harness_slug, audit_seq, created_by, created_at, audited_sha,
+             items, findings, summary
+        FROM harness_shared.plan_audits
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND plan_slug = ${planSlug}
+       ORDER BY audit_seq DESC`;
+    return foldEffectiveItemAudits(
+      rows.map((row) => ({ auditSeq: row.audit_seq, items: Array.isArray(row.items) ? row.items : [] })),
+    );
+  } catch {
+    return [];
+  }
+}
+
 /** A plan item as the audit and the gate need it: its id and its status. */
 export interface PlanItemStatus {
   itemId: string;
   status: string;
+  itemText: string;
+}
+
+/** Stable fingerprint of the exact plan-item requirement text audited. */
+export function planItemTextHash(itemText: string): string {
+  return createHash('sha256').update(itemText).digest('hex');
+}
+
+/**
+ * Build the item array for a new pass. Submitted items receive fresh provenance;
+ * unlisted items are copied by the verb with their original provenance intact and
+ * an immediate carriedFrom link. Removed items are not resurrected.
+ *
+ * This is the mechanical anti-rubber-stamp rail from D-006: callers may audit a
+ * subset, but they cannot make an uninspected item inherit the pass's new sha/time.
+ */
+export function prepareAuditPassEntries(input: {
+  planItems: PlanItemStatus[];
+  submitted: AuditItemEntry[];
+  previous: EffectiveItemAudit[];
+  auditedSha: string | null;
+  auditedAt: string;
+}): AuditItemEntry[] {
+  const submitted = new Map(input.submitted.map((entry) => [entry.itemId, entry]));
+  const previous = new Map(input.previous.map((item) => [item.entry.itemId, item]));
+  const merged: AuditItemEntry[] = [];
+
+  for (const planItem of input.planItems) {
+    const fresh = submitted.get(planItem.itemId);
+    if (fresh) {
+      const { carriedFrom: _carriedFrom, auditedSha: _sha, auditedAt: _at, itemTextHash: _text, ...entry } = fresh;
+      merged.push({
+        ...entry,
+        auditedSha: input.auditedSha,
+        auditedAt: input.auditedAt,
+        itemTextHash: planItemTextHash(planItem.itemText),
+      });
+      continue;
+    }
+
+    const prior = previous.get(planItem.itemId);
+    if (prior) merged.push({ ...prior.entry, carriedFrom: prior.auditSeq });
+  }
+
+  return merged;
 }
 
 /**
@@ -522,13 +661,13 @@ export interface PlanItemStatus {
 export async function getPlanItemStatuses(planSlug: string): Promise<PlanItemStatus[]> {
   try {
     const { sql } = getOrgPg();
-    const rows = await sql<{ item_id: string; status: string }[]>`
-      SELECT item_id, status
+    const rows = await sql<{ item_id: string; status: string; item_text: string }[]>`
+      SELECT item_id, status, item_text
         FROM harness_shared.plan_items
        WHERE workspace_id = ${activeWorkspaceId()}
          AND plan_slug = ${planSlug}
        ORDER BY seq`;
-    return rows.map((r) => ({ itemId: r.item_id, status: r.status }));
+    return rows.map((r) => ({ itemId: r.item_id, status: r.status, itemText: r.item_text }));
   } catch {
     return [];
   }
