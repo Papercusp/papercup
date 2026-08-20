@@ -45,6 +45,10 @@ import {
 import { getFeatureBlockers, syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
 import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-items/reconcile-linked-work-items';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
+import {
+  evaluatePlanSpecQualityGate,
+  type PlanSpecQualityGateVerdict,
+} from './agent-tools/plans/plan-spec-quality-gate';
 
 export interface PromotePlanResult {
   /** new work-items minted this call */
@@ -88,6 +92,10 @@ export interface PromotePlanResult {
   specTriadMissing?: string[];
   /** The work item filed to resolve it — null if the filing itself failed. */
   specTriadWorkItem?: string | null;
+  /** P-004: adopted first-class clauses failed the exact spec-quality scorecard gate. */
+  specQualityBlocked?: true;
+  /** Report-only or enforced exact specSetHash verdict evaluated before minting. */
+  specQuality?: PlanSpecQualityGateVerdict;
   /**
    * P-008: `blockedBy` refs naming a plan item that DOES NOT EXIST in the plan — an authoring
    * error `plans:lint` already reports, split out from `blockersUnresolved` because the two
@@ -227,6 +235,24 @@ export async function promotePlanItems(opts: {
     .map((i) => ({ id: i.id, text: i.text }));
   if (openItems.length === 0) return { promoted: 0, skipped: 0, ...NO_EDGES };
 
+  // P-004: direct promotion is a real entry door too. Re-check the same exact
+  // specSetHash verdict plans:start uses so a caller cannot bypass the gate by
+  // invoking the runner after revising a clause. No-clause plans are report-only.
+  const specQuality = await evaluatePlanSpecQualityGate({
+    harnessSlug: opts.harnessSlug,
+    planSlug: opts.planSlug,
+    planItemIds: rawItems.map((item) => item.id),
+  });
+  if (!specQuality.satisfied) {
+    return {
+      promoted: 0,
+      skipped: openItems.length,
+      ...NO_EDGES,
+      specQualityBlocked: true,
+      specQuality,
+    };
+  }
+
   // okf-frontmatter-adoption H(b): the SPEC TRIAD gate, at the point where plan
   // items actually become claimable work. `plans:items { actionable }` is a
   // read; this is the write, so the requirement means nothing unless it is also
@@ -263,6 +289,7 @@ export async function promotePlanItems(opts: {
       specTriadBlocked: true,
       specTriadMissing: specTriad.missing,
       specTriadWorkItem: filed.id,
+      specQuality,
     };
   }
 
@@ -390,7 +417,7 @@ export async function promotePlanItems(opts: {
     knownPlanItemIds: new Set(rawItems.map((i) => i.id)),
   });
 
-  return { promoted, skipped: openItems.length - promoted, ...edgeCounts };
+  return { promoted, skipped: openItems.length - promoted, ...edgeCounts, specQuality };
 }
 
 /**

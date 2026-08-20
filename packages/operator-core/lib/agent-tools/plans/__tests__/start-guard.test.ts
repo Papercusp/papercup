@@ -17,7 +17,20 @@ const H = vi.hoisted(() => {
     frontmatterStatus: string | null;
     /** WI-5825 regression override: force the next statement to match 0 rows. */
     forceNoMatch: boolean;
-  } = { txCalls: [], frontmatterStatus: 'ready', forceNoMatch: false };
+    specQuality: Record<string, unknown>;
+  } = {
+    txCalls: [],
+    frontmatterStatus: 'ready',
+    forceNoMatch: false,
+    specQuality: {
+      satisfied: true,
+      applicable: false,
+      mode: 'report-only',
+      planSlug: 'mock',
+      specSetHash: null,
+      wouldBlock: ['no-first-class-spec-clauses'],
+    },
+  };
   const tx = (strings: readonly string[], ...values: unknown[]) => {
     state.txCalls.push({ strings, values });
     // WI-5825 regression hook: force the statement to match 0 rows.
@@ -38,9 +51,9 @@ vi.mock('../source', async (orig) => {
   return {
     ...actual,
     readPlanBySlug: vi.fn(async () => ({
-      parsed: { frontmatter: { status: H.state.frontmatterStatus } },
+      parsed: { frontmatter: { status: H.state.frontmatterStatus }, items: [] },
       archived: false,
-      row: { planSlug: 'mock', version: 1, opStatus: null },
+      row: { planSlug: 'mock', version: 1, opStatus: null, items: [] },
     })),
     // WI-5825: plans:start now resolves its WRITE key through the same authority
     // its READ above uses (resolvePlanScope), instead of re-deriving the tenant
@@ -84,6 +97,10 @@ vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: vi.fn(async () => ({ promoted: 0, flagOff: false })),
 }));
 
+vi.mock('../plan-spec-quality-gate', () => ({
+  evaluatePlanSpecQualityGate: vi.fn(async () => H.state.specQuality),
+}));
+
 // Auto-approve runs inside withPlanLock after a successful start — stub it to
 // a no-op so the proceed-case test doesn't need the real lock side-database.
 vi.mock('../with-plan-lock', async (orig) => {
@@ -120,6 +137,14 @@ beforeEach(() => {
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
+  H.state.specQuality = {
+    satisfied: true,
+    applicable: false,
+    mode: 'report-only',
+    planSlug: 'mock',
+    specSetHash: null,
+    wouldBlock: ['no-first-class-spec-clauses'],
+  };
 });
 
 /**
@@ -152,6 +177,37 @@ const expectNoOpStatusWrite = (): void => {
 };
 
 describe('plans:start terminal guard', () => {
+  it('fails closed before promotion when an adopted spec set lacks a current quality verdict', async () => {
+    H.state.specQuality = {
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: 'live-plan-2026-06-02',
+      specSetHash: 'hash-one',
+      code: 'spec_quality_scorecard_missing',
+      wouldBlock: ['exact-specSetHash-scorecard-missing'],
+    };
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
+    expect(res.data.results[0]).toMatchObject({
+      ok: false,
+      error: 'spec_quality_not_current',
+      code: 'spec_quality_scorecard_missing',
+    });
+    expect(() => planRowRead()).toThrow();
+  });
+
+  it('surfaces no-clause rollout as report-only while allowing the start path', async () => {
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      specQuality: { satisfied: true, applicable: false, mode: 'report-only' },
+    });
+  });
+
   it.each(['shipped', 'superseded'])('refuses a %s plan without writing the started row', async (status) => {
     H.state.frontmatterStatus = status;
     const res = await run({ slug: 'done-plan-2026-06-02' });

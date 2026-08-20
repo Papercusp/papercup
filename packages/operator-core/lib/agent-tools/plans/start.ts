@@ -47,6 +47,7 @@ import { flipPlanFrontmatterStatus } from './set-plan-status';
 import { readPlanBySlug } from './source';
 import { isTerminalPlanStatus } from './plan-start-state';
 import { checkPlanStartable } from './plan-start-gate';
+import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { trackDetached } from '../../detached-imports';
@@ -170,6 +171,36 @@ export default defineTool({
           ctxAny.metadata?.({ slug, harnessSlug, refused: gate.refusal.code });
           // The refusal already carries `slug`; only harnessSlug is additive here.
           return { ok: false as const, harnessSlug, ...gate.refusal };
+        }
+
+        // P-004: first-class spec adopters fail closed on the exact current
+        // specSetHash BEFORE the consult/status/promotion side effects. Legacy
+        // plans with zero first-class clauses remain explicitly report-only.
+        let specQuality: PlanSpecQualityGateVerdict | undefined;
+        if (read) {
+          const planItemIds = (read.row.items.length ? read.row.items : read.parsed.items).map((item) => item.id);
+          specQuality = await evaluatePlanSpecQualityGate({
+            harnessSlug,
+            planSlug: slug,
+            planItemIds,
+          });
+          ctxAny.metadata?.({
+            slug,
+            harnessSlug,
+            specQualityMode: specQuality.mode,
+            specQualitySatisfied: specQuality.satisfied,
+            specSetHash: specQuality.specSetHash,
+            ...(specQuality.code ? { specQualityCode: specQuality.code } : {}),
+          });
+          if (!specQuality.satisfied) {
+            return {
+              ok: false as const,
+              slug,
+              harnessSlug,
+              error: 'spec_quality_not_current' as const,
+              ...specQuality,
+            };
+          }
         }
 
         // P-010 (get-feedback-relevance-consults-2026-08-16) as amended by
@@ -427,6 +458,7 @@ export default defineTool({
           autoApproved,
           transitioned,
           previousOpStatus: row?.prev_op_status ?? null,
+          ...(specQuality ? { specQuality } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),
           ...(axisLive
             ? {}

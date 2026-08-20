@@ -41,6 +41,14 @@ const h = vi.hoisted(() => ({
     { items: { id: string; status: string; text?: string; blockedBy?: string[] }[]; title?: string }
   >(),
   flagOn: true,
+  specQuality: {
+    satisfied: true,
+    applicable: false,
+    mode: 'report-only',
+    planSlug: 'mock',
+    specSetHash: null,
+    wouldBlock: ['no-first-class-spec-clauses'],
+  } as Record<string, unknown>,
 }));
 
 vi.mock('@papercusp/db-org', async () => {
@@ -83,6 +91,9 @@ vi.mock('./agent-tools/plans/source', () => ({
       },
     };
   },
+}));
+vi.mock('./agent-tools/plans/plan-spec-quality-gate', () => ({
+  evaluatePlanSpecQualityGate: vi.fn(async () => h.specQuality),
 }));
 
 const run = await import('./plan-workitem-promotion-run');
@@ -132,6 +143,14 @@ beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_links, harness_shared.coord_event_log, harness_shared.contributors, harness_shared.work_item_deps RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   h.flagOn = true;
+  h.specQuality = {
+    satisfied: true,
+    applicable: false,
+    mode: 'report-only',
+    planSlug: 'mock',
+    specSetHash: null,
+    wouldBlock: ['no-first-class-spec-clauses'],
+  };
   h.plans.clear();
 });
 
@@ -165,6 +184,24 @@ const depEdges = async () => {
 const base = { workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, createdBy: 'su-test' };
 
 describe('promotePlanItems (P-006): plan → placeable work-items, against real PG', () => {
+  it('fails closed before minting when an adopted spec set lacks its exact quality scorecard', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Build the guarded behavior' }] });
+    h.specQuality = {
+      satisfied: false,
+      applicable: true,
+      mode: 'enforced',
+      planSlug: PLAN,
+      specSetHash: 'hash-one',
+      code: 'spec_quality_scorecard_missing',
+      wouldBlock: ['exact-specSetHash-scorecard-missing'],
+    };
+
+    const res = await run.promotePlanItems(base);
+
+    expect(res).toMatchObject({ promoted: 0, skipped: 1, specQualityBlocked: true });
+    expect(await features()).toEqual([]);
+  });
+
   it('mints one PLACEABLE feature work-item per OPEN item, tied to the plan; done/dropped are skipped', async () => {
     h.plans.set(PLAN, {
       items: [

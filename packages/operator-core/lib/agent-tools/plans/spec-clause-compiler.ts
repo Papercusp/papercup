@@ -73,6 +73,21 @@ export interface CompiledSpecClauseCandidate {
   diagnostics: SpecCompilerDiagnostic[];
 }
 
+/** Semantic subset shared by compiler candidates and persisted current revisions. */
+export interface SpecSetHashClause {
+  specId: string;
+  sourceValId: string | null;
+  planItemId: string;
+  behavior: string;
+  behaviorClass: SpecBehaviorClass | null;
+  requiredEvidence: readonly string[];
+  requiredTestLayers: readonly string[];
+  mutationRequired: boolean;
+  lifecycleStatus: SpecLifecycleStatus;
+  exemption: SpecClauseExemption | Record<string, unknown> | null;
+  acceptanceRef: string | null;
+}
+
 export interface CompileSpecClausesOptions {
   itemIds?: Set<string>;
   enrichments?: Readonly<Record<string, SpecClauseEnrichment>>;
@@ -129,7 +144,7 @@ function normalizeSemanticValue(value: unknown): unknown {
   return value;
 }
 
-function canonicalCandidate(candidate: CompiledSpecClauseCandidate): Record<string, unknown> {
+function canonicalCandidate(candidate: SpecSetHashClause): Record<string, unknown> {
   return {
     specId: candidate.specId,
     sourceValId: candidate.sourceValId,
@@ -146,7 +161,7 @@ function canonicalCandidate(candidate: CompiledSpecClauseCandidate): Record<stri
 }
 
 /** Hash only semantic clause content; source order and Markdown styling do not matter. */
-export function computeSpecSetHash(candidates: readonly CompiledSpecClauseCandidate[]): string {
+export function computeSpecSetHash(candidates: readonly SpecSetHashClause[]): string {
   const semanticRows = candidates
     .map(canonicalCandidate)
     .sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));

@@ -1145,6 +1145,9 @@ import './plans/get-spec-evidence';
 // P-006 — reusable per-clause proof-quality rubric evaluator. It returns exact
 // scorecards:emit drafts; P-007 consumes current emitted rows at completion.
 import './plans/evaluate-spec-test-adequacy';
+// P-004 — reusable plan-level spec-quality rubric evaluator. plans:start and
+// direct promotion consume exact current specSetHash scorecards from this flow.
+import './plans/evaluate-spec-quality';
 import './plans/items';
 // plan-templates-and-rubric-v2-2026-06-20 P-003 — single-item structured read.
 import './plans/get-item';
