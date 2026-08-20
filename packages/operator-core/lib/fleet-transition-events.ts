@@ -13,6 +13,8 @@
  *
  *   events:await { event: "fleet:member-dead:<my-fleet>" }      // a member died
  *   events:await { event: "fleet:context-critical:<my-fleet>" } // a member is about to compact
+ *   events:await { event: "fleet:member-stalled:<my-fleet>" }  // a held claim stopped advancing
+ *   events:await { event: "fleet:admission-blocked:<my-fleet>" } // the fleet spec refused work
  *   events:await { event: "fleet:claim-released:<my-fleet>" }   // work came back to the pool
  *   events:await { event: "fleet:item-completed:<my-fleet>" }   // a member finished something
  *
@@ -64,7 +66,13 @@
 import { emitAwaitedEvent } from './events/await/engine';
 
 /** The transition families this module publishes, as they appear in the key. */
-export type FleetTransitionKind = 'member-dead' | 'context-critical' | 'claim-released' | 'item-completed';
+export type FleetTransitionKind =
+  | 'member-dead'
+  | 'context-critical'
+  | 'member-stalled'
+  | 'admission-blocked'
+  | 'claim-released'
+  | 'item-completed';
 
 /** Build the awaitable key for one fleet transition. Single-sourced so the
  *  emitters, the catalog entries and the tests can never drift on the shape.
@@ -101,17 +109,33 @@ export interface FleetMemberObservation {
   sessionState: string | null;
   /** The context-pressure bucket (ok | high | critical), or null when unknown. */
   contextPressure: string | null;
+  /** Whether this member currently holds a claim whose progress is stalled. */
+  stalled?: boolean | null;
 }
 
 /** One detected crossing, ready to emit. */
 export interface FleetTransitionEdge {
-  kind: Extract<FleetTransitionKind, 'member-dead' | 'context-critical'>;
+  kind: Extract<FleetTransitionKind, 'member-dead' | 'context-critical' | 'member-stalled'>;
   fleetSlug: string;
   agentId: string;
   /** The state the member crossed INTO (for the summary line). */
   to: string;
   /** The state it crossed FROM, for the summary line. */
   from: string | null;
+}
+
+/** A fleet-level admission-block crossing, ready to emit. */
+export interface FleetAdmissionTransitionEdge {
+  kind: 'admission-blocked';
+  fleetSlug: string;
+  from: number;
+  to: number;
+}
+
+/** One fleet's current distinct admission-block count. */
+export interface FleetAdmissionObservation {
+  fleetSlug: string;
+  blockedCount: number;
 }
 
 /** Snapshot identity for a member — a member is only ever compared against
@@ -183,9 +207,46 @@ export function detectFleetTransitions(
         from: before.contextPressure,
       });
     }
+
+    // A stalled-holder verdict is a second, independent leader intervention
+    // signal. Unknown is deliberately not coerced to false: the first reliable
+    // observation after a degraded read must not manufacture a crossing.
+    if (o.stalled === true && before.stalled === false) {
+      edges.push({
+        kind: 'member-stalled',
+        fleetSlug: o.fleetSlug,
+        agentId: o.agentId,
+        to: 'stalled',
+        from: before.stalled ? 'stalled' : 'clear',
+      });
+    }
   }
   edges.sort((a, b) => a.fleetSlug.localeCompare(b.fleetSlug) || a.agentId.localeCompare(b.agentId) || a.kind.localeCompare(b.kind));
   return edges;
+}
+
+/** PURE: fire when a fleet gains a new distinct admission block. A persistent
+ * block must not wake the leader every sweep, but a rising count is actionable
+ * even when an older block is still present. */
+export function detectFleetAdmissionTransitions(
+  prev: ReadonlyMap<string, number>,
+  next: readonly FleetAdmissionObservation[],
+): FleetAdmissionTransitionEdge[] {
+  return next
+    .filter((observation) => Number.isFinite(observation.blockedCount) && observation.blockedCount > 0)
+    .map((observation) => {
+      const before = prev.get(observation.fleetSlug) ?? 0;
+      return before < observation.blockedCount
+        ? {
+            kind: 'admission-blocked' as const,
+            fleetSlug: observation.fleetSlug,
+            from: before,
+            to: observation.blockedCount,
+          }
+        : null;
+    })
+    .filter((edge): edge is FleetAdmissionTransitionEdge => edge !== null)
+    .sort((a, b) => a.fleetSlug.localeCompare(b.fleetSlug));
 }
 
 /**
@@ -260,7 +321,9 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
   const summary =
     edge.kind === 'member-dead'
       ? `fleet ${edge.fleetSlug}: member ${edge.agentId} is DEAD (${edge.from ?? 'unknown'} → ${edge.to})`
-      : `fleet ${edge.fleetSlug}: member ${edge.agentId} context pressure is CRITICAL (${edge.from ?? 'unknown'} → ${edge.to})`;
+      : edge.kind === 'context-critical'
+        ? `fleet ${edge.fleetSlug}: member ${edge.agentId} context pressure is CRITICAL (${edge.from ?? 'unknown'} → ${edge.to})`
+        : `fleet ${edge.fleetSlug}: member ${edge.agentId} claim is STALLED (${edge.from ?? 'unknown'} → ${edge.to})`;
   void Promise.resolve()
     .then(() =>
       emit({
@@ -277,6 +340,31 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
       }),
     )
     .catch((e: unknown) => failSoft(`${edge.kind} for ${edge.fleetSlug}/${edge.agentId}`, e));
+}
+
+/** Fire a fleet-level admission-block edge. Awaiter-only and fail-soft, like
+ * the member transition emitter above. */
+export function emitFleetAdmissionTransitionEdge(
+  edge: FleetAdmissionTransitionEdge,
+  deps: FleetTransitionEventsDeps = {},
+): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: fleetTransitionKey(edge.fleetSlug, edge.kind),
+        summary:
+          `fleet ${edge.fleetSlug}: claim admission is BLOCKED (${edge.from} → ${edge.to} distinct refusal(s))`,
+        payload: {
+          fleetSlug: edge.fleetSlug,
+          transition: edge.kind,
+          from: edge.from,
+          to: edge.to,
+        },
+        source: 'fleet',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`${edge.kind} for ${edge.fleetSlug}`, e));
 }
 
 /**
