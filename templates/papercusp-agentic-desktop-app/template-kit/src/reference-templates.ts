@@ -1256,6 +1256,101 @@ export const PAPERCUSP_ANDROID_SHELL_TEMPLATE: TemplateManifest = {
   ],
 };
 
+/** Aspect: the SwiftUI/XcodeGen/XCFramework chassis for official iPhone apps. */
+export const PAPERCUSP_IPHONE_SHELL_TEMPLATE: TemplateManifest = {
+  id: "papercusp-iphone-shell",
+  version: "0.1.0",
+  scope: "aspect",
+  category: "shell",
+  summary:
+    "The iPhone chassis for official Papercusp mobile apps: a thin SwiftUI application generated from " +
+    "XcodeGen source, a dedicated generated-binding module over one device-and-simulator XCFramework, " +
+    "local or named-remote Mac execution, non-zero XCTest/XCUITest acceptance, explicit privacy and " +
+    "entitlement policy, and archive/export/signing preflight with no upload. Product screens, domain " +
+    "flows, endpoints, brand, and optional service dependencies stay in the consuming app.",
+  components: [],
+  contracts: [],
+  decisionPoints: [
+    {
+      id: "iphone-identity",
+      prompt:
+        "What bundle ID, module, scheme, product/display name, version/build source, and generated project name are used?",
+    },
+    {
+      id: "iphone-os-floor",
+      prompt:
+        "Does the app keep the default deployment target or raise it for a selected capability?",
+    },
+    {
+      id: "iphone-capabilities",
+      prompt:
+        "Which optional entitlements, privacy declarations, URL schemes, associated domains, background modes, and Swift packages are enabled?",
+    },
+    {
+      id: "iphone-test-host",
+      prompt:
+        "Are Xcode checks executed locally on macOS or delegated to a named Mac host from Linux?",
+    },
+    {
+      id: "iphone-release",
+      prompt:
+        "Which external team/signing inputs, archive/export mode, release channel, and validation actions are used?",
+    },
+  ],
+  composesWith: ["papercusp-mobile-base"],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
+  checks: [
+    {
+      id: "iphone-shell-contract",
+      run: "checks/iphone-shell-contract.test.ts",
+      summary:
+        "the parameterized SwiftUI/XcodeGen source pins identity, the dedicated generated Swift module, exact Rust slices, XCFramework inputs, host strategy, privacy declarations, external signing names, and no-upload release preflight without product assumptions",
+    },
+    {
+      id: "iphone-shell-assertions",
+      run: "checks/iphone-shell-commands.test.ts",
+      summary:
+        "every MOB-IOS host leg runs directly, writes an atomic machine evidence record, and proves deterministic project generation, XCFramework and module compilation, host health, non-zero XCTest/XCUITest execution, privacy/capability agreement, archive/export preflight, and signing-absence rejection",
+    },
+  ],
+  musts: [
+    {
+      id: "xcodegen-source-chassis",
+      rule: "One thin SwiftUI app pins iOS 17.0 or higher and Swift 5.9, keeps ios/project.yml as the XcodeGen source of truth, and treats the generated .xcodeproj as ignored build output",
+      enforcedBy: "iphone-shell-contract",
+    },
+    {
+      id: "exact-xcframework-slices",
+      rule: "Fresh Rust builds produce aarch64-apple-ios plus aarch64-apple-ios-sim and x86_64-apple-ios, lipo the simulator library, and create one XCFramework with generated headers and modulemap",
+      enforcedBy: "iphone-shell-contract",
+    },
+    {
+      id: "dedicated-generated-module",
+      rule: "Generated Swift and the FFI XCFramework compile behind their own framework target; the app and tests import that module instead of compiling generated bindings ad hoc",
+      enforcedBy: "iphone-shell-contract",
+    },
+    {
+      id: "host-and-test-evidence",
+      rule: "Local-mac or named remote-host preflight proves Xcode, SDK, simulator, XcodeGen, and SwiftFormat health; XCTest and XCUITest execute a non-zero count, while incapable hosts report host-constrained",
+      enforcedBy: "iphone-shell-assertions",
+    },
+    {
+      id: "privacy-and-no-upload-release",
+      rule: "Privacy manifest, usage descriptions, background modes, selected entitlements, and capability answers agree; archive/export/signing preflight uses external input names and performs no upload",
+      enforcedBy: "iphone-shell-assertions",
+    },
+    {
+      id: "product-capabilities-stay-owned",
+      rule: "Optional capabilities, Swift packages, product screens, routes, data, endpoints, brand, assets, and domain behavior appear only when selected by the consuming product",
+      enforcedBy: "prose-only",
+    },
+  ],
+};
+
 /** App: the thin official Android composition root. */
 export const PAPERCUSP_ANDROID_APP_TEMPLATE: TemplateManifest = {
   id: "papercusp-android-app",
@@ -1323,6 +1418,73 @@ export const PAPERCUSP_ANDROID_APP_TEMPLATE: TemplateManifest = {
   ],
 };
 
+/** App: the thin official iPhone composition root. */
+export const PAPERCUSP_IPHONE_APP_TEMPLATE: TemplateManifest = {
+  id: "papercusp-iphone-app",
+  version: "0.1.0",
+  scope: "app",
+  category: "app",
+  summary:
+    "The official whole-app root for a Papercusp-style iPhone app: a thin pure composition that hard-requires " +
+    "papercusp-mobile-base and papercusp-iphone-shell at 0.1.0, records every decision-point answer in the exact " +
+    "closure, and runs the additive union of portable and iPhone-native checks. It adds no product component or " +
+    "platform behavior of its own.",
+  components: [],
+  contracts: [],
+  decisionPoints: [
+    {
+      id: "iphone-app-purpose",
+      prompt:
+        "What product is this iPhone app, and which answers are supplied to every decision point in its exact dependency closure?",
+    },
+  ],
+  composesWith: ["papercusp-mobile-base", "papercusp-iphone-shell"],
+  requires: [
+    { id: "papercusp-mobile-base", version: "0.1.0" },
+    { id: "papercusp-iphone-shell", version: "0.1.0" },
+  ],
+  docs: [
+    "agent-insights/templates-system-design",
+    "agent-insights/templates-template-yaml",
+    "agent-insights/templates-component-catalog",
+  ],
+  checks: [
+    {
+      id: "composition-integrity",
+      run: "checks/composition-integrity.test.ts",
+      summary:
+        "the root resolves exactly to the pinned mobile-base and iPhone-shell closure, every tagged decision point has a non-empty answer, and the additive union retains every closure check",
+    },
+  ],
+  musts: [
+    {
+      id: "thin-app-template",
+      rule: "The iPhone app root adds purpose and composition guidance only; reusable behavior belongs in the mobile-base or iPhone-shell aspects and product behavior stays in the consumer",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "exact-mobile-closure",
+      rule: "The root hard-requires exactly papercusp-mobile-base@0.1.0 and papercusp-iphone-shell@0.1.0 with no unpinned or substitute chassis",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "complete-decision-record",
+      rule: "The materialized checks config records one non-empty template-id:decision-id answer for every decision point in the exact closure",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "full-union-green",
+      rule: "The composed iPhone app passes the full additive union of root, shared-base, and iPhone-shell checks; the root never duplicates or weakens aspect assertions",
+      enforcedBy: "composition-integrity",
+    },
+    {
+      id: "product-behavior-stays-owned",
+      rule: "Domain flows, endpoints, routes, copy, brand, assets, and selected optional capability implementations remain owned by the consuming product",
+      enforcedBy: "prose-only",
+    },
+  ],
+};
+
 /** The reference template set — validateTemplateSet(REFERENCE_TEMPLATES) must stay green. */
 export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PAPERCUSP_OPS_HIVES_TEMPLATE,
@@ -1339,5 +1501,7 @@ export const REFERENCE_TEMPLATES: TemplateManifest[] = [
   PAPERCUSP_WEBAPP_TEMPLATE,
   PAPERCUSP_MOBILE_BASE_TEMPLATE,
   PAPERCUSP_ANDROID_SHELL_TEMPLATE,
+  PAPERCUSP_IPHONE_SHELL_TEMPLATE,
   PAPERCUSP_ANDROID_APP_TEMPLATE,
+  PAPERCUSP_IPHONE_APP_TEMPLATE,
 ];

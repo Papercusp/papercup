@@ -297,28 +297,56 @@ describe('outbox-drain durable-EI auto-resolve on recovery (WI-6997)', () => {
     }
   });
 
-  it('is EDGE-triggered: a healthy backlog that never escalated never files a false all-clear', async () => {
+  it('reconciles a pre-restart EI once on the fresh drain\'s first healthy probe', async () => {
     vi.useFakeTimers();
     try {
+      const episodes: Array<{ detail: string; kind?: string }> = [];
       const recoveries: Array<{ detail: string; kind?: string }> = [];
-      // Permanently healthy: 1 undrained row, well under a 2000-row threshold.
-      const pg = fakePg(() => ({ undrained_count: 1, oldest_ts: Date.now() }));
-      const drain = startOutboxDrain(fakeHandle(), pg, {
+      let breached = true;
+      const pg = fakePg(() =>
+        breached ? { undrained_count: 5000, oldest_ts: Date.now() } : { undrained_count: 1, oldest_ts: Date.now() },
+      );
+      const beforeRestart = startOutboxDrain(fakeHandle(), pg, {
         pollMs: 1000,
         _passTimeoutMs: 0,
         _backlogStallMs: 0,
         _backlogAgeStallMs: 0,
         _backlogSizeStallThreshold: 2000,
         _backlogAgeCheckIntervalMs: 1000,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
         _onStallRecovery: (detail, kind) => recoveries.push({ detail, kind }),
       });
 
-      // Many healthy probes. Each one takes the !breached branch; none may resolve.
-      // This is the guard against a PG round-trip on every 5s poll in production.
-      await vi.advanceTimersByTimeAsync(10_000);
+      // The first process opens the durable EI, then disappears before observing
+      // recovery. Its process-local escalation latch disappears with it.
+      await vi.advanceTimersByTimeAsync(50);
+      expect(episodes.filter((e) => e.kind === 'drain_backlog_aged')).toHaveLength(1);
       expect(recoveries).toHaveLength(0);
+      await beforeRestart.stop();
 
-      await drain.stop();
+      // A fresh drain starts after the backlog recovered. Its first healthy probe
+      // must reconcile the already-open exact-kind EI despite a fresh false latch.
+      breached = false;
+      const afterRestart = startOutboxDrain(fakeHandle(), pg, {
+        pollMs: 1000,
+        _passTimeoutMs: 0,
+        _backlogStallMs: 0,
+        _backlogAgeStallMs: 0,
+        _backlogSizeStallThreshold: 2000,
+        _backlogAgeCheckIntervalMs: 1000,
+        _onStallEpisode: (detail, kind) => episodes.push({ detail, kind }),
+        _onStallRecovery: (detail, kind) => recoveries.push({ detail, kind }),
+      });
+
+      await vi.advanceTimersByTimeAsync(50);
+      expect(recoveries.filter((r) => r.kind === 'drain_backlog_aged')).toHaveLength(1);
+      expect(recoveries[0]?.detail).toMatch(/recovered/i);
+
+      // Repeated healthy probes do not generate repeated resolve queries.
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(recoveries.filter((r) => r.kind === 'drain_backlog_aged')).toHaveLength(1);
+
+      await afterRestart.stop();
     } finally {
       vi.useRealTimers();
     }

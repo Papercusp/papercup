@@ -953,6 +953,13 @@ export function startOutboxDrain(
   const backlogAgeCheckIntervalMs = opts._backlogAgeCheckIntervalMs ?? DRAIN_BACKLOG_AGE_CHECK_INTERVAL_MS;
   let lastBacklogAgeCheckAt = 0;
   let backlogAgeEscalated = false;
+  // EI-209736: the escalation latch is process-local, while the EI it opens is
+  // durable. A restarted/replaced drain can therefore observe a healthy backlog
+  // with a fresh `false` latch even though the prior instance's exact-title EI is
+  // still open. Reconcile ONCE on this instance's first healthy probe; subsequent
+  // healthy polls stay free of resolve queries, while a later real breach still
+  // gets its normal escalated->recovered edge below.
+  let backlogAgeHealthyStartReconciled = false;
 
   // WI-2136 orphan-tail detector state. `escalatedOrphanKeys` latches each dead
   // prior-era log key so it pages ONCE per process; `lastOrphanCheckAt` throttles
@@ -1021,9 +1028,11 @@ export function startOutboxDrain(
    * EI-4643 class already fixed once for `connected_never_replicated`, left
    * unfixed in this sibling module.
    *
-   * EDGE-TRIGGERED ONLY — call this on the escalated->recovered transition, never
-   * on every healthy pass: `resolveReplicationStallEi` no-ops when no EI is open,
-   * but it is a PG round-trip, and the drain's healthy path runs every 5s poll.
+   * Call this on the escalated->recovered transition or once when a fresh drain's
+   * first backlog probe is healthy. Never call it on every healthy pass:
+   * `resolveReplicationStallEi` no-ops when no EI is open, but it is a PG round-
+   * trip, and the drain's healthy path runs every 5s poll. The one boot-time
+   * reconciliation closes an EI whose durable state outlived this local latch.
    *
    * Deliberately NOT wired for `drain_orphan_tail` (a dead prior-era log — the era
    * stays dead, there is no recovery) or `drain_row_quarantined` (a poison row is
@@ -1139,10 +1148,11 @@ export function startOutboxDrain(
       const sizeBreached = backlogSizeStallThreshold > 0 && undrainedCount >= backlogSizeStallThreshold;
 
       if (!ageBreached && !sizeBreached) {
-        // WI-6997: BOTH legs recovered. Before, this only re-armed the latch and
-        // left the durable EI open forever; now the escalated->recovered edge also
-        // resolves it.
-        if (backlogAgeEscalated) {
+        // WI-6997: BOTH legs recovered. EI-209736 adds the restart-shaped case:
+        // the durable EI can outlive this process-local latch, so the first
+        // healthy probe of every drain instance performs one exact-kind no-op
+        // resolve. The per-instance flag prevents a query on every later poll.
+        if (backlogAgeEscalated || !backlogAgeHealthyStartReconciled) {
           recoverStall(
             'drain_backlog_aged',
             `outbox backlog recovered: ${undrainedCount} undrained row(s), oldest ` +
@@ -1151,6 +1161,7 @@ export function startOutboxDrain(
               )}min) and size (${backlogSizeStallThreshold}) thresholds are clear`,
           );
         }
+        backlogAgeHealthyStartReconciled = true;
         backlogAgeEscalated = false; // recovered on both legs — a later re-breach re-escalates
         return;
       }

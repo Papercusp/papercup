@@ -50,7 +50,10 @@ describe('generated .d.mts declarations', () => {
       const e = err as { stdout?: string; stderr?: string };
       throw new Error(`gen:declarations:check failed:\n${e.stdout ?? ''}${e.stderr ?? ''}`);
     }
-  });
+  // The generator cold-start measured 6.1s while the checkpoint was running;
+  // Vitest's 5s default made a correct declaration set fail before `--check`
+  // could return. Keep the real generator verdict authoritative.
+  }, 30_000);
 
   it('stay genuinely typed — a byte-compare cannot catch types silently widening to `any`', () => {
     // Each assertion below pins a type that is only produced because the source's
