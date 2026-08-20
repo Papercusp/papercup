@@ -1184,6 +1184,24 @@ export function routeFreshKickoff(backend, res, args, env = process.env) {
 }
 
 /**
+ * Finish a fresh SU launch with the backend-specific first-turn delivery.
+ * Claude/Codex receive the tagged prompt as the final positional argv token;
+ * OMP keeps argv unchanged and receives the prompt through the managed pty.
+ *
+ * Keep this assembly in one pure helper so the caller cannot truthfully log
+ * "kickoff seeded" while accidentally dropping routeFreshKickoff's
+ * positionalArgs before runWrapper (the live failure behind WI-39943).
+ */
+export function finalizeFreshSuArgs(backend, launchArgs, res, args, env = process.env) {
+  const kickoff = routeFreshKickoff(backend, res, args, env);
+  return {
+    args: [...launchArgs, ...kickoff.positionalArgs],
+    kickoff: kickoff.managedKickoff,
+    kickoffSeeded: kickoff.kickoffSeeded,
+  };
+}
+
+/**
  * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
@@ -8761,7 +8779,7 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // via a correctly-escaped `export K=…` in the oneliner prelude and arrives
   // intact (multiline / quotes included). So the desktop docs-agent launcher sets
   // the env var, not the flag.
-  const kickoff = routeFreshKickoff(res.agent, res, args);
+  const kickoff = finalizeFreshSuArgs(res.agent, launchArgs, res, args);
   if (kickoff.kickoffSeeded) {
     console.error(`psu: kickoff — seeding first turn${res.planSlug ? ` to advance plan ${res.planSlug}` : ''} (suppress with --no-kickoff)`);
   }
@@ -8864,9 +8882,9 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // server-side (D-006); nothing for psu to export here.
   runWrapper({
     wrapperBin: bin,
-    args: launchArgs,
+    args: kickoff.args,
     cwd: res.cwd,
-    kickoff: kickoff.managedKickoff,
+    kickoff: kickoff.kickoff,
     kickoffFile: res.sessionPortKickoffFile || null,
     sessionPort: res.sessionPort ? {
       ...res.sessionPort,

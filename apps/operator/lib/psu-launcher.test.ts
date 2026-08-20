@@ -110,6 +110,7 @@ import {
   resolveOmpInjectHookPath,
   kickoffPositionalArgs,
   routeFreshKickoff,
+  finalizeFreshSuArgs,
   tagKickoffProvenance,
   resolveKickoffText,
   finalizeFreshRoleArgs,
@@ -563,6 +564,62 @@ describe('routeFreshKickoff (EI-20339142329504181 OMP startup barrier)', () => {
     expect(routeFreshKickoff('omp', { envelopeEnv: { PAPERCUSP_SID: 'omp-1' } }, parseArgs(['--no-picker', '--agent=omp']), {})).toEqual({
       positionalArgs: [], managedKickoff: null, kickoffSeeded: false,
     });
+  });
+});
+
+describe('finalizeFreshSuArgs (fresh SU kickoff reaches the backend)', () => {
+  const KICK = 'Begin: pull one admitted non-P2P bug.';
+
+  it('appends the tagged first turn after every Codex/Claude launch flag', () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'su-native-kickoff-prov-'));
+    try {
+      for (const backend of ['claude', 'codex']) {
+        const args = parseArgs(['--no-picker', `--agent=${backend}`]);
+        const result = finalizeFreshSuArgs(
+          backend,
+          ['--flag=value'],
+          { envelopeEnv: { PAPERCUSP_SID: `${backend}-fresh-1` } },
+          args,
+          {
+            PAPERCUSP_KICKOFF_PROMPT: KICK,
+            PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+          },
+        );
+
+        expect(result.kickoffSeeded).toBe(true);
+        expect(result.kickoff).toBeNull();
+        expect(result.args.slice(0, -1)).toEqual(['--flag=value']);
+        expect(result.args.at(-1)).toMatch(
+          /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: pull one admitted non-P2P bug\.$/,
+        );
+      }
+    } finally {
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps OMP argv unchanged and returns its managed-pty kickoff', () => {
+    const provenanceDir = mkdtempSync(join(tmpdir(), 'su-omp-kickoff-prov-'));
+    try {
+      const result = finalizeFreshSuArgs(
+        'omp',
+        ['--extension', '/tmp/coord-hook.ts'],
+        { envelopeEnv: { PAPERCUSP_SID: 'omp-fresh-1' } },
+        parseArgs(['--no-picker', '--agent=omp']),
+        {
+          PAPERCUSP_KICKOFF_PROMPT: KICK,
+          PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+        },
+      );
+
+      expect(result.args).toEqual(['--extension', '/tmp/coord-hook.ts']);
+      expect(result.kickoffSeeded).toBe(true);
+      expect(result.kickoff).toMatch(
+        /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: pull one admitted non-P2P bug\.$/,
+      );
+    } finally {
+      rmSync(provenanceDir, { recursive: true, force: true });
+    }
   });
 });
 
