@@ -32,6 +32,7 @@
  */
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
+import { statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
@@ -610,9 +611,29 @@ export default defineTool({
     // reported as a failure, and only that sets isError.
     let freshVerdict: FreshLaunchVerdict | null = null;
     if (!isResume && callerOwnerId && opened.length > 0) {
+      // EI-20823593041668393: a slow headless first turn can stop making MCP
+      // statusline calls while its CLI is plainly alive and rendering into the
+      // durable log. Snapshot here, then let the verifier compare at the end of
+      // its window before it turns ledger silence into a death verdict.
+      const headlessLogSizes = new Map(
+        opened.flatMap((result) => {
+          if (result.status !== 'ok' || !result.logPath) return [];
+          try { return [[result.logPath, statSync(result.logPath).size] as const]; } catch { return []; }
+        }),
+      );
       try {
         freshVerdict = await verifyFreshLaunchStarted(
           { workspaceId, launcherOwnerId: callerOwnerId, since: spawnStartedAt, expected: opened.length },
+          {
+            probeProcessEvidence: () => opened.flatMap((result) => {
+              if (result.status !== 'ok' || result.pid == null || !result.logPath) return [];
+              let pidAlive = false;
+              let logGrowing = false;
+              try { process.kill(result.pid, 0); pidAlive = true; } catch { pidAlive = false; }
+              try { logGrowing = statSync(result.logPath).size > (headlessLogSizes.get(result.logPath) ?? 0); } catch { logGrowing = false; }
+              return [{ pidAlive, logGrowing }];
+            }),
+          },
         );
         notes.push(freshVerdict.note);
       } catch (e) {

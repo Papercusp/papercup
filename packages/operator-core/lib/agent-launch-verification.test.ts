@@ -166,6 +166,28 @@ describe('verifyFreshLaunchStarted — must NOT cry wolf on a healthy launch (D-
     expect(goneSilent.agentStarted).toBe(false);
   });
 
+  it('does not condemn a slow headless first turn while its live process is still growing the log (EI-20823593041668393)', async () => {
+    const verdict = await verifyFreshLaunchStarted(ARGS, {
+      ...FAST,
+      probe: fixedProbe([session({ msSinceLastSignal: FRESH_VERIFY_SILENCE_MS + 1 })]),
+      probeProcessEvidence: () => [{ pidAlive: true, logGrowing: true }],
+    });
+    expect(verdict.agentStarted).toBeNull();
+    expect(verdict.note).toMatch(/growing log/);
+    expect(verdict.note).toMatch(/Do NOT relaunch/);
+    expect(verdict.note).not.toMatch(/DID NOT START/);
+  });
+
+  it('still condemns a silent session when a surviving shell has stopped writing', async () => {
+    const verdict = await verifyFreshLaunchStarted(ARGS, {
+      ...FAST,
+      probe: fixedProbe([session({ msSinceLastSignal: FRESH_VERIFY_SILENCE_MS + 1 })]),
+      probeProcessEvidence: () => [{ pidAlive: true, logGrowing: false }],
+    });
+    expect(verdict.agentStarted).toBe(false);
+    expect(verdict.note).toMatch(/DID NOT START/);
+  });
+
   it('a session that never signalled at all is UNVERIFIED, not failed', async () => {
     // msSinceLastSignal === null means we have no observation, which is not the
     // same as an observation of silence. Treating "no data" as "dead" is how a

@@ -1025,6 +1025,13 @@ export interface FreshLaunchVerdict {
   note: string;
 }
 
+export interface FreshLaunchProcessEvidence {
+  /** The launcher pid still resolves at verdict time. */
+  pidAlive: boolean;
+  /** The headless session log advanced during the verification window. */
+  logGrowing: boolean;
+}
+
 /**
  * Did the agents this call just launched actually START?
  *
@@ -1067,12 +1074,20 @@ export async function verifyFreshLaunchStarted(
     pollMs = 2_000,
     silenceMs = FRESH_VERIFY_SILENCE_MS,
     probe = probeFreshLaunchSessions,
+    probeProcessEvidence,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
     silenceMs?: number;
     probe?: typeof probeFreshLaunchSessions;
+    /**
+     * Headless launches already know their pid + durable log. Consult those
+     * signals before turning database silence into a death verdict: a live
+     * process whose log is still advancing is visibly inside its first turn,
+     * even if it has not made an agent-chosen tool call yet.
+     */
+    probeProcessEvidence?: () => FreshLaunchProcessEvidence[] | Promise<FreshLaunchProcessEvidence[]>;
     sleep?: (ms: number) => Promise<void>;
   } = {},
 ): Promise<FreshLaunchVerdict> {
@@ -1145,6 +1160,21 @@ export async function verifyFreshLaunchStarted(
     (s) => s.successfulCalls === 0 && !s.hasPresence && s.msSinceLastSignal != null && s.msSinceLastSignal >= silenceMs,
   );
   if (silent.length > 0 && silent.length === sessions.length) {
+    const processEvidence = await probeProcessEvidence?.() ?? [];
+    const active = processEvidence.filter((item) => item.pidAlive && item.logGrowing);
+    if (active.length > 0) {
+      return {
+        agentStarted: null,
+        waitedMs,
+        sessions,
+        note:
+          `⏳ launch UNVERIFIED after ${secs}s — the session ledger went quiet before a first ` +
+          `agent-chosen call, but ${active.length} headless process${active.length > 1 ? 'es are' : ' is'} ` +
+          `still alive with a growing log. That is positive evidence the agent is still starting, not ` +
+          `an observed death. Do NOT relaunch on this note alone; verify in ~1 min with ` +
+          `coord:presence { owner } / work_items:observe.`,
+      };
+    }
     return {
       agentStarted: false,
       waitedMs,
