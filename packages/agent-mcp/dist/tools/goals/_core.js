@@ -30,6 +30,34 @@ export function goalId(title) {
 }
 export const GOAL_STATUSES = ['active', 'achieved', 'killed', 'paused'];
 /**
+ * The goal TERMINAL partition — the dependency substrate's per-kind policy for
+ * `blocked_kind='goal'` edges (goal-dag-shared-substrate-2026-08-18 D-002).
+ *
+ * Goals join the shared work-queue DAG (`work_item_deps` + the blockersOf()/
+ * frontier-readiness seam) as a SECOND consumer family, and the work-item rule
+ * — any terminal blocker is satisfied — is WRONG here, because a goal dies two
+ * ways that mean opposite things downstream:
+ *
+ *   - `achieved` SATISFIES a dependent ("get 1k users" achieved ⇒ "monetize
+ *     the users" is now doable);
+ *   - `killed` INVALIDATES the dependent's PREMISE ("get 1k users" killed ⇒
+ *     "monetize the users" is moot, not ready). A killed blocker must NEVER
+ *     silently unblock — readers flag the dependent `premiseInvalidated` for
+ *     owner/parent review (retarget, unblock deliberately, or kill downstream).
+ *
+ * TERMINAL answers "is this goal finished?" (what a generic finished-check
+ * needs); the SATISFYING/INVALIDATING split answers "what does that mean for
+ * a dependent?". Same shape as work-item-blocking.ts's ISSUE_SHIPPED /
+ * ISSUE_ABANDONED partition of ISSUE_TERMINAL_STATUSES — promoted here from
+ * reporting to blocking semantics. The partition invariant (disjoint, together
+ * exhaustive over TERMINAL) is pinned by `_core.test.ts`, so a future status
+ * joining GOAL_STATUSES without being classified fails a test rather than
+ * silently defaulting to either side.
+ */
+export const GOAL_TERMINAL_STATUSES = new Set(['achieved', 'killed']);
+export const GOAL_SATISFYING_STATUSES = new Set(['achieved']);
+export const GOAL_INVALIDATING_STATUSES = new Set(['killed']);
+/**
  * A TRIPWIRE turns the kill criterion from prose into a readout.
  *
  * A criterion written as a sentence ("kill this if we pass $500 or 30 days
@@ -64,13 +92,14 @@ export async function insertGoalRow(tx, row) {
     await tx `
     INSERT INTO harness_shared.goals
       (id, install_slug, workspace_id, title, body, parent_id, budget_cents, status,
-       kill_criterion, tripwires, metadata)
+       kill_criterion, tripwires, metadata, launch_settings)
     VALUES
       (${row.id}, ${row.installSlug}, ${row.workspaceId}, ${row.title}, ${row.body ?? null},
        ${row.parentId ?? null}, ${row.budgetCents ?? null}, ${row.status ?? 'active'},
        ${row.killCriterion ?? null},
        ${row.tripwires?.length ? JSON.stringify(row.tripwires) : null}::jsonb,
-       ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb)
+       ${Object.keys(metadata).length ? JSON.stringify(metadata) : null}::jsonb,
+       ${row.launchSettings && Object.keys(row.launchSettings).length ? JSON.stringify(row.launchSettings) : null}::jsonb)
   `;
 }
 /**

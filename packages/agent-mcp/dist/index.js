@@ -112,6 +112,12 @@ export { papercuspTierFor, setCapabilityTierOverride } from './capability-tiers-
 // installs the executor at module load; without it `goals:update { status:'paused' }` is a
 // pure record write — and `status:'active'` leaves placement gated behind an "active" label.
 export { setGoalTransitionExecutor, getGoalTransitionExecutor, isStoppingStatus, STOPPING_STATUSES, isTerminalStatus, TERMINAL_STATUSES, isResumingStatus, isTransitioningStatus, isStopReport, } from './tools/goals/stop-seam';
+// The goal DELIBERATE-PAUSE record (goal-live-holder-guarantee-2026-08-18 P-005, D-009).
+// `status='paused'` says a goal is held; this says WHO held it, WHEN and WHY — the half
+// without which a reader cannot tell a deliberate hold from a goal that lost its holder.
+// Exported here because the writer is in this package and the readers (the liveness
+// watchdog, P-004's derived activity read) are in operator-core, which imports it.
+export { readGoalPause, readGoalLastPause, stampGoalPause, clearGoalPause, isGoalAdministrativelyPaused, GOAL_PAUSE_KEY, GOAL_LAST_PAUSE_KEY, } from './tools/goals/pause-record';
 // Per-spawn URL-param parser — used by both projected-tool transports
 // to extract harness/workspace/role/feature/chunk/run/spawn from the
 // orchestrator-baked URL.

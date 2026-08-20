@@ -17,15 +17,37 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
-import { GOAL_LAUNCH_DEFAULTS, UNLIMITED_CEILING, goalLaunchSettingsSchema, writeGoalLaunchSettings, } from '@papercusp/operator-core/lib/goal-launch-settings';
+import { GOAL_LAUNCH_DEFAULTS, UNLIMITED_CEILING, declareGoalHolderPolicy, goalHolderPolicySchema, goalLaunchSettingsSchema, writeGoalLaunchSettings, } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
+import { applyGoalBlockedBy, readGoalBlockedByEdges } from './goal-deps';
 import { resolveGoalWorkspace } from './_workspace';
 import { getGoalTransitionExecutor, isTransitioningStatus, isStopReport, } from './stop-seam';
+import { clearGoalPause, stampGoalPause } from './pause-record';
+import { addGoalFieldChange, appendGoalHistory } from './history';
+function jsonField(value) {
+    if (typeof value !== 'string')
+        return value ?? null;
+    try {
+        return JSON.parse(value);
+    }
+    catch {
+        return value;
+    }
+}
+function centsField(value) {
+    if (value === null || value === undefined)
+        return null;
+    const cents = Number(value);
+    return Number.isFinite(cents) ? cents : null;
+}
+function sortedRefs(refs) {
+    return [...refs].sort((a, b) => a.localeCompare(b));
+}
 export default defineTool({
     name: 'goals:update',
-    description: 'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings? }. ' +
-        'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met. ' +
+    description: 'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings?, drainFleet? }. ' +
+        'Partial — omitted fields stay untouched. status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +
         'status FANS OUT, in both directions: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
         '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
     capability: 'goals:write',
@@ -39,7 +61,8 @@ export default defineTool({
             'TERMINAL only (killed/achieved): `modesCleared` — sessions whose GOAL-mode row was retired — and ⚠ `modesLeftArmed`, owner-directed rows the sticky guard REFUSED, so those sessions are still being told this goal is their mission. A pause keeps the rows (resume reads them). ' +
             'RESUME arm (active): `potsResumed`, `potsSkippedContributing`, and ⚠ `loopsLeftDisarmed` — sessions attributed to this goal that are still not looping, deliberately NOT re-armed (they are routinely dead by resume time; new work re-forms from PLACEMENT instead). ' +
             '`timeWakeRestored` is always false: the pause DELETES the pot\'s declared time-wake row and its cadence is not reconstructible. ' +
-            '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent.',
+            '`degraded` is true when either gap is non-zero — a caller that renders only `status` will be wrong, which is what these numbers exist to prevent. ' +
+            'REFUSAL: status:"paused" with no `reason` returns degraded and writes NOTHING — an unexplained pause is indistinguishable from a goal that lost its holder, so the reason is recorded with author + timestamp (metadata.pause, read back by goals:get) or the pause does not happen.',
     },
     requirePrincipal: false,
     agentRoles: [...SU_WRITE_ROLES],
@@ -63,6 +86,19 @@ export default defineTool({
             .optional()
             .describe('cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost'),
         parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
+        blockedBy: z
+            .array(z.string().min(1).max(200))
+            .max(20)
+            .nullable()
+            .optional()
+            .describe('REPLACE this goal\'s blocked-by set (goal-dag-shared-substrate-2026-08-18): goal ids and/or bare WI-/EI- issue ids that must resolve before this goal is actionable. Declarative full-set — the previous set is replaced; null or [] clears it. Every ref must RESOLVE (a goal in this workspace / an existing issue) and the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes — phases of one outcome belong inside the goal as plans/tripwires (D-005). An achieved goal blocker satisfies; a KILLED one flags this goal premiseInvalidated instead of unblocking it.'),
+        drainFleet: z
+            .string()
+            .min(1)
+            .max(120)
+            .nullable()
+            .optional()
+            .describe('the STANDING drain fleet slug for this goal (GOAL contract clause 3 — one per goal, always maintained). Record it the moment the fleet is established; null clears it (e.g. re-establishing under a new slug). The goal-liveness watchdog treats an active goal without one as a gap.'),
         launchSettings: goalLaunchSettingsSchema
             .nullable()
             .optional()
@@ -70,6 +106,18 @@ export default defineTool({
             `Each ceiling takes a number, or "${UNLIMITED_CEILING}" for no ceiling at all; OMITTING one applies the system default ` +
             `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
             'Pass null to clear the whole document back to those defaults; omit to leave untouched.'),
+        reason: z
+            .string()
+            .min(1)
+            .max(500)
+            .optional()
+            .describe('Why this amendment is being made. REQUIRED when pausing (status:"paused") — ideally name what would end the hold — and persisted both in metadata.pause and the append-only amendment history. On other amendments it is optional; when omitted the audit entry carries an explicit generated reason rather than losing the provenance field.'),
+        holder: goalHolderPolicySchema
+            .optional()
+            .describe('Declare (or revise) THIS goal\'s holder policy: does it need a LIVE holder to count as active, and what happens when it loses one. ' +
+            "{ requireLive: true } for a goal a session owns; { requireLive: false } for one driven by routines rather than a held session; onLoss 'deactivate' (default) or 'respawn'. " +
+            'MERGES into the existing launch settings — unlike launchSettings, which replaces the whole document — so declaring a policy cannot disturb a declared ceiling. ' +
+            'This is the door that clears a "no declared holder policy" refusal from goals:create / goals:start / mode:set { mode:"goal" }.'),
     }),
     async handler(args, ctx) {
         // ── The criterion gate (P-009) ───────────────────────────────────────────
@@ -97,14 +145,49 @@ export default defineTool({
                 return { data: null, degraded: true, degradedReasons: [problem] };
             }
         }
+        // ── The pause-reason gate (P-005, D-009) ─────────────────────────────────
+        //
+        // Also BEFORE the read, for the same reason: a refusal should cost nothing.
+        //
+        // A pause with no recorded WHY is the failure this item exists to close.
+        // `status='paused'` already had teeth (it gates placement and disarms
+        // attributed loops) but carried no record of the DECISION — no author, no
+        // timestamp of its own, no reason — so a later reader could not tell an
+        // owner's deliberate hold from a goal that quietly lost its holder, which
+        // is precisely the distinction P-004's derived deactivation has to make.
+        //
+        // REQUIRED rather than optional, following `routines:set` rather than
+        // softening it. The evidence for requiring it is three recorded incidents
+        // (EI-18654017982759582 twice, EI-19336000265007219 once), and the obvious
+        // counter-argument — that an emergency pause should not be blocked by a
+        // missing sentence — is answered by those same incidents: the emergency
+        // pause is the one most likely to be left unexplained and then forgotten.
+        const pauseReason = args.reason?.trim();
+        if (args.status === 'paused' && !pauseReason) {
+            return {
+                data: null,
+                degraded: true,
+                degradedReasons: [
+                    `goal ${args.id} not paused: status:'paused' requires \`reason\` — why the goal is being held, and ideally what would end the hold. ` +
+                        `A pause with no recorded reason is indistinguishable from a goal that lost its holder, which is the exact confusion this record exists to prevent. ` +
+                        `Retry with { status:'paused', reason:'…' }.`,
+                ],
+            };
+        }
         const existing = await ctx.tx `
-      SELECT title, body, status, parent_id, budget_cents, kill_criterion, tripwires, metadata
+      SELECT workspace_id, title, body, status, parent_id, budget_cents, kill_criterion,
+             tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
         if (!existing.length) {
             return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
         }
         const prev = existing[0];
+        let previousBlockedBy = null;
+        if (args.blockedBy !== undefined) {
+            const edges = await readGoalBlockedByEdges(ctx.tx, prev.workspace_id);
+            previousBlockedBy = sortedRefs((edges.get(args.id) ?? []).map((edge) => edge.ref));
+        }
         /* SPEND PROVENANCE (EI-20188678636377696).
            `spentCents` used to be an owner-entered number. That made a guess
            indistinguishable from a measurement and let a decorative ceiling read
@@ -162,11 +245,49 @@ export default defineTool({
             metadata.spentCents = measuredSpendCents;
             metadata.spentCentsSource = GOAL_SPEND_SNAPSHOT_SOURCE;
         }
+        // Standing drain fleet (EI-20581099901890760): omitted leaves it alone;
+        // null clears it (re-establishment under a new slug passes the new one).
+        if (args.drainFleet !== undefined) {
+            if (args.drainFleet === null)
+                delete metadata.drainFleet;
+            else
+                metadata.drainFleet = args.drainFleet;
+        }
         const legacyCriterion = typeof metadata.killCriterion === 'string' ? metadata.killCriterion : null;
         // Having migrated it into the column, drop the metadata copy: two sources
         // of truth for the one field that decides whether a goal ends is how a
         // reader ends up showing the stale one.
         delete metadata.killCriterion;
+        // ── The deliberate-pause record (P-005, D-009) ───────────────────────────
+        //
+        // Gated on an EXPLICIT `status` argument, never on the resolved value: a
+        // title edit on an already-paused goal passes no status, and clearing its
+        // pause record because `next.status` happens to be 'paused' would delete
+        // the record on every unrelated write. Same discipline as the fan-out
+        // below, which fires on the argument rather than on a transition edge.
+        //
+        // Every OTHER metadata key survives — the helpers spread rather than
+        // replace. Goal metadata carries spentCents / drainFleet / startedBy from
+        // other write paths, and a pause that dropped them would be a data-loss bug
+        // wearing an audit-trail costume.
+        let pauseMetadata = metadata;
+        if (args.status === 'paused') {
+            // `pauseReason` is non-empty here: the gate above refuses otherwise.
+            pauseMetadata = stampGoalPause(metadata, {
+                reason: pauseReason,
+                // Best-effort attribution, and it must never BLOCK a pause: an
+                // unattributable caller degrades to a marker, exactly as
+                // `routines:set`'s `pausedByFrom` degrades to its role string.
+                pausedBy: ctx.principal?.slug ?? 'unknown',
+            });
+        }
+        else if (args.status !== undefined) {
+            // Any other explicit status ends the hold — including the terminal ones.
+            // A `killed`/`achieved` goal still carrying a live `pause` record would
+            // report a hold that is over, which is the same false-premise state the
+            // record exists to prevent, inverted.
+            pauseMetadata = clearGoalPause(metadata);
+        }
         // Resolve every column in JS so "omitted" and "explicitly null" stay
         // distinguishable — a COALESCE in SQL cannot express detaching a parent,
         // and a conditional SQL fragment to work around that is worse.
@@ -189,7 +310,7 @@ export default defineTool({
                 : args.tripwires === null || args.tripwires.length === 0
                     ? null
                     : JSON.stringify(args.tripwires),
-            metadata: Object.keys(metadata).length ? JSON.stringify(metadata) : null,
+            metadata: Object.keys(pauseMetadata).length ? JSON.stringify(pauseMetadata) : null,
         };
         await ctx.tx `
       UPDATE harness_shared.goals
@@ -223,11 +344,91 @@ export default defineTool({
             if (!w.ok)
                 launchSettingsError = `launch settings NOT saved: ${w.error ?? 'unknown error'}`;
         }
+        /* HOLDER POLICY (goal-live-holder-guarantee-2026-08-18 P-003). Its own arg
+           rather than "just pass launchSettings" because the two write the document
+           differently ON PURPOSE: `launchSettings` REPLACES it, which is right when
+           the owner is editing the document as a document, and wrong for a caller
+           answering only the holder question — sending `{ holder }` through that
+           path silently drops the goal's ceilings. Since this is the door the
+           P-003 refusals name as the fix, a fix that destroys a ceiling would be
+           worse than the refusal it clears.
+    
+           AFTER the launchSettings write and in the same transaction, so passing
+           both in one call means the holder policy merges into the document just
+           written rather than into the one it replaced. */
+        let holderError = null;
+        if (args.holder !== undefined) {
+            const w = await declareGoalHolderPolicy(args.id, args.holder, ctx.tx);
+            if (!w.ok)
+                holderError = `holder policy NOT saved: ${w.error ?? 'unknown error'}`;
+        }
+        /* BLOCKED-BY (goal-dag-shared-substrate-2026-08-18 P-002). Same
+           partial-by-construction contract as every other field: omitted leaves the
+           edge set alone; null/[] clears it; a refused set (unresolvable ref,
+           cycle) degrades WITHOUT reverting the rest of the update — the failure
+           rides degradedReasons like launchSettingsError above. Runs in ctx.tx, so
+           the edges and the row commit together. */
+        let blockedByError = null;
+        let blockedByApplied = null;
+        if (args.blockedBy !== undefined) {
+            const workspaceId = await resolveGoalWorkspace({
+                tx: ctx.tx,
+                workspaceId: ctx.principal?.workspaceId,
+            });
+            if (!workspaceId) {
+                blockedByError = 'blockedBy NOT saved: no concrete workspace in scope to resolve the refs against';
+            }
+            else {
+                const applied = await applyGoalBlockedBy(ctx.tx, {
+                    workspaceId,
+                    goalId: args.id,
+                    refs: args.blockedBy ?? [],
+                    createdBy: ctx.uiClientId ?? null,
+                });
+                if (applied.ok)
+                    blockedByApplied = applied.blockers.map((b) => b.ref);
+                else
+                    blockedByError = `blockedBy NOT saved: ${applied.problem}`;
+            }
+        }
         const [row] = await ctx.tx `
-      SELECT id, title, status, parent_id, budget_cents, kill_criterion, tripwires, metadata,
-             launch_settings
+      SELECT id, workspace_id, title, body, status, parent_id, budget_cents, kill_criterion,
+             tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
+        // D-008/D-013: unrestricted self-amendment is bounded by an audit trail,
+        // not by an approval or not-self gate. Compare the persisted row before and
+        // after every write so failed subordinate writes are never logged as if
+        // they landed, and no-op calls do not manufacture fake history.
+        if (row) {
+            const changes = [];
+            addGoalFieldChange(changes, 'title', prev.title, row.title);
+            addGoalFieldChange(changes, 'body', prev.body, row.body);
+            addGoalFieldChange(changes, 'status', prev.status, row.status);
+            addGoalFieldChange(changes, 'parentId', prev.parent_id, row.parent_id);
+            addGoalFieldChange(changes, 'budgetCents', centsField(prev.budget_cents), centsField(row.budget_cents));
+            addGoalFieldChange(changes, 'killCriterion', prev.kill_criterion, row.kill_criterion);
+            addGoalFieldChange(changes, 'tripwires', jsonField(prev.tripwires), jsonField(row.tripwires));
+            addGoalFieldChange(changes, 'metadata', jsonField(prev.metadata), jsonField(row.metadata));
+            addGoalFieldChange(changes, 'launchSettings', jsonField(prev.launch_settings), jsonField(row.launch_settings));
+            if (previousBlockedBy !== null && blockedByApplied !== null) {
+                addGoalFieldChange(changes, 'blockedBy', previousBlockedBy, sortedRefs(blockedByApplied));
+            }
+            if (changes.length > 0) {
+                const callerReason = args.reason?.trim();
+                await appendGoalHistory(ctx.tx, {
+                    workspaceId: row.workspace_id,
+                    goalId: args.id,
+                    author: ctx.uiClientId ?? ctx.principal?.slug ?? ctx.role ?? 'unknown',
+                    detail: {
+                        kind: 'amendment',
+                        reason: callerReason || `goals:update changed ${changes.map((change) => change.field).join(', ')}`,
+                        reasonSource: callerReason ? 'caller' : 'generated',
+                        changes,
+                    },
+                });
+            }
+        }
         // ── The stop fan-out (EI-20013729460455061) ──────────────────────────────
         //
         // Until this existed, moving a goal to paused/killed relabelled the row and
@@ -285,6 +486,10 @@ export default defineTool({
         // would otherwise believe a limit is in force that was never written.
         if (launchSettingsError)
             degradedReasons.push(launchSettingsError);
+        if (holderError)
+            degradedReasons.push(holderError);
+        if (blockedByError)
+            degradedReasons.push(blockedByError);
         if (stopError)
             degradedReasons.push(stopError);
         if (stop?.degraded) {
@@ -310,7 +515,9 @@ export default defineTool({
             }
         }
         return {
-            data: row ? { ...row, stop } : null,
+            data: row
+                ? { ...row, stop, ...(blockedByApplied !== null ? { blocked_by: blockedByApplied } : {}) }
+                : null,
             ...(degradedReasons.length ? { degraded: true, degradedReasons } : {}),
         };
     },
