@@ -114,6 +114,25 @@ describe('WI-39922 tool-catalog pre-commit regeneration', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.[0]).toBe('status');
   });
+
+  it('does not run the papercusp-specific generator when its tracked surfaces are absent', async () => {
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') {
+        return {
+          code: 0,
+          stdout: ' M packages/operator-core/lib/agent-tools/example.ts\0',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'ls-files') return { code: 0, stdout: '', stderr: '' };
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    await regenerateToolCatalogBeforeCommit({ runGit, repoPath: '/unrelated-repo', log: () => {} }, runGenerator);
+
+    expect(runGenerator).not.toHaveBeenCalled();
+  });
 });
 
 describe('runGitSync (real git, no submodule)', () => {
