@@ -132,6 +132,10 @@ describe('renderCatalog', () => {
     expect(byFamily['fleet-drained'].awaitable_now).toBe(true); // fleet:drained:<slug> — WI-1830 LANDED (set-status plan-drain edge)
     expect(byFamily['session-compacted'].awaitable_now).toBe(true); // session:compacted:<owner> — P-103 LANDED (psu-host → emit-session-compacted CLI)
     expect(byFamily['spawn-slot'].awaitable_now).toBe(true); // spawn-slot:freed:<ws> — EI-13072: emitter has always fired (announceSpawnSlotFreed + reclaim sweep + boot reconcile); only the catalog registration was missing
+    expect(byFamily['fleet-member-stalled'].awaitable_now).toBe(true);
+    expect(byFamily['fleet-member-stalled'].key).toBe('fleet:member-stalled:<slug>');
+    expect(byFamily['fleet-admission-blocked'].awaitable_now).toBe(true);
+    expect(byFamily['fleet-admission-blocked'].key).toBe('fleet:admission-blocked:<slug>');
   });
 });
 

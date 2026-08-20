@@ -214,6 +214,8 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
       presenceDrift: { fleet: 'f', note: 'drift' },
       laneClaim: { requested: ['P-001'], claimed: ['P-001'] },
       leaderBrief: null,
+      fleetSummaries: [{ fleet: 'f', summary: { members: 2, stalled: 0 } }],
+      fleetSummariesTruncated: { total: 13, shown: 12, more: 'fleet:leader-brief' },
       ...tier4,
     };
     const out = assembleOrientOutput({

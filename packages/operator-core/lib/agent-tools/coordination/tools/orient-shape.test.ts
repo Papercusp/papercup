@@ -527,6 +527,51 @@ describe('EI-19314271768708528 leaderBrief shaping (monitor-wake fleet visibilit
   });
 });
 
+describe('EI-203907 fleetSummaries shaping', () => {
+  it('keeps bounded count-only summaries and discloses a capped fleet list', () => {
+    const summaries = Array.from({ length: 30 }, (_, i) => ({
+      fleet: `fleet-${i}`,
+      summary: {
+        members: i + 1,
+        stalled: i % 3,
+        admission_blocked: i % 4,
+        reason: 'r'.repeat(500),
+      },
+      members: Array.from({ length: 20 }, () => ({ id: 'member', blob: 'x'.repeat(500) })),
+      unavailable: i === 1,
+      reason: 'unavailable because '.repeat(40),
+    }));
+    const out = shapeOrient({ fleetSummaries: summaries }, 'trimmed') as {
+      fleetSummaries: Array<Record<string, any>>;
+      fleetSummariesTruncated?: Record<string, unknown>;
+    };
+
+    expect(out.fleetSummaries).toHaveLength(12);
+    expect(out.fleetSummariesTruncated).toMatchObject({
+      total: 30,
+      shown: 12,
+      more: 'coord:orient { mode: "monitor" } / fleet:leader-brief',
+    });
+    expect(out.fleetSummaries[0]).toMatchObject({
+      fleet: 'fleet-0',
+      summary: { members: 1, stalled: 0, admission_blocked: 0 },
+    });
+    expect(out.fleetSummaries[0].summary.reason.length).toBeLessThanOrEqual(240);
+    expect(out.fleetSummaries[1]).toMatchObject({ unavailable: true });
+    expect(out.fleetSummaries[1].reason.length).toBeLessThanOrEqual(240);
+    expect(out.fleetSummaries[0]).not.toHaveProperty('members');
+  });
+
+  it('does not invent a truncation marker for a short summary list', () => {
+    const out = shapeOrient(
+      { fleetSummaries: [{ fleet: 'fleet-a', summary: { members: 2, stalled: 0 } }] },
+      'standard',
+    ) as { fleetSummaries: unknown[]; fleetSummariesTruncated?: unknown };
+    expect(out.fleetSummaries).toEqual([{ fleet: 'fleet-a', summary: { members: 2, stalled: 0 } }]);
+    expect(out.fleetSummariesTruncated).toBeUndefined();
+  });
+});
+
 /**
  * EI-19408488769901676 — the shaper must hit its own budget so a result NEVER reaches the
  * framework's generic bounded projection (`projectBoundedPayload`), which drops whole

@@ -86,10 +86,12 @@ vi.mock('../../../events/await/store', () => ({
 // (dynamic import) — mock the read so a fleet-caller test never attempts a real
 // PG connect. Default: fleet unknown (fold absent). Pure exports stay real.
 const getFleetMock = vi.hoisted(() => vi.fn(async (): Promise<unknown> => null));
+const listFleetsLedByMock = vi.hoisted(() => vi.fn(async (): Promise<Array<{ fleetSlug: string }>> => []));
 
 vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../agent-fleets-store')>()),
   getFleet: getFleetMock,
+  listFleetsLedBy: listFleetsLedByMock,
 }));
 vi.mock('../../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../workspace-registry')>()),
@@ -110,6 +112,8 @@ beforeEach(() => {
   writeWatermarkMock.mockClear();
   listActiveAnnouncementsMock.mockResolvedValue([]);
   getFleetMock.mockResolvedValue(null);
+  listFleetsLedByMock.mockClear();
+  listFleetsLedByMock.mockResolvedValue([]);
 });
 
 describe('coord:orient args', () => {
@@ -1242,6 +1246,118 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       );
       expect(r.ok).toBe(true);
       expect(r.leaderBrief).toBeNull();
+    });
+
+    describe('EI-203907 all-led fleetSummaries fold', () => {
+      const leaderMembership = { fleetSlug: 'p2p-git', fleetRole: 'leader' };
+
+      it('passes the detailed home brief to the summary fold on a monitor tick', async () => {
+        const { call } = fakeCall({
+          ...CORE,
+          'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
+        });
+        const fleetSummariesFold = vi.fn(async (homeFleet: string, homeBrief: unknown) => [
+          { fleet: homeFleet, summary: (homeBrief as { summary: unknown }).summary },
+          { fleet: 'android', summary: { members: 4, stalled: 1, admission_blocked: 2 } },
+        ]);
+
+        const r = await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          leaderMembership,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          fleetSummariesFold,
+        );
+
+        expect(fleetSummariesFold).toHaveBeenCalledWith('p2p-git', expect.objectContaining({ summary: LEADER_BRIEF_RESULT.summary }));
+        expect(r.fleetSummaries).toEqual([
+          { fleet: 'p2p-git', summary: LEADER_BRIEF_RESULT.summary },
+          { fleet: 'android', summary: { members: 4, stalled: 1, admission_blocked: 2 } },
+        ]);
+      });
+
+      it('runs the summary fold on afterCompaction recovery but not an ordinary full orient', async () => {
+        const fold = vi.fn(async () => []);
+        const ordinary = await composeOrient(
+          {},
+          fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT }).call,
+          'leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          leaderMembership,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          fold,
+        );
+        expect(ordinary.fleetSummaries).toBeUndefined();
+        expect(fold).not.toHaveBeenCalled();
+
+        const recovered = await composeOrient(
+          { afterCompaction: true },
+          fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT }).call,
+          'leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          leaderMembership,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          fold,
+        );
+        expect(recovered.fleetSummaries).toEqual([]);
+        expect(fold).toHaveBeenCalledTimes(1);
+      });
+
+      it('keeps a failed all-led summary read explicit without breaking orientation', async () => {
+        const { call } = fakeCall({ ...CORE, 'fleet:leader-brief': () => LEADER_BRIEF_RESULT });
+        const fleetSummariesFold = vi.fn(async () => {
+          throw new Error('registry unavailable');
+        });
+        const r = await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          leaderMembership,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          fleetSummariesFold,
+        );
+        expect(r.ok).toBe(true);
+        expect(r.fleetSummaries).toBeNull();
+      });
     });
 
     // ── EI-18731216945970087: presence/registry leadership DRIFT ──
