@@ -1257,7 +1257,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
           'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
         });
         const fleetSummariesFold = vi.fn(async (homeFleet: string, homeBrief: unknown) => [
-          { fleet: homeFleet, summary: (homeBrief as { summary: unknown }).summary },
+          {
+            fleet: homeFleet,
+            summary: (homeBrief as { summary: Record<string, unknown> | null }).summary,
+          },
           { fleet: 'android', summary: { members: 4, stalled: 1, admission_blocked: 2 } },
         ]);
 
