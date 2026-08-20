@@ -266,6 +266,30 @@ describe('deriveColumn — precedence', () => {
     expect(v.reason).toContain('work-item:done:WI-5779');
   });
 
+  it('does not block an ended session on a stale real-gate await', () => {
+    // openAwaitsByOwner joins awaits by owner id for every presence row. The
+    // liveness oracle is authoritative for whether that owner can still be
+    // parked on the gate; an ended session's leftover await is not a live block.
+    const v = deriveColumn(
+      entry({
+        sessionState: 'ended',
+        liveness: 'live',
+        lastActiveAt: iso(2 * 60 * 60_000),
+        intentDeclaredAt: iso(2 * 60 * 60_000),
+        openAwait: {
+          eventKey: 'fleet:release-gate:suite-green',
+          note: 'waiting for the suite verdict',
+          sinceIso: iso(60 * 60_000),
+          expiresIso: null,
+        },
+      }),
+      undefined,
+      OPTS,
+    );
+    expect(v.column).toBe('parked');
+    expect(v.reason).toBe('No heartbeat — session has ended');
+  });
+
   it('blocked OUTRANKS stalled — a gated agent is behaving correctly, not stuck', () => {
     // This entry satisfies every stall predicate: no activity for an hour and an
     // intent two hours old. It is still Blocked, because it is *waiting on

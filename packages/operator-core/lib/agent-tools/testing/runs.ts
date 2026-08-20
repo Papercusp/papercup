@@ -66,11 +66,14 @@ export function isSaturationSuspect(loopLagP95Ms: number | null): boolean {
   return loopLagP95Ms !== null && loopLagP95Ms >= CRITICAL_P95_MS;
 }
 
-/** file_path is matched as a SUBSTRING — the corpus overwhelmingly reaches for
- *  `LIKE '%release-submodule-freshness%'`, a memorable fragment of a long path,
- *  not the exact worktree-relative path. */
+/** file_path is matched as a literal SUBSTRING — the corpus overwhelmingly
+ *  reaches for `LIKE '%release-submodule-freshness%'`, a memorable fragment of
+ *  a long path, not the exact worktree-relative path. Escape LIKE metacharacters
+ *  first so ordinary path names such as `__tests__` cannot become an anchored
+ *  wildcard pattern and produce a false absence. */
 export function toPathPattern(filePath: string): string {
-  return /[%_]/.test(filePath) ? filePath : `%${filePath}%`;
+  const escaped = filePath.replace(/[\\%_]/g, (character) => `\\${character}`);
+  return `%${escaped}%`;
 }
 
 /** commit_sha is matched as a PREFIX — agents quote a short sha
@@ -127,7 +130,7 @@ export default defineTool({
       .string()
       .max(400)
       .optional()
-      .describe('Match test file path as a SUBSTRING (a memorable fragment is fine); %/_ honoured as a LIKE pattern.'),
+      .describe('Match test file path as a literal SUBSTRING (a memorable fragment is fine); LIKE metacharacters are treated literally.'),
     commitSha: z.string().max(80).optional().describe('Match commit sha as a PREFIX — a short sha works.'),
     runGroup: z.string().max(200).optional().describe('Exact run_group_id (one suite execution).'),
     status: z
@@ -192,7 +195,7 @@ export default defineTool({
     const latestPerFile = args.latestPerFile ?? args.filePath === undefined;
 
     const where = sql`
-       WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike})
+       WHERE (${pathLike}::text IS NULL OR file_path ILIKE ${pathLike} ESCAPE '\\')
          AND (${shaLike}::text IS NULL OR commit_sha ILIKE ${shaLike})
          AND (${runGroup}::text IS NULL OR run_group_id = ${runGroup})
          AND (${source}::text IS NULL OR source = ${source})

@@ -293,7 +293,7 @@ describe("buildServiceHealthDiagnostic", () => {
         healthy: false,
       },
     ];
-    const out = buildServiceHealthDiagnostic([{ name: "operator", up: true }], supervision);
+    const out = buildServiceHealthDiagnostic([{ name: "operator", up: true, status: null, latencyMs: 1 }], supervision);
 
     expect(out.effective.supervisionUnhealthy).toBe(1);
     expect(out.evidence.unhealthySupervision).toEqual(supervision);

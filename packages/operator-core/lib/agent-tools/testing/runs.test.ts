@@ -35,8 +35,13 @@ describe('toPathPattern', () => {
     expect(toPathPattern('release-submodule-freshness')).toBe('%release-submodule-freshness%');
   });
 
-  it('honours an explicit pattern verbatim', () => {
-    expect(toPathPattern('packages/%/lib/x.test.ts')).toBe('packages/%/lib/x.test.ts');
+  it('escapes LIKE metacharacters while keeping the fragment a substring', () => {
+    expect(toPathPattern('sync/hyperbee/__tests__')).toBe('%sync/hyperbee/\\_\\_tests\\_\\_%');
+    expect(toPathPattern('packages/%/lib/x.test.ts')).toBe('%packages/\\%/lib/x.test.ts%');
+  });
+
+  it('escapes a literal backslash before wrapping', () => {
+    expect(toPathPattern('dir\\name%part')).toBe('%dir\\\\name\\%part%');
   });
 });
 
@@ -121,6 +126,34 @@ describe('testing:runs rollup source isolation', () => {
     expect(queryText).toContain('DISTINCT ON (');
     expect(queryText).toContain('latest_rows');
     expect(data).toMatchObject({ latestPerFile: true, groups: [{ failed: 0, failedFiles: 0 }] });
+  });
+});
+
+describe('testing:runs filePath matching', () => {
+  const filePathSqlCalls: Array<{ strings: string[]; values: unknown[] }> = [];
+
+  it('uses the escaped literal substring pattern and declares its LIKE escape character', async () => {
+    filePathSqlCalls.length = 0;
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      filePathSqlCalls.push(call);
+      // The handler only needs an empty result for this SQL-construction test;
+      // the nested `where` fragment remains available for inspection below.
+      if (call.strings.some((part) => part.includes('WITH filtered'))) return Promise.resolve([]);
+      return call;
+    });
+
+    await runsTool.handler({ filePath: 'sync/hyperbee/__tests__', limit: 1 } as never, {} as never);
+
+    const whereCall = filePathSqlCalls.find((call) => call.strings.some((part) => part.includes('file_path ILIKE')));
+    expect(whereCall).toBeDefined();
+    expect(whereCall?.values).toContain('%sync/hyperbee/\\_\\_tests\\_\\_%');
+    expect(renderSqlFragment({ strings: whereCall?.strings ?? [], args: whereCall?.values ?? [] })).toContain(
+      "file_path ILIKE ",
+    );
+    expect(renderSqlFragment({ strings: whereCall?.strings ?? [], args: whereCall?.values ?? [] })).toContain(
+      "ESCAPE '\\'",
+    );
   });
 });
 

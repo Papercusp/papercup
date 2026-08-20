@@ -139,6 +139,27 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('REFUSES a mutation that changes only whitespace and does not run the mutant guard', () => {
+    const phases = join(dir, 'phases.log');
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      // This applies, but only adds indentation; the non-whitespace content
+      // is identical and the subject's behavior is unchanged.
+      '--mutate',
+      's/^/ /',
+      '--test',
+      `printf '%s\\n' "$PAPERCUSP_MUTATION_PHASE" >> "${phases}"; grep -q beta {}`,
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/mutation diff/i);
+    expect(out).toMatch(/ONLY WHITESPACE/i);
+    // The baseline establishes the harness; the semantic-no-op refusal must
+    // happen before the mutant guard is launched.
+    expect(readFileSync(phases, 'utf8')).toBe('baseline\n');
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('explains the PERL-metacharacter cause when an unescaped source mutation matches nothing', () => {
     // EI-19460105590596381. --mutate is applied with `perl -pi -e`, so on the PATTERN side
     // ( ) { } are regex metacharacters. That bites hardest on this script's normal use —

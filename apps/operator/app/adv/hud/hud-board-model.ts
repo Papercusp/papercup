@@ -1168,8 +1168,10 @@ export function deriveColumn(
   // 2. Blocked — parked on a REAL gate, and we know which one. An
   //    infrastructure await (the always-armed inbox wake every agent holds) is
   //    explicitly not a block: see isInfrastructureAwait for why counting it
-  //    would have swallowed ~93% of the roster.
-  if (e.openAwait && !isInfrastructureAwait(e.openAwait)) {
+  //    would have swallowed ~93% of the roster. An ended session cannot still
+  //    be parked on a gate; its owner-scoped await can outlive the liveness
+  //    verdict, so do not let that stale enrichment resurrect a Blocked card.
+  if (e.openAwait && e.sessionState !== 'ended' && !isInfrastructureAwait(e.openAwait)) {
     const waited = ageSec(e.openAwait.sinceIso, nowMs);
     return {
       column: 'blocked',
@@ -1249,10 +1251,10 @@ export function deriveColumn(
   return {
     column: 'parked',
     reason:
-      e.liveness === 'pending'
-        ? 'Recorded — has not started yet'
-        : e.liveness === 'stale'
-          ? 'No heartbeat — session has ended'
+      e.sessionState === 'ended' || e.liveness === 'stale'
+        ? 'No heartbeat — session has ended'
+        : e.liveness === 'pending'
+          ? 'Recorded — has not started yet'
           : 'Idle between turns',
     sinceSec: sinceActivity,
   };

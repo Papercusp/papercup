@@ -122,7 +122,8 @@
 # EXIT CODES
 #   0  the probe reached its expected verdict (default: the mutant was CAUGHT)
 #   1  the probe reached the opposite verdict — your guard is weaker than you think
-#   2  misuse / the probe could not be run soundly (e.g. a no-op mutation,
+#   2  misuse / the probe could not be run soundly (e.g. a no-op or
+#      whitespace-only mutation,
 #      a failing baseline, or a harness error while running the mutant)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
 #
@@ -286,12 +287,20 @@ readonly SCRATCH
 BASE="$SCRATCH/$(basename "$FILE").orig"
 cp "$FILE" "$BASE" || die "could not snapshot $FILE"
 
+# Keep a whitespace-normalized snapshot as well. A mis-escaped expression can
+# change bytes without changing any non-whitespace token (for example, by
+# deleting one leading space from every shell line), which would otherwise
+# produce a false "MUTANT SURVIVED" verdict about a mutation that did not test
+# the intended guard behavior. Refuse that conservative case below.
+BASE_NON_WHITESPACE="$SCRATCH/$(basename "$FILE").orig.non-whitespace"
+tr -d '[:space:]' < "$BASE" > "$BASE_NON_WHITESPACE" || die "could not normalize the probe baseline"
+
 # The ORIGINAL bytes, captured before anything is touched. Every integrity
 # claim this script makes is decided against this, never against `git status`
 # (on a swept tree a clean status means the sweep ran, not that the file is
 # unmodified — CLAUDE.md documents this at length).
 ORIG_SUM="$(git hash-object "$FILE")"
-readonly BASE ORIG_SUM
+readonly BASE BASE_NON_WHITESPACE ORIG_SUM
 
 # ---------------------------------------------------------------------------
 # Restore + integrity verification. In copy-out mode this only has to PROVE
@@ -316,7 +325,7 @@ kill_tree() {
   kill -TERM "$pid" 2>/dev/null || true
 }
 finish() {
-  local rc=$?
+  local rc="${1:-$?}"
   # Disarm FIRST: without this the handler runs twice (once for TERM, once for
   # the EXIT that TERM causes) and prints its verdict twice.
   trap - EXIT INT TERM
@@ -356,7 +365,9 @@ finish() {
   rm -rf "$SCRATCH"
   exit $rc
 }
-trap finish EXIT INT TERM
+trap 'finish "$?"' EXIT
+trap 'finish 130' INT
+trap 'finish 143' TERM
 
 # ---------------------------------------------------------------------------
 # Destructive-subject gate (EI-20566003853444873, the 2026-08-15 incident).
@@ -521,8 +532,18 @@ if ! perl -Mstrict -pe "$MUTATE" "$SCRATCH/strict-check" >/dev/null 2>"$SCRATCH/
       the replacement side too: s/match/\\\$name/. Special vars (\$1, \$&) are fine."
 fi
 
+MUTANT_NON_WHITESPACE="$SCRATCH/$(basename "$FILE").mutant.non-whitespace"
+readonly MUTANT_NON_WHITESPACE
+
 # --- apply the mutation -----------------------------------------------------
 perl -pi -e "$MUTATE" "$TARGET" || die "mutation command failed"
+
+# Show the exact mutation before running the guard. This makes an accidental
+# match in indentation/comments visible immediately instead of being inferred
+# from a misleading falsifiability verdict. diff returns 1 for a real diff,
+# so its nonzero status is intentionally ignored.
+log "mutation diff (first 40 lines):"
+diff -u -- "$BASE" "$TARGET" | sed -n '1,40p' || true
 
 # A mutation that matched NOTHING is the quiet killer of this whole technique:
 # the "mutant" is identical to the original, so the guard passes, and the
@@ -543,6 +564,19 @@ if cmp -s "$TARGET" "$BASE"; then
           RIGHT:  's|if \(x > 0\) \{|if (false) {|'
 
       Only the PATTERN (left) side needs escaping — the replacement is literal."
+fi
+
+# A mutation that changes only whitespace is just as unsound as a byte-identical
+# mutation for falsifiability: it can leave the subject's behavior unchanged
+# while making a guard appear weak. Keep this check language-agnostic and
+# conservative; callers must choose a mutation that changes a non-whitespace
+# token before the guard is scored.
+tr -d '[:space:]' < "$TARGET" > "$MUTANT_NON_WHITESPACE" || die "could not normalize the mutant"
+if cmp -s "$MUTANT_NON_WHITESPACE" "$BASE_NON_WHITESPACE"; then
+  die "the --mutate expression changed ONLY WHITESPACE (non-whitespace content is unchanged).
+      A whitespace-only mutation can leave behavior unchanged and make any guard
+      look weak. Inspect the mutation diff above, then fix the expression so it
+      changes the intended non-whitespace token and re-run."
 fi
 # Keep the DIRTY window free of command substitutions. A SIGTERM that landed
 # inside the old nested hash-object substitutions could make Bash abort trap
