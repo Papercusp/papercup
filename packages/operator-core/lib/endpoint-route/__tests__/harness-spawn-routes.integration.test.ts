@@ -525,8 +525,8 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
       PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
-    // 3rd arg = AdvSessionEndedBy; spawn.ts ends its own child, so 'self'.
-    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self');
+    // The route records both disposition and the explicit no-signal evidence.
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self', { signal: null });
   });
 
   it('tracks hive launches when the resolved backend supports forced native session ids', async () => {
@@ -546,8 +546,8 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       PAPERCUSP_NATIVE_SESSION_ID: expect.stringMatching(/[0-9a-f-]{36}/),
       PAPERCUSP_SPAWN_ID: expect.stringMatching(/^s-\d+-[0-9a-f]+$/),
     });
-    // 3rd arg = AdvSessionEndedBy; spawn.ts ends its own child, so 'self'.
-    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self');
+    // The route records both disposition and the explicit no-signal evidence.
+    expect(markAdvSessionEnded).toHaveBeenCalledWith(77, 0, 'self', { signal: null });
   });
 
   it('seeds a coord_presence row for a tracked launch so the mug/kettle turn is roster-visible (owner pane-visibility)', async () => {
