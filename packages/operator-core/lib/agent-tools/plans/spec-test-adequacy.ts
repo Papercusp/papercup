@@ -107,9 +107,36 @@ const FAILURE_OUTCOMES = new Set(['fail', 'failed', 'error', 'timed-out', 'timeo
 
 function detailsOf(evidence: SpecEvidenceForAdequacy): AdequacyDetails {
   const nested = evidence.details.adequacy;
-  return nested && typeof nested === 'object' && !Array.isArray(nested)
-    ? (nested as AdequacyDetails)
-    : {};
+  if (!nested || typeof nested !== 'object' || Array.isArray(nested)) return {};
+  const raw = nested as Record<string, unknown>;
+  const bool = (key: string): boolean | undefined =>
+    typeof raw[key] === 'boolean' ? (raw[key] as boolean) : undefined;
+  const coverageRaw = raw.coverageRungs;
+  const coverage =
+    coverageRaw && typeof coverageRaw === 'object' && !Array.isArray(coverageRaw)
+      ? (coverageRaw as Record<string, unknown>)
+      : null;
+  return {
+    ...(bool('fixtureCalibrated') !== undefined ? { fixtureCalibrated: bool('fixtureCalibrated') } : {}),
+    ...(bool('falsifiable') !== undefined ? { falsifiable: bool('falsifiable') } : {}),
+    ...(typeof raw.testLayer === 'string' ? { testLayer: raw.testLayer } : {}),
+    ...(bool('pathReachable') !== undefined ? { pathReachable: bool('pathReachable') } : {}),
+    ...(bool('oracleIndependent') !== undefined ? { oracleIndependent: bool('oracleIndependent') } : {}),
+    ...(bool('collected') !== undefined ? { collected: bool('collected') } : {}),
+    ...(bool('skipped') !== undefined ? { skipped: bool('skipped') } : {}),
+    ...(bool('executed') !== undefined ? { executed: bool('executed') } : {}),
+    ...(typeof raw.outcome === 'string' ? { outcome: raw.outcome } : {}),
+    ...(bool('targeted') !== undefined ? { targeted: bool('targeted') } : {}),
+    ...(coverage
+      ? {
+          coverageRungs: Object.fromEntries(
+            ['l1', 'l2', 'l3', 'l4']
+              .filter((key) => typeof coverage[key] === 'boolean')
+              .map((key) => [key, coverage[key]]),
+          ) as AdequacyDetails['coverageRungs'],
+        }
+      : {}),
+  };
 }
 
 function normalizedLayer(value: string): string {

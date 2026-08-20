@@ -218,4 +218,25 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     expect(result.ratings.traceability.rating).toBe('fail');
     expect(result.evidenceRefs).toEqual([]);
   });
+
+  it('treats malformed untyped binding details as unknown instead of throwing or passing', () => {
+    const malformed = evidence({
+      details: {
+        adequacy: {
+          outcome: 42,
+          collected: 'yes',
+          skipped: 0,
+          coverageRungs: { l3: 'true' },
+        },
+      },
+    });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [malformed],
+      classRef: 'plan-class-feature-ship',
+    });
+    expect(result.ratings['execution-integrity'].rating).toBe('unknown');
+    expect(result.ratings['plan-class-risk-floor'].rating).toBe('unknown');
+    expect(result.verdict).not.toBe('pass');
+  });
 });
