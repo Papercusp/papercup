@@ -3032,7 +3032,8 @@ async function readSharedSystemHealth(ws: string): Promise<SystemHealth | null> 
  *   - a tick host (bg workers on) refreshes LOCALLY via `runSystemHealthTick`;
  *   - a reader host re-reads the SHARED snapshot the tick writes, so it never runs
  *     the ~15-collector aggregation on its own event loop (the P-001 fix).
- * A cold cache tries the shared snapshot before a blocking recompute.
+ * A cold cache tries the shared snapshot first; only a tick host may fall back
+ * to a blocking recompute when that snapshot is absent.
  */
 export async function resolveSystemHealth(
   ws: string,
