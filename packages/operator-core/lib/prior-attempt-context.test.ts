@@ -1,0 +1,75 @@
+import { describe, expect, it } from 'vitest';
+import { compilePriorAttempts, type PriorAttemptSource } from './prior-attempt-context';
+
+function source(overrides: Partial<PriorAttemptSource> = {}): PriorAttemptSource {
+  return {
+    scope: 'plan-wide',
+    authority: 'comment',
+    rawRef: 'WI-1#comment:1',
+    at: '2026-08-20T12:00:00.000Z',
+    text: 'Tried the first approach.',
+    ...overrides,
+  };
+}
+
+describe('compilePriorAttempts', () => {
+  it('orders scope before authority and canonical authority before semantic prose', () => {
+    const result = compilePriorAttempts([
+      source({ rawRef: 'plan#D-001', authority: 'plan-decision', text: 'Plan-wide ruling.' }),
+      source({ rawRef: 'WI-2#comment:1', scope: 'same-spec', text: 'Same-spec comment.' }),
+      source({ rawRef: 'WI-2#checkpoint', scope: 'same-spec', authority: 'checkpoint', text: 'Checkpoint.' }),
+      source({ rawRef: 'WI-2#comment:2', scope: 'same-spec', authority: 'retraction', text: 'False premise: helper was absent.' }),
+      source({ rawRef: 'plan#SPEC-1@2', scope: 'same-spec', authority: 'current-spec', text: 'Current behavior.' }),
+      source({ rawRef: 'WI-3#completion', scope: 'same-plan-item', authority: 'verified-completion', text: 'Passed.' }),
+    ]);
+    expect(result.records.map((record) => record.rawRef)).toEqual([
+      'plan#SPEC-1@2',
+      'WI-2#comment:2',
+      'WI-2#checkpoint',
+      'WI-2#comment:1',
+      'WI-3#completion',
+      'plan#D-001',
+    ]);
+  });
+
+  it('keeps the newest/richer duplicate raw authority ref exactly once', () => {
+    const result = compilePriorAttempts([
+      source({ text: 'old', at: '2026-08-20T10:00:00Z' }),
+      source({ text: 'new and richer', at: '2026-08-20T11:00:00Z' }),
+    ]);
+    expect(result.records).toHaveLength(1);
+    expect(result.records[0]?.text).toBe('new and richer');
+    expect(result.deduplicatedCount).toBe(1);
+  });
+
+  it('normalizes root cause, retraction, files, tests, and residue without inventing absent fields', () => {
+    const result = compilePriorAttempts([
+      source({
+        authority: 'retraction',
+        text: [
+          'Approach: changed packages/operator-core/lib/foo.ts.',
+          'Root cause: caller discarded the revision.',
+          'False premise: there was no existing reader.',
+          'Tests: npm run test:file -- packages/operator-core/lib/foo.test.ts',
+          'Residue: migration verification remains.',
+        ].join('\n'),
+      }),
+    ]);
+    const record = result.records[0]!;
+    expect(record.rootCauses).toEqual(['caller discarded the revision.']);
+    expect(record.falsePremises).toEqual(['there was no existing reader.']);
+    expect(record.touchedFiles).toEqual(expect.arrayContaining([
+      'packages/operator-core/lib/foo.ts',
+      'packages/operator-core/lib/foo.test.ts',
+    ]));
+    expect(record.tests.join(' ')).toContain('npm run test:file');
+    expect(record.residue).toEqual(['migration verification remains.']);
+    expect(record.outcome).toBeNull();
+  });
+
+  it('uses deterministic fingerprints independent of caller input order', () => {
+    const a = source({ rawRef: 'a', scope: 'same-spec', text: 'A' });
+    const b = source({ rawRef: 'b', authority: 'checkpoint', text: 'B' });
+    expect(compilePriorAttempts([a, b]).fingerprint).toBe(compilePriorAttempts([b, a]).fingerprint);
+  });
+});
