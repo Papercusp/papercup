@@ -684,7 +684,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"');
     expect(physicalProbe).toContain('git -C "$REPO_ROOT" archive --format=tar HEAD');
     expect(physicalProbe).toContain(
-      'packages libs/generic scripts package.json tsconfig.base.json',
+      'packages libs scripts package.json tsconfig.base.json',
     );
     expect(physicalProbe).not.toContain(
       'packages/operator-core libs/generic scripts package.json tsconfig.base.json',
@@ -708,15 +708,11 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     // naming the missing path instead of downstream on the rig.
     expect(physicalProbe).toContain('staged submodule tree contains NO FILES on the VM');
     expect(physicalProbe).toContain('required submodule is not initialised on the tower');
-    // WI-39361 — the overlay must scan `libs` ITSELF, not only `libs/generic`.
-    // libs/papercusp-shared, libs/papercusp-db, libs/agent-chat, libs/testing-shell
-    // and libs/test-config live at that top level and are direct operator-core
-    // dependencies; without this base they can never win over the installed
-    // bundle's stale symlink, however fresh the staged copy is.
-    expect(physicalProbe).toContain("path.join(runRoot, 'libs'),");
-    expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'generic')");
-    expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'libs')");
-    expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'packages')");
+    // The overlay must derive from the root workspace registry, not a directory
+    // hand-list that misses top-level or nested workspaces.
+    expect(physicalProbe).toContain('const workspacePatterns = Array.isArray(rootManifest.workspaces)');
+    expect(physicalProbe).toContain('fs.globSync(pattern');
+    expect(physicalProbe).toContain('root package.json has no workspace registry');
     expect(physicalProbe).toContain('entry.isDirectory() || entry.isSymbolicLink()');
     expect(physicalProbe).toContain("fs.symlinkSync(packageRoot, target, 'dir')");
     // EI-20963370585400416 — staging all `packages` fixes today's omitted
