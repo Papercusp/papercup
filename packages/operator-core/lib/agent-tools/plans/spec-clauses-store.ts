@@ -1,6 +1,7 @@
 /** Canonical first-class plan spec clause storage (P-002 / D-001..D-003). */
 import { createHash } from 'node:crypto';
 import { withWorkspace } from '@papercusp/db-org';
+import { pgTimestampToIso, pgTimestampToIsoOrNull } from '../../pg-timestamp';
 import { resolvePlanScope } from './source';
 
 export const SPEC_BEHAVIOR_CLASSES = [
@@ -347,9 +348,9 @@ interface RevisionRow {
   exemption: Record<string, unknown> | null;
   content_hash: string;
   created_by: string;
-  created_at: Date;
+  created_at: Date | string;
   accepted_by: string | null;
-  accepted_at: Date | null;
+  accepted_at: Date | string | null;
   acceptance_ref: string | null;
 }
 
@@ -417,9 +418,9 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
       exemption: r.exemption,
       contentHash: r.content_hash,
       createdBy: r.created_by,
-      createdAt: r.created_at.toISOString(),
+      createdAt: pgTimestampToIso(r.created_at),
       acceptedBy: r.accepted_by,
-      acceptedAt: r.accepted_at?.toISOString() ?? null,
+      acceptedAt: pgTimestampToIsoOrNull(r.accepted_at),
       acceptanceRef: r.acceptance_ref,
     }));
 }

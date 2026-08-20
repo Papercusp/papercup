@@ -191,6 +191,51 @@ describe('first-class plan spec clauses', () => {
     });
   });
 
+  it('normalizes production-shaped Postgres text timestamps at the spec-store boundary', async () => {
+    const priorSql = h.sql;
+    const fakeTx = vi.fn(async () => [
+      {
+        plan_slug: 'reconnect-plan',
+        spec_id: 'SPEC-003-01',
+        source_val_id: 'VAL-003-01',
+        current_revision: 1,
+        revision: 1,
+        plan_item_id: 'P-003',
+        behavior: 'Acknowledged event 42 is not replayed after reconnect.',
+        behavior_class: 'concurrency',
+        required_evidence: ['integration replay trace'],
+        required_test_layers: ['integration'],
+        mutation_required: true,
+        lifecycle_status: 'active',
+        supersedes_spec_id: null,
+        supersedes_revision: null,
+        exemption: null,
+        content_hash: 'sha256:spec-v1',
+        created_by: 'su-spec-integration',
+        created_at: '2026-08-20 11:59:00.123456-04',
+        accepted_by: 'su-spec-integration',
+        accepted_at: '2026-08-20 12:00:00-04',
+        acceptance_ref: 'D-003',
+      },
+    ]) as unknown as postgres.Sql;
+    h.sql = {
+      begin: async <T>(fn: (tx: postgres.Sql) => Promise<T>) => fn(fakeTx),
+    } as unknown as postgres.Sql;
+
+    try {
+      const rows = await store.listSpecClauses({
+        harnessSlug: HARNESS,
+        planSlug: 'reconnect-plan',
+      });
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.createdAt).toBe('2026-08-20T15:59:00.123Z');
+      expect(rows[0]?.acceptedAt).toBe('2026-08-20T16:00:00.000Z');
+    } finally {
+      h.sql = priorSql;
+    }
+  });
+
   it('supports deterministic no-op, revision append, exact reads, and one-winner concurrent CAS', async () => {
     const first = clause();
     expect(await store.setSpecClause(first)).toMatchObject({ status: 'created', revision: 1 });
