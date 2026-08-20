@@ -16,6 +16,7 @@ import {
   classifyCodexLine,
   textFromContent,
 } from './session-ingest';
+import { OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
 
 describe('textFromContent', () => {
   it('passes strings through and joins text-ish parts', () => {
@@ -65,6 +66,33 @@ describe('parseClaudeLine', () => {
     expect(t?.speaker).toBe('assistant');
     expect(t?.text).toBe('The root cause is the provenance stamp.');
     expect(t?.text).not.toContain('secret reasoning');
+  });
+
+  it('promotes only AskUserQuestion answers from tool_result carriers into searchable user turns', () => {
+    const answer = 'The user answered: "Which route?"="Use the visible fleet". Read the answers carefully.';
+    const promoted = parseClaudeLine(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_ask', content: answer }],
+        },
+      }),
+    );
+    expect(promoted).toMatchObject({ speaker: 'user' });
+    expect(promoted?.text).toBe(`${OWNER_DIALOG_TURN_MARKER}\n${answer}`);
+    expect(promoted?.text).toContain('Use the visible fleet');
+
+    const ordinary = parseClaudeLine(
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: [{ type: 'tool_result', tool_use_id: 'toolu_bash', content: 'command output' }],
+        },
+      }),
+    );
+    expect(ordinary).toBeNull();
   });
 
   it('returns null for non-turn lines (queue-operation / summary / system)', () => {

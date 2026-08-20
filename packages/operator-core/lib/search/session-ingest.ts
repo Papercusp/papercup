@@ -51,7 +51,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
-import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
+import { classifyRecordedTurn, OWNER_DIALOG_TURN_MARKER } from '../turn-provenance/turn-ref';
 import {
   MACHINE_SURFACE_CATALOGUE_VERSION,
   CLASSIFY_HEAD_CHARS,
@@ -283,7 +283,24 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
   if (!message) return null;
   const speaker = message.role === 'user' ? 'user' : message.role === 'assistant' ? 'assistant' : null;
   if (!speaker) return null;
-  const text = cleanTurnText(textFromContent(message.content));
+  let rawText = textFromContent(message.content);
+  // EI-20772173866687919: AskUserQuestion answers are owner speech delivered
+  // inside a synthetic `tool_result` user line. General tool results are a
+  // 218 MB/week corpus and deliberately stay out of session_turns; promote
+  // only Claude's stable owner-dialog result shape so sessions:search can find
+  // the decision without flooding recall with tool output.
+  if (!rawText && Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (!block || typeof block !== 'object') continue;
+      const part = block as { type?: string; content?: unknown };
+      if (part.type !== 'tool_result') continue;
+      const payload = partPayloadText(part.content).trim();
+      if (!payload.startsWith('The user answered:')) continue;
+      rawText = `${OWNER_DIALOG_TURN_MARKER}\n${payload}`;
+      break;
+    }
+  }
+  const text = cleanTurnText(rawText);
   if (!text) return null;
   return {
     ts: parseTs(obj.timestamp),

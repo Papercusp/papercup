@@ -124,9 +124,20 @@ export function quoteMatchesTurn(quote: string, turnText: string): boolean {
 
 export type RecordedTurnVerdict =
   | 'owner-typed'
+  | 'owner-dialog'
   | 'agent-injected'
   | 'machine-surface'
   | 'synthetic';
+
+/**
+ * Durable marker for an owner answer returned by Claude Code's
+ * AskUserQuestion dialog. The answer arrives in a `tool_result` carrier rather
+ * than a normal user-text turn, so session ingest promotes only that narrow
+ * shape into the recall corpus and stamps this marker before the display text.
+ * Keeping a distinct verdict avoids reviving the unsafe generic
+ * `owner-typed` residual for file-backed CLI transcripts.
+ */
+export const OWNER_DIALOG_TURN_MARKER = '⟦owner-dialog-answer⟧';
 
 export interface RecordedTurnClass {
   verdict: RecordedTurnVerdict;
@@ -157,6 +168,9 @@ export function classifyRecordedTurn(text: string): RecordedTurnClass {
   const env = parseEnvelope(text);
   if (env) return { verdict: 'agent-injected', origin: env.origin };
   const t = text ?? '';
+  if (t.trimStart().startsWith(OWNER_DIALOG_TURN_MARKER)) {
+    return { verdict: 'owner-dialog', origin: null };
+  }
   // Both predicates apply the head bound themselves — see
   // CLASSIFY_HEAD_CHARS in ./machine-surface-catalogue.
   if (hasSyntheticMarker(t)) return { verdict: 'synthetic', origin: null };

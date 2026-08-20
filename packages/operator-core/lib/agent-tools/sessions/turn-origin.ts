@@ -140,6 +140,7 @@ export function classifyHitTurnOrigin(
     case 'synthetic':
       return { verdict, origin, note: MACHINE_SURFACE_NOTE };
     case 'owner-typed':
+    case 'owner-dialog':
       return { verdict, origin };
   }
 }

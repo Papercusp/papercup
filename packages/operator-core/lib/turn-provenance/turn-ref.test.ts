@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   classifyRecordedTurn,
+  OWNER_DIALOG_TURN_MARKER,
   formatTurnRef,
   parseTurnRefs,
   parseUserTurns,
@@ -88,6 +89,12 @@ describe('classifyRecordedTurn', () => {
   it('an enrolled-injector envelope is decisive: agent-injected, origin extracted', () => {
     const r = classifyRecordedTurn('⟦turn-origin:wake-pump nonce:a1b2c3d4e5f60718⟧\ndo the thing');
     expect(r).toEqual({ verdict: 'agent-injected', origin: 'wake-pump' });
+  });
+
+  it('classifies a promoted AskUserQuestion result as owner-dialog, not generic owner-typed', () => {
+    expect(
+      classifyRecordedTurn(`${OWNER_DIALOG_TURN_MARKER}\nThe user answered: "Ship?"="yes".`),
+    ).toEqual({ verdict: 'owner-dialog', origin: null });
   });
 
   it('system-notification banners and compaction continuations are machine-surface', () => {

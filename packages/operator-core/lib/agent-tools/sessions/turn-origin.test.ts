@@ -21,6 +21,7 @@ import {
   turnOriginKey,
   unknownTurnOrigin,
 } from './turn-origin';
+import { OWNER_DIALOG_TURN_MARKER } from '../../turn-provenance/turn-ref';
 
 const NONCE = 'b95e490f98516e92';
 const envelope = (origin: string) => `⟦turn-origin:${origin} nonce:${NONCE}⟧`;
@@ -62,6 +63,14 @@ describe('classifyHitTurnOrigin — the false-confirmation cases', () => {
     // Property 2's other direction: repeating a caution on every owner hit
     // pushes agents toward disbelieving real directives (EI-13472).
     expect(got.note).toBeUndefined();
+  });
+
+  it('reports a promoted AskUserQuestion answer as affirmative owner-dialog provenance', () => {
+    const got = classifyHitTurnOrigin(
+      'user',
+      `${OWNER_DIALOG_TURN_MARKER}\nThe user answered: "Which route?"="visible fleet".`,
+    );
+    expect(got).toEqual({ verdict: 'owner-dialog', origin: null });
   });
 });
 
