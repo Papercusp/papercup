@@ -27,6 +27,13 @@ function fakeSql(rows: FakeRow[]) {
   return (async () => rows) as unknown as Parameters<typeof checkBespokeActiveSeeds>[0]['sql'];
 }
 
+function routedFakeSql(rowsByInstallSlug: Record<string, FakeRow[]>, calls: Array<{ installSlug: string; names: string[] }>) {
+  return (async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+    calls.push({ installSlug: String(values[0]), names: (values[2] as string[]) ?? [] });
+    return rowsByInstallSlug[String(values[0])] ?? [];
+  }) as unknown as Parameters<typeof checkBespokeActiveSeeds>[0]['sql'];
+}
+
 const NOW = Date.parse('2026-08-08T20:00:00Z');
 const paused = (name: string, pause: Record<string, unknown> | null): FakeRow => ({
   name,
@@ -115,6 +122,37 @@ describe('checkBespokeActiveSeeds', () => {
     // Every real registered routine name should show up as missing against an empty DB.
     expect(res.missing.length).toBeGreaterThanOrEqual(6);
     expect(res.missing.map((e) => e.name)).toContain('supervision-reconcile');
+  });
+
+  it('queries each seed in the install scope its writer actually targets', async () => {
+    const calls: Array<{ installSlug: string; names: string[] }> = [];
+    const res = await checkBespokeActiveSeeds({
+      sql: routedFakeSql(
+        {
+          papercusp: [{ name: 'home-routine', active: true }],
+          'hive-canary': [
+            { name: 'hive-canary', active: true },
+            { name: 'hive-canary-sla', active: true },
+          ],
+        },
+        calls,
+      ),
+      installSlug: 'papercusp',
+      workspaceId: 'ws',
+      entries: [
+        { name: 'home-routine', seedScript: 'seed-home-routine.ts' },
+        { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts', scope: 'hive-canary' },
+        { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts', scope: 'hive-canary' },
+      ],
+    });
+
+    expect(calls).toEqual([
+      { installSlug: 'papercusp', names: ['home-routine'] },
+      { installSlug: 'hive-canary', names: ['hive-canary', 'hive-canary-sla'] },
+    ]);
+    expect(res.ok).toBe(true);
+    expect(res.missing).toEqual([]);
+    expect(res.inactive).toEqual([]);
   });
 });
 

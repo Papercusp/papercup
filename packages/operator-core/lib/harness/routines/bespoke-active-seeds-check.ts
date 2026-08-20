@@ -14,7 +14,7 @@
  *
  * BESPOKE_ACTIVE_SEEDS is the explicit registry of every `seed-*-routine.ts` in this
  * directory whose WRITER defaults `active=true` (i.e. the intended steady state is an
- * ACTIVE row for the operator-home harness right after a fresh checkout/deploy, not a
+ * ACTIVE row for its declared target harness right after a fresh checkout/deploy, not a
  * human-gated bring-up). `bespoke-active-seeds-check.test.ts` reads every seed script
  * and derives that property from the executable `--inactive`/`--active` default, then
  * requires an exact match with this registry. Do not infer it from prose: capitalization
@@ -70,6 +70,11 @@ export interface BespokeActiveSeed {
   name: string;
   /** Path (relative to this file's directory) to the seed script that arms it. */
   seedScript: string;
+  /**
+   * Which harness receives the row. Most bespoke maintenance routines belong to the
+   * operator home; the canary seeders intentionally target their separate canary harness.
+   */
+  scope?: 'operator-home' | 'hive-canary';
 }
 
 export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
@@ -84,8 +89,8 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'gc-plan-runs', seedScript: 'seed-gc-plan-runs-routine.ts' },
   { name: 'gc-verify-instances', seedScript: 'seed-gc-verify-instances-routine.ts' },
   { name: 'gitnexus-reindex', seedScript: 'seed-gitnexus-reindex-routine.ts' },
-  { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts' },
-  { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts' },
+  { name: 'hive-canary', seedScript: 'seed-hive-canary-routine.ts', scope: 'hive-canary' },
+  { name: 'hive-canary-sla', seedScript: 'seed-hive-canary-sla-routine.ts', scope: 'hive-canary' },
   { name: 'idle-backend-reaper', seedScript: 'seed-idle-backend-reaper-routine.ts' },
   { name: 'improvement-human-digest', seedScript: 'seed-human-digest-routine.ts' },
   { name: 'plan-item-orphan-reconcile', seedScript: 'seed-plan-item-orphan-reconcile-routine.ts' },
@@ -129,7 +134,12 @@ export function isAlwaysOnSystemRoutine(name: string): boolean {
 
 /** A registered routine found seeded-but-paused, with the pause attribution that decides
  *  whether it warrants waking someone. */
-export interface InactiveBespokeSeed extends BespokeActiveSeed {
+export interface CheckedBespokeActiveSeed extends BespokeActiveSeed {
+  /** Resolved `install_slug` queried for this registry entry. */
+  installSlug: string;
+}
+
+export interface InactiveBespokeSeed extends CheckedBespokeActiveSeed {
   /** `metadata.pause.reason` — null when the flip bypassed `routines:set` (which requires
    *  one). A null here is itself a finding: it means an UNAUDITED path wrote active=false. */
   pauseReason: string | null;
@@ -142,7 +152,7 @@ export interface InactiveBespokeSeed extends BespokeActiveSeed {
 }
 
 export interface CheckResult {
-  missing: BespokeActiveSeed[];
+  missing: CheckedBespokeActiveSeed[];
   inactive: InactiveBespokeSeed[];
   /**
    * The subset of `missing` + `inactive` that warrants waking a human right now: everything
@@ -153,7 +163,7 @@ export interface CheckResult {
    * dated pause must be able to answer it "no" — otherwise the notice re-fires on every boot
    * forever and becomes the cry-wolf noise that got the ORIGINAL routine paused.
    */
-  escalatable: Array<BespokeActiveSeed | InactiveBespokeSeed>;
+  escalatable: Array<CheckedBespokeActiveSeed | InactiveBespokeSeed>;
   ok: boolean;
 }
 
@@ -171,17 +181,35 @@ export async function checkBespokeActiveSeeds(opts: {
   const entries = opts.entries ?? BESPOKE_ACTIVE_SEEDS;
   const now = opts.now ?? Date.now();
   type Row = { name: string; active: boolean; metadata: { pause?: PauseMeta } | null };
-  const rows = (await opts.sql<Row[]>`
-    SELECT name, active, metadata FROM harness_shared.routines
-    WHERE install_slug = ${opts.installSlug} AND workspace_id = ${opts.workspaceId}
-      AND name = ANY(${entries.map((s) => s.name)})
-  `) as unknown as Row[];
-  const byName = new Map(rows.map((r) => [r.name, r]));
+  const resolvedEntries = entries.map((entry): CheckedBespokeActiveSeed => ({
+    ...entry,
+    installSlug: resolveInstallSlug(entry.scope, opts.installSlug),
+  }));
+  const entriesByScope = new Map<string, CheckedBespokeActiveSeed[]>();
+  for (const entry of resolvedEntries) {
+    const scoped = entriesByScope.get(entry.installSlug);
+    if (scoped) scoped.push(entry);
+    else entriesByScope.set(entry.installSlug, [entry]);
+  }
 
-  const missing: BespokeActiveSeed[] = [];
+  // Seed writers may target different harnesses. Query each target scope separately so a
+  // canary row is never falsely reported missing from the operator home (and vice versa).
+  const rowsByScopeAndName = new Map<string, Row>();
+  await Promise.all(
+    [...entriesByScope].map(async ([installSlug, scopedEntries]) => {
+      const rows = (await opts.sql<Row[]>`
+        SELECT name, active, metadata FROM harness_shared.routines
+        WHERE install_slug = ${installSlug} AND workspace_id = ${opts.workspaceId}
+          AND name = ANY(${scopedEntries.map((s) => s.name)})
+      `) as unknown as Row[];
+      for (const row of rows) rowsByScopeAndName.set(`${installSlug}\u0000${row.name}`, row);
+    }),
+  );
+
+  const missing: CheckedBespokeActiveSeed[] = [];
   const inactive: InactiveBespokeSeed[] = [];
-  for (const entry of entries) {
-    const row = byName.get(entry.name);
+  for (const entry of resolvedEntries) {
+    const row = rowsByScopeAndName.get(`${entry.installSlug}\u0000${entry.name}`);
     if (row === undefined) missing.push(entry);
     else if (row.active !== true) inactive.push({ ...entry, ...readPause(row.metadata) });
   }
@@ -221,6 +249,12 @@ export function isReaffirmed(reviewBy: string | null, now: number): boolean {
   if (!reviewBy) return false;
   const t = Date.parse(reviewBy);
   return Number.isFinite(t) && t > now;
+}
+
+/** Resolve the install slug used by a seed writer's default configuration. */
+function resolveInstallSlug(scope: BespokeActiveSeed['scope'], operatorHomeInstallSlug: string): string {
+  if (scope !== 'hive-canary') return operatorHomeInstallSlug;
+  return process.env.POT_CANARY_HARNESS ?? process.env.HIVE_CANARY_HARNESS ?? 'hive-canary';
 }
 
 /** Convenience for the CLI wrapper — resolves the operator-home scope the same way

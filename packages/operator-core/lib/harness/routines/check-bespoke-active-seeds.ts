@@ -7,7 +7,7 @@
  *   tsx packages/operator-core/lib/harness/routines/check-bespoke-active-seeds.ts
  *
  * Exit codes:
- *   0 — every registered routine has an ACTIVE row for the operator-home harness
+ *   0 — every registered routine has an ACTIVE row for its seed writer's target harness
  *   1 — at least one is missing or inactive (prints the exact `tsx …` command to fix it)
  *   2 — environment problem (DB unreachable, etc.)
  */
@@ -22,7 +22,8 @@ async function main(): Promise<void> {
   if (result.ok) {
     console.log(
       `[check-bespoke-active-seeds] ok — all ${BESPOKE_ACTIVE_SEEDS.length} always-on bespoke ` +
-        `routines have an ACTIVE row for "${installSlug}" (ws=${workspaceId}).`,
+        `routines have an ACTIVE row in their declared target scope (operator home "${installSlug}" ` +
+        `or another explicitly scoped harness; ws=${workspaceId}).`,
     );
     await sql.end({ timeout: 5 });
     return;
@@ -30,7 +31,7 @@ async function main(): Promise<void> {
 
   for (const entry of result.missing) {
     console.error(
-      `[check-bespoke-active-seeds] MISSING: no "${entry.name}" row for "${installSlug}" — never seeded. Fix: ` +
+      `[check-bespoke-active-seeds] MISSING: no "${entry.name}" row for "${entry.installSlug}" — never seeded. Fix: ` +
         `tsx packages/operator-core/lib/harness/routines/${entry.seedScript}`,
     );
   }
@@ -38,9 +39,9 @@ async function main(): Promise<void> {
     const why = entry.pauseReason ?? 'NONE RECORDED — flipped by a path that bypassed routines:set';
     const held = entry.reviewBy ? ` [re-affirmed until ${entry.reviewBy}]` : '';
     console.error(
-      `[check-bespoke-active-seeds] INACTIVE: "${entry.name}" row for "${installSlug}" is seeded but active=false — ` +
+      `[check-bespoke-active-seeds] INACTIVE: "${entry.name}" row for "${entry.installSlug}" is seeded but active=false — ` +
         `its own header commits to ACTIVE by default. Pause reason: ${why}${held}. Fix: ` +
-        `routines:set { name: "${entry.name}", installSlug: "${installSlug}", active: true }`,
+        `routines:set { name: "${entry.name}", installSlug: "${entry.installSlug}", active: true }`,
     );
   }
   await sql.end({ timeout: 5 });
