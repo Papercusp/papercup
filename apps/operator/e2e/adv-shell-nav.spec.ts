@@ -378,4 +378,48 @@ test.describe('/adv shell tab navigation (P-011)', () => {
     await moreTrigger(page).click();
     await expect(page.locator('.pc-advshell__more-item[data-active]', { hasText: 'Git' })).toHaveCount(1);
   });
+
+  test('the packaged 1280x720 header keeps every visible control in the viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.route('**/api/workspaces', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          current: 'default',
+          workspaces: [{ id: 'default', name: 'Default', createdAt: 0 }],
+        }),
+      });
+    });
+    await stubShellApis(page);
+    const mounted = await gotoAdv(page, `?slug=${SLUG}&scope=expanded`);
+    assertMounted(mounted, SKIP_MSG);
+
+    const controls = await page.locator('.pc-header a:visible, .pc-header button:visible').evaluateAll((elements) =>
+      elements.map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          name: element.getAttribute('aria-label') ?? element.textContent?.trim() ?? element.tagName,
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      }),
+    );
+
+    expect(controls.length).toBeGreaterThan(0);
+    for (const control of controls) {
+      expect(control.left, `${control.name} starts outside the viewport`).toBeGreaterThanOrEqual(0);
+      expect(control.right, `${control.name} ends outside the viewport`).toBeLessThanOrEqual(1280);
+      expect(control.top, `${control.name} is above the viewport`).toBeGreaterThanOrEqual(0);
+      expect(control.bottom, `${control.name} is below the viewport`).toBeLessThanOrEqual(720);
+    }
+
+    const workspaceTrigger = page.getByRole('button', { name: 'Switch or manage workspaces' });
+    await expect(workspaceTrigger).toBeVisible();
+    await workspaceTrigger.focus();
+    await expect(workspaceTrigger).toBeFocused();
+    await workspaceTrigger.click({ trial: true });
+  });
 });

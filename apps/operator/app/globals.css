@@ -993,6 +993,29 @@ html[data-route-pending="true"] .pc-header::after {
   max-width: 100%;
 }
 
+/* At the packaged desktop's default 1280px viewport the full utility nav can
+   be wider than the header's max-content grid track. Let the right lane take
+   its equal share and wrap its controls instead of allowing the grid item to
+   extend past the viewport (the workspace switcher was the first control lost
+   to that overflow). Keep each control atomic so it remains pointer- and
+   keyboard-reachable on the second row. */
+@media (max-width: 1320px) and (min-width: 761px) {
+  .pc-header {
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .pc-header-right {
+    width: auto;
+    flex-wrap: wrap;
+    column-gap: 10px;
+    row-gap: 6px;
+  }
+
+  .pc-header-right > * {
+    flex: 0 0 auto;
+  }
+}
+
 .pc-header .brand {
   display: inline-flex;
   align-items: center;
@@ -2930,6 +2953,10 @@ p {
     overflow-x: auto;
     padding: 2px 0 3px;
     scrollbar-width: none;
+  }
+
+  .pc-header-right {
+    flex-wrap: nowrap;
   }
 
   .pc-header nav::-webkit-scrollbar {
