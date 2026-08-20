@@ -66,6 +66,9 @@ const gateMatch = drill.match(/# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)#
 const sourceOverlayMatch = physicalProbe.match(
   /\/\/ VM-RUN-SOURCE-OVERLAY-BEGIN\n([\s\S]*?)\/\/ VM-RUN-SOURCE-OVERLAY-END/,
 );
+const failureDiagnosticCleanupMatch = physicalProbe.match(
+  /# FAILED-RUN-DIAGNOSTIC-CLEANUP-BEGIN\n([\s\S]*?)# FAILED-RUN-DIAGNOSTIC-CLEANUP-END/,
+);
 
 const evidenceDir = mkdtempSync(join(tmpdir(), 'hive-git-physical-evidence-'));
 const trustByFixture = new WeakMap<Record<string, any>, Record<string, any>>();
@@ -679,6 +682,89 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(drill.indexOf('physical E/G adapter requires a durable capability:bash background task enrollment')).toBeLessThan(
       drill.indexOf('"$physical_probe_cmd" "$physical_evidence_file" "$physical_trust_file"'),
     );
+  });
+
+  it('preserves a bounded sanitized Phase A bundle only when the physical probe fails', () => {
+    expect(failureDiagnosticCleanupMatch).not.toBeNull();
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'hive-git-failure-diagnostics-'));
+    const failedRunRoot = join(fixtureRoot, 'failed-run');
+    const successfulRunRoot = join(fixtureRoot, 'successful-run');
+    const failedDiagnostics = join(fixtureRoot, 'evidence.json.failure-diagnostics');
+    const successfulDiagnostics = join(fixtureRoot, 'success.json.failure-diagnostics');
+    const runCleanup = (runRoot: string, diagnosticsRoot: string, status: number) => {
+      const script = [
+        'set -euo pipefail',
+        'ssh() { return 0; }',
+        'SSH_OPTS=()',
+        "VM='fixture-vm'",
+        "remote_source='/tmp/hive-git-physical-source.123'",
+        'source_preflight=0',
+        'run_dir="$1"',
+        'failure_diagnostics_out="$2"',
+        failureDiagnosticCleanupMatch![1],
+        'trap cleanup EXIT',
+        `exit ${status}`,
+      ].join('\n');
+      return spawnSync('bash', ['-c', script, 'diagnostic-cleanup-test', runRoot, diagnosticsRoot], {
+        encoding: 'utf8',
+      });
+    };
+
+    try {
+      const phaseA = join(failedRunRoot, 'phase-a');
+      mkdirSync(phaseA, { recursive: true, mode: 0o700 });
+      writeFileSync(
+        join(phaseA, 'bootstrap-raw.json'),
+        JSON.stringify({ status: 'failed', accessToken: 'super-secret-token', publicResult: 'kept' }),
+      );
+      writeFileSync(
+        join(phaseA, 'tower-after.json'),
+        JSON.stringify({ refOid: 'a'.repeat(40), note: `token github_pat_${'A'.repeat(32)}` }),
+      );
+      writeFileSync(join(phaseA, 'verdict.err'), 'Authorization: Bearer super-secret-token\nstrict convergence failed\n');
+      writeFileSync(join(phaseA, 'not-allowlisted.json'), JSON.stringify({ secret: 'must-not-copy' }));
+      writeFileSync(join(failedRunRoot, 'tower-identity.json'), JSON.stringify({ privateKey: 'must-not-copy' }));
+
+      const failed = runCleanup(failedRunRoot, failedDiagnostics, 37);
+      expect(failed.status).toBe(37);
+      expect(failed.stderr).toContain(`preserved failed-run diagnostics at ${failedDiagnostics}`);
+      expect(existsSync(failedRunRoot)).toBe(false);
+      expect(existsSync(failedDiagnostics)).toBe(true);
+      expect(statSync(failedDiagnostics).mode & 0o777).toBe(0o700);
+
+      const manifest = JSON.parse(readFileSync(join(failedDiagnostics, 'manifest.json'), 'utf8'));
+      expect(manifest).toMatchObject({
+        schemaVersion: 'hive-git-physical-failure-diagnostics/v1',
+        exitStatus: 37,
+        sanitized: true,
+        caps: { perFileBytes: 256 * 1024, totalBytes: 1024 * 1024 },
+      });
+      expect(manifest.included.map((entry: { path: string }) => entry.path)).toEqual([
+        'phase-a/bootstrap-raw.json',
+        'phase-a/tower-after.json',
+        'phase-a/verdict.err',
+      ]);
+      const banked = [
+        readFileSync(join(failedDiagnostics, 'phase-a', 'bootstrap-raw.json'), 'utf8'),
+        readFileSync(join(failedDiagnostics, 'phase-a', 'tower-after.json'), 'utf8'),
+        readFileSync(join(failedDiagnostics, 'phase-a', 'verdict.err'), 'utf8'),
+      ].join('\n');
+      expect(banked).toContain('publicResult');
+      expect(banked).toContain('[REDACTED]');
+      expect(banked).not.toContain('super-secret-token');
+      expect(banked).not.toContain('github_pat_');
+      expect(existsSync(join(failedDiagnostics, 'phase-a', 'not-allowlisted.json'))).toBe(false);
+      expect(existsSync(join(failedDiagnostics, 'tower-identity.json'))).toBe(false);
+
+      mkdirSync(join(successfulRunRoot, 'phase-a'), { recursive: true, mode: 0o700 });
+      writeFileSync(join(successfulRunRoot, 'phase-a', 'verdict.json'), '{"ok":true}\n');
+      const successful = runCleanup(successfulRunRoot, successfulDiagnostics, 0);
+      expect(successful.status).toBe(0);
+      expect(existsSync(successfulRunRoot)).toBe(false);
+      expect(existsSync(successfulDiagnostics)).toBe(false);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('keeps the canonical producer pinned to the checked-in physical E/G scenario', () => {
