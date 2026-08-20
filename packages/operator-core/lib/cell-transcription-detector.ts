@@ -108,6 +108,16 @@ function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valu
  */
 const PATTERNS: readonly TranscriptionPattern[] = [
   {
+    cell: 'gate.greenCheckpoint.candidate',
+    field: 'changeInCandidate.judgingSha',
+    what: 'a commit sha stated as the green-checkpoint candidate',
+    // Candidate state has its own registered cell. Keep it ahead of the generic
+    // pipeline-position pattern and do not let a gate candidate be described as
+    // the deployed/serving commit.
+    value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
+    context: /\b(candidate|green[- ]?checkpoint)\b/i,
+  },
+  {
     cell: 'git.pipelinePosition',
     field: 'positions.deployed / serving.startedSinceCodeChange',
     what: 'a commit sha stated as the deployed/serving/gate position',
@@ -127,7 +137,7 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     // identifiers, and hex colours, while leaving a standalone sha untouched.
     value: /(?<![0-9A-Za-z#-])(?=[0-9a-f]{7,40}(?![0-9A-Za-z-]))[0-9a-f]*[a-f][0-9a-f]*(?![0-9A-Za-z-])/gi,
     context:
-      /\b(deploy(ed|ing|ment)?|serving|serves|live|release[d]?|candidate|gate|green[- ]?checkpoint|staging|main|:3070|:3170|running|shipped)\b/i,
+      /\b(deploy(ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|:3070|:3170|running|shipped)\b/i,
   },
   {
     cell: 'git.pipelinePosition',

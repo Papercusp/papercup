@@ -27,8 +27,22 @@ describe('cell-transcription detector — TRUE positives (the 2026-07-26 shape)'
     expect(hits[0]!.cell).toBe('git.pipelinePosition');
   });
 
-  it('flags a sha stated as the gate candidate', () => {
-    expect(detectCellTranscriptions('green-checkpoint is judging candidate 60bb6f3c33')).toHaveLength(1);
+  it('routes a sha stated as the gate candidate to the candidate cell', () => {
+    const hits = detectCellTranscriptions('green-checkpoint is judging candidate 60bb6f3c33');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.cell).toBe('gate.greenCheckpoint.candidate');
+    expect(hits[0]!.field).toBe('changeInCandidate.judgingSha');
+    expect(hits[0]!.what).toContain('green-checkpoint candidate');
+  });
+
+  it('does not classify a gate candidate as the deployed pipeline position', () => {
+    const hits = detectCellTranscriptions('gate candidate adf6129c');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.cell).toBe('gate.greenCheckpoint.candidate');
+  });
+
+  it('does not treat an active source/candidate citation without state language as a claim', () => {
+    expect(detectCellTranscriptions('preserve the active adf6129c salvage')).toEqual([]);
   });
 
   it('flags a behind-count stated as current pipeline state', () => {
