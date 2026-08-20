@@ -151,15 +151,23 @@ export function computeCoresBusy(deltaUsec: number, elapsedMs: number): number |
  *
  * @param {number} pid
  * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
+ *           budgetMs?: number; deadlineAt?: number;
  *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
  */
 export function sampleCgroupBusy(pid: number, opts?: {
     procRoot?: string;
     cgroupRoot?: string;
     sampleMs?: number;
+    budgetMs?: number;
+    deadlineAt?: number;
     sleep?: (ms: number) => Promise<void>;
     now?: () => number;
 }): Promise<{
+    status: string;
+    reason: string;
+    cgroupPath: any;
+    elapsedMs: number;
+} | {
     status: string;
     reason: string;
     cgroupPath?: undefined;
@@ -181,6 +189,31 @@ export function sampleCgroupBusy(pid: number, opts?: {
     cgroupPath: string;
     reason?: undefined;
 }>;
+/**
+ * Sample matched process cgroups concurrently under one wall-clock budget.
+ *
+ * A caller that wants a bounded health hold must budget the whole batch, not
+ * multiply the per-process interval by the number of rows. All samples share
+ * one absolute deadline, so a large match set cannot turn a 10-second sample
+ * into an unbounded serial wait.
+ *
+ * @param {{ pid: number }[]} matches
+ * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
+ *           budgetMs?: number; deadlineAt?: number;
+ *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
+ * @returns {Promise<unknown[]>}
+ */
+export function sampleBusyMatches(matches: {
+    pid: number;
+}[], opts?: {
+    procRoot?: string;
+    cgroupRoot?: string;
+    sampleMs?: number;
+    budgetMs?: number;
+    deadlineAt?: number;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+}): Promise<unknown[]>;
 /** Render one `--busy` line (+ its falsifier when near-zero). Pure, so the
  *  wording is pinned by tests rather than by eyeballing terminal output. */
 export function formatBusy(sample: any): string[];

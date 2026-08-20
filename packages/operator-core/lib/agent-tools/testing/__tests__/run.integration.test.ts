@@ -26,7 +26,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import runTool, { normalizeTestFilePaths } from '../run';
+import runTool, { normalizeTestFilePaths, runTestFilesCore } from '../run';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -282,6 +282,32 @@ describe('testing:run (integration)', () => {
       // Give the SIGTERM → (5s) → SIGKILL fallback (run.ts's own `killGroup` retry)
       // time to land before asserting on the absence of survivors.
       await new Promise((resolve) => setTimeout(resolve, 8000));
+
+      const survivors = await pidsTaggedWithRun(out.runId as string);
+      expect(survivors).toEqual([]);
+    },
+    30_000,
+  );
+
+  // EI-20949515346526475: code:run can terminate its worker while an inner testing:run
+  // handler is still blocked in the router. The inner handler must honor that caller-owned
+  // signal and kill the SAME process group; otherwise the Vitest suite survives after the
+  // outer wrapper already returned and a retry starts a duplicate run.
+  it(
+    'kills the whole process tree when the caller aborts an in-flight run',
+    async () => {
+      const controller = new AbortController();
+      const runPromise = runTestFilesCore({
+        files: [GREEN_TARGET, CROSS_WORKSPACE_GREEN_TARGET],
+        timeoutMs: 30_000,
+        signal: controller.signal,
+      });
+      setTimeout(() => controller.abort(), 500);
+
+      const out = await runPromise;
+      expect(out.ok).toBe(false);
+      expect(out.error).toBe('aborted');
+      expect(typeof out.runId).toBe('string');
 
       const survivors = await pidsTaggedWithRun(out.runId as string);
       expect(survivors).toEqual([]);
