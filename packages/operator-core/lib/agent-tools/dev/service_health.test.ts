@@ -275,6 +275,30 @@ describe("buildServiceHealthDiagnostic", () => {
     expect(out.nextVerb).toBe('dev:restart { target:"staging" }');
     expect(out.effective).toMatchObject({ down: 1, wedged: 0 });
   });
+
+  it("counts an explicit unhealthy systemd verdict even when flapState is an operator-side zero-default", () => {
+    const supervision = [
+      {
+        name: "live-federation-gate",
+        layer: "systemd-user" as const,
+        autoRestart: false,
+        criticality: "important" as const,
+        consecutiveProbeFailures: 0,
+        lastRestartAt: null,
+        restartsLast10m: 0,
+        flapState: "ok" as const,
+        flapObserved: false,
+        active: false,
+        activeState: "failed",
+        healthy: false,
+      },
+    ];
+    const out = buildServiceHealthDiagnostic([{ name: "operator", up: true }], supervision);
+
+    expect(out.effective.supervisionUnhealthy).toBe(1);
+    expect(out.evidence.unhealthySupervision).toEqual(supervision);
+    expect(out.rootCause).toEqual({ component: "live-federation-gate", reason: "systemd state failed" });
+  });
 });
 
 describe("reconcileBgHostTicker (EI-19934795546523351, pure)", () => {

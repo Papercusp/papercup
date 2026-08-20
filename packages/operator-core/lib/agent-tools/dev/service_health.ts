@@ -421,7 +421,7 @@ export function buildMcpProxyTransportBlock(
 /** Additive stable scan path over the existing service/supervision payload. */
 export function buildServiceHealthDiagnostic(
   services: ProbeResult[],
-  supervision: SupervisionStatusEntry[],
+  supervision: SupervisionStatusEntryWithRecency[],
   /** EI-20065717746825416: live `ActiveState` of `papercup-bg-host-watchdog`, when the caller
    *  could read it. Drives the ownership disclosure on a bg-host `nextVerb`; `undefined` is an
    *  honest unknown that discloses ownership WITHOUT asserting the watchdog is up. */
@@ -434,7 +434,11 @@ export function buildServiceHealthDiagnostic(
 > {
   const absent = services.filter((s) => s.present === false);
   const failures = services.filter((s) => s.present !== false && !s.up);
-  const unhealthySupervision = supervision.filter((s) => s.flapState !== "ok");
+  // `flapState` is only measured by the reconciler process. The operator-side
+  // snapshot legitimately carries zero-default `flapState:"ok"` with
+  // `flapObserved:false`, so an explicit systemd verdict must also drive this
+  // rollup or a failed unit can read as healthy (EI-20440455610518184).
+  const unhealthySupervision = supervision.filter((s) => s.flapState !== "ok" || s.healthy === false);
   // EI-19465075959589134: a wedge is the more actionable finding of the two, so
   // it leads the root cause even when an ordinary down probe sorted first — the
   // whole point is that a wedge never announces itself in the other signals.
@@ -444,7 +448,13 @@ export function buildServiceHealthDiagnostic(
   const rootCause: ServiceRootCause | null = first
     ? { component: first.name, reason: first.note ?? `probe failed (status ${first.status ?? "none"})` }
     : supervisor
-      ? { component: supervisor.name, reason: `supervisor state ${supervisor.flapState}` }
+      ? {
+          component: supervisor.name,
+          reason:
+            supervisor.healthy === false
+              ? `systemd state ${supervisor.activeState ?? "unhealthy"}`
+              : `supervisor state ${supervisor.flapState}`,
+        }
       : null;
   return runtimeDiagnostic({
     configured: {
