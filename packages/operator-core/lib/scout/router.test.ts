@@ -292,7 +292,11 @@ describe('goal rail', () => {
   const goalHinted = (id: string, over: Partial<Proposal> = {}) =>
     fixtureProposal({ id, routeHint: 'goal', ...over });
 
-  it('classifyProposal follows an explicit goal routeHint', () => {
+  // Unit-level contract only: this proves how the router handles a Proposal that
+  // already carries the hint. It does NOT prove production reachability — the
+  // real recombine-to-router seam is pinned in recombine.test.ts, where direct
+  // `goal` hints are currently coerced away before classifyProposal sees them.
+  it('classifyProposal follows an explicit goal routeHint in isolation', () => {
     const c = classifyProposal(fixtureProposal({ routeHint: 'goal' }));
     expect(c.rail).toBe('goal');
     expect(c.followedHint).toBe(true);
