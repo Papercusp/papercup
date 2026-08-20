@@ -33,6 +33,7 @@ import { ensureCoordCapabilityTables } from '@papercusp/coordination/capabilitie
 import {
   HARNESS_FEATURES_CONSOLIDATED_DDL,
   USER_TRUST_LIST_DDL,
+  WATCHDOG_TICKS_DDL,
   WORK_ITEM_DEPS_DDL,
 } from '../../test/_work-items-schema';
 
@@ -74,18 +75,6 @@ const wi = await import('../work-items');
 const H = 'papercup';
 const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + issues live here
 let db: FreshPgDb;
-
-// EI-201069: the recovery-window floor reads only these four watchdog columns. Keep this
-// fixture intentionally narrow so the claim tests exercise the real SQL against nullable
-// known_open_keys without depending on unrelated watchdog migrations/collectors.
-const WATCHDOG_TICKS_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_shared.watchdog_ticks (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    workspace_id text NOT NULL,
-    tick_at timestamptz NOT NULL DEFAULT now(),
-    status text NOT NULL DEFAULT 'ran',
-    known_open_keys text[]
-  )`;
 
 /** A feature-FAMILY row (item_kind feature|chunk, default 'feature') —
  *  claimable through the feature path at tier 1/2 of the WI-1407 ladder. */
