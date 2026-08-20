@@ -255,6 +255,23 @@ describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', ()
     errors: [],
   });
 
+  it('uses the ticking workspace registry so a mismatched ambient registry cannot skip the metadata refresh', async () => {
+    loadHarnessRegistryMock.mockImplementation(async (workspaceId?: string) => ({
+      projects:
+        workspaceId === WS
+          ? [{ slug: SLUG, hive_slug: SLUG, self_repo: true, github_remote: 'https://github.com/acme/shop.git', fork_remote: 'https://github.com/me/shop.git' }]
+          : [],
+    }));
+    pathExistsMock.mockResolvedValue(false);
+    runGithubBridgeTickMock.mockResolvedValue(healthyOutcome(EGRESS_HEAD));
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(loadHarnessRegistryMock).toHaveBeenCalledWith(WS);
+    expect(runGithubBridgeTickMock).toHaveBeenCalledOnce();
+    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD);
+  });
+
   it('emits only after the writer-backed metadata watermark is persisted', async () => {
     const order: string[] = [];
     pathExistsMock.mockResolvedValue(false);
