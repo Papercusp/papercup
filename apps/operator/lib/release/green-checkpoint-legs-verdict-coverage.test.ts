@@ -93,6 +93,40 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     expect(legEntries(legs).some(([, l]) => l.status === 'failed')).toBe(false);
   });
 
+  it('EI-203121: records bounded execution identity for every measured leg', async () => {
+    const exec: CheckpointExec = async (cmd) =>
+      cmd === 'git'
+        ? { code: 1, stdout: '', stderr: '' }
+        : { code: 0, stdout: 'result-tail-'.repeat(250), stderr: '' };
+    const legs = await runPostSuiteLegs(ROOT, process.env, exec, '@papercusp/operator-vite', {
+      identity: {
+        runId: 'r'.repeat(200),
+        candidate: 'c'.repeat(80),
+        headAtStart: 'h'.repeat(80),
+        setup: {
+          identity: 'setup-identity-'.repeat(30),
+          output: 'setup-output-'.repeat(200),
+        },
+      },
+    });
+
+    expect(legs.records.length).toBeGreaterThan(5);
+    for (const record of legs.records) {
+      const identity = record.executionIdentity;
+      expect(identity, `${record.id} must identify the tree and command result it judged`).toBeDefined();
+      expect(identity?.runId).toHaveLength(128);
+      expect(identity?.candidate).toHaveLength(64);
+      expect(identity?.headAtStart).toHaveLength(64);
+      expect(identity?.treeDir).toBe(ROOT);
+      expect(identity?.cwd).toBe(ROOT);
+      expect(identity?.dependencies.nodeModules.source).toBe(join(ROOT, 'node_modules'));
+      expect(identity?.setup.identity.length).toBeLessThanOrEqual(200);
+      expect(identity?.setup.output.length).toBeLessThanOrEqual(1000);
+      expect(identity?.result.status).toBe(record.status);
+      expect(identity?.result.output.length).toBeLessThanOrEqual(2000);
+    }
+  });
+
   it('reds the verdict for EVERY leg script that can fail (no leg excluded from legs.ok)', async () => {
     const { legs: happy, invokedScripts } = await runLegs(null);
     const scripts = [...new Set(invokedScripts)];

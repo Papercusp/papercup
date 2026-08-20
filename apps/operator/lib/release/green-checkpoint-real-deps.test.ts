@@ -497,6 +497,51 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(calls[3].args).toContain("build");
   });
 
+  it("EI-203121: threads real-path run, tree, setup, dependency, and result identity into the verdict", async () => {
+    const { exec } = makeExec([
+      { code: 0 },
+      { code: 0, stdout: "typecheck passed" },
+      { code: 1 },
+      { code: 0 },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec, "run-identity-42").runGreen(
+      typecheckTree,
+      "base-sha",
+      {
+        candidate: "c".repeat(40),
+        headAtStart: "h".repeat(40),
+        setup: {
+          identity: "setup-release-checkout:candidate",
+          output: "setup copied dependencies",
+        },
+      },
+    );
+
+    expect(r.green).toBe(true);
+    expect(r.postSuiteLegs?.length).toBeGreaterThan(0);
+    const typecheck = r.postSuiteLegs?.find((leg) => leg.id === "lint:tsc");
+    expect(typecheck?.executionIdentity).toMatchObject({
+      runId: "run-identity-42",
+      candidate: "c".repeat(40),
+      treeDir: typecheckTree,
+      cwd: typecheckTree,
+      headAtStart: "h".repeat(40),
+      setup: {
+        identity: "setup-release-checkout:candidate",
+        output: "setup copied dependencies",
+      },
+      result: {
+        status: "passed",
+        exit: "completed",
+        exitCode: 0,
+        output: "typecheck passed",
+      },
+    });
+    expect(typecheck?.executionIdentity?.dependencies.nodeModules.source).toBe(
+      join(typecheckTree, "node_modules"),
+    );
+  });
+
   it("holds the candidate when lint:tsc reports a type regression and skips the SPA build", async () => {
     const { exec, calls } = makeExec([
       { code: 0 },
@@ -1526,8 +1571,10 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   it("setupTree shells setup-release-checkout.sh with the integration/checkpoint/ref flags", async () => {
-    const { exec, calls } = makeExec([{ code: 0 }]);
-    await realCheckpointDeps(cfg, exec).setupTree("cand123");
+    const { exec, calls } = makeExec([
+      { code: 0, stdout: "copied checkpoint dependencies" },
+    ]);
+    const setup = await realCheckpointDeps(cfg, exec).setupTree("cand123");
     expect(calls[0].cmd).toBe("bash");
     expect(
       calls[0].args[0].endsWith(
@@ -1548,6 +1595,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         "force",
       ]),
     );
+    expect(setup).toEqual({
+      identity: "setup-release-checkout:cand123",
+      output: "copied checkpoint dependencies",
+    });
   });
 
   it("push rides the PAPERCUSP_MAIN_PUSH_OK guard (the one writer allowed past the main pre-push hook)", async () => {

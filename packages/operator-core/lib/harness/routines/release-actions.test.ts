@@ -330,6 +330,13 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('deadline-exceeded', true)).toBe('reset');
   });
 
+  it('WI-39944: serialized repair waits are NON-VERDICTS, not reds', () => {
+    expect(classifyGateStallStatus('repair-in-progress', false)).toBe('noop');
+    expect(classifyGateStallStatus('repair-staging-mismatch', false)).toBe('noop');
+    expect(classifyGateStallStatus('repair-in-progress', true)).toBe('reset');
+    expect(classifyGateStallStatus('repair-staging-mismatch', true)).toBe('reset');
+  });
+
   it('every other non-green verdict still counts as a red (crash / not-green / etc.)', () => {
     for (const status of ['not-green', 'error', 'create-failed', 'not-fast-forward']) {
       expect(classifyGateStallStatus(status, false)).toBe('red');
@@ -527,6 +534,19 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
       gateStallNoopLogMessage(s),
     );
     expect(new Set(msgs).size).toBe(3);
+  });
+
+  it('WI-39944: repair no-ops name their serialized wait instead of claiming a peer gate run', () => {
+    const inProgress = gateStallNoopLogMessage('repair-in-progress');
+    const stagingMismatch = gateStallNoopLogMessage('repair-staging-mismatch');
+
+    expect(inProgress).toContain('serialized frozen-candidate repair queue');
+    expect(inProgress).toContain('ran no suite');
+    expect(inProgress).not.toContain('an active peer run holds the lock');
+    expect(stagingMismatch).toContain('not yet observable on canonical staging');
+    expect(stagingMismatch).toContain('spent no suite');
+    expect(stagingMismatch).not.toContain('an active peer run holds the lock');
+    expect(inProgress).not.toBe(stagingMismatch);
   });
 
   it('an unknown noop-class status falls back to the peer-lock wording rather than throwing', () => {
@@ -1335,6 +1355,88 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       attempts: 2,
       fixerSpawnId: 'fixer-2',
     });
+  });
+
+  it('EI-203121: buildCheckpointDetail persists bounded per-leg execution identity beside repairQueue', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      repairQueue: {
+        schemaVersion: 1,
+        phase: 'awaiting-fixer',
+        candidate: 'a'.repeat(40),
+        base: 'b'.repeat(40),
+        repairHead: 'c'.repeat(40),
+        worktreePath: '/tmp/repair',
+        attempts: 1,
+        openedAtMs: 1,
+        updatedAtMs: 2,
+        fixerSpawnId: 'fixer-1',
+        failingTests: ['lib/broken.test.ts'],
+      },
+      postSuiteLegs: Array.from({ length: 35 }, (_, index) => ({
+        id: `leg-${index}-${'i'.repeat(200)}`,
+        status: 'failed' as const,
+        durationMs: 12.9,
+        skipReason: 's'.repeat(700),
+        executionIdentity: {
+          runId: 'r'.repeat(200),
+          candidate: 'c'.repeat(80),
+          treeDir: '/tree/'.padEnd(1200, 't'),
+          cwd: '/cwd/'.padEnd(1200, 'w'),
+          headAtStart: 'h'.repeat(80),
+          dependencies: {
+            nodeModules: {
+              hash: 'd'.repeat(200),
+              inode: 42,
+              source: '/deps/'.padEnd(1200, 'd'),
+            },
+          },
+          setup: { identity: 'u'.repeat(300), output: 'o'.repeat(1500) },
+          result: {
+            status: 'failed' as const,
+            exit: 'completed' as const,
+            exitCode: 1,
+            output: 'x'.repeat(2500),
+          },
+        },
+      })),
+    });
+
+    type SerializedLeg = {
+      id: string;
+      durationMs: number;
+      skipReason: string;
+      executionIdentity: {
+        runId: string;
+        candidate: string;
+        treeDir: string;
+        cwd: string;
+        headAtStart: string;
+        dependencies: { nodeModules: { hash: string; source: string } };
+        setup: { identity: string; output: string };
+        result: { output: string };
+      };
+    };
+    const legs = d.postSuiteLegs as SerializedLeg[];
+    expect(legs).toHaveLength(32);
+    expect(legs[0].id).toHaveLength(128);
+    expect(legs[0].durationMs).toBe(12);
+    expect(legs[0].skipReason).toHaveLength(500);
+    expect(legs[0].executionIdentity).toMatchObject({
+      runId: 'r'.repeat(128),
+      candidate: 'c'.repeat(64),
+      headAtStart: 'h'.repeat(64),
+      result: { status: 'failed', exit: 'completed', exitCode: 1 },
+    });
+    expect(legs[0].executionIdentity.treeDir).toHaveLength(1000);
+    expect(legs[0].executionIdentity.cwd).toHaveLength(1000);
+    expect(legs[0].executionIdentity.dependencies.nodeModules.hash).toHaveLength(128);
+    expect(legs[0].executionIdentity.dependencies.nodeModules.source).toHaveLength(1000);
+    expect(legs[0].executionIdentity.setup.identity).toHaveLength(200);
+    expect(legs[0].executionIdentity.setup.output).toHaveLength(1000);
+    expect(legs[0].executionIdentity.result.output).toHaveLength(2000);
+    expect(d.repairQueue).toMatchObject({ phase: 'awaiting-fixer', fixerSpawnId: 'fixer-1' });
   });
 
   it('EI-15849: buildCheckpointDetail persists isolationNote even when the gate is NOT absorbed (red) — the absorber\'s reasoning must survive past the truncated console log', () => {
