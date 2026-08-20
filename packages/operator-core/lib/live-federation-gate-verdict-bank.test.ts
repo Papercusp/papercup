@@ -174,6 +174,46 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     expect('live-fed-gate-20260819-174217').toMatch(/^live-fed-gate-[0-9]/);
   });
 
+  it('never lets host load mask a build or preflight RED as SKIPPED-STORM', () => {
+    const eligibility = gate.match(/^storm_downgrade_eligible\(\) \{[\s\S]*?^\}$/m)?.[0];
+    expect(eligibility, 'could not extract storm_downgrade_eligible()').toBeTruthy();
+
+    const evaluate = (opts: { build?: boolean; local?: string; content?: string }): string => {
+      const dir = mkdtempSync(join(tmpdir(), 'lfg-storm-eligibility-'));
+      if (opts.local !== undefined) writeFileSync(join(dir, 'local-matrix.out'), opts.local);
+      if (opts.content !== undefined) writeFileSync(join(dir, 'content-matrix.out'), opts.content);
+      const script = [
+        'set -euo pipefail',
+        `WORK=${JSON.stringify(dir)}`,
+        `FAIL_BUILD=${opts.build ? 1 : 0}`,
+        `MATRIX_RES=${opts.content === undefined ? 'SKIPPED' : 'FAIL'}`,
+        'FROMREPO_RES=SKIPPED',
+        'WITNESS_RES=SKIPPED',
+        `MATRIXFULL_RES=${opts.local === undefined ? 'SKIPPED' : 'FAIL'}`,
+        eligibility!,
+        'if storm_downgrade_eligible; then echo ELIGIBLE; else echo "BLOCKED:$STORM_DOWNGRADE_BLOCKER"; fi',
+      ].join('\n');
+      const result = spawnSync('bash', ['-c', script], { encoding: 'utf8' });
+      expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
+      return result.stdout.trim();
+    };
+
+    // Permanent pre-fix controls: a high shared-host load is compatible with all three
+    // fixtures. The old branch inspected ONLY that number, so it downgraded each one.
+    expect(192.88).toBeGreaterThan(115);
+    expect(evaluate({ build: true })).toBe('BLOCKED:sidecar-build failed before smoke execution');
+    expect(evaluate({ local: "FATAL(preflight): no gh token for 'aviynw'\n" })).toBe(
+      'BLOCKED:local-matrix failed preflight before workload execution',
+    );
+    expect(evaluate({ content: 'ERROR: credential preflight rejected this run\n' })).toBe(
+      'BLOCKED:content-matrix failed preflight before workload execution',
+    );
+
+    // Positive control: keep the intended legacy storm path reachable for an execution-stage
+    // failure. This test narrows the downgrade; it does not vacuously disable it.
+    expect(evaluate({ local: '  FAIL  concurrent_lww  ✗ did not converge\n' })).toBe('ELIGIBLE');
+  });
+
   it('never lets a banking failure fail the gate', () => {
     const fn = gate.match(/^bank_verdict\(\) \{[\s\S]*?^\}$/m)?.[0];
     expect(fn, 'could not extract bank_verdict()').toBeTruthy();
