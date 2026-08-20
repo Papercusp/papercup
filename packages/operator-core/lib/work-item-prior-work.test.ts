@@ -15,7 +15,9 @@ import {
   AUTHORSHIP_REVALIDATION_MIN_AGE_MS,
   authorshipRevalidationHintFromRow,
   authorshipRevalidationWarning,
+  excludeCurrentClaimant,
   parseWorkedByHistory,
+  priorWorkHintFromRow,
   priorWorkWarning,
   type AuthorshipRevalidationRow,
   type ClaimTimePriorWorkHint,
@@ -117,6 +119,45 @@ describe('priorWorkWarning', () => {
     // The weakest possible signal must still produce a warning — this is the row shape left by a
     // holder that died without ever releasing cleanly.
     expect(priorWorkWarning(hint({ attempts: 2 }))).toMatch(/PRIOR WORK/);
+  });
+});
+
+describe('current-claimant exclusion', () => {
+  const claimedRow = {
+    taken_by: 'su-current',
+    attempts: 0,
+    last_released_by: null,
+    last_released_at: null,
+    worked_by_history: [{ owner: 'su-current' }],
+  };
+
+  it('does not classify a fresh post-claim row as prior work', () => {
+    expect(priorWorkHintFromRow(claimedRow, { currentClaimant: 'su-current' })).toBeNull();
+  });
+
+  it('retains a peer history entry while excluding only the current claimant', () => {
+    expect(
+      priorWorkHintFromRow(
+        { ...claimedRow, worked_by_history: [{ owner: 'su-peer' }, { owner: 'su-current' }] },
+        { currentClaimant: 'su-current' },
+      ),
+    ).toMatchObject({ priorWorkers: ['su-peer'] });
+  });
+
+  it('preserves real release provenance from an earlier claim by the same agent', () => {
+    expect(
+      priorWorkHintFromRow(
+        { ...claimedRow, last_released_by: 'su-current', last_released_at: '2026-08-19T12:00:00Z' },
+        { currentClaimant: 'su-current' },
+      ),
+    ).toMatchObject({ lastReleasedBy: 'su-current', priorWorkers: [] });
+  });
+
+  it('normalizes a missing or whitespace-only claimant without mutating the input', () => {
+    const workers = ['su-peer', 'su-current'];
+    expect(excludeCurrentClaimant(workers, '  ')).toEqual(workers);
+    expect(excludeCurrentClaimant(workers, ' su-current ')).toEqual(['su-peer']);
+    expect(workers).toEqual(['su-peer', 'su-current']);
   });
 });
 

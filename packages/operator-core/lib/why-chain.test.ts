@@ -152,6 +152,25 @@ describe('computeWhyChain (EI-7349)', () => {
     }
   });
 
+  it('scopes the live snapshot read to the requested harness', async () => {
+    const snapshotSpy = vi.spyOn(gitPipelineStats, 'gitPipelineSnapshot').mockImplementation(async (slug) =>
+      snap({
+        gate: { consecutiveReds: slug === 'scout-runtime' ? 2 : 0 },
+      }),
+    );
+    const input = deps({ harnessSlug: 'scout-runtime' });
+    delete input.loadSnapshot;
+    try {
+      const res = await computeWhyChain(input);
+      expect(snapshotSpy).toHaveBeenCalledWith('scout-runtime', { useSpawnerSidecar: false });
+      expect(res.configured.harnessSlug).toBe('scout-runtime');
+      expect(res.rootCause?.stage).toBe('gate');
+      expect(res.summary).toContain('2 consecutive');
+    } finally {
+      snapshotSpy.mockRestore();
+    }
+  });
+
   it('gate red but not stalled: degraded, cites recent failing files', async () => {
     const res = await computeWhyChain(
       deps({

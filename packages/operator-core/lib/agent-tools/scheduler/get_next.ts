@@ -1251,6 +1251,7 @@ export default defineTool({
             harness: wi.harness ?? null,
             workItemId: wi.id,
             workspaceId: ident.workspaceId ?? undefined,
+            currentClaimant: ident.ownerId,
           });
           if (!raw) return null;
           const priorWork = {

@@ -811,7 +811,7 @@ export async function computePipelineHealth(
 export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChainResult> {
   const loadSnapshot =
     deps.loadSnapshot ??
-    (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
+    (() => gitPipelineSnapshot(deps.harnessSlug, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
   const loadAccounts = deps.loadAccounts ?? ((ws?: string) => accountStatus(ws));
   const loadAdmission = deps.loadAdmission ?? loadAdmissionDefault;
 

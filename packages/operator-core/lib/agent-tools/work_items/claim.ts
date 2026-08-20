@@ -548,6 +548,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
         workspaceId: identity.workspaceId ?? undefined,
+        currentClaimant: claimer,
       }).catch(() => null),
       getClaimTimeAuthorshipRevalidationHint({
         harness: workItem.harness ?? it.harness ?? null,

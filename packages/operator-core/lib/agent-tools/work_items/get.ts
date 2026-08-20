@@ -240,6 +240,7 @@ export default defineTool({
           getClaimTimePriorWorkHint({
             harness: workItem.harness,
             workItemId: workItem.id,
+            currentClaimant: workItem.assignee,
           }).catch(() => null),
             threadWindowRead,
           ]);

@@ -50,6 +50,11 @@ describe('P-004 — prior work is distinguishable at every claim-decision surfac
       `${rel} must surface the P-001 prior-work banner — an already-worked item is otherwise ` +
         `indistinguishable from never-started work on this surface`,
     ).toBe(true);
+    expect(
+      src.includes('currentClaimant'),
+      `${rel} must identify the post-claim holder so migration 806's current history entry ` +
+        `cannot manufacture a prior-work warning for a fresh claim`,
+    ).toBe(true);
   });
 
   const worked = {

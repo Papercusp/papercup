@@ -58,7 +58,7 @@ export interface ClaimTimePriorWorkHint {
   hasCheckpoint: boolean | 'unknown';
 }
 
-interface PriorWorkRow {
+export interface PriorWorkRow {
   taken_by: string | null;
   attempts: number | string | null;
   last_released_by: string | null;
@@ -129,6 +129,23 @@ function toEpochMs(v: string | Date | null): number | null {
   if (v == null) return null;
   const ms = v instanceof Date ? v.getTime() : Date.parse(String(v));
   return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Remove the claimant's current post-claim history entry from the prior-worker signal.
+ *
+ * Migration 806 appends `taken_by` to `worked_by_history` in the same write that claims an
+ * item. Claim-time callers therefore read the row AFTER that append. Without this seam, a
+ * genuinely fresh claim looks like prior work by the claimant themselves. Keep the release
+ * provenance fields separate: a claimant who previously released the item still has real prior
+ * work and must remain eligible for the warning through `last_released_by`/`last_released_at`.
+ */
+export function excludeCurrentClaimant(
+  priorWorkers: readonly string[],
+  currentClaimant?: string | null,
+): string[] {
+  const claimant = currentClaimant?.trim();
+  return claimant ? priorWorkers.filter((worker) => worker !== claimant) : [...priorWorkers];
 }
 
 /** Bigint epoch-ms columns arrive as either numbers or decimal strings. */
@@ -260,6 +277,8 @@ export async function getClaimTimePriorWorkHint(ref: {
   workItemId: string;
   workspaceId?: string;
   hasCheckpoint?: boolean | 'unknown';
+  /** The holder written by the claim immediately before this post-claim read. */
+  currentClaimant?: string | null;
 }): Promise<ClaimTimePriorWorkHint | null> {
   const ws = resolveConcreteWorkspaceId(ref.workspaceId);
   if (!ws || !ref.workItemId) return null;
@@ -273,30 +292,41 @@ export async function getClaimTimePriorWorkHint(ref: {
          AND feature_id = ${ref.workItemId}
          AND (${harness}::text IS NULL OR harness_slug = ${harness})
        LIMIT 1`;
-    const row = rows[0];
-    if (!row) return null;
-
-    const attempts = toCount(row.attempts);
-    const releasedAtMs = toEpochMs(row.last_released_at);
-    const lastReleasedBy = String(row.last_released_by ?? '').trim() || null;
-    const priorWorkers = parseWorkedByHistory(row.worked_by_history);
-
-    // The no-signal check. `taken_by` is deliberately NOT a signal: it means the item is held
-    // RIGHT NOW, which the claim path already reports as a conflict — it says nothing about
-    // whether work happened before. Everything below is strictly historical.
-    if (attempts === 0 && releasedAtMs == null && lastReleasedBy == null && priorWorkers.length === 0) {
-      return null;
-    }
-    return {
-      lastReleasedBy,
-      releasedAtMs,
-      attempts,
-      priorWorkers,
-      hasCheckpoint: ref.hasCheckpoint === 'unknown' ? 'unknown' : ref.hasCheckpoint === true,
-    };
+    return priorWorkHintFromRow(rows[0] ?? null, {
+      currentClaimant: ref.currentClaimant,
+      hasCheckpoint: ref.hasCheckpoint,
+    });
   } catch {
     return null;
   }
+}
+
+/** Pure post-claim row fold used by the database reader and its regression tests. */
+export function priorWorkHintFromRow(
+  row: PriorWorkRow | null,
+  opts: { currentClaimant?: string | null; hasCheckpoint?: boolean | 'unknown' } = {},
+): ClaimTimePriorWorkHint | null {
+  if (!row) return null;
+
+  const attempts = toCount(row.attempts);
+  const releasedAtMs = toEpochMs(row.last_released_at);
+  const lastReleasedBy = String(row.last_released_by ?? '').trim() || null;
+  const priorWorkers = excludeCurrentClaimant(parseWorkedByHistory(row.worked_by_history), opts.currentClaimant);
+
+  // The no-signal check. `taken_by` is deliberately NOT a signal: it means the item is held
+  // RIGHT NOW, which the claim path already reports as a conflict — it says nothing about
+  // whether work happened before. Everything below is strictly historical. The current holder's
+  // post-claim history entry is excluded above because migration 806 appends it before this read.
+  if (attempts === 0 && releasedAtMs == null && lastReleasedBy == null && priorWorkers.length === 0) {
+    return null;
+  }
+  return {
+    lastReleasedBy,
+    releasedAtMs,
+    attempts,
+    priorWorkers,
+    hasCheckpoint: opts.hasCheckpoint === 'unknown' ? 'unknown' : opts.hasCheckpoint === true,
+  };
 }
 
 /**
