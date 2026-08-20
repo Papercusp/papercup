@@ -19,6 +19,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('./events/await/engine', () => ({
   cancelSupersededCandidateAwaits: vi.fn(async () => ({ cancelled: 0, ids: [] })),
 }));
+import { cancelSupersededCandidateAwaits } from './events/await/engine';
 import {
   buildCheckpointSystemdArgv,
   checkpointRunLogPath,
@@ -45,6 +46,7 @@ import {
   assessPreLaunchExclusion,
   renderPreLaunchRefusal,
   PRELAUNCH_EXCLUSION_MAX_WAIT_SEC,
+  cancelStaleCheckpointAwaits,
 } from './release-checkpoint-launch';
 // WI-38356: the control + calibration cases below call the underlying reads directly, to prove
 // the submodule fixture is exercising the blind spot rather than a broken fake.
@@ -1182,6 +1184,27 @@ describe('stopActiveCheckpointUnit (EI-9672: the supported cancel a stale run ha
     const r = stopActiveCheckpointUnit('some-unit', execFn);
     expect(r.stopped).toBe(false);
     expect(r.reason).toContain('Unit not loaded');
+  });
+});
+
+describe('cancelStaleCheckpointAwaits (EI-20391462658650094: candidate replacement wake families)', () => {
+  it('passes global and pipeline-scoped green, red, and inconclusive keys to the durable wake helper', async () => {
+    const candidateWake = vi.mocked(cancelSupersededCandidateAwaits);
+    candidateWake.mockClear().mockResolvedValue({ cancelled: 0, ids: [11] });
+
+    await expect(cancelStaleCheckpointAwaits('/tree', 'deadbeef')).resolves.toEqual({ cancelled: 0 });
+
+    expect(candidateWake).toHaveBeenCalledWith({
+      keys: [
+        'release:green',
+        'release:green:tree',
+        'green-checkpoint:red',
+        'green-checkpoint:red:tree',
+        'green-checkpoint:inconclusive',
+        'green-checkpoint:inconclusive:tree',
+      ],
+      staleCandidateSha: 'deadbeef',
+    });
   });
 });
 

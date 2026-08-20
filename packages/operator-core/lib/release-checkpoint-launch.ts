@@ -1769,21 +1769,23 @@ function isCheckpointUnitCollision(stderr: string): boolean {
 }
 
 /**
- * WI-4957 — retire pending checkpoint-family `events:await` registrations bound (via
- * candidateSha payload_filter) to a candidate whose run we just KILLED (the EI-9672
- * `replaceStale` stop below) before it could ever produce a verdict.
+ * WI-4957 / EI-20391462658650094 — wake pending checkpoint-family `events:await`
+ * registrations bound (via candidateSha payload_filter) to a candidate whose run we
+ * just KILLED (the EI-9672 `replaceStale` stop below) before it could ever produce a
+ * verdict.
  *
  * Without this, `checkpoint:await { candidateSha }` registered against that exact
  * candidate has no way to learn its run is dead — it sleeps on, indistinguishable from
- * "still judging", until its own timeout. That indistinguishable window is the hazard:
- * a stray/out-of-order delivery for a sha whose run was superseded must never be
- * mistakable for a live verdict that could authorize a deploy. See
+ * "still judging", until its own timeout. The durable candidate-replaced wake lets the
+ * subscriber re-orient and register for the replacement run. See
  * events/await/engine.ts's cancelSupersededCandidateAwaits for the exact (narrow,
- * payload-filter-matched) cancellation rule.
+ * payload-filter-matched) wake rule.
  *
  * Exported + the 5th positional param of launchDetachedCheckpoint below so this is
- * injectable/unit-testable without a real events:await store. Best-effort/fail-soft:
- * never blocks the fresh launch it runs ahead of.
+ * injectable/unit-testable without a real events:await store. The legacy return field
+ * remains `cancelled` for callers, although the engine now delivers a wake instead of
+ * cancelling the await. Best-effort/fail-soft: never blocks the fresh launch it runs
+ * ahead of.
  */
 export async function cancelStaleCheckpointAwaits(
   root: string,
@@ -1800,13 +1802,20 @@ export async function cancelStaleCheckpointAwaits(
     const { cancelSupersededCandidateAwaits } = await import('./events/await/engine');
     const pipeline = checkpointPipelineName(root);
     const result = await cancelSupersededCandidateAwaits({
-      keys: ['release:green', `release:green:${pipeline}`, 'green-checkpoint:red', `green-checkpoint:red:${pipeline}`],
+      keys: [
+        'release:green',
+        `release:green:${pipeline}`,
+        'green-checkpoint:red',
+        `green-checkpoint:red:${pipeline}`,
+        'green-checkpoint:inconclusive',
+        `green-checkpoint:inconclusive:${pipeline}`,
+      ],
       staleCandidateSha,
     });
     return { cancelled: result.cancelled };
   } catch (e) {
     console.error(
-      `[release-checkpoint-launch] stale-await cancellation failed (non-fatal — the fresh run still launches): ${e instanceof Error ? e.message : e}`,
+      `[release-checkpoint-launch] candidate-replaced wake failed (non-fatal — the fresh run still launches): ${e instanceof Error ? e.message : e}`,
     );
     return { cancelled: 0 };
   }
@@ -1826,8 +1835,8 @@ export async function cancelStaleCheckpointAwaits(
  *
  * `spawnFn`/`execFn`/`readLogHead` are injectable so the tool handler is unit-testable without
  * launching anything or shelling out to systemctl. `cancelStaleAwaits` (WI-4957) is likewise
- * injectable so the replaceStale path's await-cancellation is testable without a real DB, and
- * `recordDisplacement` (EI-19323010647367612) the same for the pre-stop log marker.
+ * injectable so the replaceStale path's candidate-replaced wake is testable without a real
+ * DB, and `recordDisplacement` (EI-19323010647367612) the same for the pre-stop log marker.
  */
 export function launchDetachedCheckpoint(
   opts: LaunchCheckpointOpts = {},
@@ -1906,8 +1915,8 @@ export function launchDetachedCheckpoint(
           // spawn, attach the child's event listeners) must run in the SAME tick — a caller
           // that spawns the child and immediately drives its events (every test in this file
           // does exactly that) would otherwise race a listener that isn't attached yet. The
-          // cancellation itself is already fail-soft/best-effort (see cancelStaleCheckpointAwaits),
-          // so firing it without blocking loses nothing.
+          // The wake itself is already fail-soft/best-effort (see cancelStaleCheckpointAwaits),
+          // so firing it without blocking keeps the child listener in the same tick.
           if (active.candidate) {
             void cancelStaleAwaits(root, active.candidate).catch(() => {});
           }

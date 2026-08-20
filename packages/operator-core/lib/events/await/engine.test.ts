@@ -535,59 +535,95 @@ describe('emitAwaitedEvent — EI-12457: sibling-await cancellation on fire', ()
   });
 });
 
-describe('cancelSupersededCandidateAwaits (WI-4957: a killed run cannot leave a live-looking wait behind)', () => {
+describe('cancelSupersededCandidateAwaits (WI-4957 / EI-20391462658650094: a replaced candidate wakes its bound waiter)', () => {
+  let previousAutoPump = true;
+
   beforeEach(() => {
     h.store.listActiveAwaitsForKey.mockReset();
     h.store.cancelAwaitsByIds.mockReset().mockResolvedValue(0);
+    previousAutoPump = setAutoPumpEnabledForTests(false);
   });
 
-  it('cancels only rows whose payload_filter is bound to the STALE candidate — a global (unbound) wait is left alone', async () => {
+  afterEach(() => {
+    setAutoPumpEnabledForTests(previousAutoPump);
+  });
+
+  it('claims and durably wakes only matching once wake rows — unbound, different-candidate, notify, and standing rows stay untouched', async () => {
     h.store.listActiveAwaitsForKey.mockImplementation(async (key: string) => {
       if (key !== 'release:green:papercusp') return [];
       return [
-        // Bound to the stale candidate — must be cancelled.
-        awaitRow({ id: 11, subscriberId: 'su-bound-stale', payloadFilter: { sha: { startsWith: 'deadbeef' } } }),
+        // Bound to the stale candidate — must be claimed and woken.
+        awaitRow({ id: 11, subscriberId: 'su-bound-stale', once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'deadbeef' } } }),
+        // Bound to the stale candidate but notify-only — must be left alone.
+        awaitRow({ id: 12, subscriberId: 'su-notify', once: true, policy: 'notify', payloadFilter: { sha: { startsWith: 'deadbeef' } } }),
+        // Bound to the stale candidate but standing — must be left alone.
+        awaitRow({ id: 13, subscriberId: 'su-standing', once: false, policy: 'wake', payloadFilter: { sha: { startsWith: 'deadbeef' } } }),
         // Bound to a DIFFERENT candidate — must be left alone.
-        awaitRow({ id: 12, subscriberId: 'su-bound-other', payloadFilter: { sha: { startsWith: 'cafef00d' } } }),
+        awaitRow({ id: 14, subscriberId: 'su-bound-other', once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'cafef00d' } } }),
         // Unbound (global "next verdict, any candidate") — must be left alone; the fresh
         // run's verdict is exactly what it's still waiting for.
-        awaitRow({ id: 13, subscriberId: 'su-global', payloadFilter: null }),
+        awaitRow({ id: 15, subscriberId: 'su-global', once: true, policy: 'wake', payloadFilter: null }),
       ];
     });
-    h.store.cancelAwaitsByIds.mockResolvedValueOnce(1);
+    h.store.claimSpecificOnceAwaits.mockResolvedValueOnce([
+      awaitRow({ id: 11, subscriberId: 'su-bound-stale', once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'deadbeef' } } }),
+    ]);
 
     const result = await cancelSupersededCandidateAwaits({
       keys: ['release:green', 'release:green:papercusp', 'green-checkpoint:red', 'green-checkpoint:red:papercusp'],
       staleCandidateSha: 'deadbeef1234',
     });
 
-    expect(result).toEqual({ cancelled: 1, ids: [11] });
-    expect(h.store.cancelAwaitsByIds).toHaveBeenCalledTimes(1);
-    expect(h.store.cancelAwaitsByIds).toHaveBeenCalledWith([11]);
+    expect(result).toEqual({ cancelled: 0, ids: [11] });
+    expect(h.store.claimSpecificOnceAwaits).toHaveBeenCalledWith([11]);
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith({
+      awaits: [expect.objectContaining({ id: 11, subscriberId: 'su-bound-stale' })],
+      payload: { reason: 'candidate-replaced', sha: 'deadbeef1234' },
+      summary: expect.stringContaining('candidate replacement'),
+      source: 'release:checkpoint-run:candidate-replaced',
+    });
+    expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
   });
 
-  it('nothing bound to the stale candidate → no cancel call at all', async () => {
+  it('nothing eligible bound to the stale candidate → no claim or delivery', async () => {
     h.store.listActiveAwaitsForKey.mockResolvedValue([awaitRow({ id: 1, payloadFilter: null })]);
     const result = await cancelSupersededCandidateAwaits({ keys: ['release:green'], staleCandidateSha: 'deadbeef' });
     expect(result).toEqual({ cancelled: 0, ids: [] });
+    expect(h.store.claimSpecificOnceAwaits).not.toHaveBeenCalled();
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
     expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
   });
 
   it('a lookup failure on one key degrades to skipping that key, never throws', async () => {
     h.store.listActiveAwaitsForKey.mockImplementation(async (key: string) => {
       if (key === 'release:green') throw new Error('db blip');
-      return [awaitRow({ id: 5, payloadFilter: { sha: { startsWith: 'abc123' } } })];
+      return [awaitRow({ id: 5, once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'abc123' } } })];
     });
-    h.store.cancelAwaitsByIds.mockResolvedValueOnce(1);
+    h.store.claimSpecificOnceAwaits.mockResolvedValueOnce([awaitRow({ id: 5, once: true, policy: 'wake' })]);
     const result = await cancelSupersededCandidateAwaits({ keys: ['release:green', 'release:green:papercusp'], staleCandidateSha: 'abc123456' });
-    expect(result).toEqual({ cancelled: 1, ids: [5] });
+    expect(result).toEqual({ cancelled: 0, ids: [5] });
+    expect(h.store.insertDeliveries).toHaveBeenCalledTimes(1);
   });
 
-  it('a cancel-store failure degrades to {cancelled:0}, never throws', async () => {
-    h.store.listActiveAwaitsForKey.mockResolvedValue([awaitRow({ id: 5, payloadFilter: { sha: { startsWith: 'abc123' } } })]);
-    h.store.cancelAwaitsByIds.mockRejectedValueOnce(new Error('db down'));
+  it('an atomic claim failure degrades to {cancelled:0}, never throws', async () => {
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 5, once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'abc123' } } }),
+    ]);
+    h.store.claimSpecificOnceAwaits.mockRejectedValueOnce(new Error('db down'));
     const result = await cancelSupersededCandidateAwaits({ keys: ['release:green'], staleCandidateSha: 'abc123456' });
     expect(result).toEqual({ cancelled: 0, ids: [] });
+    expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+  });
+
+  it('kicks the durable delivery pump after enqueueing a candidate-replaced wake', async () => {
+    setAutoPumpEnabledForTests(true);
+    h.store.listActiveAwaitsForKey.mockResolvedValue([
+      awaitRow({ id: 7, once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'abc123' } } }),
+    ]);
+    h.store.claimSpecificOnceAwaits.mockResolvedValueOnce([awaitRow({ id: 7, once: true, policy: 'wake' })]);
+
+    await cancelSupersededCandidateAwaits({ keys: ['release:green'], staleCandidateSha: 'abc123456' });
+    await vi.waitFor(() => expect(h.store.claimDueDeliveries).toHaveBeenCalled());
   });
 });
 
