@@ -33,14 +33,14 @@
  * Importing the agent-tools barrel registers every operator-core + agent-mcp tool
  * (side-effect imports); `listAllProjectedTools()` then reads the populated registry.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import '@papercusp/operator-core/lib/agent-tools/index.ts';
-import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import { readFileSync, writeFileSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import "@papercusp/operator-core/lib/agent-tools/index.ts";
+import { listAllProjectedTools } from "@papercusp/agent-mcp";
 
-const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const OUT = join(REPO_ROOT, '.papercusp', 'tool-catalog.json');
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const OUT = join(REPO_ROOT, ".papercusp", "tool-catalog.json");
 
 interface CatalogEntry {
   name: string | null;
@@ -54,11 +54,13 @@ interface CatalogEntry {
   guidance?: { when?: string; notWhen?: string; chaining?: string };
 }
 
-function methodsOf(http: { methods?: readonly string[]; method?: string } | undefined): string[] {
+function methodsOf(
+  http: { methods?: readonly string[]; method?: string } | undefined,
+): string[] {
   if (!http) return [];
   if (http.methods && http.methods.length > 0) return [...http.methods];
   if (http.method) return [http.method];
-  return ['POST']; // the framework default
+  return ["POST"]; // the framework default
 }
 
 const entries: CatalogEntry[] = listAllProjectedTools().map((t) => {
@@ -79,7 +81,9 @@ const entries: CatalogEntry[] = listAllProjectedTools().map((t) => {
     http,
     description: t.description,
     capabilities: [...t.capabilities],
-    ...(t.agentRoles && t.agentRoles.length > 0 ? { agentRoles: [...t.agentRoles] } : {}),
+    ...(t.agentRoles && t.agentRoles.length > 0
+      ? { agentRoles: [...t.agentRoles] }
+      : {}),
     ...(t.profile ? { profile: t.profile } : {}),
     ...(t.harness ? { harness: t.harness } : {}),
     ...(t.public ? { public: true } : {}),
@@ -88,33 +92,41 @@ const entries: CatalogEntry[] = listAllProjectedTools().map((t) => {
 });
 
 // Stable sort key so the artifact diffs cleanly: MCP name, else HTTP path.
-const sortKey = (e: CatalogEntry): string => e.name ?? e.http?.path ?? '';
-entries.sort((a, b) => (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
+const sortKey = (e: CatalogEntry): string => e.name ?? e.http?.path ?? "";
+entries.sort((a, b) =>
+  sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0,
+);
 
 const catalog = {
   _comment:
-    'GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).',
+    "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
   count: entries.length,
   tools: entries,
 };
 
-const jsonOut = JSON.stringify(catalog, null, 2) + '\n';
+const jsonOut = JSON.stringify(catalog, null, 2) + "\n";
 
-if (process.argv.includes('--check')) {
-  let current = '';
+if (process.argv.includes("--check")) {
+  let current = "";
   try {
-    current = readFileSync(OUT, 'utf8');
+    current = readFileSync(OUT, "utf8");
   } catch {
     /* missing → treat as stale */
   }
   if (current !== jsonOut) {
-    process.stderr.write('✗ .papercusp/tool-catalog.json is stale. Run: npm run gen:tool-catalog\n');
+    process.stderr.write(
+      "✗ .papercusp/tool-catalog.json is stale. Run: npm run gen:tool-catalog\n",
+    );
     process.exit(1);
   }
-  process.stdout.write(`✓ .papercusp/tool-catalog.json is up to date (${entries.length} tools)\n`);
+  process.stdout.write(
+    `✓ .papercusp/tool-catalog.json is up to date (${entries.length} tools)\n`,
+  );
 } else {
   writeFileSync(OUT, jsonOut);
-  process.stdout.write(`✓ wrote ${entries.length} tools to .papercusp/tool-catalog.json\n`);
+  process.stdout.write(
+    `✓ wrote ${entries.length} tools to .papercusp/tool-catalog.json\n`,
+  );
 }
 // The agent-tools registry import opens keep-alive handles (pools/timers), so the
 // process never exits naturally — exit explicitly or callers hang until killed.

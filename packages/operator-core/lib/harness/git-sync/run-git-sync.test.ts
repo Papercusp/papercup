@@ -189,9 +189,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(runGenerator).toHaveBeenCalledOnce();
     expect(out.status).toBe('synced');
     expect(logs.join('\n')).toMatch(/tool-catalog regeneration failed.*continuing with the commit fail-soft/);
-    expect(git(originDir, 'show', 'main:packages/operator-core/lib/agent-tools/example.ts')).toContain(
-      'version = 2',
-    );
+    expect(git(originDir, 'show', 'main:packages/operator-core/lib/agent-tools/example.ts')).toContain('version = 2');
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
@@ -263,9 +261,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(calls.filter((args) => args[0] === '-c' && args[1] === rewrite)).toEqual([
       ['-c', rewrite, 'push', 'origin', 'HEAD:main'],
     ]);
-    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain(
-      'email-verification-fallback.txt',
-    );
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('email-verification-fallback.txt');
   });
 
   it('EI-20378687739683215: does not rewrite a non-GitHub email-verification rejection', async () => {

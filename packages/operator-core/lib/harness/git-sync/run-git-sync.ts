@@ -351,9 +351,7 @@ const defaultRunToolCatalogGenerator: RunToolCatalogGenerator = (repoPath) =>
     };
     const killer = setTimeout(() => {
       timedOut = true;
-      out.stderr.append(
-        `${out.stderr.peek() ? '\n' : ''}tool-catalog regeneration timed out after ${timeoutMs}ms`,
-      );
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}tool-catalog regeneration timed out after ${timeoutMs}ms`);
       try {
         child.kill('SIGKILL');
       } catch {
@@ -396,7 +394,12 @@ export async function regenerateToolCatalogBeforeCommit(
     // Do not run this papercusp-specific generator in arbitrary repositories
     // that merely happen to contain a similarly named dirty path.
     const tracked = await runGit(['ls-files', '--', ...TOOL_CATALOG_TRACKED_PATHS], repoPath);
-    const trackedPaths = new Set(tracked.stdout.split('\n').map((p) => p.trim()).filter(Boolean));
+    const trackedPaths = new Set(
+      tracked.stdout
+        .split('\n')
+        .map((p) => p.trim())
+        .filter(Boolean),
+    );
     if (tracked.code !== 0 || !TOOL_CATALOG_TRACKED_PATHS.every((path) => trackedPaths.has(path))) return;
 
     const artifactPath = join(repoPath, TOOL_CATALOG_ARTIFACT_PATH);
@@ -453,10 +456,8 @@ export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: st
  *  account behind that key has no verified email. The configured HTTPS credential may belong to
  *  a different, write-capable automation account, so this is the same credential-plane failure
  *  class as a missing SSH key — but only after the configured remote is proven to be GitHub SSH. */
-export const isGitHubSshEmailVerificationFailure = (result: {
-  stdout: string;
-  stderr: string;
-}): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
+export const isGitHubSshEmailVerificationFailure = (result: { stdout: string; stderr: string }): boolean =>
+  /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
 const isGitHubSshRemoteUrl = (url: string): boolean =>
   /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url.trim());
