@@ -90,6 +90,7 @@ import { FLAGS } from '@papercusp/flags';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
+import { checkoutRootForPath, discoverKnownHiveCheckoutRoots } from '../testing/run';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
@@ -614,6 +615,7 @@ export function unresolvedPathsInCompletion(
 export function completionRepoRootsFromRegistry(
   primaryRoot: string | null,
   registry: Pick<HarnessRegistry, 'projects'>,
+  additionalRoots: readonly string[] = [],
 ): string[] {
   const roots = new Set<string>();
   if (primaryRoot) roots.add(nodePath.resolve(primaryRoot));
@@ -627,20 +629,46 @@ export function completionRepoRootsFromRegistry(
       roots.add(nodePath.resolve(workspaceRoot, siblingName));
     }
   }
+  // Keep the registry/sibling resolver pure for its existing callers, while allowing the
+  // completion path to append checkout roots discovered from absolute filesChanged paths or
+  // the canonical external-Hive homes. These are already validated by their discoverers;
+  // deduplication here preserves the primary Papercusp root's stable first position.
+  for (const additionalRoot of additionalRoots) {
+    if (typeof additionalRoot === 'string' && additionalRoot.trim()) {
+      roots.add(nodePath.resolve(additionalRoot));
+    }
+  }
   return [...roots];
 }
 
-async function completionRepoRootsForWorkspace(workspaceId?: string): Promise<string[]> {
+async function completionRepoRootsForWorkspace(
+  workspaceId?: string,
+  declaredPaths: readonly string[] = [],
+): Promise<string[]> {
   const primaryRoot = detectPapercupRoot();
+  const additionalRoots = [
+    ...discoverKnownHiveCheckoutRoots(),
+    ...declaredPaths
+      .map((path) => checkoutRootForPath(path))
+      .filter((root): root is string => Boolean(root)),
+  ];
   try {
     return completionRepoRootsFromRegistry(
       primaryRoot,
       await loadHarnessRegistry(resolveConcreteWorkspaceId(workspaceId)),
+      additionalRoots,
     );
   } catch {
     // This is an advisory check on an already-recorded completion. Registry trouble must never
-    // make the completion fail; preserve the old Papercusp-only behavior when it is available.
-    return primaryRoot ? [primaryRoot] : [];
+    // make the completion fail; preserve the primary root while retaining independently
+    // discovered Hive/path roots so an external completion is not silently stamped as Papercusp.
+    return [
+      ...new Set(
+        [primaryRoot, ...additionalRoots]
+          .filter((root): root is string => Boolean(root))
+          .map((root) => nodePath.resolve(root)),
+      ),
+    ];
   }
 }
 
@@ -1707,10 +1735,15 @@ async function completeOne(
 
   // Cross-repository completions are common: an su can coordinate through Papercusp while
   // verifying SideStage. Reuse the same registered-root fallback as the filesChanged audit,
-  // and only pay for the registry lookup when the primary checkout cannot resolve the paths.
+  // and pay for the registry lookup when the primary checkout cannot resolve the paths OR a
+  // declared absolute path identifies another supported checkout. The latter is important:
+  // unresolvedPathsInCompletion intentionally stays silent for paths outside its candidate
+  // root, so an absolute Hive path would otherwise skip this lookup and get Papercusp-stamped.
   const initialUnresolvedPaths = unresolvedPathsInCompletion(completionEvidenceForGate);
-  const registeredRepoRoots = initialUnresolvedPaths
-    ? await completionRepoRootsForWorkspace(ctx.workspaceId)
+  const declaredCompletionPaths = completionEvidenceForGate?.filesChanged ?? [];
+  const hasAbsoluteCheckoutPath = declaredCompletionPaths.some((path) => Boolean(checkoutRootForPath(path)));
+  const registeredRepoRoots = initialUnresolvedPaths || hasAbsoluteCheckoutPath
+    ? await completionRepoRootsForWorkspace(ctx.workspaceId, declaredCompletionPaths)
     : undefined;
 
   // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed

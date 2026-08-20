@@ -23,10 +23,11 @@
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
 import { describe, it, expect } from 'vitest';
+import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import runTool, { normalizeTestFilePaths } from '../run';
+import runTool, { discoverKnownHiveCheckoutRoots, normalizeTestFilePaths } from '../run';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -86,6 +87,13 @@ const GREEN_TARGET_TEST_NAME_FRAGMENT = 'computeFlakiness';
  */
 const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-port-straggler.test.ts';
 
+// The real SideStage checkout is the measured external-Hive case. Keep the target discovery
+// dynamic so this suite remains portable to boxes that do not have a local Hive seed; the test
+// is skipped there, while the live validation lane runs it whenever the target exists.
+const SIDESTAGE_HIVE_ROOT = discoverKnownHiveCheckoutRoots().find(
+  (root) => root.endsWith('/sidestage') && existsSync(join(root, 'apps/web/src/auction.test.tsx')),
+);
+
 /**
  * Every process in a `testing:run` invocation's tree (the router + the vitest
  * it spawns via `spawnSync`) inherits `PAPERCUSP_TEST_RUN_GROUP=<runId>` in its
@@ -110,6 +118,18 @@ async function pidsTaggedWithRun(runId: string): Promise<number[]> {
 }
 
 describe('testing:run (integration)', () => {
+  it.skipIf(!SIDESTAGE_HIVE_ROOT)('routes an absolute test path through its external Hive Vitest checkout', async () => {
+    const out = await body(
+      call({ files: [join(SIDESTAGE_HIVE_ROOT as string, 'apps/web/src/auction.test.tsx')] }),
+    );
+
+    expect(out.ok).toBe(true);
+    expect(out.failed).toBe(0);
+    expect(out.files).toBe(1);
+    expect(out.passed).toBeGreaterThan(0);
+    expect(out.root).toBe(SIDESTAGE_HIVE_ROOT);
+  }, 180_000);
+
   it('runs a real file through the router and returns a distilled green result', async () => {
     const out = await body(call({ files: [GREEN_TARGET] }));
 

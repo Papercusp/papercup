@@ -150,6 +150,19 @@ describe('unresolvedPathsInCompletion — stays SILENT (the fail-open contract)'
     ).toBeUndefined();
   });
 
+  it('resolves an absolute filesChanged path against its owning Hive checkout', () => {
+    expect(
+      unresolvedPathsInCompletion(ev([`${SIDESTAGE_ROOT}/apps/api/src/auction/auction.service.ts`]), {
+        ...probe,
+        repoRoots: [ROOT, SIDESTAGE_ROOT],
+      }),
+    ).toBeUndefined();
+  });
+
+  it('admits an explicitly discovered Hive root without changing primary-root ordering', () => {
+    expect(completionRepoRootsFromRegistry(ROOT, { projects: [] }, [SIDESTAGE_ROOT])).toEqual([ROOT, SIDESTAGE_ROOT]);
+  });
+
   it('skips a GLOB — that describes many files, it does not claim one path exists', () => {
     expect(unresolvedPathsInCompletion(ev(['packages/**/*.ts', 'lib/foo?.ts']), probe)).toBeUndefined();
   });

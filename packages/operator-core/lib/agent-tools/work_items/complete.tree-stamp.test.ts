@@ -292,6 +292,17 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toEqual({ headSha: SIDESTAGE_SHA });
   });
 
+  it('stamps the owning checkout when filesChanged uses an absolute path', () => {
+    const absolutePath = `${SIDESTAGE_ROOT}/apps/web/src/BuyerTab.thumbnail.test.tsx`;
+    expect(
+      completionTreeStampForEvidence(
+        { filesChanged: [absolutePath] },
+        [OPERATOR_ROOT, SIDESTAGE_ROOT],
+        { exists: (abs) => abs === absolutePath, readFile },
+      ),
+    ).toEqual({ headSha: SIDESTAGE_SHA });
+  });
+
   it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
     expect(
       completionTreeStampForEvidence(
