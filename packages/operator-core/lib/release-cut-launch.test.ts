@@ -61,10 +61,12 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     expect(buildCutEnv({}, sourceSha)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+      PAPERCUSP_SKIP_MOBILE: '1',
     });
     expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+      PAPERCUSP_SKIP_MOBILE: '1',
       WITH_MAC: '1',
       WITH_WINDOWS: '1',
       WITH_ARM64: '1',
@@ -73,6 +75,7 @@ describe('buildCutEnv — LOCAL-only enforced', () => {
     expect(buildCutEnv({ mac: false }, sourceSha)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+      PAPERCUSP_SKIP_MOBILE: '1',
     });
   });
 });
@@ -91,6 +94,7 @@ describe('buildCutArgv', () => {
     expect(inner).toContain(`rm -f ${CUT_DONE}`);
     expect(inner).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
+    expect(inner).toContain("PAPERCUSP_SKIP_MOBILE='1'");
     expect(inner).toContain("WITH_MAC='1'");
     expect(inner).toContain("bin/release-local.sh '0.0.8' 'alpha'");
     expect(inner).toContain(`> ${CUT_LOG} 2>&1`);

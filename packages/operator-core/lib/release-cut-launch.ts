@@ -115,6 +115,11 @@ export function buildCutEnv(legs: CutLegs, expectedSourceSha: string): Record<st
   const env: Record<string, string> = {
     PAPERCUSP_PUBLISH_GITHUB: '0',
     PAPERCUSP_EXPECTED_SOURCE_SHA: expectedSourceSha,
+    // This is the desktop release cutter. release-local.sh otherwise auto-enables
+    // Android whenever a sibling mobile checkout + SDK happen to exist, which makes
+    // an explicitly Linux/macOS/Windows cut depend on ambient fourth-product state.
+    // Mobile has its own release rail; declare the desktop-only scope explicitly.
+    PAPERCUSP_SKIP_MOBILE: '1',
   };
   if (legs.mac) env.WITH_MAC = '1';
   if (legs.windows) env.WITH_WINDOWS = '1';
