@@ -22,6 +22,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'me', workspaceId: 'ws-1' as string | null }));
+const readOutbox = vi.hoisted(() => vi.fn());
 vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
@@ -53,11 +54,17 @@ const getWorkItemCheckpoint = vi.fn();
 vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
 }));
+vi.mock('../coordination/messages', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  readOutbox,
+}));
 
 import { releaseWorkItem, setWorkItemClaimHold, type WorkItem } from '../../work-items';
+import { readOutbox as readOutboxSurface } from '../coordination/messages';
 import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 const releaseM = vi.mocked(releaseWorkItem);
 const holdM = vi.mocked(setWorkItemClaimHold);
+const outboxM = vi.mocked(readOutboxSurface);
 const tool = (await import('./release')).default;
 
 type Out = { data: any };
@@ -125,6 +132,7 @@ beforeEach(() => {
   releaseReporting({ assignee: 'me', wasClaimed: true });
   mockResolvedTyped(holdM, { id: 'WI-PARK', harness: 'papercusp', hold: true, applicable: true });
   getWorkItemCheckpoint.mockResolvedValue(null);
+  outboxM.mockResolvedValue([]);
 });
 
 describe('work_items:release — stranding warning (WI-38297)', () => {
@@ -204,5 +212,76 @@ describe('work_items:release — stranding warning (WI-38297)', () => {
     expect(b.results[0].strandedCheckpointWarning).toBeUndefined();
     expect(b.results[1]).toMatchObject({ id: 'WI-HOT' });
     expect(b.results[1].strandedCheckpointWarning).toMatch(/BACKGROUND JOB/);
+  });
+});
+
+describe('work_items:release — prior completion assertion warning (EI-20744001855099113)', () => {
+  const ITEM = 'EI-20744001855099113';
+
+  it('warns when the released holder asserted this item was complete over coord', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-complete-1',
+        ts: '2026-08-20T18:40:00.000Z',
+        from: 'me',
+        summary: `${ITEM} is COMPLETE — nothing remains; do not rebuild it.`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(outboxM).toHaveBeenCalledWith('me');
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-complete-1/);
+    expect(b.results[0].completionAssertionWarning).toMatch(/work_items:complete/);
+  });
+
+  it('recognizes an explicit structured completion premise for the item', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-complete-structured',
+        ts: '2026-08-20T18:41:00.000Z',
+        from: 'me',
+        sections: [{ text: 'The verification is recorded.', premises: [`${ITEM}#completion`] }],
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toMatch(/msg-complete-structured/);
+  });
+
+  it('stays silent for negated or still-in-progress completion language', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-not-complete',
+        ts: '2026-08-20T18:42:00.000Z',
+        from: 'me',
+        summary: `${ITEM} is not complete yet; I am still investigating it.`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  it('stays silent when only another sender asserted completion', async () => {
+    outboxM.mockResolvedValue([
+      {
+        msg_id: 'msg-other-holder',
+        ts: '2026-08-20T18:43:00.000Z',
+        from: 'peer',
+        summary: `${ITEM} is complete.`,
+      } as never,
+    ]);
+
+    const b = await body({ id: ITEM });
+    expect(outboxM).toHaveBeenCalledWith('me');
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
+  });
+
+  it('degrades to a normal release when the coord read fails', async () => {
+    outboxM.mockRejectedValue(new Error('coord db down'));
+
+    const b = await body({ id: ITEM });
+    expect(b.results[0]).toMatchObject({ ok: true, id: ITEM, released: true });
+    expect(b.results[0].completionAssertionWarning).toBeUndefined();
   });
 });

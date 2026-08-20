@@ -24,6 +24,7 @@ import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../..
 import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { readOutbox } from '../coordination/messages';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /**
  * A completion assertion is intentionally a narrow, advisory signal. It is not
@@ -97,6 +98,14 @@ function hasStructuredCompletionPremise(message: unknown, itemId: string): boole
   };
   collect(record.premises);
   collect(record.premisesClassified);
+  if (Array.isArray(record.sections)) {
+    for (const section of record.sections) {
+      if (!section || typeof section !== 'object') continue;
+      const sectionRecord = section as Record<string, unknown>;
+      collect(sectionRecord.premises);
+      collect(sectionRecord.premisesClassified);
+    }
+  }
   const ref = new RegExp(`^(?:wi:)?${itemId.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}#completion$`, 'i');
   return refs.some((candidate) => ref.test(candidate.trim()));
 }
@@ -415,8 +424,27 @@ export default defineTool({
                 `{ state:'blocked' } with the reason, so it lands somewhere that gets re-read instead of looking claimable.`,
             }
           : {};
+        // EI-20744001855099113: a completion assertion from the holder is a second,
+        // independent release-time signal for the same strand. Only inspect the
+        // holder that actually owned this claim, and only while the returned item is
+        // still non-terminal; a correctly completed item may legitimately retain an
+        // old "done" message. The read is advisory and fail-soft by design.
+        const priorHolder = wasHeld ? priorAssignee?.trim() : undefined;
+        const completionAssertion =
+          priorHolder && !ANY_FAMILY_TERMINAL_STATES.includes(workItem.state)
+            ? await readPriorCompletionAssertion(priorHolder, it.id)
+            : null;
+        const completion = completionAssertion
+          ? {
+              completionAssertionWarning:
+                `The prior holder '${priorHolder}' asserted '${it.id}' was complete in coord message ` +
+                `${completionAssertion.msgId} at ${completionAssertion.ts}, but the item is still non-terminal ` +
+                `after release. Before walking away, call work_items:complete (or set a deliberate blocked/needs-human ` +
+                `state) so this finished work is not re-dispatched.`,
+            }
+          : {};
         const claimHold = it.claimHold ?? args.claimHold;
-        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced, ...delta, ...stranding };
+        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced, ...delta, ...stranding, ...completion };
         // WI-321 boomerang fix: a release-park is a DURABLE park (claim_hold_* provenance),
         // NOT a held_open_* lease — a lease dies ~2h after the parker's session ends
         // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
@@ -434,6 +462,7 @@ export default defineTool({
           forced,
           ...delta,
           ...stranding,
+          ...completion,
           claimHold: held?.applicable ? held.hold : undefined,
         };
       },
