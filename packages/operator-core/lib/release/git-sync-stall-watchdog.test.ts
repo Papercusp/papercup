@@ -193,6 +193,43 @@ describe('clean-idle exemption (false-alarm fix, 2026-07-02)', () => {
     expect(v.stalled).toBe(true);
   });
 
+  it('EI-20315742298217655: a bridge-only error does not turn a clean local tick into a commit strand', () => {
+    // runGithubBridgeLeg runs after recordOutcome and can promote an owner-actionable
+    // egress failure to top-level error. The local stage is still clean-idle, so a frozen
+    // local head is expected and must not page as uncommitted work.
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: 48 * H,
+        lastStatus: 'error',
+        localSyncStatus: 'nothing',
+        lastError: 'github bridge rejected the staging push: workflow scope missing',
+        errorSweeps: 1,
+      },
+      NOW,
+    );
+    expect(v.commitStale).toBe(false);
+    expect(v.errorStall).toBe(false); // one bridge observation is not a persistent fault
+    expect(v.stalled).toBe(false);
+  });
+
+  it('EI-20315742298217655: a bridge-only error still preserves a real local commit stall', () => {
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: 48 * H,
+        lastStatus: 'error',
+        localSyncStatus: 'synced',
+        lastError: 'github bridge rejected the staging push: workflow scope missing',
+        errorSweeps: 1,
+      },
+      NOW,
+    );
+    expect(v.commitStale).toBe(true);
+    expect(v.errorStall).toBe(false);
+    expect(v.stalled).toBe(true);
+  });
+
   it("lastStatus 'skipped' (eligibility-gated fire) never head-stalls — a vanished checkout is not stranding code (2026-07-03 lane-rig incident)", () => {
     const v = evaluateGitSyncStall(
       { lastFiredMs: NOW - 60_000, headUnchangedMs: 61 * 3_600_000, lastError: null, lastStatus: 'skipped', watchdogAlerted: false, reapedCount: 0 },

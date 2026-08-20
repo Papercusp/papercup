@@ -383,7 +383,11 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
     registryProjects = []; // no registry entry → no_path skip
     await action(ctx);
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
-    expect(routinePatches()[0]).toMatchObject({ last_status: 'skipped', last_skip_reason: 'no_path' });
+    expect(routinePatches()[0]).toMatchObject({
+      last_status: 'skipped',
+      local_sync_status: 'skipped',
+      last_skip_reason: 'no_path',
+    });
   });
 
   it('a COMPLETED tick resets reaped_count to 0 (recordOutcome) — the reaper counter reads as CONSECUTIVE reaps', async () => {
@@ -842,10 +846,12 @@ describe('clean sync outcome', () => {
     expect(routinePatches()).toEqual([
       expect.objectContaining({
         last_status: 'synced',
+        local_sync_status: 'synced',
         last_synced_at: expect.any(Number),
         last_skip_reason: null,
         last_skipped_at: null,
         head_sha: 'abc123def456',
+        local_sync_head_sha: 'abc123def456',
         last_pushed: ['libs/generic/sync', 'superproject'],
         last_merged: ['superproject'],
         last_conflicts: [],
@@ -896,8 +902,14 @@ describe('clean sync outcome', () => {
     await action(ctx);
 
     const [patch] = routinePatches();
-    expect(patch).toMatchObject({ last_status: 'nothing', consecutive_error_ticks: 0, consecutive_content_error_ticks: 0 });
+    expect(patch).toMatchObject({
+      last_status: 'nothing',
+      local_sync_status: 'nothing',
+      consecutive_error_ticks: 0,
+      consecutive_content_error_ticks: 0,
+    });
     expect(patch).not.toHaveProperty('head_sha');
+    expect(patch).not.toHaveProperty('local_sync_head_sha');
     // + the strand clear on its own phase (measured-clean census, not counter-gated).
     expect(escalationClears()).toEqual([['git-sync-conflict'], ['git-sync-strand'], ['git-sync-error']]);
     expect(runDocSweepMock).not.toHaveBeenCalled();

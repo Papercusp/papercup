@@ -236,6 +236,11 @@ describe('runGithubBridgeLeg — owner-actionable egress failures', () => {
       }),
     });
     expect(metadata.last_error).toEqual(expect.stringContaining('fix the remote account/credential'));
+    // The bridge patch is applied after recordOutcome. It must not overwrite the
+    // local stage evidence that the watchdog uses to distinguish an egress-only
+    // failure from a commit strand (EI-20315742298217655).
+    expect(metadata).not.toHaveProperty('local_sync_status');
+    expect(metadata).not.toHaveProperty('local_sync_head_sha');
     expect(emitGitSyncEgressedEventMock).not.toHaveBeenCalled();
   });
 });
