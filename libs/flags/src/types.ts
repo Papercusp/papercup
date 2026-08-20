@@ -2975,7 +2975,30 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) 
 // — are the EXPECTED shape for that case: the override IS their sanctioned per-install
 // ratification, so their shipped default correctly stays OFF for a fresh install. No action.)
 // Escalated to the owner in-session rather than left to lapse silently again.
-export const DARK_FLAGS_REVIEW_BY = '2026-08-23';
+// ─── REVIEW 2026-08-20 (EI-20565859968567853, su-3ddaa243) — re-reviewed at
+// current HEAD (fd59c210c3) before advancing this date. SCOPE: all 31 entries:
+// parked 8 · incomplete 6 · owner-authority 14 · cutover 3. The
+// budget-counted parked+incomplete subset is 14/14, so the watermark remains 14.
+//
+// VERDICT: ZERO entries are ready to graduate. The eight parked entries are
+// explicit V1/v2 scope cuts (including the owner-directed conversations rail
+// tab); EXTERNAL_BENCH is permanently dark because its blueprint is retired;
+// CODEX_GATEWAY_OAUTH_PROXY still lacks confirmed owner-attended canary
+// evidence; ONBOARDING_PREVIEW_FEATURES still waits on its backing features;
+// CAPABILITY_EXEC_SANDBOX remains unverified on the required host; and
+// SUBSTRATE_LOG_SNAPSHOT / SUBSTRATE_SIDECAR remain gated on their
+// cross-machine proof and a working implementation respectively. The 14
+// owner-authority and 3 cutover entries remain owner-ratified or
+// attended-verification decisions, not agent graduations.
+//
+// `npm run audit:dark-flags` was also run. It reported four critical live
+// overrides (EXTERNAL_BENCH, CODEX_GATEWAY_OAUTH_PROXY, CAPABILITY_EXEC_SANDBOX,
+// SUBSTRATE_SIDECAR), so none was silently promoted; those runtime states remain
+// explicit follow-up evidence rather than justification for changing defaults.
+// `npm run test:file -- libs/flags/src/production-defaults.test.ts` passed 10/10.
+// The review was completed before the deadline was advanced; no flag membership
+// or watermark changed. Next review is 2026-09-03.
+export const DARK_FLAGS_REVIEW_BY = '2026-09-03';
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //
 // WHY THIS GUARD KEEPS GETTING RAISED (22→24→25→26, every time for this same bug class,
