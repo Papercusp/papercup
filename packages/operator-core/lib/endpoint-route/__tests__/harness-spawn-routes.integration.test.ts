@@ -18,6 +18,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 
 // ── side-effecting collaborators (all mocked) ──
+const { mugKettleSystemEnabled } = vi.hoisted(() => ({
+  mugKettleSystemEnabled: vi.fn(async () => true),
+}));
+
 const launchRun = vi.fn();
 vi.mock('../../harness-launch', () => ({ launchRun: (...a: unknown[]) => launchRun(...(a as [])) }));
 
@@ -70,6 +74,16 @@ vi.mock('../../plugin-host-runtime', () => ({
 vi.mock('../../events/pipeline-events', () => ({
   emitPipelineEvent: vi.fn(),
 }));
+// P-068/D-098 permanently hard-wired this predicate false after deleting the
+// old feature flag. Most cases in this file exercise route behavior BELOW that
+// gate (brief/env/session bookkeeping), so bypass the gate explicitly through
+// its surviving chokepoint. A dedicated assertion below flips this mock false
+// and pins the production 403; the bypass is test scaffolding, not a claim that
+// the retired tier remains launchable.
+vi.mock('../../pot/started', async (orig) => ({
+  ...(await orig<typeof import('../../pot/started')>()),
+  mugKettleSystemEnabled: (...a: unknown[]) => mugKettleSystemEnabled(...(a as [])),
+}));
 vi.mock('@papercusp/flags/server', async (orig) => {
   const actual = await orig<typeof import('@papercusp/flags/server')>();
   // ENDPOINT_AUTH_TIERS gates the loopback guard in route-stack's authStep
@@ -80,16 +94,12 @@ vi.mock('@papercusp/flags/server', async (orig) => {
   // the green gate. Keep every OTHER flag OFF (the prior default).
   return {
     ...actual,
-    // TIER ENABLED (retire-mug-kettle-su-only-2026-08-09 P-008 / D-018): this
-    // file's /invoke cases launch `role=queen` (the documented production
-    // spelling for a Mug wake), which the route's retirement gate 403s while the
-    // mug/kettle/cup tier is retired — its flag's polarity is INVERTED, so OFF is
-    // the delivered state. Answering it true keeps these cases pointed at the
-    // brief/env/tracking behaviour they are about; the gate itself is covered by
-    // ../../pot/retired-tier-roles.test.ts.
+    // The retired Mug/Kettle flag no longer exists (P-068/D-098). Only the
+    // endpoint-auth tier remains a flag concern in this file; the explicit
+    // mugKettleSystemEnabled mock above owns the test-only bypass.
     getFlag: vi.fn(
       async (flag: string) =>
-        flag === 'papercusp-endpoint-auth-tiers' || flag === 'papercusp-mug-kettle-system',
+        flag === 'papercusp-endpoint-auth-tiers',
     ),
   };
 });
@@ -130,12 +140,23 @@ vi.mock('node:fs', async (orig) => {
   const actual = await orig<typeof import('node:fs')>();
   return {
     ...actual,
-    existsSync: vi.fn(() => false),
+    // The frozen-repair cwd validator reads a linked worktree's .git pointer.
+    // Keep every unrelated path absent so the existing action-log/token branches
+    // retain their prior behavior.
+    existsSync: vi.fn((p: unknown) => String(p).endsWith('/.git')),
     readdirSync: vi.fn(() => []),
-    readFileSync: vi.fn(() => {
+    readFileSync: vi.fn((p: unknown) => {
+      if (String(p).endsWith('/.git')) {
+        return 'gitdir: /proj/.git/worktrees/repair-1\n';
+      }
       throw new Error('no file (mocked)');
     }),
-    statSync: vi.fn(() => ({ mtimeMs: 0 })),
+    realpathSync: vi.fn((p: unknown) => String(p)),
+    statSync: vi.fn((p: unknown) => ({
+      mtimeMs: 0,
+      isDirectory: () => !String(p).endsWith('/.git'),
+      isFile: () => String(p).endsWith('/.git'),
+    })),
     writeFileSync: vi.fn(),
     mkdirSync: vi.fn(),
     rmSync: vi.fn(),
@@ -210,6 +231,7 @@ beforeEach(() => {
   resolvePhasedProject.mockResolvedValue(PROJECT);
   launchRun.mockResolvedValue({ ok: true, logPath: '/log/run.out' });
   resolveSpawnBackendModel.mockReturnValue({ backend: 'omp', model: '' });
+  mugKettleSystemEnabled.mockResolvedValue(true);
   spawnMock.mockImplementation(() => makeFakeChild(0));
 });
 afterEach(() => {
@@ -275,6 +297,64 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     });
   }, 30_000);
 
+  it('runs a frozen-candidate release-fixer from its validated linked worktree', async () => {
+    const repairWorktree = '/proj/.papercusp/worktrees/repair-1';
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=release-fixer',
+      post({ releaseFixerContext: { repairWorktree } }),
+    );
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(buildInvokeOnce).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectDir: repairWorktree,
+        stateDir: `${repairWorktree}/.papercusp`,
+      }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      'node',
+      ['invoke-once.js', '--role', 'worker'],
+      { cwd: repairWorktree, env: { PAPERCUSP_TEST: '1' }, detached: true },
+    );
+  }, 30_000);
+
+  it('uses the same validated repair cwd in the tracked session row and child spawn', async () => {
+    resolveSpawnBackendModel.mockReturnValue({ backend: 'claude-code', model: '' });
+    const repairWorktree = '/proj/.papercusp/worktrees/repair-1';
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=release-fixer&bpkind=hive',
+      post({ releaseFixerContext: { repairWorktree } }),
+    );
+
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(recordAdvSession).toHaveBeenCalledWith(
+      expect.objectContaining({ cwd: repairWorktree }),
+    );
+    expect(spawnMock).toHaveBeenCalledWith(
+      'node',
+      ['invoke-once.js', '--role', 'worker'],
+      { cwd: repairWorktree, env: { PAPERCUSP_TEST: '1' }, detached: true },
+    );
+  }, 30_000);
+
+  it('rejects a repair-worktree override from a non-release-fixer role before spawning', async () => {
+    const res = await appWith(invoke).request(
+      '/harness/papercup/invoke?role=worker',
+      post({
+        releaseFixerContext: {
+          repairWorktree: '/proj/.papercusp/worktrees/repair-1',
+        },
+      }),
+    );
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({
+      error: 'invalid_repair_worktree',
+      code: 'repair_worktree_role_mismatch',
+    });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
   it('reports ok:false when the child exits non-zero', async () => {
     // The chokepoint emits a one-line diagnostic to stderr on a non-zero exit with empty
     // stderr (orchestrator-runner.ts) — expected, so assert it explicitly rather than let
@@ -299,6 +379,18 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=bad%20role', post());
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ error: 'invalid role name' });
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+
+  it('permanently rejects a retired role when the production Mug/Kettle gate is closed', async () => {
+    mugKettleSystemEnabled.mockResolvedValue(false);
+    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({}));
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      error: 'mug_kettle_retired',
+      retired: 'permanent',
+    });
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

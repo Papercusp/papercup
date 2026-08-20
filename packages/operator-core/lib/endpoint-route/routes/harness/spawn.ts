@@ -43,6 +43,7 @@ import {
 } from '../../../backend-feature-capabilities';
 import { canonicalCoordRole } from '../../../agent-tools/coordination/roles';
 import { trackDetached } from '../../../detached-imports';
+import { resolveInvokeProjectDir } from './invoke-project-dir';
 
 /**
  * launch-path-argv-reconstruction (WI-1343), extended to the hive/overwatch invoke
@@ -289,6 +290,18 @@ const invoke = defineTool({
       }
     }
     const body = await req.json().catch(() => ({} as any));
+    const invokeDir = resolveInvokeProjectDir({ projectPath: project.path, role, body });
+    if (!invokeDir.ok) {
+      return Response.json(
+        {
+          error: 'invalid_repair_worktree',
+          code: invokeDir.code,
+          message: invokeDir.message,
+        },
+        { status: 400 },
+      );
+    }
+    const invokeProjectDir = invokeDir.projectDir;
     const isHiveLaunch = url.searchParams.get('bpkind') === 'hive';
     // overwatch-role-2026-06-15 B-04 (C-3): an overwatch wake is also a tracked
     // autonomous-loop launch — its own bpkind so it gets the longer timeout, a
@@ -415,7 +428,7 @@ const invoke = defineTool({
         coordOwnerId: hiveSpawnId,
         agent: trackedInteractiveBackend === 'codex' ? 'codex' : 'claude',
         role: canonicalRole,
-        cwd: project.path,
+        cwd: invokeProjectDir,
         mode: 'console',
         // WI-3967: this prefix used to be the literal 'hive' — the hive→pot rename
         // (2026-07-xx) updated the READERS (resolveMugOwner/resolveMugOwners in
@@ -670,7 +683,7 @@ const invoke = defineTool({
     }
     const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
-      project.path,
+      invokeProjectDir,
       role,
       extra,
       env,

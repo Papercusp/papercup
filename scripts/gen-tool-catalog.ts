@@ -36,7 +36,14 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import '@papercusp/operator-core/lib/agent-tools/index.ts';
+// Resolve from THIS generator's checkout, never through the nearest ancestor's
+// node_modules. Frozen-candidate repair worktrees intentionally have no local
+// node_modules; the bare @papercusp/operator-core alias therefore escaped to the
+// canonical staging checkout and projected current-tip tools into an older repair
+// head. A source-relative import keeps the registry and OUT in the same immutable
+// worktree while the remaining shared packages can still resolve through the
+// canonical checkout's hoisted node_modules.
+import '../packages/operator-core/lib/agent-tools/index.ts';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
