@@ -39,6 +39,7 @@ status: draft
 origin: scout
 created: ${args.date}
 updated: ${args.date}
+specTriad: required
 ---
 
 # ${args.title}
@@ -52,6 +53,14 @@ updated: ${args.date}
 ## Background
 
 ${why}
+
+## Requirements
+
+The ratified plan must turn the proposal above into a concrete, observable outcome. Its first slice must preserve the rationale recorded in this draft and produce verification evidence that a reviewer can use to judge the outcome.
+
+## Design
+
+Start from the first concrete slice below and refine its implementation boundary, dependencies, and verification during review. The design must stay within the proposal's rationale and make the smallest verifiable change explicit before the plan is ratified.
 
 ## Phase 1 — TODO
 

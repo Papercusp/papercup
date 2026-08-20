@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import { buildScoutPlanTemplate, ensureDatedSlug, createScoutPlanDraft, type ScoutPlanDraftDeps } from './scout-plan-draft';
+import { specTriadGate } from '../agent-tools/plans/spec-triad-policy';
 
 describe('ensureDatedSlug', () => {
   it('appends today when no date suffix', () => {
@@ -27,6 +28,24 @@ describe('buildScoutPlanTemplate', () => {
   it('falls back to a default background when no rationale', () => {
     const body = buildScoutPlanTemplate({ slug: 'x-2026-06-08', title: 'T', date: '2026-06-08' });
     expect(body).toContain('Blender-generated broad-scope proposal');
+  });
+  it('emits a complete spec triad for post-epoch actionable gating', () => {
+    const body = buildScoutPlanTemplate({
+      slug: 'x-2026-08-13',
+      title: 'A routed proposal',
+      date: '2026-08-13',
+      rationale: 'The proposal must leave a verifiable outcome.',
+    });
+    const verdict = specTriadGate(
+      { planSlug: 'x-2026-08-13', content: body, created: '2026-08-13', itemCount: 1 },
+      { flagEnabled: true, epoch: new Date('2026-08-09T00:00:00.000Z') },
+    );
+
+    expect(body).toContain('specTriad: required');
+    expect(body).toContain('## Requirements');
+    expect(body).toContain('## Design');
+    expect(verdict.gated).toBe(false);
+    expect(verdict.missing).toEqual([]);
   });
 });
 
