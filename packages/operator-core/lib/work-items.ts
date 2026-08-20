@@ -4365,15 +4365,16 @@ export function lastIssuesClaimableFlagReadError(): string | null {
  * (the claims) and {@link diagnoseClaimNextMiss} (the READY count), so the "why did I miss"
  * diagnosis can never disagree with what the claim actually serves.
  *
- * ⚠ EI-13738: this fragment now carries THREE exclusion legs, not two — the plan is under
- * execution, OR a live lease is held by another owner, OR (new) the plan-ITEM is blocked-by an
- * unfinished sibling in `harness_plans.items[].blockedBy[]`. The third is a genuinely different
- * concept from the "reserved lane" the name describes: the first two ask *is someone else
- * driving this lane*, the third asks *is this work even ready*. It lives here anyway, and
- * deliberately so — this is the one predicate every issue-family AND feature-family claim path
- * composes, so adding the floor here reaches all 8+ call sites at once and structurally avoids
- * EI-14806 ("a floor added to only one claim path silently leaks in the other"). Do NOT hand-add
- * it per call site, and do NOT split it back out without keeping every caller covered.
+ * ⚠ EI-13738: this fragment now carries FOUR exclusion legs, not two — the plan is under
+ * execution, OR a live lease is held by another owner, OR the plan-ITEM is blocked-by an
+ * unfinished sibling in `harness_plans.items[].blockedBy[]`, OR the linked plan-item is already
+ * terminal in the normalized `plan_items` index. The latter two are genuinely different
+ * concepts from the "reserved lane" the name describes: one asks *is this work even ready?*,
+ * the other asks *has this lane already finished?*. They live here anyway, and deliberately so
+ * — this is the one predicate every issue-family AND feature-family claim path composes, so
+ * adding a floor here reaches all 8+ call sites at once and structurally avoids EI-14806 ("a
+ * floor added to only one claim path silently leaks in the other"). Do NOT hand-add it per call
+ * site, and do NOT split it back out without keeping every caller covered.
  */
 export function reservedPlanLaneExclusionSql(
   sql: OrgSql,
@@ -4477,6 +4478,19 @@ export function reservedPlanLaneExclusionSql(
            AND c.item_id  = ${col}->'plan_item'->>'item_id'
            AND c.expires_ts > now()
            AND c.owner <> ${assignee}
+      )
+      -- EI-20467873456529090: a completed plan-item is terminal residue, not generic backlog.
+      -- planItemLaneBlockReason already rejects this after a claim, but that is too late for
+      -- claimable previews, aggregate diagnostics, and fleet:bench. The normalized index is the
+      -- derived, indexed status surface for canonical plan content; scope by workspace +
+      -- plan/item identity just like the plan-lane floors above (the payload harness_slug copy
+      -- is allowed to drift during plan-harness canonicalization).
+      OR EXISTS (
+        SELECT 1 FROM harness_shared.plan_items pi
+         WHERE pi.workspace_id = ${wsCol}
+           AND pi.plan_slug = ${col}->'plan_item'->>'plan_slug'
+           AND pi.item_id = ${col}->'plan_item'->>'item_id'
+           AND pi.status IN ('done', 'dropped')
       )
       -- EI-13738: the PLAN dependency graph — the third exclusion leg, and the one nothing
       -- read until now. Readiness lives in TWO stores and only one of them gated the claim:

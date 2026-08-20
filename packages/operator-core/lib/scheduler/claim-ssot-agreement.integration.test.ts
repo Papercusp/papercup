@@ -149,6 +149,10 @@ async function blockEdge(blockedRef: string, blockerRef: string, blockedKind = '
 const seedPlan = (slug: string, status: string, opStatus: string | null = null) =>
   db.sql`INSERT INTO harness_shared.harness_plans (plan_slug, status, op_status)
           VALUES (${slug}, ${status}, ${opStatus})`;
+const seedNormalizedPlanItem = (planSlug: string, itemId: string, status: string, harnessSlug = H) =>
+  db.sql`INSERT INTO harness_shared.plan_items
+            (workspace_id, harness_slug, plan_slug, item_id, seq, status)
+          VALUES (${WS}, ${harnessSlug}, ${planSlug}, ${itemId}, 0, ${status})`;
 const seedLease = (slug: string, itemId: string, owner: string, expiresMinFromNow: number) =>
   db.sql`INSERT INTO harness_shared.plan_item_claims (plan_slug, item_id, owner, expires_ts)
           VALUES (${slug}, ${itemId}, ${owner}, now() + make_interval(mins => ${expiresMinFromNow}))`;
@@ -209,6 +213,9 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WATCHDOG_TICKS_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  // The terminal-plan floor reads the real normalized plan-item index (migration 675), not a
+  // retyped test-only table. The fixture seeds only the rows needed by the regression below.
+  await db.sql.unsafe(readMigration('675-normalize-plan-items-decisions.sql')).simple();
   await db.sql
     .unsafe(`ALTER TABLE harness_shared.work_items ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`)
     .simple();
@@ -228,12 +235,16 @@ beforeAll(async () => {
   // drift it exists to catch. Omitting this line does not merely skip the new coverage — the TS
   // path would then carry a floor the view does not, and the set-equality assertion below reds.
   await db.sql.unsafe(readMigration('759-plan-blockedby-claim-floor.sql')).simple();
+  // EI-20467873456529090: excludes open work-items whose effective normalized plan-item is already
+  // terminal, keeping the SSOT view in lockstep with the shared TS claim/diagnostic floor.
+  await db.sql.unsafe(readMigration('853-plan-item-terminal-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
+                       harness_shared.plan_items, harness_shared.plan_decisions,
                        harness_shared.harness_plans, harness_shared.plan_item_claims`;
 });
 
@@ -514,6 +525,41 @@ describe('floor #13 plan-item-blocked — the PLAN blockedBy graph gates the cla
 
     // The blocking graph lives in a DIFFERENT workspace ⇒ it must not reach this row.
     expect(await bothDoors('WI-CROSS-TENANT')).toEqual([true, true]);
+  });
+});
+
+/**
+ * EI-20467873456529090 — terminal plan-item residue must be excluded before claim. The old
+ * post-claim `planItemLaneBlockReason` guard was correct but too late: `work_items_claimable`,
+ * scheduler aggregates, and fleet:bench all counted the open work-item first and could refuse to
+ * bench a lane that had no actionable work. These seeds use the normalized plan-item index, which
+ * is the status writer/read surface used by production plan-content derivation.
+ */
+describe('floor #14 terminal normalized plan-item — completed plan residue is not claimable (EI-20467873456529090)', () => {
+  let probeSeq = 0;
+  async function bothDoors(id: string): Promise<[boolean, boolean]> {
+    const view = await viewClaimableIds();
+    const drain = await drainInlineClaimIds(`terminal-plan-probe-${++probeSeq}`);
+    await db.sql`UPDATE harness_shared.work_items SET taken_by = NULL WHERE workspace_id = ${WS}`;
+    return [view.includes(id), drain.includes(id)];
+  }
+
+  it.each(['done', 'dropped'])('excludes an open issue linked to a %s normalized plan-item', async (status) => {
+    const planSlug = `terminal-${status}`;
+    const itemId = `P-${status.toUpperCase()}`;
+    await seedPlan(planSlug, 'ready');
+    await seedNormalizedPlanItem(planSlug, itemId, status);
+    await seedPlanLinkedIssue(`WI-TERMINAL-${status.toUpperCase()}`, planSlug, itemId);
+
+    expect(await bothDoors(`WI-TERMINAL-${status.toUpperCase()}`)).toEqual([false, false]);
+  });
+
+  it('keeps a linked non-terminal plan-item claimable as the control', async () => {
+    await seedPlan('live-control', 'ready');
+    await seedNormalizedPlanItem('live-control', 'P-LIVE', 'todo');
+    await seedPlanLinkedIssue('WI-LIVE-PLAN-CONTROL', 'live-control', 'P-LIVE');
+
+    expect(await bothDoors('WI-LIVE-PLAN-CONTROL')).toEqual([true, true]);
   });
 });
 
