@@ -1799,6 +1799,18 @@ async function handleGitSync(
     await runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId));
   }
 
+  // P-302/Leg A: the integrator may advance refs/hive/staging and publish its
+  // handoff token after the normal ref-announce pass above has already signed
+  // this device's namespace. Refresh the signed snapshot immediately after the
+  // integrator so those integrator-authored refs are announced in the SAME
+  // git-sync tick. This pass is publish-only: receiving the same pending peer
+  // announcements twice would double-drive fetch failures and their budgets.
+  if (gate.hiveGitMode) {
+    await runCheckpointedStep('git-sync:ref-announce-post-integrator', () =>
+      runRefAnnounceLeg(slug, workspaceId, { receive: false }),
+    );
+  }
+
   // p2p-git-live-activation P-204: on ANY non-legacy hive (bridged OR
   // p2p-only), one worktree-bridge-tick pass per git-sync tick — process any
   // pending `hive-git:staging-advance` announcements this device hasn't
@@ -2996,7 +3008,11 @@ export async function runBootstrapLeg(slug: string, workspaceId: string): Promis
  * only genuine cross-machine reachability (Phase 3's live rig) exercises the
  * happy path end-to-end.
  */
-async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<void> {
+async function runRefAnnounceLeg(
+  slug: string,
+  workspaceId: string,
+  options: { receive?: boolean } = {},
+): Promise<void> {
   try {
     let entry: ProjectEntry | undefined;
     try {
@@ -3097,6 +3113,7 @@ async function runRefAnnounceLeg(slug: string, workspaceId: string): Promise<voi
       console.warn(`[git-sync] ${slug}: ref-announce publish reported errors: ${publishOutcome.errors.join('; ')}`);
     }
 
+    if (options.receive === false) return;
     if (memberDevicePubkeysBase64.length === 0) return; // no attested peers to receive from yet
 
     // 2. Receive: pending peer ref-announce fed-events since our watermark.
