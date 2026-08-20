@@ -13,7 +13,8 @@
  * for setFeatureStatusPg + readFeaturesPg to work:
  *   harness_shared schema + harness_plans table (its op_status drives the
  *   plan-slug filter — folded from the retired harness_plan_status)
- *   + a harness_features physical table with workspace_id (migration 009).
+ *   + the shared work_items base table and its harness_features compatibility
+ *     view (the no-per-harness-schema fallback used by state-pg.ts).
  * Features inserted with source_plan_slug = NULL take the "always eligible"
  * branch in readFeaturesPg so we don't need started harness_plans rows.
  */
@@ -61,9 +62,9 @@ const SHARED_SCHEMA_DDL = `
   );
 `;
 
-/** Physical harness_features (not the view) with workspace_id from migration 009. */
+/** Shared work-items base plus the compatibility view used by state-pg.ts. */
 const FEATURES_DDL = `
-  CREATE TABLE IF NOT EXISTS harness_features (
+  CREATE TABLE IF NOT EXISTS harness_shared.work_items (
     workspace_id       TEXT        NOT NULL DEFAULT '',
     harness_slug       TEXT        NOT NULL,
     feature_id         TEXT        NOT NULL,
@@ -88,9 +89,17 @@ const FEATURES_DDL = `
     taken_by           TEXT,
     taken_at           TIMESTAMPTZ,
     expires_at         TIMESTAMPTZ,
+    item_kind          TEXT        NOT NULL DEFAULT 'feature',
     PRIMARY KEY (harness_slug, feature_id)
   );
-  CREATE INDEX IF NOT EXISTS hf_ws_idx ON harness_features(workspace_id);
+  CREATE VIEW harness_features AS
+    SELECT workspace_id, harness_slug, feature_id, title, summary, status,
+           attempts, claims, notes, metadata, kind, project_id,
+           expected_cost_cents, tags, needs_human_review, ts, created_ts,
+           updated_ts, parent_id, goal_id, source_plan_slug, taken_by,
+           taken_at, expires_at, item_kind
+      FROM harness_shared.work_items;
+  CREATE INDEX IF NOT EXISTS wi_ws_idx ON harness_shared.work_items(workspace_id);
 `;
 
 // ─── Database setup ───────────────────────────────────────────────────────────
