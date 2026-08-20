@@ -338,13 +338,24 @@ describe('pot-git ref announcements (announcement-driven fetch, real repos)', ()
     const ann = await buildRefAnnouncement(serverRepo, devB.pubkeyBase64, devB.sign, { nowMs: now });
 
     // Hold one drive open on a dial that never settles, so a SECOND drive is
-    // guaranteed to be the collapsed one, then let the holder time out.
+    // guaranteed to be the collapsed one, then let the holder time out. Merely
+    // creating `holder` first is not enough: both calls perform async git reads
+    // before entering the coalescer, so the second call can otherwise win that
+    // race and legitimately fetch. The seam barrier proves which call owns it.
+    let markHolderEntered!: () => void;
+    const holderEntered = new Promise<void>((resolve) => {
+      markHolderEntered = resolve;
+    });
     const holder = handleRefAnnouncement(mirrorRepo, ann, {
       allowedDevices: members(),
       nowMs: now,
-      openStream: () => new Promise<never>(() => {}),
+      openStream: () => {
+        markHolderEntered();
+        return new Promise<never>(() => {});
+      },
       timeoutMs: 300,
     });
+    await holderEntered;
     const collapsed = await handleRefAnnouncement(mirrorRepo, ann, {
       allowedDevices: members(),
       nowMs: now,
