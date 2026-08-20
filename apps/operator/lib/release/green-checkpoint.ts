@@ -3095,6 +3095,47 @@ export function fileRescueCovers(
   );
 }
 
+/** Infer workspace/file pairs from the flat failure signature when the raw runner output did not
+ * preserve its per-file rows. The persisted GATE_HELD_BY line carries bare `lib/**` test paths
+ * beside a workspace marker, but it can also carry a build sentinel or failures from several
+ * workspaces. Only the uniquely attributable, workspace-relative test-file shape is safe to
+ * re-run; every other shape stays on the existing fail-closed path. Existing parsed pairs win
+ * unchanged because mixing them with an independently inferred workspace could misattribute a
+ * file that the parser already located. */
+export function inferFailingFilesFromEntries(
+  failingTests: readonly string[] | undefined,
+  existing: readonly FailingFile[] = [],
+): FailingFile[] {
+  if (existing.length > 0) return [...existing];
+
+  const entries = failingTests ?? [];
+  const files = [
+    ...new Set(
+      entries.filter((entry) =>
+        /^lib\/\S+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry.trim()),
+      ),
+    ),
+  ];
+  if (files.length === 0) return [];
+
+  // The build sentinel is a package-shaped entry, but it does not identify a test workspace.
+  // Treating it as one would pair a suite file with the SPA build and run the wrong cwd.
+  const workspaces = [
+    ...new Set(
+      entries
+        .map((entry) => entry.trim())
+        .filter(
+          (entry) =>
+            /^@[^/\s]+\/[^/\s]+$/.test(entry) &&
+            entry !== "@papercusp/operator-vite",
+        ),
+    ),
+  ];
+  if (workspaces.length !== 1) return [];
+
+  return files.map((file) => ({ workspace: workspaces[0], file }));
+}
+
 /** The non-test gate ids to re-verify at tip BESIDE whatever the file rescue re-runs.
  *
  *  EI-19992136440423793 path (a). The two rescues used to be mutually EXCLUSIVE — the caller read
@@ -10258,9 +10299,15 @@ export function realCheckpointDeps(
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
       // cwd to re-run it in). Recomputed from the raw output, not `failingTests`, because
       // the re-triage needs the {workspace,file} pair, not the flat signature.
-      const failingFiles = green
+      const parsedFailingFiles = green
         ? []
         : parseFailingFilesByWorkspace(signatureOutput);
+      // GATE_HELD_BY is a durable flat signature and may outlive the raw runner rows. Recover
+      // only the uniquely attributable operator-core-relative test paths; otherwise preserve the
+      // parser's fail-closed empty result. Existing parsed pairs remain authoritative.
+      const failingFiles = green
+        ? []
+        : inferFailingFilesFromEntries(failingTests, parsedFailingFiles);
       // EI-20767792192323374: LAST, after both absorbers have declined — did this red come from
       // the gate's own module cache being deleted mid-run? Only on the red path: a suite that
       // passed despite a cache hiccup keeps its pass. See classifyInfraFault for why an infra

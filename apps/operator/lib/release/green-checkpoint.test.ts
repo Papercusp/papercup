@@ -32,6 +32,7 @@ import {
   nonTestGateIdsFrom,
   rescueGateIdsFrom,
   fileRescueCovers,
+  inferFailingFilesFromEntries,
   parseFailingTaskId,
   isRerunnableGateEntry,
   resolveGateRuns,
@@ -3785,6 +3786,73 @@ describe("runGreenCheckpoint", () => {
           [WEB_FILE],
         ),
       ).toEqual(["@papercusp/web :: lint:no-ungated-mug-kettle"]);
+    });
+  });
+
+  describe("inferFailingFilesFromEntries (EI-20336880192345624)", () => {
+    it("pairs bare lib test/spec paths with the one accompanying workspace", () => {
+      expect(
+        inferFailingFilesFromEntries([
+          "@papercusp/operator-core",
+          "lib/backend-bin-resolve.test.ts",
+          "lib/shared-pot-loop/fleet-monitors.spec.tsx",
+        ]),
+      ).toEqual([
+        {
+          workspace: "@papercusp/operator-core",
+          file: "lib/backend-bin-resolve.test.ts",
+        },
+        {
+          workspace: "@papercusp/operator-core",
+          file: "lib/shared-pot-loop/fleet-monitors.spec.tsx",
+        },
+      ]);
+    });
+
+    it("rejects an ambiguous workspace signature instead of guessing", () => {
+      expect(
+        inferFailingFilesFromEntries([
+          "@papercusp/operator-core",
+          "@papercusp/web",
+          "lib/backend-bin-resolve.test.ts",
+        ]),
+      ).toEqual([]);
+    });
+
+    it("does not treat non-file entries or the build sentinel as a test pair", () => {
+      expect(
+        inferFailingFilesFromEntries([
+          "@papercusp/operator-vite",
+          "lib/backend-bin-resolve.ts",
+        ]),
+      ).toEqual([]);
+      expect(
+        inferFailingFilesFromEntries([
+          "@papercusp/operator-vite",
+          "lib/backend-bin-resolve.test.ts",
+        ]),
+      ).toEqual([]);
+      expect(
+        inferFailingFilesFromEntries([
+          "@papercusp/operator-core",
+          "packages/operator-core/lib/backend-bin-resolve.test.ts",
+        ]),
+      ).toEqual([]);
+    });
+
+    it("preserves already parsed pairs unchanged", () => {
+      const existing: FailingFile[] = [
+        {
+          workspace: "@papercusp/operator-core",
+          file: "lib/already-parsed.test.ts",
+        },
+      ];
+      expect(
+        inferFailingFilesFromEntries(
+          ["@papercusp/web", "lib/unlocated.test.ts"],
+          existing,
+        ),
+      ).toEqual(existing);
     });
   });
 
