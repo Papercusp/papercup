@@ -400,6 +400,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
       potSlug: null,
       goalId: null,
       nativeSessionId: null,
+      lifecycle: null,
       firstSeenAt: '2026-01-01T00:00:00.000Z',
       updatedAt: '2026-01-01T00:00:00.000Z',
     });
@@ -1101,4 +1102,3 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
     });
   });
 });
-    getWiM.mockResolvedValue({ id: 'WI-7', state: 'open', assignee: null } as never);
