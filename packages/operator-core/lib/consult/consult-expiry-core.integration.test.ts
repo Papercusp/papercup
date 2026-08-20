@@ -35,6 +35,10 @@ const MIGRATION_844_ARMED = fileURLToPath(
   new URL('../../../../libs/papercusp/libs/db/sql/844-consult-cascade-cursor.sql', import.meta.url),
 );
 const MIGRATION_844 = existsSync(MIGRATION_844_ARMED) ? MIGRATION_844_ARMED : `${MIGRATION_844_ARMED}.DRAFT`;
+const MIGRATION_856_ARMED = fileURLToPath(
+  new URL('../../../../libs/papercusp/libs/db/sql/856-backfill-answered-expired-consult-outcomes.sql', import.meta.url),
+);
+const MIGRATION_856 = existsSync(MIGRATION_856_ARMED) ? MIGRATION_856_ARMED : `${MIGRATION_856_ARMED}.DRAFT`;
 
 let rootSql: Sql;
 
@@ -141,6 +145,13 @@ async function stateOf(id: string, ws = WS): Promise<{ state: string; closed_at:
   return rows[0];
 }
 
+async function setDigest(id: string, digest: unknown[]) {
+  await rootSql`
+    UPDATE harness_shared.consult_state
+       SET cascade_digest = ${JSON.stringify(digest)}::jsonb
+     WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
+}
+
 // ── Tests ────────────────────────────────────────────────────────────────
 describe('sweepExpiredConsults', () => {
   it('flips ONLY past-due open rows to expired; hard-blocked rows get the latched park-key emit', async () => {
@@ -228,6 +239,66 @@ describe('sweepExpiredConsults', () => {
   });
 });
 
+describe('migration 856 historical answered-expired outcome repair', () => {
+  it('repairs only null-outcome expired rows with answers and is idempotent', async () => {
+    const legacyAnswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
+    const trulyUnanswered = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
+    const explicitOutcome = await seedConsult({ state: 'expired', closedAt: PAST, expiresAt: PAST });
+    const stillOpen = await seedConsult({ state: 'awaiting_responder', expiresAt: FUTURE });
+
+    await setDigest(legacyAnswered, [
+      { ownerId: 'reviewer-b', kind: 'answer', at: PAST, excerpt: 'first' },
+      { ownerId: 'reviewer-a', kind: 'answer', at: PAST, excerpt: 'second' },
+      { ownerId: 'reviewer-b', kind: 'answer', at: PAST, excerpt: 'follow-up' },
+      { ownerId: 'reviewer-c', kind: 'expired', at: PAST, excerpt: 'old unanswered label' },
+    ]);
+    await setDigest(trulyUnanswered, [
+      { ownerId: 'reviewer-z', kind: 'expired', at: PAST, excerpt: 'no answer' },
+    ]);
+    await setDigest(explicitOutcome, [
+      { ownerId: 'reviewer-x', kind: 'answer', at: PAST, excerpt: 'answered' },
+    ]);
+    await setDigest(stillOpen, [
+      { ownerId: 'reviewer-y', kind: 'answer', at: PAST, excerpt: 'not terminal' },
+    ]);
+    await rootSql`
+      UPDATE harness_shared.consult_state
+         SET outcome = ${rootSql.json({ disposition: 'requester_recorded', answer: 'keep me' })}
+       WHERE workspace_id = ${WS} AND conversation_id = ${explicitOutcome}
+    `;
+
+    // postgres.js executes SQL directly rather than through psql; keep the
+    // production safety directive in the migration and strip only that client
+    // meta-command for this real-Postgres test.
+    const migrationSql = readFileSync(MIGRATION_856, 'utf8').replace(/^\\set ON_ERROR_STOP on\s*$/m, '');
+    await rootSql.unsafe(migrationSql);
+
+    const outcomes = (await rootSql`
+      SELECT conversation_id, outcome
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS}
+         AND conversation_id IN (${legacyAnswered}, ${trulyUnanswered}, ${explicitOutcome}, ${stillOpen})
+    `) as unknown as Array<{ conversation_id: string; outcome: unknown }>;
+    const byId = new Map(outcomes.map((row) => [row.conversation_id, row.outcome]));
+    expect(byId.get(legacyAnswered)).toMatchObject({
+      disposition: 'cascade_exhausted_with_answers',
+      answers: 3,
+      answered_by: ['reviewer-b', 'reviewer-a'],
+    });
+    expect(byId.get(trulyUnanswered)).toBeNull();
+    expect(byId.get(explicitOutcome)).toMatchObject({ disposition: 'requester_recorded', answer: 'keep me' });
+    expect(byId.get(stillOpen)).toBeNull();
+
+    await rootSql.unsafe(migrationSql);
+    const [afterSecondRun] = (await rootSql`
+      SELECT outcome
+        FROM harness_shared.consult_state
+       WHERE workspace_id = ${WS} AND conversation_id = ${legacyAnswered}
+    `) as unknown as Array<{ outcome: unknown }>;
+    expect(afterSecondRun.outcome).toEqual(byId.get(legacyAnswered));
+  });
+});
+
 // ── D-005/P-013 always-advance: expiry is a chain event, not a terminal ──
 
 async function cascadeRow(id: string, ws = WS) {
@@ -311,12 +382,6 @@ describe('sweepExpiredConsults — honest expiry (WI-39862) + min-ANSWERS refill
     similarity: 0.7,
     liveness: 'live',
   });
-  async function setDigest(id: string, digest: unknown[]) {
-    await rootSql`
-      UPDATE harness_shared.consult_state
-         SET cascade_digest = ${JSON.stringify(digest)}::jsonb
-       WHERE workspace_id = ${WS} AND conversation_id = ${id}`;
-  }
   /** cascadeRow (above) deliberately selects only the cascade columns — these
    * WI-39862/WI-39861 assertions also need routing + outcome. */
   async function fullRow(id: string) {
