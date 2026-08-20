@@ -52,12 +52,23 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
   getClaimSpecRecord: vi.fn(async () => null),
   readClaimConcurrency: vi.fn(async () => null),
 }));
-vi.mock('../../work-items', () => ({ CLAIM_STATES_ALLOWLIST: ['open', 'failing'] }));
+// Spread the real module rather than listing exports: get_next's import list grows over time
+// (WI-39730 added `releaseWorkItem`), and a bare factory turns every such addition into a
+// COLLECTION crash in this file — a failure that reads as "this test is broken" rather than
+// "the graph widened". Only the allowlist is actually overridden.
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  CLAIM_STATES_ALLOWLIST: ['open', 'failing'],
+}));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));
 // EI-16057: the harness-existence gate (checked on every miss) resolves `harness` against
 // the registry — stub it so the miss this test drives falls through to the idle-recipe
 // advice path it's actually pinning, not the (also-real) harness_not_found branch.
-vi.mock('../../harness-registry', () => ({
+// Spread the real module for the same reason as ../../work-items above: get_next's transitive
+// graph now reaches p2p/revocation-reaper, which imports `deregisterEphemeralForeignHarness`
+// from here, and a bare factory omitting it crashes collection.
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'h' }] })),
 }));
 

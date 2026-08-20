@@ -16,6 +16,17 @@ const getNextM = vi.hoisted(() => vi.fn());
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
 }));
+// WI-39730 bridged scheduler:get_next onto the per-Hive claim lease, so every claim now runs
+// through leaseClaimedWorkItem — a REAL PG write the unit-test guard refuses. This file is about
+// the claim-time checkpoint hint, not the lease, so the seam is stubbed with the lease DISABLED:
+// `leaseOn === false` short-circuits arbitrateSchedulerClaim before either PG call, leaving the
+// exact claim path these assertions were written against. get_next.test.ts owns the lease's own
+// coverage (it drives the lease-lost release). BOTH exports must be supplied — get_next imports
+// them together, so a factory missing one fails collection, not just the call.
+vi.mock('../../work-item-claim-lease-wiring', () => ({
+  workItemClaimLeaseEnabled: () => false,
+  leaseClaimedWorkItem: vi.fn(async () => true),
+}));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getFlag: vi.fn(async () => true),

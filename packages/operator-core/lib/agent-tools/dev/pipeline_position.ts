@@ -341,17 +341,28 @@ export function shapePipelinePosition(
  */
 function planeFor(payload: unknown, args: { path?: string; sha?: string }, ctx: unknown): StatePlaneBlock | null {
   try {
-    let reader = { ownerId: '', roles: [] as string[], harnessSlug: undefined as string | undefined };
+    // `role` and `harnessSlug` are read straight off ctx and do NOT depend on principal
+    // resolution, so they are established OUTSIDE the try. Rebuilding the whole reader inside
+    // it — the previous shape — threw them away whenever resolveAgentIdentity failed, which
+    // this tool reaches by design (`requirePrincipal: false`).
+    //
+    // That was harmless only while every cell was workspace-visible. EI-20709429494940822
+    // narrowed all six operator-pipeline cells to `{ kind: 'harness', ref: 'papercusp' }`, and
+    // `canReadCell`'s harness arm is a plain `reader.harnessSlug === ref`. So dropping the slug
+    // stopped being "under-advertising" and started removing the ENTIRE plane — the door kept
+    // returning the volatile values while silently withholding the handles that re-read them,
+    // which is precisely the transcribe-a-stale-number failure the plane exists to prevent.
+    const c = (ctx ?? {}) as { role?: string; harnessSlug?: string | null };
+    let reader = {
+      ownerId: '',
+      roles: c.role ? [c.role] : [],
+      harnessSlug: c.harnessSlug ?? undefined,
+    };
     try {
-      const c = (ctx ?? {}) as { role?: string; harnessSlug?: string | null };
-      const identity = resolveAgentIdentity(c as never);
-      reader = {
-        ownerId: identity.ownerId,
-        roles: c.role ? [c.role] : [],
-        harnessSlug: c.harnessSlug ?? undefined,
-      };
+      reader = { ...reader, ownerId: resolveAgentIdentity(c as never).ownerId };
     } catch {
-      // Unresolvable principal — fall through with the empty reader (workspace cells only).
+      // Unresolvable principal — keep the ctx-derived audience, with an empty owner. An
+      // `owner`-scoped cell still fails closed against `ownerId: ''`.
     }
     return stampStatePlane({
       payload,

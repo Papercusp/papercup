@@ -572,16 +572,18 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
   /**
    * ⚠ THE CENSUS, AND WHY IT IS AN ASSERTION RATHER THAN A COMMENT.
    *
-   * Every built-in cell is currently `workspace`-visible, so leg E's walk exercises ONE
-   * arm of the five-way switch and `oracle` is `true` for every row above. That is not a
-   * flaw to hide — it is a fact about the registry that a reader of this file MUST know,
-   * because without it leg E reads as far stronger coverage than it is.
+   * Built-in cells now span TWO arms of the five-way switch: the operator release-pipeline
+   * cells are `harness`-visible (EI-20709429494940822 narrowed them so other harnesses in the
+   * workspace cannot read Papercusp's gate/deploy state as if it were their own), and the rest
+   * remain `workspace`. So `oracle` above is `false` for the harness rows and `true` for the
+   * workspace rows, and leg E's walk genuinely exercises both — a refusal and an admission.
+   * That is a fact about the registry a reader of this file MUST know, because it is exactly
+   * what determines how much coverage leg E is worth.
    *
-   * Asserting the census rather than writing it in prose is what keeps it true. The
-   * moment a built-in cell adopts a narrower visibility, this test fails and forces the
-   * author to look at leg E — at which point the walk starts covering a second arm and
-   * the expectation here should be updated to say so. A comment would have silently
-   * gone stale instead.
+   * Asserting the census rather than writing it in prose is what keeps it true — this
+   * expectation is what caught the narrowing above instead of letting the prose go stale. The
+   * moment the mix shifts again this test fails and forces the author back to leg E to confirm
+   * the walk still asserts something for the newly-moved cell.
    */
   it('CENSUS: records how many built-in cells use each visibility kind', () => {
     const census: Record<string, number> = {};
@@ -593,6 +595,14 @@ describe('LEG E — every BUILT-IN cell agrees with the oracle on every surface'
       'the built-in visibility census changed. If a cell has adopted a NARROWER visibility that is good news — ' +
         "leg E now exercises an arm of canReadCell's switch it never did before. Update this expectation, and " +
         'check that leg E still asserts something for the newly-narrow cell.',
-    ).toEqual({ workspace: BUILTIN_CELLS.length });
+    ).toEqual({ workspace: 4, harness: 6 });
+    // The census must also stay EXHAUSTIVE. The expectation above names kinds explicitly, so a
+    // cell registered under a kind NOT named there would be invisible to it; summing the census
+    // back to the registry size is what makes "these are all of them" an assertion rather than
+    // an assumption.
+    expect(
+      Object.values(census).reduce((total, n) => total + n, 0),
+      'the census does not account for every built-in cell',
+    ).toBe(BUILTIN_CELLS.length);
   });
 });
