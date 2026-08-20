@@ -423,6 +423,24 @@ describe('engineer issues surface (real PG)', () => {
     expect((await issues.searchIssues('beta')).map((i) => i.title)).toEqual(['beta nit']);
   });
 
+  it('q keeps list and count in parity for topic and untagged populations', async () => {
+    await topicStore.create({ slug: 'q-parity', description: 'q parity', created_ts: NOW });
+    await issues.createIssue({ title: 'topic needle', topics: ['q-parity'], createdBy: 'agA' });
+    await issues.createIssue({ title: 'topic unrelated', topics: ['q-parity'], createdBy: 'agA' });
+    await issues.createIssue({ title: 'global needle', createdBy: 'agA' });
+    await issues.createIssue({ title: 'global unrelated', createdBy: 'agA' });
+
+    const topicFilter = { topic: 'q-parity', q: 'needle' };
+    const topicRows = await issues.listIssues(topicFilter);
+    expect(topicRows.map((i) => i.title)).toEqual(['topic needle']);
+    expect(await issues.countIssues(topicFilter)).toBe(topicRows.length);
+
+    const globalFilter = { q: 'needle' };
+    const globalRows = await issues.listIssues(globalFilter);
+    expect(globalRows.map((i) => i.title).sort()).toEqual(['global needle', 'topic needle']);
+    expect(await issues.countIssues(globalFilter)).toBe(globalRows.length);
+  });
+
   // EI-18713447977097831: `searchIssuesForDedup` used to pass the new capture's
   // full title straight to `websearch_to_tsquery`, which ANDs every bare term —
   // so it required a candidate to contain literally every word of the new
