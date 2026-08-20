@@ -36,8 +36,10 @@ function fakeSql(rows: Array<{ id: string; target_owner_id: string }>) {
   }) as unknown as {
     (strings: TemplateStringsArray): Promise<unknown[]>;
     array: (values: unknown[]) => unknown[];
+    unsafe: (identifier: string) => string;
   };
   sql.array = (values) => values;
+  sql.unsafe = (identifier) => identifier;
   return sql as never;
 }
 
@@ -1161,6 +1163,78 @@ describe('sweepStalledLoops — WAKE-STARVED: fires that reached nobody (WI-3668
     expect(res.paused).toBe(1);
     expect(armWake).not.toHaveBeenCalled();
     expect(autoPause).toHaveBeenCalledWith(sql, 'rt_wedged', expect.stringContaining('WI-6639'));
+  });
+
+  describe('cold delivered reset handoff (EI-20502003602774122)', () => {
+    const FIRED = '2026-08-15T07:22:00.000Z';
+    const DELIVERED = '2026-08-15T07:22:01.000Z';
+
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    });
+    afterEach(() => {
+      warn.mockRestore();
+    });
+
+    const coldDelivered = (ownerId: string) =>
+      status({
+        ownerId,
+        turnsStalled: true,
+        carry: 'cold',
+        lastFiredAt: FIRED,
+        lastWakeAt: DELIVERED,
+        lastWakeStatus: 'delivered',
+        lastWakeChannel: 'psu-socket-reset',
+        lastTurnAt: null,
+        lastRealTurnAt: null,
+      });
+
+    it('vetoes the premature disarm when a delivered cold reset already has agent-authored activity', async () => {
+      const sql = fakeSql([{ id: 'rt-cold', target_owner_id: 'su-cold' }]);
+      const getStatuses = vi.fn(async () => new Map([['su-cold', coldDelivered('su-cold')]]));
+      const autoPause = vi.fn(async () => {});
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const readOwnerToolActivity = vi.fn(async () =>
+        new Map([
+          [
+            'su-cold',
+            // One tool, not OK, is intentional: the cold-specific grace is keyed on strict
+            // agent-authored activity, while the general retry-storm veto remains stricter.
+            { calls: 1, distinctTools: 1, okCalls: 0, lastCallAt: DELIVERED },
+          ],
+        ]),
+      );
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, broadcast, readOwnerToolActivity, probeReachability: reach(false) },
+      );
+
+      expect(res.paused).toBe(0);
+      expect(res.vetoedByToolActivity).toEqual(['su-cold']);
+      expect(autoPause).not.toHaveBeenCalled();
+      expect(broadcast).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('COLD DELIVERED WAKE VETO su-cold'));
+    });
+
+    it('does not treat cold delivery alone as proof of productivity — the wedged handoff still disarms', async () => {
+      const sql = fakeSql([{ id: 'rt-cold-wedged', target_owner_id: 'su-cold-wedged' }]);
+      const getStatuses = vi.fn(async () => new Map([['su-cold-wedged', coldDelivered('su-cold-wedged')]]));
+      const autoPause = vi.fn(async () => {});
+      const broadcast = vi.fn<BroadcastFn>(async () => true);
+      const readOwnerToolActivity = vi.fn(async () => new Map());
+
+      const res = await sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        { getStatuses, autoPause, broadcast, readOwnerToolActivity, probeReachability: reach(false) },
+      );
+
+      expect(res.paused).toBe(1);
+      expect(res.vetoedByToolActivity).toEqual([]);
+      expect(autoPause).toHaveBeenCalledWith(sql, 'rt-cold-wedged', expect.stringContaining('WI-6639'));
+    });
+
   });
 
   it('a FAILED arm does not re-arm the loop and does not report a repair — it falls through to the disarm', async () => {

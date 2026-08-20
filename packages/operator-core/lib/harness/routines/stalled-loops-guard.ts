@@ -156,6 +156,10 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
+  CARRY_NOTE_BOOKKEEPING_TOOL_NAMES,
+  agentToolInvocationPredicate,
+} from '../../agent-tools/sessions/automatic-tool-names';
+import {
   getLoopStatuses,
   turnsStalledFloorMs,
   rearmFireStarvedLoop,
@@ -560,6 +564,8 @@ export async function sweepStalledLoops(
           JOIN harness_shared.tool_invocations t
             ON t.coord_owner_id = b.owner_id
            AND t.invoked_at > b.since
+           AND ${agentToolInvocationPredicate(o.sql, 't')}
+           AND t.tool_name <> ALL(${[...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES]}::text[])
          GROUP BY t.coord_owner_id
       `;
       for (const r of rows) {
@@ -1182,6 +1188,34 @@ export async function sweepStalledLoops(
       }
     }
 
+    // EI-20502003602774122 — COLD DELIVERED RESET, NOT WEDGED. A cold psu-socket-reset
+    // delivery tears down the predecessor and hands the next turn to a fresh context. The
+    // fire claims `last_fired_at` before that handoff, so this sweep can observe `turnsStalled`
+    // while the successor's turn markers are still null. Do not let delivery alone exempt a
+    // loop: the handoff must be recent and there must already be strict agent-authored activity
+    // after this fire. This is intentionally narrower than the general activity veto below;
+    // one automatic/status call or a one-tool retry storm cannot keep an arbitrary loop armed.
+    const firedAtMs = status.lastFiredAt ? Date.parse(status.lastFiredAt) : NaN;
+    const wakeAtMs = status.lastWakeAt ? Date.parse(status.lastWakeAt) : NaN;
+    const deliveredColdResetWake =
+      status.carry === 'cold' &&
+      status.lastWakeStatus === 'delivered' &&
+      status.lastWakeChannel === 'psu-socket-reset' &&
+      Number.isFinite(firedAtMs) &&
+      Number.isFinite(wakeAtMs) &&
+      wakeAtMs >= firedAtMs;
+    const activity = toolActivity.get(ownerId);
+    if (deliveredColdResetWake && activity != null && activity.calls > 0) {
+      vetoedByToolActivity.push(ownerId);
+      console.warn(
+        `[stalled-loops-guard] COLD DELIVERED WAKE VETO ${ownerId}: the latest ` +
+          `psu-socket-reset wake was delivered at ${status.lastWakeAt}, but cold successor turn ` +
+          `markers have not landed yet; ${activity.calls} recent agent-authored tool call(s) ` +
+          `show the successor is productive. Refusing to disarm this handoff (EI-20502003602774122).`,
+      );
+      continue;
+    }
+
     // WI-37546 — LIVE, NOT STALLED. The fifth and last exemption, deliberately positioned HERE,
     // after every other branch has taken the population it can explain.
     //
@@ -1210,7 +1244,6 @@ export async function sweepStalledLoops(
     // BOUNDED, so it cannot become a standing exemption: `TOOL_LIVENESS_VETO_CEILING_MS` past the
     // owner's last COMPLETED turn, "still calling tools" stops counting as evidence and the loop
     // falls through to the disarm — which is now revivable, so even that is no longer terminal.
-    const activity = toolActivity.get(ownerId);
     if (isProgressingToolActivity(activity)) {
       // The ceiling anchors on the last time this owner FINISHED something. Unknown (a loop whose
       // owner has no turn history at all) is not old — it takes the veto, per this module's
