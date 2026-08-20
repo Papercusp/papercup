@@ -332,6 +332,53 @@ describe('P-009 spawn-request honor hook (WI-1940 pattern)', () => {
     );
   });
 
+  it('a landed REMOTE request that expired in transit is refused through the real honor hook', async () => {
+    const actualHonor = await vi.importActual<typeof import('../../../p2p/delegated-spawn-honor')>(
+      '../../../p2p/delegated-spawn-honor',
+    );
+    const setDisposition = vi.fn(async () => true);
+    const emitReceipt = vi.fn(async (..._args: unknown[]) => ({ ok: true }));
+    const spawnMembers = vi.fn(async () => ({ opened: 1, failed: 0, firstError: null }));
+    const requestedAtMs = spawnReqOver.spawnRequest.requestedAtMs;
+
+    honorSpawnMock.mockImplementationOnce(async (args) =>
+      actualHonor.honorSpawnRequestFromProjection(args as never, {
+        hostAccepts: vi.fn(async () => true),
+        resolveActor: vi.fn(async () => ({ githubUserId: spawnReqOver.spawnRequest.targetPublisherGithubUserId })) as never,
+        resolveDevicePubkey: vi.fn(async () => 'local-device-pubkey'),
+        listAllotments: vi.fn(async () => []) as never,
+        setDisposition: setDisposition as never,
+        emitReceipt: emitReceipt as never,
+        spawnMembers,
+        nowMs: () => requestedAtMs + actualHonor.SPAWN_REQUEST_HONOR_WINDOW_MS + 1,
+      }),
+    );
+
+    const { sql } = fakeAppliedSql(1);
+    const p = buildWorkOffersProjection({ ...opts, sql, verifyRecord: async () => true });
+    const row = signedRow(spawnReqOver);
+    await p.writeToPg(row, { origin: 'remote', authorPubkey: 'apk', ts: 1, fedHlc: 'hlc' } as never);
+
+    expect(setDisposition).toHaveBeenCalledOnce();
+    expect(setDisposition).toHaveBeenCalledWith(
+      WS,
+      HIVE,
+      PUBLISHER,
+      row.offer_id,
+      'refused:expired',
+      undefined,
+      sql,
+    );
+    expect(emitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'refusal',
+        offerId: row.offer_id,
+        refusal: expect.objectContaining({ code: 'expired' }),
+      }),
+    );
+    expect(spawnMembers).not.toHaveBeenCalled();
+  });
+
   it('does NOT fire for local origin / a seat row / an LWW-skipped upsert', async () => {
     const applied = fakeAppliedSql(1);
     const p1 = buildWorkOffersProjection({ ...opts, sql: applied.sql, verifyRecord: async () => true });
