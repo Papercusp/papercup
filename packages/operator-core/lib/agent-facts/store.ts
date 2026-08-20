@@ -1098,6 +1098,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   const body = clampFactBody(input.body);
   if (!body) throw new InvalidInputError('facts:assert — body required');
   const subjectVolatile = input.subjectVolatile === true;
+  const capPartition: FactCapPartition = subjectVolatile ? 'volatile' : 'ordinary';
+  const cap = factCapFor(capPartition);
   const measuredAtInput = input.measuredAt?.trim() || null;
   if (subjectVolatile && !measuredAtInput) {
     throw new InvalidInputError(
@@ -1397,7 +1399,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        AND (workspace_id, scope, coalesce(scope_ref,''), key) IN (
        SELECT workspace_id, scope, coalesce(scope_ref,''), key
          FROM harness_shared.agent_facts
-        WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}
+        WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}
           -- WI-7292: the row THIS call just wrote is excluded from the VICTIM
           -- ranking (it already occupies its slot and must not evict itself).
           -- The survival query below deliberately does NOT carry this clause —
@@ -1434,9 +1436,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        -- broken the survival query (see its note below), and here it would fail
        -- SILENTLY — over-evicting is indistinguishable from ordinary cap
        -- pressure. count(*) is 0 or 1, since id is the primary key.
-       OFFSET (SELECT GREATEST(0, ${FACTS_PER_SCOPE_CAP}::int - count(*)::int)
+       OFFSET (SELECT GREATEST(0, ${cap}::int - count(*)::int)
                  FROM harness_shared.agent_facts
-                WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}
+                WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}
                   AND id = ${writtenId}))
     RETURNING key, confidence, expires_at, created_by`;
   const fact = rowToFact(rows[0]) as AssertFactResult;
@@ -1528,7 +1530,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
       >`
         SELECT id, confidence, expires_at, created_at, updated_at
           FROM harness_shared.agent_facts
-         WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}`;
+         WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}`;
       const confRank = (c: FactConfidence | null): number =>
         c === 'verified' ? 0 : c === 'suspected' ? 2 : 1;
       const values = new Set<FactConfidence | null>();
@@ -1780,8 +1782,23 @@ export interface FactSelector {
  * pair; the cap population simply never got it. `sweep-survival-population-
  * parity` in store.integration.test.ts holds the two together.
  */
-function capPopulationPredicate(sql: Sql, ws: string, scope: string, ref: string) {
-  const volatileMarker = sql`measurement->>'subjectVolatile'`;
+type FactCapPartition = 'ordinary' | 'volatile';
+
+function factCapFor(partition: FactCapPartition): number {
+  return partition === 'volatile' ? FACTS_VOLATILE_PER_SCOPE_CAP : FACTS_PER_SCOPE_CAP;
+}
+
+function capPopulationPredicate(
+  sql: Sql,
+  ws: string,
+  scope: string,
+  ref: string,
+  partition: FactCapPartition,
+) {
+  const measurementPartition =
+    partition === 'volatile'
+      ? sql`measurement->>'subjectVolatile' = 'true'`
+      : sql`measurement->>'subjectVolatile' IS DISTINCT FROM 'true'`;
   return sql`workspace_id = ${ws} AND scope = ${scope}
          AND coalesce(scope_ref,'') = ${ref}
          -- LOCAL partition only (H6): the local writer's cap must never evict
@@ -1797,11 +1814,11 @@ function capPopulationPredicate(sql: Sql, ws: string, scope: string, ref: string
          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
          -- P-028: conventions are governance rows, not ordinary cap population.
          AND COALESCE(kind, '') <> 'convention'
-         -- EI-20365165629381535: keep moving snapshots out of the ordinary
-         -- population. IS DISTINCT FROM includes missing, malformed, and
-         -- non-true markers in the ordinary partition without turning NULL
-         -- into an accidental exclusion.
-         AND ${volatileMarker} ${sql`IS DISTINCT FROM`} ${'true'}`;
+         -- EI-20365165629381535: partition by the exact JSONB text marker.
+         -- IS DISTINCT FROM includes missing, malformed, and non-true markers
+         -- in the ordinary partition without turning NULL into an accidental
+         -- exclusion.
+         AND ${measurementPartition}`;
 }
 
 /**
@@ -1857,6 +1874,8 @@ export async function previewFactCapImpact(
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const ws = input.workspaceId ?? activeWorkspaceId();
   const ref = input.scope === 'workspace' ? null : (input.scopeRef ?? '').trim();
+  const capPartition: FactCapPartition = input.subjectVolatile === true ? 'volatile' : 'ordinary';
+  const cap = factCapFor(capPartition);
 
   // The exemptions are the SAME three the cap population excludes. Stated here
   // in TS because the row does not exist yet to be filtered by SQL — if you
@@ -1879,7 +1898,7 @@ export async function previewFactCapImpact(
   >`
     SELECT id, key, confidence, created_by, expires_at, created_at, updated_at
       FROM harness_shared.agent_facts
-     WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '')}`;
+     WHERE ${capPopulationPredicate(sql, ws, input.scope, ref ?? '', capPartition)}`;
 
   // An upsert supersedes the live row under the same key, so that row leaves the
   // population as this one enters it — the net slot count is unchanged. Missing
@@ -1916,7 +1935,7 @@ export async function previewFactCapImpact(
   // integration suite runs BOTH and requires them to name the same victims, so
   // a drift here is a test failure rather than a forecast that quietly
   // over-predicts the destruction its own caller is deciding against.
-  const capOffset = Math.max(0, exempt ? FACTS_PER_SCOPE_CAP : FACTS_PER_SCOPE_CAP - 1);
+  const capOffset = Math.max(0, exempt ? cap : cap - 1);
   const orderedIncumbents = orderAsSweepWould(incumbents, nowMs);
   const doomed = orderedIncumbents.slice(capOffset);
   const wouldEvict: FactEviction[] = doomed.map((r) => ({
@@ -1932,7 +1951,7 @@ export async function previewFactCapImpact(
     // key 2 — the fraction is (expires-now)/(expires-created) and created==now,
     // so it is 1.0 for any positive TTL. The declared TTL therefore cannot
     // change this row's rank, which is why no TTL resolution is duplicated here.
-    const survivors = orderedIncumbents.slice(0, Math.max(0, FACTS_PER_SCOPE_CAP - 1));
+    const survivors = orderedIncumbents.slice(0, Math.max(0, cap - 1));
     const hypothetical = {
       id: PREVIEW_ROW_ID,
       confidence: input.confidence ?? null,
@@ -1958,7 +1977,7 @@ export async function previewFactCapImpact(
     scope: input.scope,
     scopeRef: ref,
     populationSize: population.length,
-    cap: FACTS_PER_SCOPE_CAP,
+    cap,
     atCap: wouldEvict.length > 0,
     replacesExistingKey,
     exempt,
