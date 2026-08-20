@@ -1,7 +1,7 @@
 # Establish what your evidence covers before you read it
 URL: /internal/docs/agent-insights/establish-evidence-scope-before-reading
 
-Five confidently-wrong conclusions in one night, all from reading a log/artifact without first establishing what it actually covers — and the positive-control discipline that catches all of them. The fifth is the warning about the other four: an invalid join that returned the RIGHT answer, and was therefore about to be adopted as the standard.
+Five confidently-wrong conclusions in one night, all from reading a log/artifact without first establishing what it actually covers — plus the temporal freshness guard that prevents a current pass from falsely retracting a bug fixed after it was filed.
 
 ## The trap
 
@@ -165,3 +165,38 @@ checked step, not a held intention. Instance 5 is the warning about the
 other four: it is the one where the flawed method returned the *right*
 answer, which is precisely how a flawed method survives long enough to be
 adopted.
+
+## A non-reproduction result also needs a temporal freshness check
+
+A probe can be correctly aimed and still answer the wrong triage question if the
+artifact or source path changed after the bug was filed. **Before closing a
+filed bug as non-reproducing, establish that the thing you probed is the same
+state that the report described.** A current green result is not evidence that
+the reported failure never existed when a peer may have fixed it minutes
+earlier.
+
+Use a small, explicit freshness record:
+
+1. Record the work-item's `createdAt` in UTC, the exact cited artifact or
+   source path, and the commit or content identity under test.
+2. Compare that timestamp with the path's relevant Git history and, for
+   generated artifacts, with `TZ=UTC stat`/mtime. Read the writer's timestamp
+   or commit time; do not compare a local-time display to a UTC work-item
+   timestamp or treat an artifact's mtime as its build time.
+3. If the path or artifact changed after `createdAt`, classify the result as
+   **temporally stale**, not as proof of non-reproduction. Re-test the reported
+   revision when available, or preserve the bug with the change and uncertainty
+   recorded.
+4. Only call the bug non-reproducing when the probe covered the same artifact
+   state; include the compared UTC timestamps and identity in the evidence.
+
+This guard was added after a local-vs-UTC mtime reading caused a false
+retraction of a real fix. It is the temporal counterpart to the positive-control
+rule above: calibration proves that the instrument can distinguish the case,
+while freshness proves that it measured the case that was actually filed.
+
+Add this row to the claim table:
+
+| Claim                              | Don't trust                                            | Check instead                                                                                   |
+| ---------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| "the filed bug does not reproduce" | a current pass against an unverified or newer artifact | work-item `createdAt` versus Git history / UTC mtime and the exact revision or content identity |
