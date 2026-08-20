@@ -90,6 +90,25 @@ describe('isAncestor', () => {
     expect(await isAncestor(repo, c2, c1)).toBe(false);
     expect(await isAncestor(repo, c1, c1)).toBe(true);
   });
+
+  it('does not treat a cross-repository SHA error as a normal negative result', async () => {
+    const localHead = await commit('a.txt', '1', 'local');
+    const foreignRepo = mkdtempSync(join(tmpdir(), 'relgit-foreign-'));
+    try {
+      await git(foreignRepo, ['init', '-q', '-b', 'main']);
+      await git(foreignRepo, ['config', 'user.email', 'test@example.com']);
+      await git(foreignRepo, ['config', 'user.name', 'Test']);
+      await git(foreignRepo, ['config', 'commit.gpgsign', 'false']);
+      writeFileSync(join(foreignRepo, 'foreign.txt'), 'foreign');
+      await git(foreignRepo, ['add', '-A']);
+      await git(foreignRepo, ['commit', '--no-verify', '-q', '-m', 'foreign']);
+      const foreignHead = await revParse(foreignRepo, 'HEAD');
+
+      await expect(isAncestor(repo, foreignHead, localHead)).rejects.toMatchObject({ code: 128 });
+    } finally {
+      rmSync(foreignRepo, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('diff helpers', () => {

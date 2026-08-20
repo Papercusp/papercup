@@ -55,7 +55,13 @@ export async function commitUnixTime(repo: string, ref: string): Promise<number>
   return Number(await git(repo, ['show', '-s', '--format=%ct', ref]));
 }
 
-/** True iff `ancestor` is an ancestor of (or equal to) `descendant`. */
+/** True iff `ancestor` is an ancestor of (or equal to) `descendant`.
+ *
+ * A non-ancestor is a normal negative result (git exit 1). Any other git
+ * failure is indeterminate — notably exit 128 when a SHA belongs to a
+ * different repository — and must remain visible to callers instead of being
+ * misreported as a normal negative result.
+ */
 export async function isAncestor(
   repo: string,
   ancestor: string,
@@ -64,8 +70,10 @@ export async function isAncestor(
   try {
     await git(repo, ['merge-base', '--is-ancestor', ancestor, descendant]);
     return true;
-  } catch {
-    return false; // non-zero exit = not an ancestor
+  } catch (error: unknown) {
+    const code = (error as { code?: unknown })?.code;
+    if (Number(code) === 1) return false;
+    throw error;
   }
 }
 
