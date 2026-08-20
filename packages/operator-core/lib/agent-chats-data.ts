@@ -47,6 +47,8 @@ export interface TranscriptTurn {
    * gap (the live sender also gets the inline error banner). jsonb — no migration.
    */
   error?: boolean;
+  /** Number of terminal usage frames whose cost/token fields were absent. */
+  unreportedFrames?: number;
 }
 
 export interface ChatRow {

@@ -511,6 +511,7 @@ const messagesRoute = defineTool({
         let tokensIn = 0;
         let tokensOut = 0;
         let costUsd = 0;
+        let unreportedFrames = 0;
         let lastErrorMessage: string | null = null;
         let lastErrorStderr: string | undefined;
         let toolError: { code: string; message: string } | null = null;
@@ -567,13 +568,17 @@ const messagesRoute = defineTool({
                 if (blob && 'text' in blob && typeof blob.text === 'string') {
                   const parsed = JSON.parse(blob.text) as {
                     finalText?: string; tokensIn?: number; tokensOut?: number; costUsd?: number;
+                    unreportedFrames?: number;
                   };
                   if (parsed.finalText && parsed.finalText.length > assistantText.length) {
                     assistantText = parsed.finalText;
                   }
-                  tokensIn = parsed.tokensIn ?? 0;
-                  tokensOut = parsed.tokensOut ?? 0;
-                  costUsd = parsed.costUsd ?? 0;
+                  if (typeof parsed.tokensIn === 'number' && Number.isFinite(parsed.tokensIn)) tokensIn = parsed.tokensIn;
+                  if (typeof parsed.tokensOut === 'number' && Number.isFinite(parsed.tokensOut)) tokensOut = parsed.tokensOut;
+                  if (typeof parsed.costUsd === 'number' && Number.isFinite(parsed.costUsd)) costUsd = parsed.costUsd;
+                  if (typeof parsed.unreportedFrames === 'number' && Number.isSafeInteger(parsed.unreportedFrames) && parsed.unreportedFrames > 0) {
+                    unreportedFrames += parsed.unreportedFrames;
+                  }
                 }
               } catch { /* malformed tool result — keep what we accumulated */ }
             } else if (ev.kind === 'error') {
@@ -633,6 +638,7 @@ const messagesRoute = defineTool({
           tokens_in: tokensIn,
           tokens_out: tokensOut,
           cost_cents: Math.round(costUsd * 100),
+          ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
         };
         const finalTranscript = [...baseTranscript, finalAssistantTurn];
 
@@ -665,6 +671,7 @@ const messagesRoute = defineTool({
           tokens_in: tokensIn,
           tokens_out: tokensOut,
           cost_cents: finalAssistantTurn.cost_cents,
+          ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
         });
         sink.close();
       },

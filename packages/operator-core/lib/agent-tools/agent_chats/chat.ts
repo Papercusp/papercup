@@ -22,7 +22,8 @@
  *   event: done       data: <ToolResult.content as JSON>  ← framework auto-emit
  *
  * The ToolResult.content carries the rollup the route needs to persist:
- *   [{ type: 'text', text: JSON.stringify({ finalText, tokensIn, tokensOut, costUsd }) }]
+ *   [{ type: 'text', text: JSON.stringify({ finalText, tokensIn, tokensOut, costUsd,
+ *      ...(unreportedFrames > 0 ? { unreportedFrames } : {}) }) }]
  *
  * work-item-chat-context-modernize P-004: a scoped, read-mostly MCP tool
  * surface (`work_items:get/list`, `plans:get`, `docs:search`,
@@ -75,6 +76,7 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
   let tokensIn = 0;
   let tokensOut = 0;
   let costUsd = 0;
+  let unreportedFrames = 0;
   let lastErrorMessage: string | null = null;
   let lastErrorStderr: string | undefined;
 
@@ -124,6 +126,9 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
         tokensIn = ev.tokensIn;
         tokensOut = ev.tokensOut;
         costUsd = ev.costUsd;
+        if (typeof ev.unreportedFrames === 'number' && Number.isSafeInteger(ev.unreportedFrames) && ev.unreportedFrames > 0) {
+          unreportedFrames += ev.unreportedFrames;
+        }
         if (ev.finalText && ev.finalText.length > assistantText.length) {
           assistantText = ev.finalText;
         }
@@ -149,7 +154,13 @@ async function agentChatsHandler(input: Args, ctx: ChatCtx) {
     content: [
       {
         type: 'text' as const,
-        text: JSON.stringify({ finalText: assistantText, tokensIn, tokensOut, costUsd }),
+        text: JSON.stringify({
+          finalText: assistantText,
+          tokensIn,
+          tokensOut,
+          costUsd,
+          ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
+        }),
       },
     ],
   };

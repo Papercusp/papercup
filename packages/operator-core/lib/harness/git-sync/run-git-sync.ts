@@ -456,8 +456,10 @@ export const isGitHubSshPublicKeyFailure = (result: { stdout: string; stderr: st
  *  account behind that key has no verified email. The configured HTTPS credential may belong to
  *  a different, write-capable automation account, so this is the same credential-plane failure
  *  class as a missing SSH key — but only after the configured remote is proven to be GitHub SSH. */
-export const isGitHubSshEmailVerificationFailure = (result: { stdout: string; stderr: string }): boolean =>
-  /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
+export const isGitHubSshEmailVerificationFailure = (result: {
+  stdout: string;
+  stderr: string;
+}): boolean => /(?:remote:\s*)?You must verify your email address\.?/i.test(`${result.stdout}\n${result.stderr}`);
 
 const isGitHubSshRemoteUrl = (url: string): boolean =>
   /^(?:git@github\.com:|ssh:\/\/git@github\.com\/)/i.test(url.trim());
