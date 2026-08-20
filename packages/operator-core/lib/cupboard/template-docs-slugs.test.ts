@@ -121,10 +121,16 @@ describe('official templates: every cited docs: slug resolves', () => {
     ).toEqual([]);
   });
 
-  it('cites the three shared template pages from the app-scope roots', () => {
+  it('cites the shared template pages from all five app-scope roots', () => {
     // These are the pages the whole template system leans on; a silent drop of a
     // citation is a regression too, not only a dangling one.
-    for (const root of ['papercusp-webapp', 'papercusp-desktop-app', 'papercusp-agentic-desktop-app']) {
+    for (const root of [
+      'papercusp-webapp',
+      'papercusp-desktop-app',
+      'papercusp-agentic-desktop-app',
+      'papercusp-android-app',
+      'papercusp-iphone-app',
+    ]) {
       const mine = citations.filter((c) => c.template === root).map((c) => c.slug);
       expect(mine, `${root} should cite the template-system pages`).toEqual(
         expect.arrayContaining([

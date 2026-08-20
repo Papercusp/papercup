@@ -27,6 +27,24 @@ describe("COMPONENT_CATALOG", () => {
     }
   });
 
+  it("pins the shared mobile base as one neutral Tier-A pattern", () => {
+    const mobileBase = COMPONENT_CATALOG.find((entry) => entry.id === "rust-uniffi-mobile-base");
+    expect(mobileBase).toMatchObject({
+      version: "0.1.0",
+      tier: "A",
+      kind: "pattern",
+      composesWith: [],
+    });
+    expect(mobileBase?.provides).toEqual(
+      expect.arrayContaining([
+        "portable-mobile-core",
+        "uniffi-native-boundary",
+        "cross-language-design-tokens",
+        "mobile-source-hygiene",
+      ]),
+    );
+  });
+
   it("tier-B components are exactly the seam disciplines (D-002)", () => {
     const tierB = COMPONENT_CATALOG.filter((m) => m.tier === "B")
       .map((m) => m.id)

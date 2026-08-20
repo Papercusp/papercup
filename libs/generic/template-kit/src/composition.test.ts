@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { composeTemplates, resolveRequiresClosure, validateTemplateSet } from "./composition.js";
 import {
   AGENTIC_DESKTOP_APP_TEMPLATE,
+  PAPERCUSP_ANDROID_APP_TEMPLATE,
+  PAPERCUSP_IPHONE_APP_TEMPLATE,
   PAPERCUSP_OPS_HIVES_TEMPLATE,
   REFERENCE_TEMPLATES,
   TAURI_DESKTOP_SHELL_TEMPLATE,
@@ -199,6 +201,58 @@ describe("the reference composition (P-014 acceptance: template #1 as a 3-way sp
       ["papercusp-desktop-app", "papercusp-ops-pots"],
     );
   });
+});
+
+describe("the official mobile app roots (official-mobile-app-templates P-015)", () => {
+  const cases = [
+    {
+      root: PAPERCUSP_ANDROID_APP_TEMPLATE,
+      closure: ["papercusp-mobile-base", "papercusp-android-shell", "papercusp-android-app"],
+      checks: [
+        "papercusp-mobile-base:mobile-base-contract",
+        "papercusp-mobile-base:mobile-base-commands",
+        "papercusp-android-shell:android-shell-contract",
+        "papercusp-android-shell:android-shell-assertions",
+        "papercusp-android-app:composition-integrity",
+      ],
+    },
+    {
+      root: PAPERCUSP_IPHONE_APP_TEMPLATE,
+      closure: ["papercusp-mobile-base", "papercusp-iphone-shell", "papercusp-iphone-app"],
+      checks: [
+        "papercusp-mobile-base:mobile-base-contract",
+        "papercusp-mobile-base:mobile-base-commands",
+        "papercusp-iphone-shell:iphone-shell-contract",
+        "papercusp-iphone-shell:iphone-shell-assertions",
+        "papercusp-iphone-app:composition-integrity",
+      ],
+    },
+  ];
+
+  for (const { root, closure, checks } of cases) {
+    it(`${root.id} resolves the exact pinned closure and additive check union`, () => {
+      expect(root.scope).toBe("app");
+      expect(root.category).toBe("app");
+      expect(root.requires).toEqual(
+        closure.slice(0, -1).map((id) => ({ id, version: "0.1.0" })),
+      );
+
+      const resolved = resolveRequiresClosure([root], REFERENCE_TEMPLATES);
+      expect(resolved).toMatchObject({ ok: true, errors: [] });
+      expect(resolved.templates.map((template) => template.id)).toEqual(closure);
+
+      const composed = composeTemplates(resolved.templates);
+      expect(composed).toMatchObject({ ok: true, errors: [] });
+      expect(composed.composition?.scope).toBe("app");
+      expect(composed.composition?.appTemplateId).toBe(root.id);
+      expect(composed.composition?.components.map((component) => component.id)).toEqual([
+        "rust-uniffi-mobile-base",
+      ]);
+      expect(
+        composed.composition?.checks.map((check) => `${check.templateId}:${check.item.id}`),
+      ).toEqual(checks);
+    });
+  }
 });
 
 describe("P-015 — requires: hard pinned cross-template deps", () => {

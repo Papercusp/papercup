@@ -53,6 +53,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { listLocalTemplates, readLocalGuide } from './template-store';
 
 /** Repo root: walk up from this file until the root package.json (the one with `workspaces`). */
 function repoRoot(): string {
@@ -269,6 +270,41 @@ describe('template bundle integrity — a materialized app can run the checks it
   it('the templates dir is present (otherwise every assertion below is vacuous)', () => {
     expect(existsSync(TEMPLATES_DIR), `no templates dir at ${TEMPLATES_DIR}`).toBe(true);
     expect(listTemplateRefs().length).toBeGreaterThan(0);
+  });
+
+  it('the source store exposes both official mobile roots with complete metadata and guides', () => {
+    const byRef = new Map(
+      listLocalTemplates([{ dir: TEMPLATES_DIR, layer: 'bundled' }]).map((template) => [
+        template.ref,
+        template,
+      ]),
+    );
+    const expected = [
+      ['papercusp-android-app', 'Papercusp Official: Android App'],
+      ['papercusp-iphone-app', 'Papercusp Official: iPhone App'],
+    ] as const;
+
+    for (const [ref, title] of expected) {
+      const template = byRef.get(ref);
+      expect(template, `${ref} should be returned by the templates:list data layer`).toMatchObject({
+        ref,
+        id: ref,
+        title,
+        scope: 'app',
+        category: 'app',
+        version: '0.1.0',
+        source: 'first-party',
+      });
+
+      const guide = readLocalGuide(template!);
+      expect('error' in guide, `${ref} should be returned by the templates:get-guide data layer`).toBe(false);
+      if (!('error' in guide)) {
+        expect(guide.branch).toBe('local');
+        expect(guide.guide).toContain(`# ${ref} — composition GUIDE`);
+        expect(guide.manifest).toContain(`id: ${ref}`);
+        expect(guide.fetchedFiles).toEqual(expect.arrayContaining(['GUIDE.md', 'template.yaml']));
+      }
+    }
   });
 
   it('every executable check has at least one external import (proves the extractor is not silently matching nothing)', () => {
