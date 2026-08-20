@@ -86,6 +86,38 @@ export function toLogicalCommands(script: string): { line: number; text: string 
  * its contents. The deref must be PRESENT IN THE SAME SCRIPT — passing along a variable
  * someone else populated is precisely the ambient-inheritance assumption that broke.
  */
+/**
+ * Does `script` resolve `$<name>` from a PATH to its CONTENTS?
+ *
+ * TWO SYNTACTIC FORMS, one meaning. The deref is proven by the two things that
+ * actually make it safe — a `-f "$X"` file test (so a caller who passed key
+ * CONTENT is left alone) and an `X="$(cat "$X")"` self-assignment (the actual
+ * path->content resolution) — not by how they are joined:
+ *
+ *   one-liner:  [[ -f "$_key" ]] && _key="$(cat "$_key")"
+ *   block:      if [[ -n "${X:-}" && -f "$X" ]]; then export X="$(cat "$X")"; fi
+ *
+ * Originally only the one-liner was recognized, which red the gate on
+ * mac-vm-build.sh — code that derefs CORRECTLY, in block form. That is not a
+ * style quibble: `mac-vm-build.sh` runs under `set -eo pipefail`, where the
+ * one-liner is a LANDMINE. `[[ -f "$_key" ]] && _key=...` returns non-zero
+ * whenever the key was supplied as CONTENT rather than a path, and under
+ * `set -e` a failing `&&` list at statement position ABORTS THE SCRIPT — so
+ * prescribing that shape would have traded a false alarm for a real
+ * signing-time break. The block form is the safer idiom and the scanner has to
+ * know it.
+ *
+ * Deliberately NOT weakened: a call that merely forwards a variable someone
+ * else populated still has neither half and is still flagged (CONTROL_PASSTHROUGH),
+ * and so is an assignment from an unrelated path (CONTROL_CLOBBER).
+ */
+export function derefsPathToContents(script: string, name: string): boolean {
+  if (!/^\w+$/.test(name)) return false;
+  const catSelf = new RegExp(`(^|[^_A-Za-z0-9])${name}="\\$\\(cat\\s+"\\$${name}"\\)"`);
+  const fileTest = new RegExp(`-f\\s+"\\$${name}"`);
+  return catSelf.test(script) && fileTest.test(script);
+}
+
 export function findUnsafeSignerCalls(script: string): { line: number; text: string; why: string }[] {
   const unsafe: { line: number; text: string; why: string }[] = [];
   for (const cmd of toLogicalCommands(script)) {
@@ -101,10 +133,7 @@ export function findUnsafeSignerCalls(script: string): { line: number; text: str
       continue;
     }
     const name = envAssign[1];
-    const deref = new RegExp(
-      `\\[\\[?\\s*-f\\s+"\\$${name}"\\s*\\]\\]?\\s*&&\\s*${name}="\\$\\(cat\\s+"\\$${name}"\\)"`,
-    );
-    if (!deref.test(script)) {
+    if (!derefsPathToContents(script, name)) {
       unsafe.push({
         line: cmd.line,
         text: cmd.text,
@@ -160,13 +189,22 @@ export function findClobberingKeyAssignments(
       const rhs = m[2];
       const guarded = guardDepths.length > 0;
       const selfDefaulting = rhs.includes('${TAURI_SIGNING_PRIVATE_KEY');
+      // Everything after the `=` of THIS assignment. `rhs` comes from a naive
+      // `"[^"]*"` capture, which stops at the first inner quote and so reads
+      // `export X="$(cat "$X")"` as the value `"$(cat "` — losing the very
+      // reference that proves the value is self-derived.
+      const ASSIGN = 'TAURI_SIGNING_PRIVATE_KEY=';
+      const afterEq = text.slice(text.indexOf(ASSIGN) + ASSIGN.length);
+      // Compliance #3, in-place: the new value is DERIVED FROM THE AMBIENT ONE
+      // (`X="$(cat "$X")"`), so a caller-supplied key cannot be lost — only
+      // transformed. `\b` keeps this from matching the DIFFERENT variable
+      // `$TAURI_SIGNING_PRIVATE_KEY_PATH`, which is a real clobber source and
+      // stays subject to the `-z` guard requirement.
+      const selfDerived = /\$\{?TAURI_SIGNING_PRIVATE_KEY\b/.test(afterEq);
+      // Compliance #3, via a temp var the script deref'd elsewhere.
       const fromVar = /^"\$(\w+)"$/.exec(rhs);
-      const derefed =
-        fromVar !== null &&
-        new RegExp(
-          `\\[\\[?\\s*-f\\s+"\\$${fromVar[1]}"\\s*\\]\\]?\\s*&&\\s*${fromVar[1]}="\\$\\(cat\\s+"\\$${fromVar[1]}"\\)"`,
-        ).test(script);
-      if (!guarded && !selfDefaulting && !derefed) {
+      const derefed = fromVar !== null && derefsPathToContents(script, fromVar[1]);
+      if (!guarded && !selfDefaulting && !selfDerived && !derefed) {
         out.push({
           line: i + 1,
           text,
@@ -213,6 +251,24 @@ const CONTROL_PASSTHROUGH = `
 TAURI_SIGNING_PRIVATE_KEY="$_key" \\
   npx --yes -p @tauri-apps/cli@"$V" tauri signer sign "$OUT"
 `;
+// The BLOCK deref — mac-vm-build.sh's shape, and the one that is safe under
+// \`set -eo pipefail\` (see derefsPathToContents). Both scanners must accept it:
+// the in-place assignment is self-derived, and the later passthrough is backed
+// by a real path->content resolution in the same script.
+const CONTROL_DEREF_BLOCK = `
+if [[ -n "\${TAURI_SIGNING_PRIVATE_KEY:-}" && -f "$TAURI_SIGNING_PRIVATE_KEY" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY="$(cat "$TAURI_SIGNING_PRIVATE_KEY")"
+fi
+( cd "$ROOT" && TAURI_SIGNING_PRIVATE_KEY="$TAURI_SIGNING_PRIVATE_KEY" \\
+    npx --yes -p @tauri-apps/cli@"$V" tauri signer sign "$OUT" )
+`;
+// NEGATIVE control for the widening above: a \`-f\` test ALONE is not a deref.
+// Without this, relaxing derefsPathToContents to either-half would pass silently.
+const CONTROL_FILETEST_ONLY = `
+if [[ -f "$_key" ]]; then echo "looks like a path"; fi
+TAURI_SIGNING_PRIVATE_KEY="$_key" \\
+  npx --yes -p @tauri-apps/cli@"$V" tauri signer sign "$OUT"
+`;
 
 describe('tauri signer key contract', () => {
   // CALIBRATION. Every "zero violations" assertion below is vacuous if the scanner has
@@ -248,6 +304,12 @@ describe('tauri signer key contract', () => {
   it('accepts both compliant forms', () => {
     expect(findUnsafeSignerCalls(CONTROL_DEREF)).toEqual([]);
     expect(findUnsafeSignerCalls(CONTROL_KEY_PATH)).toEqual([]);
+  });
+
+  it('accepts the BLOCK deref too (the `set -e`-safe shape), and still needs a real deref', () => {
+    expect(findUnsafeSignerCalls(CONTROL_DEREF_BLOCK)).toEqual([]);
+    // ...but a bare `-f` test with no path->content resolution is NOT a deref.
+    expect(findUnsafeSignerCalls(CONTROL_FILETEST_ONLY)).toHaveLength(1);
   });
 
   // ── Controls for the clobber scanner. CONTROL_CLOBBER_AFTER_FI is the one that
@@ -290,6 +352,16 @@ export TAURI_SIGNING_PRIVATE_KEY="$OTHER_KEY"
     expect(findClobberingKeyAssignments(CONTROL_GUARDED)).toEqual([]);
     expect(findClobberingKeyAssignments(CONTROL_DEFAULTED)).toEqual([]);
     expect(findClobberingKeyAssignments(CONTROL_DEREF)).toEqual([]);
+    // In-place self-derive: the value comes FROM the ambient key, so nothing is lost.
+    expect(findClobberingKeyAssignments(CONTROL_DEREF_BLOCK)).toEqual([]);
+  });
+
+  it('does NOT treat the neighbouring _PATH variable as self-derived', () => {
+    // `$TAURI_SIGNING_PRIVATE_KEY_PATH` is a DIFFERENT variable and a real clobber
+    // source; only the `-z` guard may license it. This pins the `\b` in selfDerived.
+    expect(
+      findClobberingKeyAssignments('export TAURI_SIGNING_PRIVATE_KEY="$TAURI_SIGNING_PRIVATE_KEY_PATH"\n'),
+    ).toHaveLength(1);
   });
 
   // CALIBRATION for the clobber scan, same reason as above: if the scanner stops seeing

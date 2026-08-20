@@ -122,6 +122,7 @@
     "@papercusp/step-program": "*",
     "@papercusp/structured-concurrency": "*",
     "@papercusp/sync": "*",
+    "@papercusp/template-kit": "*",
     "@papercusp/testing-shell": "*",
     "@papercusp/tooldef": "*",
     "@papercusp/tooldef-mcp": "*",
