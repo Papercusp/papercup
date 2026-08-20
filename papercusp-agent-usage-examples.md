@@ -49,7 +49,7 @@ Suppose a release may proceed by either of two routes:
 }
 ```
 
-The composed-await contract is intentionally bounded: at most 20 leaves and three levels of nesting. `all` means every child, `any` means at least one child, and `some` means *k* of *n*. A leaf may include a payload condition. Event-level negation is deliberately unsupported; absence is observed at the deadline.
+The composed-await contract is intentionally bounded: at most 20 leaves and three levels of nesting. `all` means every child, `any` means at least one child, and `some` means _k_ of _n_. A leaf may include a payload condition. Event-level negation is deliberately unsupported; absence is observed at the deadline.
 
 Good agent behavior after registering the await is to end the turn. The event engine owns the wait and re-invokes the session with the matched evidence. If the tree is already satisfied, registration returns `already_satisfied` and the agent proceeds immediately.
 
@@ -91,6 +91,8 @@ For gates delivered in a coordination message, the waiter can avoid copying the 
   "on_timeout": "wake"
 }
 ```
+
+Sources: [emit.ts](packages/operator-core/lib/agent-tools/events/emit.ts), [await.ts](packages/operator-core/lib/agent-tools/events/await.ts)
 
 ## Example 3: read changing state at the moment of action
 
@@ -160,6 +162,8 @@ An exact event that requires action may opt into a wake:
 
 `watch:create` controls delivery (`wake`), cardinality (`once`), cadence (`min_sleep_sec`), urgency, timeout behavior, and target kind in one subscription model.
 
+Source: [watch.ts](packages/operator-core/lib/agent-tools/events/watch.ts)
+
 ## Example 5: send a message whose evidence and requested action are unambiguous
 
 Coordination messages say what response they expect and why this recipient is involved. Different epistemic dispositions belong in different body sections.
@@ -207,6 +211,8 @@ The transport reports whether a live session was actually woken. `woken:0`, `rec
 
 For new work, use `coord:dispatch`: it assigns plan items, delivers the brief, wakes the recipient, and reports pickup in one operation. For an ongoing discussion that must persist with a work-item, use `coord:message-agent` rather than a loose series of inbox pings.
 
+Sources: [send.ts](packages/operator-core/lib/agent-tools/coordination/tools/send.ts), [dispatch.ts](packages/operator-core/lib/agent-tools/coordination/tools/dispatch.ts), [message-agent.ts](packages/operator-core/lib/agent-tools/coordination/tools/message-agent.ts)
+
 ## Example 6: turn a goal into durable, collision-safe implementation
 
 A good implementation sequence externalizes each kind of state:
@@ -217,11 +223,13 @@ plans:new
   → plans:start
   → plan_items:convert / scheduler:get_next
   → coord:declare-intent (live lane + files)
-  → locks:acquire (exclusive edit lease)
+  → locks:acquire (exclusive edit lease, in manual lock mode)
   → edit + verify
   → locks:release
   → work_items:complete (structured evidence)
 ```
+
+The lock step follows the runtime's one effective mode. In `manual` mode the agent explicitly acquires and releases the lease. In `automatic` mode the edit hook does that around each write. Never combine the modes.
 
 Illustrative claim conversion:
 
@@ -260,10 +268,7 @@ Completion records what landed and how it was checked, rather than merely assert
   "completion": {
     "status": "done",
     "summary": "Authored and opened the source-backed walkthrough documents.",
-    "whatLanded": [
-      "Agent usage examples",
-      "State-object inventory"
-    ],
+    "whatLanded": ["Agent usage examples", "State-object inventory"],
     "verification": {
       "filesChanged": [
         "papercusp-agent-usage-examples.md",
@@ -278,7 +283,55 @@ Completion records what landed and how it was checked, rather than merely assert
 }
 ```
 
-## Example 7: run autonomously without becoming invisible
+Sources: [new.ts](packages/operator-core/lib/agent-tools/plans/new.ts), [start.ts](packages/operator-core/lib/agent-tools/plans/start.ts), [convert.ts](packages/operator-core/lib/agent-tools/plan-items/convert.ts), [acquire.ts](packages/operator-core/lib/agent-tools/locks/acquire.ts), [complete.ts](packages/operator-core/lib/agent-tools/work_items/complete.ts)
+
+## Example 7: reuse a proven orchestration instead of rebuilding it
+
+Before composing a repeated multi-step `code:run`, search the shared recipe library by intent and live entity context:
+
+```json
+{
+  "query": "validate a Markdown runtime guide and verify every repository link",
+  "limit": 5,
+  "context": {
+    "plan": "runtime-demo",
+    "harness": "papercusp",
+    "items": ["P-001"]
+  }
+}
+```
+
+Inspect the best match before executing it:
+
+```json
+{
+  "id": "<recipe-id-from-search>"
+}
+```
+
+Then pass the search result's exact `runArgs` to `recipes:run`. Entity-bound recipes include an authority proof tied to the recipe revision and current context; reconstructing that object by hand defeats the protection.
+
+```json
+{
+  "id": "<recipe-id-from-search>",
+  "dryRun": true,
+  "authority": {
+    "version": 1,
+    "revision": "<revision-returned-by-search>",
+    "context": {
+      "plan": "runtime-demo",
+      "harness": "papercusp",
+      "items": ["P-001"]
+    }
+  }
+}
+```
+
+After the dry run, execute the same returned arguments with `dryRun:false`. The recipe still runs under the caller's role-scoped tool envelope; no privilege travels from its author.
+
+Sources: [search.ts](packages/operator-core/lib/agent-tools/recipes/search.ts), [run.ts](packages/operator-core/lib/agent-tools/recipes/run.ts)
+
+## Example 8: run autonomously without becoming invisible
 
 When an owner explicitly says “run autonomously,” the session records the mode and arms a tracked loop for an open-ended objective:
 
@@ -303,17 +356,19 @@ When an owner explicitly says “run autonomously,” the session records the mo
 
 The loop is visible through `loop:status` and fleet/session surfaces and can be stopped with `loop:end`. A one-shot wait still belongs in `events:await`; the loop is for ongoing work or a paced fallback when no push event exists.
 
-## Example 8: put knowledge in the correct durability layer
+Sources: [set.ts](packages/operator-core/lib/agent-tools/mode/set.ts), [arm.ts](packages/operator-core/lib/agent-tools/loop/arm.ts)
+
+## Example 9: put knowledge in the correct durability layer
 
 The same sentence should not be copied into every store.
 
-| Need | Mechanism | Example |
-|---|---|---|
-| Deterministic conclusion every relevant turn must see | `facts:assert` | “This service has no staging endpoint; do not wait for one.” |
-| Fuzzy, durable project knowledge | `memory:remember` | “The owner prefers runtime demos organized as an end-to-end story.” |
-| In-flight progress for the next wake/successor | `work_items:checkpoint` or `loop:checkpoint` | “Validated 8/10 cells; next inspect coverage cells.” |
-| Live presence, intent, handoff, or question | `coord:*` | “I hold P-002 and these two files.” |
-| Long-form how-to | `docs:author` / an approved repository document | This walkthrough. |
+| Need                                                  | Mechanism                                       | Example                                                             |
+| ----------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------- |
+| Deterministic conclusion every relevant turn must see | `facts:assert`                                  | “This service has no staging endpoint; do not wait for one.”        |
+| Fuzzy, durable project knowledge                      | `memory:remember`                               | “The owner prefers runtime demos organized as an end-to-end story.” |
+| In-flight progress for the next wake/successor        | `work_items:checkpoint` or `loop:checkpoint`    | “Validated 8/10 cells; next inspect coverage cells.”                |
+| Live presence, intent, handoff, or question           | `coord:*`                                       | “I hold P-002 and these two files.”                                 |
+| Long-form how-to                                      | `docs:author` / an approved repository document | This walkthrough.                                                   |
 
 Facts may depend on registered cells. That creates an auditable relationship between a durable conclusion and the live measurements that can invalidate it.
 
@@ -333,7 +388,9 @@ Facts may depend on registered cells. That creates an auditable relationship bet
 }
 ```
 
-## Example 9: supervise a fleet by push, invariants, and evidence
+Sources: [assert.ts](packages/operator-core/lib/agent-tools/facts/assert.ts), [remember.ts](packages/operator-core/lib/agent-tools/memory/remember.ts)
+
+## Example 10: supervise a fleet by push, invariants, and evidence
 
 A leader should not repeatedly reconstruct the same health questions by hand.
 
@@ -349,6 +406,8 @@ launch-on-plan
 Useful transition keys include member death, claim release, item completion, context pressure, and fleet drain. Per-member state distinguishes working, parked, blocked, stalled, and needs-you. The leader brief adds conditions that generic liveness cannot see: dormant, spinning, throttled, coordination-deaf, verified-wait takeover, bench suggestions, unanswered messages, and unactuated directives.
 
 A custom fleet invariant is a stored read-only query whose contract is “rows returned = violation.” Register it once, then verify both halves: the satisfied query returns zero rows, and a deliberately wrong pin returns at least one row. The invariant replaces a memory-dependent manual reread.
+
+Sources: [invariant.ts](packages/operator-core/lib/agent-tools/fleet/invariant.ts), [adv-agent-leader-brief.ts](packages/operator-core/lib/adv-agent-leader-brief.ts)
 
 ## Compact mental model
 

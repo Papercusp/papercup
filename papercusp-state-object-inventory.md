@@ -11,13 +11,13 @@ It intentionally does **not** enumerate local React component state, raw cache e
 
 The popup is not one state object. It composes four independent live reads plus the transcript stream:
 
-| Read | What it supplies |
-|---|---|
-| `advRoster.list` | Session identity, presence/liveness, launch/runtime handles, intent, modes, current files, fleet membership, context usage, account/model/context launch settings, and session lifecycle tiers. |
-| `agentOrders.byOwner` | What the agent was told and what it carries forward: mission, modes, directives, facts, walls, and carry state. |
-| `agentDetail.byOwner` | What the agent is doing and receiving: health, plan lane, events, locks, coordination, pushed context, files, and diagnostics. |
-| `agentLeaderBrief.byOwner` | Fleet-leader-only intervention signals, member alerts, fleet alerts, capacity, invariants, and leadership drift. |
-| Native transcript/SSE | The actual user/assistant conversation, stream freshness, pending decisions, reply delivery, and archive/live resolution. |
+| Read                       | What it supplies                                                                                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `advRoster.list`           | Session identity, presence/liveness, launch/runtime handles, intent, modes, current files, fleet membership, context usage, account/model/context launch settings, and session lifecycle tiers. |
+| `agentOrders.byOwner`      | What the agent was told and what it carries forward: mission, modes, directives, facts, walls, and carry state.                                                                                 |
+| `agentDetail.byOwner`      | What the agent is doing and receiving: health, plan lane, events, locks, coordination, pushed context, files, and diagnostics.                                                                  |
+| `agentLeaderBrief.byOwner` | Fleet-leader-only intervention signals, member alerts, fleet alerts, capacity, invariants, and leadership drift.                                                                                |
+| Native transcript/SSE      | The actual user/assistant conversation, stream freshness, pending decisions, reply delivery, and archive/live resolution.                                                                       |
 
 Primary sources:
 
@@ -190,18 +190,18 @@ Sources: [fleet-peers.ts](apps/operator/app/_components/chat/fleet-peers.ts), [l
 
 `state:read {}` is the live, audience-filtered catalog. At the time of this inventory it returned these 10 readable cells; the registrations live in [cell-registrations.ts](packages/operator-core/lib/cell-registrations.ts).
 
-| Cell | Relativity | Headline / purpose |
-|---|---|---|
-| `agent.goal` | Parameter: `ownerId` | The goal reference held by an agent, corroboration, competing references, and explicit `nothing-held` unknown. |
-| `deploy.3070.sha` | Global | Deployed SHA plus serving-process restart evidence and unknown reasons. |
-| `gate.greenCheckpoint.candidate` | Parameter: `path` | Which SHA the gate is judging and whether that candidate contains the caller's path. |
-| `gate.greenCheckpoint.ownership` | Global | Real ownership of the red gate: work-item, claim/holder session, duplicates, recent thread, and unknowns. |
-| `gate.greenCheckpoint.verdict` | Global | Consecutive reds/stall state, freshness, last green, and ownership pointer. |
-| `git.mainBehindStaging` | Global | Whether main is behind staging/green pin, fast-forward state, age, deployed lag, and origin. |
-| `git.pipelinePosition` | Parameter: `path` | Commit → staging → main → deployed → serving position for one path, with unknown hoists. |
-| `host.memoryPressure` | Global | PSI/memory pressure verdict, thresholds, age/staleness, host readings, reasons, and unknowns. |
-| `testing.census.population` | Ambient scope | Test-surface population, retired surfaces, provider/fidelity census, age, and basis. |
-| `testing.coverage.floor` | Ambient scope | Coverage floor, measured/not-measured verdict, below/waived surfaces, fidelity, and coverage by rung/kind. |
+| Cell                             | Relativity           | Headline / purpose                                                                                             |
+| -------------------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `agent.goal`                     | Parameter: `ownerId` | The goal reference held by an agent, corroboration, competing references, and explicit `nothing-held` unknown. |
+| `deploy.3070.sha`                | Global               | Deployed SHA plus serving-process restart evidence and unknown reasons.                                        |
+| `gate.greenCheckpoint.candidate` | Parameter: `path`    | Which SHA the gate is judging and whether that candidate contains the caller's path.                           |
+| `gate.greenCheckpoint.ownership` | Global               | Real ownership of the red gate: work-item, claim/holder session, duplicates, recent thread, and unknowns.      |
+| `gate.greenCheckpoint.verdict`   | Global               | Consecutive reds/stall state, freshness, last green, and ownership pointer.                                    |
+| `git.mainBehindStaging`          | Global               | Whether main is behind staging/green pin, fast-forward state, age, deployed lag, and origin.                   |
+| `git.pipelinePosition`           | Parameter: `path`    | Commit → staging → main → deployed → serving position for one path, with unknown hoists.                       |
+| `host.memoryPressure`            | Global               | PSI/memory pressure verdict, thresholds, age/staleness, host readings, reasons, and unknowns.                  |
+| `testing.census.population`      | Ambient scope        | Test-surface population, retired surfaces, provider/fidelity census, age, and basis.                           |
+| `testing.coverage.floor`         | Ambient scope        | Coverage floor, measured/not-measured verdict, below/waived surfaces, fidelity, and coverage by rung/kind.     |
 
 Every cell declares:
 
@@ -398,19 +398,19 @@ Representative files are listed in [papercusp-runtime-demo-example-files.md](pap
 
 Papercusp repeatedly preserves distinctions that conventional dashboards flatten:
 
-| Values that must stay distinct | Why |
-|---|---|
-| `false` vs `unknown` | A failed read must not become a negative verdict. |
-| `0` vs unread/null | An unread claimable count must not look like a drained queue. |
-| absent vs empty | No field in an older payload is not proof that the list is empty. |
-| live vs parked vs ended | Only ended requires relaunch; parked can be woken. |
-| present vs historically present | Current presence cannot answer who was ever in a fleet. |
-| declared intent vs active progress | Intent age does not prove current work. |
-| assignment vs claim | Durable ownership and the live lease are different. |
-| message delivered vs session woken | Inbox receipt is not pickup. |
-| event declared vs fired | Declaration establishes a rendezvous; firing opens it. |
-| clean invariant vs invariant error | A guard that failed to run protects nothing. |
-| mitigation vs durable fix | Restart/retry/timeout widening does not close the root cause. |
+| Values that must stay distinct     | Why                                                               |
+| ---------------------------------- | ----------------------------------------------------------------- |
+| `false` vs `unknown`               | A failed read must not become a negative verdict.                 |
+| `0` vs unread/null                 | An unread claimable count must not look like a drained queue.     |
+| absent vs empty                    | No field in an older payload is not proof that the list is empty. |
+| live vs parked vs ended            | Only ended requires relaunch; parked can be woken.                |
+| present vs historically present    | Current presence cannot answer who was ever in a fleet.           |
+| declared intent vs active progress | Intent age does not prove current work.                           |
+| assignment vs claim                | Durable ownership and the live lease are different.               |
+| message delivered vs session woken | Inbox receipt is not pickup.                                      |
+| event declared vs fired            | Declaration establishes a rendezvous; firing opens it.            |
+| clean invariant vs invariant error | A guard that failed to run protects nothing.                      |
+| mitigation vs durable fix          | Restart/retry/timeout widening does not close the root cause.     |
 
 This tri-state discipline is part of the object model, not just UI wording.
 
