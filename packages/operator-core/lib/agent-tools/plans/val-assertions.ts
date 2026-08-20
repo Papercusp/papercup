@@ -70,10 +70,7 @@ function parseRequiresTest(raw: string): boolean {
  * given item IDs. Pass `itemIds` as a Set for fast lookup; omit/pass empty
  * to extract from ALL items.
  */
-export function extractAssertionCandidates(
-  raw: string,
-  itemIds?: Set<string>,
-): PlanAssertionCandidate[] {
+export function extractAssertionCandidates(raw: string, itemIds?: Set<string>): PlanAssertionCandidate[] {
   const lines = raw.split('\n');
   const results: PlanAssertionCandidate[] = [];
 
@@ -133,10 +130,7 @@ export function extractAssertionCandidates(
  * the given item IDs. Pass `itemIds` as a Set for fast lookup; omit/pass empty
  * to extract from ALL items.
  */
-export function extractAssertions(
-  raw: string,
-  itemIds?: Set<string>,
-): PlanAssertion[] {
+export function extractAssertions(raw: string, itemIds?: Set<string>): PlanAssertion[] {
   return extractAssertionCandidates(raw, itemIds)
     .filter((candidate): candidate is PlanAssertionCandidate & { verifyText: string } =>
       Boolean(candidate.verifyText?.trim()),

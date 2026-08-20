@@ -7,14 +7,8 @@
  * callers must never infer behavior classes, acceptance, or exemptions.
  */
 import { createHash } from 'node:crypto';
-import type {
-  SpecBehaviorClass,
-  SpecLifecycleStatus,
-} from './spec-clauses-store';
-import {
-  extractAssertionCandidates,
-  type PlanAssertionCandidate,
-} from './val-assertions';
+import type { SpecBehaviorClass, SpecLifecycleStatus } from './spec-clauses-store';
+import { extractAssertionCandidates, type PlanAssertionCandidate } from './val-assertions';
 
 export interface SpecClauseExemption {
   justification?: string;
@@ -102,7 +96,8 @@ const MULTI_OBSERVABLE_CONJUNCTION_RE = new RegExp(
   `\\b${OBSERVABLE_VERB}\\b[^.;\\n]{0,160}\\b(?:and|or)\\b[^.;\\n]{0,160}\\b${OBSERVABLE_VERB}\\b`,
   'i',
 );
-const GENERIC_NON_FALSIFIABLE_RE = /^(?:(?:it|this|the (?:feature|flow|system))\s+)?(?:works|behaves|functions)(?:\s+(?:correctly|properly|as expected))?[.!]?$/i;
+const GENERIC_NON_FALSIFIABLE_RE =
+  /^(?:(?:it|this|the (?:feature|flow|system))\s+)?(?:works|behaves|functions)(?:\s+(?:correctly|properly|as expected))?[.!]?$/i;
 const PLACEHOLDER_RE = /\b(?:TBD|TODO|to be determined|as appropriate|somehow)\b/i;
 
 /** Normalize Markdown/whitespace presentation without erasing semantics. */
@@ -146,9 +141,7 @@ function canonicalCandidate(candidate: CompiledSpecClauseCandidate): Record<stri
     mutationRequired: candidate.mutationRequired,
     lifecycleStatus: candidate.lifecycleStatus,
     exemption: normalizeSemanticValue(candidate.exemption),
-    acceptanceRef: candidate.acceptanceRef
-      ? normalizeSpecSemanticText(candidate.acceptanceRef)
-      : null,
+    acceptanceRef: candidate.acceptanceRef ? normalizeSpecSemanticText(candidate.acceptanceRef) : null,
   };
 }
 
@@ -161,13 +154,14 @@ export function computeSpecSetHash(candidates: readonly CompiledSpecClauseCandid
 }
 
 function deriveSpecId(sourceValId: string): string {
-  return sourceValId.startsWith('VAL-')
-    ? `SPEC-${sourceValId.slice('VAL-'.length)}`
-    : `SPEC-${sourceValId}`;
+  return sourceValId.startsWith('VAL-') ? `SPEC-${sourceValId.slice('VAL-'.length)}` : `SPEC-${sourceValId}`;
 }
 
 function nonAtomicReason(rawBehavior: string): string | null {
-  const lines = rawBehavior.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lines = rawBehavior
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
   if (lines.length > 1) return 'behavior contains multiple non-empty lines';
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (/;\s*\S/.test(behavior)) return 'behavior contains multiple semicolon-separated assertions';
@@ -186,18 +180,12 @@ function nonFalsifiableReason(rawBehavior: string): string | null {
   return null;
 }
 
-function normalizedExemption(
-  exemption: SpecClauseExemption | null | undefined,
-): SpecClauseExemption | null {
+function normalizedExemption(exemption: SpecClauseExemption | null | undefined): SpecClauseExemption | null {
   if (!exemption) return null;
   return {
     ...exemption,
-    ...(typeof exemption.justification === 'string'
-      ? { justification: exemption.justification.trim() }
-      : {}),
-    ...(typeof exemption.provenance === 'string'
-      ? { provenance: exemption.provenance.trim() }
-      : {}),
+    ...(typeof exemption.justification === 'string' ? { justification: exemption.justification.trim() } : {}),
+    ...(typeof exemption.provenance === 'string' ? { provenance: exemption.provenance.trim() } : {}),
   };
 }
 
@@ -216,11 +204,8 @@ function compileCandidate(
   const exemption = normalizedExemption(enrichment?.exemption);
   let lifecycleStatus: SpecLifecycleStatus = enrichment?.lifecycleStatus ?? 'draft';
 
-  const add = (
-    code: SpecCompilerDiagnosticCode,
-    severity: SpecCompilerDiagnosticSeverity,
-    message: string,
-  ) => diagnostics.push({ code, severity, sourceValId: source.valId, specId, message });
+  const add = (code: SpecCompilerDiagnosticCode, severity: SpecCompilerDiagnosticSeverity, message: string) =>
+    diagnostics.push({ code, severity, sourceValId: source.valId, specId, message });
 
   if (!STRICT_VAL_ID_RE.test(source.valId)) {
     add('invalid-source-val-id', 'error', `${source.valId} is not a canonical VAL-* id`);
@@ -277,11 +262,7 @@ function compileCandidate(
     lifecycleStatus = 'draft';
   }
   if (source.requiresTest === false && (enrichment?.requiredTestLayers?.length ?? 0) > 0) {
-    add(
-      'test-requirement-conflict',
-      'error',
-      'legacy RequiresTest:false conflicts with explicit requiredTestLayers',
-    );
+    add('test-requirement-conflict', 'error', 'legacy RequiresTest:false conflicts with explicit requiredTestLayers');
   }
 
   const requiredEvidence = enrichment?.requiredEvidence
@@ -329,10 +310,7 @@ function addDuplicateDiagnostics(
 }
 
 /** Compile a plan's inline VAL blocks into deterministic first-class clause candidates. */
-export function compileSpecClauses(
-  rawPlan: string,
-  options: CompileSpecClausesOptions = {},
-): CompileSpecClausesResult {
+export function compileSpecClauses(rawPlan: string, options: CompileSpecClausesOptions = {}): CompileSpecClausesResult {
   const enrichments = options.enrichments ?? {};
   const sources = extractAssertionCandidates(rawPlan, options.itemIds);
   const candidates = sources.map((source) => compileCandidate(source, enrichments[source.valId]));
@@ -365,8 +343,7 @@ export function compileSpecClauses(
     candidates,
     diagnostics,
     specSetHash,
-    ...(options.previousSpecSetHash ? { previousSpecSetHash: options.previousSpecSetHash } : {}),
-    invalidated:
-      options.previousSpecSetHash !== undefined && options.previousSpecSetHash !== specSetHash,
+    ...(options.previousSpecSetHash !== undefined ? { previousSpecSetHash: options.previousSpecSetHash } : {}),
+    invalidated: options.previousSpecSetHash !== undefined && options.previousSpecSetHash !== specSetHash,
   };
 }
