@@ -721,7 +721,10 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
         join(phaseA, 'tower-after.json'),
         JSON.stringify({ refOid: 'a'.repeat(40), note: `token github_pat_${'A'.repeat(32)}` }),
       );
-      writeFileSync(join(phaseA, 'verdict.err'), 'Authorization: Bearer super-secret-token\nstrict convergence failed\n');
+      writeFileSync(
+        join(phaseA, 'verdict.err'),
+        'Authorization: Bearer super-secret-token\nstrict convergence failed\n',
+      );
       writeFileSync(join(phaseA, 'not-allowlisted.json'), JSON.stringify({ secret: 'must-not-copy' }));
       writeFileSync(join(failedRunRoot, 'tower-identity.json'), JSON.stringify({ privateKey: 'must-not-copy' }));
 
