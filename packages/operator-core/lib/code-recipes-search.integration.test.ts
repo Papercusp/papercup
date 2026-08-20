@@ -88,6 +88,30 @@ describe('code_recipes hybrid search (real PG)', () => {
     if (decoyRank !== -1) expect(targetRank).toBeLessThan(decoyRank);
   });
 
+  it('keeps a recipe name discoverable when the intent query contains extra terms', async () => {
+    // No embedding: this isolates lexical recall. The stored recipe shares the
+    // name terms, but not every extra term in the free-form intent query.
+    await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'lexical-anchor-zircon',
+      title: 'release:verify-provenance',
+      description: 'check the release ship gate',
+      script: 's',
+      toolsUsed: [],
+      embedding: null,
+    });
+
+    const results = await searchSimilarRecipes(db.adminSql, {
+      title: 'release:verify-provenance',
+      description: 'install vm preflight and relaunch',
+      toolsUsed: [],
+      embedding: null,
+      limit: 10,
+    });
+
+    expect(results.find((row) => row.id === 'lexical-anchor-zircon')).toBeDefined();
+  });
+
   it('the structural tool-set overlap boosts a same-tool recipe over a lexical-only match', async () => {
     const ws = 'ws-crs-struct';
     const hive = 'alpha';

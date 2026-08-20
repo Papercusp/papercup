@@ -4,7 +4,8 @@
  *
  * A recipe SearchSource that RIDES @papercusp/search (no new search engine):
  *   - lexical leg  — `title_tsv` (the migration-349 GENERATED tsvector over
- *     title+description), `ts_rank_cd` like every search/sources.ts surface.
+ *     title+description), `ts_rank_cd` over a disjunctive query so a free-form
+ *     intent query can still recall a recipe that shares only part of it.
  *   - embedding leg — cosine over the `embedding vector(384)` column
  *     (`embedding <=> qVec::vector`), 1 - distance as the similarity.
  * Both legs are GLOBAL — recipes are a fleet-wide capability (P-001, reversing the
@@ -59,12 +60,19 @@ const trunc = (s: string): string => s.slice(0, 200) + (s.length > 200 ? '…' :
 export const codeRecipesSource: SearchSource = {
   name: 'code_recipes',
   async lexical({ sql, query, limit }: SearchSourceParams): Promise<Listing> {
+    // `plainto_tsquery` is useful for normalising user text, but its implicit
+    // AND semantics make discovery brittle: a query that combines several
+    // intents excludes a recipe as soon as it lacks one unrelated term. Keep
+    // Postgres-owned parsing/stemming/stop-word handling and only relax the
+    // boolean operator after parsing (the same safe pattern used by the other
+    // lexical search sources).
+    const orQuery = sql`replace(plainto_tsquery('english', ${query})::text, ' & ', ' | ')::tsquery`;
     const rows = (await sql`
       SELECT id, title, description, run_count, tools_used,
-             ts_rank_cd(title_tsv, plainto_tsquery('english', ${query})) AS rank
+             ts_rank_cd(title_tsv, ${orQuery}) AS rank
         FROM harness_shared.code_recipes
        WHERE status = 'active'
-         AND title_tsv @@ plainto_tsquery('english', ${query})
+         AND title_tsv @@ ${orQuery}
     ORDER BY rank DESC LIMIT ${limit}
     `) as unknown as Array<{ id: string; title: string; description: string; run_count: number | string; tools_used: string[] | null; rank: number }>;
     return rows.map((r) => ({
