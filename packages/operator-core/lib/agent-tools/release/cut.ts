@@ -81,6 +81,24 @@ const cutRootArg = z
     'Optional registered, clean Git worktree selector. Accepts a registered project slug, the linked worktree path, or that worktree\'s papercusp-desktop path.',
   );
 
+const cutOwnerNameArg = z
+  .string()
+  .min(1)
+  .max(500)
+  .describe(
+    'Human owner name supplied at run time for the finished-byte identity audit. Never persist it in the release tree.',
+  );
+const cutOwnerEmailArg = z
+  .string()
+  .min(1)
+  .max(1000)
+  .optional()
+  .describe('Optional comma-separated owner email literals for the same runtime-only identity audit.');
+const cutReuseSeedArg = z
+  .boolean()
+  .optional()
+  .describe('Retry-only: reuse the already-completed seed in this isolated cut root (PAPERCUSP_SKIP_SEED_CUT=1).');
+
 interface CutWorktree {
   path: string;
   prunable: boolean;
@@ -141,6 +159,22 @@ function defaultCanonicalPath(candidate: string): string {
   return path.resolve(candidate);
 }
 
+/** Auto-managed checkouts can be replaced underneath a long cut by git-sync,
+ * green-checkpoint, or release deploy. Artifact cuts must use a dedicated exact-SHA
+ * worktree prepared through setup-release-checkout.sh instead. */
+export function isAutoManagedCutWorktree(worktreePath: string): boolean {
+  return new Set([
+    'papercup',
+    'papercusp',
+    'papercup-release',
+    'papercusp-release',
+    'papercup-checkpoint',
+    'papercusp-checkpoint',
+    'papercup-staging',
+    'papercusp-staging',
+  ]).has(path.basename(path.resolve(worktreePath)));
+}
+
 /**
  * Resolve the optional cut root without allowing an arbitrary filesystem path.
  * Explicit selectors must identify a non-prunable linked worktree belonging to a
@@ -151,7 +185,19 @@ export async function resolveCutRoot(
   selector: string | undefined,
   deps: CutRootResolutionDeps = {},
 ): Promise<CutRootResolution> {
-  if (selector === undefined) return { ok: true, desktopRoot: desktopRoot() };
+  if (selector === undefined) {
+    const implicitDesktopRoot = desktopRoot();
+    const implicitWorktreeRoot = path.dirname(implicitDesktopRoot);
+    if (isAutoManagedCutWorktree(implicitWorktreeRoot)) {
+      return {
+        ok: false,
+        reason:
+          `root_not_isolated — default cut root '${implicitWorktreeRoot}' is auto-managed and can move during a build; ` +
+          'prepare a dedicated exact-SHA worktree with setup-release-checkout.sh and pass it via root',
+      };
+    }
+    return { ok: true, desktopRoot: implicitDesktopRoot };
+  }
   const requested = selector.trim();
   if (!requested) return { ok: false, reason: 'bad_root — selector must not be blank' };
 
@@ -215,6 +261,14 @@ export async function resolveCutRoot(
     return {
       ok: false,
       reason: `root_not_clean — selected worktree '${selected.path}' has uncommitted changes; release cuts require a clean worktree`,
+    };
+  }
+  if (isAutoManagedCutWorktree(selected.path)) {
+    return {
+      ok: false,
+      reason:
+        `root_not_isolated — selected worktree '${selected.path}' is auto-managed and can be replaced during a cut; ` +
+        'prepare a dedicated exact-SHA worktree with setup-release-checkout.sh',
     };
   }
 
@@ -321,6 +375,9 @@ export default defineTool({
       windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
       root: cutRootArg.optional(),
+      ownerName: cutOwnerNameArg,
+      ownerEmail: cutOwnerEmailArg,
+      reuseSeed: cutReuseSeedArg,
       confirm: z
         .boolean()
         .optional()
@@ -342,6 +399,9 @@ export default defineTool({
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
       sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this leg.'),
       root: cutRootArg.optional(),
+      ownerName: cutOwnerNameArg,
+      ownerEmail: cutOwnerEmailArg,
+      reuseSeed: cutReuseSeedArg,
       confirm: z
         .boolean()
         .optional()
@@ -647,7 +707,16 @@ export default defineTool({
       }
 
       if (!args.confirm) {
-        const argv = buildCutArgv(selected.desktopRoot, args.version, channel, legs, args.sourceSha, '<PATH>', platform);
+        const argv = buildCutArgv(
+          selected.desktopRoot,
+          args.version,
+          channel,
+          legs,
+          args.sourceSha,
+          '<PATH>',
+          { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+          platform,
+        );
         return json({
           ok: true,
           op: 'run-leg',
@@ -671,7 +740,15 @@ export default defineTool({
 
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-      const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs, platform, root: selected.desktopRoot });
+      const launch = await launchDetachedCut({
+        version: args.version,
+        channel,
+        expectedSourceSha: args.sourceSha,
+        runtime: { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+        legs,
+        platform,
+        root: selected.desktopRoot,
+      });
       await recordCutAudit('run-leg', actor, {
         platform,
         version: args.version,
@@ -750,7 +827,15 @@ export default defineTool({
     }
 
     if (!args.confirm) {
-      const argv = buildCutArgv(selected.desktopRoot, args.version, channel, legs, args.sourceSha, '<PATH>');
+      const argv = buildCutArgv(
+        selected.desktopRoot,
+        args.version,
+        channel,
+        legs,
+        args.sourceSha,
+        '<PATH>',
+        { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+      );
       return json({
         ok: true,
         op: 'run',
@@ -772,7 +857,14 @@ export default defineTool({
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-    const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs, root: selected.desktopRoot });
+    const launch = await launchDetachedCut({
+      version: args.version,
+      channel,
+      expectedSourceSha: args.sourceSha,
+      runtime: { ownerName: args.ownerName, ownerEmail: args.ownerEmail, reuseSeed: args.reuseSeed },
+      legs,
+      root: selected.desktopRoot,
+    });
     await recordCutAudit('run', actor, {
       version: args.version,
       channel,

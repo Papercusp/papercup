@@ -57,32 +57,50 @@ describe('version / channel validation', () => {
 
 describe('buildCutEnv — LOCAL-only enforced', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
+  const runtime = { ownerName: 'Avi' };
   it('always disables GitHub publish; adds only requested legs', () => {
-    expect(buildCutEnv({}, sourceSha)).toEqual({
+    expect(buildCutEnv({}, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+      PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       PAPERCUSP_SKIP_MOBILE: '1',
     });
-    expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha)).toEqual({
+    expect(buildCutEnv({ mac: true, windows: true, arm64: true }, sourceSha, runtime)).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+      PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
       PAPERCUSP_SKIP_MOBILE: '1',
       WITH_MAC: '1',
       WITH_WINDOWS: '1',
       WITH_ARM64: '1',
     });
     // A false/undefined leg is not injected.
-    expect(buildCutEnv({ mac: false }, sourceSha)).toEqual({
+    expect(buildCutEnv({ mac: false }, sourceSha, { ownerName: ' Avi ', ownerEmail: ' owner@example.test ', reuseSeed: true })).toEqual({
       PAPERCUSP_PUBLISH_GITHUB: '0',
       PAPERCUSP_EXPECTED_SOURCE_SHA: sourceSha,
+      PAPERCUSP_RELEASE_OWNER_NAME: 'Avi',
+      PAPERCUSP_RELEASE_OWNER_EMAIL: 'owner@example.test',
+      PAPERCUSP_SKIP_SEED_CUT: '1',
       PAPERCUSP_SKIP_MOBILE: '1',
     });
+  });
+
+  it('refuses a missing runtime owner identity before constructing a cut command', () => {
+    expect(() => buildCutEnv({}, sourceSha, { ownerName: '   ' })).toThrow(/release_owner_name_required/);
   });
 });
 
 describe('buildCutArgv', () => {
   const sourceSha = '1feac8dd867c6566af834445a58b5a2e43b14649';
-  const argv = buildCutArgv('/root/papercusp-desktop', '0.0.8', 'alpha', { mac: true }, sourceSha, '/usr/bin:/bin');
+  const argv = buildCutArgv(
+    '/root/papercusp-desktop',
+    '0.0.8',
+    'alpha',
+    { mac: true },
+    sourceSha,
+    '/usr/bin:/bin',
+    { ownerName: "Avi O'Neil" },
+  );
   const inner = argv[argv.length - 1];
 
   it('targets the dedicated detached unit + desktop working dir', () => {
@@ -94,6 +112,7 @@ describe('buildCutArgv', () => {
     expect(inner).toContain(`rm -f ${CUT_DONE}`);
     expect(inner).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
+    expect(inner).toContain(`PAPERCUSP_RELEASE_OWNER_NAME='Avi O'\"'\"'Neil'`);
     expect(inner).toContain("PAPERCUSP_SKIP_MOBILE='1'");
     expect(inner).toContain("WITH_MAC='1'");
     expect(inner).toContain("bin/release-local.sh '0.0.8' 'alpha'");
@@ -450,6 +469,7 @@ describe('buildCutArgv with a platform', () => {
       { mac: true },
       '1feac8dd867c6566af834445a58b5a2e43b14649',
       '/usr/bin:/bin',
+      { ownerName: 'Avi' },
       'mac',
     );
     const inner = argv[argv.length - 1]!;
