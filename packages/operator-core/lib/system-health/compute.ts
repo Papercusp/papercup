@@ -3050,6 +3050,11 @@ export async function resolveSystemHealth(
   // Cold cache — a shared SELECT before a blocking recompute.
   const shared = await readSharedSystemHealth(ws);
   if (shared) return shared;
+  // A reader host has no tick owner and must never turn a shared-snapshot miss
+  // back into the expensive inline aggregation. The next writer tick will
+  // publish the snapshot; until then the read surface correctly reports no
+  // snapshot rather than recreating the cold-load stampede.
+  if (!isTickHost) return null;
   return runSystemHealthTick(ws);
 }
 

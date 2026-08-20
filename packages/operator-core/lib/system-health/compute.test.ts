@@ -6,7 +6,24 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+const { backgroundWorkersEnabledMock, getFlagMock, readSharedSnapshotMock } = vi.hoisted(() => ({
+  backgroundWorkersEnabledMock: vi.fn(() => false),
+  getFlagMock: vi.fn(async () => true),
+  readSharedSnapshotMock: vi.fn(async () => null),
+}));
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+  getFlag: getFlagMock,
+}));
+vi.mock('../background-workers', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../background-workers')>()),
+  backgroundWorkersEnabled: backgroundWorkersEnabledMock,
+}));
+vi.mock('../derived-reads/shared-snapshot', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../derived-reads/shared-snapshot')>()),
+  readSharedSnapshot: readSharedSnapshotMock,
+}));
+import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -17,6 +34,23 @@ import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPane
  *  fields, so these tests need no cast and stay honest if the shape changes. */
 const candidate = (id: string): ImprovementCandidate =>
   ({ id, kind: 'bug', scope: 'operator', title: `candidate ${id}` });
+
+describe('resolveSystemHealth — reader cold-cache guard (EI-203357)', () => {
+  beforeEach(() => {
+    _resetSystemHealthCache();
+    backgroundWorkersEnabledMock.mockReturnValue(false);
+    getFlagMock.mockResolvedValue(true);
+    readSharedSnapshotMock.mockResolvedValue(null);
+  });
+
+  it('returns null on a reader snapshot miss instead of running the full tick', async () => {
+    const health = await resolveSystemHealth('ws-reader-cold-cache');
+
+    expect(health).toBeNull();
+    expect(backgroundWorkersEnabledMock).toHaveBeenCalledOnce();
+    expect(readSharedSnapshotMock).toHaveBeenCalledOnce();
+  });
+});
 
 describe('makeOpenImprovementsReader — one open-improvements read per tick (P-008)', () => {
   // Why this is pinned: collectWorkFeed (auto-eligible-stuck) and collectImprovements
@@ -1137,4 +1171,3 @@ describe('summarizeDeadRoutines — census vs. exemplar list (EI-200456914514713
     expect([...FLEET_BLOCKING_ROUTINE_NAMES].sort()).toEqual(['git-sync', 'green-checkpoint', 'release-trigger']);
   });
 });
-
