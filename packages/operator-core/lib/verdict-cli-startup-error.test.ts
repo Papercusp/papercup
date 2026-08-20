@@ -164,6 +164,38 @@ process.on('SIGTERM', () => server.close(() => process.exit(0)));
     }
   }, 12_000);
 
+  it('clears console evidence when the active page navigates', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-navigation-evidence-'));
+    const dataDir = join(fixtureRoot, 'data');
+    const env = {
+      ...process.env,
+      VERDICT_DATA_DIR: dataDir,
+      VERDICT_SESSION: 'navigation-evidence',
+      PAPERCUSP_SID: '',
+      CODEX_SESSION_ID: '',
+      VERDICT_START_TIMEOUT_MS: '5000',
+      VERDICT_IDLE_TIMEOUT: '60000',
+    };
+    const run = (command: string, ...args: string[]) =>
+      execFileAsync(process.execPath, [require.resolve('verdict-cli/bin/browse.mjs'), command, ...args], {
+        env,
+        maxBuffer: 32 * 1024,
+        timeout: 12_000,
+      });
+
+    try {
+      await run('goto', 'data:text/html,<script>console.log("NAV-A-CONSOLE")</script><body>A</body>');
+      await run('goto', 'data:text/html,<script>console.log("NAV-B-CONSOLE")</script><body>B</body>');
+      const { stdout } = await run('console');
+
+      expect(stdout).not.toContain('NAV-A-CONSOLE');
+      expect(stdout).toContain('NAV-B-CONSOLE');
+    } finally {
+      await run('stop').catch(() => undefined);
+      await rm(fixtureRoot, { recursive: true, force: true });
+    }
+  }, 20_000);
+
   it('exits after a successful first command while the detached daemon stays alive', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'verdict-cli-startup-unref-'));
     const fakeNode = join(fixtureRoot, 'node');
