@@ -64,6 +64,17 @@ const ACTIVE_PLAN = 'plan-running';
 const IDLE_PLAN = 'plan-shipped';
 let db: FreshPgDb;
 
+// EI-201069: keep the branch-parity fixture focused on the columns the recovery-window
+// predicate actually reads, including nullable known_open_keys for fail-open coverage.
+const WATCHDOG_TICKS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.watchdog_ticks (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL,
+    tick_at timestamptz NOT NULL DEFAULT now(),
+    status text NOT NULL DEFAULT 'ran',
+    known_open_keys text[]
+  )`;
+
 interface SeedOpts {
   title?: string;
   payload?: Record<string, unknown>;
@@ -89,6 +100,23 @@ async function seedIssue(id: string, opts: SeedOpts = {}) {
        ${hasPayload ? db.sql.json(payload as unknown as Parameters<typeof db.sql.json>[0]) : null},
        ${opts.origin ?? 'local'},
        ${opts.terminalOwner ?? null}, ${opts.terminalCompletionRef ?? null}, ${opts.authority ?? null})`;
+}
+
+async function seedWatchdogTick(knownOpenKeys: string[] | null, tickAt = new Date(), status = 'ran') {
+  await db.sql`
+    INSERT INTO harness_shared.watchdog_ticks (workspace_id, tick_at, status, known_open_keys)
+    VALUES (${WS}, ${tickAt}, ${status}, ${knownOpenKeys}::text[])`;
+}
+
+async function seedWatchdogWindow(
+  key: string,
+  opts: { count?: number; nullAt?: number; presentAt?: number } = {},
+) {
+  const count = opts.count ?? 6;
+  for (let i = 0; i < count; i += 1) {
+    const knownOpenKeys = opts.nullAt === i ? null : opts.presentAt === i ? [key] : [];
+    await seedWatchdogTick(knownOpenKeys, new Date(Date.now() - (count - i) * 1_000));
+  }
 }
 
 /**
@@ -209,6 +237,7 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   await ensureCoordCapabilityTables(db.sql);
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   // A decoy carrying EVERY column engineer_issues has (see the ambiguity test below).
   // Derived from the view itself rather than a hand-listed column set, so a column added
   // to the view is covered without anyone remembering to update this file.
@@ -222,7 +251,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_item_claims, harness_shared.coord_links, harness_shared.ambiguity_decoy`;
+  await db.sql`TRUNCATE harness_shared.work_items, harness_shared.harness_plans, harness_shared.plan_item_claims,
+                       harness_shared.coord_links, harness_shared.ambiguity_decoy,
+                       harness_shared.watchdog_ticks`;
   // The plan-lane floor reads BOTH an active plan and a live item lease, so both
   // fixtures are always present and the seeded rows choose which one they land on.
   await db.sql`

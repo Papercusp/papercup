@@ -75,6 +75,18 @@ const H = 'papercup';
 const WS = 'default'; // == DEFAULT_COORD_WORKSPACE; work_item_deps + issues live here
 let db: FreshPgDb;
 
+// EI-201069: the recovery-window floor reads only these four watchdog columns. Keep this
+// fixture intentionally narrow so the claim tests exercise the real SQL against nullable
+// known_open_keys without depending on unrelated watchdog migrations/collectors.
+const WATCHDOG_TICKS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.watchdog_ticks (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL,
+    tick_at timestamptz NOT NULL DEFAULT now(),
+    status text NOT NULL DEFAULT 'ran',
+    known_open_keys text[]
+  )`;
+
 /** A feature-FAMILY row (item_kind feature|chunk, default 'feature') —
  *  claimable through the feature path at tier 1/2 of the WI-1407 ladder. */
 async function seedFeature(
@@ -91,13 +103,38 @@ async function seedFeature(
  *  harness_slug = 'papercup'. open = claimable; resolved/closed = terminal. */
 async function seedIssue(
   id: string,
-  opts: { createdTs?: number; state?: string; kind?: string; takenBy?: string | null } = {},
+  opts: {
+    createdTs?: number;
+    state?: string;
+    kind?: string;
+    takenBy?: string | null;
+    payload?: Record<string, unknown> | null;
+  } = {},
 ) {
   await db.sql`
     INSERT INTO harness_shared.work_items
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts)
+      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, payload)
     VALUES (${H}, ${id}, ${opts.kind ?? 'bug'}, ${opts.state ?? 'open'}, ${opts.takenBy ?? null},
-      ${WS}, ${opts.createdTs ?? 0}, 0)`;
+      ${WS}, ${opts.createdTs ?? 0}, 0,
+      ${opts.payload ? db.sql.json(opts.payload as unknown as Parameters<typeof db.sql.json>[0]) : null})`;
+}
+
+async function seedWatchdogTick(knownOpenKeys: string[] | null, tickAt = new Date(), status = 'ran') {
+  await db.sql`
+    INSERT INTO harness_shared.watchdog_ticks (workspace_id, tick_at, status, known_open_keys)
+    VALUES (${WS}, ${tickAt}, ${status}, ${knownOpenKeys}::text[])`;
+}
+
+/** Insert the newest-first recovery evidence in chronological order for deterministic IDs. */
+async function seedWatchdogWindow(
+  key: string,
+  opts: { count?: number; nullAt?: number; presentAt?: number } = {},
+) {
+  const count = opts.count ?? 6;
+  for (let i = 0; i < count; i += 1) {
+    const knownOpenKeys = opts.nullAt === i ? null : opts.presentAt === i ? [key] : [];
+    await seedWatchdogTick(knownOpenKeys, new Date(Date.now() - (count - i) * 1_000));
+  }
 }
 
 /** An OPERATOR-scope issue-family row (harness_slug = 'operator:<workspace>', migration 382 —
@@ -150,6 +187,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL); // base work_items + the hfc + engineer_issues views
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // the feature floor LEFT-JOINs the trust list
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the readiness dep table
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
       ADD COLUMN IF NOT EXISTS signal_origin text NOT NULL DEFAULT 'organic';`).simple();
@@ -164,7 +202,8 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.work_item_deps, harness_shared.work_item_blocked,
-                       harness_shared.harness_plans, harness_shared.plan_item_claims`;
+                       harness_shared.harness_plans, harness_shared.plan_item_claims,
+                       harness_shared.watchdog_ticks`;
   h.issuesClaimable = false;
 });
 
