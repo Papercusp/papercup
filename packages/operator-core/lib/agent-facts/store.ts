@@ -1797,8 +1797,8 @@ function capPopulationPredicate(
 ) {
   const measurementPartition =
     partition === 'volatile'
-      ? sql`measurement->>'subjectVolatile' = 'true'`
-      : sql`measurement->>'subjectVolatile' IS DISTINCT FROM 'true'`;
+      ? sql`measurement->'subjectVolatile' = 'true'::jsonb`
+      : sql`measurement->'subjectVolatile' IS DISTINCT FROM 'true'::jsonb`;
   return sql`workspace_id = ${ws} AND scope = ${scope}
          AND coalesce(scope_ref,'') = ${ref}
          -- LOCAL partition only (H6): the local writer's cap must never evict
@@ -1814,10 +1814,12 @@ function capPopulationPredicate(
          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
          -- P-028: conventions are governance rows, not ordinary cap population.
          AND COALESCE(kind, '') <> 'convention'
-         -- EI-20365165629381535: partition by the exact JSONB text marker.
-         -- IS DISTINCT FROM includes missing, malformed, and non-true markers
-         -- in the ordinary partition without turning NULL into an accidental
-         -- exclusion.
+         -- EI-20365165629381535: partition by the exact JSONB boolean marker.
+         -- the JSONB arrow operator preserves the type, so a malformed string marker such as
+         -- {subjectVolatile: "true"} remains ordinary rather than joining the
+         -- volatile population. IS DISTINCT FROM includes missing, malformed,
+         -- and non-true markers in the ordinary partition without turning NULL
+         -- into an accidental exclusion.
          AND ${measurementPartition}`;
 }
 

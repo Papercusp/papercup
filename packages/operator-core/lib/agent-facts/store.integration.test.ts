@@ -33,6 +33,7 @@ import {
   renderFactsFold,
   factVersions,
   FACTS_PER_SCOPE_CAP,
+  FACTS_VOLATILE_PER_SCOPE_CAP,
   FACT_PERMANENT_EXPIRY,
   FACT_VOLATILE_MAX_TTL_SEC,
   listLapsedWallFacts,
@@ -1727,6 +1728,140 @@ describe('volatile measurements (migration 795)', () => {
               '{"subjectVolatile":true,"measuredAt":"not-a-date"}'::jsonb)`;
     const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
     expect(f.measurement).toBeNull();
+  });
+});
+
+// EI-20365165629381535: volatile snapshots get their own bounded cap. The
+// partition must be based on the JSONB BOOLEAN marker, not text extraction:
+// legacy/malformed rows are ordinary facts and must not be allowed to either
+// escape the ordinary cap or consume volatile capacity.
+describe('volatile fact-cap partition (EI-20365165629381535)', () => {
+  const scopeRef = 'volatile-cap-partition';
+  const base = {
+    scope: 'harness' as const,
+    scopeRef,
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+
+  it('keeps malformed markers ordinary, isolates caps, and keeps preview/write victims identical', async () => {
+    const measuredAt = new Date(Date.now() - 1_000).toISOString();
+    const validMeasurement = { subjectVolatile: true, measuredAt };
+
+    // Leave three ordinary slots for malformed/legacy measurement shapes. The
+    // string marker is the load-bearing case: `->>` would incorrectly classify
+    // it as volatile, while `->` + JSONB equality must keep it ordinary.
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
+      SELECT ${WS}, 'harness', ${scopeRef}, 'ordinary-seed-' || i, 'ordinary', 'su-int',
+             now() + interval '30 days', 'verified'
+        FROM generate_series(0, ${FACTS_PER_SCOPE_CAP - 4}) AS seed(i)`;
+
+    const malformed = [
+      ['ordinary-marker-string', { subjectVolatile: 'true', measuredAt }],
+      ['ordinary-marker-false', { subjectVolatile: false, measuredAt }],
+      ['ordinary-marker-missing', { measuredAt }],
+    ] as const;
+    for (const [key, measurement] of malformed) {
+      await db.sql`
+        INSERT INTO harness_shared.agent_facts
+          (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence, measurement)
+        VALUES (${WS}, 'harness', ${scopeRef}, ${key}, 'ordinary', 'su-int',
+                now() + interval '30 days', 'verified', ${JSON.stringify(measurement)}::text::jsonb)`;
+    }
+
+    // Saturate the independent volatile cap. A single deliberately weak row
+    // makes the victim deterministic and proves the sweep actually fires.
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence, measurement)
+      SELECT ${WS}, 'harness', ${scopeRef}, 'volatile-seed-' || i, 'volatile', 'su-int',
+             now() + interval '15 minutes',
+             CASE WHEN i = 0 THEN 'suspected' ELSE 'verified' END,
+             ${JSON.stringify(validMeasurement)}::text::jsonb
+        FROM generate_series(0, ${FACTS_VOLATILE_PER_SCOPE_CAP - 1}) AS seed(i)`;
+
+    const ordinaryPreview = await previewFactCapImpact(
+      { ...base, key: 'ordinary-arrival', body: 'ordinary', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(ordinaryPreview.populationSize).toBe(FACTS_PER_SCOPE_CAP);
+    expect(ordinaryPreview.cap).toBe(FACTS_PER_SCOPE_CAP);
+    expect(ordinaryPreview.atCap).toBe(true);
+    expect(ordinaryPreview.wouldEvict.length).toBeGreaterThan(0);
+
+    const volatilePreview = await previewFactCapImpact(
+      {
+        ...base,
+        key: 'volatile-arrival',
+        body: 'volatile',
+        confidence: 'verified',
+        subjectVolatile: true,
+        measuredAt,
+        ttlSec: FACT_VOLATILE_MAX_TTL_SEC,
+      },
+      db.sql,
+    );
+    expect(volatilePreview.populationSize).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+    expect(volatilePreview.cap).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+    expect(volatilePreview.atCap).toBe(true);
+    expect(volatilePreview.wouldEvict).toHaveLength(1);
+    expect(volatilePreview.wouldEvict[0]?.key).toBe('volatile-seed-0');
+
+    // The ordinary write consumes only ordinary capacity; the volatile cohort
+    // remains untouched. This also makes the two-cap isolation observable
+    // before the volatile write exercises preview/write parity.
+    const ordinaryWrite = await assertFact(
+      { ...base, key: 'ordinary-arrival', body: 'ordinary', confidence: 'verified', ttlSec: 30 * 86400 },
+      db.sql,
+    );
+    expect(ordinaryWrite.evicted?.length).toBe(1);
+    const [{ volatileBefore }] = await db.sql<{ volatileBefore: number }[]>`
+      SELECT count(*)::int AS "volatileBefore"
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'harness' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND measurement->'subjectVolatile' = 'true'::jsonb`;
+    expect(volatileBefore).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+
+    const volatileWrite = await assertFact(
+      {
+        ...base,
+        key: 'volatile-arrival',
+        body: 'volatile',
+        confidence: 'verified',
+        subjectVolatile: true,
+        measuredAt,
+        ttlSec: FACT_VOLATILE_MAX_TTL_SEC,
+      },
+      db.sql,
+    );
+    expect(volatileWrite.evicted?.map((entry) => entry.key)).toEqual(
+      volatilePreview.wouldEvict.map((entry) => entry.key),
+    );
+
+    const [{ volatileAfter }] = await db.sql<{ volatileAfter: number }[]>`
+      SELECT count(*)::int AS "volatileAfter"
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'harness' AND scope_ref = ${scopeRef}
+         AND source_hive IS NULL AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()
+         AND measurement->'subjectVolatile' = 'true'::jsonb`;
+    expect(volatileAfter).toBe(FACTS_VOLATILE_PER_SCOPE_CAP);
+
+    // All three malformed/legacy rows remain live ordinary facts after both
+    // writes. In particular, the string marker must not have been treated as a
+    // volatile victim or hidden from the ordinary preview population.
+    const [{ ordinaryMarkers }] = await db.sql<{ ordinaryMarkers: number }[]>`
+      SELECT count(*)::int AS "ordinaryMarkers"
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'harness' AND scope_ref = ${scopeRef}
+         AND key IN ('ordinary-marker-string', 'ordinary-marker-false', 'ordinary-marker-missing')
+         AND source_hive IS NULL AND superseded_at IS NULL
+         AND retracted_at IS NULL AND expires_at > now()`;
+    expect(ordinaryMarkers).toBe(3);
   });
 });
 
