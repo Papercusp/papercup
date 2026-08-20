@@ -70,6 +70,47 @@ export type RunGit = (
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 /**
+ * A local child_process.spawn() pays the caller's fork/page-table cost. Keep
+ * that fallback out of the multi-GB RSS band where it blocks the bg-host's
+ * event loop for hundreds of milliseconds per git call. The sidecar remains
+ * the normal path; this is a loud, transient failure rather than a fabricated
+ * git result when the sidecar is unavailable at an unsafe parent RSS.
+ */
+export const POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB = 4096;
+const POT_GIT_LOCAL_SPAWN_RSS_LIMIT_ENV = 'PAPERCUSP_POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB';
+
+export function resolvePotGitLocalSpawnRssLimitMb(env: NodeJS.ProcessEnv = process.env): number {
+  const explicit = Number(env[POT_GIT_LOCAL_SPAWN_RSS_LIMIT_ENV]);
+  return Number.isFinite(explicit) && explicit > 0 ? explicit : POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB;
+}
+
+export interface PotGitLocalSpawnAdmission {
+  allowed: boolean;
+  rssMb: number;
+  limitMb: number;
+}
+
+/** Pure/testable admission decision for the in-process git fallback. */
+export function potGitLocalSpawnAdmission(
+  rssBytes: number,
+  env: NodeJS.ProcessEnv = process.env,
+): PotGitLocalSpawnAdmission {
+  const limitMb = resolvePotGitLocalSpawnRssLimitMb(env);
+  return {
+    allowed: rssBytes < limitMb * 1024 * 1024,
+    rssMb: Math.round(rssBytes / (1024 * 1024)),
+    limitMb,
+  };
+}
+
+function localSpawnRefusal(admission: PotGitLocalSpawnAdmission): string {
+  return (
+    `pot-git: refusing local git spawn at RSS ${admission.rssMb}MB ` +
+    `(limit ${admission.limitMb}MB); spawner sidecar is required at this parent size`
+  );
+}
+
+/**
  * Local (in-process) RunGit — bounded, C-locale, never-throw. `cwd` is the bare
  * repo (git operates on it via -C-equivalent cwd; bare repos need no worktree).
  *
@@ -80,6 +121,11 @@ export type RunGit = (
  */
 export const runGitLocal: RunGit = (args, cwd, opts) =>
   new Promise((resolve) => {
+    const admission = potGitLocalSpawnAdmission(process.memoryUsage().rss);
+    if (!admission.allowed) {
+      resolve({ code: -1, stdout: '', stderr: localSpawnRefusal(admission) });
+      return;
+    }
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
     const out = collectChildOutput(child);
     let settled = false;
@@ -188,6 +234,11 @@ export type RunGitStdin = (
  */
 export const runGitStdinLocal: RunGitStdin = (args, cwd, stdin, opts) =>
   new Promise((resolve) => {
+    const admission = potGitLocalSpawnAdmission(process.memoryUsage().rss);
+    if (!admission.allowed) {
+      resolve({ code: -1, stdout: Buffer.alloc(0), stderr: localSpawnRefusal(admission) });
+      return;
+    }
     const child = spawn('git', args, { cwd, env: { ...process.env, LC_ALL: 'C', LANG: 'C' } });
     // stdout stays RAW BUFFERS here on purpose: this is the `cat-file --batch`
     // seam, whose frames are `<oid> SP <type> SP <size> LF <contents> LF` — the

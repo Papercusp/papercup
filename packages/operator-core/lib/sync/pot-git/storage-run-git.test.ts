@@ -24,14 +24,24 @@ vi.mock('../../fleet/git-via-sidecar', async (importOriginal) => {
     ...actual,
     gitSidecarEnabled: (...a: unknown[]) => sidecarEnabledMock(...(a as [])),
     runGitViaSpawnerSidecar: (...a: unknown[]) => sidecarRunMock(...(a as [])),
+    runGitStdinViaSpawnerSidecar: (...a: unknown[]) => stdinSidecarRunMock(...(a as [])),
   };
 });
 
 let sidecarEnabledMock: (...a: unknown[]) => boolean = () => false;
 let sidecarRunMock: (...a: unknown[]) => Promise<{ code: number; stdout: string; stderr: string }> =
   () => Promise.reject(new Error('not configured'));
+let stdinSidecarRunMock: (...a: unknown[]) => Promise<{ code: number; stdout: Buffer; stderr: string }> =
+  () => Promise.reject(new Error('not configured'));
 
-const { defaultRunGit, runGitLocal } = await import('./storage');
+const {
+  defaultRunGit,
+  defaultRunGitStdin,
+  potGitLocalSpawnAdmission,
+  POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB,
+  runGitLocal,
+  runGitStdinLocal,
+} = await import('./storage');
 
 let repo: string;
 
@@ -97,6 +107,27 @@ describe('pot-git defaultRunGit', () => {
     }
   });
 
+  it('refuses the local fallback at the high-RSS fork-tax ceiling instead of spawning', async () => {
+    sidecarEnabledMock = () => true;
+    sidecarRunMock = () => Promise.reject(new Error('ECONNREFUSED /run/nope.sock'));
+    const rss = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB * 1024 * 1024,
+      heapTotal: 0,
+      heapUsed: 0,
+      external: 0,
+      arrayBuffers: 0,
+    });
+    try {
+      const r = await defaultRunGit(['rev-parse', '--verify', '-q', 'HEAD^{object}'], repo);
+      expect(r.code).toBe(-1);
+      expect(r.stdout).toBe('');
+      expect(r.stderr).toMatch(/refusing local git spawn/);
+      expect(r.stderr).toContain(`limit ${POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB}MB`);
+    } finally {
+      rss.mockRestore();
+    }
+  });
+
   it('uses the sidecar result verbatim when the sidecar answers', async () => {
     sidecarEnabledMock = () => true;
     sidecarRunMock = () => Promise.resolve({ code: 0, stdout: 'from-sidecar\n', stderr: '' });
@@ -127,5 +158,61 @@ describe('pot-git defaultRunGit', () => {
     };
     await defaultRunGit(['fetch'], repo, { timeoutMs: 240_000 });
     expect(seenTimeout).toBe(240_000);
+  });
+});
+
+describe('pot-git local-spawn RSS admission (EI-20282995952031769)', () => {
+  it('blocks the observed multi-GB parent band at and above the default ceiling', () => {
+    const atLimit = potGitLocalSpawnAdmission(POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB * 1024 * 1024);
+    const aboveLimit = potGitLocalSpawnAdmission((POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB + 1) * 1024 * 1024);
+    expect(atLimit).toMatchObject({ allowed: false, limitMb: POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB });
+    expect(aboveLimit.allowed).toBe(false);
+  });
+
+  it('keeps the local path available below the ceiling and honors a positive override', () => {
+    expect(potGitLocalSpawnAdmission((POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB - 1) * 1024 * 1024).allowed).toBe(true);
+    expect(
+      potGitLocalSpawnAdmission(5000 * 1024 * 1024, {
+        PAPERCUSP_POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB: '6000',
+      } as NodeJS.ProcessEnv),
+    ).toMatchObject({ allowed: true, rssMb: 5000, limitMb: 6000 });
+  });
+
+  it('returns a loud transient failure for the stdin fallback too', async () => {
+    const rss = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB * 1024 * 1024,
+      heapTotal: 0,
+      heapUsed: 0,
+      external: 0,
+      arrayBuffers: 0,
+    });
+    try {
+      const r = await runGitStdinLocal(['cat-file', '--batch-check'], repo, 'HEAD\n');
+      expect(r.code).toBe(-1);
+      expect(r.stdout).toEqual(Buffer.alloc(0));
+      expect(r.stderr).toMatch(/refusing local git spawn/);
+    } finally {
+      rss.mockRestore();
+    }
+  });
+
+  it('routes the stdin sidecar failure through the guarded local fallback', async () => {
+    sidecarEnabledMock = () => true;
+    stdinSidecarRunMock = () => Promise.reject(new Error('ECONNREFUSED /run/nope.sock'));
+    const rss = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: POT_GIT_LOCAL_SPAWN_RSS_LIMIT_MB * 1024 * 1024,
+      heapTotal: 0,
+      heapUsed: 0,
+      external: 0,
+      arrayBuffers: 0,
+    });
+    try {
+      const r = await defaultRunGitStdin(['cat-file', '--batch-check'], repo, 'HEAD\n');
+      expect(r.code).toBe(-1);
+      expect(r.stdout).toEqual(Buffer.alloc(0));
+      expect(r.stderr).toMatch(/refusing local git spawn/);
+    } finally {
+      rss.mockRestore();
+    }
   });
 });
