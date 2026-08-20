@@ -36,7 +36,7 @@ export interface FrozenCandidateRepairQueue {
   repairHead: string;
   /** Initial gate process's PAPERCUSP_TEST_RUN_GROUP. Later verifiers keep their own runId;
    * this stable identity is only for affected-task proof reuse. Null means execute fully. */
-  affectedTestProofGroup: string | null;
+  affectedTestProofGroup?: string | null;
   /** Gate-owned isolation path. Agents never switch the canonical shared checkout. */
   worktreePath: string;
   /** Number of fixer attempts actually dispatched (not reds observed or suites run). */

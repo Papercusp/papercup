@@ -1698,7 +1698,10 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
   it('round-trips the full queue and clears only repair_queue without creating a parallel store', async () => {
     fakeSql.unsafe.mockResolvedValueOnce([{ repair_queue: queue }] as never);
 
-    await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual(queue);
+    await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual({
+      ...queue,
+      schemaVersion: 2,
+    });
 
     await writeFrozenCandidateRepairQueue(target, queue);
     expect(fakeSql.unsafe).toHaveBeenCalledWith(

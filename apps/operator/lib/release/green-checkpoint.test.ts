@@ -229,6 +229,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       return { spawnId: "fixer-1", runId: "run-1" };
     };
     deps.frozenRepairFixerAlive = async () => true;
+    deps.runId = "initial-proof-run";
 
     const first = await runGreenCheckpoint(cfg(), deps, {
       candidate: frozen,
@@ -242,6 +243,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       repairQueue: {
         candidate: frozen,
         repairHead: frozen,
+        affectedTestProofGroup: "initial-proof-run",
         phase: "awaiting-fixer",
         attempts: 1,
         fixerSpawnId: "fixer-1",
@@ -291,6 +293,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       candidate: frozen,
       base: ready,
       repairHead: frozen,
+      affectedTestProofGroup: "initial-proof-run",
       worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
       attempts: 1,
       openedAtMs: now - 1_000,
@@ -300,7 +303,14 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     let patchOnStaging = false;
     let cleanupCount = 0;
+    let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
+    deps.runId = "verifier-run";
+    deps.runGreen = async (_tree, _base, execution) => {
+      calls.push("runGreen");
+      verificationExecution = execution;
+      return { green: true, summary: "all pass", failingTests: [] };
+    };
     deps.readFrozenRepairQueue = async () => queue;
     deps.writeFrozenRepairQueue = async (next) => {
       queue = next;
@@ -343,6 +353,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       from: ready,
     });
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(verificationExecution).toMatchObject({
+      candidate: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+    });
     expect(await revParse(repo, "ready")).toBe(repaired);
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);

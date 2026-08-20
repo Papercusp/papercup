@@ -510,7 +510,7 @@ export interface CheckpointVerdict {
     candidate: string;
     base: string | null;
     repairHead: string;
-    affectedTestProofGroup: string | null;
+    affectedTestProofGroup?: string | null;
     worktreePath: string;
     attempts: number;
     openedAtMs: number;
@@ -665,7 +665,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       phase: v.repairQueue.phase,
       candidate: v.repairQueue.candidate.slice(0, 12),
       repairHead: v.repairQueue.repairHead.slice(0, 12),
-      affectedTestProofGroup: v.repairQueue.affectedTestProofGroup,
+      affectedTestProofGroup: v.repairQueue.affectedTestProofGroup ?? null,
       attempts: v.repairQueue.attempts,
       fixerSpawnId: v.repairQueue.fixerSpawnId,
     };

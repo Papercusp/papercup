@@ -32,7 +32,7 @@ describe('frozen-candidate repair queue', () => {
   it('persists the first red as an unassigned serialized queue without moving C', () => {
     const queue = fresh();
     expect(queue).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       phase: 'awaiting-fixer',
       candidate: C,
       base: BASE,
@@ -72,7 +72,7 @@ describe('frozen-candidate repair queue', () => {
         schemaVersion: 1,
         affectedTestProofGroup: undefined,
       }),
-    ).toMatchObject({ schemaVersion: 1, affectedTestProofGroup: null });
+    ).toMatchObject({ schemaVersion: 2, affectedTestProofGroup: null });
     expect(
       parseFrozenCandidateRepairQueue({
         ...current,
@@ -331,7 +331,7 @@ describe('frozen-candidate repair queue', () => {
     expect(parsed).toEqual(raw);
     expect(parsed).not.toBe(raw);
     expect(parsed?.failingTests).not.toBe(raw.failingTests);
-    expect(parseFrozenCandidateRepairQueue({ ...raw, schemaVersion: 2 })).toBeNull();
+    expect(parseFrozenCandidateRepairQueue({ ...raw, schemaVersion: 3 })).toBeNull();
     expect(parseFrozenCandidateRepairQueue({ ...raw, attempts: -1 })).toBeNull();
     expect(parseFrozenCandidateRepairQueue({ ...raw, updatedAtMs: T0 - 1 })).toBeNull();
     expect(
