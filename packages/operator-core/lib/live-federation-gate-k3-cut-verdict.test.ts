@@ -227,3 +227,34 @@ describe('K3 CUT — the anti-confound is polled, and a failing anti-confound is
     });
   });
 });
+
+describe('K4b CONTENT CUT — ciphertext arrival and no-key defer are both witnessed (WI-6266)', () => {
+  const k4b = SRC.slice(SRC.indexOf('# ── K4b CONTENT CUT'), SRC.indexOf('# ── 6.5 MODERATION'));
+
+  it('rejects a packaged witness bundle that lacks the epoch-gate arrival trace', () => {
+    const supportGate = SRC.slice(
+      SRC.indexOf('assert_serve_supports_from_repo()'),
+      SRC.indexOf('# ── resolve mode'),
+    );
+    expect(supportGate).toContain("grep -qaF 'epoch_gate_seen'");
+    expect(supportGate).toMatch(/K4b cannot distinguish ciphertext deferral from non-arrival/);
+  });
+
+  it('reads B boot-history through the authenticated superuser token and filters the exact four gate outcomes', () => {
+    const helper = SRC.slice(SRC.indexOf('boot_history_get()'), SRC.indexOf('# ── 0. pre-create'));
+    expect(helper).toContain('/api/admin/dogfood-substrate-boot-history');
+    expect(helper).toContain('Authorization: Bearer $tok');
+    expect(k4b).toContain('epoch_gate_seen,epoch_defer,epoch_decrypt_fail,epoch_applied');
+    expect(k4b).toContain('"/F-RKCUT"');
+  });
+
+  it('cannot PASS from non-materialization alone: K3, seen, defer, and negative applied/decrypt-fail are load-bearing', () => {
+    expect(k4b).toContain('[ "$rk_cut_ok" != 1 ]');
+    expect(k4b).toContain('[ "${rkcut_seen:-0}" -lt 1 ]');
+    expect(k4b).toContain('[ "${rkcut_defer:-0}" -lt 1 ]');
+    expect(k4b).toContain('[ "${rkcut_decrypt_fail:-0}" -gt 0 ]');
+    expect(k4b).toContain('[ "${rkcut_applied:-0}" -gt 0 ]');
+    expect(k4b).toMatch(/never recorded epoch_gate_seen for \/F-RKCUT — non-materialization may be non-arrival/);
+    expect(k4b.match(/rk_content_cut_ok=1/g)).toHaveLength(1);
+  });
+});
