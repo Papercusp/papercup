@@ -684,6 +684,9 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain('HIVE_GIT_PHYSICAL_EXECUTE="$HIVE_GIT_PHYSICAL_PLAN"');
     expect(physicalProbe).toContain('git -C "$REPO_ROOT" archive --format=tar HEAD');
     expect(physicalProbe).toContain(
+      'packages libs/generic scripts package.json tsconfig.base.json',
+    );
+    expect(physicalProbe).not.toContain(
       'packages/operator-core libs/generic scripts package.json tsconfig.base.json',
     );
     // WI-39361 — SUBMODULE CONTENTS MUST BE STAGED FROM EACH SUBMODULE'S OWN REPO.
@@ -716,6 +719,15 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe).toContain("path.join(runRoot, 'libs', 'papercusp', 'packages')");
     expect(physicalProbe).toContain('entry.isDirectory() || entry.isSymbolicLink()');
     expect(physicalProbe).toContain("fs.symlinkSync(packageRoot, target, 'dir')");
+    // EI-20963370585400416 — staging all `packages` fixes today's omitted
+    // coordination adapter, while the runtime closure check makes the whole
+    // class fail before identity lookup if any direct Papercusp dependency
+    // still resolves into the installed (potentially stale) bundle.
+    expect(physicalProbe).toContain(".filter((name) => name.startsWith('@papercusp/'))");
+    expect(physicalProbe).toContain('fs.realpathSync(target)');
+    expect(physicalProbe).toContain(
+      'operator-core workspace dependencies were not staged into the VM run-source overlay',
+    );
     expect(physicalProbe).not.toContain(
       "ln -s '$VM_DEP_SOURCE/node_modules' '$remote_source/node_modules'",
     );
