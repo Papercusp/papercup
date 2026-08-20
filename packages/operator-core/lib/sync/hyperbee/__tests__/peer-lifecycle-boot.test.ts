@@ -82,10 +82,7 @@ function makeLifecycleStore(opts: { failUpsert?: boolean } = {}): {
   return { store, rows, attempts };
 }
 
-function makeClosableRemoteLog(
-  logKeyHex: string,
-  closes: Map<string, () => Promise<void>>,
-): RemoteLog {
+function makeClosableRemoteLog(logKeyHex: string, closes: Map<string, () => Promise<void>>): RemoteLog {
   const close = vi.fn(async () => undefined);
   closes.set(logKeyHex, close);
   return {
@@ -147,8 +144,7 @@ describe('boot peer lifecycle persistence', () => {
       reverifyIntervalMs: 0,
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => 'verified',
-      openRemoteLogOverride: async (_store, logKeyHex) =>
-        makeClosableRemoteLog(logKeyHex, closes),
+      openRemoteLogOverride: async (_store, logKeyHex) => makeClosableRemoteLog(logKeyHex, closes),
       mergeCursorStore: lifecycle.store,
     });
     cleanups.push(() => handle.close());
@@ -218,8 +214,7 @@ describe('boot peer lifecycle persistence', () => {
       reverifyIntervalMs: 0,
       loadRevokedOverride: async () => new Set(published),
       verifyBindingOverride: async () => 'verified',
-      openRemoteLogOverride: async (_store, logKeyHex) =>
-        makeClosableRemoteLog(logKeyHex, closes),
+      openRemoteLogOverride: async (_store, logKeyHex) => makeClosableRemoteLog(logKeyHex, closes),
       mergeCursorStore: lifecycle.store,
     });
     cleanups.push(() => handle.close());
@@ -287,8 +282,7 @@ describe('boot peer lifecycle persistence', () => {
       reverifyBatchSize: 1,
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => binding,
-      openRemoteLogOverride: async (_store, logKeyHex) =>
-        makeClosableRemoteLog(logKeyHex, closes),
+      openRemoteLogOverride: async (_store, logKeyHex) => makeClosableRemoteLog(logKeyHex, closes),
       mergeCursorStore: lifecycle.store,
     });
     cleanups.push(() => handle.close());
