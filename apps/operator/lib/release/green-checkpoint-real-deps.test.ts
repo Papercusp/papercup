@@ -536,6 +536,52 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(heldByLine).toContain('entries=["lint:tsc"]');
   });
 
+  it("EI-20336874238055183: GATE_HELD_BY uses the final authoritative break set, not stale retry rows", async () => {
+    const before = new Set(readdirSync(tmpLogDir));
+    const staleRowsThenAuthoritativeEmptyFiles = [
+      ">>> @papercusp/operator-core :: npm run test",
+      " FAIL  lib/stale-first.test.ts > stale retry output",
+      " ❯ lib/stale-second.test.ts (1 test | 1 failed) 10ms",
+      "",
+      "1 non-quarantined task(s) failed:",
+      "  - @papercusp/web :: test:el-suite",
+      "",
+      "0 failing test file(s) — the per-FILE break set (the failed=1 above counts TASKS, not files):",
+      "1 failed task(s) could NOT be attributed to files — their failures are REAL but unnamed here; do not read the list above as complete:",
+      "  - @papercusp/web :: test:el-suite (no-file-rows)",
+      'AFFECTED_TESTS_FAILING_FILES run=fixture-20336874238055183 coverage=unattributed files=[] unattributed=[{"task":"@papercusp/web :: test:el-suite","reason":"no-file-rows"}] transformCulprits=[]',
+    ].join("\n");
+    const { exec } = makeExec([
+      { code: 1, stdout: staleRowsThenAuthoritativeEmptyFiles },
+    ]);
+
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toEqual([
+      "@papercusp/web",
+      "@papercusp/web :: test:el-suite",
+    ]);
+    expect(r.failingTests).not.toContain("lib/stale-first.test.ts");
+    expect(r.failingTests).not.toContain("lib/stale-second.test.ts");
+
+    const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
+    expect(written).toHaveLength(1);
+    const writtenLog = written[0];
+    if (!writtenLog)
+      throw new Error("expected one newly-written checkpoint log");
+    const body = readFileSync(join(tmpLogDir, writtenLog), "utf8");
+    const heldByLine = body
+      .split("\n")
+      .find((line) => line.startsWith("GATE_HELD_BY count="));
+    expect(heldByLine).toBeDefined();
+    expect(heldByLine).toContain(
+      'entries=["@papercusp/web","@papercusp/web :: test:el-suite"]',
+    );
+    expect(heldByLine).not.toContain("stale-first.test.ts");
+    expect(heldByLine).not.toContain("stale-second.test.ts");
+  });
+
   // WI-6841: `lint:tsc` resolves to packages/operator-core alone, so the EIGHT typecheck
   // gates libs/papercusp packages had earned (libs/db, file-claim, blueprint-distribution,
   // harness, harness/docs-viewer, locks, gitnexus-bridge at a strict zero + orchestrator on a
