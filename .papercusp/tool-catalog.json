@@ -14841,7 +14841,7 @@
           "POST"
         ]
       },
-      "description": "Edit one OR many memory entries: replace content and/or patch metadata (kind, workspaceId, scope/recall-pool) — preserving each id. Pass supersedes:<old-id> to record that this memory REPLACES an old one (the old one drops out of default recall, history preserved — temporal-lite). Metadata patches are vec-safe (no re-embed). Single: { id, content?, kind?, … }. Many same patch: { ids:[…], kind?/scope?/… }. Many heterogeneous: items:[{ id, content?, kind?, … }]. Returns { ok, results:[{ ok, id, superseded?, error? }], counts } — correlate by id, not by position; a not-found / timed-out id never fails the rest.",
+      "description": "Edit one or many memories in place, preserving ids. Patch content or metadata (`kind`, `workspaceId`, `scope`); metadata-only patches do not re-embed. On the NEW row, `supersedes:<old-id>` records replacement and closes the old row from default recall while preserving history. Single: `{ id, … }`; homogeneous bulk: `{ ids:[…], … }`; heterogeneous bulk: `{ items:[…] }`. Results are per-id; one failure does not fail the batch.",
       "capabilities": [
         "memory:write"
       ],
