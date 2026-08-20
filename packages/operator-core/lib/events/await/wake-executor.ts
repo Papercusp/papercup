@@ -60,6 +60,7 @@ import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-schedule
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
 import { readFleetClaudeToken } from '@papercusp/orchestrator/fleet-claude-token';
 import { getAdvSession } from '../../adv-sessions';
+import { resolveAgentBinarySync } from '../../agent-bin-detect';
 import {
   collectSessionFiles as defaultCollectSessionFiles,
   findArchivedSessionIdForAdv as defaultFindArchivedSessionIdForAdv,
@@ -224,7 +225,13 @@ export function defaultSpawnDetached(
   o: { cwd: string; env: Record<string, string> },
   onExit?: (exit: ResumeTurnExitRaw) => void,
 ): number | null {
-  const child = childSpawn(bin, args, {
+  // The operator services intentionally run with a stripped PATH. Resolve the
+  // known agent CLIs through the shared resolver before spawning so an npm
+  // install beside the node running the operator remains reachable even when
+  // that node prefix is absent from the service environment. Keep arbitrary
+  // commands (the real-subprocess test uses process.execPath) byte-identical.
+  const spawnBin = resolveResumeSpawnBin(bin);
+  const child = childSpawn(spawnBin, args, {
     cwd: o.cwd,
     env: { ...process.env, ...o.env },
     detached: true,
@@ -262,6 +269,14 @@ export function defaultSpawnDetached(
   }
   child.unref();
   return child.pid ?? null;
+}
+
+const RESUMABLE_AGENT_BINS = new Set(['claude', 'codex', 'omp']);
+
+/** Resolve a headless-resume backend without changing arbitrary subprocesses. */
+export function resolveResumeSpawnBin(bin: string): string {
+  if (!RESUMABLE_AGENT_BINS.has(bin)) return bin;
+  return resolveAgentBinarySync(bin) ?? bin;
 }
 
 /** A codex rollout filename ends `…-<uuid>.jsonl`; the trailing UUID is the

@@ -28,8 +28,6 @@ const healthy: PerfRegressionMetrics = {
   dispatchOrphanRate: 0.05,
   dispatchSample: 100,
   coordOpenEscalations: 10,
-  advTabSwitchMedianMs: 253,
-  advFcpMs: 1923,
 };
 
 // ── pure core: each metric breaching warn + crit ─────────────────────────────
@@ -120,46 +118,6 @@ describe('evaluatePerfRegression — coord open-escalation backlog', () => {
     const { signals } = evaluatePerfRegression({ ...healthy, coordOpenEscalations: B.coordOpenEscalationsCrit });
     expect(signals).toHaveLength(1);
     expect(signals[0].severity).toBe('critical');
-  });
-});
-
-describe('evaluatePerfRegression — /adv UI perf budgets (EI-3034)', () => {
-  it('/adv tab-switch median warn band → major', () => {
-    const { signals, breaches } = evaluatePerfRegression({
-      ...healthy,
-      advTabSwitchMedianMs: B.advTabSwitchMedianWarnMs,
-    });
-    expect(signals).toHaveLength(1);
-    expect(signals[0]).toMatchObject({
-      key: 'adv-tab-switch-median',
-      severity: 'major',
-      findingClass: 'perf-regression:adv-tab-switch-median',
-    });
-    expect(breaches).toEqual([
-      {
-        metric: 'adv-tab-switch-median',
-        value: B.advTabSwitchMedianWarnMs,
-        budget: B.advTabSwitchMedianWarnMs,
-        tier: 'warn',
-      },
-    ]);
-  });
-
-  it('/adv FCP crit band → critical', () => {
-    const { signals, breaches } = evaluatePerfRegression({
-      ...healthy,
-      advFcpMs: B.advFcpCritMs,
-    });
-    expect(signals).toHaveLength(1);
-    expect(signals[0]).toMatchObject({
-      key: 'adv-fcp',
-      severity: 'critical',
-      findingClass: 'perf-regression:adv-fcp',
-    });
-    expect(signals[0].body).toContain('/adv first-contentful-paint');
-    expect(breaches).toEqual([
-      { metric: 'adv-fcp', value: B.advFcpCritMs, budget: B.advFcpCritMs, tier: 'crit' },
-    ]);
   });
 });
 
@@ -288,10 +246,13 @@ function dispatchRows(total: number, orphaned: number): unknown[] {
 function fakeSql(handlers: { match: RegExp; rows?: unknown[]; throws?: Error }[]): {
   sql: Sql;
   readonly inserts: number;
+  readonly queries: readonly string[];
 } {
   let insertCount = 0;
+  const queries: string[] = [];
   const tag = (strings: TemplateStringsArray, ..._args: unknown[]): Promise<unknown[]> => {
     const text = strings.join(' ');
+    queries.push(text);
     if (/INSERT\s+INTO/i.test(text)) {
       insertCount++;
       // Route the INSERT to its snapshot-table handler ONLY. The INSERT column list
@@ -311,6 +272,7 @@ function fakeSql(handlers: { match: RegExp; rows?: unknown[]; throws?: Error }[]
     get inserts() {
       return insertCount;
     },
+    queries,
   };
 }
 
@@ -370,21 +332,20 @@ describe('collectPerfRegressionSnapshot — healthy tick persists, emits nothing
     expect(out.note).toBeUndefined();
   });
 
-  it('includes optional /adv UI perf metrics when a sampler provides them', async () => {
+  it('does not advertise retired /adv budgets or snapshot columns', async () => {
+    expect(B).not.toHaveProperty('advTabSwitchMedianWarnMs');
+    expect(B).not.toHaveProperty('advTabSwitchMedianCritMs');
+    expect(B).not.toHaveProperty('advFcpWarnMs');
+    expect(B).not.toHaveProperty('advFcpCritMs');
+
     const fake = fakeSql([
       { match: /improvement_dispatches/i, rows: dispatchRows(100, 3) },
       { match: /coord_open_escalations/i, rows: [{ n: 7 }] },
     ]);
-    const out = await collectPerfRegressionSnapshot(
-      'ws',
-      depsWith({
-        sql: () => fake.sql,
-        readAdvTabSwitchMedianMs: () => Promise.resolve(B.advTabSwitchMedianWarnMs),
-        readAdvFcpMs: () => Promise.resolve(1923),
-      }),
-    );
-    expect(out.signals).toHaveLength(1);
-    expect(out.signals[0].key).toBe('adv-tab-switch-median');
+    await collectPerfRegressionSnapshot('ws', depsWith({ sql: () => fake.sql }));
+    const snapshotInsert = fake.queries.find((query) => /INSERT\s+INTO\s+harness_shared\.perf_regression_snapshots/i.test(query));
+    expect(snapshotInsert).toBeDefined();
+    expect(snapshotInsert).not.toMatch(/adv_(?:tab_switch_median|fcp)_ms/i);
     expect(fake.inserts).toBe(1);
   });
 });

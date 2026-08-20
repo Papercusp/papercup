@@ -1,6 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { defaultSpawnDetached } from './wake-executor';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { defaultSpawnDetached, resolveResumeSpawnBin } from './wake-executor';
 import { classifyResumeTurnExit, type ResumeTurnExitRaw } from './resume-turn-outcome';
+
+/** Exact PATH values from the two systemd hosts that run wake-executor. */
+const SERVICE_PATHS = [
+  {
+    service: 'papercup-dev-api',
+    value: '/home/linuxbrew/.linuxbrew/bin:/home/linuxbrew/.linuxbrew/sbin:/home/marsh-office/.cargo/bin:/home/marsh-office/.local/bin:/home/marsh-office/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+  },
+  {
+    service: 'papercup-bg-host',
+    value: '/home/marsh-office/.cargo/bin:/home/linuxbrew/.linuxbrew/bin:/home/marsh-office/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+  },
+] as const;
 
 /**
  * P0a deadlock-safety + end-to-end exit observation against a REAL subprocess.
@@ -48,5 +63,48 @@ describe('defaultSpawnDetached — real-subprocess exit observation (P0a integra
     const exit = await run(script);
     expect(exit.exitCode === null || exit.exitCode !== 0).toBe(true);
     expect(classifyResumeTurnExit(exit).ok).toBe(false);
+  });
+
+  it.each(SERVICE_PATHS)('$service resolves codex from the node prefix omitted by its service PATH', async ({ value }) => {
+    const root = mkdtempSync(join(tmpdir(), 'wake-resolve-codex-'));
+    const nodeBin = join(root, 'node25', 'bin');
+    const codexBin = join(nodeBin, 'codex');
+    const previousExecPath = process.execPath;
+    const previousPath = process.env.PATH;
+    mkdirSync(nodeBin, { recursive: true });
+    writeFileSync(
+      codexBin,
+      String.raw`#!/bin/sh
+printf '%s\n' '{"type":"turn.completed"}'
+`,
+      { mode: 0o755 },
+    );
+    // The real services run node from ~/.local/node25/bin while their PATHs omit
+    // that directory. Point the derived resolver at an equivalent staged prefix
+    // so this test proves both service-PATH variants without relying on the host's
+    // current symlinks or installed CLI version.
+    process.execPath = join(nodeBin, 'node');
+    process.env.PATH = value;
+    try {
+      expect(resolveResumeSpawnBin('codex')).toBe(codexBin);
+      const exit = await new Promise<ResumeTurnExitRaw>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('resolved codex spawn did not exit')), 10_000);
+        const pid = defaultSpawnDetached('codex', [], { cwd: root, env: { PATH: value } }, (outcome) => {
+          clearTimeout(timer);
+          resolve(outcome);
+        });
+        if (!pid) {
+          clearTimeout(timer);
+          reject(new Error('codex spawn returned no pid under service PATH'));
+        }
+      });
+      expect(exit.exitCode).toBe(0);
+      expect(exit.stdoutTail).toContain('turn.completed');
+    } finally {
+      process.execPath = previousExecPath;
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
