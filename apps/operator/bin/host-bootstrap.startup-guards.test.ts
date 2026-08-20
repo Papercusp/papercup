@@ -99,6 +99,19 @@ describe('host-bootstrap wires every startup guard', () => {
     expect(bootSrc).toMatch(/startup validation deferred[\s\S]*?return;[\s\S]*?validateDeclaredSingletons\(\)/);
   });
 
+  it('defers bespoke active-seed validation during a fresh packaged install', () => {
+    // The same empty-workspace window applies to the always-on seed backstop: before the
+    // first project exists, every bespoke seed row is absent by construction. Established
+    // workspaces must still run the check so a genuinely missing/paused routine stays loud.
+    expect(bootSrc).toMatch(
+      /process\.env\.PAPERCUSP_DESKTOP\s*===\s*['"]1['"]\s*&&\s*\(await\s+isLikelyFreshInstallGap\(workspaceId\)\)/,
+    );
+    expect(bootSrc).toContain('[bespoke-active-seeds] startup validation deferred');
+    expect(bootSrc).toMatch(
+      /\[bespoke-active-seeds\]\s*startup validation deferred[\s\S]*?return;[\s\S]*?checkBespokeActiveSeeds\(/,
+    );
+  });
+
   // [EI-727] Not a STARTUP_GUARDS entry (it doesn't live in its own startup/validate-*
   // module — it's a one-line pure predicate on agent-config.ts) but the same
   // called-not-just-imported wiring risk applies: a silently-orphaned boot warning is as

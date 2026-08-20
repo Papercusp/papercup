@@ -6,6 +6,7 @@ vi.mock('../../pot/watchdog', () => ({
   recentWatchdogFires: vi.fn(),
   claimWatchdogFire: vi.fn(),
 }));
+vi.mock('../../startup/validate-home-harness', () => ({ isLikelyFreshInstallGap: vi.fn() }));
 vi.mock('../improvements/capture-core', () => ({ captureImprovement: vi.fn() }));
 vi.mock('../../blueprint/learning-loop-read', () => ({ readLearningLoopHealth: vi.fn() }));
 
@@ -17,6 +18,7 @@ import { summarizeLearningLoopHealth, type LearningLoopHealth } from '../../blue
 import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { captureImprovement } from '../improvements/capture-core';
 import { readLearningLoopHealth } from '../../blueprint/learning-loop-read';
+import { isLikelyFreshInstallGap } from '../../startup/validate-home-harness';
 
 function loop(over: Partial<LearningLoopHealth>): LearningLoopHealth {
   return {
@@ -106,12 +108,64 @@ describe('selectLearningLoopsNeedingEscalation (EI-19281872822982156)', () => {
 });
 
 describe('learningLoopHealthSweep (EI-19281872822982156, defect 2)', () => {
+  const originalDesktopEnv = process.env.PAPERCUSP_DESKTOP;
+
   beforeEach(() => {
+    if (originalDesktopEnv === undefined) delete process.env.PAPERCUSP_DESKTOP;
+    else process.env.PAPERCUSP_DESKTOP = originalDesktopEnv;
+    vi.mocked(isLikelyFreshInstallGap).mockResolvedValue(false);
     vi.mocked(recentWatchdogFires).mockResolvedValue(0);
     vi.mocked(claimWatchdogFire).mockResolvedValue(true);
     vi.mocked(captureImprovement).mockResolvedValue({} as never);
   });
-  afterEach(() => vi.clearAllMocks());
+  afterEach(() => {
+    if (originalDesktopEnv === undefined) delete process.env.PAPERCUSP_DESKTOP;
+    else process.env.PAPERCUSP_DESKTOP = originalDesktopEnv;
+    vi.clearAllMocks();
+  });
+
+  it('does not escalate an empty registry during a pristine packaged desktop first boot', async () => {
+    process.env.PAPERCUSP_DESKTOP = '1';
+    vi.mocked(isLikelyFreshInstallGap).mockResolvedValue(true);
+
+    const results = await learningLoopHealthSweep();
+
+    expect(results).toEqual([]);
+    expect(isLikelyFreshInstallGap).toHaveBeenCalledWith('ws-test');
+    expect(readLearningLoopHealth).not.toHaveBeenCalled();
+    expect(captureImprovement).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the fresh-install deferral to a non-desktop operator', async () => {
+    vi.mocked(isLikelyFreshInstallGap).mockResolvedValue(true);
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([
+      loop({ blueprintId: 'scout', status: 'should-be-on-but-dark', alwaysOn: true }),
+    ]);
+
+    const results = await learningLoopHealthSweep();
+
+    expect(results).toEqual([
+      expect.objectContaining({ blueprintId: 'scout', outcome: 'escalated', status: 'should-be-on-but-dark' }),
+    ]);
+    expect(readLearningLoopHealth).toHaveBeenCalled();
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps real alarms active on a packaged desktop after a project is provisioned', async () => {
+    process.env.PAPERCUSP_DESKTOP = '1';
+    vi.mocked(isLikelyFreshInstallGap).mockResolvedValue(false);
+    vi.mocked(readLearningLoopHealth).mockResolvedValue([
+      loop({ blueprintId: 'scout', status: 'should-be-on-but-dark', alwaysOn: true }),
+    ]);
+
+    const results = await learningLoopHealthSweep();
+
+    expect(results).toEqual([
+      expect.objectContaining({ blueprintId: 'scout', outcome: 'escalated', status: 'should-be-on-but-dark' }),
+    ]);
+    expect(readLearningLoopHealth).toHaveBeenCalled();
+    expect(captureImprovement).toHaveBeenCalledTimes(1);
+  });
 
   it('the motivating case: scout paused (should-be-on-but-dark) — files ONE major-severity observation', async () => {
     vi.mocked(readLearningLoopHealth).mockResolvedValue([

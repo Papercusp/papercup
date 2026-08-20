@@ -411,6 +411,19 @@ export function runBootstrap(): void {
         import('@papercusp/db-org'),
       ]);
       const { installSlug, workspaceId } = operatorHomeScope();
+      // A packaged desktop's first boot can reach this backstop before the asynchronous
+      // dogfood-hive bootstrap registers its first project. In that known empty-workspace
+      // window every bespoke active seed is absent by construction; defer the owner-facing
+      // alarm until the next boot, when first-boot provisioning has had a chance to finish.
+      // Once any project exists, keep the check loud so established workspaces cannot hide
+      // a missing or paused always-on routine behind the fresh-install exception.
+      if (process.env.PAPERCUSP_DESKTOP === '1' && (await isLikelyFreshInstallGap(workspaceId))) {
+        console.log(
+          '[bespoke-active-seeds] startup validation deferred — fresh packaged install has no ' +
+            'registered project yet; retry after first-boot hive provisioning',
+        );
+        return;
+      }
       const { sql } = getOrgPg();
       const r = await checkBespokeActiveSeeds({ sql: sql as unknown as never, installSlug, workspaceId });
       if (r.ok) {

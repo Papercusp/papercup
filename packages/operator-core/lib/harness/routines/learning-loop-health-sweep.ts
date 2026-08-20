@@ -26,6 +26,7 @@ import { recentWatchdogFires, claimWatchdogFire } from '../../pot/watchdog';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readLearningLoopHealth } from '../../blueprint/learning-loop-read';
 import type { LearningLoopHealth, LearningLoopStatus } from '../../blueprint/learning-loop-health';
+import { isLikelyFreshInstallGap } from '../../startup/validate-home-harness';
 
 export interface LearningLoopHealthEscalation {
   blueprintId: string;
@@ -90,6 +91,19 @@ export async function learningLoopHealthSweep(): Promise<LearningLoopHealthEscal
   try {
     const { sql } = getOrgPg();
     const workspaceId = activeWorkspaceId();
+    // A pristine packaged desktop has no project to own learning-loop rows yet. The
+    // asynchronous first-boot hive bootstrap may still be materializing that project when
+    // this periodic sweep fires; treating every expected singleton as absent would create
+    // improvement noise before onboarding can possibly complete. Keep the exception narrow
+    // to the same desktop + empty-registry predicate used by startup validation, and resume
+    // normal alarms as soon as provisioning registers a project.
+    if (process.env.PAPERCUSP_DESKTOP === '1' && (await isLikelyFreshInstallGap(workspaceId))) {
+      console.log(
+        '[learning-loop-health-sweep] sweep deferred — fresh packaged install has no ' +
+          'registered project yet; retry after first-boot hive provisioning',
+      );
+      return results;
+    }
     const rows = await readLearningLoopHealth(sql, workspaceId);
     const needing = selectLearningLoopsNeedingEscalation(rows);
     for (const loop of needing) {
