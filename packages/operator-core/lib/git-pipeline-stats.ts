@@ -754,7 +754,10 @@ export async function gitPipelineSnapshot(
   // The currently-open merge conflict (git-sync-conflict escalation), if any.
   let openConflict: GitPipelineSnapshot['openConflict'] = null;
   try {
-    const escRows = await sql<{ escalation: Record<string, unknown> }[]>`
+    const escRows = await sql<{
+      escalation: Record<string, unknown>;
+      mtime_ms: unknown;
+    }[]>`
       SELECT escalation, mtime_ms
         FROM harness_shared.harness_escalations
        WHERE harness_slug = ${slug}
