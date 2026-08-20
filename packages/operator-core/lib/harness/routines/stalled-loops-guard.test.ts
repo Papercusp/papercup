@@ -231,6 +231,59 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     expect(broadcast.mock.calls[0]?.[0].summary).toContain('advisory only');
   });
 
+  it('keeps cadence-drift-only healthy owners advisory beside true turn-stalled owners', async () => {
+    const stalledOwners = Array.from({ length: 5 }, (_, i) => `su-turn-stalled-${i + 1}`);
+    const cadenceOwners = Array.from({ length: 21 }, (_, i) => `su-cadence-only-${i + 1}`);
+    const allOwners = [...stalledOwners, ...cadenceOwners];
+    const sql = fakeSql(allOwners.map((ownerId) => ({ id: `rt-${ownerId}`, target_owner_id: ownerId })));
+    const statuses = new Map<string, LoopStatus>([
+      ...stalledOwners.map(
+        (ownerId) =>
+          [ownerId, status({ ownerId, turnsStalled: true, lastTurnAt: null, lastRealTurnAt: null })] as [
+            string,
+            LoopStatus,
+          ],
+      ),
+      ...cadenceOwners.map(
+        (ownerId) =>
+          [
+            ownerId,
+            status({
+              ownerId,
+              turnsStalled: false,
+              firesSinceArm: 5,
+              expectedFiresSinceArm: 62,
+              effectiveIntervalSec: 728.0376,
+              cadenceRatio: 12.13396,
+              longestObservedGapSec: 1207.28,
+              // An overdue next fire is the independent evidence required for the advisory.
+              nextFireAt: '2026-08-01T00:00:00.000Z',
+            }),
+          ] as [string, LoopStatus],
+      ),
+    ]);
+    const getStatuses = vi.fn(async () => statuses);
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
+
+    expect(res.checked).toBe(26);
+    expect(res.paused).toBe(5);
+    expect(res.sample.slice().sort()).toEqual(stalledOwners.slice().sort());
+    expect(res.cadenceDrift).toEqual(cadenceOwners);
+    expect(autoPause).toHaveBeenCalledTimes(5);
+    expect(autoPause.mock.calls.map((call) => call[1]).sort()).toEqual(
+      stalledOwners.map((ownerId) => `rt-${ownerId}`).sort(),
+    );
+    for (const ownerId of cadenceOwners) {
+      expect(autoPause).not.toHaveBeenCalledWith(sql, `rt-${ownerId}`, expect.anything());
+    }
+  });
+
   // Companion to the case above: identical drift statistics, but the fire is NOT late. This pins
   // that the sweep hands the settling-gate inputs (parked / nextFireAt) through to
   // computeCadenceDrift. If it ever passed a projection that dropped them, loop.test.ts would
