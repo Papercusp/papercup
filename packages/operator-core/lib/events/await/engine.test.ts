@@ -585,6 +585,27 @@ describe('cancelSupersededCandidateAwaits (WI-4957 / EI-20391462658650094: a rep
     expect(h.store.cancelAwaitsByIds).not.toHaveBeenCalled();
   });
 
+  it('durably wakes a candidate-bound inconclusive checkpoint await', async () => {
+    h.store.listActiveAwaitsForKey.mockImplementation(async (key: string) =>
+      key === 'green-checkpoint:inconclusive:papercusp'
+        ? [awaitRow({ id: 22, once: true, policy: 'wake', payloadFilter: { sha: { startsWith: 'deadbeef' } } })]
+        : [],
+    );
+    h.store.claimSpecificOnceAwaits.mockResolvedValueOnce([awaitRow({ id: 22, once: true, policy: 'wake' })]);
+
+    const result = await cancelSupersededCandidateAwaits({
+      keys: ['green-checkpoint:inconclusive', 'green-checkpoint:inconclusive:papercusp'],
+      staleCandidateSha: 'deadbeef1234',
+    });
+
+    expect(result).toEqual({ cancelled: 0, ids: [22] });
+    expect(h.store.claimSpecificOnceAwaits).toHaveBeenCalledWith([22]);
+    expect(h.store.insertDeliveries).toHaveBeenCalledWith(expect.objectContaining({
+      awaits: [expect.objectContaining({ id: 22 })],
+      payload: { reason: 'candidate-replaced', sha: 'deadbeef1234' },
+    }));
+  });
+
   it('nothing eligible bound to the stale candidate → no claim or delivery', async () => {
     h.store.listActiveAwaitsForKey.mockResolvedValue([awaitRow({ id: 1, payloadFilter: null })]);
     const result = await cancelSupersededCandidateAwaits({ keys: ['release:green'], staleCandidateSha: 'deadbeef' });
