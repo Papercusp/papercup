@@ -16,6 +16,7 @@ import { listCells } from '../../cell-registry';
 import { CELL_READ_SPAWN_ID } from '../../cell-read';
 import { stampStatePlane, type StatePlaneBlock } from '../../state-plane-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { canonicalHarnessSlug, operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
 const TOOL_NAME = 'dev:pipeline_position';
 
@@ -118,6 +119,49 @@ function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLim
 
 function compactPipelineRuntime(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
   return pickPipelineFields(value, ['host', 'releasePipelineApplies', 'restartTarget', 'activation'], opts);
+}
+
+/**
+ * EI-20742070351584478 — THE SUBJECT STAMP. `gitPipelinePosition` reads the
+ * operator-home integration tree, green-checkpoint and deployed :3070 state. It
+ * cannot answer a SideStage (or any other harness's) release question, but the
+ * old response carried no subject, so its correct Papercusp numbers looked like
+ * an answer about the caller's own pipeline.
+ *
+ * Keep this as disclosure rather than a selector: the resolver has one pipeline
+ * by design. A concrete foreign caller gets a loud warning beside the values,
+ * while wildcard/unknown callers still receive the subject without an invented
+ * mismatch claim.
+ */
+function pipelineSubjectStamp(
+  ctx: { harnessSlug?: string | null },
+  integrationRoot: string,
+) {
+  const home = canonicalHarnessSlug(operatorHomeHarnessSlug());
+  const subject = {
+    harness: home,
+    scope: 'operator-home-release-pipeline' as const,
+    integrationRoot,
+    note:
+      `Every sha, gate verdict and deploy position in this reply describes the \`${home}\` operator release pipeline ONLY. ` +
+      'Other harnesses run their own green-checkpoint and promotion — this reply is not evidence about them.',
+  };
+
+  const raw = ctx?.harnessSlug?.trim();
+  const caller = raw && raw !== '*' ? canonicalHarnessSlug(raw) : null;
+  if (!caller || caller === home) return { subject };
+
+  return {
+    subject,
+    harnessMismatch: {
+      callerHarness: caller,
+      reportedHarness: home,
+      warning:
+        `⚠ CROSS-HARNESS READ — you called from harness \`${caller}\`, but dev:pipeline_position reports the \`${home}\` operator pipeline. ` +
+        `These SHAs, gate reds and deploy positions are NOT \`${caller}\`'s and must not be quoted as its release truth: ` +
+        `\`${caller}\` promotes on its OWN green-checkpoint. This tool has no \`${caller}\` mode; use that harness's own release surface.`,
+    },
+  };
 }
 
 function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opts: { textChars: number; arrayLimit: number }): JsonRecord {
@@ -481,6 +525,10 @@ export default defineTool({
      * not depend on a path.
      */
     const result = await gitPipelinePosition({ path: args.path, sha: args.sha, marker: args.marker });
+    const subjectStamp = pipelineSubjectStamp(
+      ctx as { harnessSlug?: string | null },
+      result.repoRoot,
+    );
 
     // P-010. Computed ONCE and spread into every return below — this handler has three
     // exits (multi-consumer, non-release runtime, default), and stamping only the default
@@ -509,6 +557,7 @@ export default defineTool({
       const anyReleaseCarried = runtimes.some((r) => r.releasePipelineApplies);
       return {
         data: shapePipelinePosition(result, {
+          ...subjectStamp,
           ...(plane ? { plane } : {}),
           activations: runtimes.map((r) => ({
             hint: r.activation,
@@ -541,6 +590,7 @@ export default defineTool({
     if (runtime && !runtime.releasePipelineApplies) {
       return {
         data: shapePipelinePosition(result, {
+          ...subjectStamp,
           ...(plane ? { plane } : {}),
           activation: {
             hint: runtime.activation,
@@ -611,6 +661,7 @@ export default defineTool({
           };
     return {
       data: shapePipelinePosition(result, {
+        ...subjectStamp,
         ...(plane ? { plane } : {}),
         ...(awaitable ? { awaitable } : {}),
       }, rereadArgs, shapeOpts),

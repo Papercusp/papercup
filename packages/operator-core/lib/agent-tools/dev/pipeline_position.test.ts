@@ -15,6 +15,11 @@ vi.mock('../../git-pipeline-position', async (importOriginal) => {
   return { ...actual, gitPipelinePosition: vi.fn() };
 });
 
+vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/operator-home-harness')>()),
+  operatorHomeHarnessSlug: () => 'test-home',
+}));
+
 /**
  * deploy-pipeline-legibility-2026-06-18 P-005: the shared DEPLOY_PIPELINE_NOTE (in every spawned
  * role's prompt) tells EVERY execution/judgment role to reach for `dev:pipeline_position` instead
@@ -589,5 +594,111 @@ describe('dev:pipeline_position EMITS the state plane (P-010)', () => {
     const out = (await tool.handler({} as never, {} as never)) as Out;
     expect(out.data.plane).toBeUndefined();
     expect(out.data.summary).toBe('nothing measured');
+  });
+});
+
+/**
+ * EI-20742070351584478 — `gitPipelinePosition` reads the operator-home pipeline,
+ * not the caller's harness pipeline. Keep that scope visible so a SideStage
+ * caller cannot quote Papercusp gate/deploy values as its own release truth.
+ */
+describe('dev:pipeline_position subject disclosure', () => {
+  type Out = { data: Record<string, unknown> };
+
+  const base = {
+    input: { path: 'apps/operator/app/x.ts', sha: null },
+    repoRoot: '/test/integration-root',
+    submodule: null,
+    targetSha: 'sha0000001',
+    targetShortSha: 'sha000000',
+    targetSubject: 'subject',
+    dirtyUncommitted: false,
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    deployedSha: 'sha0000001',
+    gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+    verdictProvenance: {
+      lastGreenSha: 'sha0000001',
+      lastGreenShortSha: 'sha000000',
+      lastGreenAgeMs: 1000,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    summary: 'stub summary',
+    notes: [],
+  } as unknown as PipelinePosition;
+
+  const release = {
+    host: 'operator-release',
+    releasePipelineApplies: true,
+    restartTarget: 'staging',
+    activation: 'deploy',
+  };
+  const staging = {
+    host: 'bg-host',
+    releasePipelineApplies: false,
+    restartTarget: 'bg-host',
+    activation: 'restart bg-host',
+  };
+
+  it('stamps the operator-home pipeline and warns a foreign caller', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({ ...base, runtime: release, runtimes: [release] });
+
+    const out = (await tool.handler(
+      { path: 'apps/operator/app/x.ts' } as never,
+      { role: 'cup', harnessSlug: 'sidestage' } as never,
+    )) as Out;
+
+    expect(out.data.subject).toMatchObject({
+      harness: 'test-home',
+      scope: 'operator-home-release-pipeline',
+      integrationRoot: '/test/integration-root',
+    });
+    expect(out.data.subject).toMatchObject({ note: expect.stringContaining('test-home') });
+    expect(out.data.harnessMismatch).toMatchObject({
+      callerHarness: 'sidestage',
+      reportedHarness: 'test-home',
+    });
+    expect((out.data.harnessMismatch as { warning: string }).warning).toContain('sidestage');
+    expect((out.data.harnessMismatch as { warning: string }).warning).toContain('test-home');
+  });
+
+  it('stamps every activation exit and does not invent a mismatch for same or wildcard callers', async () => {
+    const exits = [
+      { runtime: release, runtimes: [release] },
+      { runtime: staging, runtimes: [staging] },
+      { runtime: staging, runtimes: [staging, release] },
+    ];
+
+    for (const result of exits) {
+      vi.mocked(gitPipelinePosition).mockResolvedValue({ ...base, ...result });
+      const foreign = (await tool.handler(
+        { path: 'apps/operator/app/x.ts' } as never,
+        { role: 'cup', harnessSlug: 'sidestage' } as never,
+      )) as Out;
+      expect(foreign.data.subject).toMatchObject({ harness: 'test-home' });
+      expect(foreign.data.harnessMismatch).toMatchObject({ callerHarness: 'sidestage' });
+
+      for (const harnessSlug of ['test-home', '*', undefined]) {
+        vi.mocked(gitPipelinePosition).mockResolvedValue({ ...base, ...result });
+        const same = (await tool.handler(
+          { path: 'apps/operator/app/x.ts' } as never,
+          { role: 'cup', harnessSlug } as never,
+        )) as Out;
+        expect(same.data.subject).toMatchObject({ harness: 'test-home' });
+        expect(same.data.harnessMismatch).toBeUndefined();
+      }
+    }
+  });
+
+  it('canonicalizes a retired foreign harness alias before warning', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({ ...base, runtime: release, runtimes: [release] });
+    const out = (await tool.handler(
+      { path: 'apps/operator/app/x.ts' } as never,
+      { role: 'cup', harnessSlug: 'papercup' } as never,
+    )) as Out;
+
+    expect(out.data.harnessMismatch).toMatchObject({ callerHarness: 'papercusp', reportedHarness: 'test-home' });
   });
 });
