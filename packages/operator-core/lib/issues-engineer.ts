@@ -69,6 +69,10 @@ import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from '
 import { randomInt } from 'node:crypto';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { trackDetached } from './detached-imports';
+import {
+  AUTO_CLOSE_DEFAULT_MIN_TICKS,
+  AUTO_CLOSE_ELIGIBLE_SOURCES,
+} from './harness/improvements/auto-close-sources';
 
 /**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
@@ -1271,6 +1275,48 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
 }
 
 /**
+ * Render the watchdog recovery-window floor against the engineer_issues view.
+ *
+ * `work-items.ts` owns the real claim helper, but it imports this module for the
+ * issue facade, so importing that helper back would create a runtime cycle. Keep
+ * this view-form renderer structurally identical and cover both forms against
+ * real rows in issue-admissible-branch-equivalence.integration.test.ts.
+ *
+ * The qualifier is an internal literal (`''` or `'ei.'`), never caller input.
+ */
+function watchdogRecoveryWindowExclusionSqlForIssueView(sql: OrgSql, qualifier: string) {
+  const eligibleSources = [...AUTO_CLOSE_ELIGIBLE_SOURCES];
+  const minTicks = AUTO_CLOSE_DEFAULT_MIN_TICKS;
+  const watchdogKey = `${qualifier}payload ->> 'watchdogKey'`;
+  const workspaceId = `${qualifier}workspace_id`;
+  return sql`(
+    ${sql.unsafe(watchdogKey)} IS NULL
+    OR btrim(${sql.unsafe(watchdogKey)}) = ''
+    OR position(':' IN ${sql.unsafe(watchdogKey)}) <= 1
+    OR btrim(substring(
+         ${sql.unsafe(watchdogKey)}
+         FROM position(':' IN ${sql.unsafe(watchdogKey)}) + 1
+       )) = ''
+    OR split_part(${sql.unsafe(watchdogKey)}, ':', 1) <> ALL(${eligibleSources}::text[])
+    OR NOT (
+      SELECT count(*) = ${minTicks}
+         AND count(recovery_ticks.known_open_keys) = ${minTicks}
+         AND count(*) FILTER (
+               WHERE ${sql.unsafe(watchdogKey)} = ANY(recovery_ticks.known_open_keys)
+             ) = 0
+        FROM (
+          SELECT wt.known_open_keys
+            FROM harness_shared.watchdog_ticks wt
+           WHERE wt.workspace_id = ${sql.unsafe(workspaceId)}
+             AND wt.status = 'ran'
+           ORDER BY wt.tick_at DESC, wt.id DESC
+           LIMIT ${minTicks}
+        ) recovery_ticks
+    )
+  )`;
+}
+
+/**
  * WI-37827: exported ONLY so the runtime equivalence guard
  * (`issue-admissible-branch-equivalence.integration.test.ts`) can evaluate the real
  * fragment each column form returns against real rows, rather than regexing the SQL
@@ -1374,7 +1420,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // considered and rejected: it would have gone false-green the moment this became a
   // rendering rather than two written-out literals, i.e. precisely here.
   const c = aliased ? 'ei.' : '';
-  return sql.unsafe(`(
+  const base = sql.unsafe(`(
         (${c}origin = 'local' OR ${c}origin IS NULL)
         AND ${c}lane IS DISTINCT FROM 'observation'
         AND ${c}created_by IS DISTINCT FROM 'system:replication-liveness'
@@ -1413,6 +1459,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
           )
         )
       )`);
+  return sql`(${base} AND ${watchdogRecoveryWindowExclusionSqlForIssueView(sql, c)})`;
 }
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {

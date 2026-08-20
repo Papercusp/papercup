@@ -6179,6 +6179,13 @@ export async function claimNextIssueWorkItem(
           -- (work_items:complete's own stateWarning documents this exact gap: a caller can
           -- omit state and leave the row claimable). Still directly claimable BY ID.
           AND ${alreadyTerminallyCompletedExclusionSql(tx)}
+          -- EI-20106946822538304: an eligible watchdog signal is not actionable while
+          -- auto-close is still gathering its six-ran-tick recovery window. Keep the row
+          -- in the pool, but fail the READY/claim floor until the same live evidence
+          -- shows the signal survived that window. The helper is fail-open for every
+          -- incomplete or malformed history, so a real problem cannot be hidden by a
+          -- telemetry gap.
+          AND ${watchdogRecoveryWindowExclusionSql(tx)}
           -- Mig 499 + WI-5939: the per-claim cooldown floor (issueCooldownExclusionSql) — the
           -- SAME fragment the preview (get-next), the miss diagnosis and the per-id explainer
           -- apply, so the claim door and every read of it can no longer disagree. NULL-safe in

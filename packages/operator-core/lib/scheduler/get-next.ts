@@ -77,6 +77,7 @@ import {
   loopIterationNoiseExclusionSql,
   alreadyTerminallyCompletedExclusionSql,
   crossMachineRigExclusionSql,
+  watchdogRecoveryWindowExclusionSql,
   type FeatureRowDb,
   type OrgSql,
   type WorkItem,
@@ -870,7 +871,8 @@ export interface IssueClaimExclusionBreakdown {
 export const ALL_ISSUE_CLAIM_FLOORS_PASS =
   `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
-  `AND ok_completed AND ok_rig AND ok_no_blocker AND ok_cooldown AND ok_origin`;
+  `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
+  `AND ok_cooldown AND ok_origin`;
 
 /**
  * The SHARED inner subquery for issue-family claimability: every candidate issue-family
@@ -912,6 +914,10 @@ export function issueClaimCandidateSubquery(
       (${federationDetectorExclusionSql(sql)})                          AS ok_federation,
       (${loopIterationNoiseExclusionSql(sql)})                          AS ok_loop_noise,
       (${alreadyTerminallyCompletedExclusionSql(sql)})                  AS ok_completed,
+      -- EI-20106946822538304: an eligible watchdog signal remains in POOL while the
+      -- auto-close sweep gathers its six-ran-tick recovery window, but is not READY
+      -- until that window has been evaluated and the signal is still present.
+      (${watchdogRecoveryWindowExclusionSql(sql)})                      AS ok_watchdog_recovery,
       (${crossMachineRigExclusionSql(sql, rigAvailable)})               AS ok_rig,
       -- WI-6409: mirror claimNextIssueWorkItem's own-node-aware origin floor (local OR our
       -- own author key) — previously absent from this shared subquery entirely, so a
