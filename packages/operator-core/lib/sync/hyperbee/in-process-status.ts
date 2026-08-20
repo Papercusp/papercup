@@ -23,7 +23,9 @@
 import { isSubstrateOwnerProcess } from '../../background-workers';
 import { listBootedHandles, type BootedHandleSummary } from './boot-all';
 import {
+  collectHarnessContentConnectivity,
   isCompleteHealthInputs,
+  type HarnessContentConnectivity,
   type RemoteBootedHandlesSnapshot,
 } from './cluster-booted-handles-sync';
 import { listBootstrapProgress } from './bootstrap-progress';
@@ -101,6 +103,13 @@ export interface InProcessSubstrateStatus {
    * the sidecar (read it via the `getReplicationLiveness` RPC method there).
    */
   replicationLiveness: HarnessReplicationLiveness[];
+  /**
+   * EI-21010563550057801: per-booted-harness content-topic reachability,
+   * measured in the substrate owner and carried through the same complete
+   * cross-process health snapshot as replication/fork/log inputs. Empty with
+   * `healthInputsObserved:false` means unmeasured, never "zero peers".
+   */
+  contentConnectivity: HarnessContentConnectivity[];
   /**
    * EI-20575137548097507: did THIS process actually measure the process-local
    * health inputs (`replicationLiveness`, `logStats`, own-log-fork) for the
@@ -339,6 +348,9 @@ export function getInProcessSubstrateStatus(
   const replicationLiveness = isSubstrateOwner
     ? getReplicationLiveness()
     : (remoteHealthInputs?.replicationLiveness ?? []);
+  const contentConnectivity = isSubstrateOwner
+    ? collectHarnessContentConnectivity()
+    : (remoteHealthInputs?.contentConnectivity ?? []);
   // Non-owner: the owner publishes only FORKED harnesses, so a miss here means
   // "measured, not forked" — but ONLY because the bundle's presence is what
   // licenses that reading. Absent bundle ⇒ the map is empty AND
@@ -437,6 +449,9 @@ export function getInProcessSubstrateStatus(
       : (remoteHealthInputs?.logStats ?? []),
     // P-004 (WI-1840): per-log replication-liveness verdicts.
     replicationLiveness,
+    // EI-21010563550057801: exact per-topic remote-content evidence. The
+    // healthInputsObserved marker distinguishes measured-empty from absent.
+    contentConnectivity,
     // EI-8816: explicit blind-spot marker — see resolveEffectiveBootedHandles above.
     reachedSubstrateOwner,
     // EI-20575137548097507: the SECOND blind-spot marker, and deliberately NOT

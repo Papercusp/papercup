@@ -35,19 +35,48 @@
 
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { isSubstrateOwnerProcess } from '../../background-workers';
-import { listBootedHandles, type BootedHandleSummary } from './boot-all';
+import {
+  getBootedHarness,
+  listBootedHandles,
+  type BootedHandleSummary,
+} from './boot-all';
 import { collectSubstrateLogStats, type HarnessLogStats } from './log-stats';
 import { getOwnLogForkState } from './own-log-fork-guard';
 import {
   getReplicationLiveness,
   type HarnessReplicationLiveness,
 } from './replication-liveness';
+import {
+  contentPeerCountForTopic,
+  lastContentAnnounceRecvMs,
+} from './swarm';
 
 /** One harness whose own log the OWNER has latched as forked (local writes blocked). */
 export interface OwnLogForkSummary {
   workspaceId: string;
   harnessSlug: string;
   detail?: string;
+}
+
+/**
+ * EI-21010563550057801: one booted harness's topic-scoped content-connectivity
+ * evidence, sampled inside the substrate-owning process.
+ *
+ * `contentPeers` is the live announce-channel gauge for THIS topic, never the
+ * process-global swarm socket count. `lastContentAnnounceRecvMs` is the latest
+ * inbound signed announce on that same topic. Together they distinguish "a
+ * handle booted locally" from "this hive can currently exchange content with
+ * a remote peer" — the destructive Phase A quarantine requires the latter.
+ */
+export interface HarnessContentConnectivity {
+  workspaceId: string;
+  harnessSlug: string;
+  /** Exact 32-byte content topic in lowercase hex, or null before swarm join. */
+  topicHex: string | null;
+  /** Distinct live peers with an open content-announce channel on topicHex. */
+  contentPeers: number;
+  /** Latest inbound signed announce on topicHex, or null when none was seen. */
+  lastContentAnnounceRecvMs: number | null;
 }
 
 /**
@@ -69,6 +98,39 @@ export interface SubstrateHealthInputsBundle {
   /** Only FORKED harnesses. Present-and-empty = "measured, none forked". */
   ownLogForks: OwnLogForkSummary[];
   logStats: HarnessLogStats[];
+  /**
+   * Exact per-harness content-topic reachability sampled by the substrate
+   * owner. Present-and-empty means no booted handle had a live swarm topic;
+   * absent means an older publisher did not measure this input at all.
+   */
+  contentConnectivity: HarnessContentConnectivity[];
+}
+
+/**
+ * Sample per-topic content reachability for every currently booted handle.
+ *
+ * The booted summary intentionally stays shape-stable; the health bundle is
+ * the existing transport for owner-process metrics. A handle disappearing
+ * between the summary and lookup is omitted, which is conservative: readers
+ * then have no positive connectivity witness and destructive readiness fails.
+ */
+export function collectHarnessContentConnectivity(): HarnessContentConnectivity[] {
+  const out: HarnessContentConnectivity[] = [];
+  for (const { workspaceId, harnessSlug } of listBootedHandles()) {
+    const handle = getBootedHarness(workspaceId, harnessSlug);
+    if (!handle) continue;
+    const topicHex = handle.swarm?.topicHex ?? null;
+    out.push({
+      workspaceId,
+      harnessSlug,
+      topicHex,
+      contentPeers: topicHex ? contentPeerCountForTopic(topicHex) : 0,
+      lastContentAnnounceRecvMs: topicHex
+        ? lastContentAnnounceRecvMs(topicHex)
+        : null,
+    });
+  }
+  return out;
 }
 
 /**
@@ -97,6 +159,7 @@ export function collectSubstrateHealthInputs(): SubstrateHealthInputsBundle {
     replicationLiveness: getReplicationLiveness(),
     ownLogForks,
     logStats: collectSubstrateLogStats(),
+    contentConnectivity: collectHarnessContentConnectivity(),
   };
 }
 
@@ -150,7 +213,8 @@ export function isCompleteHealthInputs(
     !!b &&
     Array.isArray(b.replicationLiveness) &&
     Array.isArray(b.ownLogForks) &&
-    Array.isArray(b.logStats)
+    Array.isArray(b.logStats) &&
+    Array.isArray(b.contentConnectivity)
   );
 }
 
