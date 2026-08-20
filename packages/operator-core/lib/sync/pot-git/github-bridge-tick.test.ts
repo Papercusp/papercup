@@ -6,7 +6,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   getOrgPg: () => {
     throw new Error('getOrgPg must not be reached — inject seams in tests');
   },

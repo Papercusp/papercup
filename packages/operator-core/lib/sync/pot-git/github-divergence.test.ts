@@ -5,7 +5,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Sql } from 'postgres';
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
   getOrgPg: () => {
     throw new Error('getOrgPg must not be reached — inject sql in tests');
   },
