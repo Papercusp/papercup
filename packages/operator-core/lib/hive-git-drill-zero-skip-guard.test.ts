@@ -17,6 +17,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -62,6 +63,9 @@ const gitSyncAction = readFileSync(
   'utf8',
 );
 const gateMatch = drill.match(/# ZERO-SKIP-RELEASE-GATE-BEGIN[^\n]*\n([\s\S]*?)# ZERO-SKIP-RELEASE-GATE-END/);
+const sourceOverlayMatch = physicalProbe.match(
+  /\/\/ VM-RUN-SOURCE-OVERLAY-BEGIN\n([\s\S]*?)\/\/ VM-RUN-SOURCE-OVERLAY-END/,
+);
 
 const evidenceDir = mkdtempSync(join(tmpdir(), 'hive-git-physical-evidence-'));
 const trustByFixture = new WeakMap<Record<string, any>, Record<string, any>>();
@@ -708,10 +712,12 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     // naming the missing path instead of downstream on the rig.
     expect(physicalProbe).toContain('staged submodule tree contains NO FILES on the VM');
     expect(physicalProbe).toContain('required submodule is not initialised on the tower');
-    // The overlay must derive from the root workspace registry, not a directory
-    // hand-list that misses top-level or nested workspaces.
-    expect(physicalProbe).toContain('const workspacePatterns = Array.isArray(rootManifest.workspaces)');
-    expect(physicalProbe).toContain('fs.globSync(pattern');
+    // The overlay must derive from every staged canonical workspace registry,
+    // not a root-only directory hand-list that misses nested repositories.
+    expect(physicalProbe).toContain('const workspaceRegistryPaths = [...new Set([');
+    expect(physicalProbe).toContain("fs.globSync('**/package.json'");
+    expect(physicalProbe).toContain('const registryRoot = path.dirname(registryPath)');
+    expect(physicalProbe).toContain('for (const pattern of workspacePatterns)');
     expect(physicalProbe).toContain('root package.json has no workspace registry');
     expect(physicalProbe).toContain('entry.isDirectory() || entry.isSymbolicLink()');
     expect(physicalProbe).toContain("fs.symlinkSync(packageRoot, target, 'dir')");
@@ -756,6 +762,52 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalProbe.indexOf('"$SCENARIO" --require-ready')).toBeLessThan(
       physicalProbe.indexOf('ssh "${SSH_OPTS[@]}"'),
     );
+  });
+
+  it('overlays packages declared only by a nested workspace registry', () => {
+    expect(sourceOverlayMatch).not.toBeNull();
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'hive-git-source-overlay-'));
+    const runRoot = join(fixtureRoot, 'run');
+    const installedRoot = join(fixtureRoot, 'installed');
+    const writeManifest = (root: string, manifest: Record<string, unknown>) => {
+      mkdirSync(root, { recursive: true });
+      writeFileSync(join(root, 'package.json'), JSON.stringify(manifest));
+    };
+
+    try {
+      writeManifest(runRoot, { name: 'fixture-root', workspaces: ['packages/*'] });
+      writeManifest(join(runRoot, 'packages', 'operator-core'), {
+        name: '@papercusp/operator-core',
+        dependencies: {
+          '@papercusp/root-package': '*',
+          '@papercusp/file-claim': 'file:../../libs/papercusp/packages/file-claim',
+        },
+      });
+      writeManifest(join(runRoot, 'packages', 'root-package'), { name: '@papercusp/root-package' });
+      writeManifest(join(runRoot, 'libs', 'papercusp'), {
+        name: 'nested-registry',
+        workspaces: ['packages/*'],
+      });
+      writeManifest(join(runRoot, 'libs', 'papercusp', 'packages', 'file-claim'), {
+        name: '@papercusp/file-claim',
+      });
+      mkdirSync(join(installedRoot, 'node_modules', '@papercusp', 'root-package'), { recursive: true });
+      mkdirSync(join(installedRoot, 'node_modules', '@papercusp', 'file-claim'), { recursive: true });
+
+      const result = spawnSync(process.execPath, ['-', runRoot, installedRoot], {
+        input: sourceOverlayMatch![1],
+        encoding: 'utf8',
+      });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(realpathSync(join(runRoot, 'node_modules', '@papercusp', 'root-package'))).toBe(
+        realpathSync(join(runRoot, 'packages', 'root-package')),
+      );
+      expect(realpathSync(join(runRoot, 'node_modules', '@papercusp', 'file-claim'))).toBe(
+        realpathSync(join(runRoot, 'libs', 'papercusp', 'packages', 'file-claim')),
+      );
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('installs the ready fixed A-G scenario but refuses physical mutation without the explicit execution grant', () => {
