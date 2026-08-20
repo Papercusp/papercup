@@ -18,6 +18,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 
+/** Render the SQL text carried by postgres.js tagged fragments in the mock. */
+function renderSqlFragment(fragment: unknown): string {
+  if (!fragment || typeof fragment !== 'object') return '';
+  const value = fragment as { strings?: unknown[]; args?: unknown[]; values?: unknown[] };
+  if (!Array.isArray(value.strings)) return '';
+  const args = value.args ?? value.values ?? [];
+  return value.strings
+    .map((part, index) => `${String(part)}${renderSqlFragment(args[index])}`)
+    .join('');
+}
+
 describe('toPathPattern', () => {
   it('matches a memorable path FRAGMENT as a substring — the corpus shape', () => {
     // Corpus: WHERE file_path LIKE '%release-submodule-freshness-fail-closed%'
@@ -92,6 +103,24 @@ describe('testing:runs rollup source isolation', () => {
 
     expect(JSON.stringify(whereCall)).toContain('ci');
     expect(data).toMatchObject({ source: 'ci', groups: [{ failed: 0 }] });
+  });
+
+  it('collapses a superseded fail before aggregating a commit rollup', async () => {
+    const result = (await runsTool.handler({ commitSha: 'abc123', rollup: 'commit' } as never, {} as never)) as {
+      data?: { latestPerFile?: boolean; groups?: Array<{ failed: number; failedFiles: number }> };
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    const rollupCall = sqlCalls.find((call) => call.strings.some((part) => part.includes('WITH filtered')));
+    const queryText = rollupCall ? renderSqlFragment({ strings: rollupCall.strings, args: rollupCall.values }) : '';
+
+    // The fixture returned by this mock represents a file whose older fail was
+    // superseded by a newer pass. The query must explicitly select the latest
+    // row per rollup key + file before counting red statuses; otherwise the
+    // pre-fix aggregate would report failed=1/failedFiles=1.
+    expect(queryText).toContain('DISTINCT ON (');
+    expect(queryText).toContain('latest_rows');
+    expect(data).toMatchObject({ latestPerFile: true, groups: [{ failed: 0, failedFiles: 0 }] });
   });
 });
 

@@ -25,6 +25,8 @@
  * commit_sha/run_group_id with count(*) FILTER (WHERE status='fail')), not
  * row-listing. A row-list-only verb would not cover this relation's real
  * shapes, so `rollup` is a first-class mode, not an afterthought (D-001 §1).
+ * Rollups use the same latest-per-file view as the default row listing, so a
+ * retry that supersedes a failed attempt cannot poison the aggregate verdict.
  *
  * NOT this tool: cross-run flip-rate ranking ("is this red mine or a known
  * flake") is `testing:flakiness` — same table, different question. Running
@@ -105,7 +107,7 @@ export default defineTool({
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
       'Rows: { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
-      'Rollup rows: { key, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. The response also reports the effective source filter; commit rollups default to source:"ci".',
+      'Rollup rows: { key, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. By default each group uses its latest result per file, matching the row-listing view; pass latestPerFile:false to include historical attempts. The response also reports the effective source filter; commit rollups default to source:"ci".',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
       '`saturationSuspect` = this row was recorded while host event-loop p95 was past the critical band, so it is NOT reliable evidence of a genuine red — re-run before chasing it. NULL lag is not suspect (it means no monitor was running, not that the host was calm).',
@@ -200,6 +202,17 @@ export default defineTool({
 
     if (args.rollup) {
       const keyCol = args.rollup === 'commit' ? sql`commit_sha` : sql`run_group_id`;
+      // A gate retry writes a second row for the same file/commit/run group. The
+      // row-listing path already hides the superseded attempt; applying the same
+      // collapse here is what makes "is this sha green" answer the current
+      // outcome instead of counting a historical fail forever. Keep an explicit
+      // latestPerFile:false escape hatch for callers that intentionally want the
+      // raw attempt history in an aggregate.
+      const rollupRows = latestPerFile
+        ? sql`SELECT DISTINCT ON (${keyCol}, file_path) *
+                FROM filtered
+               ORDER BY ${keyCol}, file_path, finished_at DESC NULLS LAST, id DESC`
+        : sql`SELECT * FROM filtered`;
       const rows = await sql<
         Array<{
           key: string | null;
@@ -217,6 +230,8 @@ export default defineTool({
         WITH filtered AS (
           SELECT * FROM harness_shared.test_runs
           ${where}
+        ), latest_rows AS (
+          ${rollupRows}
         ), grouped AS (
           SELECT ${keyCol} AS key,
                  count(*)::text AS total,
@@ -225,7 +240,7 @@ export default defineTool({
                  count(DISTINCT file_path)::text AS files,
                  min(started_at) AS first_start,
                  max(finished_at) AS last_finish
-            FROM filtered
+            FROM latest_rows
            GROUP BY 1
         )
         SELECT g.*, (SELECT count(*) FROM grouped)::text AS group_count
@@ -238,6 +253,7 @@ export default defineTool({
         data: {
           rollup: args.rollup,
           source,
+          latestPerFile,
           count: rows.length,
           total,
           truncatedByLimit: total > rows.length,
