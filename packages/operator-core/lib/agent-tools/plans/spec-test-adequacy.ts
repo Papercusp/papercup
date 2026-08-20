@@ -4,8 +4,13 @@ import type { EvidenceCurrentness, SpecEvidenceKind } from './spec-evidence-stor
 
 export const SPEC_TEST_ADEQUACY_RUBRIC_REF = 'spec-test-adequacy';
 
-export const PLAN_CLASSES = ['feature', 'bugfix', 'migration', 'investigation'] as const;
-export type PlanClass = (typeof PLAN_CLASSES)[number];
+export const PLAN_CLASS_RUBRIC_REFS = [
+  'plan-class-feature-ship',
+  'plan-class-bugfix',
+  'plan-class-migration',
+  'plan-class-investigation',
+] as const;
+export type PlanClassRubricRef = (typeof PLAN_CLASS_RUBRIC_REFS)[number];
 
 export const ADEQUACY_CRITERIA = [
   'traceability',
@@ -73,7 +78,7 @@ export interface SpecTestAdequacyResult {
   specRevision: number;
   specFingerprint: string;
   planItemId: string;
-  planClass: PlanClass;
+  classRef: PlanClassRubricRef;
   behaviorClass: SpecBehaviorClass;
   evidenceRefs: string[];
   ratings: Record<AdequacyCriterion, AdequacyRatingEntry>;
@@ -141,21 +146,24 @@ function l4WaiverOf(exemption: Record<string, unknown> | null, now: Date): L4Wai
   };
 }
 
-export function requiredProofFloor(clause: SpecClauseRevision, planClass: PlanClass): 'none' | 'l3' | 'l4' {
+export function requiredProofFloor(
+  clause: SpecClauseRevision,
+  classRef: PlanClassRubricRef,
+): 'none' | 'l3' | 'l4' {
   if (clause.behaviorClass === 'non-automated' && clause.requiredTestLayers.length === 0) return 'none';
-  if (planClass === 'migration' || planClass === 'bugfix') return 'l4';
+  if (classRef === 'plan-class-migration' || classRef === 'plan-class-bugfix') return 'l4';
   if (clause.mutationRequired || HIGH_RISK_BEHAVIOR_CLASSES.has(clause.behaviorClass)) return 'l4';
-  if (planClass === 'investigation' && clause.requiredTestLayers.length === 0) return 'none';
+  if (classRef === 'plan-class-investigation' && clause.requiredTestLayers.length === 0) return 'none';
   return 'l3';
 }
 
 function riskFloorRating(
   clause: SpecClauseRevision,
-  planClass: PlanClass,
+  classRef: PlanClassRubricRef,
   evidence: SpecEvidenceForAdequacy[],
   now: Date,
 ): { floor: 'none' | 'l3' | 'l4'; rating: AdequacyRatingEntry } {
-  const floor = requiredProofFloor(clause, planClass);
+  const floor = requiredProofFloor(clause, classRef);
   if (floor === 'none') {
     return { floor, rating: { rating: 'not-applicable', evidence: 'This non-automated clause declares no test layer.' } };
   }
@@ -221,10 +229,10 @@ function compactSubjectRef(planSlug: string, specId: string, revision: number): 
 export function evaluateSpecTestAdequacy(input: {
   clause: SpecClauseRevision;
   evidence: SpecEvidenceForAdequacy[];
-  planClass: PlanClass;
+  classRef: PlanClassRubricRef;
   now?: Date;
 }): SpecTestAdequacyResult {
-  const { clause, planClass } = input;
+  const { clause, classRef } = input;
   const evidence = input.evidence.filter(
     (row) =>
       row.planSlug === clause.planSlug &&
@@ -371,7 +379,7 @@ export function evaluateSpecTestAdequacy(input: {
         ? { rating: 'pass', evidence: 'Every bound proof dimension is current.' }
         : { rating: 'fail', evidence: 'No evidence exists whose freshness can be established.' };
 
-  const risk = riskFloorRating(clause, planClass, evidence, input.now ?? new Date());
+  const risk = riskFloorRating(clause, classRef, evidence, input.now ?? new Date());
   ratings['plan-class-risk-floor'] = risk.rating;
 
   const wouldBlock = ADEQUACY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
@@ -382,13 +390,15 @@ export function evaluateSpecTestAdequacy(input: {
       : 'pass';
   const evidenceRefs = [...new Set(evidence.map((row) => row.evidenceRef))].sort();
   const subjectRef = compactSubjectRef(clause.planSlug, clause.specId, clause.revision);
+  const rawRefs = evidenceRefs.join(', ') || '(none)';
+  const bodyRefs = rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
   return {
     planSlug: clause.planSlug,
     specId: clause.specId,
     specRevision: clause.revision,
     specFingerprint: clause.contentHash,
     planItemId: clause.planItemId,
-    planClass,
+    classRef,
     behaviorClass: clause.behaviorClass,
     evidenceRefs,
     ratings,
@@ -399,7 +409,7 @@ export function evaluateSpecTestAdequacy(input: {
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
       subject: { kind: 'plan', ref: subjectRef },
       title: `${clause.specId}@${clause.revision} test adequacy`,
-      body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${evidenceRefs.join(', ') || '(none)'}.`,
+      body: `Exact clause ${clause.planSlug}/${clause.specId}@${clause.revision}; fingerprint ${clause.contentHash}; work item evidence refs: ${bodyRefs}.`,
       ratings,
       terminal: true,
     },

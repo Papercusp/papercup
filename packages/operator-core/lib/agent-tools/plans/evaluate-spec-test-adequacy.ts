@@ -5,7 +5,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { resolveEffectiveHarnessSlug } from './_ctx-opts';
 import { listSpecClauses } from './spec-clauses-store';
 import { listSpecEvidence, SPEC_EVIDENCE_KINDS } from './spec-evidence-store';
-import { evaluateSpecTestAdequacy, PLAN_CLASSES } from './spec-test-adequacy';
+import { evaluateSpecTestAdequacy, PLAN_CLASS_RUBRIC_REFS } from './spec-test-adequacy';
 
 const fingerprint = z.string().trim().min(1).max(256);
 const currentSchema = z.object({
@@ -21,7 +21,9 @@ const currentSchema = z.object({
 const argsSchema = z.object({
   harness: harnessArg,
   slug: z.string().min(1),
-  planClass: z.enum(PLAN_CLASSES),
+  classRef: z
+    .enum(PLAN_CLASS_RUBRIC_REFS)
+    .describe('Existing plan-class standard rubric referenced by the plan acceptance rubric.'),
   workItemIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   specIds: z.array(z.string().min(1)).min(1).max(500).optional(),
   planItemIds: z.array(z.string().regex(/^P-\d{3,}$/)).min(1).max(200).optional(),
@@ -51,14 +53,26 @@ export default defineTool({
   async handler(args, ctx) {
     const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    const evidenceLimit = args.limit ?? 1000;
     const allEvidence = await listSpecEvidence({
       harnessSlug,
       planSlug: args.slug,
       workItemIds: args.workItemIds,
       specIds: args.specIds,
       current: args.current,
-      limit: args.limit ?? 1000,
+      limit: evidenceLimit,
     });
+    if (allEvidence.length >= evidenceLimit) {
+      return {
+        data: {
+          ok: false,
+          error: 'evidence_selection_hit_limit',
+          count: allEvidence.length,
+          limit: evidenceLimit,
+          remedy: 'Narrow workItemIds/specIds or raise limit; a capped evidence set cannot produce an adequacy verdict.',
+        },
+      };
+    }
     const evidenceSpecIds = new Set(allEvidence.map((row) => row.specId));
     const requestedSpecIds = args.specIds ?? (args.workItemIds ? [...evidenceSpecIds] : undefined);
     const clauses = await listSpecClauses({
@@ -72,14 +86,14 @@ export default defineTool({
     );
     const now = args.now ? new Date(args.now) : new Date();
     const rows = eligible.map((clause) =>
-      evaluateSpecTestAdequacy({ clause, evidence: allEvidence, planClass: args.planClass, now }),
+      evaluateSpecTestAdequacy({ clause, evidence: allEvidence, classRef: args.classRef, now }),
     );
     return {
       data: {
         ok: true,
         slug: args.slug,
         harnessSlug,
-        planClass: args.planClass,
+        classRef: args.classRef,
         rubricRef: 'spec-test-adequacy',
         rows,
         count: rows.length,

@@ -83,7 +83,11 @@ function evidence(over: Partial<SpecEvidenceForAdequacy> = {}): SpecEvidenceForA
 
 describe('spec-test-adequacy per-clause evaluator', () => {
   it('produces a complete scorecards:emit draft for a current L3 feature proof', () => {
-    const result = evaluateSpecTestAdequacy({ clause: clause(), evidence: [evidence()], planClass: 'feature' });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [evidence()],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(result.verdict).toBe('pass');
     expect(result.requiredProofFloor).toBe('l3');
     expect(result.wouldBlock).toEqual([]);
@@ -98,15 +102,15 @@ describe('spec-test-adequacy per-clause evaluator', () => {
   });
 
   it('requires targeted L4 for high-risk, bugfix, migration, and mutation-required clauses', () => {
-    expect(requiredProofFloor(clause({ behaviorClass: 'authorization' }), 'feature')).toBe('l4');
-    expect(requiredProofFloor(clause(), 'bugfix')).toBe('l4');
-    expect(requiredProofFloor(clause(), 'migration')).toBe('l4');
-    expect(requiredProofFloor(clause({ mutationRequired: true }), 'feature')).toBe('l4');
+    expect(requiredProofFloor(clause({ behaviorClass: 'authorization' }), 'plan-class-feature-ship')).toBe('l4');
+    expect(requiredProofFloor(clause(), 'plan-class-bugfix')).toBe('l4');
+    expect(requiredProofFloor(clause(), 'plan-class-migration')).toBe('l4');
+    expect(requiredProofFloor(clause({ mutationRequired: true }), 'plan-class-feature-ship')).toBe('l4');
 
     const result = evaluateSpecTestAdequacy({
       clause: clause({ behaviorClass: 'concurrency' }),
       evidence: [evidence()],
-      planClass: 'feature',
+      classRef: 'plan-class-feature-ship',
     });
     expect(result.verdict).toBe('fail');
     expect(result.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'fail' });
@@ -133,7 +137,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
     const proved = evaluateSpecTestAdequacy({
       clause: highRisk,
       evidence: [evidence(), mutation],
-      planClass: 'feature',
+      classRef: 'plan-class-feature-ship',
     });
     expect(proved.ratings['plan-class-risk-floor'].rating).toBe('pass');
 
@@ -151,7 +155,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       }),
       evidence: [evidence()],
-      planClass: 'feature',
+      classRef: 'plan-class-feature-ship',
       now: new Date('2026-08-20T00:00:00.000Z'),
     });
     expect(waived.ratings['plan-class-risk-floor']).toMatchObject({ rating: 'waived' });
@@ -171,7 +175,7 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         },
       }),
       evidence: [evidence()],
-      planClass: 'feature',
+      classRef: 'plan-class-feature-ship',
       now: new Date('2026-08-20T00:00:00.000Z'),
     });
     expect(expired.ratings['plan-class-risk-floor'].rating).toBe('fail');
@@ -185,12 +189,20 @@ describe('spec-test-adequacy per-clause evaluator', () => {
         staleReasons: ['source-stale'],
       },
     });
-    const staleResult = evaluateSpecTestAdequacy({ clause: clause(), evidence: [stale], planClass: 'feature' });
+    const staleResult = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [stale],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(staleResult.ratings.freshness.rating).toBe('fail');
     expect(staleResult.verdict).toBe('fail');
 
     const incomplete = evidence({ details: { adequacy: { coverageRungs: { l3: true } } } });
-    const unknown = evaluateSpecTestAdequacy({ clause: clause(), evidence: [incomplete], planClass: 'feature' });
+    const unknown = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [incomplete],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(unknown.ratings['execution-integrity'].rating).toBe('unknown');
     expect(unknown.ratings['oracle-independence'].rating).toBe('unknown');
     expect(unknown.verdict).toBe('fail');
@@ -198,7 +210,11 @@ describe('spec-test-adequacy per-clause evaluator', () => {
 
   it('never lets evidence for another revision establish traceability', () => {
     const historical = evidence({ specRevision: 0 });
-    const result = evaluateSpecTestAdequacy({ clause: clause(), evidence: [historical], planClass: 'feature' });
+    const result = evaluateSpecTestAdequacy({
+      clause: clause(),
+      evidence: [historical],
+      classRef: 'plan-class-feature-ship',
+    });
     expect(result.ratings.traceability.rating).toBe('fail');
     expect(result.evidenceRefs).toEqual([]);
   });
