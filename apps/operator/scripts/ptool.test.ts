@@ -15,6 +15,7 @@ import {
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
+  PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
   resultToText,
   sanitizeJsonText,
@@ -83,6 +84,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('coord:send')).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('git-sync:run')).toBe(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS);
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
+    expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'backup:snapshot_create',
       args: { reason: 'pre_destructive' },
@@ -91,6 +93,10 @@ describe('ptool call deadlines', () => {
       name: 'coord:send',
       args: {},
     })).toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'templates:new-app',
+      args: { template: 'papercusp-android-app', slug: 'demo' },
+    })).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
@@ -140,7 +146,7 @@ describe('ptool tools/call failure diagnostics', () => {
   });
 });
 
-describe('ptool keyed post-connect replay recovery (EI-20245300628078356)', () => {
+describe('ptool keyed result recovery without concurrent replay', () => {
   it('puts one caller-supplied idempotency key beside the format metadata', () => {
     expect(buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
       idempotencyKey: 'ptool-key-1',
@@ -193,45 +199,39 @@ describe('ptool keyed post-connect replay recovery (EI-20245300628078356)', () =
     expect(isTransportFailure(new Error('tool failed after dispatch'))).toBe(false);
   });
 
-  it('reconnects once and replays the exact keyed request after a post-connect close', async () => {
-    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+  it('does not reconnect after a post-connect close while the original may still be running', async () => {
     const params = buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
       idempotencyKey: 'ptool-key-1',
     });
+    const failure = Object.assign(new Error('Connection closed'), { code: -32000 });
     const first = {
-      callTool: vi.fn().mockRejectedValue(Object.assign(new Error('Connection closed'), { code: -32000 })),
+      callTool: vi.fn().mockRejectedValue(failure),
       close: vi.fn(),
     };
-    const second = { callTool: vi.fn().mockResolvedValue(result), close: vi.fn() };
-    const reconnect = vi.fn().mockResolvedValue(second);
+    const reconnect = vi.fn();
 
     await expect(callToolWithReplayRecovery(first, params, {
       reconnect,
       timeoutMs: 1,
-    })).resolves.toEqual({ client: second, result });
+    })).rejects.toBe(failure);
 
-    expect(reconnect).toHaveBeenCalledTimes(1);
-    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(PTOOL_POST_CONNECT_RETRIES).toBe(0);
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(first.close).not.toHaveBeenCalled();
     expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
-    expect(second.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
-    expect(second.callTool.mock.calls[0][0]._meta.idempotencyKey).toBe('ptool-key-1');
   });
 
-  it('bounds repeated post-connect failures to the configured replay budget', async () => {
+  it('cannot re-enable automatic replay with a larger per-call retry budget', async () => {
     const firstError = Object.assign(new Error('socket hang up'), { code: 'UND_ERR_SOCKET' });
-    const secondError = Object.assign(new Error('Connection closed'), { code: -32000 });
     const first = { callTool: vi.fn().mockRejectedValue(firstError), close: vi.fn() };
-    const second = { callTool: vi.fn().mockRejectedValue(secondError), close: vi.fn() };
-    const reconnect = vi.fn().mockResolvedValue(second);
+    const reconnect = vi.fn();
     const params = buildCallToolParams('coord:send', {}, { idempotencyKey: 'ptool-key-2' });
 
-    await expect(callToolWithReplayRecovery(first, params, { reconnect })).rejects.toBe(secondError);
-    expect(PTOOL_POST_CONNECT_RETRIES).toBe(1);
-    expect(reconnect).toHaveBeenCalledTimes(PTOOL_POST_CONNECT_RETRIES);
+    await expect(callToolWithReplayRecovery(first, params, { reconnect, maxAttempts: 99 })).rejects.toBe(firstError);
+    expect(PTOOL_POST_CONNECT_RETRIES).toBe(0);
+    expect(reconnect).not.toHaveBeenCalled();
     expect(first.callTool).toHaveBeenCalledTimes(1);
-    expect(second.callTool).toHaveBeenCalledTimes(1);
-    expect(first.close).toHaveBeenCalledTimes(1);
-    expect(second.close).toHaveBeenCalledTimes(1);
+    expect(first.close).not.toHaveBeenCalled();
   });
 });
 

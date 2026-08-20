@@ -23,10 +23,10 @@
  *   - 'idempotent' (no tools/call: initialize / tools/list / ping / resources / prompts /
  *     notifications) → replaying has no side effect, so a post-connect failure IS retried
  *     (bounded, in-window). This directly targets the dropped-handshake "toolless session".
- *   - 'keyed' (a tools/call into which the proxy injects a per-request `_meta.idempotencyKey`,
- *     reused across retries) → a post-connect retry is write-safe because :3070 REPLAYS the
- *     stored result (harness_shared.mcp_tool_results) instead of re-executing. Bounded to
- *     MAX_POST_CONNECT_RETRIES so the documented commit→store race is exposed at most once.
+ *   - 'keyed' (a tools/call into which the proxy injects a per-request `_meta.idempotencyKey`)
+ *     → the key preserves a completed result for a later explicit retry, but the proxy does
+ *     NOT retry immediately: the original handler may still be running and its result row
+ *     does not exist until it settles, so a concurrent replay can execute the mutation twice.
  *   - 'opaque' (a tools/call with no usable key — keying kill-switched off, body unparseable,
  *     or oversized) → the original invariant stands: NEVER replay a post-connect failure.
  * Kill-switch: PAPERCUSP_MCP_PROXY_KEYED_RETRY=0 forces every tools/call to 'opaque'
@@ -336,9 +336,9 @@ export function prepareForward(
 }
 
 /**
- * Post-connect retry decision (PURE + unit-tested): a forward that CONNECTED and then failed
- * may be replayed only when it is 'idempotent' or server-dedup 'keyed', bounded to
- * `maxRetries` and within the window. 'opaque' never replays — the load-bearing invariant.
+ * Post-connect retry decision (PURE + unit-tested): only a write-free 'idempotent'
+ * request may be replayed. A keyed tools/call is recoverable only AFTER its first
+ * execution stores a result; an immediate retry can overlap that still-running call.
  */
 export function postConnectRetryable(
   klass: ForwardClass,
@@ -347,7 +347,7 @@ export function postConnectRetryable(
   elapsedMs: number,
   windowMs: number,
 ): boolean {
-  if (klass === 'opaque') return false;
+  if (klass !== 'idempotent') return false;
   if (retriesUsed >= maxRetries) return false;
   return elapsedMs < windowMs;
 }

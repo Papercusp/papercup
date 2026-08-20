@@ -84,7 +84,7 @@ function mockInner(opts: { failCreateChat?: boolean } = {}) {
   const inner = vi.fn(async (name: string, args: any) => {
     calls.push({ name, args });
     if (name === 'pot:create') {
-      const path = join(scratch, 'apps', args.slug);
+      const path = join(args.parentDir ?? join(scratch, 'apps'), args.slug);
       // pot:create writes the hive (coding-pot) blueprint.yaml; overlay must
       // preserve it (PROTECTED_REL in overlayTemplateFiles).
       mkdirSync(join(path, '.papercusp'), { recursive: true });
@@ -217,7 +217,7 @@ describe('composeNewApp — compensating rollback after a durable create (WI-377
       calls.push({ name, args });
       if (name === 'pot:create') {
         if (opts.createThrows !== undefined) throw opts.createThrows;
-        const path = join(scratch, 'apps', args.slug);
+        const path = join(args.parentDir ?? join(scratch, 'apps'), args.slug);
         mkdirSync(path, { recursive: true });
         return { ok: true, slug: args.slug, path };
       }
@@ -250,13 +250,16 @@ describe('composeNewApp — compensating rollback after a durable create (WI-377
 
   it('rolls the pot back when a step AFTER pot:create fails, so the retry is unblocked', async () => {
     const { inner, calls } = rollbackInner();
-    const result = await composeNewApp(baseArgs(), inner, overlayFailingDeps());
+    const customParent = join(scratch, 'custom-parent');
+    mkdirSync(customParent, { recursive: true });
+    const result = await composeNewApp(baseArgs({ parentDir: customParent }), inner, overlayFailingDeps());
     const payload = parse(result);
 
     expect(payload.ok).toBe(false);
     // The pot really was obliterated — the point of the fix, not just a nicer message.
     expect(calls.map((c) => c.name)).toEqual(['pot:create', 'pot:obliterate']);
     expect(calls[1].args).toMatchObject({ slug: 'my-app', confirm: true });
+    expect(existsSync(join(customParent, 'my-app'))).toBe(false);
     // And the caller is TOLD the retry is now safe, rather than having to infer it.
     expect(payload.error).toContain('ROLLED BACK');
     expect(payload.error).toContain('retrying with the same slug is safe');

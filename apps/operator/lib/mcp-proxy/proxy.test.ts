@@ -112,16 +112,16 @@ describe('prepareForward — classify + inject idempotencyKey', () => {
   });
 });
 
-describe('postConnectRetryable — bounded, idempotent/keyed only', () => {
+describe('postConnectRetryable — write-free requests only', () => {
   it('opaque never replays (write-safety invariant)', () => {
     expect(postConnectRetryable('opaque', 0, 1, 100, 5_000)).toBe(false);
   });
-  it('idempotent + keyed replay once, within the window', () => {
+  it('replays idempotent requests but never a keyed tools/call that may still be running', () => {
     expect(postConnectRetryable('idempotent', 0, 1, 100, 5_000)).toBe(true);
-    expect(postConnectRetryable('keyed', 0, 1, 100, 5_000)).toBe(true);
+    expect(postConnectRetryable('keyed', 0, 1, 100, 5_000)).toBe(false);
   });
   it('is bounded by maxRetries (no unbounded post-connect replay)', () => {
-    expect(postConnectRetryable('keyed', 1, 1, 100, 5_000)).toBe(false);
+    expect(postConnectRetryable('idempotent', 1, 1, 100, 5_000)).toBe(false);
     expect(MAX_POST_CONNECT_RETRIES).toBe(1);
   });
   it('does not replay past the window', () => {
@@ -529,16 +529,16 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
   }
 
   it(
-    'P-005: a KEYED tools/call retries ONCE after a post-connect reset and recovers (:3070 dedups the replay)',
+    'a KEYED tools/call does not replay after a post-connect reset while the first execution may still be running',
     withKeyedRetry('1', async () => {
       const upstream = resetOnceUpstream('{"result":"keyed-recovered"}') as http.Server & { hits: () => number };
       await listen(upstream);
       const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream), retryWindowMs: 5_000, retryBackoffMs: 40, log: () => {} }));
       await listen(proxy);
       const r = await request(port(proxy), TOOLS_CALL);
-      expect(r.status).toBe(200);
-      expect(r.body).toBe('{"result":"keyed-recovered"}');
-      expect(upstream.hits()).toBe(2);
+      expect(r.status).toBe(502);
+      expect(r.body).toContain('mcp_proxy_upstream_error');
+      expect(upstream.hits()).toBe(1);
     }),
   );
 
@@ -1199,7 +1199,7 @@ describe('EI-19305299022434394: maxHoldMs — a real tools/call is no longer lit
     }
   });
 
-  it('a KEYED tools/call that hits the hold ceiling gets ONE bounded replay, then the real response wins', async () => {
+  it('a KEYED tools/call that hits the hold ceiling surfaces 502 without overlapping the still-running write', async () => {
     let hits = 0;
     const upstream = track(
       http.createServer((req, res) => {
@@ -1222,9 +1222,9 @@ describe('EI-19305299022434394: maxHoldMs — a real tools/call is no longer lit
     await listen(proxy);
 
     const r = await request(port(proxy), A_TOOLS_CALL);
-    expect(r.status).toBe(200);
-    expect(r.body).toBe('{"result":"recovered-after-hold-ceiling"}');
-    expect(hits).toBe(2); // stalled once (ceiling fired), keyed-replayed once, dedup-safe
+    expect(r.status).toBe(502);
+    expect(r.body).toContain('mcp_proxy_upstream_error');
+    expect(hits).toBe(1); // never overlaps the first still-running tools/call
   });
 
   it('does NOT bound a tools/call by DEFAULT — the generous default ceiling leaves a normal slow tool untouched', async () => {

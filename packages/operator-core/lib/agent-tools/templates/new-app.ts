@@ -16,7 +16,8 @@
 import { z } from 'zod';
 import { tmpdir } from 'node:os';
 import { mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { rm } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
@@ -214,6 +215,17 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
         typeof raw === 'string' ? raw : (r?.error ?? 'pot:obliterate did not report ok'),
       );
     }
+    // pot:obliterate historically removed only <papercuspRoot>/apps/<slug>.
+    // This compound accepts a custom parentDir, so a failed materialization
+    // could clear registry/schema state while stranding that committed checkout.
+    // This call created exactly parentDir/slug moments ago; remove that exact child
+    // only after the platform teardown reports success.
+    const parent = resolve(parentDir);
+    const createdPath = resolve(parent, slug);
+    if (dirname(createdPath) !== parent) {
+      throw new Error(`refusing unsafe rollback path outside parentDir: ${createdPath}`);
+    }
+    await rm(createdPath, { recursive: true, force: true });
   };
 
   let materialized: MaterializeTemplateResult;
@@ -339,6 +351,10 @@ export default defineTool({
     seeAlso: ['templates:list', 'templates:get-guide', 'harness:create'],
   },
   capability: 'harness:write',
+  // Fresh pot creation includes repo initialization, registry/schema setup and
+  // routine seeding. Measured under load: the inner pot:create alone took 111s.
+  // Match ptool's long-call budget so the compound can report its real outcome.
+  timeoutSec: 300,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({

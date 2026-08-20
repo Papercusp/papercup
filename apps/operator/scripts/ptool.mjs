@@ -745,9 +745,16 @@ export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS = 60_000;
 // ambiguous transport timeout (EI-20477679208771292).
 export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
 
+// `templates:new-app` composes a full pot:create before overlaying the
+// template. Under real operator pressure the inner create alone has taken
+// 111s. A 30s client deadline is unsafe here: the old reconnect path replayed
+// the same still-running write before its result receipt existed.
+export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 300_000;
+
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
+  ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
 ]);
 
 /**
@@ -908,8 +915,12 @@ export function formatOperatorConnectFailure(operatorUrl, error) {
   );
 }
 
-/** Number of reconnects allowed after a connected tools/call fails. */
-export const PTOOL_POST_CONNECT_RETRIES = 1;
+/**
+ * Automatic reconnect replays after a connected tools/call are disabled.
+ * A key can replay a completed call, but it is not an in-flight claim: an
+ * immediate retry can overlap the original handler before its receipt exists.
+ */
+export const PTOOL_POST_CONNECT_RETRIES = 0;
 
 async function closeClientQuietly(client) {
   try {
@@ -921,12 +932,9 @@ async function closeClientQuietly(client) {
 }
 
 /**
- * Recover one post-connect transport failure by opening a fresh MCP session and
- * replaying the exact same tools/call params. `params._meta.idempotencyKey` is
- * generated once by the caller, so the server returns the stored result when
- * the first attempt committed before its response stream died. Recovery is
- * deliberately bounded: an ambiguous write must never become an unbounded
- * retry loop, even when the operator is repeatedly restarting.
+ * Call with a stable idempotency key, but do not automatically replay a
+ * post-connect transport failure. The reconnect-shaped API remains for callers,
+ * with its production retry ceiling clamped to zero.
  *
  * Returns the active client because the successful replay belongs to the new
  * session. A failed replay client is closed before the error is surfaced.
@@ -945,6 +953,7 @@ export async function callToolWithReplayRecovery(
 ) {
   let activeClient = client;
   let retriesUsed = 0;
+  const retryBudget = Math.min(maxAttempts, PTOOL_POST_CONNECT_RETRIES);
   while (true) {
     try {
       const result = await callToolWithPressureRetry(activeClient, params, { timeoutMs });
@@ -952,7 +961,7 @@ export async function callToolWithReplayRecovery(
     } catch (error) {
       if (
         !isTransportFailure(error) ||
-        retriesUsed >= maxAttempts ||
+        retriesUsed >= retryBudget ||
         typeof reconnect !== 'function'
       ) {
         if (activeClient !== client) await closeClientQuietly(activeClient);
