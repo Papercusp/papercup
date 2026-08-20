@@ -1040,9 +1040,17 @@ async function recordOutcome(
   // status used to drop the error list entirely, e.g. a libs/papercusp push failure
   // hidden behind a libs/generic/sync conflict).
   const errors = 'errors' in outcome ? outcome.errors : [];
+  const localSyncRecordedAt = Date.now();
   await patchRoutineMetadata(slug, workspaceId, {
     last_status: outcome.status,
-    last_synced_at: Date.now(),
+    last_synced_at: localSyncRecordedAt,
+    // EI-20315742298217655: the github-bridge leg runs after this write and may
+    // promote an owner-actionable egress failure into the top-level last_status /
+    // last_error fields. Keep the local commit stage explicit so readers can still
+    // distinguish a clean/local commit result from a bridge-only failure. The head
+    // value is sticky, just like the legacy head_sha field: only a new local commit
+    // writes it, while nothing/error/conflict ticks preserve the last observed head.
+    local_sync_status: outcome.status,
     // A completed non-skipped outcome supersedes any earlier eligibility skip.
     // JSONB patches are additive, so leaving these fields untouched makes a later
     // `synced` tick look contradictory (`last_status: synced` alongside an old
@@ -1071,7 +1079,9 @@ async function recordOutcome(
     // since the last completed fire" (the git-sync-stall-watchdog's persistent-reap
     // signal), never a forever-growing total.
     reaped_count: 0,
-    ...(outcome.status === 'synced' ? { head_sha: outcome.headSha } : {}),
+    ...(outcome.status === 'synced'
+      ? { head_sha: outcome.headSha, local_sync_head_sha: outcome.headSha }
+      : {}),
   });
 }
 
@@ -1529,6 +1539,7 @@ async function handleGitSync(
       if (!g.eligible) {
         await patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
+          local_sync_status: 'skipped',
           last_skip_reason: g.reason,
           last_skipped_at: Date.now(),
         });
@@ -1933,6 +1944,10 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     // `last_status: synced` + `last_error: null` beside a red github_bridge row.
     // Self-healing bridge residues (for example a stale canonical ref) stay in
     // github_bridge only and must not turn the whole git-sync tick red.
+    // Do not write local_sync_status/local_sync_head_sha here: those fields are
+    // the stage-aware evidence recorded by recordOutcome immediately before this
+    // leg, and must survive an egress-only failure for the watchdog to classify it
+    // as a failing bridge leg rather than a commit strand.
     const ownerActionableBridgeFailure = outcome.verdict.action === 'escalate' && outcome.verdict.needsOwner;
     const bridgeError = ownerActionableBridgeFailure
       ? outcome.verdict.detail || outcome.errors.join('; ') || 'github-bridge owner action required'

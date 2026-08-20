@@ -9,7 +9,9 @@
  * uncommitted (and thus un-deployable — a deploy ships only committed HEAD). The green-stall-
  * watchdog is blind to this: it only watches `system:green-checkpoint`. git-sync RECORDS its
  * health on the routine metadata (`head_sha` / `last_status` / `last_error`, set by
- * recordOutcome) — but nothing READ it. This does.
+ * recordOutcome) — but nothing READ it. This does. The github-bridge leg runs after
+ * recordOutcome and may overwrite top-level status/error, so the commit signal also
+ * reads the stage-aware `local_sync_*` fields written by that local stage.
  *
  * Process-level (NOT a DBOS routine) for the same reason as green-stall-watchdog: a routine-based
  * watchdog queues on the very engine that wedges, so it can't fire when most needed.
@@ -98,11 +100,12 @@ export interface GitSyncStallSnapshot {
    *  (`metadata.wd_error_sweeps`, maintained by checkGitSyncStall). Absent with a
    *  present lastError reads as 1 — a first observation, below the alarm bar. */
   errorSweeps?: number;
-  /** The routine's last recorded sync status ('synced' | 'nothing' | 'skipped' | 'error' | …).
-   *  'nothing' = clean tree ⇒ HEAD-staleness is healthy idle, never a stall.
-   *  'skipped' = the eligibility gate no-opped the fire (no_path / hive_home / …) ⇒ a
-   *  commit was never attemptable, so HEAD-staleness is likewise never a stall. */
+  /** The top-level routine status, which a later bridge leg may overwrite with an egress error. */
   lastStatus?: string | null;
+  /** The status recorded by the local git-sync stage before any bridge leg runs. This is the
+   *  authoritative status for commit-staleness: 'nothing' = clean idle and 'skipped' = the
+   *  eligibility gate no-opped the fire, so neither means a commit was attemptable. */
+  localSyncStatus?: string | null;
   /** the watchdog's own dedup flag (`metadata.watchdog_alerted`). */
   watchdogAlerted: boolean;
   /** WI-1416: consecutive executor-reaper cancels since the last COMPLETED fire
@@ -227,7 +230,12 @@ export function evaluateGitSyncStall(
   // this watchdog should not add a second "git-sync failing" page/broadcast for
   // the same incident. Unknown liveness is fail-open.
   const rootEngineStale = s.routineEngineStale === true;
-  const commitNotAttemptable = s.lastStatus === 'nothing' || s.lastStatus === 'skipped';
+  // The bridge leg can promote a remote egress failure into top-level `lastStatus: error`
+  // after a clean local `nothing`/`synced` result. Use the local stage record for this
+  // commit-only decision, with the top-level value as a backwards-compatible fallback
+  // for rows written before EI-20315742298217655.
+  const localSyncStatus = s.localSyncStatus ?? s.lastStatus;
+  const commitNotAttemptable = localSyncStatus === 'nothing' || localSyncStatus === 'skipped';
   const commitStale = !rootEngineStale && !commitNotAttemptable && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
   const fireStale = !rootEngineStale && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   // FALSE-ALARM FIX (2026-07-02, second class): a fault observed on a SINGLE sweep is
@@ -340,6 +348,7 @@ export async function checkGitSyncStall(
         wd_head_sha: string | null;
         wd_head_since_ms: string | number | null;
         last_status: string | null;
+        local_sync_status: string | null;
         last_error: string | null;
         watchdog_alerted: boolean | null;
         reaped_count: number | null;
@@ -350,10 +359,11 @@ export async function checkGitSyncStall(
       SELECT install_slug,
              workspace_id,
              extract(epoch from last_fired_at) * 1000 AS last_fired_ms,
-             metadata->>'head_sha' AS head_sha,
+             COALESCE(metadata->>'local_sync_head_sha', metadata->>'head_sha') AS head_sha,
              metadata->>'wd_head_sha' AS wd_head_sha,
              (metadata->>'wd_head_since_ms')::bigint AS wd_head_since_ms,
              metadata->>'last_status' AS last_status,
+             metadata->>'local_sync_status' AS local_sync_status,
              metadata->>'last_error' AS last_error,
              COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
              COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
@@ -415,6 +425,7 @@ export async function checkGitSyncStall(
           lastError: row.last_error,
           errorSweeps,
           lastStatus: row.last_status,
+          localSyncStatus: row.local_sync_status,
           watchdogAlerted,
           reapedCount: row.reaped_count != null ? Number(row.reaped_count) : 0,
           routineEngineStale: routineEngine.stale,
