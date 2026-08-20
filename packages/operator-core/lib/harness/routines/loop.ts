@@ -1725,7 +1725,7 @@ export async function countAgentToolCallsInWindow(
        WHERE coord_owner_id = ${ownerId}
          AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
          AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
-         AND tool_name <> ALL(${[...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES]}::text[])
+         AND tool_name <> ALL(${sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[])
          AND ${agentToolPredicate}
     `;
     return row ? Number(row.n) : 0;

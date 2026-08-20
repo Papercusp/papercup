@@ -33,6 +33,7 @@ describe('tool invocation SQL predicates', () => {
   type SqlCall = { strings: readonly string[]; values: unknown[] };
   type SqlStub = ((strings: TemplateStringsArray, ...values: unknown[]) => unknown) & {
     unsafe(identifier: string): string;
+    array(values: unknown[]): unknown[];
     calls: SqlCall[];
   };
 
@@ -44,6 +45,7 @@ describe('tool invocation SQL predicates', () => {
     }) as SqlStub;
     sql.calls = calls;
     sql.unsafe = (identifier: string) => identifier;
+    sql.array = (values: unknown[]) => values;
     return sql;
   }
 

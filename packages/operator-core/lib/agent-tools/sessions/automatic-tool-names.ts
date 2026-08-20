@@ -134,8 +134,8 @@ export function automaticToolInvocationPredicate(
   const callOrigin = sql.unsafe(`${prefix}call_origin`);
   const toolName = sql.unsafe(`${prefix}tool_name`);
   return sql`(
-    ${callOrigin} = ANY(${[...AUTOMATIC_CALL_ORIGINS]}::text[])
-    OR (${callOrigin} IS NULL AND ${toolName} = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]))
+    ${callOrigin} = ANY(${sql.array([...AUTOMATIC_CALL_ORIGINS])}::text[])
+    OR (${callOrigin} IS NULL AND ${toolName} = ANY(${sql.array([...AUTOMATIC_TOOL_NAMES])}::text[]))
   )`;
 }
 
@@ -148,7 +148,7 @@ export function agentToolInvocationPredicate(
   const callOrigin = sql.unsafe(`${prefix}call_origin`);
   const toolName = sql.unsafe(`${prefix}tool_name`);
   return sql`(
-    ${callOrigin} = ANY(${[...AGENT_CALL_ORIGINS]}::text[])
-    OR (${callOrigin} IS NULL AND ${toolName} <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))
+    ${callOrigin} = ANY(${sql.array([...AGENT_CALL_ORIGINS])}::text[])
+    OR (${callOrigin} IS NULL AND ${toolName} <> ALL(${sql.array([...AUTOMATIC_TOOL_NAMES])}::text[]))
   )`;
 }

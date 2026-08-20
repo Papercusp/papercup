@@ -1073,10 +1073,13 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
   function countSql(n: number) {
     const sql = ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([{ n }])) as any;
     sql.unsafe = (identifier: string) => identifier;
+    sql.array = (values: unknown[]) => values;
     return sql;
   }
   function throwingSql() {
-    return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.reject(new Error('boom'));
+    const sql = ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.reject(new Error('boom'))) as any;
+    sql.array = (values: unknown[]) => values;
+    return sql;
   }
 
   it('returns the row count when the query succeeds', async () => {
@@ -1096,6 +1099,7 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
       return Promise.resolve([{ n: 1 }]);
     }) as any;
     sql.unsafe = (identifier: string) => identifier;
+    sql.array = (values: unknown[]) => values;
 
     const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
 
@@ -1114,20 +1118,20 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
     // NOTE: this asserts COMPOSITION only. The fake sql below never executes the
     // predicate, which is why the semantic proof lives in loop.integration.test.ts.
     const calls: { strings: readonly string[]; values: unknown[] }[] = [];
+    const array = vi.fn((values: unknown[]) => ({ values }));
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      if (values.some(Array.isArray)) throw new Error('Received an instance of Array');
       calls.push({ strings: [...strings], values });
       return Promise.resolve([{ n: 0 }]);
     }) as any;
     sql.unsafe = (identifier: string) => identifier;
+    sql.array = array;
 
     await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
 
     const rendered = calls.flatMap((call) => call.strings).join(' ');
-    const values = calls.flatMap((call) =>
-      call.values.flatMap((value: unknown) => (Array.isArray(value) ? value : [value])),
-    );
     expect(rendered).toContain('tool_name <> ALL');
-    expect(values).toEqual(expect.arrayContaining(['loop:checkpoint', 'work_items:checkpoint']));
+    expect(array).toHaveBeenCalledWith(['loop:checkpoint', 'work_items:checkpoint']);
   });
 
   it('returns null (never 0) when the query itself fails — "unavailable" must not read as "confirmed zero"', async () => {

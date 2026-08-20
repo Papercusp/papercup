@@ -64,8 +64,13 @@ function strictArraySql(rows: Array<{ id: string; target_owner_id: string }>) {
       ]);
     }
     return Promise.resolve([]);
-  }) as unknown as { (...args: unknown[]): Promise<unknown[]>; array: typeof array };
+  }) as unknown as {
+    (...args: unknown[]): Promise<unknown[]>;
+    array: typeof array;
+    unsafe(identifier: string): string;
+  };
   sql.array = array;
+  sql.unsafe = (identifier: string) => identifier;
   return { sql: sql as never, array };
 }
 
@@ -266,6 +271,7 @@ describe('sweepStalledLoops — liveness veto (WI-37546: 18 of 19 disarms on 202
 
     expect(array).toHaveBeenNthCalledWith(1, ['su-live']);
     expect(array).toHaveBeenNthCalledWith(2, ['2026-08-09T17:07:00.000Z']);
+    expect(array).toHaveBeenCalledWith(['loop:checkpoint', 'work_items:checkpoint']);
     expect(res.vetoedByToolActivity).toEqual(['su-live']);
     expect(res.paused).toBe(0);
     expect(autoPause).not.toHaveBeenCalled();

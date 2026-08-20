@@ -565,7 +565,7 @@ export async function sweepStalledLoops(
             ON t.coord_owner_id = b.owner_id
            AND t.invoked_at > b.since
            AND ${agentToolInvocationPredicate(o.sql, 't')}
-           AND t.tool_name <> ALL(${[...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES]}::text[])
+           AND t.tool_name <> ALL(${o.sql.array([...CARRY_NOTE_BOOKKEEPING_TOOL_NAMES])}::text[])
          GROUP BY t.coord_owner_id
       `;
       for (const r of rows) {
