@@ -18,7 +18,12 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WATCHDOG_TICKS_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgLinkStore } from '@papercusp/coordination/capabilities';
 // WI-38339: the canonical terminal union the notTerminal filter derives from — imported
 // so the drift guard below compares against the SOURCE, not a copy of it.
@@ -100,6 +105,7 @@ beforeAll(async () => {
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple(); // claim path's watchdog recovery-window floor reads watchdog_ticks
   // P-010 unification: HFC_DDL already builds work_items + the hfc/engineer_issues
   // compat views + the ei INSTEAD OF trigger, with the full column set (incl.
   // assignee_rank/rank_writer/rank_updated_at; signal_origin lives in payload->'_ei').
@@ -119,7 +125,7 @@ beforeEach(async () => {
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.coord_event_log RESTART IDENTITY`;
+                       harness_shared.coord_event_log, harness_shared.watchdog_ticks RESTART IDENTITY`;
   // Deterministic WI ids per test (the standalone sequence is not reset by TRUNCATE).
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   planItemLaneBlockReasonMock.mockReset().mockResolvedValue(null);

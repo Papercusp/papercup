@@ -447,6 +447,24 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   );`;
 
 /**
+ * Minimal watchdog-tick fixture for the issue claim recovery-window floor.
+ *
+ * The claim path reads only these four columns when deciding whether an eligible
+ * watchdog signal has six complete ran ticks of recovery evidence. Keep this
+ * fixture intentionally narrow: the full production table is migration 202 plus
+ * additive columns, while these integration tests do not exercise the collector
+ * writer or its unrelated diagnostics.
+ */
+export const WATCHDOG_TICKS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.watchdog_ticks (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL,
+    tick_at timestamptz NOT NULL DEFAULT now(),
+    status text NOT NULL DEFAULT 'ran',
+    known_open_keys text[]
+  )`;
+
+/**
  * `user_trust_list` DDL — the owner's trusted github user ids (migration 276,
  * shared-hive-trust-admission). The work-items claim path's `autoPickableWhereSql`
  * (work-items-admission.ts, P-010) LEFT-JOINs this table to let un-screened remote
