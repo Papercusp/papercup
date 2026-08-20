@@ -446,6 +446,107 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
   });
 });
 
+describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () => {
+  it("publishes an unchanged-tree staging join for an already-represented local repair head", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-repair-bridge-"));
+    const remote = join(root, "origin.git");
+    const repo = join(root, "work");
+    mkdirSync(repo);
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+        },
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+        );
+      }
+      return result.stdout.trim();
+    };
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+
+    try {
+      git(root, "init", "--bare", "-q", remote);
+      git(repo, "init", "-q", "-b", "staging");
+      git(repo, "config", "user.email", "fixture@example.invalid");
+      git(repo, "config", "user.name", "fixture");
+      writeFileSync(join(repo, "a"), "1");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "ready");
+      const ready = git(repo, "rev-parse", "HEAD");
+
+      git(repo, "switch", "-qc", "repair");
+      writeFileSync(join(repo, "b"), "broken");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "frozen");
+      const frozen = git(repo, "rev-parse", "HEAD");
+      writeFileSync(join(repo, "b"), "fixed");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "verified repair");
+      const repairHead = git(repo, "rev-parse", "HEAD");
+
+      git(repo, "switch", "-q", "staging");
+      writeFileSync(join(repo, "b"), "fixed");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "patch-equivalent staging repair");
+      writeFileSync(join(repo, "c"), "later staging work");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "later staging work");
+      const stagingTip = git(repo, "rev-parse", "HEAD");
+      const stagingTree = git(repo, "rev-parse", `${stagingTip}^{tree}`);
+      git(repo, "remote", "add", "origin", remote);
+      git(repo, "push", "-qu", "origin", "staging");
+
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: repo,
+        releaseRoot: repo,
+        checkpointRoot: repo,
+        integrationBranch: "staging",
+      });
+      const joined = await deps.reconcileFrozenRepairIntoStaging?.({
+        schemaVersion: 2,
+        phase: "ready-to-promote",
+        candidate: frozen,
+        base: ready,
+        repairHead,
+        worktreePath: join(root, "repair-worktree"),
+        attempts: 1,
+        openedAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now(),
+        fixerSpawnId: "fixture-fixer",
+        failingTests: [],
+      });
+
+      expect(joined).toMatch(/^[0-9a-f]{40}$/);
+      expect(git(repo, "rev-parse", "staging")).toBe(joined);
+      expect(git(repo, "rev-parse", `${joined}^{tree}`)).toBe(stagingTree);
+      git(repo, "merge-base", "--is-ancestor", stagingTip, joined!);
+      git(repo, "merge-base", "--is-ancestor", repairHead, joined!);
+      expect(git(repo, "ls-remote", "origin", "refs/heads/staging")).toBe(
+        `${joined}\trefs/heads/staging`,
+      );
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
   it("detects the optional lint:tsc script without requiring it from subject hives", () => {
     expect(hasNpmScript(cpTree, "lint:tsc")).toBe(false);
