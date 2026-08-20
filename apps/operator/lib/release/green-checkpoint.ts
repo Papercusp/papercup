@@ -411,9 +411,7 @@ export interface CheckpointDeps {
    *  armed by default since D-005).
    *  Optional + FLAG-gated (FLAGS.DESKTOP_PERF_GATE, default ON; a no-op `pass`
    *  when off or when no run is recorded) so existing stubs need not provide it. */
-  desktopPerfGate?(
-    candidate: string,
-  ): Promise<{
+  desktopPerfGate?(candidate: string): Promise<{
     action: "pass" | "warn" | "block";
     summary: string;
     /** WI-39685 (cutover-plan D-013): the gate's own verdict class — 'ok' | 'warn' |
@@ -560,8 +558,12 @@ export interface CheckpointDeps {
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
   readFrozenRepairQueue?(): Promise<FrozenCandidateRepairQueue | null>;
-  writeFrozenRepairQueue?(queue: FrozenCandidateRepairQueue | null): Promise<void>;
-  prepareFrozenRepairWorktree?(queue: FrozenCandidateRepairQueue): Promise<void>;
+  writeFrozenRepairQueue?(
+    queue: FrozenCandidateRepairQueue | null,
+  ): Promise<void>;
+  prepareFrozenRepairWorktree?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<void>;
   finalizeFrozenRepairWorktree?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<string | null>;
@@ -572,7 +574,9 @@ export interface CheckpointDeps {
   stagingContainsFrozenRepair?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<boolean | null>;
-  cleanupFrozenRepairWorktree?(queue: FrozenCandidateRepairQueue): Promise<void>;
+  cleanupFrozenRepairWorktree?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<void>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -1029,7 +1033,11 @@ export function checkpointSweepTargets(
   // to "protect fewer ancestors", never to a hang inside an exit path.
   const ancestors = new Set<number>();
   let cursor = byPid.get(selfPid)?.ppid;
-  for (let hops = 0; cursor && cursor > 1 && !ancestors.has(cursor) && hops < 64; hops += 1) {
+  for (
+    let hops = 0;
+    cursor && cursor > 1 && !ancestors.has(cursor) && hops < 64;
+    hops += 1
+  ) {
     ancestors.add(cursor);
     cursor = byPid.get(cursor)?.ppid;
   }
@@ -1107,8 +1115,10 @@ export function sweepCheckpointSurvivors(
 ): number[] {
   const selfPid = opts.pid ?? process.pid;
   const readTable = opts.readProcTable ?? readCheckpointProcTable;
-  const resolvePgid = opts.resolveProcessGroupId ?? resolveCheckpointProcessGroupId;
-  const kill = opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
+  const resolvePgid =
+    opts.resolveProcessGroupId ?? resolveCheckpointProcessGroupId;
+  const kill =
+    opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
   const log = opts.log ?? ((m: string) => console.error(m));
   try {
     const table = readTable();
@@ -1428,7 +1438,12 @@ export function writeFailingFilesMarker(
  *  or garble — the caller degrades to the empty failingTests it carried before. */
 export function readFailingFilesMarker(
   lockDir: string,
-): { runId?: string; files?: string[]; absorbed?: boolean; at?: string } | null {
+): {
+  runId?: string;
+  files?: string[];
+  absorbed?: boolean;
+  at?: string;
+} | null {
   try {
     const parsed = JSON.parse(
       readFileSync(path.join(lockDir, "failing-files.json"), "utf8"),
@@ -1452,7 +1467,8 @@ export function emergencyRedFailingTests(
   marker: ReturnType<typeof readFailingFilesMarker>,
   runId: string,
 ): { failingTests: string[]; note: string | null } {
-  if (!marker || marker.runId !== runId) return { failingTests: [], note: null };
+  if (!marker || marker.runId !== runId)
+    return { failingTests: [], note: null };
   const files = Array.isArray(marker.files)
     ? marker.files.filter((f): f is string => typeof f === "string")
     : [];
@@ -5202,7 +5218,9 @@ async function tryLongestGreenPrefix(
   let scanStopped = false;
   /** Which granularity actually produced the verdict — the fallback below can change it,
    *  and a decline message naming the wrong one sends the next reader to the wrong scan. */
-  let declineGranularity: "FILE" | "workspace" = locateByFile ? "FILE" : "workspace";
+  let declineGranularity: "FILE" | "workspace" = locateByFile
+    ? "FILE"
+    : "workspace";
   for (const sha of commits.slice(0, -1)) {
     // exclude the red tip itself
     if (locateByFile) {
@@ -5266,7 +5284,8 @@ async function tryLongestGreenPrefix(
   if (locateByFile && !scanStopped && prefixTip) {
     const tailFiles = await deps.changedFilesForRange!(prefixTip, candidate);
     const tailImplicates =
-      !!tailFiles && matchFailingFilesToChanged(failingPaths, tailFiles).length > 0;
+      !!tailFiles &&
+      matchFailingFilesToChanged(failingPaths, tailFiles).length > 0;
     if (!tailImplicates) {
       logPartialGreenGate(
         `partial-green-gate: NO SIGNAL at file granularity — none of the ` +
@@ -5707,7 +5726,10 @@ function appendGateHeldByIfMissing(
 ): void {
   if (!logPath || hasGateHeldByLine(logPath)) return;
   try {
-    appendFileSync(logPath, formatGateHeldByNote(failingTests, { postSuiteMeasured }));
+    appendFileSync(
+      logPath,
+      formatGateHeldByNote(failingTests, { postSuiteMeasured }),
+    );
   } catch (e) {
     log?.(
       `warn: GATE_HELD_BY line not published to ${logPath}: ${e instanceof Error ? e.message : e}`,
@@ -7156,7 +7178,8 @@ export async function runGreenCheckpoint(
     // correct direction to be wrong in: it fails toward skipping. Self-calibrating by design:
     // when the suite gets faster (more forks, less fleet load) the salvage re-enables on its
     // own, with no constant to retune.
-    const salvageDeadlineMs = opts.salvageDeadlineMs ?? isolationPhaseDeadlineMs();
+    const salvageDeadlineMs =
+      opts.salvageDeadlineMs ?? isolationPhaseDeadlineMs();
     const salvageCostEstimateMs = Date.now() - runStartedAtMs;
     const salvageOutOfTime =
       Date.now() + salvageCostEstimateMs > salvageDeadlineMs;
@@ -7474,11 +7497,13 @@ export async function runGreenCheckpoint(
   });
   if (repairQueue) {
     await deps.writeFrozenRepairQueue?.(null);
-    await deps.cleanupFrozenRepairWorktree?.(repairQueue).catch((e) =>
-      deps.log(
-        `warn: promoted repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-      ),
-    );
+    await deps
+      .cleanupFrozenRepairWorktree?.(repairQueue)
+      .catch((e) =>
+        deps.log(
+          `warn: promoted repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+        ),
+      );
   }
   deps.log(
     `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
@@ -7934,12 +7959,10 @@ export async function clearDetectorEscalation(
  *  this CLI's static module graph deliberately does not carry the
  *  escalations/attention DB modules. */
 async function realDetectorEscalationIo(): Promise<DetectorEscalationIo> {
-  const { openEscalation, listEscalations, resolveEscalation } = await import(
-    "@papercusp/operator-core/lib/agent-tools/coordination/escalations"
-  );
-  const { SELF_RECONCILING_META_KEY } = await import(
-    "@papercusp/operator-core/lib/attention/reconcile-escalations"
-  );
+  const { openEscalation, listEscalations, resolveEscalation } =
+    await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
+  const { SELF_RECONCILING_META_KEY } =
+    await import("@papercusp/operator-core/lib/attention/reconcile-escalations");
   return {
     list: async () =>
       (await listEscalations({ status: "open" })) as Array<{
@@ -9513,15 +9536,15 @@ export function realCheckpointDeps(
     ...(repairTarget
       ? {
           async readFrozenRepairQueue() {
-            const { readFrozenCandidateRepairQueue } = await import(
-              "@papercusp/operator-core/lib/harness/routines/release-actions"
-            );
+            const { readFrozenCandidateRepairQueue } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             return readFrozenCandidateRepairQueue(repairTarget);
           },
-          async writeFrozenRepairQueue(queue: FrozenCandidateRepairQueue | null) {
-            const { writeFrozenCandidateRepairQueue } = await import(
-              "@papercusp/operator-core/lib/harness/routines/release-actions"
-            );
+          async writeFrozenRepairQueue(
+            queue: FrozenCandidateRepairQueue | null,
+          ) {
+            const { writeFrozenCandidateRepairQueue } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
             await writeFrozenCandidateRepairQueue(repairTarget, queue);
           },
           async prepareFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
@@ -9529,50 +9552,91 @@ export function realCheckpointDeps(
             mkdirSync(path.dirname(queue.worktreePath), { recursive: true });
             await exec(
               "git",
-              ["-C", cfg.integrationRoot, "worktree", "add", "--detach", queue.worktreePath, queue.repairHead],
+              [
+                "-C",
+                cfg.integrationRoot,
+                "worktree",
+                "add",
+                "--detach",
+                queue.worktreePath,
+                queue.repairHead,
+              ],
               { timeoutMs: SETUP_TREE_TIMEOUT_MS },
             );
           },
-          async finalizeFrozenRepairWorktree(queue: FrozenCandidateRepairQueue) {
+          async finalizeFrozenRepairWorktree(
+            queue: FrozenCandidateRepairQueue,
+          ) {
             if (!existsSync(path.join(queue.worktreePath, ".git"))) return null;
-            const dirty = await exec("git", ["-C", queue.worktreePath, "status", "--porcelain=v1"]);
+            const dirty = await exec("git", [
+              "-C",
+              queue.worktreePath,
+              "status",
+              "--porcelain=v1",
+            ]);
             if (dirty.stdout.trim()) {
               await exec("git", ["-C", queue.worktreePath, "add", "-A"]);
               await exec("git", [
-                "-C", queue.worktreePath,
-                "-c", "user.name=Papercusp Green Checkpoint",
-                "-c", "user.email=green-checkpoint@papercusp.local",
-                "commit", "-m", `Repair frozen candidate ${queue.candidate.slice(0, 12)}`,
+                "-C",
+                queue.worktreePath,
+                "-c",
+                "user.name=Papercusp Green Checkpoint",
+                "-c",
+                "user.email=green-checkpoint@papercusp.local",
+                "commit",
+                "-m",
+                `Repair frozen candidate ${queue.candidate.slice(0, 12)}`,
               ]);
             }
             const head = await revParse(queue.worktreePath, "HEAD");
             if (head === queue.repairHead) return null;
-            if (!(await isAncestor(queue.worktreePath, queue.repairHead, head))) {
-              throw new Error(`repair worktree moved non-forward: ${queue.repairHead.slice(0, 8)} !<= ${head.slice(0, 8)}`);
+            if (
+              !(await isAncestor(queue.worktreePath, queue.repairHead, head))
+            ) {
+              throw new Error(
+                `repair worktree moved non-forward: ${queue.repairHead.slice(0, 8)} !<= ${head.slice(0, 8)}`,
+              );
             }
             return head;
           },
           async frozenRepairFixerAlive(spawnId: string) {
             const { getOrgPg } = await import("@papercusp/db-org");
-            const { releaseFixerSpawnAlive } = await import(
-              "@papercusp/operator-core/lib/release/fixer-liveness"
-            );
+            const { releaseFixerSpawnAlive } =
+              await import("@papercusp/operator-core/lib/release/fixer-liveness");
             return releaseFixerSpawnAlive(getOrgPg().sql, spawnId);
           },
           async dispatchFrozenRepairFixer(queue: FrozenCandidateRepairQueue) {
-            const { dispatchReleaseFixer } = await import(
-              "@papercusp/operator-core/lib/harness/routines/release-actions"
+            const { dispatchReleaseFixer } =
+              await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+            return dispatchReleaseFixer(
+              repairTarget,
+              queue.repairHead,
+              queue.failingTests,
+              queue,
             );
-            return dispatchReleaseFixer(repairTarget, queue.repairHead, queue.failingTests, queue);
           },
           async stagingContainsFrozenRepair(queue: FrozenCandidateRepairQueue) {
             const patchResult = spawnSync("git", [
-              "-C", queue.worktreePath, "diff", "--binary", queue.candidate, queue.repairHead,
+              "-C",
+              queue.worktreePath,
+              "diff",
+              "--binary",
+              queue.candidate,
+              queue.repairHead,
             ]);
-            if (patchResult.status !== 0 || !patchResult.stdout?.length) return false;
+            if (patchResult.status !== 0 || !patchResult.stdout?.length)
+              return false;
             const check = spawnSync(
               "git",
-              ["-C", cfg.integrationRoot, "apply", "--reverse", "--check", "--binary", "-"],
+              [
+                "-C",
+                cfg.integrationRoot,
+                "apply",
+                "--reverse",
+                "--check",
+                "--binary",
+                "-",
+              ],
               { input: patchResult.stdout },
             );
             return check.status === 0;
@@ -9581,7 +9645,14 @@ export function realCheckpointDeps(
             if (!existsSync(queue.worktreePath)) return;
             await exec(
               "git",
-              ["-C", cfg.integrationRoot, "worktree", "remove", "--force", queue.worktreePath],
+              [
+                "-C",
+                cfg.integrationRoot,
+                "worktree",
+                "remove",
+                "--force",
+                queue.worktreePath,
+              ],
               { timeoutMs: SETUP_TREE_TIMEOUT_MS },
             );
           },
@@ -9734,7 +9805,8 @@ export function realCheckpointDeps(
           isPidAlive,
           describeAbandonedInFlightCandidate,
           recordLostGateRun,
-        } = await import("@papercusp/operator-core/lib/release/in-flight-candidate");
+        } =
+          await import("@papercusp/operator-core/lib/release/in-flight-candidate");
         const prior = await readInFlightCandidate(
           target.installSlug,
           target.workspaceId,

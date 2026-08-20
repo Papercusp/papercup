@@ -25,14 +25,14 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
-import {
-  gateVerdictEnv,
-  isRecordableVerdict,
-  type GateVerdictTarget,
-} from '../../release/gate-verdict-target';
+import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
-import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from '../../release/gate-red-ownership';
+import {
+  describeGateRedOwnership,
+  gateFailureSignature,
+  type GateRedOwnership,
+} from '../../release/gate-red-ownership';
 import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 // WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
 // own suite (release-actions*.test.ts) drives these code paths, and vitest captures their stdout
@@ -53,15 +53,15 @@ import {
 } from '../../release/frozen-candidate-repair-queue';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
-import {
-  buildDeployTerminalShell,
-  RELEASE_DEPLOY_UNIT,
-} from '../../release-deploy-terminal';
+import { buildDeployTerminalShell, RELEASE_DEPLOY_UNIT } from '../../release-deploy-terminal';
 
 // Kept as exports from this historical module for callers/tests that already
 // use the release-actions config surface. The implementation is shared with
 // the detached manual launcher in release/checkpoint-db-pool.ts.
-export { DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX, resolveGreenCheckpointDbPoolMax } from '../../release/checkpoint-db-pool';
+export {
+  DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX,
+  resolveGreenCheckpointDbPoolMax,
+} from '../../release/checkpoint-db-pool';
 
 // Re-exported for backward compatibility — release-actions.test.ts imports
 // buildIsolatedScopeArgv from THIS module. The pure builder itself now lives in
@@ -112,10 +112,7 @@ const NON_INTEGRATION_CHECKOUTS = new Set([
  *  those apart and returned both without complaint. The guard is deliberately NARROW —
  *  it refuses ONLY the known-bad checkouts, so every working path keeps working and
  *  only the silent-wrong-tree case becomes a loud error. */
-export function resolveIntegrationRoot(
-  env: NodeJS.ProcessEnv = process.env,
-  cwd: string = process.cwd(),
-): string {
+export function resolveIntegrationRoot(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): string {
   const explicit = env.PAPERCUSP_INTEGRATION_ROOT;
   if (explicit) return explicit;
 
@@ -167,10 +164,7 @@ function integrationRootForDiagnostic(): string | null {
  *  independently concluded the gate was executing the release copy, and neither could
  *  cheaply confirm or refute it, because the checkpoint log never stated the root. The
  *  absence of that one line is what turned a five-minute check into hours of archaeology. */
-export function integrationRootEvidence(
-  env: NodeJS.ProcessEnv = process.env,
-  cwd: string = process.cwd(),
-): string {
+export function integrationRootEvidence(env: NodeJS.ProcessEnv = process.env, cwd: string = process.cwd()): string {
   const root = resolveIntegrationRoot(env, cwd);
   const source = env.PAPERCUSP_INTEGRATION_ROOT ? 'PAPERCUSP_INTEGRATION_ROOT' : 'cwd-fallback';
   return `integration root: ${root} (source=${source}, emitter=routine-dispatcher)`;
@@ -239,8 +233,7 @@ export const CHECKPOINT_FORKS_BY_MODE = { shared: 2, reserved: 8 } as const;
  *  from real breakage unless you read `memory.events`. That produced a different random red
  *  set every run and a 15-deep red streak that never converged. WI-39472. */
 export function checkpointScopeMemoryMaxG(env: NodeJS.ProcessEnv = process.env): number {
-  const mode =
-    env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE === 'reserved' ? 'reserved' : 'shared';
+  const mode = env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE === 'reserved' ? 'reserved' : 'shared';
   return CHECKPOINT_SCOPE_OVERHEAD_G + CHECKPOINT_FORKS_BY_MODE[mode] * CHECKPOINT_FORK_HEAP_G;
 }
 
@@ -575,9 +568,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       // EI-19393306381214544). Copied conditionally so an unmeasured leg stays absent
       // rather than being written as a 0 that reads like a measurement.
       ...(v.lineage.rangeFilesChanged != null ? { rangeFilesChanged: v.lineage.rangeFilesChanged } : {}),
-      ...(v.lineage.failingPathsConsidered != null
-        ? { failingPathsConsidered: v.lineage.failingPathsConsidered }
-        : {}),
+      ...(v.lineage.failingPathsConsidered != null ? { failingPathsConsidered: v.lineage.failingPathsConsidered } : {}),
       // EI-20063423357086565: the only leg here NOT derived from commits. Without it the
       // durable record shows "candidate IS the tip, 0 behind, nothing changed in range" —
       // three commit-based facts that are all TRUE and together read as a confirmed real
@@ -722,7 +713,9 @@ export function prebindSelfHealModules(): Promise<void> {
       );
       return;
     }
-    console.log(`${orchestratorStdoutTag()} self-heal modules prebound (${results.length}) — notify + fixer dispatch are launchable`);
+    console.log(
+      `${orchestratorStdoutTag()} self-heal modules prebound (${results.length}) — notify + fixer dispatch are launchable`,
+    );
   })();
   return selfHealPrebound;
 }
@@ -732,10 +725,7 @@ export function __resetSelfHealPrebindForTest(): void {
   selfHealPrebound = null;
 }
 
-export async function recordCheckpointVerdict(
-  target: GateVerdictTarget,
-  verdict: CheckpointVerdict,
-): Promise<boolean> {
+export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict: CheckpointVerdict): Promise<boolean> {
   if (!isRecordableVerdict(verdict.reason)) return false;
   await appendPipelineEvent({
     workspaceId: target.workspaceId,
@@ -746,7 +736,15 @@ export async function recordCheckpointVerdict(
   });
   // EI-19405864032365760: `summary` rides along so the 'migrations-pending' abort path can name
   // the pending migration in `gate_health.inconclusive` — it is the only field carrying it.
-  await trackGateStall(target, verdict.reason, verdict.candidate, verdict.failingTests, verdict.from ?? null, verdict.retriage, verdict.summary ?? null);
+  await trackGateStall(
+    target,
+    verdict.reason,
+    verdict.candidate,
+    verdict.failingTests,
+    verdict.from ?? null,
+    verdict.retriage,
+    verdict.summary ?? null,
+  );
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
   // recording, which already happened above.
@@ -921,7 +919,15 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     // 'infra-inconclusive') record their cause in `gate_health.inconclusive` and the summary is
     // the ONLY field carrying it — omitting it on this fallback path recorded a detail-less
     // abort, which reads as "aborted, cause unknown" exactly where the reader needs the cause.
-    await trackGateStall(ctx, status, candidate, failingTests, parsed?.from ?? null, parsed?.retriage, parsed?.summary ?? null).catch((e) =>
+    await trackGateStall(
+      ctx,
+      status,
+      candidate,
+      failingTests,
+      parsed?.from ?? null,
+      parsed?.retriage,
+      parsed?.summary ?? null,
+    ).catch((e) =>
       console.warn(`${orchestratorStdoutTag()} stall tracking failed: ${e instanceof Error ? e.message : e}`),
     );
   }
@@ -984,7 +990,9 @@ export function gateStallEscalationBody(opts: {
     detail: `green-checkpoint has held main for ${opts.consecutiveReds} checkpoint(s)${
       opts.heldHrs != null ? ` (~${opts.heldHrs}h since the last green)` : ''
     }; staging changes are NOT reaching the release.${
-      tests.length ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.` : ''
+      tests.length
+        ? ` Failing: ${tests.slice(0, 5).join(', ')}${tests.length > 5 ? ` (+${tests.length - 5} more)` : ''}.`
+        : ''
     }${opts.ownership ? ` ${opts.ownership.label}` : ''}`,
   });
 }
@@ -1177,10 +1185,7 @@ export type GateStallRetriage = {
  * reason is a plain `not-green`.
  */
 export function isProvenStaleCandidate(retriage?: GateStallRetriage | null): boolean {
-  return (
-    retriage?.classification === 'stale-candidate' &&
-    retriage.refireBlockedBy !== 'charged-budget'
-  );
+  return retriage?.classification === 'stale-candidate' && retriage.refireBlockedBy !== 'charged-budget';
 }
 
 /**
@@ -1197,9 +1202,7 @@ export function isProvenStaleCandidate(retriage?: GateStallRetriage | null): boo
  * 'deadline-exceeded' status means "killed AND never reported", which is exactly the tick that
  * establishes nothing about the code.
  */
-export function checkpointFallbackStatus(
-  timedOut: boolean | undefined,
-): 'deadline-exceeded' | 'error' {
+export function checkpointFallbackStatus(timedOut: boolean | undefined): 'deadline-exceeded' | 'error' {
   return timedOut ? 'deadline-exceeded' : 'error';
 }
 
@@ -1385,7 +1388,22 @@ export async function trackGateStall(
     `SELECT metadata->'gate_health' AS gh, metadata->'last_fixer' AS lf FROM harness_shared.routines
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug],
-  )) as Array<{ gh: { consecutiveReds?: number; lastGreenAt?: number; firstRedAt?: number; stallAlerted?: boolean; lastFrom?: string; lastMainPin?: string | null; watchdogAlerted?: boolean; failingTests?: string[]; retriageStaleTip?: string | null; retriageDetail?: string | null; retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null } | null; lf: ReleaseFixerRecord | null }>;
+  )) as Array<{
+    gh: {
+      consecutiveReds?: number;
+      lastGreenAt?: number;
+      firstRedAt?: number;
+      stallAlerted?: boolean;
+      lastFrom?: string;
+      lastMainPin?: string | null;
+      watchdogAlerted?: boolean;
+      failingTests?: string[];
+      retriageStaleTip?: string | null;
+      retriageDetail?: string | null;
+      retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
+    } | null;
+    lf: ReleaseFixerRecord | null;
+  }>;
   const gh = rows[0]?.gh ?? {};
   const lastFixer = rows[0]?.lf ?? null;
   // Release-pin movement (green-checkpoint-lock-starvation-2026-07-02): `from` is the
@@ -1453,11 +1471,7 @@ export async function trackGateStall(
     // still — the suite ran and may even have REACHED a verdict, but the process was killed
     // before it could record one, so nothing about the code was established. Recording it here
     // is what stops the abort going silent once it no longer counts as a red.
-    if (
-      status === 'migrations-pending' ||
-      status === 'infra-inconclusive' ||
-      status === 'deadline-exceeded'
-    ) {
+    if (status === 'migrations-pending' || status === 'infra-inconclusive' || status === 'deadline-exceeded') {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
@@ -1477,7 +1491,9 @@ export async function trackGateStall(
       } catch (e) {
         // Fail-safe, exactly like every other write in this function: an unrecorded abort
         // degrades to the pre-EI-19405864032365760 behaviour (invisible), never to a wrong verdict.
-        console.warn(`${orchestratorStdoutTag()} inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(
+          `${orchestratorStdoutTag()} inconclusive-verdict record failed: ${e instanceof Error ? e.message : e}`,
+        );
       }
     }
     return;
@@ -1504,11 +1520,7 @@ export async function trackGateStall(
   // never handed — so it records null and the next tick falls back to `lastFrom`, i.e. the
   // pre-existing behaviour for that one status rather than a value we would be inventing.
   const mainPinAfterRun =
-    status === 'advanced'
-      ? (candidate?.slice(0, 12) ?? fromPin)
-      : status === 'advanced-prefix'
-        ? null
-        : fromPin;
+    status === 'advanced' ? (candidate?.slice(0, 12) ?? fromPin) : status === 'advanced-prefix' ? null : fromPin;
   // EI-13288 / WI-7482 / EI-20243738214569472 — full rationale on the red branch below.
   // Hoisted above the branch so the NOT-GREEN reset arm records the same re-triage
   // provenance a red does: that arm IS a red verdict in every respect except the stall
@@ -1561,8 +1573,46 @@ export async function trackGateStall(
     //   · `lastVerdict` is the explicit marker that was missing: with it a reader can tell the
     //     two populations of this branch apart instead of having to infer it from side-effects.
     next = isGreen
-      ? { consecutiveReds: 0, lastGreenAt: Date.now(), firstRedAt: null, stallAlerted: false, lastVerdict: 'green', lastFrom: fromPin ?? gh.lastFrom ?? null, lastFromFresh: fromPin != null, lastMainPin: mainPinAfterRun, watchdogAlerted: false, failingTests: [], observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: null, retriageDetail: null, retriageClassification: null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null }
-      : { consecutiveReds: 0, lastGreenAt: gh.lastGreenAt ?? null, firstRedAt: null, stallAlerted: gh.stallAlerted ?? false, lastVerdict: 'not-green', lastFrom: fromPin ?? gh.lastFrom ?? null, lastFromFresh: fromPin != null, lastMainPin: mainPinAfterRun, watchdogAlerted: gh.watchdogAlerted ?? false, failingTests: (failingTests ?? []).slice(0, 20), observedAt: Date.now(), observedCandidate: candidate?.slice(0, 12) ?? null, retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null, retriageDetail: retriageBlocked ? retriage!.detail : null, retriageClassification: retriage?.classification ?? null, candidateCommittedAt: staleness.candidateCommittedAt, commitsBehindTip: staleness.commitsBehindTip, inconclusive: null };
+      ? {
+          consecutiveReds: 0,
+          lastGreenAt: Date.now(),
+          firstRedAt: null,
+          stallAlerted: false,
+          lastVerdict: 'green',
+          lastFrom: fromPin ?? gh.lastFrom ?? null,
+          lastFromFresh: fromPin != null,
+          lastMainPin: mainPinAfterRun,
+          watchdogAlerted: false,
+          failingTests: [],
+          observedAt: Date.now(),
+          observedCandidate: candidate?.slice(0, 12) ?? null,
+          retriageStaleTip: null,
+          retriageDetail: null,
+          retriageClassification: null,
+          candidateCommittedAt: staleness.candidateCommittedAt,
+          commitsBehindTip: staleness.commitsBehindTip,
+          inconclusive: null,
+        }
+      : {
+          consecutiveReds: 0,
+          lastGreenAt: gh.lastGreenAt ?? null,
+          firstRedAt: null,
+          stallAlerted: gh.stallAlerted ?? false,
+          lastVerdict: 'not-green',
+          lastFrom: fromPin ?? gh.lastFrom ?? null,
+          lastFromFresh: fromPin != null,
+          lastMainPin: mainPinAfterRun,
+          watchdogAlerted: gh.watchdogAlerted ?? false,
+          failingTests: (failingTests ?? []).slice(0, 20),
+          observedAt: Date.now(),
+          observedCandidate: candidate?.slice(0, 12) ?? null,
+          retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
+          retriageDetail: retriageBlocked ? retriage!.detail : null,
+          retriageClassification: retriage?.classification ?? null,
+          candidateCommittedAt: staleness.candidateCommittedAt,
+          commitsBehindTip: staleness.commitsBehindTip,
+          inconclusive: null,
+        };
     // P-003: clear the durable stall escalation on the green transition (idempotent).
     // WI-2825: a 0-row match here (harness_slug/phase mismatch, or the row was already
     // cleared/removed some other way) previously succeeded silently — no error, no log —
@@ -1607,7 +1657,9 @@ export async function trackGateStall(
           [ctx.installSlug, Date.now(), RELEASE_FIXER_NO_TURN_PHASE],
         );
       } catch (e) {
-        console.warn(`${orchestratorStdoutTag()} release-fixer no-turn escalation clear failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(
+          `${orchestratorStdoutTag()} release-fixer no-turn escalation clear failed: ${e instanceof Error ? e.message : e}`,
+        );
       }
     }
     // P-005: CLOSE the red-streak condition — the bridge settles the owning work-item
@@ -1646,7 +1698,9 @@ export async function trackGateStall(
             `is stale. This says NOTHING about any other harness's gate — each harness has its own.`,
         });
       } catch (e) {
-        console.warn(`${orchestratorStdoutTag()} red-streak condition resolve failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(
+          `${orchestratorStdoutTag()} red-streak condition resolve failed: ${e instanceof Error ? e.message : e}`,
+        );
       }
     }
   } else {
@@ -1779,7 +1833,9 @@ export async function trackGateStall(
           oneShot: true,
         });
       } catch (e) {
-        console.warn(`${orchestratorStdoutTag()} red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`);
+        console.warn(
+          `${orchestratorStdoutTag()} red-streak condition broadcast failed: ${e instanceof Error ? e.message : e}`,
+        );
       }
     }
     // Seed/carry the pin so the NEXT tick can detect movement (first observation
@@ -1886,11 +1942,7 @@ export async function trackGateStall(
  * release-fixer's / a human's job (D-003), never a tracked-file write from this
  * routine. Fail-safe — the routine tick never depends on it.
  */
-async function trackFlakeHistory(
-  ctx: SystemActionCtx,
-  summary?: string,
-  flakeSuspects?: string[],
-): Promise<void> {
+async function trackFlakeHistory(ctx: SystemActionCtx, summary?: string, flakeSuspects?: string[]): Promise<void> {
   const flaked = new Set<string>();
   if (summary) {
     for (const m of summary.matchAll(/>>>\s+(\S+)\s+passed on retry — counted as a FLAKE/g)) {
@@ -1917,7 +1969,10 @@ async function trackFlakeHistory(
     const prev = fh[ws] ?? {};
     const flakes = (prev.flakes ?? 0) + 1;
     let notifiedAt = prev.notifiedAt;
-    if (flakes >= releaseCheckpointConfig().chronicFlakeCount && (notifiedAt == null || now - notifiedAt > releaseCheckpointConfig().flakeNotifyCooldownMs)) {
+    if (
+      flakes >= releaseCheckpointConfig().chronicFlakeCount &&
+      (notifiedAt == null || now - notifiedAt > releaseCheckpointConfig().flakeNotifyCooldownMs)
+    ) {
       newlyChronic.push(ws);
       notifiedAt = now;
     }
@@ -1986,7 +2041,9 @@ export function shouldDispatchReleaseFixer(
   candidate: string | undefined,
   failingTests: string[] | undefined,
 ): candidate is string {
-  return (status === 'not-green' || status === 'advanced-prefix') && !!candidate && !!failingTests && failingTests.length > 0;
+  return (
+    (status === 'not-green' || status === 'advanced-prefix') && !!candidate && !!failingTests && failingTests.length > 0
+  );
 }
 
 export interface ReleaseFixerDecision {
@@ -2028,8 +2085,7 @@ export function decideReleaseFixerDispatch(args: {
   const dedupMs = args.dedupMs ?? RELEASE_FIXER_DEDUP_MS;
   const notifyCooldownMs = args.notifyCooldownMs ?? RELEASE_FIXER_DEDUP_MS;
   const { lf, signature, now } = args;
-  const sameRecent =
-    !!lf && lf.signature === signature && typeof lf.at === 'number' && now - lf.at < dedupMs;
+  const sameRecent = !!lf && lf.signature === signature && typeof lf.at === 'number' && now - lf.at < dedupMs;
   if (!sameRecent) {
     // A fresh failure (new signature, or the prior one aged out) — dispatch + notify.
     return { dispatch: true, notify: true, reason: 'fresh' };
@@ -2073,7 +2129,10 @@ export function annotateFailingTestsWithFlakeStats(
   const lines = failingTests
     .map((f) => byFile.get(f))
     .filter((s): s is FlakeSuspect => !!s)
-    .map((s) => `  - ${s.file_path}: ${s.fails}F/${s.passes}P over 7d, ${s.both_status_shas} commit(s) with both a pass and a fail (flake_rate=${s.flake_rate})`);
+    .map(
+      (s) =>
+        `  - ${s.file_path}: ${s.fails}F/${s.passes}P over 7d, ${s.both_status_shas} commit(s) with both a pass and a fail (flake_rate=${s.flake_rate})`,
+    );
   if (lines.length === 0) return undefined;
   return (
     `FLAKE SIGNAL (EI-7443, from the last 7d of harness_shared.test_runs — check this BEFORE assuming a regression):\n` +
@@ -2347,13 +2406,19 @@ export async function dispatchReleaseFixer(
       const selfHeal = decision.reason === 'self-heal';
       await notifyAttention({
         kind: 'intervention',
-        title: selfHeal ? 'Release gate still held — prior fixer died, re-dispatched' : 'Release gate held — staging→main blocked',
+        title: selfHeal
+          ? 'Release gate still held — prior fixer died, re-dispatched'
+          : 'Release gate held — staging→main blocked',
         body:
           `green-checkpoint couldn't promote candidate ${candidate.slice(0, 8)} (gate red${failingTests && failingTests.length > 0 ? `: ${failingTests.slice(0, 5).join(', ')}` : ''}); ` +
           `${selfHeal ? 'the previous release-fixer ended without clearing it — a fresh one was' : 'a release-fixer was'} dispatched to diagnose it.`,
         importance: 'high',
         workspaceId: ctx.workspaceId,
-        data: { candidate: candidate.slice(0, 12), failing: (failingTests ?? []).slice(0, 10).join(','), selfHeal: String(selfHeal) },
+        data: {
+          candidate: candidate.slice(0, 12),
+          failing: (failingTests ?? []).slice(0, 10).join(','),
+          selfHeal: String(selfHeal),
+        },
       });
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} release-red notify failed: ${e instanceof Error ? e.message : e}`);
@@ -2369,7 +2434,9 @@ export async function dispatchReleaseFixer(
     const { entries } = await testFlakeRollup(7);
     flakeAnnotation = annotateFailingTestsWithFlakeStats(failingTests, flagFlakeSuspects(entries, 7));
   } catch (e) {
-    console.warn(`${orchestratorStdoutTag()} flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `${orchestratorStdoutTag()} flake-suspect annotation skipped (non-fatal): ${e instanceof Error ? e.message : e}`,
+    );
   }
 
   // P-006/P-014: fire the release-fixer via the canonical spawn-recording, DBOS-durable
@@ -2412,7 +2479,9 @@ export async function dispatchReleaseFixer(
   const spawnId = fired?.spawn?.spawnId ?? null;
   const runId = fired?.spawn?.runId ?? null;
   if (spawnId || runId) {
-    await writeRecord({ signature, candidate, at: now, spawnId, runId, notifiedAt: notifiedAt ?? undefined }).catch(() => {});
+    await writeRecord({ signature, candidate, at: now, spawnId, runId, notifiedAt: notifiedAt ?? undefined }).catch(
+      () => {},
+    );
   }
   await appendPipelineEvent({
     workspaceId: ctx.workspaceId,
@@ -2511,9 +2580,14 @@ export interface DeployEventRow {
  * the SAME target within DEPLOY_BACKOFF_MS of `nowMs`. A new green (different sha) or the
  * window elapsing clears the back-off. Exported for unit testing.
  */
-export function shouldBackOff(latest: DeployEventRow | null, targetSha: string, nowMs: number, backoffMs: number = DEPLOY_BACKOFF_MS): boolean {
+export function shouldBackOff(
+  latest: DeployEventRow | null,
+  targetSha: string,
+  nowMs: number,
+  backoffMs: number = DEPLOY_BACKOFF_MS,
+): boolean {
   if (!latest || (latest.status !== 'failed' && latest.status !== 'rolled-back')) return false;
-  const detail = typeof latest.detail === 'string' ? safeJson(latest.detail) : latest.detail ?? {};
+  const detail = typeof latest.detail === 'string' ? safeJson(latest.detail) : (latest.detail ?? {});
   const lastTarget = String((detail as Record<string, unknown>).targetSha ?? ''); // stored sliced(0,12)
   const ageMs = nowMs - new Date(latest.created_at).getTime();
   return lastTarget.length > 0 && targetSha.startsWith(lastTarget) && ageMs < backoffMs;
@@ -2604,7 +2678,9 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
 
   const targetSha = typeof planObj.targetSha === 'string' ? planObj.targetSha.slice(0, 12) : '?';
   const commits = Array.isArray(planObj.commits) ? planObj.commits.length : '?';
-  console.log(`[release-trigger] green main is ahead — launching detached auto-deploy of ${targetSha} (${commits} commit(s)) as ${AUTO_DEPLOY_UNIT}`);
+  console.log(
+    `[release-trigger] green main is ahead — launching detached auto-deploy of ${targetSha} (${commits} commit(s)) as ${AUTO_DEPLOY_UNIT}`,
+  );
 
   // PAPERCUSP_ALLOW_DEV_RESTART=1: the restart step is env-gated against ad-hoc
   // runs restarting the shared host — this routine IS the owner-authorized
@@ -2644,7 +2720,9 @@ registerSystemAction('release-trigger', async (ctx: SystemActionCtx) => {
     child.on('close', (code) => {
       if (code !== 0) {
         // Most common cause: the unit already exists = a deploy is in flight.
-        console.warn(`[release-trigger] systemd-run exited ${code} (deploy already running?): ${stderr.trim().slice(0, 200)}`);
+        console.warn(
+          `[release-trigger] systemd-run exited ${code} (deploy already running?): ${stderr.trim().slice(0, 200)}`,
+        );
       }
       resolve();
     });
