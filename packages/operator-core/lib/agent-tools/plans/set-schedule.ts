@@ -16,6 +16,7 @@ import { harnessArg, harnessScopedCtx } from '../_harness-scope';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
 import { setPlanSchedule } from './source';
 import { validateRrule, frequencyWarning } from '../../harness/routines/schedule-next';
+import { deletePlanSchedule } from '../../harness/routines/materialize-plan-schedule';
 
 const scheduleSchema = z
   .object({
@@ -96,6 +97,14 @@ export default defineTool({
     });
 
     if (!ok) return errorOut('not_found', `plan '${args.slug}' not found`);
+
+    // Clearing the authored recurrence AND one-shot is permanent un-scheduling,
+    // not a pause. Remove the materialized routine so inventory cannot retain a
+    // stale inactive row. Missing rows are an idempotent no-op.
+    if (sched == null && args.scheduledAt == null) {
+      await deletePlanSchedule(opts.harnessSlug, args.slug);
+    }
+
     const warn = sched ? frequencyWarning(sched, new Date()) : null; // P-013: warn-on-frequent
     return {
       content: [

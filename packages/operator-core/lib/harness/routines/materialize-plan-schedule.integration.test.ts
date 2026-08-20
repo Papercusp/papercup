@@ -13,6 +13,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import {
   materializePlanSchedule,
   deactivatePlanSchedule,
+  deletePlanSchedule,
   planScheduleRoutineName,
   PLAN_RUN_ACTION,
 } from './materialize-plan-schedule';
@@ -133,5 +134,20 @@ describe('materializePlanSchedule', () => {
     expect(ok).toBe(true);
     const row = await routineRow(template);
     expect(row!.active).toBe(false);
+  });
+
+  it('deletePlanSchedule permanently removes the routine and is idempotent', async () => {
+    const template = 'permanently-unscheduled-plan';
+    await materializePlanSchedule({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      templateSlug: template,
+      schedule: { kind: 'cron', cron: '0 9 * * *' },
+      sql,
+    });
+
+    expect(await deletePlanSchedule(HARNESS, template, { sql })).toBe(true);
+    expect(await routineRow(template)).toBeNull();
+    expect(await deletePlanSchedule(HARNESS, template, { sql })).toBe(false);
   });
 });

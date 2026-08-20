@@ -30,12 +30,17 @@ vi.mock('../../harness/routines/schedule-next', () => ({
   validateRrule: vi.fn(),
   frequencyWarning: vi.fn(),
 }));
+vi.mock('../../harness/routines/materialize-plan-schedule', () => ({
+  deletePlanSchedule: vi.fn(),
+}));
 
 import { setPlanSchedule } from './source';
 import { validateRrule, frequencyWarning } from '../../harness/routines/schedule-next';
+import { deletePlanSchedule } from '../../harness/routines/materialize-plan-schedule';
 const setSched = vi.mocked(setPlanSchedule);
 const validate = vi.mocked(validateRrule);
 const freqWarn = vi.mocked(frequencyWarning);
+const deleteSched = vi.mocked(deletePlanSchedule);
 const tool = (await import('./set-schedule')).default;
 
 type Out = { content: { text: string }[]; isError?: boolean };
@@ -48,6 +53,7 @@ beforeEach(() => {
   setSched.mockResolvedValue(true);
   validate.mockReset().mockReturnValue({ ok: true }); // default: rrule is valid
   freqWarn.mockReset().mockReturnValue(null); // default: not "frequent"
+  deleteSched.mockReset().mockResolvedValue(false); // idempotent: routine may never have been armed
 });
 
 describe('plans:set-schedule validation (pre-PG branches)', () => {
@@ -98,17 +104,20 @@ describe('plans:set-schedule persistence + result shaping', () => {
     const out = await call({ schedule: { kind: 'rrule', rrule: 'FREQ=DAILY' } });
     expect(out.isError).toBe(true);
     expect(body(out).error).toBe('not_found');
+    expect(deleteSched).not.toHaveBeenCalled();
   });
 
-  it('clears the schedule (schedule:null) → scheduled:false, write gets schedule:null', async () => {
+  it('clears recurrence + one-shot permanently, including the materialized routine', async () => {
     const out = await call({ schedule: null, scheduledAt: null });
     const b = body(out);
     expect(b).toMatchObject({ ok: true, scheduled: false });
     expect((setSched.mock.calls[0]![0] as unknown as Record<string, unknown>).schedule).toBeNull();
+    expect(deleteSched).toHaveBeenCalledWith('web', 'p1');
   });
 
-  it('a one-shot scheduledAt (no recurrence) still reports scheduled:true', async () => {
+  it('a one-shot scheduledAt (no recurrence) stays materialized and reports scheduled:true', async () => {
     const out = await call({ schedule: null, scheduledAt: '2026-07-01T00:00:00Z' });
     expect(body(out)).toMatchObject({ ok: true, scheduled: true });
+    expect(deleteSched).not.toHaveBeenCalled();
   });
 });

@@ -20,7 +20,7 @@
  * claim.ts deactivates the row after it fires once.
  */
 import type { Sql } from 'postgres';
-import { getOrgPg, upsertRoutine, setRoutineActive } from '@papercusp/db-org';
+import { deleteRoutine, getOrgPg, upsertRoutine, setRoutineActive } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { computeNextFire, type ScheduleTrigger } from './schedule-next';
 import { computeNextFireAt } from './cron';
@@ -97,4 +97,19 @@ export async function deactivatePlanSchedule(
 ): Promise<boolean> {
   const sql = opts.sql ?? getOrgPg().sql;
   return setRoutineActive(sql, harnessSlug, planScheduleRoutineName(templateSlug), false);
+}
+
+/**
+ * Permanently remove a plan's materialized schedule routine. Unlike disarming,
+ * clearing both the recurrence and one-shot leaves nothing that can be re-armed,
+ * so retaining an inactive routine would expose stale schedule inventory.
+ * Idempotent: false means there was no materialized row to remove.
+ */
+export async function deletePlanSchedule(
+  harnessSlug: string,
+  templateSlug: string,
+  opts: { sql?: Sql } = {},
+): Promise<boolean> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  return deleteRoutine(sql, harnessSlug, planScheduleRoutineName(templateSlug));
 }
