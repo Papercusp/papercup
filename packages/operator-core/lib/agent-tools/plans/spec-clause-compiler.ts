@@ -157,7 +157,7 @@ function deriveSpecId(sourceValId: string): string {
   return sourceValId.startsWith('VAL-') ? `SPEC-${sourceValId.slice('VAL-'.length)}` : `SPEC-${sourceValId}`;
 }
 
-function nonAtomicReason(rawBehavior: string): string | null {
+export function specBehaviorNonAtomicReason(rawBehavior: string): string | null {
   const lines = rawBehavior
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -172,7 +172,7 @@ function nonAtomicReason(rawBehavior: string): string | null {
   return null;
 }
 
-function nonFalsifiableReason(rawBehavior: string): string | null {
+export function specBehaviorNonFalsifiableReason(rawBehavior: string): string | null {
   const behavior = normalizeSpecSemanticText(rawBehavior);
   if (!behavior) return 'behavior is empty';
   if (PLACEHOLDER_RE.test(behavior)) return 'behavior contains placeholder or discretionary wording';
@@ -217,9 +217,9 @@ function compileCandidate(
     add('behavior-missing', 'error', 'legacy assertion has neither explicit behavior, Verify text, nor header text');
     lifecycleStatus = 'draft';
   } else {
-    const atomicity = nonAtomicReason(rawBehavior);
+    const atomicity = specBehaviorNonAtomicReason(rawBehavior);
     if (atomicity) add('behavior-non-atomic', 'error', atomicity);
-    const falsifiability = nonFalsifiableReason(rawBehavior);
+    const falsifiability = specBehaviorNonFalsifiableReason(rawBehavior);
     if (falsifiability) add('behavior-not-falsifiable', 'error', falsifiability);
   }
 
