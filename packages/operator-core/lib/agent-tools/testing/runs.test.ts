@@ -7,9 +7,16 @@
  * one with a documented failure mode, so it is asserted directly.
  */
 
-import { describe, it, expect } from 'vitest';
-import { isSaturationSuspect, toPathPattern, toShaPattern } from './runs';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { defaultRollupSource, isSaturationSuspect, toPathPattern, toShaPattern } from './runs';
+import runsTool from './runs';
 import { CRITICAL_P95_MS } from '../../event-loop-lag-monitor';
+
+const sqlMock = vi.hoisted(() => vi.fn());
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlMock }),
+}));
 
 describe('toPathPattern', () => {
   it('matches a memorable path FRAGMENT as a substring — the corpus shape', () => {
@@ -30,6 +37,61 @@ describe('toShaPattern', () => {
 
   it('honours an explicit pattern verbatim', () => {
     expect(toShaPattern('%362398%')).toBe('%362398%');
+  });
+});
+
+describe('defaultRollupSource', () => {
+  it('isolates commit rollups to CI rows by default', () => {
+    expect(defaultRollupSource('commit')).toBe('ci');
+  });
+
+  it('honors an explicit source for commit rollups', () => {
+    expect(defaultRollupSource('commit', 'local')).toBe('local');
+    expect(defaultRollupSource('commit', 'admin-ui')).toBe('admin-ui');
+  });
+
+  it('leaves non-commit rollups unscoped when no source is named', () => {
+    expect(defaultRollupSource('runGroup')).toBeNull();
+    expect(defaultRollupSource(undefined)).toBeNull();
+  });
+});
+
+describe('testing:runs rollup source isolation', () => {
+  const sqlCalls: Array<{ strings: string[]; values: unknown[] }> = [];
+
+  beforeEach(() => {
+    sqlCalls.length = 0;
+    sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const call = { strings: Array.from(strings), values };
+      sqlCalls.push(call);
+      if (call.strings.some((part) => part.includes('WITH filtered'))) {
+        return Promise.resolve([
+          {
+            key: 'abc123',
+            total: '1',
+            failed: '0',
+            failed_files: '0',
+            files: '1',
+            first_start: '2026-08-14T13:14:24.555Z',
+            last_finish: '2026-08-14T13:14:24.563Z',
+            group_count: '1',
+          },
+        ]);
+      }
+      return call;
+    });
+  });
+
+  it('passes source:ci into an omitted-source commit rollup and reports it', async () => {
+    const result = (await runsTool.handler({ commitSha: 'abc123', rollup: 'commit' } as never, {} as never)) as {
+      data?: { source?: string; groups?: Array<{ failed: number }> };
+      content?: Array<{ text: string }>;
+    };
+    const data = result.data ?? JSON.parse(result.content?.[0]?.text ?? '{}');
+    const whereCall = sqlCalls.find((call) => call.strings.some((part) => part.includes('file_path')));
+
+    expect(JSON.stringify(whereCall)).toContain('ci');
+    expect(data).toMatchObject({ source: 'ci', groups: [{ failed: 0 }] });
   });
 });
 

@@ -77,22 +77,35 @@ export function toShaPattern(sha: string): string {
   return /[%_]/.test(sha) ? sha : `${sha}%`;
 }
 
+/**
+ * A commit rollup is documented as the commit's CI/gate verdict. Local rows
+ * share the same commit SHA while representing an agent's potentially dirty
+ * working tree, so they must not silently join that verdict. Callers can
+ * still select a different writer explicitly with `source`.
+ */
+export function defaultRollupSource(
+  rollup: 'commit' | 'runGroup' | undefined,
+  source?: 'ci' | 'local' | 'admin-ui',
+): 'ci' | 'local' | 'admin-ui' | null {
+  return source ?? (rollup === 'commit' ? 'ci' : null);
+}
+
 export default defineTool({
   name: 'testing:runs',
   description:
-    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
+    'Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:"commit"|"runGroup"` aggregates ("is this sha green" — total/failed/failing-file counts); commit rollups default to `source:"ci"` so local rows cannot contaminate a gate verdict; otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.',
   capability: 'operator:read',
   guidance: {
     when: 'Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:"commit" answers "is this sha green" in one call.',
     notWhen:
       'To decide whether a red is a known FLAKE rather than your change, use testing:flakiness (cross-run flip rate — same table, different question). To RUN tests use testing:run. For "is my change live/what is blocking it" use dev:pipeline_position.',
     chaining:
-      'rollup:"commit" to find the red sha → rows with that commitSha + status:["fail","error"] for the failing files and their output tails → testing:flakiness on a file before assuming the red is yours.',
+      'rollup:"commit" to find the red sha (CI rows by default; pass source:"local" or source:"admin-ui" for another writer) → rows with that commitSha + status:["fail","error"] for the failing files and their output tails → testing:flakiness on a file before assuming the red is yours.',
     // Response docs live HERE, not in description/when — those are
     // prompt-weight budgeted (the guard refused the P-002 edit on routines:list).
     returns: [
       'Rows: { filePath, status, framework, startedAt, finishedAt, durationMs, commitSha, runGroupId, source, branch, outputTail, loopLagP95Ms, rssMb, saturationSuspect, worktreeDirty, isScratchConfig }. outputTail is populated only for fail/error rows and is truncated.',
-      'Rollup rows: { key, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id.',
+      'Rollup rows: { key, total, failed, failedFiles, files, firstStart, lastFinish } grouped by commit_sha or run_group_id. The response also reports the effective source filter; commit rollups default to source:"ci".',
       '`count` = rows returned; `total` = rows matching the filter independent of `limit`; `truncatedByLimit` says whether they differ, so a capped list is never read as a total.',
       'latestPerFile (default true, or false when you name a filePath) collapses to the most recent run per file — without it a file that failed an hour ago and has passed since still lists as failing.',
       '`saturationSuspect` = this row was recorded while host event-loop p95 was past the critical band, so it is NOT reliable evidence of a genuine red — re-run before chasing it. NULL lag is not suspect (it means no monitor was running, not that the host was calm).',
@@ -166,7 +179,7 @@ export default defineTool({
     const pathLike = args.filePath ? toPathPattern(args.filePath) : null;
     const shaLike = args.commitSha ? toShaPattern(args.commitSha) : null;
     const runGroup = args.runGroup ?? null;
-    const source = args.source ?? null;
+    const source = defaultRollupSource(args.rollup, args.source);
     const workspace = args.workspace ?? null;
     const statuses = args.status ?? null;
     const sinceTs =
@@ -224,6 +237,7 @@ export default defineTool({
       return {
         data: {
           rollup: args.rollup,
+          source,
           count: rows.length,
           total,
           truncatedByLimit: total > rows.length,
