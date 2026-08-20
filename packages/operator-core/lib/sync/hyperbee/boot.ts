@@ -768,11 +768,11 @@ export interface BootedHarnessHandle {
   onAdmitted(listener: (info: { logKeyHex: string; admittedSize: number }) => void): () => void;
   /**
    * Revoke a device pubkey (D-004). Revocation = drop the pubkey from the
-   * admitted set + stop reading its log:
+   * admitted set + stop reading every log it announced:
    *   (a) add the pubkey to the `revoked` set so a re-announce is refused
    *       (`reason:'revoked'`);
-   *   (b) look up the pubkey's `log_core_key` and remove that log from the
-   *       admitted set (so the next merge no longer reads it);
+   *   (b) look up all of the pubkey's `log_core_key` values and remove those
+   *       logs from the admitted set (so the next merge no longer reads them);
    *   (c) re-merge so the merge set reflects the removal immediately.
    * Best-effort + idempotent: revoking an unknown / already-revoked pubkey is a
    * no-op (the pubkey is still added to `revoked` so a future announce is
@@ -787,7 +787,7 @@ export interface BootedHarnessHandle {
    * For each admitted peer EXCEPT the own log, calls `verifyBinding` with the
    * peer's recorded `{devicePubkey, githubLogin, githubUserId, attestationGistId}`:
    *   - `'fail'` (conclusive) → ENQUEUES the peer's logKey for a drop. The drop
-   *     (delete from `admitted` + `admittedIdentities` + `pubkeyToLogKey`, plus a
+   *     (delete from `admitted` + `admittedIdentities` + `pubkeyToLogKeys`, plus a
    *     `peer_revoked` boot-history event) is APPLIED on a SUBSEQUENT merge pass
    *     under the gate — NOT synchronously here. Does NOT add to the published
    *     `revoked` set (a GitHub-deleted binding may be re-published; normal
@@ -1500,13 +1500,61 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const FROZEN_GRACE_MS = opts.frozenGraceMs ?? REPLICATION_STALL_GRACE_MS;
 
   // ── Revocation (D-004) ── the only blocklist. `revoked` holds device pubkeys
-  // (base64) the read-admission decider refuses; `pubkeyToLogKey` records the
-  // device_pubkey → log_core_key mapping at admit time so `revoke()` can find
-  // and drop the corresponding admitted log. `admitted` is keyed by
-  // `log_core_key`, but a revoke names a `device_pubkey`, so the mapping is the
-  // bridge between the two.
+  // (base64) the read-admission decider refuses; `pubkeyToLogKeys` records every
+  // device_pubkey → log_core_key association at admit time so `revoke()` can
+  // find and drop ALL admitted logs announced by that device. A single device
+  // legitimately announces multiple logs on one topic (member + hive-home),
+  // while `admitted` is keyed by log_core_key and a revoke names only the
+  // device_pubkey, so this multi-value reverse map is the bridge between them.
   const revoked = new Set<string>();
-  const pubkeyToLogKey = new Map<string, string>();
+  const pubkeyToLogKeys = new Map<string, Set<string>>();
+
+  function trackDeviceLog(devicePubkey: string, logKey: string): void {
+    let logKeys = pubkeyToLogKeys.get(devicePubkey);
+    if (!logKeys) {
+      logKeys = new Set<string>();
+      pubkeyToLogKeys.set(devicePubkey, logKeys);
+    }
+    logKeys.add(logKey);
+  }
+
+  function untrackDeviceLog(devicePubkey: string, logKey: string): void {
+    const logKeys = pubkeyToLogKeys.get(devicePubkey);
+    if (!logKeys) return;
+    logKeys.delete(logKey);
+    if (logKeys.size === 0) pubkeyToLogKeys.delete(devicePubkey);
+  }
+
+  /**
+   * Remove one admitted remote log from every boot-scoped ownership/liveness
+   * surface and release its Hypercore session. Callers persist the lifecycle
+   * transition first so a device-wide revoke can write all sibling rows in one
+   * ordered batch. The close is deliberately fire-and-forget: map removal is
+   * the correctness boundary, while a live replicator can take seconds to tear
+   * down and must not hold the merge/revoke hot path.
+   */
+  function dropAdmittedRemoteLog(
+    logKey: string,
+    devicePubkey: string | undefined,
+    context: string,
+  ): void {
+    const droppedLog = admitted.get(logKey);
+    admitted.delete(logKey);
+    replicationStallState.delete(logKey);
+    void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey);
+    admittedIdentities.delete(logKey);
+    advertisedLogHighWater.delete(logKey);
+    if (devicePubkey) untrackDeviceLog(devicePubkey, logKey);
+
+    if (droppedLog && typeof droppedLog.close === 'function') {
+      void droppedLog.close().catch((e: unknown) => {
+        console.error(
+          `[boot] ${context}: closing session for ${peerLabel(logKey)} failed (non-fatal):`,
+          e,
+        );
+      });
+    }
+  }
   // WI-193 (G8): provenance tracking for the UN-REVOKE reconciliation below.
   // Holds ONLY pubkeys that entered `revoked` via the startup seed or
   // applyRevocationRefresh — i.e. from the PUBLISHED revoked-pubkeys list, never
@@ -1628,25 +1676,26 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         revokedViaRefresh.add(pk);
         // Drop from the pending-retry set — a revoked peer must never be retried.
         purgePendingForDevice(pk);
-        // If the peer is currently admitted, drop its log.
-        const logKey = pubkeyToLogKey.get(pk);
-        if (logKey) {
+        // If the device is currently admitted, drop every log it announced.
+        const logKeys = [...(pubkeyToLogKeys.get(pk) ?? [])];
+        if (logKeys.length > 0) {
           await persistPeerLifecycle(
-            [{ logKeyHex: logKey, devicePubkey: pk, state: 'retired' }],
+            logKeys.map((logKey) => ({
+              logKeyHex: logKey,
+              devicePubkey: pk,
+              state: 'retired' as const,
+            })),
             'published revoke',
           );
-          admitted.delete(logKey);
-          replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-          void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
-          pubkeyToLogKey.delete(pk);
-          admittedIdentities.delete(logKey);
-          advertisedLogHighWater.delete(logKey);
-          recordBootEvent(
-            opts.workspaceId,
-            opts.harnessSlug,
-            'peer_revoked',
-            peerLabel(logKey),
-          );
+          for (const logKey of logKeys) {
+            dropAdmittedRemoteLog(logKey, pk, 'published revoke');
+            recordBootEvent(
+              opts.workspaceId,
+              opts.harnessSlug,
+              'peer_revoked',
+              peerLabel(logKey),
+            );
+          }
         }
       }
     }
@@ -1755,7 +1804,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
    * and makes the SERIAL GitHub `verifyBinding` calls OFF the merge lock — at most
    * `reverifyBatchSize` of them per pass, walked round-robin from `reverifyCursor`
    * so the API rate is bounded independently of membership (P-021). It does
-   * NOT mutate `admitted` / `admittedIdentities` / `pubkeyToLogKey`; instead it
+   * NOT mutate `admitted` / `admittedIdentities` / `pubkeyToLogKeys`; instead it
    * ENQUEUES each peer whose binding returns a conclusive `'fail'` into
    * `reverifyDropQueue`, which `drainReverifyDropQueue()` applies UNDER the merge
    * gate on a subsequent pass. Peers on `'pending'` / `'verified'` / a thrown
@@ -1854,15 +1903,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           'channel-2 reverify drop',
         );
       }
-      admitted.delete(logKey);
-      replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-      void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
-      admittedIdentities.delete(logKey);
-      advertisedLogHighWater.delete(logKey);
-      // Clean up the pubkey→logKey reverse mapping.
-      if (identity?.devicePubkey) {
-        pubkeyToLogKey.delete(identity.devicePubkey);
-      }
+      // Remove only this log from the device's reverse-map set. A sibling log
+      // from the same device may still be admitted (for example when the
+      // bounded reverify batch processed only one of the pair).
+      dropAdmittedRemoteLog(logKey, identity?.devicePubkey, 'channel-2 reverify drop');
       recordBootEvent(
         opts.workspaceId,
         opts.harnessSlug,
@@ -2126,7 +2170,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       : await getFlag(FLAGS.SUBSTRATE_SIDECAR, 'system').catch(() => false);
 
   // ── Admission queue (audit P-022, EI-115/EI-116 contributor) ── admitPeer
-  // used to mutate admitted/pubkeyToLogKey/admittedIdentities directly while a
+  // used to mutate admitted/pubkeyToLogKeys/admittedIdentities directly while a
   // merge pass could be iterating them, and its mergeNow() no-op'd against an
   // in-flight pass, deferring the newly-admitted log to the next 1s poll.
   // Admissions now QUEUE here and are drained at the top of each pass under
@@ -2675,20 +2719,6 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         continue;
       }
       try {
-        // Record device_pubkey → log_core_key so `revoke(devicePubkey)` can
-        // find and drop the right admitted log (admitted is keyed by
-        // log_core_key).
-        pubkeyToLogKey.set(frame.device_pubkey, frame.log_core_key);
-        // Record the full identity for this admitted peer so
-        // `reverifyAdmitted()` can re-call verifyBinding without needing the
-        // original frame (rev-v2 A).
-        admittedIdentities.set(frame.log_core_key, {
-          devicePubkey: frame.device_pubkey,
-          githubLogin: frame.github_login,
-          githubUserId: frame.github_user_id,
-          attestationGistId: frame.attestation_gist_id,
-        });
-        newlyResolvedSourceLogs.push(frame.log_core_key);
         if (!admitted.has(frame.log_core_key)) {
           const remote = await (opts.openRemoteLogOverride ?? openRemoteLog)(
             store,
@@ -2703,6 +2733,21 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
           emitAdmitted(frame.log_core_key);
         }
+        // The remote session is now open/admitted. Record its multi-value
+        // device reverse mapping and full identity so device-wide revocation
+        // and per-log channel-2 reverify cleanup remain independently correct.
+        const priorDevice = admittedIdentities.get(frame.log_core_key)?.devicePubkey;
+        if (priorDevice && priorDevice !== frame.device_pubkey) {
+          untrackDeviceLog(priorDevice, frame.log_core_key);
+        }
+        trackDeviceLog(frame.device_pubkey, frame.log_core_key);
+        admittedIdentities.set(frame.log_core_key, {
+          devicePubkey: frame.device_pubkey,
+          githubLogin: frame.github_login,
+          githubUserId: frame.github_user_id,
+          attestationGistId: frame.attestation_gist_id,
+        });
+        newlyResolvedSourceLogs.push(frame.log_core_key);
         await persistPeerLifecycle(
           [{
             logKeyHex: frame.log_core_key,
@@ -4161,7 +4206,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   /**
    * Queue + admit a peer's remote log and trigger a merge. The map mutations
-   * (admitted/pubkeyToLogKey/admittedIdentities) happen inside the merge gate
+   * (admitted/pubkeyToLogKeys/admittedIdentities) happen inside the merge gate
    * (drainAdmissionQueue) so an in-flight pass never races them, and the
    * coalescing mergeNow guarantees the admission is processed before the
    * returned promise resolves (audit P-022). Extracted so the pending-retry
@@ -4175,11 +4220,11 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
 
   /**
    * Revoke a device pubkey (D-004). Adds it to the `revoked` set (so a future
-   * announce is refused), drops its admitted log (so the next merge stops
-   * reading it), drops it from the pending-retry set (D-006: a revoked peer
+   * announce is refused), drops all of its admitted logs (so the next merge
+   * stops reading them), drops it from the pending-retry set (D-006: a revoked peer
    * must never be retried), and re-merges so the removal takes effect immediately.
    * Best-effort + idempotent: an unknown / already-revoked pubkey still gets
-   * added to `revoked` (a no-op for the set) and skips the log drop.
+   * added to `revoked` (a no-op for the set) and skips the log drops.
    */
   async function revoke(devicePubkey: string): Promise<void> {
     // (a) Block future admits + re-announces (decider checks `revoked` first).
@@ -4192,46 +4237,27 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
     // a revoked peer must never be retried even if its channel-2 file eventually
     // appears.
     purgePendingForDevice(devicePubkey);
-    // (b) Drop the already-admitted log for this pubkey, if any.
-    const logKey = pubkeyToLogKey.get(devicePubkey);
-    if (logKey) {
+    // (b) Drop every already-admitted log for this pubkey, if any. A device can
+    // legitimately announce both its member log and the hive-home log.
+    const logKeys = [...(pubkeyToLogKeys.get(devicePubkey) ?? [])];
+    if (logKeys.length > 0) {
       await persistPeerLifecycle(
-        [{ logKeyHex: logKey, devicePubkey, state: 'retired' }],
+        logKeys.map((logKey) => ({
+          logKeyHex: logKey,
+          devicePubkey,
+          state: 'retired' as const,
+        })),
         'explicit revoke',
       );
-      const revokedLog = admitted.get(logKey);
-      admitted.delete(logKey);
-      replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
-      void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
-      pubkeyToLogKey.delete(devicePubkey);
-      admittedIdentities.delete(logKey);
-      advertisedLogHighWater.delete(logKey);
-      // WI-1856 (G9): the Hypercore SESSION `openRemoteLog` opened for this peer
-      // is never used again once dropped from `admitted` — without an explicit
-      // close it leaks (each `store.get({key})` call is a distinct session, not
-      // shared/refcounted by key). Best-effort + optional (a hand-rolled
-      // RemoteLog test fixture may not implement `close`). Fire-and-forget
-      // (NOT awaited): closing a session that still has a live replicator
-      // attached can take multiple seconds to tear down cleanly, and revoke()
-      // is on the hot path (owner-driven, potentially inside a request) — the
-      // peer is already fully refused (revoked/admitted/pubkeyToLogKey all
-      // updated above) before the session finishes closing, so nothing
-      // correctness-relevant waits on it. A close failure never surfaces to
-      // the caller either way.
-      if (revokedLog && typeof revokedLog.close === 'function') {
-        void revokedLog.close().catch((e: unknown) => {
-          console.error(
-            `[boot] revoke: closing session for ${peerLabel(logKey)} failed (non-fatal):`,
-            e,
-          );
-        });
+      for (const logKey of logKeys) {
+        dropAdmittedRemoteLog(logKey, devicePubkey, 'explicit revoke');
+        recordBootEvent(
+          opts.workspaceId,
+          opts.harnessSlug,
+          'peer_revoked',
+          peerLabel(logKey),
+        );
       }
-      recordBootEvent(
-        opts.workspaceId,
-        opts.harnessSlug,
-        'peer_revoked',
-        peerLabel(logKey),
-      );
     }
     // (c) Re-merge so the merge set no longer includes the revoked log.
     await mergeNow();
