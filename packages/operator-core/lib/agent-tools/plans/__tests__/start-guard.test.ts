@@ -89,12 +89,12 @@ vi.mock('../source', async (orig) => {
 // follow-up (WI-38240) — D-098 is explicit that those branches are retired
 // per-file with tests, never by deleting the predicate.
 
-// plans:start fires promotePlanItems fire-and-forget after the start. Stub it so
-// the suite needs no work_items database — and so the retired-axis block below
-// can assert promotion STILL runs with the op_status write gated off (previously
-// it ran for real and its failure was swallowed by the handler's own .catch()).
+// plans:start awaits promotePlanItems before returning so the caller receives
+// its exact queue outcome. Stub it so the suite needs no work_items database —
+// and so the retired-axis block below can assert promotion STILL runs with the
+// op_status write gated off.
 vi.mock('../../../plan-workitem-promotion-run', () => ({
-  promotePlanItems: vi.fn(async () => ({ promoted: 0, flagOff: false })),
+  promotePlanItems: vi.fn(async () => ({ promoted: 0, skipped: 0, flagOff: false })),
 }));
 
 vi.mock('../plan-spec-quality-gate', () => ({
@@ -110,6 +110,9 @@ vi.mock('../with-plan-lock', async (orig) => {
 
 import tool from '../start';
 import { DEFAULT_WORKSPACE_ID } from '../../../workspace-registry';
+import { promotePlanItems } from '../../../plan-workitem-promotion-run';
+
+const promotePlanItemsMock = vi.mocked(promotePlanItems);
 
 const MAKE_CTX = () =>
   ({
@@ -121,7 +124,7 @@ const MAKE_CTX = () =>
     // no harnessSlug → ctxToPlanSourceOpts resolves the papercup default
     role: 'operator' as const,
     principal: { slug: 'agent-test' },
-  } as never);
+  }) as never;
 
 const run = async (args: Record<string, unknown>) =>
   (await tool.handler({ harness: 'papercup', ...args } as never, MAKE_CTX())) as {
@@ -145,6 +148,8 @@ beforeEach(() => {
     specSetHash: null,
     wouldBlock: ['no-first-class-spec-clauses'],
   };
+  promotePlanItemsMock.mockReset();
+  promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false } as never);
 });
 
 /**
@@ -277,15 +282,55 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     // Reporting `status:'started'` on a row that carries nothing is the WI-5825
     // "announced a start that never happened" bug wearing a flag.
     expect(res.data.results[0]).toMatchObject({ ok: true, status: null, opStatusRetired: true });
-    // Promotion is fire-and-forget and may be refused by the spec-triad gate;
-    // this response must not claim items were promoted when it cannot know that.
-    expect(res.data.results[0].message).toContain('verify claimable work-items');
-    expect(res.data.results[0].message).not.toMatch(/items promoted/i);
+    // EI-21016597300738770: the response now carries the exact synchronous
+    // promotion outcome instead of returning ok while a detached refusal is lost.
+    expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
+    expect(res.data.results[0]).toMatchObject({
+      promotion: { promoted: 0, skipped: 0, flagOff: false },
+    });
+    expect(res.data.results[0].message).toContain('promotion completed before this response');
     // transitioned MUST stay false, or the `plan started` demand event fires at
     // the retired Queen for a transition that did not occur. This is the trap in
     // the retired branch: prev_op_status mirrors the CURRENT value there, so a
     // never-started plan scores `null !== 'started'` unless axisLive gates it.
     expect(res.data.results[0]).toMatchObject({ transitioned: false });
+  });
+
+  it('surfaces a spec-triad promotion refusal and its concrete repair work-item', async () => {
+    promotePlanItemsMock.mockResolvedValue({
+      promoted: 0,
+      skipped: 3,
+      specTriadBlocked: true,
+      specTriadMissing: ['requirements', 'design'],
+      specTriadWorkItem: 'WI-TRIAD-1',
+    } as never);
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      promotion: {
+        promoted: 0,
+        skipped: 3,
+        specTriadBlocked: true,
+        specTriadWorkItem: 'WI-TRIAD-1',
+      },
+    });
+    expect(res.data.results[0].message).toContain('requirements, design');
+    expect(res.data.results[0].message).toContain('WI-TRIAD-1');
+  });
+
+  it('keeps approval best-effort but reports a promotion exception explicitly', async () => {
+    promotePlanItemsMock.mockRejectedValue(new Error('promotion boom'));
+
+    const res = await run({ slug: 'live-plan-2026-06-02' });
+
+    expect(res.data.results[0]).toMatchObject({
+      ok: true,
+      promotion: null,
+      promotionError: 'promotion boom',
+    });
+    expect(res.data.results[0].message).toContain('Item promotion failed: promotion boom');
   });
 
   it('WI-5825: still detects plan_not_found — the retired branch reads the SAME key the write used', async () => {

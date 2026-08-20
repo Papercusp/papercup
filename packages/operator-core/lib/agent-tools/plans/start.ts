@@ -50,35 +50,36 @@ import { checkPlanStartable } from './plan-start-gate';
 import { evaluatePlanSpecQualityGate, type PlanSpecQualityGateVerdict } from './plan-spec-quality-gate';
 import { mugKettleSystemEnabled } from '../../pot/started';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
-import { trackDetached } from '../../detached-imports';
+import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 
 /** Boolean that also accepts the exact wire strings 'true'/'false' — same
  * EI-302 manifest-pinned-schema tolerance as plans:new's `force`. */
-const stringTolerantBool = z.preprocess(
-  (v) => (v === 'true' ? true : v === 'false' ? false : v),
-  z.boolean(),
-);
+const stringTolerantBool = z.preprocess((v) => (v === 'true' ? true : v === 'false' ? false : v), z.boolean());
 
-const argsSchema = z.object({
-  slug: z.string().min(1).optional().describe('Plan slug to start (filename without .md).'),
-  slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to start in one call.'),
-  consulted: stringTolerantBool
-    .optional()
-    .describe(
-      'Answer to a `consult_available` refusal (P-010 checkpoint consult). Pass true after actually consulting a listed candidate (name the consult in consult_reason), or false + consult_reason to proceed WITHOUT consulting (the reason is recorded). Omit on a first call — the checkpoint routing runs then. Applies to every slug in a bulk call. Accepts the wire strings "true"/"false" too.',
-    ),
-  consult_reason: z
-    .string()
-    .min(1)
-    .max(2000)
-    .optional()
-    .describe('Why you are overriding (consulted: false) or what the consult concluded (consulted: true). Recorded.'),
-  harness: harnessArg,
-}).refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
-  message: 'pass `slug` or `slugs`',
-}).refine((a) => a.consulted !== false || Boolean(a.consult_reason), {
-  message: 'consulted: false requires consult_reason — state why you are proceeding without consulting (it is recorded)',
-});
+const argsSchema = z
+  .object({
+    slug: z.string().min(1).optional().describe('Plan slug to start (filename without .md).'),
+    slugs: z.array(z.string().min(1)).min(1).max(200).optional().describe('Plan slugs to start in one call.'),
+    consulted: stringTolerantBool
+      .optional()
+      .describe(
+        'Answer to a `consult_available` refusal (P-010 checkpoint consult). Pass true after actually consulting a listed candidate (name the consult in consult_reason), or false + consult_reason to proceed WITHOUT consulting (the reason is recorded). Omit on a first call — the checkpoint routing runs then. Applies to every slug in a bulk call. Accepts the wire strings "true"/"false" too.',
+      ),
+    consult_reason: z
+      .string()
+      .min(1)
+      .max(2000)
+      .optional()
+      .describe('Why you are overriding (consulted: false) or what the consult concluded (consulted: true). Recorded.'),
+    harness: harnessArg,
+  })
+  .refine((a) => Boolean(a.slug) || (a.slugs?.length ?? 0) > 0, {
+    message: 'pass `slug` or `slugs`',
+  })
+  .refine((a) => a.consulted !== false || Boolean(a.consult_reason), {
+    message:
+      'consulted: false requires consult_reason — state why you are proceeding without consulting (it is recorded)',
+  });
 
 export default defineTool({
   name: 'plans:start',
@@ -86,8 +87,7 @@ export default defineTool({
     "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag). Runs the plan-start CHECKPOINT consult (min:1): the plan body is routed through the relevance router; any selectable live peer — floor-qualified or best-available below the floor — nudge-refuses once with `consult_available` + labeled candidates (override: consulted + consult_reason).",
   guidance: {
     when: 'An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.',
-    notWhen:
-      'The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.',
+    notWhen: 'The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.',
     chaining: 'plans:list to find the slug, then plans:start { slug }.',
     seeAlso: [
       'plans:launch (have an agent autonomously advance the started plan)',
@@ -268,9 +268,7 @@ export default defineTool({
                         ownerIds.map((ownerId) => ({ ownerId })),
                         { hydratePerId: true },
                       );
-                      return Object.fromEntries(
-                        [...verdicts.values()].map((v) => [v.ownerId, v.sessionState]),
-                      );
+                      return Object.fromEntries([...verdicts.values()].map((v) => [v.ownerId, v.sessionState]));
                     },
                   }),
                 getExcerpts: (refs) => consult.fetchTurnExcerpts(getOrgPg().sql, startWorkspaceId, refs),
@@ -305,15 +303,13 @@ export default defineTool({
               // kept everyone out — record the honest verdict on the result.
               checkpointConsult = {
                 verdict: 'no_live_responder',
-                note:
-                  'The plan-start consult found candidate peer history, but no LIVE candidate exists to consult (min:1 physically unfillable) — the start proceeded. Consider get_feedback later if a relevant peer comes alive.',
+                note: 'The plan-start consult found candidate peer history, but no LIVE candidate exists to consult (min:1 physically unfillable) — the start proceeded. Consider get_feedback later if a relevant peer comes alive.',
               };
             }
             if (outcome.outcome === 'proceed_with_excerpts') {
               checkpointConsult = {
                 verdict: 'routed_dead_context',
-                note:
-                  'The router found above-floor peer history for this plan, but every candidate context is dead and no live peer could fill the min:1 — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.',
+                note: 'The router found above-floor peer history for this plan, but every candidate context is dead and no live peer could fill the min:1 — no wake is possible, so their matched transcript excerpts are injected here instead (retrieval, not consult). Read them before fanning out.',
                 candidates: outcome.candidates.map((c) => ({
                   ownerId: c.ownerId,
                   score: c.score,
@@ -393,10 +389,7 @@ export default defineTool({
         const transitioned = axisLive && row.prev_op_status !== 'started';
 
         if (transitioned) {
-          void Promise.all([
-            import('../../calibration/capture'),
-            import('../coordination/identity'),
-          ])
+          void Promise.all([import('../../calibration/capture'), import('../coordination/identity')])
             .then(([cal, ident]) =>
               cal.recordPrediction({
                 predictor: ident.resolveAgentIdentity(ctx).ownerId,
@@ -433,18 +426,41 @@ export default defineTool({
 
         ctxAny.metadata?.({ slug, harnessSlug, status: row?.op_status, autoApproved, transitioned });
 
-        const promoWorkspaceId = startWorkspaceId;
-        void trackDetached(import('../../plan-workitem-promotion-run'))
-          .then(async (m) => {
-            const { resolveAgentIdentity } = await import('../coordination/identity');
-            await m.promotePlanItems({
-              workspaceId: promoWorkspaceId,
-              harnessSlug,
-              planSlug: slug,
-              createdBy: resolveAgentIdentity(ctx).ownerId,
-            });
-          })
-          .catch(() => {});
+        // EI-21016597300738770: promotion used to run detached and its result was
+        // discarded. A spec-triad refusal therefore returned `ok:true` from this
+        // tool, then a fleet launch saw only a generic zero-row lane — even though
+        // promotePlanItems had already produced the exact missing legs + repair WI.
+        // Await the idempotent promotion so the approval result carries the actual
+        // queue outcome. Promotion remains best-effort with respect to approval: a
+        // failure is reported explicitly, but does not roll back the plan status.
+        let promotion: PromotePlanResult | null = null;
+        let promotionError: string | null = null;
+        try {
+          const [{ promotePlanItems }, { resolveAgentIdentity }] = await Promise.all([
+            import('../../plan-workitem-promotion-run'),
+            import('../coordination/identity'),
+          ]);
+          promotion = await promotePlanItems({
+            workspaceId: startWorkspaceId,
+            harnessSlug,
+            planSlug: slug,
+            createdBy: resolveAgentIdentity(ctx).ownerId,
+          });
+        } catch (error) {
+          promotionError = (error as Error).message;
+        }
+
+        const promotionMessage = promotionError
+          ? `Item promotion failed: ${promotionError}. The plan approval remains recorded, but no queue outcome can be claimed.`
+          : promotion?.specTriadBlocked
+            ? `Item promotion is blocked by the spec triad (missing: ${(promotion.specTriadMissing ?? []).join(', ') || 'required sections'}).${promotion.specTriadWorkItem ? ` Resolve ${promotion.specTriadWorkItem}, then rerun plans:start.` : ''}`
+            : promotion?.specQualityBlocked
+              ? 'Item promotion is blocked by the current first-class spec-quality verdict; inspect `promotion.specQuality` before retrying.'
+              : promotion?.flagOff
+                ? 'Item promotion is disabled by papercusp-plan-workitem-promotion; no queue rows were minted.'
+                : promotion
+                  ? `Item promotion completed before this response: promoted ${promotion.promoted}, skipped ${promotion.skipped}.`
+                  : 'Item promotion returned no outcome; verify claimable work-items before launching a fleet.';
 
         return {
           ok: true as const,
@@ -458,17 +474,19 @@ export default defineTool({
           autoApproved,
           transitioned,
           previousOpStatus: row?.prev_op_status ?? null,
+          promotion,
+          ...(promotionError ? { promotionError } : {}),
           ...(specQuality ? { specQuality } : {}),
           ...(checkpointConsult ? { checkpointConsult } : {}),
+          message:
+            promotionMessage +
+            (axisLive
+              ? ''
+              : ' The operational started axis is PERMANENTLY RETIRED (P-068 DELETED papercusp-mug-kettle-system — there is no flag to flip and no toggle in /admin/features), so op_status was not written — su agents self-select these items via scheduler:get_next instead of waiting for a dispatcher.'),
           ...(axisLive
             ? {}
             : {
                 opStatusRetired: true as const,
-                message:
-                  'Plan approved. Item promotion runs asynchronously; verify claimable work-items before launching a fleet. The operational started axis is PERMANENTLY RETIRED ' +
-                  '(P-068 DELETED papercusp-mug-kettle-system — there is no flag to flip and no ' +
-                  'toggle in /admin/features), so op_status was not written — su agents self-select ' +
-                  'these items via scheduler:get_next instead of waiting for a dispatcher.',
               }),
         };
       },

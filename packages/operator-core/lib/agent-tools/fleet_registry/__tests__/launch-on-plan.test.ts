@@ -98,12 +98,14 @@ vi.mock('../leader-control', () => ({
 // that, failing 40 tests at once (EI-19310192267009629).
 // template/inputSchema null => planSchemaSource 'none' => the start gate passes.
 // Individual tests override with mockResolvedValueOnce.
-const readPlanBySlugMock = vi.fn(async (..._args: unknown[]): Promise<any> => ({
-  slug: 'my-plan',
-  parsed: { items: [] },
-  archived: false,
-  row: { planSlug: 'my-plan', template: null, inputSchema: null, templateData: null },
-}));
+const readPlanBySlugMock = vi.fn(
+  async (..._args: unknown[]): Promise<any> => ({
+    slug: 'my-plan',
+    parsed: { items: [] },
+    archived: false,
+    row: { planSlug: 'my-plan', template: null, inputSchema: null, templateData: null },
+  }),
+);
 
 vi.mock('../../plans/source', () => ({
   resolveHarnessPlansDir: vi.fn(async (slug: string) => ({ harnessSlug: slug, workspaceId: 'ws-1' })),
@@ -147,9 +149,7 @@ const previewSpecPoolEffectMock = vi.fn(
     harness: 'papercusp',
   }),
 );
-const evaluateCollapseGuardMock = vi.fn(
-  (..._args: unknown[]): CollapseGuardVerdict => ({ refuse: false, errors: [] }),
-);
+const evaluateCollapseGuardMock = vi.fn((..._args: unknown[]): CollapseGuardVerdict => ({ refuse: false, errors: [] }));
 vi.mock('../../../scheduler/spec-pool-preview', () => ({
   previewSpecPoolEffect: (...args: unknown[]) => previewSpecPoolEffectMock(...args),
   evaluateCollapseGuard: (...args: unknown[]) => evaluateCollapseGuardMock(...args),
@@ -324,11 +324,7 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     const payload = JSON.parse((res as any).content[0].text);
 
     expect(payload.spawnedLeader).toMatchObject({ registered: true });
-    expect(setFleetLeaderMock).toHaveBeenCalledWith(
-      'ws-1',
-      'spawn-led',
-      payload.spawnedLeader.ownerId,
-    );
+    expect(setFleetLeaderMock).toHaveBeenCalledWith('ws-1', 'spawn-led', payload.spawnedLeader.ownerId);
     expect(ensureFleetLeaderControlMock).toHaveBeenCalledWith({
       workspaceId: 'ws-1',
       ownerId: payload.spawnedLeader.ownerId,
@@ -795,7 +791,13 @@ describe('claimableStatesForKinds + builder states threading (P-010)', () => {
   });
 
   it('mergeKindIntoClaimSpec derives states when the leader spec had none, and PRESERVES a leader-set states', () => {
-    const noStates = { specVersion: '1.0', specId: 'leader-x', revision: 3, view: { filter: { field: 'priority', op: '<=', value: 2 } }, rank: { mode: 'lexicographic' as const, terms: [{ expr: 'priority', dir: 'asc' as const }] } };
+    const noStates = {
+      specVersion: '1.0',
+      specId: 'leader-x',
+      revision: 3,
+      view: { filter: { field: 'priority', op: '<=', value: 2 } },
+      rank: { mode: 'lexicographic' as const, terms: [{ expr: 'priority', dir: 'asc' as const }] },
+    };
     expect((mergeKindIntoClaimSpec(noStates as never, ['bug']) as { states?: string[] }).states).toEqual(['open']);
     const withStates = { ...noStates, states: ['failing'] };
     expect((mergeKindIntoClaimSpec(withStates as never, ['bug']) as { states?: string[] }).states).toEqual(['failing']);
@@ -1532,7 +1534,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
   beforeEach(async () => {
     spawnConsoleMock.mockReset();
     spawnConsoleMock.mockImplementation((_opts) => ({
-      status: 'ok', terminal: `term-${spawnConsoleMock.mock.calls.length}`, pid: 100 + spawnConsoleMock.mock.calls.length,
+      status: 'ok',
+      terminal: `term-${spawnConsoleMock.mock.calls.length}`,
+      pid: 100 + spawnConsoleMock.mock.calls.length,
     }));
     fetchGatewayHeadroomMock.mockReset();
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
@@ -1576,7 +1580,10 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     // opened member 2. The fix: the unconfirmed first probe earns one bounded
     // re-probe, the slow boot verifies there, and the launch proceeds normally.
     launchTransaction.verify.mockResolvedValueOnce({
-      agentStarted: null, waitedMs: 25_000, sessions: [], note: 'UNVERIFIED',
+      agentStarted: null,
+      waitedMs: 25_000,
+      sessions: [],
+      note: 'UNVERIFIED',
     });
     const res = await tool.handler(
       { name: 'Slow Canary Fleet', plan: 'my-plan', harness: 'papercusp', count: 5 } as never,
@@ -1928,10 +1935,7 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
       expect.stringContaining('--owner-id=su-retry-1'),
       expect.stringContaining('--owner-id=su-retry-2'),
     ]);
-    expect(payload.opened.map((member: { ownerId: string }) => member.ownerId)).toEqual([
-      'su-retry-1',
-      'su-retry-2',
-    ]);
+    expect(payload.opened.map((member: { ownerId: string }) => member.ownerId)).toEqual(['su-retry-1', 'su-retry-2']);
     expect(payload.relaunchSuppressed).toBeUndefined();
   });
 
@@ -2105,9 +2109,20 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
   it('confirmClaimCollapse:true forwards confirm to the guard and launches the pre-staged lane anyway', async () => {
     previewSpecPoolEffectMock.mockResolvedValue({ matched: 0, pool: 12, states: ['open'], harness: 'papercusp' });
     // With confirm the guard does not refuse (verified by its own suite); assert the handler forwards it.
-    evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [], warning: 'pool-collapse confirmed by caller' });
+    evaluateCollapseGuardMock.mockReturnValue({
+      refuse: false,
+      errors: [],
+      warning: 'pool-collapse confirmed by caller',
+    });
     const res = await tool.handler(
-      { name: 'Prestaged Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'], confirmClaimCollapse: true } as never,
+      {
+        name: 'Prestaged Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        claimKinds: ['bug'],
+        confirmClaimCollapse: true,
+      } as never,
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
@@ -2137,6 +2152,16 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
   // {ok:true}` while the plan-scoped lane matched exactly ONE claimable row for a
   // 10-member fleet.
   it('REFUSES a starving PLAN-ONLY fleet (no claimKinds) BEFORE any terminal opens — same guard as claimKinds', async () => {
+    // EI-21016597300738770 live shape: promotion knew the exact spec-triad
+    // blocker + repair WI, then the zero-lane EARLY return discarded that
+    // diagnosis and exposed only the generic collapse refusal.
+    promotePlanItemsMock.mockResolvedValue({
+      promoted: 0,
+      skipped: 5,
+      specTriadBlocked: true,
+      specTriadMissing: ['requirements', 'design'],
+      specTriadWorkItem: 'WI-TRIAD-1',
+    });
     previewSpecPoolEffectMock.mockResolvedValue({ matched: 0, pool: 12, states: ['open'], harness: 'papercusp' });
     evaluateCollapseGuardMock.mockReturnValue({
       refuse: true,
@@ -2152,6 +2177,9 @@ describe('fleet:launch-on-plan handler — P-010 claimKinds pool-collapse guard'
     expect(text).toContain('plan=`my-plan`');
     expect(text).toContain('NO members were opened');
     expect(text).toContain('confirmClaimCollapse:true');
+    expect(text).toMatch(/0 of 5 open plan items.*spec triad.*Nothing is claimable yet/i);
+    expect(text).toContain('requirements, design');
+    expect(text).toContain('WI-TRIAD-1');
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(setClaimSpecMock).not.toHaveBeenCalled();
   });
@@ -2204,7 +2232,12 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     setClaimSpecMock.mockReset();
     setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
     previewSpecPoolEffectMock.mockReset();
-    previewSpecPoolEffectMock.mockResolvedValue({ matched: 1_252, pool: 1_400, states: ['open'], harness: 'papercusp' });
+    previewSpecPoolEffectMock.mockResolvedValue({
+      matched: 1_252,
+      pool: 1_400,
+      states: ['open'],
+      harness: 'papercusp',
+    });
     evaluateCollapseGuardMock.mockReset();
     evaluateCollapseGuardMock.mockReturnValue({ refuse: false, errors: [] });
     aggregateAdmittedCompositionMock.mockReset();
@@ -2213,7 +2246,14 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
 
   const launch = async (args: Record<string, unknown> = {}) =>
     tool.handler(
-      { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug', 'change'], ...args } as never,
+      {
+        name: 'Drain Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        claimKinds: ['bug', 'change'],
+        ...args,
+      } as never,
       {} as never,
     );
 
@@ -2239,7 +2279,12 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     // match before them (strictly larger). Reporting one against the other is a true
     // percentage on the wrong base — the very defect class this guard exists to catch,
     // and it shipped inside the guard's own message once.
-    previewSpecPoolEffectMock.mockResolvedValue({ matched: 3_000, pool: 4_000, states: ['open'], harness: 'papercusp' });
+    previewSpecPoolEffectMock.mockResolvedValue({
+      matched: 3_000,
+      pool: 4_000,
+      states: ['open'],
+      harness: 'papercusp',
+    });
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch();
     const warning = JSON.parse((res as any).content[0].text).claimSpecApplied.warning as string;
@@ -2251,7 +2296,12 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
   });
 
   it('omits the pre-floor aside when nothing was filtered out — no confusing "(of N matched)" when N is the same number', async () => {
-    previewSpecPoolEffectMock.mockResolvedValue({ matched: 1_252, pool: 1_400, states: ['open'], harness: 'papercusp' });
+    previewSpecPoolEffectMock.mockResolvedValue({
+      matched: 1_252,
+      pool: 1_400,
+      states: ['open'],
+      harness: 'papercusp',
+    });
     aggregateAdmittedCompositionMock.mockResolvedValue(DEGENERATE);
     const res = await launch();
     const warning = JSON.parse((res as any).content[0].text).claimSpecApplied.warning as string;
@@ -2292,7 +2342,10 @@ describe('fleet:launch-on-plan handler — WI-6673 degenerate-lane (observation-
     // Composition describing a different population than the one the fleet drains would be
     // a confidently-wrong reassurance — the failure mode, not a milder version of it.
     expect(aggregateAdmittedCompositionMock).toHaveBeenCalledTimes(1);
-    const [, opts] = aggregateAdmittedCompositionMock.mock.calls[0] as [unknown, { harness: string; states?: readonly string[] }];
+    const [, opts] = aggregateAdmittedCompositionMock.mock.calls[0] as [
+      unknown,
+      { harness: string; states?: readonly string[] },
+    ];
     expect(opts.harness).toBe('papercusp');
     expect(opts.states).toEqual(expect.arrayContaining(['open']));
   });

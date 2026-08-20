@@ -71,10 +71,7 @@ import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller } from '.
 import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from '../work_items/mirror-guard';
 import { itemMatchesRawClaimSpec } from '../../scheduler/fleet-scope-admission';
 import { reseedLeaderCompactionLimit } from './take-leadership-core';
-import {
-  ensureFleetLeaderControl,
-  type LeaderControlOutcome,
-} from './leader-control';
+import { ensureFleetLeaderControl, type LeaderControlOutcome } from './leader-control';
 import { resolveSeatLaunch, seatAvailabilityForFleet } from '../../fleet/seat-accounting';
 import {
   resolveWorkspaceHiveScope,
@@ -1342,7 +1339,9 @@ export default defineTool({
         planRow = found.row;
       }
     } catch (e: any) {
-      return err(`Could not resolve ${planSlug ? `plan \`${planSlug}\`` : `harness \`${harness}\``}: ${e?.message ?? e}`);
+      return err(
+        `Could not resolve ${planSlug ? `plan \`${planSlug}\`` : `harness \`${harness}\``}: ${e?.message ?? e}`,
+      );
     }
 
     // P-006 start gate, checked HERE for the same reason the existence check is
@@ -1374,9 +1373,7 @@ export default defineTool({
       if (!gate.ok) {
         return err(
           `Plan \`${planSlug}\` cannot start: ${gate.refusal.hint}` +
-            (gate.refusal.missing.length > 0
-              ? ` (missing: ${gate.refusal.missing.join(', ')})`
-              : ''),
+            (gate.refusal.missing.length > 0 ? ` (missing: ${gate.refusal.missing.join(', ')})` : ''),
         );
       }
     }
@@ -1541,9 +1538,13 @@ export default defineTool({
     // plan= filter whenever claimKinds is given. Best-effort throughout: a spec read/write failure
     // never blocks the launch (members still start; get_next's harness floor still scopes them to
     // this pot).
-    let claimSpecApplied:
-      | { ok: boolean; revision?: number; warning?: string; errors?: string[]; poolEffect?: SpecPoolEffect }
-      | null = null;
+    let claimSpecApplied: {
+      ok: boolean;
+      revision?: number;
+      warning?: string;
+      errors?: string[];
+      poolEffect?: SpecPoolEffect;
+    } | null = null;
     // P-010: when the claimKinds pool-collapse guard refuses, abort the launch BEFORE any
     // terminal opens (the whole point — a starving spec must never open members onto nothing).
     let claimCollapseRefusal: { errors: string[]; poolEffect: SpecPoolEffect | null } | null = null;
@@ -1609,9 +1610,7 @@ export default defineTool({
         try {
           const validated = validateClaimSpec(specToApply);
           if (validated.ok && validated.spec) {
-            const { previewSpecPoolEffect, evaluateCollapseGuard } = await import(
-              '../../scheduler/spec-pool-preview'
-            );
+            const { previewSpecPoolEffect, evaluateCollapseGuard } = await import('../../scheduler/spec-pool-preview');
             // Count the REAL work_items partition (the launch's resolved workspace) — NOT the
             // claim-spec store partition (resolveClaimSpecWorkspace), which is a different key
             // space. This mirrors scheduler:set_claim_spec's own countScope (ident.workspaceId).
@@ -1729,11 +1728,16 @@ export default defineTool({
     // set.
     if (claimCollapseRefusal) {
       const pe = claimCollapseRefusal.poolEffect;
-      const laneDesc = args.claimKinds?.length
-        ? `claimKinds=[${args.claimKinds.join(',')}]`
-        : `plan=\`${planSlug}\``;
+      const laneDesc = args.claimKinds?.length ? `claimKinds=[${args.claimKinds.join(',')}]` : `plan=\`${planSlug}\``;
+      // EI-21016597300738770: this is an EARLY return, before the ordinary
+      // success-message assembler appends promotionFailsafeWarning. When
+      // promotion itself explained the zero lane (notably specTriadBlocked +
+      // its concrete filing), dropping that warning left callers with only a
+      // generic 0/N refusal and no discoverable exit. Preserve the structured
+      // diagnosis here too; the collapse guard still refuses and opens nothing.
+      const promotionWarning = planSlug ? promotionFailsafeWarning(planSlug, promotionFailsafe) : null;
       return err(
-        `${claimCollapseRefusal.errors.join('\n')}\n` +
+        `${promotionWarning ? `${promotionWarning}\n` : ''}${claimCollapseRefusal.errors.join('\n')}\n` +
           (pe
             ? `${laneDesc} matched ${pe.matched} of ${pe.pool} claimable row(s) under states=[${pe.states.join(
                 ',',
@@ -2024,10 +2028,10 @@ export default defineTool({
       }
       if (remotePlacements.length) {
         lines.push(
-          'ASYNC contract: each signed request federates on the next sync tick; a target spawns ONLY if its owner enabled accept-delegated-seats (otherwise the request expires after 60 min — agree with that machine\'s owner first). Watch members arrive via fleet:status / coord:presence (federated session presence carries the fleet label); a refusal federates back as a p2p receipt (p2p:trace with the requestOfferId).',
+          "ASYNC contract: each signed request federates on the next sync tick; a target spawns ONLY if its owner enabled accept-delegated-seats (otherwise the request expires after 60 min — agree with that machine's owner first). Watch members arrive via fleet:status / coord:presence (federated session presence carries the fleet label); a refusal federates back as a p2p receipt (p2p:trace with the requestOfferId).",
         );
         lines.push(
-          'NOTE: the fleet claim spec set here is MACHINE-LOCAL — remote members pull work-items under their own machine\'s spec (default order, scoped by the pot floor). The plan\'s promoted work-items federate, so they still land on this plan.',
+          "NOTE: the fleet claim spec set here is MACHINE-LOCAL — remote members pull work-items under their own machine's spec (default order, scoped by the pot floor). The plan's promoted work-items federate, so they still land on this plan.",
         );
         lines.push(LEADER_AUTO_MODE_DIRECTIVE);
         LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
@@ -2178,9 +2182,8 @@ export default defineTool({
     let codexPreflightWarning: string | null = null;
     if (effAgent === 'codex' && effModel) {
       try {
-        const { preflightCodexModel, resolveCodexPreflightHome } = await import(
-          '../../inference-gateway/codex-oauth-proxy'
-        );
+        const { preflightCodexModel, resolveCodexPreflightHome } =
+          await import('../../inference-gateway/codex-oauth-proxy');
         const home = await resolveCodexPreflightHome(effAccount, workspaceId);
         if (home) {
           const { parseBridgeModel } = await import('../../inference-gateway/codex-cli-bridge');
@@ -2244,8 +2247,7 @@ export default defineTool({
       const unopenedRetryOwnerIds = priorLaunchTransaction.recovery.retryOwnerIds.filter(
         (memberOwnerId) => !opened.has(memberOwnerId),
       );
-      const openedWaveRecovered =
-        opened.size > 0 && [...opened].every((memberOwnerId) => live.has(memberOwnerId));
+      const openedWaveRecovered = opened.size > 0 && [...opened].every((memberOwnerId) => live.has(memberOwnerId));
       if (openedWaveRecovered && unopenedRetryOwnerIds.length === requestedOpenCount) {
         try {
           await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.priorAt });
@@ -2405,8 +2407,7 @@ export default defineTool({
           try {
             ownBriefText = readFileSync(ownPath, 'utf8');
           } catch (e: any) {
-            const readFailure =
-              `member ${i + 1}: could not read perMemberLaunchContext[${i}] \`${ownPath}\` (${e?.message ?? e})`;
+            const readFailure = `member ${i + 1}: could not read perMemberLaunchContext[${i}] \`${ownPath}\` (${e?.message ?? e})`;
             perMemberReadErrors.push(`${readFailure} — refusing the launch.`);
             perMemberReadFailures.push(readFailure);
           }
@@ -2486,7 +2487,10 @@ export default defineTool({
       const kickoffIds = extractKickoffWorkItemIds(kickoffBriefTexts);
       const claimSpecWorkspaceId = resolveClaimSpecWorkspace(workspaceId);
       if (kickoffIds.length > 0 && !args.confirmKickoffMismatch && claimSpecWorkspaceId) {
-        const effectiveSpec = await getClaimSpec({ cupId: fleetSpecBeeKey(fleetSlug), workspaceId: claimSpecWorkspaceId });
+        const effectiveSpec = await getClaimSpec({
+          cupId: fleetSpecBeeKey(fleetSlug),
+          workspaceId: claimSpecWorkspaceId,
+        });
         const { lookupWorkItem } = await import('../work_items/_lookup');
         const mismatches: string[] = [];
         const unreadable: string[] = [];
@@ -2630,11 +2634,9 @@ export default defineTool({
     };
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
     /** The folded, fully-resolved config for member `i` (0-indexed). */
-    const resolvedMemberConfig = (i: number): FleetMemberDefaults =>
-      foldMemberSpec(fleetDefaults, memberSpecs[i]);
+    const resolvedMemberConfig = (i: number): FleetMemberDefaults => foldMemberSpec(fleetDefaults, memberSpecs[i]);
     const launchRequestedAt = Date.now();
-    const requestedMemberIds =
-      resumeOwnerIds ?? Array.from({ length: openCount }, () => `su-${randomUUID()}`);
+    const requestedMemberIds = resumeOwnerIds ?? Array.from({ length: openCount }, () => `su-${randomUUID()}`);
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(i);
       return memberLaunchCommand({
@@ -2650,27 +2652,24 @@ export default defineTool({
         launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
       });
     });
-    const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from(
-      { length: openCount },
-      (_v, i) => {
-        const folded = resolvedMemberConfig(i);
-        const modelSpec = composeModelSpec(folded.model, folded.effort) ?? null;
-        return {
-          ownerId: requestedMemberIds[i],
-          agent: folded.agent,
-          workspaceId,
-          harnessSlug: harness,
-          planSlug: planSlug ?? null,
-          model: modelSpec,
-          effort: modelEffortFromSpec(modelSpec),
-          account: folded.account ?? 'default',
-          carry: folded.carry ?? 'warm',
-          visibility: folded.headless ? 'headless' : 'visible',
-          fleetSlug,
-          fleetRole: 'member',
-        };
-      },
-    );
+    const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from({ length: openCount }, (_v, i) => {
+      const folded = resolvedMemberConfig(i);
+      const modelSpec = composeModelSpec(folded.model, folded.effort) ?? null;
+      return {
+        ownerId: requestedMemberIds[i],
+        agent: folded.agent,
+        workspaceId,
+        harnessSlug: harness,
+        planSlug: planSlug ?? null,
+        model: modelSpec,
+        effort: modelEffortFromSpec(modelSpec),
+        account: folded.account ?? 'default',
+        carry: folded.carry ?? 'warm',
+        visibility: folded.headless ? 'headless' : 'visible',
+        fleetSlug,
+        fleetRole: 'member',
+      };
+    });
     // Back-compat: `command` (singular) is reported/reused where every member is
     // identical (the common case — no perMemberLaunchContext).
     const command = memberCommands[0] ?? '';
@@ -2983,10 +2982,7 @@ export default defineTool({
             for (const memberOwnerId of pending) {
               unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
             }
-            launchTransaction.unconfirmedMemberIds = [
-              ...(launchTransaction.unconfirmedMemberIds ?? []),
-              ...pending,
-            ];
+            launchTransaction.unconfirmedMemberIds = [...(launchTransaction.unconfirmedMemberIds ?? []), ...pending];
           } else {
             const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
             for (const memberOwnerId of openedThisWave) {
@@ -3029,13 +3025,9 @@ export default defineTool({
       // `unconfirmed`/`recovery.retryOwnerIds` for later liveness reconciliation.
       wave.state = 'partial';
       const waveFullyOpened = openedThisWave.length === ownerIds.length;
-      const wavePositivelyFailed =
-        spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
+      const wavePositivelyFailed = spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
       const canContinueAfterUnconfirmedWave =
-        waveIndex > 0 &&
-        launchTransaction.verifiedMemberIds.length > 0 &&
-        waveFullyOpened &&
-        !wavePositivelyFailed;
+        waveIndex > 0 && launchTransaction.verifiedMemberIds.length > 0 && waveFullyOpened && !wavePositivelyFailed;
       if (canContinueAfterUnconfirmedWave) {
         await persistLaunchTransaction();
         continue;
@@ -3263,9 +3255,7 @@ export default defineTool({
         // These members OPENED and were neither confirmed nor observed failing —
         // a caller must treat them as possibly-live (verify via coord:presence),
         // never as a shortfall to relaunch into.
-        unverifiedMembers: unconfirmed.length
-          ? unconfirmed.map((u) => ({ ownerId: u.ownerId, note: u.note }))
-          : null,
+        unverifiedMembers: unconfirmed.length ? unconfirmed.map((u) => ({ ownerId: u.ownerId, note: u.note })) : null,
         // P-006: the MACHINE-READABLE fill verdict, so a caller never has to infer "did I get the
         // fleet I asked for?" from an opened count whose denominator is the post-clamp attempt.
         fleetSize: fill.fleetSize,
