@@ -814,6 +814,19 @@ export function validateIphoneShellScaffold(
     errors.push(
       `${paths.testScript}: must verify a non-zero executed test count`,
     );
+  if (section.hostStrategy === "remote-host") {
+    requireTokens(
+      errors,
+      paths.testScript,
+      tests,
+      ["simctl boot", "simctl spawn", "launchctl print system"],
+      "bounded headless simulator readiness",
+    );
+    if (/simctl\s+bootstatus\b/.test(tests))
+      errors.push(
+        `${paths.testScript}: remote-host runners may not use GUI-dependent simctl bootstatus; use a bounded simctl spawn readiness probe`,
+      );
+  }
 
   requireTokens(
     errors,

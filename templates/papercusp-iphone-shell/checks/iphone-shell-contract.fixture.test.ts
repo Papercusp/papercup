@@ -238,6 +238,11 @@ xcrun simctl list devices available
     root,
     paths.testScript,
     `#!/usr/bin/env bash
+xcrun simctl boot fixture-udid || true
+for attempt in $(seq 1 60); do
+  xcrun simctl spawn fixture-udid launchctl print system >/dev/null 2>&1 && break
+  sleep 1
+done
 xcodebuild build-for-testing -scheme Harbor -resultBundlePath ios/build/build.xcresult
 xcodebuild test-without-building -scheme Harbor -resultBundlePath ios/build/test.xcresult
 xcrun xcresulttool get test-results tests --path ios/build/test.xcresult > ios/build/tests.json
@@ -382,6 +387,19 @@ targets:
     expect(errors).toContain(
       `signing-absence must unset ${signingInputNames[0]}`,
     );
+  });
+
+  it("rejects GUI-dependent remote simulator readiness", () => {
+    const { root, section } = fixture();
+    const script = readFileSync(join(root, section.paths.testScript), "utf8")
+      .replace(
+        "xcrun simctl spawn fixture-udid launchctl print system >/dev/null 2>&1 && break",
+        "xcrun simctl bootstatus fixture-udid -b",
+      );
+    put(root, section.paths.testScript, script);
+    const errors = validateIphoneShellScaffold(root, section).join("\n");
+    expect(errors).toContain("bounded headless simulator readiness");
+    expect(errors).toContain("may not use GUI-dependent simctl bootstatus");
   });
 
   it("writes atomic evidence for pass, expected failure, and Linux host constraint", () => {
