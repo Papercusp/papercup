@@ -700,7 +700,8 @@ GO/NO-GO fact.**
    expensive rig attempt while the preflight is deterministically red, and do not substitute the
    same `papercupai` identity on both frames: that topology collapses the membership identity and
    can false-green. The flip condition is a valid `aviynw` token followed by actual live-leg
-   execution and green evidence.
+   execution and green evidence. Cross-lane ruling:
+   `p2p-public-release-remaining-lanes-2026-07-16#D-039`.
 
    The census and failure chronology below are the **2026-08-16 historical baseline**, retained
    for provenance rather than presented as current counts:
