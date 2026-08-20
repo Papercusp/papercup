@@ -407,6 +407,7 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       });
 
       expect(res.status).toBe('ok');
+      if (res.status !== 'ok') throw new Error(`expected an ok sample, got ${res.status}`);
       expect(res.cores).toBeCloseTo(2.0, 5);
       expect(res.elapsedMs).toBe(500);
       expect(res.procs).toBe(3); // every descendant, not just the pid asked about
@@ -460,7 +461,7 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
       let nowMs = 0;
       let active = 0;
       let maxActive = 0;
-      const results = (await sampleBusyMatches(
+      const results = await sampleBusyMatches(
         [{ pid: 42 }, { pid: 43 }],
         {
           procRoot,
@@ -477,7 +478,7 @@ describe('proc-guard --busy: cgroup CPU sampling', () => {
           },
           now: () => nowMs,
         },
-      )) as Array<{ status: string }>;
+      );
 
       expect(maxActive).toBe(2);
       expect(results.map((sample) => sample.status)).toEqual(['ok', 'ok']);

@@ -94,6 +94,33 @@ const DEFAULT_PROC_ROOT = '/proc';
  * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
  */
 
+/**
+ * A successful cgroup CPU sample. The literal status is load-bearing: callers
+ * narrow on it before reading the measurement-only fields.
+ *
+ * @typedef {object} CgroupBusyOk
+ * @property {'ok'} status
+ * @property {number} cores
+ * @property {number | null} procs
+ * @property {number} elapsedMs
+ * @property {string} cgroupPath
+ */
+
+/**
+ * An indeterminate cgroup CPU sample. Missing measurement fields are explicit
+ * so callers may render them as absent without collapsing UNKNOWN into zero.
+ *
+ * @typedef {object} CgroupBusyUnknown
+ * @property {'unknown'} status
+ * @property {string} reason
+ * @property {string | null} [cgroupPath]
+ * @property {number} [elapsedMs]
+ * @property {undefined} [cores]
+ * @property {undefined} [procs]
+ */
+
+/** @typedef {CgroupBusyOk | CgroupBusyUnknown} CgroupBusySample */
+
 const PROMPT_ARG_MARKERS = ['PAPERCUSP_KICKOFF_PROMPT=', '⟦turn-origin:'];
 
 /**
@@ -358,6 +385,7 @@ export function computeCoresBusy(deltaUsec, elapsedMs) {
  * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
  *           budgetMs?: number; deadlineAt?: number;
  *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
+ * @returns {Promise<CgroupBusySample>}
  */
 export async function sampleCgroupBusy(pid, opts = {}) {
   const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
@@ -449,7 +477,7 @@ export async function sampleCgroupBusy(pid, opts = {}) {
  * @param {{ procRoot?: string; cgroupRoot?: string; sampleMs?: number;
  *           budgetMs?: number; deadlineAt?: number;
  *           sleep?: (ms: number) => Promise<void>; now?: () => number }} [opts]
- * @returns {Promise<unknown[]>}
+ * @returns {Promise<CgroupBusySample[]>}
  */
 export async function sampleBusyMatches(matches, opts = {}) {
   const now = opts.now ?? (() => Date.now());
