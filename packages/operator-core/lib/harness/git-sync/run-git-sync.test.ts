@@ -215,7 +215,7 @@ describe('runGitSync (real git, no submodule)', () => {
       isolatedMain,
     ]);
     expect(git(originDir, 'merge-base', '--is-ancestor', isolatedMain, bridged)).toBe('');
-    expect(logs.join('\n')).toMatch(/bridged fully-represented origin\/main into staging ancestry/);
+    expect(logs.join('\n')).toMatch(/bridged fully-represented origin\/main into current ancestry/);
   });
 
   it('declines the release-main ancestry bridge when a main-only blob is not identical on staging', async () => {
@@ -245,7 +245,7 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(git(originDir, 'rev-parse', 'refs/heads/staging')).toBe(stagingBefore);
     expect(() => git(originDir, 'merge-base', '--is-ancestor', isolatedMain, stagingBefore)).toThrow();
     expect(logs.join('\n')).toMatch(/release-main ancestry bridge declined/);
-    expect(logs.join('\n')).toMatch(/repair\.txt.*not represented exactly on staging/);
+    expect(logs.join('\n')).toMatch(/repair\.txt.*not represented exactly on HEAD/);
   });
 
   it('EI-20744916065879285: excludes a protected tracked path while committing the rest of the tree', async () => {

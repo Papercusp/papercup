@@ -2087,30 +2087,110 @@ type ReconcilePushResult =
   | { status: 'conflict'; conflictedFiles: string[] }
   | { status: 'error'; message: string; mergeCompleted?: boolean };
 
-export type ContainedReleaseMainBridgeResult =
+export type ContainedAncestryBridgeResult =
   | { status: 'not-needed' }
-  | { status: 'bridged'; mainRef: string; changedPaths: string[] }
+  | { status: 'bridged'; sourceRef: string; joinedSha: string; changedPaths: string[] }
   | { status: 'declined'; reason: string }
   | { status: 'error'; message: string };
 
-const RELEASE_MAIN_BRIDGE_MAX_PATHS = 200;
+export type ContainedReleaseMainBridgeResult = ContainedAncestryBridgeResult;
+
+const CONTAINED_ANCESTRY_BRIDGE_MAX_PATHS = 200;
 
 /**
- * Reconcile the release gate's `main` lineage into canonical `staging` without
- * changing staging's tree.
- *
- * Frozen-candidate repair verification can produce an isolated repair commit.
- * If that commit is promoted directly to `main` while the same patch landed on
- * staging through ordinary git-sync commits, the branches become siblings and
- * every later green-checkpoint is permanently `not-fast-forward`.
+ * Join an arbitrary source commit into the current branch's ancestry without
+ * changing the current branch's tree.
  *
  * This bridge is deliberately fail-closed. It runs only for the staging branch,
- * and only when EVERY path changed exclusively on main has the exact same Git
- * tree entry (mode + object id, including deletions and gitlinks) at local HEAD.
- * Once proven, an `ours` merge records main as a parent while preserving the
- * already-canonical staging tree. A mismatch is a no-op: git-sync keeps syncing
- * staging normally and never fabricates ancestry over unrepresented content.
+ * and only when EVERY path changed exclusively on the source has the exact same
+ * Git tree entry (mode + object id, including deletions and gitlinks) at local
+ * HEAD. Once proven, an `ours` merge records the source as a parent while
+ * preserving the current tree. A mismatch is a no-op: callers never fabricate
+ * ancestry over unrepresented content.
+ *
+ * Frozen-repair verification calls this with its local `repairHead` BEFORE any
+ * main advance. git-sync's recovery wrapper below calls it with `origin/main`
+ * when an older gate already promoted a sibling repair head.
  */
+export async function bridgeContainedCommitIntoCurrentBranch(
+  runGit: RunGit,
+  repoPath: string,
+  sourceRef: string,
+  opts: { log: (message: string) => void },
+): Promise<ContainedAncestryBridgeResult> {
+  const exists = await runGit(['rev-parse', '--verify', '--quiet', sourceRef], repoPath);
+  if (exists.code !== 0) return { status: 'not-needed' };
+
+  const alreadyContained = await runGit(['merge-base', '--is-ancestor', sourceRef, 'HEAD'], repoPath);
+  if (alreadyContained.code === 0) return { status: 'not-needed' };
+  if (alreadyContained.code !== 1) {
+    return { status: 'error', message: `could not compare HEAD with ${sourceRef}` };
+  }
+
+  const base = await runGit(['merge-base', 'HEAD', sourceRef], repoPath);
+  const mergeBase = base.stdout.trim();
+  if (base.code !== 0 || !mergeBase) {
+    return { status: 'declined', reason: `${sourceRef} has no merge base with HEAD` };
+  }
+
+  const changed = await runGit(
+    ['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${sourceRef}`],
+    repoPath,
+  );
+  if (changed.code !== 0) {
+    return { status: 'error', message: `could not enumerate ${sourceRef}-only paths` };
+  }
+  const changedPaths = changed.stdout.split('\0').filter(Boolean);
+  if (changedPaths.length > CONTAINED_ANCESTRY_BRIDGE_MAX_PATHS) {
+    return {
+      status: 'declined',
+      reason: `${sourceRef} changes ${changedPaths.length} paths (cap ${CONTAINED_ANCESTRY_BRIDGE_MAX_PATHS})`,
+    };
+  }
+
+  for (const file of changedPaths) {
+    const [onSource, onHead] = await Promise.all([
+      runGit(['ls-tree', sourceRef, '--', file], repoPath),
+      runGit(['ls-tree', 'HEAD', '--', file], repoPath),
+    ]);
+    if (onSource.code !== 0 || onHead.code !== 0) {
+      return { status: 'error', message: `could not compare '${file}' across ${sourceRef} and HEAD` };
+    }
+    if (onSource.stdout.trim() !== onHead.stdout.trim()) {
+      return {
+        status: 'declined',
+        reason: `${sourceRef}-only path '${file}' is not represented exactly on HEAD`,
+      };
+    }
+  }
+
+  const merge = await runGit(
+    [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', sourceRef],
+    repoPath,
+  );
+  if (merge.code !== 0) {
+    await runGit(['merge', '--abort'], repoPath);
+    return {
+      status: 'error',
+      message: `contained ${sourceRef} ancestry bridge failed: ${(merge.stderr || merge.stdout).trim().slice(0, 300)}`,
+    };
+  }
+  const joined = await runGit(['rev-parse', 'HEAD'], repoPath);
+  const joinedSha = joined.stdout.trim();
+  if (joined.code !== 0 || !joinedSha) {
+    return { status: 'error', message: `contained ${sourceRef} bridge committed but HEAD could not be resolved` };
+  }
+
+  opts.log(
+    `[git-sync] ${repoPath}: bridged fully-represented ${sourceRef} into current ancestry ` +
+      `without changing the current tree (${changedPaths.length} source-only path(s))`,
+  );
+  return { status: 'bridged', sourceRef, joinedSha, changedPaths };
+}
+
+/** Refresh and reconcile the release gate's `main` lineage into canonical
+ * staging. This is the post-incident wrapper; pre-promotion repair verification
+ * reuses {@link bridgeContainedCommitIntoCurrentBranch} with its local head. */
 export async function bridgeContainedReleaseMain(
   runGit: RunGit,
   repoPath: string,
@@ -2131,70 +2211,9 @@ export async function bridgeContainedReleaseMain(
       reason: `could not refresh ${mainRef}: ${(fetched.stderr || fetched.stdout).trim().slice(0, 240)}`,
     };
   }
-
-  const exists = await runGit(['rev-parse', '--verify', '--quiet', mainRef], repoPath);
-  if (exists.code !== 0) return { status: 'not-needed' };
-
-  const alreadyContained = await runGit(['merge-base', '--is-ancestor', mainRef, 'HEAD'], repoPath);
-  if (alreadyContained.code === 0) return { status: 'not-needed' };
-  if (alreadyContained.code !== 1) {
-    return { status: 'error', message: `could not compare HEAD with ${mainRef}` };
-  }
-
-  const base = await runGit(['merge-base', 'HEAD', mainRef], repoPath);
-  const mergeBase = base.stdout.trim();
-  if (base.code !== 0 || !mergeBase) {
-    return { status: 'declined', reason: `${mainRef} has no merge base with staging HEAD` };
-  }
-
-  const changed = await runGit(
-    ['diff', '--name-only', '--no-renames', '-z', `${mergeBase}..${mainRef}`],
-    repoPath,
-  );
-  if (changed.code !== 0) {
-    return { status: 'error', message: `could not enumerate ${mainRef}-only paths` };
-  }
-  const changedPaths = changed.stdout.split('\0').filter(Boolean);
-  if (changedPaths.length > RELEASE_MAIN_BRIDGE_MAX_PATHS) {
-    return {
-      status: 'declined',
-      reason: `${mainRef} changes ${changedPaths.length} paths (cap ${RELEASE_MAIN_BRIDGE_MAX_PATHS})`,
-    };
-  }
-
-  for (const file of changedPaths) {
-    const [onMain, onStaging] = await Promise.all([
-      runGit(['ls-tree', mainRef, '--', file], repoPath),
-      runGit(['ls-tree', 'HEAD', '--', file], repoPath),
-    ]);
-    if (onMain.code !== 0 || onStaging.code !== 0) {
-      return { status: 'error', message: `could not compare '${file}' across ${mainRef} and HEAD` };
-    }
-    if (onMain.stdout.trim() !== onStaging.stdout.trim()) {
-      return {
-        status: 'declined',
-        reason: `${mainRef}-only path '${file}' is not represented exactly on staging`,
-      };
-    }
-  }
-
-  const merge = await runGit(
-    [...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', '-s', 'ours', mainRef],
-    repoPath,
-  );
-  if (merge.code !== 0) {
-    await runGit(['merge', '--abort'], repoPath);
-    return {
-      status: 'error',
-      message: `contained ${mainRef} ancestry bridge failed: ${(merge.stderr || merge.stdout).trim().slice(0, 300)}`,
-    };
-  }
-
-  opts.log(
-    `[git-sync] ${repoPath}: bridged fully-represented ${mainRef} into staging ancestry ` +
-      `without changing the staging tree (${changedPaths.length} main-only path(s))`,
-  );
-  return { status: 'bridged', mainRef, changedPaths };
+  return bridgeContainedCommitIntoCurrentBranch(runGit, repoPath, mainRef, {
+    log: opts.log,
+  });
 }
 
 /**
