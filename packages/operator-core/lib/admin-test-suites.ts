@@ -169,9 +169,73 @@ interface AiExploreRunSummary {
   outputTokens: number;
   totalTokens: number;
   costUsd: number;
+  /** Number of terminal usage frames whose metrics were absent or incomplete. */
+  unreportedFrames?: number;
   exitCode: number | null;
   errors: string[];
   logs: string[];
+}
+
+export interface AiExploreParserState {
+  metricsSeen: boolean;
+  metricsIncomplete: boolean;
+}
+
+/**
+ * Apply one AI Explore SSE event without turning an absent metric into a measured zero.
+ * This function is also embedded in the Tauri-evaluated parser below, so the tested
+ * reducer and the generated reader share one presence contract.
+ */
+export function applyAiExploreEvent(
+  summary: AiExploreRunSummary,
+  type: string,
+  payload: Record<string, unknown>,
+  state: AiExploreParserState,
+): void {
+  const finiteNumber = (value: unknown): number | undefined =>
+    typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+  const markUnreported = () => {
+    if (summary.unreportedFrames === undefined) summary.unreportedFrames = 1;
+  };
+
+  if (type === 'step') {
+    const n = finiteNumber(payload.n);
+    if (n !== undefined) summary.steps = Math.max(summary.steps, n);
+  } else if (type === 'metrics') {
+    state.metricsSeen = true;
+    const inputTokens = finiteNumber(payload.inputTokens);
+    const outputTokens = finiteNumber(payload.outputTokens);
+    const totalTokens = finiteNumber(payload.totalTokens);
+    const costUsd = finiteNumber(payload.costUsd);
+    if ([inputTokens, outputTokens, totalTokens, costUsd].some((value) => value === undefined)) {
+      state.metricsIncomplete = true;
+      markUnreported();
+    }
+    if (inputTokens !== undefined) summary.inputTokens = inputTokens;
+    if (outputTokens !== undefined) summary.outputTokens = outputTokens;
+    if (totalTokens !== undefined) summary.totalTokens = totalTokens;
+    if (costUsd !== undefined) summary.costUsd = costUsd;
+  } else if (type === 'done') {
+    // The runner's done frame carries a cost fallback, but no token totals. Without
+    // a metrics frame that fallback is not enough to call the usage complete.
+    if (!state.metricsSeen) {
+      state.metricsIncomplete = true;
+      markUnreported();
+    }
+    const totalMs = finiteNumber(payload.totalMs);
+    const steps = finiteNumber(payload.steps);
+    const costUsd = finiteNumber(payload.costUsd);
+    if (totalMs !== undefined) summary.totalMs = totalMs;
+    if (steps !== undefined) summary.steps = Math.max(summary.steps, steps);
+    if (costUsd !== undefined) summary.costUsd = costUsd;
+    summary.exitCode = typeof payload.exitCode === 'number' && Number.isFinite(payload.exitCode)
+      ? payload.exitCode
+      : null;
+  } else if (type === 'error') {
+    summary.errors.push(String(payload.message === undefined ? 'unknown error' : payload.message));
+  } else if (type === 'log' && payload.level === 'error') {
+    summary.logs.push(String(payload.line === undefined ? '' : payload.line).slice(0, 300));
+  }
 }
 
 const SUITE_MAP = new Map(ADMIN_TEST_SUITES.map((suite) => [suite.id, suite] as const));
@@ -1476,6 +1540,7 @@ async function runAiExplorePrompt(ctx: SuiteContext, goal: string, startUrl: str
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buffer = '';
       let currentEvent = null;
+      const applyAiExploreEvent = ${applyAiExploreEvent.toString()};
       const summary = {
         goal: ${JSON.stringify(goal)},
         steps: 0,
@@ -1488,6 +1553,7 @@ async function runAiExplorePrompt(ctx: SuiteContext, goal: string, startUrl: str
         errors: [],
         logs: []
       };
+      const parserState = { metricsSeen: false, metricsIncomplete: false };
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
@@ -1499,22 +1565,7 @@ async function runAiExplorePrompt(ctx: SuiteContext, goal: string, startUrl: str
           if (line.startsWith('event: ')) { currentEvent = line.slice(7).trim(); continue; }
           if (!line.startsWith('data: ') || !currentEvent) continue;
           const payload = JSON.parse(line.slice(6));
-          if (currentEvent === 'step') summary.steps = Math.max(summary.steps, Number(payload.n || 0));
-          else if (currentEvent === 'metrics') {
-            summary.inputTokens = Number(payload.inputTokens || 0);
-            summary.outputTokens = Number(payload.outputTokens || 0);
-            summary.totalTokens = Number(payload.totalTokens || 0);
-            summary.costUsd = Number(payload.costUsd || 0);
-          } else if (currentEvent === 'done') {
-            summary.totalMs = Number(payload.totalMs || 0);
-            summary.steps = Math.max(summary.steps, Number(payload.steps || 0));
-            summary.costUsd = Number(payload.costUsd || summary.costUsd || 0);
-            summary.exitCode = typeof payload.exitCode === 'number' ? payload.exitCode : null;
-          } else if (currentEvent === 'error') {
-            summary.errors.push(String(payload.message || 'unknown error'));
-          } else if (currentEvent === 'log' && payload.level === 'error') {
-            summary.logs.push(String(payload.line || '').slice(0, 300));
-          }
+          applyAiExploreEvent(summary, currentEvent, payload, parserState);
         }
       }
       return { ok: true, summary };

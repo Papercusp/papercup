@@ -12,6 +12,8 @@ import {
   warmRouteResult,
   gradeChaosSummary,
   buildInteractionMeasureScript,
+  applyAiExploreEvent,
+  type AiExploreParserState,
   type ChaosRecorderSummary,
   type InteractionMeasureSpec,
   type RouteMeasurement,
@@ -20,6 +22,56 @@ import {
 import { DESKTOP_PERF_BUDGETS } from './system-health/desktop-perf-budgets';
 
 const suites = listAdminTestSuites();
+
+function aiSummary() {
+  return {
+    goal: 'test',
+    steps: 0,
+    totalMs: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    costUsd: 0,
+    exitCode: null,
+    errors: [] as string[],
+    logs: [] as string[],
+  };
+}
+
+function parserState(): AiExploreParserState {
+  return { metricsSeen: false, metricsIncomplete: false };
+}
+
+describe('AI Explore usage presence', () => {
+  it('keeps measured zero metrics distinct from an absent metrics frame', () => {
+    const summary = aiSummary();
+    const state = parserState();
+    applyAiExploreEvent(summary, 'metrics', { inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0 }, state);
+    applyAiExploreEvent(summary, 'done', { totalMs: 10, steps: 1, costUsd: 0, exitCode: 0 }, state);
+    expect(summary).not.toHaveProperty('unreportedFrames');
+    expect(state).toEqual({ metricsSeen: true, metricsIncomplete: false });
+  });
+
+  it('marks one incomplete usage frame and preserves measured fields', () => {
+    const summary = aiSummary();
+    const state = parserState();
+    applyAiExploreEvent(summary, 'metrics', { inputTokens: 12, outputTokens: 8, costUsd: 0.01 }, state);
+    expect(summary.inputTokens).toBe(12);
+    expect(summary.outputTokens).toBe(8);
+    expect(summary.totalTokens).toBe(0);
+    expect(summary.unreportedFrames).toBe(1);
+    expect(state.metricsIncomplete).toBe(true);
+  });
+
+  it('marks the done-only zero-cost fallback as unreported', () => {
+    const summary = aiSummary();
+    const state = parserState();
+    applyAiExploreEvent(summary, 'done', { costUsd: 0, exitCode: 1 }, state);
+    expect(summary.costUsd).toBe(0);
+    expect(summary.unreportedFrames).toBe(1);
+    expect(state).toEqual({ metricsSeen: false, metricsIncomplete: true });
+  });
+});
 
 describe('listAdminTestSuites', () => {
   it('returns a non-empty registry, each with an id + safeDefault flag', () => {

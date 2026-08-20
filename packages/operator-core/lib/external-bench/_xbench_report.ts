@@ -52,6 +52,15 @@ function load(arm: string): { run: ArmRun; grade: Resolved | null } {
   return { run, grade };
 }
 
+function requireCoordEvents(run: ArmRun, arm: string): CoordEvent[] {
+  if (!Array.isArray(run.coordEvents)) {
+    throw new Error(
+      `[xbench-report] ${arm}.json is missing coordEvents; refusing to compute MAST from an absent coordination trace`,
+    );
+  }
+  return run.coordEvents;
+}
+
 function pct(n: number, d: number): string {
   return d > 0 ? `${((n / d) * 100).toFixed(1)}%` : 'n/a';
 }
@@ -60,7 +69,8 @@ function armReport(arm: string) {
   const { run, grade } = load(arm);
   const wallSec = run.wallMs / 1000;
   const cost = run.totals.costUsd;
-  const mast = substrateSignalRates(run.coordEvents ?? [], run.taskCount);
+  const coordEvents = requireCoordEvents(run, arm);
+  const mast = substrateSignalRates(coordEvents, run.taskCount);
 
   // FAIRNESS (benchmark-fairness-fix): exclude EXTERNAL/transient/infra tasks from the resolved%
   // denominator. A task is NON-SCORED when its stopReason ∈ {error, timeout, infra-failed} (per
@@ -105,7 +115,7 @@ function armReport(arm: string) {
     tasksPerDollar: cost > 0 ? run.taskCount / cost : 0,
     resolvedPerDollar: cost > 0 ? resolved / cost : 0,
     costPerResolved: resolved > 0 ? cost / resolved : null,
-    coordEventCount: (run.coordEvents ?? []).length,
+    coordEventCount: coordEvents.length,
     mast: {
       duplicationRate: mast.duplicationRate,
       coordinationBreakdownRate: mast.coordinationBreakdownRate,
