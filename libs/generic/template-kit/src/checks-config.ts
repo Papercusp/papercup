@@ -145,6 +145,70 @@ export interface ChecksMobileBaseSection {
   portableCommands: ChecksMobileCommand[];
 }
 
+/** Source/build paths consumed by the official Android shell checks. */
+export interface ChecksAndroidShellPaths {
+  settingsGradle: string;
+  projectGradle: string;
+  appGradle: string;
+  wrapperProperties: string;
+  manifest: string;
+  packageSourceRoot: string;
+  unitTestRoots: string[];
+  instrumentationTestRoots: string[];
+  lintConfig: string;
+  buildScript: string;
+  abiVerifier: string;
+  provenanceScript: string;
+  udl: string;
+  uniffiConfig: string;
+  cargoLock: string;
+  generatedKotlin: string;
+  releaseApk: string;
+  releaseAab: string;
+  provenanceFile: string;
+}
+
+/** One machine-evidenced Android host assertion leg. */
+export interface ChecksAndroidAssertionCommand extends ChecksMobileCommand {
+  assertionId: string;
+  leg: string;
+  unsetEnv?: string[];
+  expectedExit?: "zero" | "nonzero";
+  expectedOutputPattern?: string;
+  hostConstraintPatterns?: string[];
+  selectedCapability?: string;
+}
+
+/**
+ * `android-shell-contract` + `android-shell-assertions` — the pinned
+ * Compose/Gradle/cargo-ndk/package/privacy/release contract.
+ */
+export interface ChecksAndroidShellSection {
+  namespace: string;
+  applicationId: string;
+  minSdk: number;
+  compileSdk: number;
+  targetSdk: number;
+  gradleVersion: string;
+  agpVersion: string;
+  kotlinVersion: string;
+  javaVersion: number;
+  ndkVersion: string;
+  abis: string[];
+  nativeLibrary: string;
+  releaseVersionInput: string;
+  signingPrefix: string;
+  /** External input names only; values never belong in checks config. */
+  signingInputNames: string[];
+  debugCleartext: boolean;
+  selectedCapabilities: string[];
+  allowedPermissions: string[];
+  paths: ChecksAndroidShellPaths;
+  /** App-relative generated evidence directory. */
+  evidenceDir: string;
+  assertions: ChecksAndroidAssertionCommand[];
+}
+
 export interface TemplateChecksConfig {
   app: {
     /** The app's name (diagnostics only). */
@@ -159,6 +223,7 @@ export interface TemplateChecksConfig {
   composition?: ChecksCompositionSection;
   components?: ChecksComponentsSection;
   mobileBase?: ChecksMobileBaseSection;
+  androidShell?: ChecksAndroidShellSection;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
