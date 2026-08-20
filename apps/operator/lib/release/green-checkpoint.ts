@@ -1775,6 +1775,17 @@ export function defangCapturedResultMarkers(output: string): string {
     .join(CAPTURED_RESULT_MARKER_PLACEHOLDER);
 }
 
+/**
+ * Keep persisted checkpoint logs line-oriented text even when a child process writes raw
+ * control bytes to stdout/stderr. GNU grep treats a file containing one NUL as binary and
+ * suppresses both matches and counts, turning a real failure into a false absence during gate
+ * triage. Tabs/newlines/carriage returns remain valid log formatting; other C0 bytes and DEL are
+ * not useful in a human-readable checkpoint transcript and are removed at the persistence seam.
+ */
+export function sanitizeCheckpointLogText(output: string): string {
+  return output.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+}
+
 /** EI-19346606967082413 — the orchestrator's OWN log lines, teed into a buffer so the
  *  PERSISTED checkpoint log records what a run actually DID, not merely what its suite printed.
  *
@@ -5909,7 +5920,10 @@ function appendPartialGreenGateLine(
   log(line);
   if (!logPath) return;
   try {
-    appendFileSync(logPath, `\n${defangCapturedResultMarkers(line)}\n`);
+    appendFileSync(
+      logPath,
+      `\n${sanitizeCheckpointLogText(defangCapturedResultMarkers(line))}\n`,
+    );
   } catch (e) {
     log(
       `warn: partial-green-gate line not published to ${logPath}: ${e instanceof Error ? e.message : e}`,
@@ -10488,8 +10502,10 @@ export function realCheckpointDeps(
         writeFileSync(
           logPath,
           header +
-            defangCapturedResultMarkers(
-              renderOrchestratorTranscript() + fullOutput,
+            sanitizeCheckpointLogText(
+              defangCapturedResultMarkers(
+                renderOrchestratorTranscript() + fullOutput,
+              ),
             ),
         );
         log(`full suite output → ${logPath}`);

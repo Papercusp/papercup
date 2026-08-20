@@ -604,6 +604,29 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     expect(heldByLine).toContain('entries=["lint:tsc"]');
   });
 
+  it("EI-20689175600678908: strips control bytes before persisting the checkpoint log", async () => {
+    const before = new Set(readdirSync(tmpLogDir));
+    const { exec } = makeExec([
+      {
+        code: 0,
+        stdout: "suite output before\0after\u0007\n",
+      },
+    ]);
+
+    const r = await realCheckpointDeps(cfg, exec).runGreen(cpTree, null);
+
+    expect(r.green).toBe(true);
+    const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
+    expect(written).toHaveLength(1);
+    const writtenLog = written[0];
+    if (!writtenLog)
+      throw new Error("expected one newly-written checkpoint log");
+    const bytes = readFileSync(join(tmpLogDir, writtenLog));
+    expect(bytes.includes(0)).toBe(false);
+    expect(bytes.includes(7)).toBe(false);
+    expect(bytes.toString("utf8")).toContain("suite output beforeafter");
+  });
+
   it("EI-20336874238055183: GATE_HELD_BY uses the final authoritative break set, not stale retry rows", async () => {
     const before = new Set(readdirSync(tmpLogDir));
     const staleRowsThenAuthoritativeEmptyFiles = [
