@@ -505,11 +505,12 @@ export interface CheckpointVerdict {
    * Presence means the gate already dispatched/owns the targeted fixer, so the legacy
    * moving-tip dispatcher must not launch a second agent. */
   repairQueue?: {
-    schemaVersion: 1;
+    schemaVersion: 1 | 2;
     phase: 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
     candidate: string;
     base: string | null;
     repairHead: string;
+    affectedTestProofGroup: string | null;
     worktreePath: string;
     attempts: number;
     openedAtMs: number;
@@ -664,6 +665,7 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       phase: v.repairQueue.phase,
       candidate: v.repairQueue.candidate.slice(0, 12),
       repairHead: v.repairQueue.repairHead.slice(0, 12),
+      affectedTestProofGroup: v.repairQueue.affectedTestProofGroup,
       attempts: v.repairQueue.attempts,
       fixerSpawnId: v.repairQueue.fixerSpawnId,
     };

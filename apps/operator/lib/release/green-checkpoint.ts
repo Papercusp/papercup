@@ -124,6 +124,8 @@ export interface CheckpointExecutionContext {
   candidate: string;
   headAtStart?: string;
   setup?: CheckpointSetupIdentity;
+  /** Original affected-task proof identity for a frozen repair chain. Distinct from runId. */
+  affectedTestProofGroup?: string;
 }
 
 export interface CheckpointDeps {
@@ -5003,6 +5005,7 @@ export function buildGreenCheckpointEnv(
   runId?: string,
   /** Explicit operator capacity contract. `shared` remains the safe default. */
   capacityMode: GreenCheckpointCapacityMode = "shared",
+  affectedTestProofGroup?: string | null,
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const k of Object.keys(env)) {
@@ -5029,6 +5032,12 @@ export function buildGreenCheckpointEnv(
   // still indexes exactly the "recent gate runs" read this exists to serve.
   env.PAPERCUSP_TEST_RUN_SOURCE = "ci";
   if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
+  // P-007/D-005: this non-PAPERCUSP key must not leak from the host. A repair verifier
+  // receives it explicitly while retaining its own process/verdict run group above.
+  delete env.AFFECTED_TASK_VERDICT_PROOF_GROUP;
+  if (affectedTestProofGroup) {
+    env.AFFECTED_TASK_VERDICT_PROOF_GROUP = affectedTestProofGroup;
+  }
   // The bg-host's 128 GiB `--max-old-space-size` must NOT ride into the test forks
   // (8 × 128 GiB → no GC → ENOMEM under fleet load). Pin a sane per-fork heap.
   env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS);
@@ -6526,6 +6535,9 @@ export async function runGreenCheckpoint(
     candidate,
     headAtStart: candidate,
     ...(setupIdentity ? { setup: setupIdentity } : {}),
+    ...(repairVerification && repairQueue?.affectedTestProofGroup
+      ? { affectedTestProofGroup: repairQueue.affectedTestProofGroup }
+      : {}),
   }));
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
@@ -6650,6 +6662,7 @@ export async function runGreenCheckpoint(
             `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
           ),
           failingTests,
+          affectedTestProofGroup: deps.runId ?? null,
           nowMs: Date.now(),
         });
       }
@@ -9977,6 +9990,7 @@ export function realCheckpointDeps(
         process.env,
         runId,
         cfg.greenCheckpointCapacityMode,
+        execution?.affectedTestProofGroup,
       );
       env.NODE_OPTIONS = sanitizeForkNodeOptions(
         env.NODE_OPTIONS,

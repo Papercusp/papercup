@@ -9,7 +9,7 @@
  * filesystem, database, or process work.
  */
 
-export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 1 as const;
+export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 2 as const;
 
 /** Three full repair attempts fit comfortably inside the four-hour wall-clock bound even
  * when each verification pays the current ~42-minute full checkpoint cost. Both bounds are
@@ -26,7 +26,7 @@ const MAX_PERSISTED_FAILURE_CHARS = 500;
 export type FrozenCandidateRepairPhase = 'awaiting-fixer' | 'ready-to-verify' | 'ready-to-promote';
 
 export interface FrozenCandidateRepairQueue {
-  schemaVersion: typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
+  schemaVersion: 1 | typeof FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION;
   phase: FrozenCandidateRepairPhase;
   /** The fixed C selected by the first red verdict. Never moves for this queue entry. */
   candidate: string;
@@ -34,6 +34,9 @@ export interface FrozenCandidateRepairQueue {
   base: string | null;
   /** The head fixes move FORWARD from. Verification and promotion target this exact SHA. */
   repairHead: string;
+  /** Initial gate process's PAPERCUSP_TEST_RUN_GROUP. Later verifiers keep their own runId;
+   * this stable identity is only for affected-task proof reuse. Null means execute fully. */
+  affectedTestProofGroup: string | null;
   /** Gate-owned isolation path. Agents never switch the canonical shared checkout. */
   worktreePath: string;
   /** Number of fixer attempts actually dispatched (not reds observed or suites run). */
@@ -168,6 +171,7 @@ export function createFrozenCandidateRepairQueue(input: {
   base: string | null;
   worktreePath: string;
   failingTests?: readonly string[];
+  affectedTestProofGroup?: string | null;
   nowMs: number;
 }): FrozenCandidateRepairQueue {
   if (!nonBlank(input.candidate)) throw new Error('candidate must be non-empty');
@@ -180,6 +184,9 @@ export function createFrozenCandidateRepairQueue(input: {
     candidate: input.candidate,
     base: input.base,
     repairHead: input.candidate,
+    affectedTestProofGroup: nonBlank(input.affectedTestProofGroup)
+      ? input.affectedTestProofGroup
+      : null,
     worktreePath: input.worktreePath,
     attempts: 0,
     openedAtMs: input.nowMs,
@@ -193,7 +200,7 @@ export function createFrozenCandidateRepairQueue(input: {
 export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidateRepairQueue | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  if (row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION) return null;
+  if (row.schemaVersion !== 1 && row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION) return null;
   if (row.phase !== 'awaiting-fixer' && row.phase !== 'ready-to-verify' && row.phase !== 'ready-to-promote')
     return null;
   if (!nonBlank(row.candidate) || !nonBlank(row.repairHead) || !nonBlank(row.worktreePath)) {
@@ -215,6 +222,10 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     candidate: row.candidate,
     base: row.base as string | null,
     repairHead: row.repairHead,
+    // v1/missing/malformed proof state keeps the queue valid but forces full execution.
+    affectedTestProofGroup: nonBlank(row.affectedTestProofGroup)
+      ? row.affectedTestProofGroup
+      : null,
     worktreePath: row.worktreePath,
     attempts: row.attempts as number,
     openedAtMs: row.openedAtMs,

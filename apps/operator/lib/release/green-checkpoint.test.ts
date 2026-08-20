@@ -5453,6 +5453,25 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     expect(noId.PAPERCUSP_TEST_RUN_SOURCE).toBe("ci");
   });
 
+  it("keeps a repair proof group separate from this verifier process's run identity", () => {
+    const env = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({ AFFECTED_TASK_VERDICT_PROOF_GROUP: "leaked" }),
+      "verifier-run",
+      "shared",
+      "initial-proof-run",
+    );
+    expect(env.PAPERCUSP_TEST_RUN_GROUP).toBe("verifier-run");
+    expect(env.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBe("initial-proof-run");
+
+    const noProof = buildGreenCheckpointEnv(
+      "b",
+      partialEnv({ AFFECTED_TASK_VERDICT_PROOF_GROUP: "leaked" }),
+      "verifier-run",
+    );
+    expect(noProof.AFFECTED_TASK_VERDICT_PROOF_GROUP).toBeUndefined();
+  });
+
   it("sets GREEN_CHECKPOINT=1 and AFFECTED_BASE only when a base is given", () => {
     const withBase = buildGreenCheckpointEnv("abc", {});
     expect(withBase.GREEN_CHECKPOINT).toBe("1");

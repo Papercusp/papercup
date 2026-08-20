@@ -37,6 +37,7 @@ describe('frozen-candidate repair queue', () => {
       candidate: C,
       base: BASE,
       repairHead: C,
+      affectedTestProofGroup: null,
       worktreePath: ROOT,
       attempts: 0,
       fixerSpawnId: null,
@@ -51,6 +52,33 @@ describe('frozen-candidate repair queue', () => {
       runSuite: false,
       recordVerdict: false,
     });
+  });
+
+  it('persists the initial proof group and parses legacy or malformed proof state fail-closed', () => {
+    const current = createFrozenCandidateRepairQueue({
+      candidate: C,
+      base: BASE,
+      worktreePath: ROOT,
+      affectedTestProofGroup: 'initial-gate-run',
+      nowMs: T0,
+    });
+    expect(current).toMatchObject({
+      schemaVersion: 2,
+      affectedTestProofGroup: 'initial-gate-run',
+    });
+    expect(
+      parseFrozenCandidateRepairQueue({
+        ...current,
+        schemaVersion: 1,
+        affectedTestProofGroup: undefined,
+      }),
+    ).toMatchObject({ schemaVersion: 1, affectedTestProofGroup: null });
+    expect(
+      parseFrozenCandidateRepairQueue({
+        ...current,
+        affectedTestProofGroup: { corrupt: true },
+      }),
+    ).toMatchObject({ schemaVersion: 2, affectedTestProofGroup: null });
   });
 
   it('leaves an absent queue on the existing normal gate path', () => {
