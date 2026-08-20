@@ -211,6 +211,81 @@ export interface ChecksAndroidShellSection {
   assertions: ChecksAndroidAssertionCommand[];
 }
 
+/** Source/build paths consumed by the official iPhone shell checks. */
+export interface ChecksIphoneShellPaths {
+  projectSpec: string;
+  generatedProject: string;
+  gitignore: string;
+  infoPlist: string;
+  privacyManifest: string;
+  entitlements: string;
+  appSourceRoot: string;
+  coreSourceRoot: string;
+  unitTestRoots: string[];
+  uiTestRoots: string[];
+  buildScript: string;
+  hostPreflightScript: string;
+  testScript: string;
+  releaseScript: string;
+  udl: string;
+  uniffiConfig: string;
+  cargoLock: string;
+  generatedSwift: string;
+  ffiHeader: string;
+  moduleMap: string;
+  deviceLibrary: string;
+  simulatorLibrary: string;
+  xcframework: string;
+  archive: string;
+  exportDir: string;
+  provenanceFile: string;
+}
+
+/** One machine-evidenced iPhone host assertion leg. */
+export interface ChecksIphoneAssertionCommand extends ChecksMobileCommand {
+  assertionId: string;
+  leg: string;
+  unsetEnv?: string[];
+  expectedExit?: "zero" | "nonzero";
+  expectedOutputPattern?: string;
+  hostConstraintPatterns?: string[];
+  selectedCapability?: string;
+}
+
+/**
+ * `iphone-shell-contract` + `iphone-shell-assertions` — the pinned
+ * SwiftUI/XcodeGen/XCFramework/privacy/archive-preflight contract.
+ */
+export interface ChecksIphoneShellSection {
+  bundleId: string;
+  productName: string;
+  coreModule: string;
+  scheme: string;
+  projectName: string;
+  deploymentTarget: string;
+  swiftVersion: string;
+  deviceTarget: string;
+  simulatorTargets: string[];
+  rustLibrary: string;
+  ffiModule: string;
+  hostStrategy: "local-mac" | "remote-host";
+  remoteHost?: string;
+  releaseVersionInput: string;
+  buildNumberInput: string;
+  signingPrefix: string;
+  /** External input names only; values never belong in checks config. */
+  signingInputNames: string[];
+  exportMethod: string;
+  selectedCapabilities: string[];
+  entitlementKeys: string[];
+  privacyUsageDescriptionKeys: string[];
+  backgroundModes: string[];
+  paths: ChecksIphoneShellPaths;
+  /** App-relative generated evidence directory. */
+  evidenceDir: string;
+  assertions: ChecksIphoneAssertionCommand[];
+}
+
 export interface TemplateChecksConfig {
   app: {
     /** The app's name (diagnostics only). */
@@ -226,6 +301,7 @@ export interface TemplateChecksConfig {
   components?: ChecksComponentsSection;
   mobileBase?: ChecksMobileBaseSection;
   androidShell?: ChecksAndroidShellSection;
+  iphoneShell?: ChecksIphoneShellSection;
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -762,6 +838,235 @@ export function validateChecksConfig(value: unknown): string[] {
           ) {
             errors.push(
               `${section}.selectedCapability: must be a non-empty string when present`,
+            );
+          }
+        });
+      }
+    }
+  }
+
+  if (value.iphoneShell !== undefined) {
+    if (!isRecord(value.iphoneShell))
+      errors.push("iphoneShell: must be an object");
+    else {
+      for (const field of [
+        "bundleId",
+        "productName",
+        "coreModule",
+        "scheme",
+        "projectName",
+        "deploymentTarget",
+        "swiftVersion",
+        "deviceTarget",
+        "rustLibrary",
+        "ffiModule",
+        "releaseVersionInput",
+        "buildNumberInput",
+        "signingPrefix",
+        "exportMethod",
+        "evidenceDir",
+      ] as const) {
+        if (!isNonEmptyString(value.iphoneShell[field])) {
+          errors.push(`iphoneShell.${field}: required non-empty string`);
+        }
+      }
+      if (
+        value.iphoneShell.hostStrategy !== "local-mac" &&
+        value.iphoneShell.hostStrategy !== "remote-host"
+      ) {
+        errors.push(
+          "iphoneShell.hostStrategy: must be 'local-mac' or 'remote-host'",
+        );
+      }
+      if (
+        value.iphoneShell.hostStrategy === "remote-host" &&
+        !isNonEmptyString(value.iphoneShell.remoteHost)
+      ) {
+        errors.push(
+          "iphoneShell.remoteHost: required non-empty string for remote-host strategy",
+        );
+      }
+      if (
+        value.iphoneShell.remoteHost !== undefined &&
+        !isNonEmptyString(value.iphoneShell.remoteHost)
+      ) {
+        errors.push(
+          "iphoneShell.remoteHost: must be a non-empty string when present",
+        );
+      }
+      for (const field of [
+        "simulatorTargets",
+        "signingInputNames",
+      ] as const) {
+        requireStringArray(
+          errors,
+          "iphoneShell",
+          field,
+          value.iphoneShell[field],
+          true,
+        );
+      }
+      for (const field of [
+        "selectedCapabilities",
+        "entitlementKeys",
+        "privacyUsageDescriptionKeys",
+        "backgroundModes",
+      ] as const) {
+        requireStringArray(
+          errors,
+          "iphoneShell",
+          field,
+          value.iphoneShell[field],
+          false,
+        );
+      }
+
+      if (!isRecord(value.iphoneShell.paths)) {
+        errors.push("iphoneShell.paths: required object");
+      } else {
+        for (const field of [
+          "projectSpec",
+          "generatedProject",
+          "gitignore",
+          "infoPlist",
+          "privacyManifest",
+          "entitlements",
+          "appSourceRoot",
+          "coreSourceRoot",
+          "buildScript",
+          "hostPreflightScript",
+          "testScript",
+          "releaseScript",
+          "udl",
+          "uniffiConfig",
+          "cargoLock",
+          "generatedSwift",
+          "ffiHeader",
+          "moduleMap",
+          "deviceLibrary",
+          "simulatorLibrary",
+          "xcframework",
+          "archive",
+          "exportDir",
+          "provenanceFile",
+        ] as const) {
+          if (!isNonEmptyString(value.iphoneShell.paths[field])) {
+            errors.push(
+              `iphoneShell.paths.${field}: required non-empty string`,
+            );
+          }
+        }
+        for (const field of ["unitTestRoots", "uiTestRoots"] as const) {
+          requireStringArray(
+            errors,
+            "iphoneShell.paths",
+            field,
+            value.iphoneShell.paths[field],
+            true,
+          );
+        }
+      }
+
+      if (
+        !Array.isArray(value.iphoneShell.assertions) ||
+        value.iphoneShell.assertions.length === 0
+      ) {
+        errors.push(
+          "iphoneShell.assertions: required non-empty list of command objects",
+        );
+      } else {
+        const assertionLegs = new Set<string>();
+        value.iphoneShell.assertions.forEach((assertion, index) => {
+          const section = `iphoneShell.assertions[${index}]`;
+          if (!isRecord(assertion)) {
+            errors.push(`${section}: must be an object`);
+            return;
+          }
+          for (const field of ["assertionId", "leg"] as const) {
+            if (!isNonEmptyString(assertion[field])) {
+              errors.push(`${section}.${field}: required non-empty string`);
+            }
+          }
+          if (
+            isNonEmptyString(assertion.assertionId) &&
+            isNonEmptyString(assertion.leg)
+          ) {
+            const key = `${assertion.assertionId}/${assertion.leg}`;
+            if (assertionLegs.has(key)) {
+              errors.push(`${section}: duplicate assertion leg '${key}'`);
+            } else {
+              assertionLegs.add(key);
+            }
+          }
+          requireStringArray(
+            errors,
+            section,
+            "command",
+            assertion.command,
+            true,
+          );
+          if (assertion.cwd !== undefined && !isNonEmptyString(assertion.cwd)) {
+            errors.push(
+              `${section}.cwd: must be a non-empty string when present`,
+            );
+          }
+          if (
+            assertion.env !== undefined &&
+            (!isRecord(assertion.env) ||
+              Object.values(assertion.env).some(
+                (entry) => typeof entry !== "string",
+              ))
+          ) {
+            errors.push(`${section}.env: must be a string map when present`);
+          }
+          if (
+            assertion.timeoutMs !== undefined &&
+            (typeof assertion.timeoutMs !== "number" ||
+              !Number.isFinite(assertion.timeoutMs) ||
+              assertion.timeoutMs <= 0)
+          ) {
+            errors.push(
+              `${section}.timeoutMs: must be a positive number when present`,
+            );
+          }
+          if (assertion.unsetEnv !== undefined) {
+            requireStringArray(
+              errors,
+              section,
+              "unsetEnv",
+              assertion.unsetEnv,
+              false,
+            );
+          }
+          if (
+            assertion.expectedExit !== undefined &&
+            assertion.expectedExit !== "zero" &&
+            assertion.expectedExit !== "nonzero"
+          ) {
+            errors.push(
+              `${section}.expectedExit: must be 'zero' or 'nonzero' when present`,
+            );
+          }
+          for (const field of [
+            "expectedOutputPattern",
+            "selectedCapability",
+          ] as const) {
+            if (
+              assertion[field] !== undefined &&
+              !isNonEmptyString(assertion[field])
+            ) {
+              errors.push(
+                `${section}.${field}: must be a non-empty string when present`,
+              );
+            }
+          }
+          if (assertion.hostConstraintPatterns !== undefined) {
+            requireStringArray(
+              errors,
+              section,
+              "hostConstraintPatterns",
+              assertion.hostConstraintPatterns,
+              false,
             );
           }
         });

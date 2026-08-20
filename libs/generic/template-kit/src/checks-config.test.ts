@@ -227,6 +227,62 @@ describe("validateChecksConfig", () => {
     );
   });
 
+  it("rejects an incomplete iPhone shell and duplicate assertion legs", () => {
+    const errors = validateChecksConfig({
+      app: { name: "x" },
+      iphoneShell: {
+        hostStrategy: "remote-host",
+        simulatorTargets: [],
+        signingInputNames: [],
+        selectedCapabilities: [],
+        entitlementKeys: [],
+        privacyUsageDescriptionKeys: [],
+        backgroundModes: [],
+        paths: { unitTestRoots: [], uiTestRoots: [] },
+        assertions: [
+          {
+            assertionId: "MOB-IOS-001",
+            leg: "project-generation",
+            command: [],
+          },
+          {
+            assertionId: "MOB-IOS-001",
+            leg: "project-generation",
+            command: ["xcodegen", "generate"],
+            timeoutMs: 0,
+            expectedExit: "sometimes",
+          },
+        ],
+      },
+    });
+
+    expect(errors).toContain(
+      "iphoneShell.bundleId: required non-empty string",
+    );
+    expect(errors).toContain(
+      "iphoneShell.remoteHost: required non-empty string for remote-host strategy",
+    );
+    expect(errors).toContain("iphoneShell.simulatorTargets: must be non-empty");
+    expect(errors).toContain(
+      "iphoneShell.paths.projectSpec: required non-empty string",
+    );
+    expect(errors).toContain(
+      "iphoneShell.paths.unitTestRoots: must be non-empty",
+    );
+    expect(errors).toContain(
+      "iphoneShell.assertions[0].command: must be non-empty",
+    );
+    expect(errors).toContain(
+      "iphoneShell.assertions[1]: duplicate assertion leg 'MOB-IOS-001/project-generation'",
+    );
+    expect(errors).toContain(
+      "iphoneShell.assertions[1].timeoutMs: must be a positive number when present",
+    );
+    expect(errors).toContain(
+      "iphoneShell.assertions[1].expectedExit: must be 'zero' or 'nonzero' when present",
+    );
+  });
+
   it("parseChecksConfig throws on invalid, returns typed on valid", () => {
     expect(() => parseChecksConfig({})).toThrow(/invalid checks config/);
     expect(parseChecksConfig(valid).app.name).toBe("quartermaster");
@@ -264,6 +320,19 @@ describe("validateChecksConfig", () => {
         join(
           TEMPLATES_DIR,
           "papercusp-android-shell/reference/android-shell.checks-config.example.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(validateChecksConfig(raw)).toEqual([]);
+  });
+
+  it("the committed iPhone-shell reference config validates", () => {
+    const raw = JSON.parse(
+      readFileSync(
+        join(
+          TEMPLATES_DIR,
+          "papercusp-iphone-shell/reference/iphone-shell.checks-config.example.json",
         ),
         "utf8",
       ),
