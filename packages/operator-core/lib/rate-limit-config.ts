@@ -195,7 +195,7 @@ export function getRateLimitBus() {
 /** The live value (synchronous) the orchestrator + pty-bridge read every tick. Reflects the last
     PG load + bus publish in THIS process. */
 export function getCachedRateLimitConfig(): RateLimitConfig {
-  return cached;
+  return (cached ??= { ...DEFAULT_RATE_LIMIT_CONFIG });
 }
 
 function applyCached(cfg: RateLimitConfig): void {
