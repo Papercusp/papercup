@@ -32,6 +32,7 @@ import { resolveConcreteWorkspaceId } from './workspace-registry';
 export type PriorAttemptScope = 'same-spec' | 'same-plan-item' | 'plan-wide';
 export type PriorAttemptAuthority =
   | 'current-spec'
+  | 'spec-revision'
   | 'plan-decision'
   | 'retraction'
   | 'verified-completion'
@@ -87,12 +88,19 @@ const AUTHORITY_RANK: Record<PriorAttemptAuthority, number> = {
   'current-spec': 0,
   'plan-decision': 1,
   retraction: 2,
-  'verified-completion': 3,
-  checkpoint: 4,
-  lifecycle: 5,
-  'release-provenance': 6,
-  comment: 7,
+  'spec-revision': 3,
+  'verified-completion': 4,
+  checkpoint: 5,
+  lifecycle: 6,
+  'release-provenance': 7,
+  comment: 8,
 };
+
+const CANONICAL_AUTHORITY = new Set<PriorAttemptAuthority>([
+  'current-spec',
+  'plan-decision',
+  'retraction',
+]);
 
 const FILE_RE = /(?:^|[\s`("'])([A-Za-z0-9_@.-]+(?:\/[A-Za-z0-9_@.+-]+)+\.[A-Za-z0-9_-]+)(?=$|[.\s`),:"'])/g;
 const TEST_RE = /(?:^|\s)((?:npm|pnpm|yarn)\s+(?:run\s+)?test[^\n;]*|(?:vitest|jest|pytest|cargo\s+test)\s+[^\n;]*)/gi;
@@ -169,9 +177,13 @@ export function compilePriorAttempts(sources: readonly PriorAttemptSource[]): Pr
     }
   }
   const records = [...byIdentity.values()].sort((a, b) => {
+    const aCanonical = CANONICAL_AUTHORITY.has(a.authority) ? 0 : 1;
+    const bCanonical = CANONICAL_AUTHORITY.has(b.authority) ? 0 : 1;
     return (
-      SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope] ||
-      AUTHORITY_RANK[a.authority] - AUTHORITY_RANK[b.authority] ||
+      aCanonical - bCanonical ||
+      (aCanonical === 0
+        ? AUTHORITY_RANK[a.authority] - AUTHORITY_RANK[b.authority] || SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope]
+        : SCOPE_RANK[a.scope] - SCOPE_RANK[b.scope] || AUTHORITY_RANK[a.authority] - AUTHORITY_RANK[b.authority]) ||
       atMs(b.at) - atMs(a.at) ||
       a.rawRef.localeCompare(b.rawRef)
     );
@@ -412,7 +424,7 @@ export async function collectPriorAttempts(
 function specSource(spec: SpecClauseRevision, targetPlanItemId: string): PriorAttemptSource {
   return {
     scope: 'same-spec',
-    authority: 'current-spec',
+    authority: spec.revision === spec.currentRevision ? 'current-spec' : 'spec-revision',
     rawRef: `${spec.planSlug}#${spec.specId}@${spec.revision}`,
     specId: spec.specId,
     specRevision: spec.revision,
