@@ -21,6 +21,8 @@ import { lookupByMcpName } from '@papercusp/tooldef';
 let fixtureQueue: unknown[][] = [];
 let queriesBuilt = 0;
 const wherePredicates: unknown[] = [];
+let historyRows: unknown[] = [];
+let historyQueries = 0;
 
 /**
  * The holder liveness `goals:get` sees (P-004). Mutable + reset per test, the
@@ -85,7 +87,14 @@ import tool from './get';
 // queriesBuilt (that counter pins the drizzle-query shape only).
 const CTX = () => ({
   principal: { slug: 'op', workspaceId: 'default' } as never,
-  tx: ((..._args: unknown[]) => Promise.resolve([])) as never,
+  tx: ((strings: TemplateStringsArray, ..._args: unknown[]) => {
+    const sql = strings.join('?');
+    if (/FROM harness_shared\.audit_log/.test(sql)) {
+      historyQueries += 1;
+      return Promise.resolve(historyRows);
+    }
+    return Promise.resolve([]);
+  }) as never,
   log: vi.fn(),
 });
 
@@ -116,6 +125,8 @@ beforeEach(() => {
   queriesBuilt = 0;
   wherePredicates.length = 0;
   holderLivenessFixture = 'unheld';
+  historyRows = [];
+  historyQueries = 0;
 });
 
 /**
@@ -211,6 +222,7 @@ describe('goals:get — summary skips the children query (Gap 11)', () => {
     expect(json).not.toContain('rationale'); // body dropped
     expect(json).not.toContain('9999'); // budget dropped
     expect(queriesBuilt).toBe(1); // NO second children query in summary mode
+    expect(historyQueries).toBe(0); // history is a full-detail cost only
     expect(res.data).not.toHaveProperty('children');
   });
 });
@@ -324,6 +336,7 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
         { id: 'g-2', title: 'Child A' },
         { id: 'g-3', title: 'Child B' },
       ],
+      history: { entries: [], truncated: false, limit: 100 },
       pause: null,
       lastPause: null,
       actionable: true,
@@ -337,6 +350,54 @@ describe('goals:get — full mode fires the children query (Gap 11)', () => {
     const res = await tool.handler({ id: 'g-1', detail: 'full' } as never, CTX() as never);
     expect(queriesBuilt).toBe(2);
     expect((res.data as Record<string, unknown>).children).toEqual([]);
+  });
+
+  it('full mode reads append-only evidence and amendments from the goal', async () => {
+    fixtureQueue = [[GOAL_ROW()], []];
+    historyRows = [
+      {
+        id: 'history-2',
+        ts: 2000,
+        actor: 'blender',
+        action: 'goal:evidence',
+        details: { kind: 'finding', summary: 'retention fell', refs: ['WI-39969'] },
+      },
+      {
+        id: 'history-1',
+        ts: 1000,
+        actor: 'su-goal-executor',
+        action: 'goal:amendment',
+        details: {
+          kind: 'amendment',
+          reason: 'measurement changed the plan',
+          reasonSource: 'caller',
+          changes: [{ field: 'budgetCents', before: 50000, after: 75000 }],
+        },
+      },
+    ];
+
+    const res = await tool.handler({ id: 'g-1', detail: 'full' } as never, CTX() as never);
+    const history = (res.data as { history: { entries: unknown[] } }).history;
+    expect(historyQueries).toBe(1);
+    expect(history.entries).toEqual([
+      {
+        id: 'history-2',
+        kind: 'finding',
+        author: 'blender',
+        at: new Date(2000).toISOString(),
+        summary: 'retention fell',
+        refs: ['WI-39969'],
+      },
+      {
+        id: 'history-1',
+        kind: 'amendment',
+        author: 'su-goal-executor',
+        at: new Date(1000).toISOString(),
+        reason: 'measurement changed the plan',
+        reasonSource: 'caller',
+        changes: [{ field: 'budgetCents', before: 50000, after: 75000 }],
+      },
+    ]);
   });
 
   it('the children query binds parentId === id (lineage edge)', async () => {

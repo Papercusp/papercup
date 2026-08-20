@@ -17,7 +17,10 @@ import { setGoalTransitionExecutor, type GoalStopReport } from './stop-seam';
 type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
 let existingRow: Record<string, unknown> | null = null;
+let finalRow: Record<string, unknown> | null = null;
 let spendRows: Array<Record<string, string | null>> = [];
+let blockedByRows: Array<{ blocked_ref: string; blocker_kind: string; blocker_ref: string }> = [];
+let blockerGoalRows: Array<{ id: string; status: string }> = [];
 
 function makeTx() {
   return (strings: TemplateStringsArray, ...params: unknown[]) => {
@@ -28,6 +31,15 @@ function makeTx() {
     }
     if (/FROM harness_shared\.agent_usage_samples s/.test(sql)) {
       return Promise.resolve(spendRows);
+    }
+    if (/SELECT blocked_ref, blocker_kind, blocker_ref/.test(sql)) {
+      return Promise.resolve(blockedByRows);
+    }
+    if (/SELECT id, status FROM harness_shared\.goals/.test(sql)) {
+      return Promise.resolve(blockerGoalRows);
+    }
+    if (/SELECT id, workspace_id, title, body, status/.test(sql)) {
+      return Promise.resolve(finalRow ? [finalRow] : existingRow ? [existingRow] : []);
     }
     if (/^\s*SELECT/.test(sql)) {
       return Promise.resolve(existingRow ? [existingRow] : []);
@@ -64,6 +76,7 @@ const writtenCriterion = (): unknown => updateCall().params[KILL_CRITERION_PARAM
 beforeEach(() => {
   calls = [];
   existingRow = {
+    workspace_id: 'papercusp-workspace',
     title: 'Ship a paid app',
     body: 'the original statement',
     status: 'active',
@@ -72,7 +85,11 @@ beforeEach(() => {
     kill_criterion: 'no paying user after 2 weeks',
     tripwires: null,
     metadata: {},
+    launch_settings: null,
   };
+  finalRow = null;
+  blockedByRows = [];
+  blockerGoalRows = [];
   // The authoritative fixture is $12.34, so every accepted snapshot must be
   // exactly 1234 cents. Tests that use an unpriced/empty rollup override this.
   spendRows = [
@@ -189,6 +206,120 @@ describe('goals:update — partial writes preserve untouched state', () => {
       CTX() as never,
     );
     expect(writtenCriterion()).toBe('the real one');
+  });
+});
+
+describe('goals:update — unrestricted amendments are always reversible from history (D-008/D-013)', () => {
+  const amendmentInsert = () =>
+    calls.find((call) => /INSERT INTO harness_shared\.audit_log/.test(call.sql));
+
+  it('allows the goal executor to amend every row field and records before/after + author + reason', async () => {
+    const nextTripwires = [
+      { metric: 'spend_usd', label: '$120 of $750', threshold: 750, current: 120 },
+    ];
+    finalRow = {
+      ...existingRow!,
+      id: 'g1',
+      title: 'Ship a profitable app',
+      body: 'the revised outcome',
+      status: 'achieved',
+      parent_id: 'parent-goal',
+      budget_cents: '75000',
+      kill_criterion: 'no repeat purchase after 30 days',
+      tripwires: nextTripwires,
+      metadata: {
+        spentCents: 1234,
+        spentCentsSource: 'goal-pots-rollup',
+        drainFleet: 'goal-drain',
+      },
+      launch_settings: { maxAgents: 3 },
+    };
+
+    await tool.handler(
+      tool.args.parse({
+        id: 'g1',
+        title: 'Ship a profitable app',
+        body: 'the revised outcome',
+        status: 'achieved',
+        parentId: 'parent-goal',
+        budgetCents: 75000,
+        spentCents: 1234,
+        killCriterion: 'no repeat purchase after 30 days',
+        tripwires: nextTripwires,
+        drainFleet: 'goal-drain',
+        launchSettings: { maxAgents: 3 },
+        reason: 'the latest measured cohort changed the goal',
+      }) as never,
+      { ...CTX(), uiClientId: 'su-goal-executor', role: 'su' } as never,
+    );
+
+    expect(calls.some((call) => /UPDATE harness_shared\.goals/.test(call.sql))).toBe(true);
+    const audit = amendmentInsert();
+    expect(audit).toBeDefined();
+    expect(audit!.params[2]).toBe('su-goal-executor');
+    expect(audit!.params[3]).toBe('goal:amendment');
+    expect(audit!.params[4]).toBe('g1');
+    expect(audit!.params[6]).toBe('papercusp-workspace');
+    const detail = JSON.parse(audit!.params[5] as string) as {
+      reason: string;
+      reasonSource: string;
+      changes: Array<{ field: string; before: unknown; after: unknown }>;
+    };
+    expect(detail.reason).toBe('the latest measured cohort changed the goal');
+    expect(detail.reasonSource).toBe('caller');
+    expect(detail.changes.map((change) => change.field)).toEqual([
+      'title',
+      'body',
+      'status',
+      'parentId',
+      'budgetCents',
+      'killCriterion',
+      'tripwires',
+      'metadata',
+      'launchSettings',
+    ]);
+    expect(detail.changes.find((change) => change.field === 'budgetCents')).toEqual({
+      field: 'budgetCents',
+      before: 50000,
+      after: 75000,
+    });
+  });
+
+  it('generates an explicit reason when a non-pause caller omitted one', async () => {
+    finalRow = { ...existingRow!, id: 'g1', title: 'Renamed goal' };
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Renamed goal' }) as never, CTX() as never);
+
+    const detail = JSON.parse(amendmentInsert()!.params[5] as string) as {
+      reason: string;
+      reasonSource: string;
+    };
+    expect(detail.reasonSource).toBe('generated');
+    expect(detail.reason).toContain('title');
+  });
+
+  it('does not manufacture an amendment row for a semantic no-op', async () => {
+    await tool.handler(tool.args.parse({ id: 'g1', title: 'Ship a paid app' }) as never, CTX() as never);
+    expect(amendmentInsert()).toBeUndefined();
+  });
+
+  it('records the dependency field as a set-level before/after change', async () => {
+    blockedByRows = [{ blocked_ref: 'g1', blocker_kind: 'goal', blocker_ref: 'old-blocker' }];
+    blockerGoalRows = [{ id: 'new-blocker', status: 'active' }];
+    finalRow = { ...existingRow!, id: 'g1' };
+
+    await tool.handler(
+      tool.args.parse({ id: 'g1', blockedBy: ['new-blocker'], reason: 'dependency changed' }) as never,
+      CTX() as never,
+    );
+
+    const detail = JSON.parse(amendmentInsert()!.params[5] as string) as {
+      changes: Array<{ field: string; before: unknown; after: unknown }>;
+    };
+    expect(detail.changes).toContainEqual({
+      field: 'blockedBy',
+      before: ['old-blocker'],
+      after: ['new-blocker'],
+    });
   });
 });
 
@@ -471,7 +602,7 @@ describe('goals:update — the deliberate-pause record (P-005)', () => {
     expect(res.degradedReasons?.join(' ')).toContain('requires `reason`');
     // The refusal must cost nothing — not even the pre-read.
     expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
-    expect(calls.some((c) => /SELECT title, body, status/.test(c.sql))).toBe(false);
+    expect(calls.some((c) => /SELECT workspace_id, title, body, status/.test(c.sql))).toBe(false);
   });
 
   it('a whitespace-only reason is NOT a reason', async () => {
