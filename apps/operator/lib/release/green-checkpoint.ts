@@ -64,6 +64,15 @@ import {
   type GitRead,
 } from "@papercusp/operator-core/lib/candidate-contains";
 import {
+  createFrozenCandidateRepairQueue,
+  decideFrozenCandidateRepairQueue,
+  markFrozenRepairFixerDispatched,
+  markFrozenRepairFixerFinished,
+  markFrozenRepairVerificationGreen,
+  markFrozenRepairVerificationRed,
+  type FrozenCandidateRepairQueue,
+} from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
+import {
   describeIntegrationRoot,
   databaseEvidence,
   toolingRoot,
@@ -546,6 +555,23 @@ export interface CheckpointDeps {
     skipped: boolean;
     error?: string;
   } | null>;
+  /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
+   * live on the existing gate dependency seam so test stubs and non-recording CLI runs
+   * keep the old behavior when the routine metadata target is unavailable. */
+  readFrozenRepairQueue?(): Promise<FrozenCandidateRepairQueue | null>;
+  writeFrozenRepairQueue?(queue: FrozenCandidateRepairQueue | null): Promise<void>;
+  prepareFrozenRepairWorktree?(queue: FrozenCandidateRepairQueue): Promise<void>;
+  finalizeFrozenRepairWorktree?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<string | null>;
+  frozenRepairFixerAlive?(spawnId: string): Promise<boolean | null>;
+  dispatchFrozenRepairFixer?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<{ spawnId: string | null; runId: string | null } | null>;
+  stagingContainsFrozenRepair?(
+    queue: FrozenCandidateRepairQueue,
+  ): Promise<boolean | null>;
+  cleanupFrozenRepairWorktree?(queue: FrozenCandidateRepairQueue): Promise<void>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -575,11 +601,17 @@ export interface CheckpointResult {
     | "cupboard-hygiene-held"
     | "skipped-locked"
     | "migrations-pending"
+    | "repair-in-progress"
+    | "repair-staging-mismatch"
     /** EI-20767792192323374: the run's own module cache vanished mid-suite, so its failures
      *  are a HOST fault, not a verdict about the code. `green: null` (never `false`) — see
      *  {@link classifyInfraFault}. Treated as a no-op by `classifyGateStallStatus`, exactly
      *  like 'migrations-pending', so an infra fault cannot inflate the red streak. */
     | "infra-inconclusive";
+  /** D-001 / WI-39944: present when this verdict belongs to the serialized frozen
+   * repair queue. Downstream recording uses it to suppress the legacy moving-tip
+   * release-fixer dispatch; the queue already owns one targeted fixer. */
+  repairQueue?: FrozenCandidateRepairQueue;
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -5776,6 +5808,140 @@ export async function runGreenCheckpoint(
     ? await revParse(cfg.integrationRoot, cfg.releaseRef)
     : null;
 
+  // D-001 / WI-39944 — a persisted repair queue outranks the moving integration tip.
+  // Reconcile it before quiet-cut, setupTree, or any suite work: a live fixer consumes no
+  // second gate run, a dead fixer is finalized/replaced, and a completed repair is judged
+  // at its exact forward head. Missing hooks preserve the historical path for old CLIs and
+  // direct, non-recording invocations; a configured hook that FAILS is inconclusive rather
+  // than silently discarding a queue whose state we could not read.
+  let repairQueue: FrozenCandidateRepairQueue | null = null;
+  let repairVerification = false;
+  if (deps.readFrozenRepairQueue) {
+    try {
+      repairQueue = await deps.readFrozenRepairQueue();
+    } catch (e) {
+      const summary = `frozen repair queue read failed — refusing to cut a moving candidate: ${e instanceof Error ? e.message : e}`;
+      deps.log(summary);
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: null,
+        reason: "repair-in-progress",
+        summary,
+      };
+    }
+  }
+  if (repairQueue) {
+    // A process may die after proving green but before promotion. Re-running that exact
+    // immutable head is cheaper than inventing a second promotion-only state machine, and
+    // preserves every post-suite gate before main moves.
+    if (repairQueue.phase === "ready-to-promote") {
+      repairQueue = { ...repairQueue, phase: "ready-to-verify" };
+      await deps.writeFrozenRepairQueue?.(repairQueue);
+    }
+    const fixerAlive = repairQueue.fixerSpawnId
+      ? await deps
+          .frozenRepairFixerAlive?.(repairQueue.fixerSpawnId)
+          .catch(() => null)
+      : undefined;
+    let decision = decideFrozenCandidateRepairQueue(repairQueue, {
+      nowMs: Date.now(),
+      fixerAlive,
+    });
+
+    if (
+      decision.kind === "dispatch-fixer" &&
+      repairQueue.fixerSpawnId &&
+      fixerAlive === false
+    ) {
+      const finishedHead = await deps
+        .finalizeFrozenRepairWorktree?.(repairQueue)
+        .catch((e) => {
+          deps.log(
+            `frozen repair finalize failed for ${repairQueue!.repairHead.slice(0, 8)}: ${e instanceof Error ? e.message : e}`,
+          );
+          return null;
+        });
+      if (finishedHead && finishedHead !== repairQueue.repairHead) {
+        repairQueue = markFrozenRepairFixerFinished(repairQueue, {
+          spawnId: repairQueue.fixerSpawnId,
+          repairHead: finishedHead,
+          nowMs: Date.now(),
+        });
+        await deps.writeFrozenRepairQueue?.(repairQueue);
+        decision = decideFrozenCandidateRepairQueue(repairQueue, {
+          nowMs: Date.now(),
+        });
+      }
+    }
+
+    if (decision.kind === "abandon-repair") {
+      deps.log(
+        `frozen repair queue abandoned (${decision.reason}) at ${decision.repairHead.slice(0, 8)} — allowing one fresh candidate cut`,
+      );
+      await deps.writeFrozenRepairQueue?.(null);
+      await deps.cleanupFrozenRepairWorktree?.(repairQueue).catch(() => {});
+      repairQueue = null;
+    } else if (decision.kind === "dispatch-fixer") {
+      await deps.prepareFrozenRepairWorktree?.(repairQueue);
+      const fired = await deps.dispatchFrozenRepairFixer?.(repairQueue);
+      if (fired?.spawnId) {
+        repairQueue = markFrozenRepairFixerDispatched(repairQueue, {
+          spawnId: fired.spawnId,
+          nowMs: Date.now(),
+        });
+        await deps.writeFrozenRepairQueue?.(repairQueue);
+      }
+      const summary = fired?.spawnId
+        ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
+        : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
+      deps.log(summary);
+      return {
+        advanced: false,
+        candidate: repairQueue.repairHead,
+        from: lastReady,
+        green: null,
+        reason: "repair-in-progress",
+        summary,
+        repairQueue,
+      };
+    } else if (decision.kind === "wait-for-fixer") {
+      const summary = `frozen repair fixer ${decision.fixerSpawnId} is ${decision.liveness}; candidate ${repairQueue.candidate.slice(0, 8)} remains serialized and no suite was run`;
+      deps.log(summary);
+      return {
+        advanced: false,
+        candidate: repairQueue.repairHead,
+        from: lastReady,
+        green: null,
+        reason: "repair-in-progress",
+        summary,
+        repairQueue,
+      };
+    } else if (decision.kind === "verify-repair") {
+      candidate = await revParse(cfg.integrationRoot, decision.candidate);
+      repairVerification = true;
+      const onStaging = await deps
+        .stagingContainsFrozenRepair?.(repairQueue)
+        .catch(() => null);
+      if (onStaging !== true) {
+        const summary =
+          `frozen repair ${candidate.slice(0, 8)} is ready to verify, but its exact ` +
+          `${repairQueue.candidate.slice(0, 8)}..${candidate.slice(0, 8)} patch is not yet observable on staging; holding without spending a suite`;
+        deps.log(summary);
+        return {
+          advanced: false,
+          candidate,
+          from: lastReady,
+          green: null,
+          reason: "repair-staging-mismatch",
+          summary,
+          repairQueue,
+        };
+      }
+    }
+  }
+
   // QUIET CUT (2026-07-01): never judge a tip younger than the quiet window. On a shared
   // tree, a logically-atomic cross-package change lands across SEVERAL ~3-min git-sync
   // ticks — a candidate cut between the halves is TORN and reds the whole run on a state
@@ -5791,7 +5957,7 @@ export async function runGreenCheckpoint(
   // that is silently wrong rather than erroring when you get it subtly right-looking.
   const candidateBeforeQuietCut = candidate;
   let quietCutApplied = false;
-  if (!opts.candidate && quietCutSecFromEnv() > 0) {
+  if (!opts.candidate && !repairVerification && quietCutSecFromEnv() > 0) {
     try {
       const quietSec = quietCutSecFromEnv();
       const tipTime = await commitUnixTime(cfg.integrationRoot, candidate);
