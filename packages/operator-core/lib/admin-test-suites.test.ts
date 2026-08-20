@@ -331,8 +331,9 @@ describe('gradeChaosSummary (unmeasured-INP guard)', () => {
   // go in a separate bucket, and these pin that the exclusion stays auditable.
 
   it('reports WHERE the worst graded frame landed, so a breach can be attributed', () => {
-    const res = grade({ maxFrameMs: 180, maxFrameAtMs: 2400 });
+    const res = grade({ maxFrameMs: 180, maxFrameAtMs: 2400, maxFrameContext: 'button "Save" 12ms before' });
     expect(res.actual).toContain('@2400ms into window');
+    expect(res.actual).toContain('preceding=button "Save" 12ms before');
   });
 
   it('reports the excluded arming cost rather than dropping it', () => {

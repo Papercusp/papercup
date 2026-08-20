@@ -158,6 +158,8 @@ export interface ChaosRecorderSummary {
   maxFrameAtMs?: number;
   setupMaxFrameMs?: number;
   setupFrameDrops?: number;
+  /** Last synthetic/trusted click dispatch preceding the worst frame. */
+  maxFrameContext?: string;
   routes: string[];
 }
 
@@ -1355,7 +1357,8 @@ export function gradeChaosSummary(
   const setupText = summary.setupMaxFrameMs === undefined
     ? ' · setup=unreported (recorder predates the split)'
     : ` · setup maxFrame=${summary.setupMaxFrameMs}ms/drops=${summary.setupFrameDrops ?? 0} (excluded from grade)`;
-  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms${frameWhere}${setupText}.`;
+  const contextText = summary.maxFrameContext ? ` · preceding=${summary.maxFrameContext}` : '';
+  const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms${frameWhere}${setupText}${contextText}.`;
 
   const measures = [
     budgetMeasure(`${measurePrefix}max-frame`, summary.maxFrameMs, 'ms', DESKTOP_PERF_BUDGETS.chaosMaxFrameMs),
@@ -1694,9 +1697,10 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   while (Date.now() < deadline) {
     const summary = await runTauriEvalJson<{
       runId: string;
+      startedAt: number;
       durationMs: number;
       clicks: number;
-      events: Array<{ kind: string; route: string; inp?: number; duration?: number }>;
+      events: Array<{ kind: string; route: string; ts?: number; target?: string; inp?: number; duration?: number }>;
       routes: Record<string, unknown>;
       reloads?: number;
       frameDrops?: number;
@@ -1743,6 +1747,17 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
       const errors = source.filter((ev) => ev.kind === 'console-error' || ev.kind === 'unhandled-error').length;
       const longTasks = source.filter((ev) => ev.kind === 'long-task').length;
       const routes = Object.keys(summary.value.routes || {});
+      const frameAt = typeof summary.value.maxFrameAtMs === 'number'
+        ? Number(summary.value.startedAt || 0) + summary.value.maxFrameAtMs
+        : null;
+      const precedingClick = frameAt === null
+        ? undefined
+        : source
+            .filter((ev) => ev.kind === 'click-dispatch' && Number(ev.ts || 0) <= frameAt)
+            .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))[0];
+      const maxFrameContext = precedingClick && frameAt !== null
+        ? `${precedingClick.target || '(unknown target)'} ${Math.max(0, Math.round(frameAt - Number(precedingClick.ts || 0)))}ms before`
+        : undefined;
       return {
         clicks: Number(summary.value.clicks || inps.length),
         durationMs: Number(summary.value.durationMs || durationMs),
@@ -1761,6 +1776,7 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
         maxFrameAtMs: typeof summary.value.maxFrameAtMs === 'number' ? summary.value.maxFrameAtMs : undefined,
         setupMaxFrameMs: typeof summary.value.setupMaxFrameMs === 'number' ? summary.value.setupMaxFrameMs : undefined,
         setupFrameDrops: typeof summary.value.setupFrameDrops === 'number' ? summary.value.setupFrameDrops : undefined,
+        maxFrameContext,
         routes,
       };
     }
