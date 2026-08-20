@@ -108,6 +108,11 @@ export interface ScoutCycleLike {
   ideas?: readonly unknown[];
   /** Every idea after the critics (ScoutCycleResult.scored). */
   scored?: readonly unknown[];
+  /**
+   * Every routing decision, including failed/skipped decisions without a
+   * routedRef. Persisted with the stage artifacts for lossless reconciliation.
+   */
+  routed?: readonly unknown[];
   /** keep + moonshot after the critics (ScoutCycleResult.survivors) — deduped = scored − survivors. */
   survivors?: readonly unknown[];
   /** Debate/recombine fusions (ScoutCycleResult.proposals) — persisted per cycle for the Analyze stage (P-009). */
@@ -869,6 +874,7 @@ export function buildScoutTickDeps(opts: BuildScoutTickDepsOptions): ScoutTickDe
         ideas: cycle.ideas,
         scored: cycle.scored,
         proposals: cycle.proposals,
+        routingDecisions: cycle.routed,
         ideatorSlots: cycle.ideators,
         installSlug: harnessSlug,
         ...(opts.workspaceId ? { workspaceId: opts.workspaceId } : {}),

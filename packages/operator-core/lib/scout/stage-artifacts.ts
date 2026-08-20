@@ -46,6 +46,13 @@ export async function persistStageArtifacts(opts: {
   scored?: readonly unknown[];
   /** ScoutCycleResult.proposals — debate/recombine fusions (sourceIdeaIds). */
   proposals?: readonly unknown[];
+  /**
+   * ScoutCycleResult.routed — every routing decision, including failures and
+   * skips that have no routedRef. WI-20860583842231472: the successful-artifact
+   * ledger cannot represent those outcomes, so this cycle-owned artifact is the
+   * durable reconciliation surface for proposals → success | failed | skipped.
+   */
+  routingDecisions?: readonly unknown[];
   /** ScoutCycleLike.ideators — per-slot ideator outcomes (EI-13119). */
   ideatorSlots?: readonly unknown[];
   workspaceId?: string;
@@ -56,10 +63,11 @@ export async function persistStageArtifacts(opts: {
   const asJson = (v: readonly unknown[] | undefined): string | null => (v == null ? null : JSON.stringify(v));
   await sql`
     INSERT INTO harness_shared.scout_cycle_stage_artifacts
-      (workspace_id, install_slug, cycle_id, ideas, scored, proposals, ideator_slots)
+      (workspace_id, install_slug, cycle_id, ideas, scored, proposals, routing_decisions, ideator_slots)
     VALUES (${ws}, ${opts.installSlug ?? null}, ${opts.cycleId},
             ${asJson(opts.ideas)}::text::jsonb, ${asJson(opts.scored)}::text::jsonb,
-            ${asJson(opts.proposals)}::text::jsonb, ${asJson(opts.ideatorSlots)}::text::jsonb)
+            ${asJson(opts.proposals)}::text::jsonb, ${asJson(opts.routingDecisions)}::text::jsonb,
+            ${asJson(opts.ideatorSlots)}::text::jsonb)
     ON CONFLICT (workspace_id, cycle_id) DO NOTHING`;
   await sql`
     DELETE FROM harness_shared.scout_cycle_stage_artifacts

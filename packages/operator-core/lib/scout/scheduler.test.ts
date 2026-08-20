@@ -134,7 +134,12 @@ describe('runScoutTick (P-008)', () => {
       provenance: [],
       ideas: [{ id: 'i1' }],
       scored: [{ verdict: 'keep' }],
-      proposals: [{ id: 'p1' }],
+      proposals: [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }],
+      routed: [
+        { proposalId: 'p1', rail: 'goal', routedRef: 'goal:G-1' },
+        { proposalId: 'p2', rail: 'goal', error: 'goal dispatch unavailable' },
+        { proposalId: 'p3', rail: 'plan' },
+      ],
       ideators: [{ lens: 'analogical', ok: true, raw: 3, produced: 1 }],
     };
     const persisted: Array<{ cycle: ScoutCycleLike; cycleId: string }> = [];
@@ -148,7 +153,12 @@ describe('runScoutTick (P-008)', () => {
     expect(r.fired).toBe(true);
     expect(persisted).toHaveLength(1);
     expect(persisted[0].cycleId).toBe(r.cycleId);
-    expect(persisted[0].cycle.proposals).toEqual([{ id: 'p1' }]);
+    expect(persisted[0].cycle.proposals).toHaveLength(3);
+    const decisions = persisted[0].cycle.routed as Array<{ routedRef?: string; error?: string }>;
+    const dispatched = decisions.filter((d) => d.routedRef).length;
+    const failed = decisions.filter((d) => d.error).length;
+    const skipped = decisions.filter((d) => !d.routedRef && !d.error).length;
+    expect(persisted[0].cycle.proposals?.length).toBe(dispatched + failed + skipped);
 
     const failing = makeDeps({
       runCycle: async () => cycle,
