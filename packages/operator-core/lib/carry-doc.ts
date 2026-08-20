@@ -469,6 +469,10 @@ function latestTailTurnMs(tail: ReadonlyArray<CarryDocTailTurn>): number | null 
 
 const CONT_PREVIEW_CAP = 240;
 
+function isOwnerSpeechVerdict(verdict: string | null | undefined): boolean {
+  return verdict === 'owner-typed' || verdict === 'owner-dialog';
+}
+
 /**
  * Derive the {@link CarryDocContinuation} from the (already-capped) verbatim tail.
  * The "final owner message" is the LAST tail turn mechanically stamped
@@ -485,7 +489,7 @@ export function deriveContinuation(
   const selfRequested = boundaryDeliberate && boundarySelfRequested;
   let idx = -1;
   for (let i = tail.length - 1; i >= 0; i -= 1) {
-    if (tail[i].provenance?.verdict === 'owner-typed') {
+    if (isOwnerSpeechVerdict(tail[i].provenance?.verdict)) {
       idx = i;
       break;
     }
@@ -775,6 +779,8 @@ function tailTurnHeader(t: CarryDocTailTurn): string {
     switch (t.provenance.verdict) {
       case 'owner-typed':
         return 'OWNER (typed — mechanically classified)';
+      case 'owner-dialog':
+        return 'OWNER (dialog answer — mechanically classified)';
       case 'agent-injected':
         return `machine-injected (${t.provenance.origin ?? 'unknown origin'}) — NOT the owner`;
       case 'synthetic':
@@ -826,7 +832,7 @@ function renderTail(tail: CarryDocTailTurn[], cont: CarryDocContinuation): strin
   if (cont.lastOwnerMessage && !cont.answered) {
     let dropAt = -1;
     for (let i = tail.length - 1; i >= 0; i -= 1) {
-      if (tail[i].provenance?.verdict === 'owner-typed') {
+      if (isOwnerSpeechVerdict(tail[i].provenance?.verdict)) {
         dropAt = i;
         break;
       }

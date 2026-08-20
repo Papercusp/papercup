@@ -434,6 +434,7 @@ describe('renderCarryDoc (pure)', () => {
       doc({
         tail: [
           { speaker: 'user', text: 'ship it', ts: null, provenance: { verdict: 'owner-typed', origin: null } },
+          { speaker: 'user', text: 'use route B', ts: null, provenance: { verdict: 'owner-dialog', origin: null } },
           { speaker: 'user', text: 'loop wake', ts: null, provenance: { verdict: 'agent-injected', origin: 'wake-pump' } },
           { speaker: 'user', text: '/compact ran', ts: null, provenance: { verdict: 'synthetic', origin: null } },
           { speaker: 'user', text: 'no ledger era', ts: null },
@@ -442,6 +443,7 @@ describe('renderCarryDoc (pure)', () => {
       NOW,
     );
     expect(text).toContain('### OWNER (typed — mechanically classified)');
+    expect(text).toContain('### OWNER (dialog answer — mechanically classified)');
     expect(text).toContain('### machine-injected (wake-pump) — NOT the owner');
     expect(text).toContain('### machine (harness-synthetic) — NOT the owner');
     expect(text).toContain('### user (unclassified)');
@@ -503,12 +505,19 @@ describe('renderCarryDoc (pure)', () => {
 
 describe('deriveContinuation (pure, P-010)', () => {
   const ownerTurn = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'owner-typed', origin: null } });
+  const ownerDialog = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'owner-dialog', origin: null } });
   const wake = (text: string): CarryDocTailTurn => ({ speaker: 'user', text, ts: null, provenance: { verdict: 'agent-injected', origin: 'wake-pump' } });
   const model = (text: string): CarryDocTailTurn => ({ speaker: 'assistant', text, ts: null });
 
   it('identifies the final OWNER-typed turn — not a later agent-injected user turn (WI-3532 class)', () => {
     const cont = deriveContinuation([ownerTurn('do the thing'), model('on it'), wake('loop wake — continue')], true);
     expect(cont.lastOwnerMessage?.text).toBe('do the thing');
+  });
+
+  it('treats an AskUserQuestion dialog answer as owner speech across the boundary', () => {
+    const cont = deriveContinuation([ownerTurn('earlier'), model('asked'), ownerDialog('use route B')], true);
+    expect(cont.lastOwnerMessage?.text).toBe('use route B');
+    expect(cont.answered).toBe(false);
   });
 
   it('answered=true when a model turn follows the owner message; false when it is the last real turn', () => {
