@@ -17,6 +17,7 @@ import { resolveGoalEffectiveActivity } from '@papercusp/operator-core/lib/goals
 import { parseGoalLaunchSettings } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { readGoalReadiness } from './goal-deps';
 import { readGoalLastPause, readGoalPause } from './pause-record';
+import { readGoalHistory } from './history';
 
 const goals = generated.goalsInHarnessShared;
 const GoalSelect = schemaOf(goals).select;
@@ -109,6 +110,10 @@ export default defineTool({
       .select({ id: goals.id, title: goals.title })
       .from(goals)
       .where(eq(goals.parentId, args.id))) as Array<Pick<GoalRow, 'id' | 'title'>>;
+    const history = await readGoalHistory(ctx.tx, {
+      workspaceId: goal.workspaceId,
+      goalId: goal.id,
+    });
     return {
       data: {
         ...goal,
@@ -127,6 +132,7 @@ export default defineTool({
           sessionState: h.sessionState,
         })),
         children,
+        history,
         pause,
         // The archived record of the last pause that has since been resumed —
         // "was this ever held, and by whom" survives the resume.

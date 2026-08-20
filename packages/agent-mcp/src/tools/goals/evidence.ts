@@ -12,9 +12,9 @@ export const goalEvidenceArgs = z
   .object({
     goalId: z.string().min(1),
     kind: z.enum(['evidence', 'finding']).default('evidence'),
-    summary: z.string().min(1).max(1000),
-    detail: z.string().min(1).max(12000).optional(),
-    refs: z.array(z.string().min(1).max(500)).max(20).optional(),
+    summary: z.string().trim().min(1).max(1000),
+    detail: z.string().trim().min(1).max(12000).optional(),
+    refs: z.array(z.string().trim().min(1).max(500)).max(20).optional(),
   })
   .strict();
 
@@ -48,12 +48,11 @@ export default defineTool({
       author,
       detail: {
         kind: args.kind,
-        summary: args.summary.trim(),
-        ...(args.detail ? { detail: args.detail.trim() } : {}),
+        summary: args.summary,
+        ...(args.detail ? { detail: args.detail } : {}),
         ...(args.refs?.length ? { refs: args.refs } : {}),
       },
     });
     return { data: entry };
   },
 });
-

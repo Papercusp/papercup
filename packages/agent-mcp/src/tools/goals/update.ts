@@ -29,7 +29,7 @@ import {
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema } from './create';
-import { applyGoalBlockedBy } from './goal-deps';
+import { applyGoalBlockedBy, readGoalBlockedByEdges } from './goal-deps';
 import { resolveGoalWorkspace } from './_workspace';
 import {
   getGoalTransitionExecutor,
@@ -38,6 +38,26 @@ import {
   type GoalTransitionReport,
 } from './stop-seam';
 import { clearGoalPause, stampGoalPause } from './pause-record';
+import { addGoalFieldChange, appendGoalHistory, type GoalFieldChange } from './history';
+
+function jsonField(value: unknown): unknown {
+  if (typeof value !== 'string') return value ?? null;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
+}
+
+function centsField(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const cents = Number(value);
+  return Number.isFinite(cents) ? cents : null;
+}
+
+function sortedRefs(refs: readonly string[]): string[] {
+  return [...refs].sort((a, b) => a.localeCompare(b));
+}
 
 export default defineTool({
   name: 'goals:update',
@@ -122,7 +142,7 @@ export default defineTool({
       .max(500)
       .optional()
       .describe(
-        'REQUIRED when pausing (status:"paused") — why the goal is held, ideally what would end the hold. Persisted as metadata.pause { reason, pausedBy, pausedAtMs } and read back by goals:get, so a later reader can tell a DELIBERATE hold from a goal that quietly lost its holder. Ignored on any other status.',
+        'Why this amendment is being made. REQUIRED when pausing (status:"paused") — ideally name what would end the hold — and persisted both in metadata.pause and the append-only amendment history. On other amendments it is optional; when omitted the audit entry carries an explicit generated reason rather than losing the provenance field.',
       ),
     holder: goalHolderPolicySchema
       .optional()
@@ -192,6 +212,7 @@ export default defineTool({
 
     const existing = await ctx.tx<
       Array<{
+        workspace_id: string;
         title: string;
         body: string | null;
         status: string;
@@ -200,15 +221,22 @@ export default defineTool({
         kill_criterion: string | null;
         tripwires: unknown;
         metadata: Record<string, unknown> | null;
+        launch_settings: unknown;
       }>
     >`
-      SELECT title, body, status, parent_id, budget_cents, kill_criterion, tripwires, metadata
+      SELECT workspace_id, title, body, status, parent_id, budget_cents, kill_criterion,
+             tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
     if (!existing.length) {
       return { data: null, degraded: true, degradedReasons: [`goal ${args.id} not found`] };
     }
     const prev = existing[0]!;
+    let previousBlockedBy: string[] | null = null;
+    if (args.blockedBy !== undefined) {
+      const edges = await readGoalBlockedByEdges(ctx.tx, prev.workspace_id);
+      previousBlockedBy = sortedRefs((edges.get(args.id) ?? []).map((edge) => edge.ref));
+    }
 
     /* SPEND PROVENANCE (EI-20188678636377696).
        `spentCents` used to be an owner-entered number. That made a guess
@@ -419,7 +447,9 @@ export default defineTool({
     const [row] = await ctx.tx<
       Array<{
         id: string;
+        workspace_id: string;
         title: string;
+        body: string | null;
         status: string;
         parent_id: string | null;
         budget_cents: string | null;
@@ -429,10 +459,54 @@ export default defineTool({
         launch_settings: unknown;
       }>
     >`
-      SELECT id, title, status, parent_id, budget_cents, kill_criterion, tripwires, metadata,
-             launch_settings
+      SELECT id, workspace_id, title, body, status, parent_id, budget_cents, kill_criterion,
+             tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
+
+    // D-008/D-013: unrestricted self-amendment is bounded by an audit trail,
+    // not by an approval or not-self gate. Compare the persisted row before and
+    // after every write so failed subordinate writes are never logged as if
+    // they landed, and no-op calls do not manufacture fake history.
+    if (row) {
+      const changes: GoalFieldChange[] = [];
+      addGoalFieldChange(changes, 'title', prev.title, row.title);
+      addGoalFieldChange(changes, 'body', prev.body, row.body);
+      addGoalFieldChange(changes, 'status', prev.status, row.status);
+      addGoalFieldChange(changes, 'parentId', prev.parent_id, row.parent_id);
+      addGoalFieldChange(
+        changes,
+        'budgetCents',
+        centsField(prev.budget_cents),
+        centsField(row.budget_cents),
+      );
+      addGoalFieldChange(changes, 'killCriterion', prev.kill_criterion, row.kill_criterion);
+      addGoalFieldChange(changes, 'tripwires', jsonField(prev.tripwires), jsonField(row.tripwires));
+      addGoalFieldChange(changes, 'metadata', jsonField(prev.metadata), jsonField(row.metadata));
+      addGoalFieldChange(
+        changes,
+        'launchSettings',
+        jsonField(prev.launch_settings),
+        jsonField(row.launch_settings),
+      );
+      if (previousBlockedBy !== null && blockedByApplied !== null) {
+        addGoalFieldChange(changes, 'blockedBy', previousBlockedBy, sortedRefs(blockedByApplied));
+      }
+      if (changes.length > 0) {
+        const callerReason = args.reason?.trim();
+        await appendGoalHistory(ctx.tx, {
+          workspaceId: row.workspace_id,
+          goalId: args.id,
+          author: ctx.uiClientId ?? ctx.principal?.slug ?? ctx.role ?? 'unknown',
+          detail: {
+            kind: 'amendment',
+            reason: callerReason || `goals:update changed ${changes.map((change) => change.field).join(', ')}`,
+            reasonSource: callerReason ? 'caller' : 'generated',
+            changes,
+          },
+        });
+      }
+    }
 
     // ── The stop fan-out (EI-20013729460455061) ──────────────────────────────
     //

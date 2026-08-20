@@ -5,6 +5,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { GoalSqlTag } from './_core';
 
 export const GOAL_EVIDENCE_ACTION = 'goal:evidence';
@@ -41,8 +42,6 @@ export interface GoalHistoryEntry {
   refs?: string[];
 }
 
-const same = (a: unknown, b: unknown): boolean => JSON.stringify(a) === JSON.stringify(b);
-
 /** Add one field only when its persisted semantic value really moved. */
 export function addGoalFieldChange(
   changes: GoalFieldChange[],
@@ -50,7 +49,11 @@ export function addGoalFieldChange(
   before: unknown,
   after: unknown,
 ): void {
-  if (!same(before, after)) changes.push({ field, before: before ?? null, after: after ?? null });
+  const normalizedBefore = before ?? null;
+  const normalizedAfter = after ?? null;
+  if (!isDeepStrictEqual(normalizedBefore, normalizedAfter)) {
+    changes.push({ field, before: normalizedBefore, after: normalizedAfter });
+  }
 }
 
 export async function appendGoalHistory(
@@ -146,4 +149,3 @@ export async function readGoalHistory(
     limit,
   };
 }
-
