@@ -16,14 +16,7 @@ export const SPEC_BEHAVIOR_CLASSES = [
 ] as const;
 export type SpecBehaviorClass = (typeof SPEC_BEHAVIOR_CLASSES)[number];
 
-export const SPEC_LIFECYCLE_STATUSES = [
-  'draft',
-  'accepted',
-  'active',
-  'superseded',
-  'exempt',
-  'retired',
-] as const;
+export const SPEC_LIFECYCLE_STATUSES = ['draft', 'accepted', 'active', 'superseded', 'exempt', 'retired'] as const;
 export type SpecLifecycleStatus = (typeof SPEC_LIFECYCLE_STATUSES)[number];
 
 export interface SpecClauseWrite {
@@ -72,7 +65,29 @@ export type SetSpecClauseResult =
   | { status: 'created' | 'revised'; specId: string; revision: number; contentHash: string }
   | { status: 'unchanged'; specId: string; revision: number; contentHash: string }
   | { status: 'conflict'; specId: string; expectedRevision: number; actualRevision: number }
-  | { status: 'source_alias_immutable'; specId: string; sourceValId: string | null };
+  | { status: 'source_alias_immutable'; specId: string; sourceValId: string | null }
+  | {
+      status: 'source_alias_conflict';
+      specId: string;
+      sourceValId: string;
+      conflictingPlanSlug: string;
+      conflictingSpecId: string;
+    }
+  | { status: 'plan_not_found'; specId: string; planSlug: string }
+  | { status: 'plan_item_not_found'; specId: string; planItemId: string }
+  | { status: 'supersedes_not_found'; specId: string; supersedes: { specId: string; revision: number } };
+
+function canonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, nested]) => [key, canonicalJson(nested)]),
+    );
+  }
+  return value;
+}
 
 function normalizedSet(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((v) => v.trim()).filter(Boolean))].sort();
@@ -94,12 +109,19 @@ function canonicalWrite(input: SpecClauseWrite) {
 }
 
 export function specClauseContentHash(input: SpecClauseWrite): string {
-  return createHash('sha256').update(JSON.stringify(canonicalWrite(input))).digest('hex');
+  return createHash('sha256')
+    .update(JSON.stringify(canonicalJson(canonicalWrite(input))))
+    .digest('hex');
 }
 
 interface IdentityRow {
   source_val_id: string | null;
   current_revision: number;
+}
+
+interface AliasIdentityRow {
+  plan_slug: string;
+  spec_id: string;
 }
 
 /** Append one immutable revision under an optimistic expectedRevision CAS. */
@@ -111,6 +133,55 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
   return withWorkspace(scope.workspaceId, async (tx) => {
     const lockKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.planSlug}:${input.specId}`;
     await tx`SELECT pg_advisory_xact_lock(hashtext('plan_spec_clause'), hashtext(${lockKey}))`;
+
+    // The optional VAL alias has harness-wide uniqueness. Lock it independently
+    // from the spec identity so two different specs racing for one alias resolve
+    // to a structured conflict rather than an opaque 23505.
+    if (input.sourceValId) {
+      const aliasKey = `${scope.workspaceId}:${scope.harnessSlug}:${input.sourceValId}`;
+      await tx`SELECT pg_advisory_xact_lock(hashtext('plan_spec_clause_alias'), hashtext(${aliasKey}))`;
+    }
+
+    const ownership = await tx<{ plan_exists: boolean; item_exists: boolean }[]>`
+      SELECT
+        EXISTS (
+          SELECT 1 FROM harness_shared.harness_plans
+           WHERE workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${input.planSlug}
+        ) AS plan_exists,
+        EXISTS (
+          SELECT 1 FROM harness_shared.plan_items
+           WHERE workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${input.planSlug}
+             AND item_id = ${normalized.planItemId}
+        ) AS item_exists`;
+    if (!ownership[0]?.plan_exists) {
+      return { status: 'plan_not_found', specId: input.specId, planSlug: input.planSlug };
+    }
+    if (!ownership[0]?.item_exists) {
+      return { status: 'plan_item_not_found', specId: input.specId, planItemId: normalized.planItemId };
+    }
+
+    if (normalized.supersedes) {
+      const target = await tx<{ exists: boolean }[]>`
+        SELECT EXISTS (
+          SELECT 1 FROM harness_shared.plan_spec_clause_revisions
+           WHERE workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${input.planSlug}
+             AND spec_id = ${normalized.supersedes.specId}
+             AND revision = ${normalized.supersedes.revision}
+        ) AS exists`;
+      if (!target[0]?.exists) {
+        return {
+          status: 'supersedes_not_found',
+          specId: input.specId,
+          supersedes: normalized.supersedes,
+        };
+      }
+    }
 
     const identities = await tx<IdentityRow[]>`
       SELECT source_val_id, current_revision
@@ -129,6 +200,24 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
       return { status: 'source_alias_immutable', specId: input.specId, sourceValId: identity.source_val_id };
     }
 
+    if (!identity && input.sourceValId) {
+      const aliases = await tx<AliasIdentityRow[]>`
+        SELECT plan_slug, spec_id
+          FROM harness_shared.plan_spec_clauses
+         WHERE workspace_id = ${scope.workspaceId}
+           AND harness_slug = ${scope.harnessSlug}
+           AND source_val_id = ${input.sourceValId}`;
+      if (aliases[0]) {
+        return {
+          status: 'source_alias_conflict',
+          specId: input.specId,
+          sourceValId: input.sourceValId,
+          conflictingPlanSlug: aliases[0].plan_slug,
+          conflictingSpecId: aliases[0].spec_id,
+        };
+      }
+    }
+
     if (identity) {
       const current = await tx<{ content_hash: string }[]>`
         SELECT content_hash
@@ -142,19 +231,57 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
         return { status: 'unchanged', specId: input.specId, revision: actualRevision, contentHash };
       }
     } else {
-      await tx`
+      const inserted = await tx<{ spec_id: string }[]>`
         INSERT INTO harness_shared.plan_spec_clauses (
           workspace_id, harness_slug, plan_slug, spec_id, source_val_id,
           current_revision, created_by
         ) VALUES (
           ${scope.workspaceId}, ${scope.harnessSlug}, ${input.planSlug}, ${input.specId},
           ${input.sourceValId ?? null}, 0, ${input.actorId}
-        )`;
+        )
+        ON CONFLICT DO NOTHING
+        RETURNING spec_id`;
+      if (!inserted[0]) {
+        const raced = await tx<IdentityRow[]>`
+          SELECT source_val_id, current_revision
+            FROM harness_shared.plan_spec_clauses
+           WHERE workspace_id = ${scope.workspaceId}
+             AND harness_slug = ${scope.harnessSlug}
+             AND plan_slug = ${input.planSlug}
+             AND spec_id = ${input.specId}`;
+        if (raced[0]) {
+          return {
+            status: 'conflict',
+            specId: input.specId,
+            expectedRevision: input.expectedRevision,
+            actualRevision: Number(raced[0].current_revision),
+          };
+        }
+        const aliases = input.sourceValId
+          ? await tx<AliasIdentityRow[]>`
+              SELECT plan_slug, spec_id
+                FROM harness_shared.plan_spec_clauses
+               WHERE workspace_id = ${scope.workspaceId}
+                 AND harness_slug = ${scope.harnessSlug}
+                 AND source_val_id = ${input.sourceValId}`
+          : [];
+        if (input.sourceValId && aliases[0]) {
+          return {
+            status: 'source_alias_conflict',
+            specId: input.specId,
+            sourceValId: input.sourceValId,
+            conflictingPlanSlug: aliases[0].plan_slug,
+            conflictingSpecId: aliases[0].spec_id,
+          };
+        }
+        throw new Error(`plan_spec_clause_identity_insert_failed:${input.planSlug}:${input.specId}`);
+      }
     }
 
     const revision = actualRevision + 1;
     const accepted = normalized.lifecycleStatus === 'accepted' || normalized.lifecycleStatus === 'active';
-    const rows = await tx<{ created_at: Date; accepted_at: Date | null }[]>`
+    const exemptionJson = normalized.exemption === null ? null : JSON.stringify(canonicalJson(normalized.exemption));
+    await tx`
       INSERT INTO harness_shared.plan_spec_clause_revisions (
         workspace_id, harness_slug, plan_slug, spec_id, revision, plan_item_id,
         behavior, behavior_class, required_evidence, required_test_layers,
@@ -165,10 +292,10 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
         ${normalized.planItemId}, ${normalized.behavior}, ${normalized.behaviorClass},
         ${normalized.requiredEvidence}, ${normalized.requiredTestLayers}, ${normalized.mutationRequired},
         ${normalized.lifecycleStatus}, ${normalized.supersedes?.specId ?? null},
-        ${normalized.supersedes?.revision ?? null}, ${normalized.exemption}, ${contentHash},
+        ${normalized.supersedes?.revision ?? null}, ${exemptionJson}::text::jsonb, ${contentHash},
         ${input.actorId}, ${accepted ? input.actorId : null}, ${accepted ? new Date() : null},
         ${normalized.acceptanceRef}
-      ) RETURNING created_at, accepted_at`;
+      )`;
 
     await tx`
       UPDATE harness_shared.plan_spec_clauses
@@ -198,7 +325,6 @@ export async function setSpecClause(input: SpecClauseWrite): Promise<SetSpecClau
           updated_at = now()`;
     }
 
-    void rows;
     return { status: actualRevision === 0 ? 'created' : 'revised', specId: input.specId, revision, contentHash };
   });
 }
@@ -240,7 +366,9 @@ export interface ListSpecClausesOptions {
 /** Exact structured read; current-only unless includeHistory or revision is requested. */
 export async function listSpecClauses(options: ListSpecClausesOptions): Promise<SpecClauseRevision[]> {
   const scope = await resolvePlanScope({ harnessSlug: options.harnessSlug });
-  const rows = await withWorkspace(scope.workspaceId, async (tx) => tx<RevisionRow[]>`
+  const rows = await withWorkspace(
+    scope.workspaceId,
+    async (tx) => tx<RevisionRow[]>`
     SELECT c.plan_slug, c.spec_id, c.source_val_id, c.current_revision,
            r.revision, r.plan_item_id, r.behavior, r.behavior_class,
            r.required_evidence, r.required_test_layers, r.mutation_required,
@@ -254,7 +382,8 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
      WHERE c.workspace_id = ${scope.workspaceId}
        AND c.harness_slug = ${scope.harnessSlug}
        AND c.plan_slug = ${options.planSlug}
-     ORDER BY c.spec_id, r.revision`);
+     ORDER BY c.spec_id, r.revision`,
+  );
 
   const specIds = options.specIds ? new Set(options.specIds) : null;
   const valIds = options.sourceValIds ? new Set(options.sourceValIds) : null;
@@ -263,9 +392,11 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
     .filter((r) => !specIds || specIds.has(r.spec_id))
     .filter((r) => !valIds || (r.source_val_id !== null && valIds.has(r.source_val_id)))
     .filter((r) => !itemIds || itemIds.has(r.plan_item_id))
-    .filter((r) => options.revision !== undefined
-      ? Number(r.revision) === options.revision
-      : options.includeHistory || Number(r.revision) === Number(r.current_revision))
+    .filter((r) =>
+      options.revision !== undefined
+        ? Number(r.revision) === options.revision
+        : options.includeHistory || Number(r.revision) === Number(r.current_revision),
+    )
     .map((r) => ({
       planSlug: r.plan_slug,
       specId: r.spec_id,
@@ -279,9 +410,10 @@ export async function listSpecClauses(options: ListSpecClausesOptions): Promise<
       requiredTestLayers: r.required_test_layers,
       mutationRequired: r.mutation_required,
       lifecycleStatus: r.lifecycle_status,
-      supersedes: r.supersedes_spec_id && r.supersedes_revision
-        ? { specId: r.supersedes_spec_id, revision: Number(r.supersedes_revision) }
-        : null,
+      supersedes:
+        r.supersedes_spec_id && r.supersedes_revision
+          ? { specId: r.supersedes_spec_id, revision: Number(r.supersedes_revision) }
+          : null,
       exemption: r.exemption,
       contentHash: r.content_hash,
       createdBy: r.created_by,

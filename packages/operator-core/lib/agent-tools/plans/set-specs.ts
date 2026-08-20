@@ -1,0 +1,97 @@
+/** plans:set-specs — optimistic-CAS append of canonical plan spec revisions. */
+import { z } from 'zod';
+import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { resolveEffectiveHarnessSlug } from './_ctx-opts';
+import { resolveAgentIdentity } from '../coordination/identity';
+import { bulkContent, runBulk } from '../_bulk';
+import { SPEC_BEHAVIOR_CLASSES, SPEC_LIFECYCLE_STATUSES, setSpecClause } from './spec-clauses-store';
+
+const specWriteSchema = z
+  .object({
+    specId: z.string().min(1).max(200).regex(/^\S+$/, 'specId may not contain whitespace'),
+    expectedRevision: z.number().int().min(0),
+    sourceValId: z
+      .string()
+      .regex(/^VAL-[A-Za-z0-9._-]+$/)
+      .nullable()
+      .optional(),
+    planItemId: z.string().regex(/^P-\d{3,}$/),
+    behavior: z.string().trim().min(1).max(12_000),
+    behaviorClass: z.enum(SPEC_BEHAVIOR_CLASSES),
+    requiredEvidence: z.array(z.string().trim().min(1).max(1000)).max(100).optional(),
+    requiredTestLayers: z.array(z.string().trim().min(1).max(200)).max(50).optional(),
+    mutationRequired: z.boolean().optional(),
+    lifecycleStatus: z.enum(SPEC_LIFECYCLE_STATUSES),
+    supersedes: z
+      .object({ specId: z.string().min(1).max(200), revision: z.number().int().positive() })
+      .nullable()
+      .optional(),
+    exemption: z.record(z.string(), z.unknown()).nullable().optional(),
+    acceptanceRef: z.string().trim().min(1).max(1000).nullable().optional(),
+  })
+  .superRefine((spec, ctx) => {
+    if (spec.lifecycleStatus === 'exempt' && !spec.exemption) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['exemption'],
+        message: 'lifecycleStatus=exempt requires structured exemption provenance',
+      });
+    }
+    if (spec.lifecycleStatus !== 'exempt' && spec.exemption) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['exemption'],
+        message: 'exemption is only valid when lifecycleStatus=exempt',
+      });
+    }
+  });
+
+const argsSchema = z
+  .object({
+    harness: harnessArg,
+    slug: z.string().min(1).describe('Plan slug owning every supplied clause.'),
+    spec: specWriteSchema.optional().describe('Single-clause shorthand.'),
+    specs: z.array(specWriteSchema).min(1).max(200).optional().describe('Append several clause revisions.'),
+  })
+  .refine((args) => Boolean(args.spec) !== Boolean(args.specs), {
+    message: 'pass exactly one of `spec` or `specs`',
+  });
+
+const OK = new Set(['created', 'revised', 'unchanged']);
+
+export default defineTool({
+  name: 'plans:set-specs',
+  description:
+    'Create or append immutable first-class plan spec revisions under expectedRevision CAS. Preserves an optional source VAL alias, verifies plan/item ownership and supersession targets, and refreshes the legacy VAL projection without overwriting its test verdict.',
+  guidance: {
+    when: 'Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.',
+    notWhen:
+      'Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools.',
+    chaining: 'plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify.',
+    seeAlso: ['plans:get-specs (current/exact/history read)', 'plans:get-item (owning outcome)'],
+  },
+  capability: 'plans:write',
+  requirePrincipal: false,
+  skipWorkspaceTx: true,
+  agentRoles: [...AGENT_ROLES],
+  modality: ['text'],
+  args: argsSchema,
+  async handler(args, ctx) {
+    const sctx = harnessScopedCtx(args.harness, ctx);
+    const harnessSlug = resolveEffectiveHarnessSlug(sctx);
+    const actorId = resolveAgentIdentity(ctx).ownerId;
+    const specs = args.specs ?? [args.spec!];
+    const env = await runBulk(
+      specs,
+      async (spec) => {
+        const result = await setSpecClause({ ...spec, planSlug: args.slug, harnessSlug, actorId });
+        return OK.has(result.status)
+          ? { ok: true as const, slug: args.slug, ...result }
+          : { ok: false as const, slug: args.slug, error: result.status, ...result };
+      },
+      { keyOf: (spec) => ({ slug: args.slug, specId: spec.specId }) },
+    );
+    return bulkContent(env);
+  },
+});

@@ -1133,6 +1133,10 @@ import './generators/publish';
 // SU-agent plan tracking — see agent-plan-tracking-2026-05-20.md
 import './plans/list';
 import './plans/get';
+// first-class-spec-clauses-and-prior-attempt-briefs P-002 — stable clause
+// identities + immutable revisions, with exact/current/history reads.
+import './plans/get-specs';
+import './plans/set-specs';
 import './plans/items';
 // plan-templates-and-rubric-v2-2026-06-20 P-003 — single-item structured read.
 import './plans/get-item';
