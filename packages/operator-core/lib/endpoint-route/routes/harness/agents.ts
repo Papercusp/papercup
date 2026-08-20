@@ -16,6 +16,41 @@ import { scanAgentRunsCached, syncAgentRunsToPg } from '../../../harness-agent-r
 import { activeStreams, HARNESS_STREAM_TOTAL_CAP } from '../../../harness-active-streams';
 import { defineTool } from '@papercusp/agent-mcp';
 
+export interface AgentRunResultRollup {
+  text: string;
+  costUsd?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  durationMs?: number;
+  unreportedFrames?: number;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+/** Parse one Claude CLI terminal result without turning absent usage into measured zero. */
+export function parseAgentRunResult(obj: Record<string, unknown>): AgentRunResultRollup {
+  const usage = obj.usage && typeof obj.usage === 'object'
+    ? obj.usage as Record<string, unknown>
+    : undefined;
+  const costUsd = finiteNumber(obj.total_cost_usd);
+  const inputTokens = finiteNumber(usage?.input_tokens);
+  const outputTokens = finiteNumber(usage?.output_tokens);
+  const durationMs = finiteNumber(obj.duration_ms);
+  const unreportedFrames = costUsd === undefined || inputTokens === undefined || outputTokens === undefined
+    ? 1
+    : undefined;
+  return {
+    text: typeof obj.result === 'string' ? obj.result : '',
+    ...(costUsd !== undefined ? { costUsd } : {}),
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(unreportedFrames !== undefined ? { unreportedFrames } : {}),
+  };
+}
+
 const listAgents = defineTool({
   method: 'GET',
   path: '/harness/:slug/agents',
@@ -89,11 +124,13 @@ const getAgentRun = defineTool({
       inputTokens?: number;
       outputTokens?: number;
       durationMs?: number;
+      unreportedFrames?: number;
     }> = [];
     let accumulatedText = '';
     let totalCostUsd = 0;
     let totalInputTokens = 0;
     let totalOutputTokens = 0;
+    let unreportedFrames = 0;
 
     if (jsonlRaw) {
       for (const rawLine of jsonlRaw.split('\n')) {
@@ -132,16 +169,19 @@ const getAgentRun = defineTool({
               }
             }
           } else if (type === 'result') {
-            totalCostUsd += obj.total_cost_usd ?? 0;
-            totalInputTokens += obj.usage?.input_tokens ?? 0;
-            totalOutputTokens += obj.usage?.output_tokens ?? 0;
+            const result = parseAgentRunResult(obj as Record<string, unknown>);
+            if (result.costUsd !== undefined) totalCostUsd += result.costUsd;
+            if (result.inputTokens !== undefined) totalInputTokens += result.inputTokens;
+            if (result.outputTokens !== undefined) totalOutputTokens += result.outputTokens;
+            if (result.unreportedFrames !== undefined) unreportedFrames += result.unreportedFrames;
             timeline.push({
               kind: 'result',
-              text: obj.result ?? '',
-              costUsd: obj.total_cost_usd,
-              inputTokens: obj.usage?.input_tokens,
-              outputTokens: obj.usage?.output_tokens,
-              durationMs: obj.duration_ms,
+              text: result.text,
+              ...(result.costUsd !== undefined ? { costUsd: result.costUsd } : {}),
+              ...(result.inputTokens !== undefined ? { inputTokens: result.inputTokens } : {}),
+              ...(result.outputTokens !== undefined ? { outputTokens: result.outputTokens } : {}),
+              ...(result.durationMs !== undefined ? { durationMs: result.durationMs } : {}),
+              ...(result.unreportedFrames !== undefined ? { unreportedFrames: result.unreportedFrames } : {}),
             });
           } else if (type === 'system' && obj.subtype === 'status') {
             timeline.push({ kind: 'status', text: obj.status });
@@ -162,6 +202,7 @@ const getAgentRun = defineTool({
       totalCostUsd,
       totalInputTokens,
       totalOutputTokens,
+      ...(unreportedFrames > 0 ? { unreportedFrames } : {}),
     });
   },
 });
