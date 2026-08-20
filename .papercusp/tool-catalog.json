@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 742,
+  "count": 743,
   "tools": [
     {
       "name": "ablation:report",
@@ -1745,6 +1745,35 @@
         "when": "Use when you need to grade how a desktop agent behaved on a plan run: routing, gating, scope, execution, launch discipline, and completion evidence. score grades an existing run; launch runs and grades a fresh fixture.",
         "notWhen": "Not for raw model certification (cert:run), subjective gym scoring (gym:judge), or reading plan/work-item state (plans:get / work_items:list).",
         "chaining": "omp:sessions or dev:sessions → behaviour:run { mode:\"score\", sessionId }. Or create/pick a fixture plan → behaviour:run { mode:\"launch\", planSlug, model }."
+      }
+    },
+    {
+      "name": "blender:attach-goal-evidence",
+      "http": {
+        "path": "/api/agent-tools/blender/attach-goal-evidence",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Append evidence or a finding ABOUT an existing goal. This is structurally zero-authority: it writes only an append-only goal:evidence audit row and cannot change the goal title, outcome, criterion, budget, status, tripwires, or launch settings. The entry is returned by goals:get { id, detail:\"full\" } under history.",
+      "capabilities": [
+        "goals:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "blender"
+      ],
+      "guidance": {
+        "when": "The Blender learned a fact, measurement, risk, or finding that changes what is KNOWN about a goal but not what the goal IS. Attach the concise summary, optional supporting detail, and durable refs.",
+        "notWhen": "Changing goal intent/state — use goals:update, which records a before/after amendment automatically. Filing a product idea — use improvements:capture or blender:route-idea.",
+        "chaining": "blender:attach-goal-evidence → goals:get { id:goalId, detail:\"full\" } to verify the append-only entry is readable from the goal."
       }
     },
     {

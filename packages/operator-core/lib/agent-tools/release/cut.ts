@@ -41,10 +41,13 @@
  */
 
 import { z } from 'zod';
+import { execFileSync } from 'node:child_process';
+import * as path from 'node:path';
 import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { loadHarnessRegistry, type HarnessRegistry } from '../../harness-registry';
 import {
   launchDetachedCut,
   readCutStatus,
@@ -67,6 +70,158 @@ import {
   type CutLegs,
   type Platform,
 } from '../../release-cut-launch';
+
+const cutRootArg = z
+  .string()
+  .min(1)
+  .describe(
+    'Optional registered, clean Git worktree selector. Accepts a registered project slug, the linked worktree path, or that worktree\'s papercusp-desktop path.',
+  );
+
+interface CutWorktree {
+  path: string;
+  prunable: boolean;
+}
+
+export interface CutRootSelection {
+  desktopRoot: string;
+  selector?: string;
+  worktreeRoot?: string;
+}
+
+export type CutRootResolution =
+  | ({ ok: true } & CutRootSelection)
+  | { ok: false; reason: string };
+
+export interface CutRootResolutionDeps {
+  loadRegistry?: (workspaceId: string) => Promise<HarnessRegistry>;
+  listWorktrees?: (repoPath: string) => CutWorktree[];
+  status?: (worktreePath: string) => string;
+  canonicalPath?: (candidate: string) => string;
+}
+
+function parseWorktreeList(stdout: string): CutWorktree[] {
+  return stdout
+    .split(/\n\n+/)
+    .map((block) => {
+      let worktreePath = '';
+      let prunable = false;
+      for (const line of block.split('\n')) {
+        if (line.startsWith('worktree ')) worktreePath = line.slice('worktree '.length).trim();
+        if (line === 'prunable' || line.startsWith('prunable ')) prunable = true;
+      }
+      return { path: worktreePath, prunable };
+    })
+    .filter((worktree) => worktree.path.length > 0);
+}
+
+function defaultListWorktrees(repoPath: string): CutWorktree[] {
+  const stdout = execFileSync('git', ['-C', repoPath, 'worktree', 'list', '--porcelain'], {
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+    timeout: 10_000,
+  });
+  return parseWorktreeList(String(stdout));
+}
+
+function defaultWorktreeStatus(worktreePath: string): string {
+  return String(
+    execFileSync('git', ['-C', worktreePath, 'status', '--porcelain'], {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+      timeout: 10_000,
+    }),
+  );
+}
+
+function defaultCanonicalPath(candidate: string): string {
+  return path.resolve(candidate);
+}
+
+/**
+ * Resolve the optional cut root without allowing an arbitrary filesystem path.
+ * Explicit selectors must identify a non-prunable linked worktree belonging to a
+ * project in the active harness registry, and that worktree must be clean at the
+ * moment of the read. The cutter itself receives the worktree's desktop subdir.
+ */
+export async function resolveCutRoot(
+  selector: string | undefined,
+  deps: CutRootResolutionDeps = {},
+): Promise<CutRootResolution> {
+  if (selector === undefined) return { ok: true, desktopRoot: desktopRoot() };
+  const requested = selector.trim();
+  if (!requested) return { ok: false, reason: 'bad_root — selector must not be blank' };
+
+  const loadRegistry = deps.loadRegistry ?? ((workspaceId: string) => loadHarnessRegistry(workspaceId));
+  const listWorktrees = deps.listWorktrees ?? defaultListWorktrees;
+  const status = deps.status ?? defaultWorktreeStatus;
+  const canonical = deps.canonicalPath ?? defaultCanonicalPath;
+  let registry: HarnessRegistry;
+  try {
+    registry = await loadRegistry(activeWorkspaceId());
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `root_unavailable — could not read the active harness registry: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  const candidates = new Map<string, CutWorktree>();
+  const projects = registry.projects.filter((project) => project.path.trim().length > 0);
+  for (const project of projects) {
+    try {
+      for (const worktree of listWorktrees(project.path)) {
+        if (worktree.prunable) continue;
+        candidates.set(canonical(worktree.path), worktree);
+      }
+    } catch {
+      // A repo-less/non-Git registered project is not a valid cut-root carrier.
+    }
+  }
+
+  const requestedPath = canonical(requested);
+  const requestedDesktopParent = path.basename(requestedPath) === 'papercusp-desktop'
+    ? canonical(path.dirname(requestedPath))
+    : null;
+  let selected: CutWorktree | undefined;
+  if (requestedDesktopParent) selected = candidates.get(requestedDesktopParent);
+  if (!selected) selected = candidates.get(requestedPath);
+  if (!selected) {
+    const project = projects.find((candidate) => candidate.slug === requested);
+    if (project) selected = candidates.get(canonical(project.path));
+  }
+  if (!selected) {
+    return {
+      ok: false,
+      reason:
+        `root_not_registered — '${requested}' is not a linked worktree of any project registered in the active workspace; ` +
+        'select a registered project slug or a path from `git worktree list --porcelain`.',
+    };
+  }
+
+  let dirty: string;
+  try {
+    dirty = status(selected.path);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `root_unreadable — could not inspect git status for '${selected.path}': ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  if (dirty.trim().length > 0) {
+    return {
+      ok: false,
+      reason: `root_not_clean — selected worktree '${selected.path}' has uncommitted changes; release cuts require a clean worktree`,
+    };
+  }
+
+  return {
+    ok: true,
+    selector: requested,
+    worktreeRoot: selected.path,
+    desktopRoot: path.join(selected.path, 'papercusp-desktop'),
+  };
+}
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
 
@@ -121,6 +276,7 @@ export default defineTool({
       mac: z.boolean().optional().describe('Include the macOS leg (build VM on SSH :2222).'),
       windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
+      root: cutRootArg.optional(),
     }),
     z.object({
       op: z.literal('run'),
@@ -130,6 +286,7 @@ export default defineTool({
       mac: z.boolean().optional().describe('Include the macOS leg (build VM on SSH :2222).'),
       windows: z.boolean().optional().describe('Include the Windows leg (build VM on SSH :2223).'),
       arm64: z.boolean().optional().describe('Include the linux-arm64 cross-compile leg.'),
+      root: cutRootArg.optional(),
       confirm: z
         .boolean()
         .optional()
@@ -142,6 +299,7 @@ export default defineTool({
     z.object({
       op: z.literal('handoff'),
       version: z.string().min(1).describe('The version whose cut artifacts to collect for the owner.'),
+      root: cutRootArg.optional(),
     }),
     z.object({
       op: z.literal('run-leg'),
@@ -149,6 +307,7 @@ export default defineTool({
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease), e.g. 0.0.8 or 1.2.3-rc.1.'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
       sourceSha: z.string().regex(/^[0-9a-f]{40}$/).describe('Exact 40-char superproject commit authorized for this leg.'),
+      root: cutRootArg.optional(),
       confirm: z
         .boolean()
         .optional()
@@ -162,15 +321,20 @@ export default defineTool({
       op: z.literal('gate-status'),
       version: z.string().min(1).describe('Release version X.Y.Z (optional -prerelease).'),
       channel: z.enum(['stable', 'beta', 'alpha']).describe('Release channel.'),
+      root: cutRootArg.optional(),
     }),
   ]),
   async handler(args, ctx) {
     // ── preflight: read-only go/no-go ──
     if (args.op === 'preflight') {
-      const result = preflightCut(legsFrom(args));
+      const selected = await resolveCutRoot(args.root);
+      if (!selected.ok) return json({ ok: false, op: 'preflight', refused: true, reason: selected.reason });
+      const result = preflightCut(legsFrom(args), { root: selected.desktopRoot });
       return json({
         ok: true,
         op: 'preflight',
+        root: selected.desktopRoot,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         ...result,
         note: result.go
           ? "Ready to cut. release:cut{op:run,version,channel,confirm:true} fires it detached. LOCAL-only — hand the owner the artifacts (op:handoff), never publish to GitHub."
@@ -204,13 +368,16 @@ export default defineTool({
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
         });
       }
-      const h = collectHandoff(args.version);
+      const selected = await resolveCutRoot(args.root);
+      if (!selected.ok) return json({ ok: false, op: 'handoff', refused: true, reason: selected.reason });
+      const h = collectHandoff(args.version, { root: selected.desktopRoot });
       if (!h.found) {
         return json({
           ok: false,
           op: 'handoff',
           found: false,
           version: args.version,
+          root: selected.desktopRoot,
           targetRoot: h.targetRoot,
           scannedRoots: h.scannedRoots,
           reason: `no ${args.version} artifacts under ${h.scannedRoots.length > 0 ? h.scannedRoots.join(', ') : h.targetRoot} — cut it first (release:cut{op:run}) or check the version.`,
@@ -226,6 +393,8 @@ export default defineTool({
       return json({
         ok: true,
         op: 'handoff',
+        root: selected.desktopRoot,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         ...h,
         shipGate:
           h.unsignedNames.length > 0
@@ -245,11 +414,15 @@ export default defineTool({
           reason: `bad_version '${args.version}' — expected X.Y.Z with an optional -prerelease suffix.`,
         });
       }
+      const selected = await resolveCutRoot(args.root);
+      if (!selected.ok) return json({ ok: false, op: 'gate-status', refused: true, reason: selected.reason });
       const { ownerLabel } = readIdentity(ctx);
-      const { gate, created } = readOrCreateGate(args.version, args.channel as Channel, ownerLabel);
+      const { gate, created } = readOrCreateGate(args.version, args.channel as Channel, ownerLabel, { root: selected.desktopRoot });
       return json({
         ok: true,
         op: 'gate-status',
+        root: selected.desktopRoot,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         created,
         ...gate,
         note: created
@@ -312,8 +485,10 @@ export default defineTool({
       const channel = args.channel as Channel;
       const platform = args.platform as Platform;
       const legs = legsForPlatform(platform);
+      const selected = await resolveCutRoot(args.root);
+      if (!selected.ok) return json({ ok: false, op: 'run-leg', refused: true, reason: selected.reason });
 
-      const pre = preflightCut(legs, { platform });
+      const pre = preflightCut(legs, { platform, root: selected.desktopRoot });
       const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
       if (inFlight && !inFlight.ok) {
         return json({
@@ -325,7 +500,7 @@ export default defineTool({
       }
 
       if (!args.confirm) {
-        const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, args.sourceSha, '<PATH>', platform);
+        const argv = buildCutArgv(selected.desktopRoot, args.version, channel, legs, args.sourceSha, '<PATH>', platform);
         return json({
           ok: true,
           op: 'run-leg',
@@ -334,6 +509,8 @@ export default defineTool({
           version: args.version,
           channel,
           sourceSha: args.sourceSha,
+          root: selected.desktopRoot,
+          ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
           legs,
           localOnly: true,
           unit: cutUnitFor(platform),
@@ -347,13 +524,15 @@ export default defineTool({
 
       const { ownerLabel } = readIdentity(ctx);
       const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-      const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs, platform });
+      const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs, platform, root: selected.desktopRoot });
       await recordCutAudit('run-leg', actor, {
         platform,
         version: args.version,
         channel,
         sourceSha: args.sourceSha,
+        root: selected.desktopRoot,
         legs,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
         launched: launch.launched,
         unit: launch.unit,
@@ -368,6 +547,8 @@ export default defineTool({
         channel,
         sourceSha: args.sourceSha,
         legs,
+        root: selected.desktopRoot,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         localOnly: true,
         unit: launch.unit,
         logPath: launch.logPath,
@@ -406,9 +587,11 @@ export default defineTool({
     }
     const channel = args.channel as Channel;
     const legs = legsFrom(args);
+    const selected = await resolveCutRoot(args.root);
+    if (!selected.ok) return json({ ok: false, op: 'run', refused: true, reason: selected.reason });
 
     // Refuse to start a second cut over an in-flight one (structured, so the caller waits).
-    const pre = preflightCut(legs);
+    const pre = preflightCut(legs, { root: selected.desktopRoot });
     const inFlight = pre.checks.find((c) => c.name === 'no-cut-in-flight');
     if (inFlight && !inFlight.ok) {
       return json({
@@ -420,7 +603,7 @@ export default defineTool({
     }
 
     if (!args.confirm) {
-      const argv = buildCutArgv(desktopRoot(), args.version, channel, legs, args.sourceSha, '<PATH>');
+      const argv = buildCutArgv(selected.desktopRoot, args.version, channel, legs, args.sourceSha, '<PATH>');
       return json({
         ok: true,
         op: 'run',
@@ -428,6 +611,8 @@ export default defineTool({
         version: args.version,
         channel,
         sourceSha: args.sourceSha,
+        root: selected.desktopRoot,
+        ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
         legs,
         localOnly: true,
         preflight: { go: pre.go, blockers: pre.blockers },
@@ -440,12 +625,14 @@ export default defineTool({
 
     const { ownerLabel } = readIdentity(ctx);
     const actor = `${ownerLabel} (role:${ctx.role ?? 'unknown'})`;
-    const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs });
+    const launch = await launchDetachedCut({ version: args.version, channel, expectedSourceSha: args.sourceSha, legs, root: selected.desktopRoot });
     await recordCutAudit('run', actor, {
       version: args.version,
       channel,
       sourceSha: args.sourceSha,
+      root: selected.desktopRoot,
       legs,
+      ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
       launched: launch.launched,
       unit: launch.unit,
@@ -459,6 +646,8 @@ export default defineTool({
       channel,
       sourceSha: args.sourceSha,
       legs,
+      root: selected.desktopRoot,
+      ...(selected.selector ? { rootSelector: selected.selector, worktreeRoot: selected.worktreeRoot } : {}),
       localOnly: true,
       unit: launch.unit,
       logPath: launch.logPath,

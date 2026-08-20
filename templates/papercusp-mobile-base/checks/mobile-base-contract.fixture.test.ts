@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -114,6 +115,25 @@ describe("portable mobile-base contract logic", () => {
     }).join("\n");
     expect(errors).toContain(
       "missing declared mobile-base path: crates/harbor_bindings/src/missing.udl",
+    );
+  });
+
+  it("scans Git-visible source without treating ignored local inputs as committed secrets", () => {
+    const { root, section } = fixture();
+    execFileSync("git", ["init", "-q", root]);
+    put(
+      root,
+      ".gitignore",
+      "android/local.properties\nandroid/app/google-services.json\n",
+    );
+    put(root, "android/local.properties", "sdk.dir=/private/android-sdk\n");
+    put(root, "android/app/google-services.json", '{"project_id":"local"}\n');
+
+    expect(collectMobileSourceViolations(root, section)).toEqual([]);
+
+    put(root, "android/release.jks", "unignored signing fixture\n");
+    expect(collectMobileSourceViolations(root, section)).toContain(
+      "android/release.jks: secret/service/signing path",
     );
   });
 });

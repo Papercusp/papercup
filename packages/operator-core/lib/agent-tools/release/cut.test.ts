@@ -217,7 +217,13 @@ describe('release:cut — run (operator-gated write)', () => {
   it('confirm:true fires the detached LOCAL cut', async () => {
     const b = body(await tool.handler({ ...runArgs, confirm: true, mac: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, op: 'run', launched: true, localOnly: true });
-    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', expectedSourceSha: sourceSha, legs: { mac: true, windows: undefined, arm64: undefined } });
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      version: '0.0.8',
+      channel: 'alpha',
+      expectedSourceSha: sourceSha,
+      legs: { mac: true, windows: undefined, arm64: undefined },
+      root: expect.any(String),
+    }));
   });
 });
 
@@ -310,7 +316,7 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b.refused).toBe(true);
     expect(b.reason).toMatch(/cut_in_flight/);
-    expect(preflightM).toHaveBeenCalledWith({ mac: true }, { platform: 'mac' });
+    expect(preflightM).toHaveBeenCalledWith({ mac: true }, { platform: 'mac', root: expect.any(String) });
     expect(launchM).not.toHaveBeenCalled();
   });
   it('dry-run (no confirm) previews the command scoped to just this leg and does NOT launch', async () => {
@@ -335,7 +341,14 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     });
     const b = body(await tool.handler({ ...legArgs, confirm: true } as never, { role: 'operator' } as never));
     expect(b).toMatchObject({ ok: true, op: 'run-leg', platform: 'mac', launched: true, localOnly: true, unit: 'papercup-release-cut-mac' });
-    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', expectedSourceSha: sourceSha, legs: { mac: true }, platform: 'mac' });
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      version: '0.0.8',
+      channel: 'alpha',
+      expectedSourceSha: sourceSha,
+      legs: { mac: true },
+      platform: 'mac',
+      root: expect.any(String),
+    }));
   });
   it('a linux leg needs no WITH_* flag at all', async () => {
     launchM.mockResolvedValue({
@@ -350,6 +363,13 @@ describe('release:cut — run-leg (fleet-split, operator-gated write)', () => {
     });
     const b = body(await tool.handler({ ...legArgs, platform: 'linux', confirm: true } as never, { role: 'operator' } as never));
     expect(b.legs).toEqual({});
-    expect(launchM).toHaveBeenCalledWith({ version: '0.0.8', channel: 'alpha', expectedSourceSha: sourceSha, legs: {}, platform: 'linux' });
+    expect(launchM).toHaveBeenCalledWith(expect.objectContaining({
+      version: '0.0.8',
+      channel: 'alpha',
+      expectedSourceSha: sourceSha,
+      legs: {},
+      platform: 'linux',
+      root: expect.any(String),
+    }));
   });
 });

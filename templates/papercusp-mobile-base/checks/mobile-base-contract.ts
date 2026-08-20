@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -39,6 +40,32 @@ function walkFiles(root: string): string[] {
     if (entry.isSymbolicLink()) return [];
     return entry.isDirectory() ? walkFiles(child) : [child];
   });
+}
+
+function gitVisibleFiles(root: string, scanRoots: string[]): string[] | null {
+  try {
+    const output = execFileSync(
+      "git",
+      [
+        "-C",
+        root,
+        "ls-files",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+        "-z",
+        "--",
+        ...scanRoots,
+      ],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    );
+    return output
+      .split("\0")
+      .filter(Boolean)
+      .map((path) => join(root, path));
+  } catch {
+    return null;
+  }
 }
 
 function textIfSource(path: string): string | null {
@@ -157,32 +184,39 @@ export function collectMobileSourceViolations(
     /\bsk-[A-Za-z0-9]{20,}\b/,
   ];
 
+  const availableRoots: string[] = [];
   for (const scanRoot of section.scanRoots) {
     const absoluteRoot = inRoot(root, scanRoot);
     if (!existsSync(absoluteRoot)) {
       violations.push(`missing mobileBase.scanRoots entry: ${scanRoot}`);
       continue;
     }
-    for (const path of walkFiles(absoluteRoot)) {
-      const rel = slash(relative(resolve(root), path));
-      if (
-        [...defaultSecretPaths, ...configuredSecretPaths].some((pattern) =>
-          pattern.test(rel),
-        )
-      ) {
-        violations.push(`${rel}: secret/service/signing path`);
-      }
-      if (allowlisted.has(rel)) continue;
-      const text = textIfSource(path);
-      if (text === null) continue;
-      for (const token of section.forbiddenTokens) {
-        if (text.includes(token))
-          violations.push(`${rel}: forbidden token '${token}'`);
-      }
-      for (const signature of credentialSignatures) {
-        if (signature.test(text))
-          violations.push(`${rel}: credential signature ${signature.source}`);
-      }
+    availableRoots.push(scanRoot);
+  }
+
+  const files =
+    gitVisibleFiles(resolve(root), availableRoots) ??
+    availableRoots.flatMap((scanRoot) => walkFiles(inRoot(root, scanRoot)));
+  for (const path of new Set(files)) {
+    if (!existsSync(path) || lstatSync(path).isSymbolicLink()) continue;
+    const rel = slash(relative(resolve(root), path));
+    if (
+      [...defaultSecretPaths, ...configuredSecretPaths].some((pattern) =>
+        pattern.test(rel),
+      )
+    ) {
+      violations.push(`${rel}: secret/service/signing path`);
+    }
+    if (allowlisted.has(rel)) continue;
+    const text = textIfSource(path);
+    if (text === null) continue;
+    for (const token of section.forbiddenTokens) {
+      if (text.includes(token))
+        violations.push(`${rel}: forbidden token '${token}'`);
+    }
+    for (const signature of credentialSignatures) {
+      if (signature.test(text))
+        violations.push(`${rel}: credential signature ${signature.source}`);
     }
   }
   return violations;
