@@ -5377,7 +5377,7 @@
           "POST"
         ]
       },
-      "description": "Wake/session bootstrap in one read: assignments and load, claimable work, inbox, plan events, and fleet health. With `intent`, it also recalls memory and declares the intent. Fleet and workspace are inferred; pass `harness` only for explicit harness scope.",
+      "description": "Wake/session bootstrap in one read: assignments and load, claimable work, inbox, plan events, and fleet health. With `intent`, it also recalls memory and declares the intent. Fleet and workspace are inferred; an optional `fleet` is a compatibility hint only and does not override session membership; pass `harness` only for explicit harness scope.",
       "capabilities": [
         "coord:read"
       ],
