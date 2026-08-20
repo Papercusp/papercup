@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs, existsSync } from 'node:fs';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import {
   materializeTemplateCore,
   cloneSourceAcquire,
@@ -23,6 +23,7 @@ import {
 
 const REF = 'papercusp-webapp';
 const URL = 'https://github.com/Papercusp/templates';
+const REPO_ROOT = resolve(__dirname, '..', '..', '..', '..');
 
 let scratch: string;
 beforeEach(() => {
@@ -171,6 +172,39 @@ describe('materializeTemplateCore', () => {
     const leftovers = (await fs.readdir(scratch)).filter((n) => n.startsWith('cupboard-template-'));
     expect(leftovers).toEqual([]);
   });
+
+  it.each(['papercusp-android-app', 'papercusp-iphone-app'])(
+    'materializes the complete shipped %s root from the real bundled store',
+    async (ref) => {
+      const localDir = join(REPO_ROOT, 'templates', ref);
+      const r = await materializeTemplateCore({
+        ref,
+        acquireSourceDir: localSourceAcquire(localDir),
+        createHarness: fakeCreateHarness(`${ref}-consumer`),
+      });
+
+      expect(r.filesCopied).toEqual(
+        expect.arrayContaining([
+          'GUIDE.md',
+          'listing.json',
+          'template.yaml',
+          'checks',
+          'reference',
+          'template-kit',
+        ]),
+      );
+      for (const rel of [
+        'GUIDE.md',
+        'listing.json',
+        'template.yaml',
+        'checks/composition-integrity.test.ts',
+        'template-kit/package.json',
+      ]) {
+        expect(existsSync(join(r.path, rel)), `${ref} should materialize ${rel}`).toBe(true);
+      }
+      expect(existsSync(localDir), 'local source acquisition must never delete the bundled source').toBe(true);
+    },
+  );
 
   it('rejects a non-github url before cloning', async () => {
     let cloned = false;

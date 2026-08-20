@@ -272,7 +272,7 @@ describe('template bundle integrity — a materialized app can run the checks it
     expect(listTemplateRefs().length).toBeGreaterThan(0);
   });
 
-  it('the source store exposes both official mobile roots with complete metadata and guides', () => {
+  it('the source store exposes all five official mobile templates with complete metadata and guides', () => {
     const byRef = new Map(
       listLocalTemplates([{ dir: TEMPLATES_DIR, layer: 'bundled' }]).map((template) => [
         template.ref,
@@ -280,18 +280,21 @@ describe('template bundle integrity — a materialized app can run the checks it
       ]),
     );
     const expected = [
-      ['papercusp-android-app', 'Papercusp Official: Android App'],
-      ['papercusp-iphone-app', 'Papercusp Official: iPhone App'],
+      ['papercusp-mobile-base', 'Papercusp Official: Mobile Base', 'aspect', 'shell'],
+      ['papercusp-android-shell', 'Papercusp Official: Android Shell', 'aspect', 'shell'],
+      ['papercusp-android-app', 'Papercusp Official: Android App', 'app', 'app'],
+      ['papercusp-iphone-shell', 'Papercusp Official: iPhone Shell', 'aspect', 'shell'],
+      ['papercusp-iphone-app', 'Papercusp Official: iPhone App', 'app', 'app'],
     ] as const;
 
-    for (const [ref, title] of expected) {
+    for (const [ref, title, scope, category] of expected) {
       const template = byRef.get(ref);
       expect(template, `${ref} should be returned by the templates:list data layer`).toMatchObject({
         ref,
         id: ref,
         title,
-        scope: 'app',
-        category: 'app',
+        scope,
+        category,
         version: '0.1.0',
         source: 'first-party',
       });

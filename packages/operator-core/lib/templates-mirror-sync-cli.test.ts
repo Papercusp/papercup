@@ -34,6 +34,14 @@ import {
 } from '../../../scripts/templates-mirror-sync.mjs';
 
 const SCRIPT = fileURLToPath(new URL('../../../scripts/templates-mirror-sync.mjs', import.meta.url));
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
+const MOBILE_TEMPLATE_REFS = [
+  'papercusp-mobile-base',
+  'papercusp-android-shell',
+  'papercusp-android-app',
+  'papercusp-iphone-shell',
+  'papercusp-iphone-app',
+] as const;
 
 let tmp: string;
 
@@ -80,6 +88,18 @@ describe('VENDORED — the hive->pot rename regression guard', () => {
     expect(VENDORED).toContain('pot-app-seam');
     expect(VENDORED).not.toContain('hive-app-seam');
     expect(VENDORED).toContain('template-kit');
+  });
+});
+
+describe('official mobile template mirror closure', () => {
+  it('maps all five mobile template directories and their published entry files', async () => {
+    const { expected, templateIds } = await buildExpected(REPO_ROOT, []);
+    for (const ref of MOBILE_TEMPLATE_REFS) {
+      expect(templateIds).toContain(ref);
+      for (const rel of ['GUIDE.md', 'listing.json', 'template.yaml']) {
+        expect(expected.has(`${ref}/${rel}`), `mirror map should publish ${ref}/${rel}`).toBe(true);
+      }
+    }
   });
 });
 
