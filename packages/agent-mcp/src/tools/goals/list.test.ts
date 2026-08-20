@@ -13,6 +13,8 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 let fixtureRows: unknown[] = [];
+let edgeRows: unknown[] = [];
+let goalStatusRows: unknown[] = [];
 let limitArg: number | null = null;
 let selectProjection: Record<string, unknown> | null = null;
 
@@ -42,12 +44,19 @@ import tool from './list';
 // every goal actionable, premise intact.
 const CTX = () => ({
   principal: { slug: 'op', workspaceId: 'default' } as never,
-  tx: ((..._args: unknown[]) => Promise.resolve([])) as never,
+  tx: ((strings: TemplateStringsArray) => {
+    const query = strings.join(' ');
+    if (query.includes('FROM harness_shared.work_item_deps')) return Promise.resolve(edgeRows);
+    if (query.includes('FROM harness_shared.goals')) return Promise.resolve(goalStatusRows);
+    return Promise.resolve([]);
+  }) as never,
   log: vi.fn(),
 });
 
 beforeEach(() => {
   fixtureRows = [];
+  edgeRows = [];
+  goalStatusRows = [];
   limitArg = null;
   selectProjection = null;
 });
@@ -79,6 +88,7 @@ describe('goals:list — summary/full projection', () => {
         ...r,
         actionable: true,
         premiseInvalidated: false,
+        blockedBy: [],
         // The derived reading REPLACES the column here for the same reason as
         // goals:get — an agent reads `status`, so `status` must be true.
         status: 'dormant',
@@ -93,6 +103,35 @@ describe('goals:list — summary/full projection', () => {
     expect((res as { data: Record<string, unknown>[] }).data[0]).not.toHaveProperty(
       'launch_settings',
     );
+  });
+
+  it('full exposes each blockedBy status + verdict while summary stays flat (P-003)', async () => {
+    fixtureRows = [
+      {
+        id: 'g1',
+        title: 'Ship v1',
+        body: 'b',
+        parent_id: null,
+        budget_cents: 5,
+        created_at: 1,
+        workspace_id: 'default',
+        status: 'active',
+      },
+    ];
+    edgeRows = [{ blocked_ref: 'g1', blocker_kind: 'goal', blocker_ref: 'prereq-goal' }];
+    goalStatusRows = [{ id: 'prereq-goal', status: 'killed' }];
+
+    const full = await tool.handler({ detail: 'full', limit: 50 } as never, CTX() as never);
+    expect(full.data[0]).toMatchObject({
+      actionable: false,
+      premiseInvalidated: true,
+      blockedBy: [
+        { kind: 'goal', ref: 'prereq-goal', status: 'killed', verdict: 'invalidating' },
+      ],
+    });
+
+    const summary = await tool.handler({ detail: 'summary', limit: 50 } as never, CTX() as never);
+    expect(summary.data[0]).not.toHaveProperty('blockedBy');
   });
 
   it('requests the full column set even in summary mode (shaping is post-query)', async () => {

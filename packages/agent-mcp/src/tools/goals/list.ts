@@ -21,6 +21,7 @@ import {
   readGoalBlockedByEdges,
   resolveBlockerStatuses,
   type GoalBlockerEndpoint,
+  type GoalReadiness,
 } from './goal-deps';
 
 const goals = generated.goalsInHarnessShared;
@@ -79,10 +80,7 @@ export default defineTool({
     // Readiness fold (P-003, D-002/D-003): one edge read + one batched status
     // resolve per workspace present in the page (normally exactly one). Derived
     // on read — goal cardinality is tiny (D-006).
-    const readinessById = new Map<
-      string,
-      { actionable: boolean; premiseInvalidated: boolean }
-    >();
+    const readinessById = new Map<string, GoalReadiness>();
     for (const ws of new Set(rows.map((r) => r.workspace_id))) {
       const wsRows = rows.filter((r) => r.workspace_id === ws);
       const edges = await readGoalBlockedByEdges(ctx.tx, ws);
@@ -105,15 +103,11 @@ export default defineTool({
           ...b,
           status: statuses.get(blockerStatusKey(b)) ?? null,
         }));
-        const folded = goalReadiness(view);
-        readinessById.set(r.id, {
-          actionable: folded.actionable,
-          premiseInvalidated: folded.premiseInvalidated,
-        });
+        readinessById.set(r.id, goalReadiness(view));
       }
     }
     const readinessOf = (id: string) =>
-      readinessById.get(id) ?? { actionable: true, premiseInvalidated: false };
+      readinessById.get(id) ?? { actionable: true, premiseInvalidated: false, blockers: [] };
 
     // Deterministic deactivation (P-004, D-011). ONE holder read + ONE oracle
     // call for the whole page — `resolveGoalHoldersBatch` exists for exactly
@@ -145,24 +139,31 @@ export default defineTool({
 
     if (args.detail === 'summary') {
       return {
-        data: rows.map((r) => ({
-          id: r.id,
-          title: r.title,
-          ...readinessOf(r.id),
-          deactivated: activityOf(r).activity.deactivated,
-        })),
+        data: rows.map((r) => {
+          const readiness = readinessOf(r.id);
+          return {
+            id: r.id,
+            title: r.title,
+            actionable: readiness.actionable,
+            premiseInvalidated: readiness.premiseInvalidated,
+            deactivated: activityOf(r).activity.deactivated,
+          };
+        }),
       };
     }
     return {
       data: rows.map((r) => {
         const { activity, liveness } = activityOf(r);
+        const readiness = readinessOf(r.id);
         // `launch_settings` is an input to the fold, not an output — the
         // resolved `holderPolicy` says what it MEANT, without handing back a
         // raw blob every caller would have to re-parse.
         const { launch_settings: _launchSettings, ...row } = r;
         return {
           ...row,
-          ...readinessOf(r.id),
+          actionable: readiness.actionable,
+          premiseInvalidated: readiness.premiseInvalidated,
+          blockedBy: readiness.blockers,
           status: activity.effectiveStatus,
           rawStatus: r.status,
           deactivated: activity.deactivated,
