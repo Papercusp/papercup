@@ -3111,9 +3111,11 @@ export function inferFailingFilesFromEntries(
   const entries = failingTests ?? [];
   const files = [
     ...new Set(
-      entries.filter((entry) =>
-        /^lib\/\S+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry.trim()),
-      ),
+      entries
+        .map((entry) => entry.trim())
+        .filter((entry) =>
+          /^lib\/\S+\.(?:test|spec)\.[cm]?[jt]sx?$/.test(entry),
+        ),
     ),
   ];
   if (files.length === 0) return [];
@@ -10297,8 +10299,8 @@ export function realCheckpointDeps(
         }
       }
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
-      // cwd to re-run it in). Recomputed from the raw output, not `failingTests`, because
-      // the re-triage needs the {workspace,file} pair, not the flat signature.
+      // cwd to re-run it in). Prefer the raw output's authoritative pairs, with a conservative
+      // fallback for a durable flat GATE_HELD_BY signature that outlived those rows.
       const parsedFailingFiles = green
         ? []
         : parseFailingFilesByWorkspace(signatureOutput);
