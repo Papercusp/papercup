@@ -125,6 +125,33 @@ describe('fleetScopeClassRefusalNote — the decision boundary', () => {
 });
 
 describe('fleetScopeLeaderRemedy — how the class reading reaches the leader', () => {
+  it('leads a plan-scoped refusal with a conditional plan_item backfill and suppresses the ratio warning', () => {
+    const base = refusal();
+    const planViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
+      ...base,
+      scope: {
+        ...base.scope,
+        record: {
+          ...base.scope.record,
+          spec: {
+            ...base.scope.record.spec,
+            view: { filter: { field: 'plan', op: '=', value: 'mail-retirement' } },
+          },
+        },
+      },
+    };
+    const body = fleetScopeLeaderRemedy(planViolation, true, reading(1, 29883));
+    const stampAt = body.indexOf('plan_item');
+    const widenAt = body.indexOf('WIDEN the fleet lane');
+
+    expect(body).toContain("plan-scoped to 'mail-retirement'");
+    expect(body).toContain('work_items:update');
+    expect(body).toContain('without a spec revision');
+    expect(body).not.toContain('POSSIBLE CLASS REFUSAL');
+    expect(stampAt).toBeGreaterThanOrEqual(0);
+    expect(stampAt).toBeLessThan(widenAt);
+  });
+
   it('PREPENDS the class note, so it is read before the per-row advice it can invalidate', () => {
     const body = fleetScopeLeaderRemedy(refusal(), true, reading(0, 42));
     const classAt = body.indexOf('CLASS REFUSAL');

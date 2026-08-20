@@ -863,12 +863,29 @@ export function fleetScopeLeaderRemedy(
   }
   const spec = admission.scope.record?.spec;
   const specRef = spec?.specId ? formatSpecRef(spec.specId, spec.revision) : 'the fleet lane (no authored spec yet — default)';
+  const planScoped = specHasPlanPredicate(spec);
   const retiredPlanNote = retiredPlans?.length
     ? `⚠ RETIRED PLAN PIN — this spec still filters on ${retiredPlans
         .map((plan) => `'${plan.planSlug}' (status: ${plan.status})`)
         .join(', ')}. A shipped/superseded plan is terminal, so keeping it as the member's lane can match ZERO rows ` +
       `without the spec being malformed. Re-steer the fleet to a live plan (or another positive filter) with ` +
       `scheduler:set_claim_spec; do not keep bumping this revision for individual rows. `
+    : '';
+  const planStampNote = planScoped && !retiredPlans?.length
+    ? (() => {
+        const plans = planPredicateValues(spec);
+        const planScope = plans.length
+          ? plans.map((plan) => `'${plan}'`).join(', ')
+          : 'a plan/plan-item predicate';
+        const planSlug = plans.length === 1 ? `"${plans[0]}"` : '"<plan-slug>"';
+        return (
+          `This member's lane is plan-scoped to ${planScope}. If the refused work-item genuinely IMPLEMENTS ` +
+          `one of that plan's items but carries no plan_item stamp, backfill it before changing the lane: ` +
+          `work_items:update { id: "<work-item-id>", plan_item: { slug: ${planSlug}, item: "<P-NNN>" } } — ` +
+          `the existing claim can then succeed without a spec revision. Do not stamp a bug merely discovered ` +
+          `while working the plan; leave it unlinked and route it to the leader or another admitting lane. `
+        );
+      })()
     : '';
   const laneAction = retiredPlans?.length
     ? `RE-STEER the fleet lane in ONE call: ` +
@@ -887,7 +904,9 @@ export function fleetScopeLeaderRemedy(
     // EI-19484346966003625 (R1): the class reading LEADS, because it can invalidate the
     // per-row advice that follows it — a leader who reads only the first sentence must not
     // walk away with "bump a revision for this row" when the spec matches nothing.
-    `${retiredPlanNote}${fleetScopeClassRefusalNote(classRefusal)}` +
+    // Plan-scoped lanes are intentionally narrow: their exclusion ratio is not evidence of
+    // a malformed class filter, and a missing plan_item stamp has a safer row-local remedy.
+    `${retiredPlanNote}${planStampNote}${planScoped ? '' : fleetScopeClassRefusalNote(classRefusal)}` +
     `To let this member self-claim it, ${laneAction} — the member picks it up on its next scheduler:get_next, ` +
     `no re-dispatch. ${routeElsewhereNote}`
   );
