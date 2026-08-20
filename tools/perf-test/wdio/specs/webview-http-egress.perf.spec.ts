@@ -47,6 +47,15 @@ const POLL_TICK_MS = 30_000;
 const SAMPLE_WINDOW_MS = POLL_TICK_MS + 6_000;
 
 /**
+ * A void sample is a re-measure trigger, not a verdict. Give a transient
+ * navigation/reload one fresh attempt before publishing the -1 sentinel. The
+ * second attempt still has the normal full poll-tick window, so a real sensor
+ * or product failure remains observable and is recorded for the gate.
+ */
+const MAX_VOID_SAMPLE_ATTEMPTS = 2;
+const VOID_RETRY_DELAY_MS = 1_000;
+
+/**
  * Where the sensor's positive control is sent — and it MUST come from the runner,
  * never from the webview's own origin.
  *
@@ -136,17 +145,23 @@ interface EgressProbe {
 
 describe("Packaged Papercusp desktop — webview HTTP egress", () => {
   it("makes ZERO HTTP requests to /api across first paint and a full background poll tick", async () => {
-    // 1. Wait for real app content. This is also the first half of the positive
-    //    control: an unloaded page trivially reports zero egress, and a green
-    //    "no HTTP" result from a blank webview is the most dangerous possible
-    //    false pass — it looks exactly like success.
-    const mount = await waitForAppMount(browser);
+    let mount!: Awaited<ReturnType<typeof waitForAppMount>>;
+    let probe!: EgressProbe;
+    let sampleVoidReason: string | null = null;
 
-    // 2. Sample across a full poll tick, so a recurring escape cannot hide in the
-    //    gap between first paint and the first background refresh.
-    await browser.pause(SAMPLE_WINDOW_MS);
+    for (let attempt = 1; attempt <= MAX_VOID_SAMPLE_ATTEMPTS; attempt += 1) {
+      // 1. Wait for real app content. This is also the first half of the positive
+      //    control: an unloaded page trivially reports zero egress, and a green
+      //    "no HTTP" result from a blank webview is the most dangerous possible
+      //    false pass — it looks exactly like success. A void sample gets a
+      //    fresh mount and a fresh document on the retry.
+      mount = await waitForAppMount(browser);
 
-    const probe: EgressProbe = await browser.executeAsync(
+      // 2. Sample across a full poll tick, so a recurring escape cannot hide in the
+      //    gap between first paint and the first background refresh.
+      await browser.pause(SAMPLE_WINDOW_MS);
+
+      probe = await browser.executeAsync(
       (controlUrl: string, done: (r: EgressProbe) => void) => {
       const monitor = (
         window as unknown as {
@@ -201,7 +216,7 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     // 3. Record BEFORE asserting (P-003c). Every `expect` below throws, and a
     //    measure recorded after a throw is a measure the release gate never sees —
     //    which would leave the gate blind to exactly the breach it exists to block.
-    //    A missing detector is recorded as a breach rather than skipped: "we could
+    //    A missing detector is recorded as unknown rather than skipped: "we could
     //    not tell" must never reach the gate wearing the same face as "it was zero".
     //    The -1 sentinel is deliberate and must stay FINITE. The ingest route
     //    rejects a non-finite value, and it rejects the WHOLE POST when any one
@@ -229,15 +244,32 @@ describe("Packaged Papercusp desktop — webview HTTP egress", () => {
     //    order the asserts use. `-1` for every void case, not just the absent
     //    detector: "we could not tell" must never reach the gate wearing the same
     //    face as "it was zero".
-    const sampleVoidReason: string | null =
+      sampleVoidReason =
       probe.docToken !== mount.docToken
         ? "document replaced during the sample"
         : !probe.appMounted || !probe.shellPresent
           ? "operator shell gone at probe time"
-          : !probe.report
-            ? "egress detector absent"
-            : null;
+            : !probe.report
+              ? "egress detector absent"
+              : null;
 
+      if (sampleVoidReason === null || attempt === MAX_VOID_SAMPLE_ATTEMPTS) break;
+
+      // A document replacement or transient unmount is not evidence about the
+      // invariant. Retry the complete sample before publishing the unmeasured
+      // sentinel, so one load-induced void cannot become a release verdict.
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[perf] invariant webview-http-egress sample void on attempt ${attempt}/${MAX_VOID_SAMPLE_ATTEMPTS} ` +
+          `(${sampleVoidReason}); retrying after ${VOID_RETRY_DELAY_MS}ms`,
+      );
+      await browser.pause(VOID_RETRY_DELAY_MS);
+    }
+
+    // 3. Record only after the retry budget is exhausted. Every `expect` below
+    //    throws, and a measure recorded after a throw is a measure the release
+    //    gate never sees; recording the final sample first keeps a persistent
+    //    producer failure audible without publishing a transient void.
     recordInvariant(
       "webview-http-egress",
       sampleVoidReason === null && probe.report ? probe.report.total : -1,
