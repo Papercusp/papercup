@@ -426,6 +426,59 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   -- broken migration rather than a stale fixture.
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS items jsonb;
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS template_slug text;
+  -- Migration 675 normalizes the canonical plan content into these derived indexes. The
+  -- reserved-plan-lane claim floor reads plan_items on every issue-family preview/claim path,
+  -- so the shared fixture must carry the production relation even when a test does not seed a
+  -- normalized row. Keep the full key/column shape so tests that apply migration 675 afterward
+  -- compose with this DDL instead of silently accepting a stub.
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_items (
+    workspace_id text NOT NULL DEFAULT 'default',
+    harness_slug text NOT NULL DEFAULT 'papercup',
+    plan_slug text NOT NULL,
+    item_id text NOT NULL,
+    seq integer NOT NULL,
+    item_text text NOT NULL DEFAULT '',
+    status text NOT NULL DEFAULT 'todo',
+    importance text,
+    phase text,
+    blocked_by text[] NOT NULL DEFAULT '{}'::text[],
+    decision_refs text[] NOT NULL DEFAULT '{}'::text[],
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
+  );
+  CREATE TABLE IF NOT EXISTS harness_shared.plan_decisions (
+    workspace_id text NOT NULL DEFAULT 'default',
+    harness_slug text NOT NULL DEFAULT 'papercup',
+    plan_slug text NOT NULL,
+    decision_id text NOT NULL,
+    seq integer NOT NULL,
+    title text NOT NULL DEFAULT '',
+    body text NOT NULL DEFAULT '',
+    decision_date text,
+    item_refs text[] NOT NULL DEFAULT '{}'::text[],
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, harness_slug, plan_slug, decision_id)
+  );
+  CREATE INDEX IF NOT EXISTS plan_items_status_idx
+    ON harness_shared.plan_items (workspace_id, harness_slug, status);
+  CREATE INDEX IF NOT EXISTS plan_items_plan_seq_idx
+    ON harness_shared.plan_items (workspace_id, harness_slug, plan_slug, seq);
+  CREATE INDEX IF NOT EXISTS plan_items_blocked_by_gin
+    ON harness_shared.plan_items USING gin (blocked_by);
+  CREATE INDEX IF NOT EXISTS plan_decisions_plan_seq_idx
+    ON harness_shared.plan_decisions (workspace_id, harness_slug, plan_slug, seq);
+  CREATE INDEX IF NOT EXISTS plan_decisions_item_refs_gin
+    ON harness_shared.plan_decisions USING gin (item_refs);
+  -- The watchdog recovery-window floor is also unconditional in the shared claim SQL. Keep an
+  -- empty, production-shaped relation in the common fixture so tests that do not seed watchdog
+  -- evidence still exercise the same fail-open query path.
+  CREATE TABLE IF NOT EXISTS harness_shared.watchdog_ticks (
+    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    workspace_id text NOT NULL,
+    tick_at timestamptz NOT NULL DEFAULT now(),
+    status text NOT NULL DEFAULT 'ran',
+    known_open_keys text[]
+  );
   -- Mirrors libs/papercusp/libs/db/sql/141-plan-item-claims.sql column-for-column (checks/COMMENT/
   -- GRANTs intentionally omitted — superset-only, no-enforcement fixture stance).
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
