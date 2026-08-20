@@ -83,6 +83,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
 const DEFAULT_PROC_ROOT = '/proc';
+const GREEN_CHECKPOINT_PATTERN = /green(?:\\?[-_])checkpoint/i;
+const GREEN_CHECKPOINT_CGROUP = /(?:^|\/)(?:papercup|papercusp)-green-checkpoint(?:[-./]|$)/i;
 
 /**
  * One live process, as read out of `/proc`.
@@ -92,6 +94,8 @@ const DEFAULT_PROC_ROOT = '/proc';
  * @property {number | null} ppid - null when `/proc/<pid>/stat` was unreadable or unparseable.
  * @property {string[]} argv - Raw process arguments, decoded from NUL-separated cmdline.
  * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
+ * @property {{ greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }} [identity]
+ *   Non-secret identity evidence read only when checking the known green-checkpoint workload.
  */
 
 /**
@@ -196,6 +200,55 @@ export function getOperationalArgv(argv) {
 }
 
 /**
+ * Read only the non-secret identity signals that distinguish a green-checkpoint
+ * process from an agent that happens to mention the gate in its argv. Environment
+ * values themselves are deliberately not retained or returned: the two marker
+ * names and the cgroup path are the evidence, not the rest of the process env.
+ *
+ * @param {string} procRoot
+ * @param {number} pid
+ * @returns {{ greenCheckpointMarker: boolean; releaseGateMarker: boolean; cgroupPath: string | null }}
+ */
+function readProcessIdentity(procRoot, pid) {
+  let greenCheckpointMarker = false;
+  let releaseGateMarker = false;
+  try {
+    const environment = String(readFileSync(path.join(procRoot, String(pid), 'environ')));
+    for (const entry of environment.split('\0')) {
+      const separator = entry.indexOf('=');
+      if (separator === -1) continue;
+      const key = entry.slice(0, separator);
+      const value = entry.slice(separator + 1);
+      if (key === 'GREEN_CHECKPOINT' && value === '1') greenCheckpointMarker = true;
+      if (key === 'PC_HEAVY_RELEASE_GATE' && value === '1') releaseGateMarker = true;
+    }
+  } catch {
+    // Processes can exit between cmdline and identity reads. argv remains useful.
+  }
+
+  let cgroupPath = null;
+  try {
+    cgroupPath = parseCgroupPath(readFileSync(path.join(procRoot, String(pid), 'cgroup'), 'utf8'));
+  } catch {
+    // cgroup identity is supplementary; an unreadable file is not a match.
+  }
+  return { greenCheckpointMarker, releaseGateMarker, cgroupPath };
+}
+
+function isGreenCheckpointPattern(pattern) {
+  return GREEN_CHECKPOINT_PATTERN.test(pattern);
+}
+
+function matchesGreenCheckpointIdentity(processRow) {
+  const identity = processRow.identity;
+  if (!identity) return false;
+  return (
+    (identity.greenCheckpointMarker && identity.releaseGateMarker) ||
+    (identity.cgroupPath !== null && GREEN_CHECKPOINT_CGROUP.test(identity.cgroupPath))
+  );
+}
+
+/**
  * Parse the ppid out of a /proc/<pid>/stat line. The comm field (2nd field) is
  * parenthesized and may itself contain spaces/parens, so field-splitting must
  * resume from the LAST `)` rather than naively splitting on whitespace — the
@@ -217,9 +270,10 @@ export function parsePpid(statLine) {
  * Enumerate every live process as { pid, ppid, argv, cmdline }, from a /proc root (real or a test fixture).
  *
  * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
+ * @param {{ readIdentity?: boolean }} [opts] - Read known-workload identity markers when requested.
  * @returns {ProcRow[]}
  */
-export function listProcesses(procRoot = DEFAULT_PROC_ROOT) {
+export function listProcesses(procRoot = DEFAULT_PROC_ROOT, opts = {}) {
   /** @type {string[]} */
   let entries;
   try {
@@ -246,7 +300,9 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT) {
     } catch {
       ppid = null;
     }
-    out.push({ pid, ppid, argv, cmdline });
+    const row = { pid, ppid, argv, cmdline };
+    if (opts.readIdentity) row.identity = readProcessIdentity(procRoot, pid);
+    out.push(row);
   }
   return out;
 }
@@ -283,6 +339,8 @@ export function getAncestryChain(pid, byPid, maxHops = 512) {
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * For the known `green-checkpoint` workload, gate-owned environment/cgroup
+ * identity is also accepted so argv-blind descendants are not missed.
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern, opts = {}) {
@@ -298,21 +356,25 @@ export function matchExternalProcesses(pattern, opts = {}) {
  *
  * @param {string} pattern - A RegExp source.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
- * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[] }}
+ * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
 export function matchExternalProcessesDetailed(pattern, opts = {}) {
   const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
   const selfPid = opts.selfPid ?? process.pid;
-  const all = listProcesses(procRoot);
+  const knownIdentity = isGreenCheckpointPattern(pattern);
+  const all = listProcesses(procRoot, { readIdentity: knownIdentity });
   const byPid = new Map(all.map((p) => [p.pid, p.ppid]));
   const excluded = getAncestryChain(selfPid, byPid);
   const re = new RegExp(pattern);
   const external = all.filter((p) => !excluded.has(p.pid));
   const fullMatches = external.filter((p) => re.test(p.cmdline));
-  const matches = external.filter((p) => re.test(getOperationalArgv(p.argv).join(' ')));
-  const matchedOperationalPids = new Set(matches.map((p) => p.pid));
+  const operationalMatches = external.filter((p) => re.test(getOperationalArgv(p.argv).join(' ')));
+  const matchedOperationalPids = new Set(operationalMatches.map((p) => p.pid));
+  const identityMatches = knownIdentity ? external.filter(matchesGreenCheckpointIdentity) : [];
+  const matchedIdentityPids = new Set(identityMatches.map((p) => p.pid));
+  const matches = external.filter((p) => matchedOperationalPids.has(p.pid) || matchedIdentityPids.has(p.pid));
   const argvTextOnly = fullMatches.filter((p) => !matchedOperationalPids.has(p.pid));
-  return { matches, fullMatches, argvTextOnly };
+  return { matches, fullMatches, argvTextOnly, identityMatches };
 }
 
 const DEFAULT_CGROUP_ROOT = '/sys/fs/cgroup';
@@ -533,7 +595,7 @@ async function main(argv) {
     return;
   }
   const report = matchExternalProcessesDetailed(pattern);
-  const { matches, fullMatches, argvTextOnly } = report;
+  const { matches, fullMatches, argvTextOnly, identityMatches } = report;
   if (matches.length === 0) {
     if (fullMatches.length > 0) {
       console.log(
@@ -546,13 +608,16 @@ async function main(argv) {
     return;
   }
   const rawSuffix =
-    fullMatches.length === matches.length
+    fullMatches.length === matches.length && identityMatches.length === 0
       ? ''
-      : ` (${fullMatches.length} full-argv match(es): ${argvTextOnly.length} argv-text-only ignored)`;
+      : ` (${fullMatches.length} full-argv match(es), ${identityMatches.length} identity match(es) via gate markers/cgroup; ${argvTextOnly.length} argv-text-only ignored)`;
   console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`);
   const samples = busy ? await sampleBusyMatches(matches, { sampleMs, budgetMs }) : [];
   for (const [index, m] of matches.entries()) {
     console.log(`  ${m.pid}  ${m.cmdline}`);
+    if (identityMatches.some((identityMatch) => identityMatch.pid === m.pid)) {
+      console.log('         identity: green-checkpoint gate markers or checkpoint cgroup');
+    }
     if (!busy) continue;
     for (const line of formatBusy(samples[index])) console.log(`         ${line}`);
   }

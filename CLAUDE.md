@@ -630,7 +630,12 @@ the poll command, because the fix is one step earlier:
 `node scripts/proc-guard.mjs check <pattern>`.** It walks the CALLER's own
 ancestor chain and excludes every pid in it before matching, so it cannot
 self-match no matter where the pattern appears in your command (the pgrep
-argument, an `echo` label, a comment, an `ls` path). 
+argument, an `echo` label, a comment, an `ls` path). For `green-checkpoint`, it
+also recognizes the gate-owned identity markers (`GREEN_CHECKPOINT=1` together
+with `PC_HEAVY_RELEASE_GATE=1`) and the checkpoint systemd cgroup. This catches
+gate descendants whose argv only names the `papercusp-checkpoint` tree; the report
+labels those rows as identity matches. Other patterns remain operational-argv
+matches, and a peer's prose or JSON payload is still ignored. 
 
 ⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this
 one fails via the EXIT CODE rather than a spurious match, so bracketing does not

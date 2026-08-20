@@ -49,6 +49,16 @@ function fixtureProc(root: string, pid: number, ppid: number, argv: string[], co
   writeFileSync(join(dir, 'stat'), `${pid} (${comm}) S ${ppid} ${pid} ${pid} 0 -1 0 0 0 0 0`);
 }
 
+function fixtureIdentity(
+  root: string,
+  pid: number,
+  options: { environment?: string[]; cgroupPath?: string },
+) {
+  const dir = join(root, String(pid));
+  if (options.environment) writeFileSync(join(dir, 'environ'), options.environment.join('\0') + '\0');
+  if (options.cgroupPath) writeFileSync(join(dir, 'cgroup'), `0::${options.cgroupPath}\n`);
+}
+
 afterEach(() => {
   if (fixtureRoot) {
     rmSync(fixtureRoot, { recursive: true, force: true });
@@ -319,6 +329,42 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     ]);
 
     expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
+  });
+
+  it('matches argv-blind gate descendants through authoritative markers and cgroup identity', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'green-checkpoint';
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+
+    // The real gate descendants run from the checkpoint tree, whose argv does
+    // not name green-checkpoint. The suite env carries both dedicated markers.
+    fixtureProc(fixtureRoot, 777, 1, ['node', '/repo/papercusp-checkpoint/scripts/affected-tests.mjs']);
+    fixtureIdentity(fixtureRoot, 777, {
+      environment: ['GREEN_CHECKPOINT=1', 'PC_HEAVY_RELEASE_GATE=1'],
+    });
+
+    // GREEN_CHECKPOINT alone is intentionally insufficient: agents can export
+    // it to reproduce the gate's skip-set without being the release gate.
+    fixtureProc(fixtureRoot, 778, 1, ['node', '/repo/papercusp-checkpoint/scripts/worker.mjs']);
+    fixtureIdentity(fixtureRoot, 778, { environment: ['GREEN_CHECKPOINT=1'] });
+
+    // The detached manual launcher supplies the same identity at the cgroup
+    // boundary even when a child does not expose the env files in the fixture.
+    fixtureProc(fixtureRoot, 779, 1, ['node', '/repo/papercusp-checkpoint/scripts/worker.mjs']);
+    fixtureIdentity(fixtureRoot, 779, {
+      cgroupPath: '/user.slice/user-1000.slice/papercup-green-checkpoint-manual-abc.service',
+    });
+
+    const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
+    expect(report.matches.map((m) => m.pid)).toEqual([777, 779]);
+    expect(report.identityMatches.map((m) => m.pid)).toEqual([777, 779]);
+    expect(report.fullMatches).toEqual([]);
+    expect(report.argvTextOnly).toEqual([]);
+
+    // Identity enrichment is scoped to the known workload; generic patterns
+    // remain argv-only and therefore do not inherit gate marker semantics.
+    expect(matchExternalProcesses('gate-only-sentinel', { procRoot: fixtureRoot, selfPid: 100 })).toEqual([]);
   });
 });
 
