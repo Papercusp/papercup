@@ -147,6 +147,15 @@ function promotionFailsafeWarning(
  *  this tool enforces, without pulling this server module into the renderer. */
 const MAX_MEMBERS = FLEET_MAX_MEMBERS;
 
+/**
+ * EI-21010422711013687: every visible fleet launch carries a command that must
+ * execute. A server-side gnome-terminal client can successfully open a window
+ * while its D-Bus factory silently drops that command, leaving only a wrapper
+ * and no psu child. Keep this exported so the fleet contract has a cheap pure
+ * regression assertion as well as the two runtime call sites below.
+ */
+export const VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW = true;
+
 /** The operator's own base URL for the spawned terminal's API-callback env. Mirrors
  *  capability:terminal's resolver (strip a trailing /api/mcp back to the origin). */
 // WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
@@ -2738,6 +2747,7 @@ export default defineTool({
             scheme,
             allowDesktopBridge: true,
             displayOverride: args.display,
+            preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
           });
       if (leaderResult.status !== 'ok') {
         // Nothing else has opened yet, so release the launch slot — an immediate, legitimate
@@ -2821,6 +2831,7 @@ export default defineTool({
                 scheme,
                 allowDesktopBridge: true,
                 displayOverride: args.display,
+                preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
               }),
         ),
       );

@@ -561,11 +561,13 @@ export default defineTool({
               scheme,
               allowDesktopBridge: true,
               displayOverride: memberSpecs[i]?.display ?? args.display,
-              // EI-11578: a RESUME/FORK re-attaches a transcript under psu's
-              // managed-pty host, which gnome-terminal's VTE pty drops (the
-              // resumed claude died within seconds → a silent no-op). Force a
-              // process-per-window emulator (xterm/alacritty), which holds it.
-              preferProcessPerWindow: isResume,
+              // EI-21010422711013687: the server-side gnome-terminal factory can
+              // open the requested window but silently drop the `-- CMD`
+              // handoff. That strands BOTH fresh launches (no psu child ever
+              // exists) and resume/fork launches (EI-11578). Every visible agent
+              // launch is command-bearing, so reliability outranks the owner's
+              // normal client-server terminal preference here.
+              preferProcessPerWindow: true,
             });
       }),
     );

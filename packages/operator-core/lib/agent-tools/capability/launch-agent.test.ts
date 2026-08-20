@@ -315,9 +315,9 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
   });
 
-  it('EI-11578: a FRESH launch does NOT force process-per-window (keeps the WI-4718 standard-terminal preference)', async () => {
+  it('EI-21010422711013687: a FRESH launch also forces process-per-window so gnome-terminal cannot drop the psu command', async () => {
     await launchAgent.handler({ brief: 'fresh work' }, ctx);
-    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: false });
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
   });
 
   it('resumes a dead agent BY AGENT ID — no uuid hunting', async () => {

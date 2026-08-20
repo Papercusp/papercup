@@ -35,6 +35,7 @@ import launchOnPlan, {
   extractKickoffWorkItemIds,
   looksLikeInlineLaunchContextText,
   describeFleetFillOutcome,
+  VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
   type MemberLaunchOpts,
 } from './launch-on-plan';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, positiveIdCohortIds, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -202,6 +203,12 @@ describe('headless + carry args (P-003/P-004)', () => {
         expect(() => parseArgs({ headless, carry }), `${headless}/${carry}`).not.toThrow();
       }
     }
+  });
+});
+
+describe('visible fleet terminal reliability (EI-21010422711013687)', () => {
+  it('forces a process-per-window emulator so the terminal cannot open while silently dropping the psu command', () => {
+    expect(VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW).toBe(true);
   });
 });
 
