@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 743,
+  "count": 745,
   "tools": [
     {
       "name": "ablation:report",
@@ -17256,6 +17256,39 @@
       }
     },
     {
+      "name": "plans:get-specs",
+      "http": {
+        "path": "/api/agent-tools/plans/get-specs",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read canonical first-class spec clauses for one plan. Current revisions only by default; filter by stable spec id, source VAL alias, plan item, or exact revision, and opt into immutable history.",
+      "capabilities": [
+        "plans:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "kettle",
+        "worker",
+        "cup"
+      ],
+      "guidance": {
+        "when": "Inspecting the behavioral contract a plan/item owns, resolving a VAL alias, or auditing exact historical revisions.",
+        "notWhen": "Reading plan-item outcome text — plans:get-item. Reading legacy test verdicts — testing/coverage tools.",
+        "chaining": "plans:get-specs → plans:set-specs with expectedRevision for an optimistic-CAS revision."
+      }
+    },
+    {
       "name": "plans:get-template-data",
       "http": {
         "path": "/api/agent-tools/plans/get-template-data",
@@ -19138,6 +19171,80 @@
         "when": "Turning a plan into a scheduled/recurring one, editing its cadence/expiry, or clearing its schedule.",
         "notWhen": "Arming a saved schedule so it starts firing — that is the autonomy-gated arm step, not authoring. Flipping plan/item status uses plans:set-plan-status / plans:set-status.",
         "chaining": "plans:set-schedule → (arm, autonomy-gated) → the routines engine fires system:plan-run; plans:run-now to fire one manually."
+      }
+    },
+    {
+      "name": "plans:set-specs",
+      "http": {
+        "path": "/api/agent-tools/plans/set-specs",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create or append immutable first-class plan spec revisions under expectedRevision CAS. Preserves an optional source VAL alias, verifies plan/item ownership and supersession targets, and refreshes the legacy VAL projection without overwriting its test verdict.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Authoring or revising atomic observable behavior owned by a P-NNN plan item. Use expectedRevision:0 to create; otherwise pass the current revision returned by plans:get-specs.",
+        "notWhen": "Changing a plan-item outcome or dependency — plans:* item verbs. Recording test evidence — testing/coverage tools.",
+        "chaining": "plans:get-specs → plans:set-specs { expectedRevision } → plans:get-specs exact/history to verify."
       }
     },
     {
