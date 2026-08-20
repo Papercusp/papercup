@@ -537,9 +537,11 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
         output: "typecheck passed",
       },
     });
-    expect(typecheck?.executionIdentity?.dependencies.nodeModules.source).toBe(
-      join(typecheckTree, "node_modules"),
-    );
+    expect(typecheck?.executionIdentity?.dependencies.nodeModules).toMatchObject({
+      hash: null,
+      inode: null,
+      source: "missing",
+    });
   });
 
   it("holds the candidate when lint:tsc reports a type regression and skips the SPA build", async () => {
