@@ -369,6 +369,13 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // (a kill switch), and cutover/owner-authority entries were never rationed by the
   // parking budget — so removing it frees no slot and owes no trade.
   // The deletion is pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts.
+  //
+  // 2026-08-20 (goal-live-holder-guarantee-2026-08-18 P-009 / D-002) —
+  // papercusp-goal-holder-respawn: DELIBERATE new owner-authority dark flag.
+  // The actor launches unattended GOAL-mode sessions and spends money, so it
+  // stays independent of the report-only liveness watchdog and defaults OFF.
+  // owner-authority does not consume a parking-watermark slot. Count 31 → 32.
+  'papercusp-goal-holder-respawn',
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -638,7 +645,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // and no graduation trade was owed. Count 32 → 31.
     // Pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts, which now guards the
     // DELETION (the flag must not come back) rather than the polarity.
-    expect(offCount).toBe(31);
+    // 2026-08-20 — P-009's independently gated unattended holder recovery.
+    // case: owner-authority, so the parking subset/watermark remain 14.
+    // Count 31 → 32.
+    expect(offCount).toBe(32);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

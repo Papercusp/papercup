@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { DARK_FLAGS, FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
@@ -6,10 +7,14 @@ import {
   GOAL_LIVENESS_GRACE_MS,
   classifyGoalLiveness,
   classifyGoalReadiness,
+  goalEligibleForHolderRespawn,
+  goalHolderRespawnKey,
   goalReadinessKey,
   holderCountsAsAlive,
+  runGoalHolderRespawnOnce,
   runGoalLivenessSweepOnce,
   scanGoalLiveness,
+  type GoalHolderRespawnDeps,
   type GoalHolderLike,
   type GoalLivenessAlert,
   type GoalReadinessAlert,

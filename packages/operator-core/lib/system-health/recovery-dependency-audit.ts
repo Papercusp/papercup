@@ -479,6 +479,13 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
     note: 'P-001 of this plan — goals with a stale agent_modes row and no live holder. A dead agent is not a dead operator.',
   },
   {
+    name: 'goal-holder-respawner',
+    file: 'packages/operator-core/lib/system-health/goal-liveness-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note: 'P-009 — opt-in lost-holder recovery. It rides the operator rather than the agent-session layer it restores, and shares the bounded flap-damping/give-up policy.',
+  },
+  {
     name: 'goal-drain-fleet-watchdog',
     file: 'packages/operator-core/lib/system-health/goal-drain-fleet-watchdog.ts',
     executor: 'operator-in-process-timer',
@@ -790,15 +797,13 @@ export const HOLDER_LOSS_DISPOSITIONS: Readonly<Record<string, HolderLossDisposi
       'fate-shared WITH — the absence of an actor is the property, not a gap in this table.',
   },
   respawn: {
-    kind: 'planned',
-    planItem: 'goal-live-holder-guarantee-2026-08-18 P-009',
+    kind: 'recovery-mechanism',
+    mechanism: 'goal-holder-respawner',
     why:
-      'No actor exists yet. D-001 makes a goal EARN respawn by being named, and D-002 ' +
-      'gates the actor itself behind owner authority as a fleet-autonomy escalation. ' +
-      'Until P-009 lands, a goal that names respawn gets deactivate\'s behaviour — this ' +
-      'row is what says so out loud instead of letting the schema imply a recovery that ' +
-      'nothing performs. P-009 flips this to kind:\'recovery-mechanism\', which then ' +
-      'forces the respawner into RECOVERY_MECHANISMS to be judged like everything else.',
+      'P-009\'s goal-holder-respawner runs on the operator host, independently of the ' +
+      'agent-session layer it restores. D-001 still makes a goal earn respawn by naming ' +
+      'it, D-002 keeps the actor behind its own default-OFF owner-authority flag, and the ' +
+      'shared damping policy bounds retries before a deduped give-up escalation.',
   },
 };
 
