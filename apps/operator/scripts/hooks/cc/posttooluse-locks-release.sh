@@ -70,6 +70,15 @@ tool_use_id = payload.get('tool_use_id', '')
 if not isinstance(tool_use_id, str) or not tool_use_id:
     sys.exit(0)
 
+# Claude's PreToolUse batch path writes a marker for every native edit before
+# allowing any member of the batch to run.  Those edits share one union lock;
+# releasing one member here would reopen the union while sibling edits are
+# still in flight.  The matching PostToolBatch hook owns the single release.
+# Codex has no .batch marker and keeps the original per-call lifecycle.
+batch_marker_path = os.path.join(cache_dir, tool_use_id + '.batch')
+if os.path.exists(batch_marker_path):
+    sys.exit(0)
+
 # Identity MUST match the acquirer (the release owner-check requires
 # owner == acquirer). PreToolUse resolves PAPERCUSP_SID → session_id →
 # agent_id, in that order; mirror it exactly so release matches acquire.

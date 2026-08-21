@@ -23,6 +23,11 @@
         "matcher": "*",
         "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttooluse-activity-report.sh" }]
       }
+    ],
+    "PostToolBatch": [
+      {
+        "hooks": [{ "type": "command", "command": "${HOME}/.papercusp/hooks/cc/posttoolbatch-locks-release.sh" }]
+      }
     ]
   }
 }

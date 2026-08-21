@@ -800,6 +800,9 @@ function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): st
 export const CC_HOOK_FILES = [
   'pretooluse-locks-acquire.sh',
   'posttooluse-locks-release.sh',
+  // Claude native edit batches defer the union-lock release until this
+  // matcher-less PostToolBatch hook sees the complete batch.
+  'posttoolbatch-locks-release.sh',
   // EI-11405 / coordination-hook-rpc-fanout-collapse-2026-07-16: this hook now
   // ALSO carries the delta-aware coord:inbox PUSH that used to be a separate
   // posttooluse-coord-inbox.sh entry (deleted) — one round trip instead of two.
@@ -2333,7 +2336,8 @@ export function mergeClaudeHookSettings(
   const fileEditMatcher = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
   const fileOverwriteMatcher = 'Write|mcp__.*__capability_write';
 
-  // merge_lock_hooks — PreToolUse + PostToolUse, matcher Edit|Write|MultiEdit.
+  // merge_lock_hooks — PreToolUse + PostToolUse, matcher Edit|Write|MultiEdit,
+  // plus the Claude-only matcher-less PostToolBatch union release.
   if (has('pretooluse-locks-acquire.sh') && has('posttooluse-locks-release.sh')) {
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-locks-acquire.sh'), {
       matcher: fileWriteMatcher,
@@ -2343,6 +2347,10 @@ export function mergeClaudeHookSettings(
       matcher: fileWriteMatcher,
       hooks: cmd('posttooluse-locks-release.sh'),
     });
+    if (has('posttoolbatch-locks-release.sh'))
+      hooks.PostToolBatch = replaceOurHookEntries(ev('PostToolBatch'), ours('posttoolbatch-locks-release.sh'), {
+        hooks: cmd('posttoolbatch-locks-release.sh'),
+      });
     // Claude-only: auto-approve project-scoped .mcp.json servers (operator-signed papercusp MCP).
     if (opts.isClaudeSettings) cfg.enableAllProjectMcpServers = true;
   }

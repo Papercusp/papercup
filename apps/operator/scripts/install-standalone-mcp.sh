@@ -283,6 +283,9 @@ CC_TURN_MEMORY_HOOK="${CC_HOOK_DEST_DIR}/userpromptsubmit-memory.sh"
 # auto-approve every call it matched. PostToolBatch takes no matcher and carries
 # no permission semantics. Fail-open, psu-gated, 1.5s wall.
 CC_MIDTURN_CONTEXT_HOOK="${CC_HOOK_DEST_DIR}/posttoolbatch-midturn-context.sh"
+# Claude native edit-batch lock lifecycle: PostToolUse defers union-lock
+# release, and this matcher-less PostToolBatch hook releases it once.
+CC_POST_BATCH_LOCKS_HOOK="${CC_HOOK_DEST_DIR}/posttoolbatch-locks-release.sh"
 # Stop hook (deterministic-context-carry-2026-07-14 P-012): per-turn journal —
 # pings journal:record-turn at each turn end; the server extracts the agent's
 # ⟦journal⟧ line (mechanical first-line fallback, flagged). Fire-and-forget,
@@ -331,9 +334,9 @@ CC_WRITE_OVERWRITE_GUARD_HOOK="${CC_HOOK_DEST_DIR}/pretooluse-write-overwrite-gu
 # then appends fresh entries with the given tool-name matcher.
 #   $1 = settings.json path   $2 = matcher regex (e.g. "Edit|Write")
 merge_lock_hooks() {
-  python3 - "$1" "$2" "$CC_PRE_HOOK" "$CC_POST_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
+  python3 - "$1" "$2" "$CC_PRE_HOOK" "$CC_POST_HOOK" "$CC_POST_BATCH_LOCKS_HOOK" "$WORKSPACE_ROOT" <<'PYEOF'
 import json, os, sys, time
-path, matcher, pre, post, workspace_root = sys.argv[1:6]
+path, matcher, pre, post, post_batch, workspace_root = sys.argv[1:7]
 try:
     with open(path) as f:
         cfg = json.load(f)
@@ -345,7 +348,10 @@ except (json.JSONDecodeError, ValueError):
     os.rename(path, path + '.bak.' + str(int(time.time())))
     cfg = {}
 
-ours = {pre, post, os.path.basename(pre), os.path.basename(post)}
+ours = {
+    pre, post, post_batch,
+    os.path.basename(pre), os.path.basename(post), os.path.basename(post_batch),
+}
 
 def drop_ours(entry):
     # See the sibling merge_* helpers below for why this filters at the command
@@ -358,6 +364,7 @@ def drop_ours(entry):
 # an env prefix is honored.
 pre_cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {pre}"
 post_cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {post}"
+post_batch_cmd = f"PAPERCUSP_WORKSPACE_ROOT={workspace_root!r} {post_batch}"
 
 hooks = cfg.setdefault('hooks', {})
 for event, cmd in (('PreToolUse', pre_cmd), ('PostToolUse', post_cmd)):
@@ -365,6 +372,13 @@ for event, cmd in (('PreToolUse', pre_cmd), ('PostToolUse', post_cmd)):
     arr.append({'matcher': matcher,
                 'hooks': [{'type': 'command', 'command': cmd}]})
     hooks[event] = arr
+
+# PostToolBatch has no matcher. Keep the lock-release hook before the context
+# injector so the union is released/cleaned before the next model request.
+arr = [e for e in (drop_ours(x) for x in hooks.get('PostToolBatch', [])) if e]
+if os.path.isfile(post_batch):
+    arr.append({'hooks': [{'type': 'command', 'command': post_batch_cmd}]})
+hooks['PostToolBatch'] = arr
 
 # Claude Code: auto-approve project-scoped .mcp.json servers (the operator-SIGNED papercusp MCP)
 # so a :3070 restart that re-mints .mcp.json never drops the session to "pending approval" and go
@@ -1566,7 +1580,10 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
   mkdir -p "$CC_HOOK_DEST_DIR"
   cp "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" "$CC_PRE_HOOK"
   cp "${CC_HOOK_SRC_DIR}/posttooluse-locks-release.sh" "$CC_POST_HOOK"
-  chmod 755 "$CC_PRE_HOOK" "$CC_POST_HOOK"
+  if [ -f "${CC_HOOK_SRC_DIR}/posttoolbatch-locks-release.sh" ]; then
+    cp "${CC_HOOK_SRC_DIR}/posttoolbatch-locks-release.sh" "$CC_POST_BATCH_LOCKS_HOOK"
+  fi
+  chmod 755 "$CC_PRE_HOOK" "$CC_POST_HOOK" "$CC_POST_BATCH_LOCKS_HOOK" 2>/dev/null || true
   if [ -f "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" ]; then
     cp "${CC_HOOK_SRC_DIR}/posttooluse-activity-report.sh" "$CC_ACTIVITY_HOOK"
     chmod 755 "$CC_ACTIVITY_HOOK"
