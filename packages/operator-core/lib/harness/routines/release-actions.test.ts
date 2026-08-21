@@ -1384,7 +1384,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
 
     // Feed the early write back into the final recorder. The same run must finalize
     // the marker while preserving the already-counted streak.
-    fakeSql.unsafe.mockResolvedValueOnce([{ gh: pendingPayload.gate_health, lf: null }] as never);
+    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([{ gh: pendingPayload.gate_health, lf: null }] as unknown[], { count: 1 }));
     const finalRecorded = await recordCheckpointVerdict(target, {
       reason: 'not-green',
       green: false,
