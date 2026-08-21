@@ -566,6 +566,45 @@ export default defineTool({
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
     const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
+    // P-007: the OTHER half of the dependency-disclosure story. `dependencyWarning`
+    // below reports declared dependencies that could not be anchored; this reports the
+    // dependency the body's own text suggests the caller MEANT to declare and did not.
+    //
+    // Suggestion-only, by spec: nothing is attached and nothing is refused. A wrong
+    // auto-attached dependency is strictly worse than none — it would report this fact
+    // fresh or stale on an unrelated subject's account — so attach-mode waits until
+    // precision has been measured in production.
+    //
+    // Fail-soft, matching every other advisory in this handler: an advisory that can fail
+    // a write is a worse trade than the friction it prevents. suggestDependsOnCells is
+    // pure and returns [] rather than throwing, but it is wrapped anyway so that a future
+    // edit to it can never turn facts:assert into an outage.
+    let dependsOnSuggestions: DependsOnSuggestion[] = [];
+    try {
+      dependsOnSuggestions = suggestDependsOnCells(slotted.body, declaredCells);
+    } catch {
+      dependsOnSuggestions = [];
+    }
+    const dependsOnSuggestion =
+      dependsOnSuggestions.length > 0
+        ? {
+            suggested: dependsOnSuggestions,
+            // Accept-in-one-call: hand back the exact argument to re-send, so acting on
+            // this costs a copy rather than a trip to the schema docs.
+            accept: {
+              dependsOn: [
+                ...declaredCells.map((c) => c.trim()).filter(Boolean),
+                ...dependsOnSuggestions.map((s) => s.cell),
+              ],
+            },
+            note:
+              `This fact's body states ${dependsOnSuggestions.length} value(s) a registered CELL answers ` +
+              'authoritatively, but the fact does not depend on those cells — so nothing will ever mark it stale ' +
+              'when they change, and it will keep folding into orients as standing context long after it stopped ' +
+              'being true. Re-assert with the `accept.dependsOn` above to arm staleness detection. NOTHING was ' +
+              'attached or changed by this suggestion; if you are deliberately recording HISTORICAL state, ignore it.',
+          }
+        : null;
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {
@@ -699,6 +738,7 @@ export default defineTool({
               : {}),
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
+            ...(dependsOnSuggestion ? { dependsOnSuggestion } : {}),
             ...(measurementWarning ? { measurementWarning } : {}),
             ...(fact.measurement?.subjectVolatile
               ? {
