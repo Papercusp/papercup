@@ -8,9 +8,7 @@
 #   bin/gen-release-video.sh [<path-to-public-site-checkout>]
 #
 # Default checkout: ~/.papercusp-workspaces/clones/papercusp-public-site
-# (NOTE: gen-release-bg.sh still defaults to the older ~/papercusp-site, which
-# on this box is now ~/papercusp-site.RETIRED-2026-07-18. If you are running
-# that one, point it at the clone above.)
+# gen-release-bg.sh uses the same default checkout.
 #
 # The poster is INLINED as a data URI (70 KB) so the page stays self-contained —
 # the homepage serves it relatively, which would 404 under the release bucket's
