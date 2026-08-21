@@ -1,13 +1,45 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_DREAM_CYCLE_CONFIG,
   DEFAULT_DREAM_PASS_CONFIG,
   DEFAULT_DREAM_REVIEW_CONFIG,
   DEFAULT_DREAM_SAMPLER_CONFIG,
   DREAM_FRAGMENT_KINDS,
   resolveDreamPassConfig,
+  resolveDreamCycleConfig,
   resolveDreamReviewConfig,
   resolveDreamSamplerConfig,
 } from './dream-config';
+
+describe('resolveDreamCycleConfig', () => {
+  it('ships bounded manual-first cycle defaults without enabling automatic dreaming', () => {
+    expect(DEFAULT_DREAM_CYCLE_CONFIG).toEqual({
+      maxDreamsPerCycle: 3,
+      maxCostUsd: 1,
+      rolling24hCostUsd: 5,
+      timeoutMs: 10 * 60_000,
+      autoIdleRatioFloor: 0.5,
+    });
+  });
+
+  it('merges overrides without mutating the defaults', () => {
+    expect(resolveDreamCycleConfig({ maxDreamsPerCycle: 1, maxCostUsd: 0.25 })).toMatchObject({
+      maxDreamsPerCycle: 1,
+      maxCostUsd: 0.25,
+    });
+    expect(DEFAULT_DREAM_CYCLE_CONFIG.maxDreamsPerCycle).toBe(3);
+  });
+
+  it.each([
+    [{ maxDreamsPerCycle: 0 }, 'maxDreamsPerCycle'],
+    [{ maxCostUsd: -0.01 }, 'maxCostUsd'],
+    [{ rolling24hCostUsd: Number.NaN }, 'rolling24hCostUsd'],
+    [{ timeoutMs: 1.5 }, 'timeoutMs'],
+    [{ autoIdleRatioFloor: 1.1 }, 'autoIdleRatioFloor'],
+  ] as const)('rejects invalid cycle config %o', (override, message) => {
+    expect(() => resolveDreamCycleConfig(override)).toThrow(message);
+  });
+});
 
 describe('resolveDreamSamplerConfig', () => {
   it('ships the manual-cycle sampler defaults from the REM design', () => {

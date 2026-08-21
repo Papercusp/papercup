@@ -1,0 +1,109 @@
+import { describe, expect, it, vi } from 'vitest';
+import type { Sql } from 'postgres';
+import {
+  DREAM_REGISTRANT_PRIORITY,
+  DREAM_ROLLING_WINDOW_MS,
+  dreamLoopId,
+  dreamRegistrationInput,
+  preflightDreamCycle,
+  type DreamGovernorDeps,
+} from './dream-governor';
+
+const sql = (() => Promise.resolve([])) as unknown as Sql;
+
+function deps(overrides: Partial<DreamGovernorDeps> = {}): DreamGovernorDeps {
+  return {
+    enabled: vi.fn(async () => true),
+    register: vi.fn(async () => ({})),
+    check: vi.fn(async () => ({ allow: true, remainingUsd: 1 })),
+    sumSince: vi.fn(async () => ({ totalUsd: 1.25, loopCount: 2 })),
+    now: () => Date.parse('2026-08-20T12:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+describe('dream governor registration', () => {
+  it('extends the shared governor with one bounded per-cycle registrant', () => {
+    expect(dreamLoopId(' papercusp ')).toBe('dream:papercusp');
+    expect(dreamRegistrationInput({ workspaceId: 'ws-1', potSlug: 'papercusp' })).toEqual({
+      workspaceId: 'ws-1',
+      loopId: 'dream:papercusp',
+      potSlug: 'papercusp',
+      displayName: 'Dream cycles (papercusp)',
+      budgetKind: 'per-cycle',
+      budgetUsd: 1,
+      priority: DREAM_REGISTRANT_PRIORITY,
+      enabled: true,
+      enforcement: 'governor',
+      meta: {
+        maxDreamsPerCycle: 3,
+        rolling24hCostUsd: 5,
+        rollingWindowMs: DREAM_ROLLING_WINDOW_MS,
+      },
+    });
+  });
+});
+
+describe('preflightDreamCycle', () => {
+  it('fails closed before registration when the shared governor flag is dark', async () => {
+    const d = deps({ enabled: vi.fn(async () => false) });
+
+    await expect(preflightDreamCycle(sql, { workspaceId: 'ws-1', potSlug: 'papercusp' }, d)).resolves.toEqual({
+      allow: false,
+      loopId: 'dream:papercusp',
+      reason: 'governor-dark',
+      cycleRemainingUsd: null,
+      rollingSpentUsd: 0,
+      rollingRemainingUsd: 5,
+      rollingLoopCount: 0,
+    });
+    expect(d.register).not.toHaveBeenCalled();
+  });
+
+  it('honors a shared-governor refusal even when the rolling window has room', async () => {
+    const d = deps({
+      check: vi.fn(async () => ({ allow: false, reason: 'disabled', remainingUsd: 1 })),
+    });
+
+    await expect(preflightDreamCycle(sql, { workspaceId: 'ws-1', potSlug: 'papercusp' }, d)).resolves.toMatchObject({
+      allow: false,
+      reason: 'disabled',
+      cycleRemainingUsd: 1,
+      rollingSpentUsd: 1.25,
+      rollingRemainingUsd: 3.75,
+    });
+  });
+
+  it('refuses at the workspace-wide rolling ceiling and measures the exact 24h window', async () => {
+    const d = deps({ sumSince: vi.fn(async () => ({ totalUsd: 5, loopCount: 3 })) });
+
+    await expect(preflightDreamCycle(sql, { workspaceId: 'ws-1', potSlug: 'papercusp' }, d)).resolves.toMatchObject({
+      allow: false,
+      reason: 'rolling-cap-exceeded',
+      rollingSpentUsd: 5,
+      rollingRemainingUsd: 0,
+      rollingLoopCount: 3,
+    });
+    expect(d.sumSince).toHaveBeenCalledWith(sql, {
+      workspaceId: 'ws-1',
+      sinceMs: d.now() - DREAM_ROLLING_WINDOW_MS,
+    });
+  });
+
+  it('returns both cycle and rolling remaining spend when every gate allows', async () => {
+    const d = deps();
+
+    await expect(preflightDreamCycle(sql, { workspaceId: 'ws-1', potSlug: 'papercusp' }, d)).resolves.toEqual({
+      allow: true,
+      loopId: 'dream:papercusp',
+      cycleRemainingUsd: 1,
+      rollingSpentUsd: 1.25,
+      rollingRemainingUsd: 3.75,
+      rollingLoopCount: 2,
+    });
+    expect(d.register).toHaveBeenCalledWith(
+      sql,
+      expect.objectContaining({ loopId: 'dream:papercusp', budgetKind: 'per-cycle', budgetUsd: 1 }),
+    );
+  });
+});
