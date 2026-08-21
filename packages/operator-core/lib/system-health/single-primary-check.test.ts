@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import {
   evaluatePrimaryCount,
   countBackgroundPrimaries,
@@ -6,11 +7,28 @@ import {
   routinesDemonstrablyFiring,
   d026QuiescenceIsActive,
   readD026QuiescenceEvidence,
+  defaultIsCutQuiescing,
   D026_RESTORE_UNIT,
   runSinglePrimaryCheck,
   openSinglePrimaryConditions,
   _resetSinglePrimaryDebounce,
 } from './single-primary-check';
+
+// EI-20517156511202200 fixture: `systemctl --user is-active` for the CUT unit. Node's
+// execFileSync throws on a non-zero exit but still captures stdout on the thrown error —
+// exactly what happens for a real `deactivating` unit (systemctl exits non-zero but prints
+// the state). Modeled here instead of hitting a real systemd user session in CI.
+vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
+
+function mockIsActiveOutput(state: 'active' | 'activating' | 'deactivating' | 'inactive' | 'failed'): void {
+  vi.mocked(execFileSync).mockImplementation(() => {
+    if (state === 'active' || state === 'activating') return `${state}\n`;
+    // real systemctl: non-zero exit, but stdout still carries the printed state.
+    const err = new Error(`Command failed`) as Error & { stdout?: string };
+    err.stdout = `${state}\n`;
+    throw err;
+  });
+}
 
 describe('evaluatePrimaryCount (pure)', () => {
   it('exactly one → healthy', () => {
@@ -116,6 +134,51 @@ describe('D-026 Corestore quiescence evidence', () => {
   it('keeps ordinary stale zero-primary readings as blockers when either signal is absent', () => {
     expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, { cutActive: true, restoreActive: false }).key).toBe('no-primary');
     expect(evaluatePrimaryCount(0, { lastRoutineFireAgeSec: 3600 }, { cutActive: false, restoreActive: true }).key).toBe('no-primary');
+  });
+
+  // EI-20517156511202200: the reported incident — the cut's main script has exited and
+  // systemd is running the stop sequence (ActiveState=deactivating) while an orphaned
+  // process in its cgroup still holds the Corestore lock, and the restore leg is genuinely
+  // active. The old cut probe (strict active/activating) read this as "not running" and the
+  // guard alarmed straight through an authorized, actively-progressing restore.
+  describe('defaultIsCutQuiescing — the deactivating-but-still-holding-the-lock window', () => {
+    beforeEach(() => {
+      vi.mocked(execFileSync).mockReset();
+    });
+
+    it('active and activating both quiesce (unchanged behavior)', () => {
+      mockIsActiveOutput('active');
+      expect(defaultIsCutQuiescing('papercup-release-cut')).toBe(true);
+      mockIsActiveOutput('activating');
+      expect(defaultIsCutQuiescing('papercup-release-cut')).toBe(true);
+    });
+
+    it('deactivating (the reported incident) ALSO quiesces — this is the fix', () => {
+      mockIsActiveOutput('deactivating');
+      expect(defaultIsCutQuiescing('papercup-release-cut')).toBe(true);
+    });
+
+    it('a genuinely gone cut (inactive/failed) does NOT quiesce', () => {
+      mockIsActiveOutput('inactive');
+      expect(defaultIsCutQuiescing('papercup-release-cut')).toBe(false);
+      mockIsActiveOutput('failed');
+      expect(defaultIsCutQuiescing('papercup-release-cut')).toBe(false);
+    });
+
+    it('reproduces the reported incident end-to-end via readD026QuiescenceEvidence defaults', () => {
+      // First call (cut, via readCutStatus) reads deactivating; second call (restore unit)
+      // reads active — exactly what was observed at 2026-08-15T11:09Z.
+      vi.mocked(execFileSync).mockImplementationOnce(() => {
+        const err = new Error('Command failed') as Error & { stdout?: string };
+        err.stdout = 'deactivating\n';
+        throw err;
+      });
+      vi.mocked(execFileSync).mockImplementationOnce(() => 'active\n');
+
+      const evidence = readD026QuiescenceEvidence();
+      expect(evidence).toEqual({ cutActive: true, restoreActive: true });
+      expect(d026QuiescenceIsActive(evidence)).toBe(true);
+    });
   });
 });
 
