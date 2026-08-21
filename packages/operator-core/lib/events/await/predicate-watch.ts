@@ -612,6 +612,100 @@ async function dispatchPredicateTool(row: PredicateWatchRow): Promise<unknown> {
   });
 }
 
+/* ── POLL-TICK DISPATCH DEDUPE (P-012) ──────────────────────────────────────────
+ * Registration dedupe (`findMatchingActivePredicateWatch`) already merges a second
+ * caller onto an existing row — but only when path, op, value, interval AND once all
+ * match too. Two agents watching the SAME cell for DIFFERENT thresholds are therefore
+ * two rows, and each costs its own resolver dispatch every tick. That is the cost that
+ * scales with fleet size once auto-arm fans a profile out across members (P-014), and
+ * the read is the expensive half — the compare downstream of it is free.
+ *
+ * So the dispatch is shared across rows that agree on everything the READ depends on,
+ * and only the compare stays per-row.
+ *
+ * ── WHY THE KEY IS WIDER THAN THE PLAN ITEM'S WORDING ─────────────────────────
+ * P-012 says "(tool, canonical args hash)". That is NOT sufficient, and grouping on it
+ * alone would be a privilege leak: `dispatchReadOnlyTool` runs under the row's role
+ * envelope and ENFORCES the role gate as a second, independent access check (see its
+ * contract — gateBypass covers only capability + quota). Two rows with identical
+ * tool+args but different roles can legitimately get different outcomes: a value for
+ * one, an access refusal for the other. Sharing across them would hand a denied watcher
+ * a payload fetched under someone else's authority.
+ *
+ * The identity dimensions are exactly the ones `dispatchPredicateTool` reads off the
+ * row: workspaceId, harnessSlug, role. `onBehalfOf` (ownerId) and `spawnId` do NOT
+ * belong in the key — they are audit-only and cannot change the result.
+ *
+ * This is not a new security judgement. `findMatchingActivePredicateWatch` already
+ * merges rows ACROSS OWNERS on (workspace, role, harness, tool, args), so the system
+ * has already ratified that tuple as safe to share; this reuses it verbatim, minus the
+ * downstream compare fields.
+ *
+ * ⚠ ONE DISCLOSED COST: N shared watchers produce ONE `tool_invocations` audit row,
+ * attributed to the group's representative ownerId. Audit VOLUME therefore stops being
+ * a proxy for watcher count — which is the point (that volume is the waste being
+ * removed), but anything counting reads per agent from tool_invocations must read
+ * `deduped` off the tick result instead of assuming one row per watcher.
+ * ────────────────────────────────────────────────────────────────────────────── */
+
+/** Field separator for the group key: a NUL, which cannot occur in a postgres text
+ *  column, so no value can forge a field boundary by containing the delimiter. */
+const GROUP_KEY_SEP = '\x00';
+
+/** Recursively key-sort so args differing only in key ORDER share a group. Mirrors the
+ *  jsonb equality that `findMatchingActivePredicateWatch` compares args with. */
+function canonicalizeForKey(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeForKey);
+  if (value && typeof value === 'object') {
+    const src = value as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(src).sort()) out[k] = canonicalizeForKey(src[k]);
+    return out;
+  }
+  return value;
+}
+
+/** Monotonic source of never-colliding keys for the fail-safe branch below. */
+let ungroupableSeq = 0;
+
+/**
+ * Canonical, order-insensitive key for a row's args.
+ *
+ * FAILS SAFE: if the args cannot be serialized (a cycle, a BigInt), this returns a
+ * UNIQUE key so the row groups with nothing. Returning a shared sentinel instead would
+ * silently pool rows whose args were never actually compared — a wrong shared read,
+ * which is far worse than a missed optimisation.
+ */
+export function canonicalArgsKey(args: Record<string, unknown> | null | undefined): string {
+  try {
+    return (
+      JSON.stringify(canonicalizeForKey(args ?? {})) ?? `${GROUP_KEY_SEP}ungroupable:${++ungroupableSeq}`
+    );
+  } catch {
+    return `${GROUP_KEY_SEP}ungroupable:${++ungroupableSeq}`;
+  }
+}
+
+/**
+ * The key rows must agree on to share ONE resolver dispatch in a tick: every input
+ * `dispatchPredicateTool` actually uses, and nothing else.
+ */
+export function predicateDispatchGroupKey(row: PredicateWatchRow): string {
+  return [
+    row.workspaceId,
+    row.harnessSlug ?? `${GROUP_KEY_SEP}null`,
+    row.role,
+    row.tool,
+    canonicalArgsKey(row.args),
+  ].join(GROUP_KEY_SEP);
+}
+
+/** A dispatch result shared by every row in one group — success, or the failure each
+ *  row must then take through its OWN error accounting. */
+export type PredicateDispatchOutcome =
+  | { readonly ok: true; readonly payload: unknown }
+  | { readonly ok: false; readonly error: unknown };
+
 /* ── Eval + poller ─────────────────────────────────────────────────────────── */
 
 export interface PredicateEvalResult {
@@ -686,10 +780,23 @@ export function deriveCellReread(row: {
  * rows deactivate on fire. Errors accumulate; the Nth consecutive one
  * deactivates AND emits a predicateError payload so the waiter wakes.
  */
-export async function evalPredicateWatch(row: PredicateWatchRow): Promise<PredicateEvalResult> {
+export async function evalPredicateWatch(
+  row: PredicateWatchRow,
+  /**
+   * A dispatch outcome already obtained for this row's GROUP (P-012). Omitted ⇒ the row
+   * dispatches for itself, byte-for-byte as before.
+   *
+   * A shared FAILURE is deliberately re-thrown into this row's own catch rather than
+   * short-circuited: every row must accrue its OWN consecutive-error count and reach its
+   * own deactivation threshold. Collapsing that would let one row's error history
+   * deactivate another agent's watch.
+   */
+  shared?: PredicateDispatchOutcome,
+): Promise<PredicateEvalResult> {
   const dispatch = dispatchOverride ?? dispatchPredicateTool;
   try {
-    const payload = await dispatch(row);
+    if (shared && !shared.ok) throw shared.error;
+    const payload = shared ? shared.payload : await dispatch(row);
     const observed = valueAtPath(payload, row.path);
     // `lastEval !== null` is the ONLY honest "has this row ever been evaluated"
     // signal — `lastValue` is null for both a never-polled row and one that
@@ -755,17 +862,74 @@ export async function evalPredicateWatch(row: PredicateWatchRow): Promise<Predic
   }
 }
 
-/** One poller tick: GC orphans, claim the due batch, evaluate serially (the batch
- *  is capped and each dispatch is a read — bounded work per tick). */
-export async function pollDuePredicateWatches(): Promise<{ polled: number; fired: number; gc: number }> {
+/**
+ * One poller tick: GC orphans, claim the due batch, then evaluate serially — but with
+ * ONE resolver dispatch per `predicateDispatchGroupKey`, not one per row (P-012).
+ *
+ * `dispatches` and `deduped` are reported because the saving is otherwise invisible:
+ * with dedupe working, `tool_invocations` no longer carries one read per watcher, so a
+ * count taken from there would UNDER-report watchers rather than show the win.
+ *
+ * A single-row group takes the untouched path — it calls `evalPredicateWatch(row)` with
+ * no shared outcome, so behaviour is identical to before this change unless two rows
+ * genuinely agree on the whole dispatch identity. That keeps the blast radius of the
+ * optimisation to exactly the case it targets, including for the `dispatchOverride`
+ * test seam.
+ */
+export async function pollDuePredicateWatches(): Promise<{
+  polled: number;
+  fired: number;
+  gc: number;
+  /** Resolver dispatches actually issued this tick. */
+  dispatches: number;
+  /** Dispatches AVOIDED by sharing (polled − dispatches, for rows that grouped). */
+  deduped: number;
+}> {
   const gc = await gcOrphanedPredicateWatches();
   const due = await claimDuePredicateWatches();
-  let fired = 0;
+
+  const groups = new Map<string, PredicateWatchRow[]>();
   for (const row of due) {
-    const r = await evalPredicateWatch(row);
-    if (r.fired) fired++;
+    const key = predicateDispatchGroupKey(row);
+    const existing = groups.get(key);
+    if (existing) existing.push(row);
+    else groups.set(key, [row]);
   }
-  return { polled: due.length, fired, gc };
+
+  const dispatch = dispatchOverride ?? dispatchPredicateTool;
+  let fired = 0;
+  let dispatches = 0;
+  let deduped = 0;
+
+  for (const rows of groups.values()) {
+    const first = rows[0];
+    if (!first) continue;
+
+    if (rows.length === 1) {
+      dispatches++;
+      const r = await evalPredicateWatch(first);
+      if (r.fired) fired++;
+      continue;
+    }
+
+    // One read for the whole group. A throw here is CAPTURED, never propagated: each
+    // row still has to record its own error and its own deactivation.
+    let shared: PredicateDispatchOutcome;
+    dispatches++;
+    try {
+      shared = { ok: true, payload: await dispatch(first) };
+    } catch (error) {
+      shared = { ok: false, error };
+    }
+    deduped += rows.length - 1;
+
+    for (const row of rows) {
+      const r = await evalPredicateWatch(row, shared);
+      if (r.fired) fired++;
+    }
+  }
+
+  return { polled: due.length, fired, gc, dispatches, deduped };
 }
 
 type Globals = typeof globalThis & { __papercuspPredicateWatchPollerStarted?: boolean };
