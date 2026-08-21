@@ -78,6 +78,16 @@ export interface SymbolSite {
   readonly line1: number | null;
   /** Backend-reported symbol kind, lowercased ('function', 'class', ...). */
   readonly kind: string | null;
+  /**
+   * Optional human-readable detail for sites that carry one: a diagnostic's
+   * message, a workspace-symbol's container, a rename edit's replacement text.
+   *
+   * OPTIONAL by construction — the frozen corpus (P-002) constructs sites
+   * without it and must keep typechecking, and a required field here would
+   * strand every existing call site. Absence means "this backend/intent has no
+   * detail to give", never "the detail was empty".
+   */
+  readonly detail?: string | null;
 }
 
 /** Whether a result set is complete or was cut off, stated EXPLICITLY. */
@@ -143,6 +153,12 @@ export type CodeIntelIntent =
   | 'impact'
   | 'rename-preview'
   | 'diagnostics'
+  /**
+   * Find a symbol by NAME across the workspace (LSP `workspace/symbol`).
+   * Distinct from 'text-search': the backend matches declared symbols, not
+   * arbitrary text, so a comment mentioning the name is not a hit.
+   */
+  | 'symbol-search'
   | 'structural-search'
   | 'text-search'
   | 'pack';

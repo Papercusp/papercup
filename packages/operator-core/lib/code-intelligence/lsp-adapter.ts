@@ -139,6 +139,25 @@ interface LspClient {
   pendingProgress: Set<string | number>;
   /** True once at least one progress cycle has completed. */
   everSettled: boolean;
+  /**
+   * Latest `textDocument/publishDiagnostics` payload per document URI.
+   *
+   * Diagnostics are PUSHED, not requested, which creates a false-empty trap
+   * the definition path does not have: a document the server has never
+   * published for is indistinguishable from a clean one unless we track
+   * whether a publish was ever OBSERVED. We therefore record receipt, and the
+   * diagnostics reader refuses to report "clean" for a URI with no entry.
+   */
+  diagnostics: Map<string, { diags: LspDiagnostic[]; receivedAt: number }>;
+}
+
+/** The subset of the LSP `Diagnostic` shape this adapter reads. */
+export interface LspDiagnostic {
+  range?: { start?: { line?: number; character?: number } };
+  severity?: number;
+  code?: string | number;
+  source?: string;
+  message?: string;
 }
 
 /**
@@ -229,6 +248,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     coldStartMs: 0,
     pendingProgress: new Set(),
     everSettled: false,
+    diagnostics: new Map(),
   };
 
   // ── Project-load readiness ────────────────────────────────────────────────
@@ -250,6 +270,20 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
         client.pendingProgress.delete(params.token);
         if (client.pendingProgress.size === 0) client.everSettled = true;
       }
+    },
+  );
+
+  // Diagnostics arrive as a PUSH notification, never as a reply to a request.
+  // Recording receipt (not just content) is what lets the reader below tell
+  // "this file is clean" from "the server has not spoken about this file yet".
+  connection.onNotification(
+    'textDocument/publishDiagnostics',
+    (params: { uri?: string; diagnostics?: LspDiagnostic[] }) => {
+      if (!params?.uri) return;
+      client.diagnostics.set(params.uri, {
+        diags: Array.isArray(params.diagnostics) ? params.diagnostics : [],
+        receivedAt: Date.now(),
+      });
     },
   );
 
@@ -276,8 +310,15 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
         definition: { linkSupport: false },
         references: {},
         implementation: { linkSupport: false },
+        // Declaring publishDiagnostics is what makes the server push them at
+        // all; without it `lsp.diagnostics` would report every file clean.
+        publishDiagnostics: { relatedInformation: false },
+        // `rename` here buys the PREVIEW only — the returned WorkspaceEdit is
+        // never applied by this adapter (see the read-only rail above and
+        // P-013, which gates application separately).
+        rename: { prepareSupport: false },
       },
-      workspace: { workspaceFolders: true },
+      workspace: { workspaceFolders: true, symbol: { dynamicRegistration: false } },
       // REQUIRED for the readiness protocol above. Without declaring this the
       // server never sends workDoneProgress, we can never tell "still loading"
       // from "done", and every early query silently returns the wrong answer.
