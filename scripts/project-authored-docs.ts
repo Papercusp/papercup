@@ -219,11 +219,11 @@ interface QueryResult<T = unknown> {
 }
 
 async function connect(): Promise<{
-  query: (q: string, v?: unknown[]) => Promise<QueryResult>;
+  query: <T = unknown>(q: string, v?: unknown[]) => Promise<QueryResult<T>>;
   end: () => Promise<void>;
 }> {
   return (await connectScriptPg()) as unknown as {
-    query: (q: string, v?: unknown[]) => Promise<QueryResult>;
+    query: <T = unknown>(q: string, v?: unknown[]) => Promise<QueryResult<T>>;
     end: () => Promise<void>;
   };
 }
