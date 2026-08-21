@@ -38,6 +38,7 @@ import {
 } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
+import { listCellsUnchecked, canReadCell } from '../../cell-registry';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
