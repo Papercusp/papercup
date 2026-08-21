@@ -14,8 +14,9 @@
  *   - `improvementKind: 'feature'` — a net-new capture (display refinement of
  *     kind='change'; the feature *family* lives in the features base table).
  *   - `paths: string[]` — candidate implementation paths (the protected-path gate).
- *   - `implementAttempts` / `needsHuman` — the auto-implement loop's lifecycle
- *     (anti-re-dispatch counter + the explicit human-routing flag, D-001).
+ *   - `implementAttempts` / `needsOwnerAction` — the auto-implement loop's lifecycle
+ *     (anti-re-dispatch counter + the strict owner-capability routing flag). Legacy
+ *     `needsHuman` remains surfaced until P-006 migrates the parked cohort.
  */
 
 import {
@@ -83,6 +84,7 @@ interface ImprovementPayload {
   paths?: unknown;
   implementAttempts?: unknown;
   needsHuman?: unknown;
+  needsOwnerAction?: unknown;
   /** One-line "already decided: <reason>" recall for the recurrence matcher
    *  (self-learning P-003) — set when an item is resolved/closed with a durable
    *  rationale worth recalling on the next same-signature capture. */
@@ -145,6 +147,7 @@ export function issueToCandidate(issue: EngineerIssue): ImprovementCandidate {
     ...(paths?.length ? { paths } : {}),
     ...(attempts !== undefined ? { attempts } : {}),
     ...(p.needsHuman === true ? { needsHuman: true } : {}),
+    ...(p.needsOwnerAction === true ? { needsOwnerAction: true } : {}),
     ...(decidedReason ? { decidedReason } : {}),
     ...(sourceRole ? { sourceRole } : {}),
     ...(isIdeaLifecycle(p.ideaLifecycle) ? { ideaLifecycle: p.ideaLifecycle } : {}),
