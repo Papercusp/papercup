@@ -38,3 +38,33 @@ _retired/
 **/*.min.js
 **/*.map
 **/coverage/
+
+# --- P-004 additions (plan code-intelligence-routing-lsp-gitnexus-2026-08-20) --------
+#
+# `**/dist/` above matches a directory named exactly `dist`. It does NOT match a
+# SIBLING build directory whose name merely starts with it, so
+# apps/operator/dist-sidecar/ was indexed in full — 151 files, measured against the
+# live index on 2026-08-21. The symptom is the one this whole file exists to prevent:
+# apps/operator/dist-sidecar/embed-sidecar.mjs came back as a PEER of the real source
+# declaration it is bundled from, with nothing to tell the caller which was genuine.
+#
+# The glob is deliberately the CLASS, not the one directory, so the next `dist-<x>`
+# sibling cannot silently re-open the same hole.
+**/dist-*/
+
+# Agent scratch space: working notes, one-off audit pages, generated file-list dumps.
+# 44 files, none of them source, none ever imported. Not covered by .gitignore either
+# (verified: `git check-ignore scratchpad` exits 1), so nothing else was excluding it.
+scratchpad/
+
+# ⚠ SCOPE NOTE, so this block is not later cited for more than it does. These two rules
+# remove 195 files of 19,479 (~1%). That is a CORRECTNESS fix — wrong symbol answers —
+# and NOT a cure for `analyze` exceeding GITNEXUS_ANALYZE_TIMEOUT_MS. The timeout kill
+# leaves crash residue that segfaults every read, and that is handled unconditionally by
+# cleanCrashResidue() in
+# packages/operator-core/lib/harness/routines/gitnexus-reindex-action.ts (plan D-016).
+#
+# ⚠ Keep every rule PATH-ANCHORED. A substring census over this tree reports 40 hits for
+# "target" and 55 for "generated" that are all REAL SOURCE (workspace-api-target.ts,
+# tty-title-target.test.ts, ...). An unanchored rule deletes genuine declarations from
+# the graph — the same wrong answer this file prevents, pointed the other way.
