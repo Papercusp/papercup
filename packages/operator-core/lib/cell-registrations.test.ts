@@ -570,3 +570,31 @@ describe('P-005 — declared audiences are actually reachable (real registry)', 
     expect(getCell(AGENT_GOAL_CELL.cell, sidestage)).toBeTruthy();
   });
 });
+
+describe('P-009 / D-013: no registered cell declares a federation nobody transports', () => {
+  beforeEach(() => {
+    __resetCellRegistryForTests();
+  });
+
+  it('every builtin cell is `local`', () => {
+    // THE DRIFT GUARD. The validator refuses `shareable` at registration, but this
+    // asserts the property over the REAL population rather than over a hand-built
+    // spec — so it fails if someone lands a shareable cell by any route (including
+    // flipping CELL_FEDERATION_TRANSPORT_AVAILABLE) without wiring a transport that
+    // actually consumes spec.federation.
+    const notLocal = BUILTIN_CELLS.filter((c) => c.federation?.kind !== 'local').map((c) => c.cell);
+    expect(notLocal, `cells declaring a federation nothing transports: ${notLocal.join(', ')}`).toEqual([]);
+  });
+
+  it('measures the population from the registry, so a new cell cannot slip past it', () => {
+    // Calibration, and NOT redundant with the assertion above: a filter over an EMPTY
+    // array also returns [], so without this the guard would pass vacuously if
+    // BUILTIN_CELLS were ever emptied or renamed. Measured 2026-08-21: 10 cells — and
+    // a string-literal grep of cell-registrations.ts finds only 9 of them, because
+    // agent.goal registers its name through the AGENT_GOAL_CELL_ID constant. That 10%
+    // silent undercount is exactly why this counts the registry, never the source text.
+    expect(BUILTIN_CELLS.length).toBeGreaterThanOrEqual(10);
+    registerBuiltinCells();
+    expect(listCellsUnchecked().length).toBe(BUILTIN_CELLS.length);
+  });
+});

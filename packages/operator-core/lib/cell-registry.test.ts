@@ -8,6 +8,7 @@ import {
   canReadCell,
   CellRegistrationError,
   __resetCellRegistryForTests,
+  CELL_FEDERATION_TRANSPORT_AVAILABLE,
   type CellSpec,
 } from './cell-registry';
 
@@ -60,7 +61,12 @@ const sessionCell = (): CellSpec => ({
   unknownHoist: 'subjectsWithoutSignal',
   callerRelativity: { kind: 'global' },
   visibility: { kind: 'workspace' },
-  federation: { kind: 'shareable' },
+  // `local`, and deliberately so: this fixture is the file's generic KNOWN-GOOD spec —
+  // a dozen axis tests spread it and assert `[]` — so its federation must be the valid
+  // answer, not the subject under test. It was `shareable` until P-009/D-013 made that
+  // a rejection; the federation tests below now opt INTO shareable explicitly, which is
+  // also clearer about which assertions are actually about federation.
+  federation: { kind: 'local' },
   provenance: {
     obtainedBy: 'resolveSessionStates over coord_presence + event_awaits + adv_sessions',
     liveExercised: true,
@@ -149,9 +155,45 @@ describe('P-019 — visibility and federation are declared at registration', () 
     expect(validateCellSpec(spec).map((r) => r.rule)).toContain('shareable-narrow-visibility');
   });
 
-  it('ACCEPTS workspace-visible + shareable, and any visibility + local', () => {
-    expect(validateCellSpec(sessionCell())).toEqual([]); // workspace + shareable
+  it('ACCEPTS any visibility + local', () => {
     expect(validateCellSpec(portCell())).toEqual([]); // harness-narrow + local
+    expect(validateCellSpec(sessionCell())).toEqual([]); // workspace-wide + local
+  });
+
+  // ── P-009 / D-013 — `shareable` fails CLOSED while nothing transports it.
+  /** Workspace-visible + shareable: valid under P-019 alone, refused only by D-013. */
+  const shareableCell = (): CellSpec => ({ ...sessionCell(), federation: { kind: 'shareable' } });
+
+  it('REFUSES a shareable cell while no transport consumes spec.federation, and for NO OTHER reason', () => {
+    // Pinning the rejection set EXACTLY (not toContain) is the point: it proves the
+    // spec is otherwise entirely valid — sessionCell() asserts `[]` directly above —
+    // so flipping CELL_FEDERATION_TRANSPORT_AVAILABLE re-accepts it unchanged rather
+    // than uncovering a second latent violation.
+    expect(CELL_FEDERATION_TRANSPORT_AVAILABLE).toBe(false); // the premise this test is about
+    expect(validateCellSpec(shareableCell()).map((r) => r.rule)).toEqual(['shareable-no-transport']);
+  });
+
+  it('tells a shareable author WHAT WOULD HAVE TO EXIST, not merely that it is refused', () => {
+    // A refusal that does not name its own remedy just relocates the dead end.
+    const [rejection] = validateCellSpec(shareableCell());
+    expect(rejection.detail).toContain('CELL_FEDERATION_TRANSPORT_AVAILABLE');
+    expect(rejection.detail).toContain('D-013');
+  });
+
+  it('reports BOTH federation violations at once for shareable + narrow visibility', () => {
+    // validateCellSpec's contract is to return EVERY reason (it pushes, never throws),
+    // so the transport gate must not mask the narrow-visibility rule. That rule is
+    // deliberately KEPT rather than deleted, and this is what proves it is not dead
+    // code: it still fires today, and it is what will police shareable cells the day
+    // a transport lands.
+    const spec: CellSpec = {
+      ...portCell(),
+      visibility: { kind: 'owner', ref: 'su-8d9a6' },
+      federation: { kind: 'shareable' },
+    };
+    const rules = validateCellSpec(spec).map((r) => r.rule);
+    expect(rules).toContain('shareable-narrow-visibility');
+    expect(rules).toContain('shareable-no-transport');
   });
 
   it('an OUT-OF-AUDIENCE caller cannot read the cell — P-019 acceptance criterion', () => {

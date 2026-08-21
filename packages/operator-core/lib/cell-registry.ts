@@ -132,6 +132,38 @@ export type CellFederation =
   | { kind: 'shareable' };
 
 /**
+ * P-009 / D-013 — DOES ANYTHING ACTUALLY CARRY A SHAREABLE CELL? Today: no.
+ *
+ * MEASURED 2026-08-21, not assumed. Across `packages/`, `apps/` and `libs/`,
+ * `CellSpec.federation` is referenced in exactly two non-test places: its type
+ * declaration above, and the validator below. No transport, serializer, projection
+ * or cross-hive path reads it. A real row-federation transport DOES exist in this
+ * repo (fed_ts + watermarks + LWW over coord_event_log / shared_presence /
+ * agent_facts, migration 150), but it carries ROWS, and a cell is not a row — it is
+ * a resolver-COMPUTED, host-local reading.
+ *
+ * ⚠ Do not be fooled by `shared-pot-loop/federated-cell-setup.ts`: "cell" there means
+ * a simulated hive in the composition rig, not a state-plane cell. It is a test-rig
+ * DDL helper, not a transport.
+ *
+ * SO THE VARIANT FAILS CLOSED. Left merely declarable, `{ kind: 'shareable' }` would
+ * be accepted and then do NOTHING — silently, with no error and no warning. That is
+ * precisely the "declaration with no mechanism" P-009 exists to kill, and it is worse
+ * than a missing feature because it reads as a working one.
+ *
+ * WHY NOT JUST BUILD THE TRANSPORT: a foreign hive's `gate.greenCheckpoint.verdict` or
+ * `host.memoryPressure` is not merely stale there, it is MEANINGLESS — it answers
+ * about a different machine. Federating cells needs authority/staleness semantics that
+ * zero declared demand justifies (all 10 registered cells are `local`).
+ *
+ * THIS CONSTANT IS THE ONE SWITCH. Wire a transport that genuinely consumes
+ * `spec.federation`, flip this to `true`, and the whole path — including the
+ * shareable+narrow-visibility cross-rule below, which is deliberately KEPT rather
+ * than deleted — comes back to life unchanged.
+ */
+export const CELL_FEDERATION_TRANSPORT_AVAILABLE = false;
+
+/**
  * P-021 — THE MATERIALITY THRESHOLD. Declared at REGISTRATION, and OPTIONAL:
  * absence means "every change is material", which is today's behaviour and stays
  * the default. You declare this only for a cell whose raw value churns faster
@@ -442,6 +474,17 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
     reject('federation', 'federation-undeclared', 'federation is REQUIRED: `{ kind: "local" }` (never leaves this hive) or `{ kind: "shareable" }`.');
   } else if (fed.kind === 'shareable' && vis?.kind && vis.kind !== 'workspace') {
     reject('federation', 'shareable-narrow-visibility', `a \`shareable\` cell must be workspace-visible; this one is "${vis.kind}"-scoped. A ref like an owner id, role or work-item does NOT resolve in a foreign hive, so the receiving side can neither evaluate nor honour the audience — it either fails open (a leak) or fails closed (silently invisible). Both are wrong answers, so the combination is refused rather than guessed.`);
+  }
+
+  // ── P-009 / D-013 — a declaration with no mechanism is contract theater.
+  //
+  // Deliberately an INDEPENDENT `if`, not another `else if` on the chain above: this
+  // function's contract is to return EVERY reason a spec may not be registered (see
+  // its doc — "so a caller can report ALL violations at once"), and `reject` pushes
+  // rather than throws. A shareable+owner-scoped spec is wrong on BOTH counts and
+  // should be told both, not made to fix them one run at a time.
+  if (fed?.kind === 'shareable' && !CELL_FEDERATION_TRANSPORT_AVAILABLE) {
+    reject('federation', 'shareable-no-transport', `\`shareable\` is declarable but NOTHING TRANSPORTS IT. Measured 2026-08-21: \`CellSpec.federation\` is read in exactly two non-test places — its type declaration and this validator — so a shareable cell would federate to nobody, silently and with no error. That is worse than an unsupported feature because it reads as a working one. Declare \`{ kind: 'local' }\`; if you genuinely need cross-hive cells, wire a transport that CONSUMES spec.federation and flip CELL_FEDERATION_TRANSPORT_AVAILABLE in cell-registry.ts (see plan state-plane-interest-and-hardening-2026-08-21 D-013). Note a cell is not a row: the fed_ts/LWW transport federates ROWS, and a cell is a resolver-computed host-local reading.`);
   }
 
   // ── P-021 — MATERIALITY. Optional, but a declared one must be able to do work.
