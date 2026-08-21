@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { EngineerIssue } from '../../issues-engineer';
+import type { WorkItem } from '../../work-items';
+import { LEGACY_AGENT_REVIEW_SUBMITTER } from './agent-review-policy';
 import {
   enterAgentReview,
   preflightAgentReviewGrade,
@@ -10,49 +11,50 @@ import {
   type AgentReviewLedgerGrade,
 } from './agent-review';
 
-function issue(overrides: Partial<EngineerIssue> = {}): EngineerIssue {
+function issue(overrides: Partial<WorkItem> = {}): WorkItem {
   return {
     id: 'WI-7',
     kind: 'change',
-    scope: 'harness:papercusp',
+    family: 'issue',
+    harness: 'papercusp',
     title: 'Proposal needing peer review',
-    body: 'body',
+    summary: 'body',
     severity: 'minor',
-    source: 'agent',
     state: 'open',
     assignee: 'su-filer',
     assignedBy: null,
-    assignedAt: null,
+    takenAt: null,
     lastProgressAt: null,
     payload: {},
     parent: null,
     origin: 'local',
     foundDuring: null,
-    linkedFeatureId: null,
     createdBy: 'su-filer',
-    signalOrigin: 'organic',
-    assigneeRank: null,
+    goalId: null,
+    auditVerdict: null,
+    verifiedAuthorGithubUserId: null,
+    rank: null,
     rankWriter: null,
     rankUpdatedAt: null,
+    priority: null,
     terminalOwner: null,
     terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
     completionAuthority: null,
-    featureOrder: null,
     createdAt: '2026-08-20T00:00:00.000Z',
     updatedAt: '2026-08-20T00:00:00.000Z',
     closedAt: null,
-    goalId: null,
     ...overrides,
-  } as EngineerIssue;
+  } as WorkItem;
 }
 
-function cloneIssue(value: EngineerIssue): EngineerIssue {
+function cloneIssue(value: WorkItem): WorkItem {
   return { ...value, payload: { ...(value.payload as Record<string, unknown> ?? {}) } };
 }
 
-function harness(initial: EngineerIssue = issue()) {
+function harness(initial: WorkItem = issue()) {
   const state: {
-    issue: EngineerIssue;
+    issue: WorkItem;
     ledger: AgentReviewLedgerGrade | null;
     posts: Array<{ body: string; author: string }>;
   } = {
@@ -62,25 +64,26 @@ function harness(initial: EngineerIssue = issue()) {
   };
 
   const recordRoutedIdea = vi.fn(async () => undefined);
-  const releaseIssue = vi.fn(async (_id: string, opts: { expectedAssignee?: string } = {}) => {
+  const resolveLedgerIdeaId = vi.fn(async (id: string) => id);
+  const releaseWorkItem = vi.fn(async (_id: string, opts: { expectedAssignee?: string } = {}) => {
     if (opts.expectedAssignee && state.issue.assignee && state.issue.assignee !== opts.expectedAssignee) return null;
     state.issue = { ...state.issue, assignee: null };
     return cloneIssue(state.issue);
   });
-  const claimIssue = vi.fn(async (_id: string, assignee: string, opts: { fromHolder?: string } = {}) => {
+  const claimWorkItem = vi.fn(async (_id: string, assignee: string, opts: { fromHolder?: string } = {}) => {
     if (state.issue.assignee && state.issue.assignee !== assignee && state.issue.assignee !== opts.fromHolder) return null;
     state.issue = { ...state.issue, assignee };
     return cloneIssue(state.issue);
   });
-  const commentIssue = vi.fn(async (_id: string, body: string, author = 'substrate') => {
+  const commentWorkItem = vi.fn(async (_id: string, body: string, author = 'substrate') => {
     state.posts.push({ body, author });
     return { body } as never;
   });
   const deliverRevision = vi.fn(async () => ({ woken: 1 }));
 
   const deps = {
-    getIssue: vi.fn(async () => cloneIssue(state.issue)),
-    getIssueDetail: vi.fn(async () => ({
+    getWorkItem: vi.fn(async () => cloneIssue(state.issue)),
+    getWorkItemDetail: vi.fn(async () => ({
       ...cloneIssue(state.issue),
       topics: [],
       posts: state.posts.map((post, index) => ({
@@ -92,21 +95,31 @@ function harness(initial: EngineerIssue = issue()) {
       })),
       links: [],
     } as never)),
-    mergeIssuePayload: vi.fn(async (_id: string, patch: Record<string, unknown>, opts: { unset?: readonly string[] } = {}) => {
+    mergeWorkItemPayload: vi.fn(async (_id: string, patch: Record<string, unknown>, opts: { unset?: readonly string[] } = {}) => {
       const payload = { ...(state.issue.payload as Record<string, unknown> ?? {}), ...patch };
       for (const key of opts.unset ?? []) delete payload[key];
       state.issue = { ...state.issue, payload };
       return cloneIssue(state.issue);
     }),
-    releaseIssue,
-    claimIssue,
-    commentIssue,
+    releaseWorkItem,
+    claimWorkItem,
+    commentWorkItem,
     recordRoutedIdea,
+    resolveLedgerIdeaId,
     readLedgerGrade: vi.fn(async () => state.ledger),
     deliverRevision,
   } as unknown as AgentReviewDeps;
 
-  return { state, deps, recordRoutedIdea, releaseIssue, claimIssue, commentIssue, deliverRevision };
+  return {
+    state,
+    deps,
+    recordRoutedIdea,
+    resolveLedgerIdeaId,
+    releaseWorkItem,
+    claimWorkItem,
+    commentWorkItem,
+    deliverRevision,
+  };
 }
 
 describe('enterAgentReview (abolish-human-review D-003)', () => {
@@ -132,9 +145,26 @@ describe('enterAgentReview (abolish-human-review D-003)', () => {
       improvementKind: 'feature',
       agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
     });
-    expect(h.releaseIssue).toHaveBeenCalledWith('WI-7', { expectedAssignee: 'su-filer' });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-filer',
+    });
     expect(h.state.issue.assignee).toBeNull();
     expect(h.state.issue.state).toBe('open');
+  });
+
+  it('preserves feature-family kind and uses the deterministic ledger fallback on collision', async () => {
+    const h = harness(issue({ kind: 'feature', family: 'feature' }));
+    h.resolveLedgerIdeaId.mockResolvedValue('agent-review:WI-7');
+
+    const result = await enterAgentReview({ id: 'WI-7', submittedBy: 'su-filer' }, h.deps);
+
+    expect(result.state).toMatchObject({ ledgerIdeaId: 'agent-review:WI-7' });
+    expect(h.state.issue.kind).toBe('feature');
+    expect(h.recordRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({
+      ideaId: 'agent-review:WI-7',
+      routedRef: 'wi:WI-7',
+    }));
   });
 
   it('does not enroll remote or strict owner-capability rows', async () => {
@@ -203,7 +233,10 @@ describe('agent-review grading lifecycle', () => {
     expect(h.state.issue.payload).toEqual({
       agentReview: { status: 'revision-requested', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
     });
-    expect(h.claimIssue).toHaveBeenCalledWith('WI-7', 'su-filer', { fromHolder: 'su-reviewer' });
+    expect(h.claimWorkItem).toHaveBeenCalledWith('WI-7', 'su-filer', {
+      harness: 'papercusp',
+      fromHolder: 'su-reviewer',
+    });
     expect(h.deliverRevision).toHaveBeenCalledWith(expect.objectContaining({
       to: 'su-filer',
       workItemId: 'WI-7',
@@ -215,8 +248,43 @@ describe('agent-review grading lifecycle', () => {
       status: 'revision-requested',
       changed: false,
     });
-    expect(h.commentIssue).toHaveBeenCalledTimes(1);
+    expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
     expect(h.deliverRevision).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases legacy-sentinel revision work to normal implementation without assigning or waking the sentinel', async () => {
+    const h = harness(issue({
+      assignee: 'su-reviewer',
+      payload: {
+        agentReview: {
+          status: 'pending',
+          submittedBy: LEGACY_AGENT_REVIEW_SUBMITTER,
+          ledgerIdeaId: 'WI-7',
+          round: 1,
+        },
+      },
+    }));
+    h.state.ledger = {
+      ideaId: 'WI-7',
+      workItemId: 'WI-7',
+      grade: 2,
+      feedback: 'Rework the migration boundary.',
+      gradedBy: 'su-reviewer',
+    };
+
+    await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toEqual({
+      workItemId: 'WI-7',
+      status: 'revision-requested',
+      round: 1,
+      changed: true,
+    });
+    expect(h.state.issue.assignee).toBeNull();
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-reviewer',
+    });
+    expect(h.claimWorkItem).not.toHaveBeenCalled();
+    expect(h.deliverRevision).not.toHaveBeenCalled();
   });
 
   it('resubmission increments the round and releases revision work for another reviewer', async () => {
@@ -235,6 +303,35 @@ describe('agent-review grading lifecycle', () => {
     expect(h.state.issue.payload).toEqual({
       agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 2 },
     });
+  });
+
+  it('requires the real legacy reviser to hold the item, then rebinds submittedBy on resubmission', async () => {
+    const h = harness(issue({
+      assignee: 'su-reviser',
+      payload: {
+        agentReview: {
+          status: 'revision-requested',
+          submittedBy: LEGACY_AGENT_REVIEW_SUBMITTER,
+          ledgerIdeaId: 'agent-review:WI-7',
+          round: 1,
+        },
+      },
+    }));
+
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-stranger' }, h.deps)).resolves.toMatchObject({
+      resubmitted: false,
+      reason: 'legacy-revision-not-claimant',
+    });
+    await expect(resubmitAgentReview({ id: 'WI-7', submittedBy: 'su-reviser' }, h.deps)).resolves.toEqual({
+      resubmitted: true,
+      state: {
+        status: 'pending',
+        submittedBy: 'su-reviser',
+        ledgerIdeaId: 'agent-review:WI-7',
+        round: 2,
+      },
+    });
+    expect(h.state.issue.assignee).toBeNull();
   });
 
   it('a 4–5 grade re-admits the still-open item and retry converges without duplicate history', async () => {
@@ -258,12 +355,15 @@ describe('agent-review grading lifecycle', () => {
     expect(h.state.issue.payload).toEqual({
       agentReview: { status: 'approved', submittedBy: 'su-filer', ledgerIdeaId: 'WI-7', round: 1 },
     });
-    expect(h.releaseIssue).toHaveBeenCalledWith('WI-7', { expectedAssignee: 'su-reviewer' });
+    expect(h.releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercusp',
+      expectedAssignee: 'su-reviewer',
+    });
 
     await expect(reconcileAgentReviewGrade({ ideaId: 'WI-7', gradedBy: 'su-reviewer' }, h.deps)).resolves.toMatchObject({
       status: 'approved',
       changed: false,
     });
-    expect(h.commentIssue).toHaveBeenCalledTimes(1);
+    expect(h.commentWorkItem).toHaveBeenCalledTimes(1);
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentReviewEligibility,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
   readAgentReviewState,
 } from './agent-review-policy';
 
@@ -28,13 +29,12 @@ describe('readAgentReviewState', () => {
 });
 
 describe('agentReviewEligibility (abolish-human-review D-003)', () => {
-  it('admits issue-family changes and feature improvements', () => {
-    expect(agentReviewEligibility({ kind: 'change', payload: {} })).toEqual({ eligible: true });
-    expect(agentReviewEligibility({ kind: 'change', payload: { improvementKind: 'feature' } })).toEqual({ eligible: true });
+  it.each(['bug', 'change', 'task', 'feature'])('admits preserved %s work-item kinds', (kind) => {
+    expect(agentReviewEligibility({ kind, payload: {} })).toEqual({ eligible: true });
   });
 
   it('keeps observations and non-review kinds out of the lane', () => {
-    expect(agentReviewEligibility({ kind: 'bug', payload: {} })).toEqual({
+    expect(agentReviewEligibility({ kind: 'chunk', payload: {} })).toEqual({
       eligible: false,
       reason: 'not-review-kind',
     });
@@ -42,6 +42,10 @@ describe('agentReviewEligibility (abolish-human-review D-003)', () => {
       eligible: false,
       reason: 'observation',
     });
+  });
+
+  it('exports a stable non-owner sentinel for unattributed migrated revisions', () => {
+    expect(LEGACY_AGENT_REVIEW_SUBMITTER).toBe('system:legacy-agent-review');
   });
 
   it('keeps remote-owned rows on peer reconciliation', () => {

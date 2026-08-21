@@ -14,6 +14,14 @@ import { activeExternalBlockers, type ExternalBlockerCapability } from '../../ex
 export const AGENT_REVIEW_STATUSES = ['pending', 'revision-requested', 'approved'] as const;
 export type AgentReviewStatus = (typeof AGENT_REVIEW_STATUSES)[number];
 
+/**
+ * Migration 864 cannot recover an originating principal for every legacy park.
+ * The sentinel is deliberately not a routable owner id: revision handling treats
+ * it as an instruction to release the item back to normal implementation instead
+ * of assigning or waking a nonexistent submitter.
+ */
+export const LEGACY_AGENT_REVIEW_SUBMITTER = 'system:legacy-agent-review' as const;
+
 export interface AgentReviewState {
   status: AgentReviewStatus;
   submittedBy: string;
@@ -63,8 +71,11 @@ export function agentReviewEligibility(candidate: AgentReviewCandidate):
   | { eligible: true }
   | { eligible: false; reason: 'not-review-kind' | 'remote-owned' | 'observation' | 'owner-capability' } {
   const payload = record(candidate.payload);
-  const isFeature = payload.improvementKind === 'feature';
-  if (candidate.kind !== 'change' && !isFeature) return { eligible: false, reason: 'not-review-kind' };
+  // D-004: enrollment is a lifecycle layered onto the existing work-item. It must
+  // preserve historical kinds rather than coercing review work to `change`.
+  if (!['bug', 'change', 'task', 'feature'].includes(candidate.kind)) {
+    return { eligible: false, reason: 'not-review-kind' };
+  }
   if (candidate.origin === 'remote') return { eligible: false, reason: 'remote-owned' };
   if (payload.lane === 'observation') return { eligible: false, reason: 'observation' };
   if (payload.needsOwnerAction === true) return { eligible: false, reason: 'owner-capability' };
@@ -87,7 +98,10 @@ export function agentReviewNormalExclusionSql(
   const payload = sql.unsafe(payloadCol);
   return sql`(
     COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'pending'
-    AND COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
+    AND (
+      COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' IS DISTINCT FROM 'revision-requested'
+      OR COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' = ${LEGACY_AGENT_REVIEW_SUBMITTER}
+    )
   )`;
 }
 

@@ -7,21 +7,21 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import {
-  claimIssue,
-  commentIssue,
-  getIssue,
-  getIssueDetail,
-  getIssueInWorkspace,
-  issuesScopeWorkspace,
-  mergeIssuePayload,
-  releaseIssue,
-  type EngineerIssue,
-} from '../../issues-engineer';
+  claimWorkItem,
+  commentWorkItem,
+  depsBlockedExclusionSql,
+  getWorkItem,
+  getWorkItemDetail,
+  mergeWorkItemPayload,
+  releaseWorkItem,
+  type WorkItem,
+} from '../../work-items';
+import { activeWorkspaceId } from '../../workspace-registry';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
-import { depsBlockedExclusionSql } from '../../work-items';
 import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
+  LEGACY_AGENT_REVIEW_SUBMITTER,
   readAgentReviewState,
   type AgentReviewState,
 } from './agent-review-policy';
@@ -37,13 +37,14 @@ export interface AgentReviewLedgerGrade {
 }
 
 export interface AgentReviewDeps {
-  getIssue: typeof getIssue;
-  getIssueDetail: typeof getIssueDetail;
-  mergeIssuePayload: typeof mergeIssuePayload;
-  releaseIssue: typeof releaseIssue;
-  claimIssue: typeof claimIssue;
-  commentIssue: typeof commentIssue;
+  getWorkItem: typeof getWorkItem;
+  getWorkItemDetail: typeof getWorkItemDetail;
+  mergeWorkItemPayload: typeof mergeWorkItemPayload;
+  releaseWorkItem: typeof releaseWorkItem;
+  claimWorkItem: typeof claimWorkItem;
+  commentWorkItem: typeof commentWorkItem;
   recordRoutedIdea: typeof recordRoutedIdea;
+  resolveLedgerIdeaId: (workItemId: string) => Promise<string>;
   readLedgerGrade: (ideaId: string) => Promise<AgentReviewLedgerGrade | null>;
   deliverRevision: (input: {
     to: string;
@@ -76,6 +77,29 @@ async function readLedgerGrade(ideaId: string): Promise<AgentReviewLedgerGrade |
     feedback: row.human_feedback,
     gradedBy: row.graded_by,
   };
+}
+
+/**
+ * Preserve a pre-existing same-id Blender row when it belongs to another
+ * artifact. D-004 reserves exactly one deterministic fallback so migration
+ * retries converge and payload.agentReview can point at the real grade authority.
+ */
+export async function resolveLedgerIdeaId(workItemId: string): Promise<string> {
+  const { sql } = getOrgPg();
+  const fallback = `agent-review:${workItemId}`;
+  const rows = await sql<{ idea_id: string; routed_ref: string }[]>`
+    SELECT idea_id, routed_ref
+      FROM harness_shared.scout_routed_ideas
+     WHERE idea_id IN (${workItemId}, ${fallback})`;
+  const byId = new Map(rows.map((row) => [row.idea_id, row.routed_ref]));
+  const routedRef = `wi:${workItemId}`;
+  const primary = byId.get(workItemId);
+  if (primary == null || primary === routedRef) return workItemId;
+  const fallbackRoute = byId.get(fallback);
+  if (fallbackRoute == null || fallbackRoute === routedRef) return fallback;
+  throw new Error(
+    `agent review ledger collision: '${workItemId}' and '${fallback}' both route to other artifacts`,
+  );
 }
 
 async function deliverRevision(input: {
@@ -112,13 +136,14 @@ async function deliverRevision(input: {
 }
 
 const defaultDeps: AgentReviewDeps = {
-  getIssue,
-  getIssueDetail,
-  mergeIssuePayload,
-  releaseIssue,
-  claimIssue,
-  commentIssue,
+  getWorkItem,
+  getWorkItemDetail,
+  mergeWorkItemPayload,
+  releaseWorkItem,
+  claimWorkItem,
+  commentWorkItem,
   recordRoutedIdea,
+  resolveLedgerIdeaId,
   readLedgerGrade,
   deliverRevision,
 };
@@ -134,42 +159,48 @@ export async function enterAgentReview(
   input: EnterAgentReviewInput,
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<{ entered: boolean; state?: AgentReviewState; reason?: string }> {
-  const issue = await deps.getIssue(input.id);
-  if (!issue) return { entered: false, reason: 'not-found' };
-  const eligibility = agentReviewEligibility(issue);
+  const workItem = await deps.getWorkItem(input.id, input.harnessSlug);
+  if (!workItem) return { entered: false, reason: 'not-found' };
+  const eligibility = agentReviewEligibility(workItem);
   if (!eligibility.eligible) return { entered: false, reason: eligibility.reason };
 
-  const existing = readAgentReviewState(issue.payload);
+  const existing = readAgentReviewState(workItem.payload);
   if (existing?.status === 'approved') return { entered: false, state: existing, reason: 'already-approved' };
+  const ledgerIdeaId = existing?.ledgerIdeaId ?? await deps.resolveLedgerIdeaId(workItem.id);
   const next: AgentReviewState = existing?.status === 'pending'
     ? existing
     : {
         status: 'pending',
         submittedBy: existing?.submittedBy ?? input.submittedBy,
-        ledgerIdeaId: existing?.ledgerIdeaId ?? issue.id,
+        ledgerIdeaId,
         round: existing ? existing.round + 1 : 1,
       };
 
-  const harnessSlug = input.harnessSlug ?? (issue.scope.startsWith('harness:') ? issue.scope.slice(8) : 'papercusp');
+  const harnessSlug = input.harnessSlug ?? workItem.harness;
+  if (!harnessSlug) throw new Error(`enterAgentReview: work item '${workItem.id}' has no harness`);
   await deps.recordRoutedIdea({
     ideaId: next.ledgerIdeaId,
     lens: 'agent-review',
     rail: 'improvement',
-    routedRef: `wi:${issue.id}`,
+    routedRef: `wi:${workItem.id}`,
     harnessSlug,
-    title: issue.title,
+    title: workItem.title,
     origin: 'agent-review',
     createdBy: next.submittedBy,
     preserveExisting: true,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
   });
-  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+  const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
+    harness: harnessSlug,
     unset: ['needsHuman', 'needsOwnerAction'],
   });
-  if (!merged) throw new Error(`enterAgentReview: work item '${issue.id}' disappeared during enrollment`);
-  if (issue.assignee) {
-    const released = await deps.releaseIssue(issue.id, { expectedAssignee: issue.assignee });
-    if (!released) throw new Error(`enterAgentReview: could not release submitter claim on '${issue.id}'`);
+  if (!merged) throw new Error(`enterAgentReview: work item '${workItem.id}' disappeared during enrollment`);
+  if (workItem.assignee) {
+    const released = await deps.releaseWorkItem(workItem.id, {
+      harness: harnessSlug,
+      expectedAssignee: workItem.assignee,
+    });
+    if (!released) throw new Error(`enterAgentReview: could not release submitter claim on '${workItem.id}'`);
   }
   return { entered: !existing || existing.status !== 'pending', state: next };
 }
@@ -178,22 +209,37 @@ export async function resubmitAgentReview(
   input: { id: string; submittedBy: string },
   deps: AgentReviewDeps = defaultDeps,
 ): Promise<{ resubmitted: boolean; state?: AgentReviewState; reason?: string }> {
-  const issue = await deps.getIssue(input.id);
-  if (!issue) return { resubmitted: false, reason: 'not-found' };
-  const current = readAgentReviewState(issue.payload);
+  const workItem = await deps.getWorkItem(input.id);
+  if (!workItem) return { resubmitted: false, reason: 'not-found' };
+  const current = readAgentReviewState(workItem.payload);
   if (!current) return { resubmitted: false, reason: 'not-agent-review' };
-  if (current.submittedBy !== input.submittedBy) return { resubmitted: false, state: current, reason: 'not-submitter' };
+  const isLegacyRebind = current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER;
+  if (isLegacyRebind && workItem.assignee !== input.submittedBy) {
+    return { resubmitted: false, state: current, reason: 'legacy-revision-not-claimant' };
+  }
+  if (!isLegacyRebind && current.submittedBy !== input.submittedBy) {
+    return { resubmitted: false, state: current, reason: 'not-submitter' };
+  }
   if (current.status !== 'revision-requested') {
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
   }
-  const next: AgentReviewState = { ...current, status: 'pending', round: current.round + 1 };
-  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+  const next: AgentReviewState = {
+    ...current,
+    status: 'pending',
+    submittedBy: isLegacyRebind ? input.submittedBy : current.submittedBy,
+    round: current.round + 1,
+  };
+  const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
+    ...(workItem.harness ? { harness: workItem.harness } : {}),
     unset: ['needsHuman', 'needsOwnerAction'],
   });
-  if (!merged) throw new Error(`resubmitAgentReview: work item '${issue.id}' disappeared`);
-  if (issue.assignee) {
-    const released = await deps.releaseIssue(issue.id, { expectedAssignee: input.submittedBy });
-    if (!released) throw new Error(`resubmitAgentReview: '${issue.id}' is held by another agent`);
+  if (!merged) throw new Error(`resubmitAgentReview: work item '${workItem.id}' disappeared`);
+  if (workItem.assignee) {
+    const released = await deps.releaseWorkItem(workItem.id, {
+      ...(workItem.harness ? { harness: workItem.harness } : {}),
+      expectedAssignee: input.submittedBy,
+    });
+    if (!released) throw new Error(`resubmitAgentReview: '${workItem.id}' is held by another agent`);
   }
   return { resubmitted: true, state: next };
 }
@@ -211,16 +257,16 @@ export async function preflightAgentReviewGrade(
 ): Promise<AgentReviewGradePreflight> {
   const ledger = await deps.readLedgerGrade(input.ideaId);
   if (!ledger) return { applicable: false };
-  const issue = await deps.getIssue(ledger.workItemId);
-  const state = issue ? readAgentReviewState(issue.payload) : null;
+  const workItem = await deps.getWorkItem(ledger.workItemId);
+  const state = workItem ? readAgentReviewState(workItem.payload) : null;
   if (!state || state.ledgerIdeaId !== input.ideaId) return { applicable: false };
   if (state.status !== 'pending') {
-    return { applicable: true, workItemId: issue!.id, state, refusal: 'agent-review-not-pending' };
+    return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-not-pending' };
   }
   if (input.grade <= AGENT_REVIEW_MAX_REVISION_GRADE && !input.feedback?.trim()) {
-    return { applicable: true, workItemId: issue!.id, state, refusal: 'agent-review-feedback-required' };
+    return { applicable: true, workItemId: workItem!.id, state, refusal: 'agent-review-feedback-required' };
   }
-  return { applicable: true, workItemId: issue!.id, state };
+  return { applicable: true, workItemId: workItem!.id, state };
 }
 
 function revisionComment(round: number, grade: number, feedback: string, gradedBy: string): string {
@@ -232,15 +278,20 @@ function approvalComment(round: number, grade: number, gradedBy: string): string
 }
 
 async function ensureComment(
-  issue: EngineerIssue,
+  workItem: WorkItem,
   body: string,
   author: string,
   deps: AgentReviewDeps,
 ): Promise<boolean> {
-  const detail = await deps.getIssueDetail(issue.id);
+  const detail = await deps.getWorkItemDetail(workItem.id, workItem.harness ?? undefined);
   if (detail?.posts.some((post) => post.body === body)) return false;
-  const written = await deps.commentIssue(issue.id, body, author);
-  if (!written) throw new Error(`agent review could not persist round history on '${issue.id}'`);
+  const written = await deps.commentWorkItem(
+    workItem.id,
+    body,
+    author,
+    workItem.harness ? { harness: workItem.harness } : {},
+  );
+  if (!written) throw new Error(`agent review could not persist round history on '${workItem.id}'`);
   return true;
 }
 
@@ -258,9 +309,9 @@ export async function reconcileAgentReviewGrade(
 ): Promise<AgentReviewReconcileOutcome | null> {
   const ledger = await deps.readLedgerGrade(input.ideaId);
   if (!ledger) return null;
-  const issue = await deps.getIssue(ledger.workItemId);
-  if (!issue) return null;
-  const current = readAgentReviewState(issue.payload);
+  const workItem = await deps.getWorkItem(ledger.workItemId);
+  if (!workItem) return null;
+  const current = readAgentReviewState(workItem.payload);
   if (!current || current.ledgerIdeaId !== input.ideaId) return null;
   if (ledger.grade == null) throw new Error(`agent review ledger '${input.ideaId}' has no standing grade`);
 
@@ -271,69 +322,92 @@ export async function reconcileAgentReviewGrade(
     if (!feedback) throw new Error('agent-review-feedback-required');
     const next: AgentReviewState = { ...current, status: 'revision-requested' };
     const changed = current.status !== next.status;
-    const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+    const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
+      ...(workItem.harness ? { harness: workItem.harness } : {}),
       unset: ['needsHuman', 'needsOwnerAction'],
     });
-    if (!merged) throw new Error(`agent review could not persist revision state on '${issue.id}'`);
-    const commentAdded = await ensureComment(issue, revisionComment(current.round, grade, feedback, gradedBy), gradedBy, deps);
+    if (!merged) throw new Error(`agent review could not persist revision state on '${workItem.id}'`);
+    const commentAdded = await ensureComment(
+      workItem,
+      revisionComment(current.round, grade, feedback, gradedBy),
+      gradedBy,
+      deps,
+    );
+    if (current.submittedBy === LEGACY_AGENT_REVIEW_SUBMITTER) {
+      if (changed && workItem.assignee) {
+        const released = await deps.releaseWorkItem(workItem.id, {
+          ...(workItem.harness ? { harness: workItem.harness } : {}),
+          expectedAssignee: gradedBy,
+        });
+        if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
+      }
+      return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed };
+    }
     if (changed) {
-      const transferred = await deps.claimIssue(issue.id, current.submittedBy, {
-        ...(issue.assignee ? { fromHolder: gradedBy } : {}),
+      const transferred = await deps.claimWorkItem(workItem.id, current.submittedBy, {
+        ...(workItem.harness ? { harness: workItem.harness } : {}),
+        ...(workItem.assignee ? { fromHolder: gradedBy } : {}),
       });
-      if (!transferred) throw new Error(`agent review could not return '${issue.id}' to ${current.submittedBy}`);
+      if (!transferred) throw new Error(`agent review could not return '${workItem.id}' to ${current.submittedBy}`);
     }
     let woken: number | undefined;
     if (changed || commentAdded) {
       woken = (await deps.deliverRevision({
         to: current.submittedBy,
-        workItemId: issue.id,
+        workItemId: workItem.id,
         round: current.round,
         grade,
         feedback,
         gradedBy,
       })).woken;
     }
-    return { workItemId: issue.id, status: 'revision-requested', round: current.round, changed, ...(woken === undefined ? {} : { woken }) };
+    return { workItemId: workItem.id, status: 'revision-requested', round: current.round, changed, ...(woken === undefined ? {} : { woken }) };
   }
 
   const next: AgentReviewState = { ...current, status: 'approved' };
   const changed = current.status !== next.status;
-  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+  const merged = await deps.mergeWorkItemPayload(workItem.id, { agentReview: next }, {
+    ...(workItem.harness ? { harness: workItem.harness } : {}),
     unset: ['needsHuman', 'needsOwnerAction'],
   });
-  if (!merged) throw new Error(`agent review could not persist approval state on '${issue.id}'`);
-  await ensureComment(issue, approvalComment(current.round, grade, gradedBy), gradedBy, deps);
-  if (issue.assignee) {
-    const released = await deps.releaseIssue(issue.id, { expectedAssignee: gradedBy });
-    if (!released) throw new Error(`agent review could not release reviewer claim on '${issue.id}'`);
+  if (!merged) throw new Error(`agent review could not persist approval state on '${workItem.id}'`);
+  await ensureComment(workItem, approvalComment(current.round, grade, gradedBy), gradedBy, deps);
+  if (workItem.assignee) {
+    const released = await deps.releaseWorkItem(workItem.id, {
+      ...(workItem.harness ? { harness: workItem.harness } : {}),
+      expectedAssignee: gradedBy,
+    });
+    if (!released) throw new Error(`agent review could not release reviewer claim on '${workItem.id}'`);
   }
-  return { workItemId: issue.id, status: 'approved', round: current.round, changed };
+  return { workItemId: workItem.id, status: 'approved', round: current.round, changed };
 }
 
-/** Reviewer pickup over the existing issue-family queue; direct claims still use claimIssue's CAS. */
+/** Reviewer pickup over the unified queue; direct claims still use claimWorkItem's CAS. */
 export async function claimNextAgentReview(
   input: { reviewer: string; harnessSlug?: string },
   deps: AgentReviewDeps = defaultDeps,
-): Promise<EngineerIssue | null> {
+): Promise<WorkItem | null> {
   const { sql } = getOrgPg();
-  const ws = issuesScopeWorkspace();
-  const rows = await sql<{ issue_id: string }[]>`
-    SELECT issue_id
-      FROM harness_shared.engineer_issues wi
+  const ws = activeWorkspaceId();
+  const rows = await sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items wi
      WHERE workspace_id = ${ws}
-       AND state = 'open'
-       AND kind = 'change'
-       AND (assignee IS NULL OR btrim(assignee) = '')
+       AND status = 'open'
+       AND item_kind IN ('bug', 'change', 'task', 'feature')
+       AND (taken_by IS NULL OR btrim(taken_by) = '')
        AND ${depsBlockedExclusionSql(sql)}
        AND ${agentReviewPendingSelectorSql(sql)}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.reviewer}
-       AND ${input.harnessSlug ? sql`scope = ${`harness:${input.harnessSlug}`}` : sql`TRUE`}
-     ORDER BY feature_order ASC NULLS LAST, created_at ASC
+       AND ${input.harnessSlug ? sql`harness_slug = ${input.harnessSlug}` : sql`TRUE`}
+     ORDER BY feature_order ASC NULLS LAST, created_ts ASC
      LIMIT 25`;
   for (const row of rows) {
-    const issue = await getIssueInWorkspace(ws, row.issue_id);
-    if (!issue || !agentReviewEligibility(issue).eligible) continue;
-    const claimed = await deps.claimIssue(issue.id, input.reviewer, { workspaceId: ws });
+    const workItem = await deps.getWorkItem(row.feature_id, input.harnessSlug);
+    if (!workItem || !agentReviewEligibility(workItem).eligible) continue;
+    const claimed = await deps.claimWorkItem(workItem.id, input.reviewer, {
+      ...(workItem.harness ? { harness: workItem.harness } : {}),
+    });
     if (claimed) return claimed;
   }
   return null;
