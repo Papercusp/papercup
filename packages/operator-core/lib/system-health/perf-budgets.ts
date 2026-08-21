@@ -337,6 +337,59 @@ function summarizeCgroupMemory(
 }
 
 /**
+ * Pick the most specific (deepest) cgroup among the bounded top-N attribution rows,
+ * to name as "the responsible cgroup" in a memory-pressure reason.
+ *
+ * cgroup-v2 memory.current accounting is INCLUSIVE of descendants (see
+ * {@link MemoryPressureCgroupAttribution}), so the single LARGEST row in `top` is
+ * routinely a coarse ancestor — a user slice, or the cgroup root itself — that
+ * contains every other row by construction. Naming that as "the responsible cgroup"
+ * tells a reader nothing they can act on (EI-21006730273601832: a live P2P-gate
+ * incident had exactly this shape — the alarm reason carried only the raw host PSI
+ * number, not which workload owned the memory). The DEEPEST path among the captured
+ * rows is the most specific attribution the bounded sample actually reached, which
+ * is what a responder needs to go find the real workload. Ties broken by size.
+ */
+function mostSpecificCgroupOwner(
+  attribution: MemoryPressureCgroupAttribution | null,
+): MemoryPressureCgroupAttribution['top'][number] | null {
+  if (!attribution || attribution.top.length === 0) return null;
+  const depth = (path: string): number => path.split('/').filter(Boolean).length;
+  let best: MemoryPressureCgroupAttribution['top'][number] | null = null;
+  for (const row of attribution.top) {
+    if (
+      !best ||
+      depth(row.path) > depth(best.path) ||
+      (depth(row.path) === depth(best.path) && row.memoryBytes > best.memoryBytes)
+    ) {
+      best = row;
+    }
+  }
+  return best;
+}
+
+/** Render a cgroup attribution row into the clause appended to a memory-pressure
+ *  reason — the human-actionable half of {@link mostSpecificCgroupOwner}. */
+function formatCgroupOwner(row: MemoryPressureCgroupAttribution['top'][number]): string {
+  const gb = (row.memoryBytes / 1024 ** 3).toFixed(2);
+  const swap = row.swapBytes !== null ? `, ${(row.swapBytes / 1024 ** 3).toFixed(2)}GB swap` : '';
+  const pids = row.directPids !== null ? `, ${row.directPids} direct pid(s)` : '';
+  return `${row.path} (${gb}GB${swap}${pids})`;
+}
+
+/** Append the cgroup-attribution clause to a memory-pressure reason, or an explicit
+ *  "unconfirmed" clause when the capture carried no attribution — so a reader always
+ *  sees whether mechanism was actually correlated to a cgroup, never a bare PSI
+ *  number that INVITES attributing the stall to "low memory" (EI-21006730273601832:
+ *  ~51 GiB MemAvailable was live at the very reading that paged full avg60=5.13). */
+function withCgroupAttribution(reason: string, attribution: MemoryPressureCgroupAttribution | null): string {
+  const owner = mostSpecificCgroupOwner(attribution);
+  return owner
+    ? `${reason}; largest attributed cgroup: ${formatCgroupOwner(owner)}`
+    : `${reason}; no cgroup memory attribution captured — mechanism unconfirmed, do not attribute to low free RAM`;
+}
+
+/**
  * Evaluate ONLY the memory-pressure portion of a perf capture.
  *
  * The full evaluator below calls this and copies its reasons into the infra verdict;
@@ -436,7 +489,10 @@ export function evaluateMemoryPressure(
       ...common,
       pressure: 'crit',
       reasons: [
-        `PSI memory full avg60 ${psiMemoryFull60} ≥ ${budgets.psiMemoryFullCrit} — all tasks stalled on memory reclaim/swap (WI-5471 class: real thrashing, not a CPU issue)`,
+        withCgroupAttribution(
+          `PSI memory full avg60 ${psiMemoryFull60} ≥ ${budgets.psiMemoryFullCrit} — all tasks stalled on memory reclaim/swap (WI-5471 class: real thrashing, not a CPU issue)`,
+          cgroupAttribution,
+        ),
       ],
     };
   }
@@ -445,7 +501,10 @@ export function evaluateMemoryPressure(
       ...common,
       pressure: 'warn',
       reasons: [
-        `PSI memory some avg60 ${psiMemorySome60} ≥ ${budgets.psiMemorySomeWarn} — sustained memory reclaim pressure`,
+        withCgroupAttribution(
+          `PSI memory some avg60 ${psiMemorySome60} ≥ ${budgets.psiMemorySomeWarn} — sustained memory reclaim pressure`,
+          cgroupAttribution,
+        ),
       ],
     };
   }
