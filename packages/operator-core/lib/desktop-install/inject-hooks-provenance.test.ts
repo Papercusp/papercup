@@ -365,7 +365,7 @@ describe('installInjectionHooks — install provenance', () => {
     expect(await fs.readFile(installedPath, 'utf8')).toBe(before);
     expect((await readInstallStamp(path.join(home, '.papercusp', 'hooks', 'cc')))?.sourceDir).toBe(newer.ccDir);
     expect(error.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(
-      /cc hooks: REFUSING downgrade.*500000ms older/,
+      /cc hooks: REFUSING downgrade.*300000ms older/,
     );
   });
 });

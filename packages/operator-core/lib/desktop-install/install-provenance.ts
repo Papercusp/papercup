@@ -97,7 +97,13 @@ export async function resolveSourceGitProvenance(
     });
     const [sha, committedAt] = String(stdout).trim().split('\n');
     if (!sha) return {};
-    return { sourceSha: sha, sourceCommittedAt: committedAt || undefined };
+    const committedMs = committedAt ? Date.parse(committedAt) : NaN;
+    return {
+      sourceSha: sha,
+      sourceCommittedAt: Number.isFinite(committedMs)
+        ? new Date(committedMs).toISOString()
+        : committedAt || undefined,
+    };
   } catch {
     return {};
   }
