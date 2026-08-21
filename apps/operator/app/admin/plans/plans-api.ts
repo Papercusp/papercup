@@ -1779,13 +1779,12 @@ export interface JsonSchemaObject {
 export type PlanInputsResult = PlanInputSchemaInfo | { ok: false; slug?: string; error: string };
 
 /**
- * `plans:get-input-schema` is a BULK tool, so even a single-slug call comes back as
- * `{ ok, results: [row], counts }`. The admin route only unwraps that envelope for
- * `get` (see unwrapBulkGet), so every other bulk verb arrives wrapped — which reads as
- * a row whose every field is `undefined`, i.e. a panel that silently renders nothing
- * rather than an error anyone would notice. Unwrap here, and pin it in tests: this was
- * caught by probing the live route, NOT by the component tests, which mock this
- * function and would have kept passing.
+ * `plans:get-input-schema` is a BULK tool at the agent layer, so even a single-slug
+ * call can produce `{ ok, results: [row], counts }`. The admin route unwraps that
+ * envelope for its single-row contract; keep this parser defensive for a rolling
+ * server/client deployment (and for direct callers) so an older route cannot turn
+ * the response into an all-undefined input panel. This was caught by probing the
+ * live route, NOT by the component tests, which mock this function.
  */
 export function unwrapPlanInputs(body: unknown): PlanInputsResult {
   if (!body || typeof body !== 'object') return { ok: false, error: 'malformed_response' };

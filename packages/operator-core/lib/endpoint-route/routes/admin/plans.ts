@@ -146,6 +146,25 @@ function unwrap(toolResult: { status: number; body: unknown }): Response {
  * from a trust/validation failure) pass through unchanged.
  */
 export function unwrapBulkGet(toolResult: { status: number; body: unknown }): Response {
+  return unwrapBulkSingle(toolResult, {
+    error: { code: 'not_found', message: 'Plan not found.' },
+  });
+}
+
+/**
+ * Unwrap a bulk tool result when the admin route's contract is one row.
+ *
+ * Bulk tools keep their `{ ok, results, counts }` envelope for agent callers,
+ * including a single-slug request. Admin consumers such as the inputs panel
+ * read one row directly, so forwarding that envelope makes every field look
+ * absent without producing an error. Keep this helper opt-in per verb: list
+ * and search endpoints legitimately return multiple rows and must retain the
+ * envelope/payload they received.
+ */
+export function unwrapBulkSingle(
+  toolResult: { status: number; body: unknown },
+  emptyResult: unknown = { ok: false, error: 'not_found' },
+): Response {
   if (toolResult.status !== 200) {
     return Response.json(toolResult.body, { status: toolResult.status });
   }
@@ -158,11 +177,15 @@ export function unwrapBulkGet(toolResult: { status: number; body: unknown }): Re
   } catch {
     return new Response(text, { headers: { 'content-type': 'text/plain' } });
   }
-  if (env && typeof env === 'object' && Array.isArray((env as { results?: unknown }).results)) {
-    const plan = (env as { results: unknown[] }).results[0];
-    return Response.json(
-      plan ?? { error: { code: 'not_found', message: 'Plan not found.' } },
-    );
+  if (
+    env &&
+    typeof env === 'object' &&
+    Array.isArray((env as { results?: unknown }).results) &&
+    (env as { counts?: unknown }).counts &&
+    typeof (env as { counts?: unknown }).counts === 'object'
+  ) {
+    const row = (env as { results: unknown[] }).results[0];
+    return Response.json(row ?? emptyResult);
   }
   // Not the bulk envelope (e.g. a bare { error } from trust/validation) — pass through.
   return Response.json(env as Record<string, unknown>);
@@ -262,7 +285,11 @@ export async function dispatchRead(req: Request, ctx: RouteContext): Promise<Res
     },
     HOST_EXTRAS,
   );
-  return verb === 'get' ? unwrapBulkGet(result) : unwrap(result);
+  if (verb === 'get') return unwrapBulkGet(result);
+  if (verb === 'get-input-schema') {
+    return unwrapBulkSingle(result);
+  }
+  return unwrap(result);
 }
 
 async function dispatchWrite(req: Request, ctx: RouteContext): Promise<Response> {

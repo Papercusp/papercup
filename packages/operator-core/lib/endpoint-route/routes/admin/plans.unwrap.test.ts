@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { unwrapBulkGet } from './plans';
+import { unwrapBulkGet, unwrapBulkSingle } from './plans';
 
 /**
  * plans:get became a BULK tool (get.ts → runBulk → bulkContent), so even a
@@ -56,5 +56,24 @@ describe('unwrapBulkGet — single-plan unwrap of the plans:get bulk envelope', 
   it('forwards a non-200 tool failure verbatim with its status', async () => {
     const res = unwrapBulkGet({ status: 500, body: { error: 'boom' } });
     expect(res.status).toBe(500);
+  });
+});
+
+describe('unwrapBulkSingle — single-row admin consumers of bulk tools', () => {
+  it('returns results[0] from a one-slug bulk envelope', async () => {
+    const row = { ok: true, slug: 'demo', ready: false, missing: ['paths'] };
+    const res = unwrapBulkSingle(toolResult({ ok: true, results: [row], counts: { ok: 1, failed: 0 } }));
+    expect(await res.json()).toEqual(row);
+  });
+
+  it('returns a clean not_found row when the bulk result is empty', async () => {
+    const res = unwrapBulkSingle(toolResult({ ok: true, results: [], counts: { ok: 0, failed: 1 } }));
+    expect(await res.json()).toEqual({ ok: false, error: 'not_found' });
+  });
+
+  it('passes a bare error through without treating it as bulk', async () => {
+    const body = { error: { code: 'forbidden', message: 'not allowed' } };
+    const res = unwrapBulkSingle(toolResult(body));
+    expect(await res.json()).toEqual(body);
   });
 });

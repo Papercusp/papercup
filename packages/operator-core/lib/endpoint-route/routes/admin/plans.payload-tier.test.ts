@@ -75,6 +75,13 @@ describe('admin plans read dispatch — payload-tier contract (WI-5520 / WI-5078
     expect(H.calls.every((c) => c.body.payloadTier === 'full')).toBe(true);
   });
 
+  it('unwraps the single-row get-input-schema bulk response for the admin UI', async () => {
+    const res = await dispatchRead(reqFor('get-input-schema'), ctxFor('get-input-schema'));
+    const body = await res.json();
+    expect(body).toEqual(expect.objectContaining({ ok: true, slug: 'demo' }));
+    expect(body.results).toBeUndefined();
+  });
+
   it('respects an explicit lower payloadTier from the query (opt-in shaped reads stay possible)', async () => {
     await dispatchRead(reqFor('get', '&payloadTier=trimmed'), ctxFor('get'));
     expect(H.calls[0].body.payloadTier).toBe('trimmed');
