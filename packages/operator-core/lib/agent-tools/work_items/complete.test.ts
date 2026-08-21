@@ -2828,6 +2828,33 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    it('accepts the documented `assumptions: "none"` on the direct path just like items[]', async () => {
+      getWorkItem.mockResolvedValue(openIssue);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...openIssue, state: 'resolved' }));
+
+      const direct = await oneRaw({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: { summary: 'closed' },
+      });
+      const bulk = await envRaw({
+        items: [
+          {
+            id: 'WI-1',
+            state: 'resolved',
+            assumptions: 'none',
+            completion: { summary: 'closed' },
+          },
+        ],
+      });
+
+      expect(direct.ok).toBe(true);
+      expect(bulk.ok).toBe(true);
+      expect(bulk.results[0].ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(2);
+    });
+
     it('applies the same gate to an inferred issue terminal close', async () => {
       getWorkItem.mockResolvedValue(openIssue);
 
