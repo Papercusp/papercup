@@ -19,6 +19,10 @@
  *   node --import tsx scripts/project-authored-docs.ts --ingest     # bootstrap file → PG
  *   node --import tsx scripts/project-authored-docs.ts --write      # project PG → file
  *   node --import tsx scripts/project-authored-docs.ts --check      # CI: corpus == projection
+ *   node --import tsx scripts/project-authored-docs.ts --ingest --reconcile \
+ *     --doc=agent-insights/example.mdx                         # reconcile one exact doc
+ *   node --import tsx scripts/project-authored-docs.ts --ingest --reconcile \
+ *     --files=agent-insights/a.mdx,agent-insights/b.mdx         # reconcile an exact list
  *
  * P-009 (ephemeral corpus) adds two more, and their ORDER matters:
  *   --retire-orphans            # ONE-TIME: record in PG which rows are dead. Must run
@@ -134,10 +138,69 @@ export function listCorpusDocs(docsRoot: string): string[] {
   return walkDocs(docsRoot, docsRoot).sort();
 }
 
+export interface ExactDocSelection {
+  docIds: string[];
+  errors: string[];
+}
+
+/**
+ * Parse an explicit, exact document allowlist.
+ *
+ * `--section` is intentionally a convenience scope, not a concurrency boundary: a
+ * section-wide reconcile can still race with a newer PG edit. `--doc` and `--files` are
+ * the narrow form for that operation. Both accept a single path or a comma/newline-
+ * separated list, and either flag may be repeated.
+ */
+export function parseExactDocSelection(argv: readonly string[]): ExactDocSelection {
+  const rawValues: string[] = [];
+  const errors: string[] = [];
+
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    const equals = arg.match(/^--(?:doc|files)=(.*)$/);
+    if (equals) {
+      rawValues.push(equals[1]);
+      continue;
+    }
+    if (arg !== '--doc' && arg !== '--files') continue;
+    const value = argv[i + 1];
+    if (!value || value.startsWith('--')) {
+      errors.push(`${arg} requires an exact relative doc path (or a comma-separated list)`);
+      continue;
+    }
+    rawValues.push(value);
+    i += 1;
+  }
+
+  const docIds: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of rawValues) {
+    for (const candidate of raw.split(/[\n,]/)) {
+      const docId = candidate.trim().replace(/^\.\//, '');
+      if (!docId) continue;
+      const segments = docId.split('/');
+      if (
+        docId.startsWith('/') ||
+        docId.includes('\\') ||
+        segments.some((segment) => segment === '.' || segment === '..' || segment === '')
+      ) {
+        errors.push(`invalid exact doc path: ${candidate.trim()}`);
+        continue;
+      }
+      if (!seen.has(docId)) {
+        seen.add(docId);
+        docIds.push(docId);
+      }
+    }
+  }
+  return { docIds, errors };
+}
+
 interface DocRow {
   doc_id: string;
   content: string;
   content_hash: string;
+  updated_at: Date | string;
   content_mode: string;
   /**
    * Lifecycle marker (migration 814). NULL = live; non-NULL = deliberately removed.
@@ -150,9 +213,17 @@ interface DocRow {
   retired_at: string | null;
 }
 
-async function connect(): Promise<{ query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }>; end: () => Promise<void> }> {
+interface QueryResult<T = unknown> {
+  rows: T[];
+  rowCount?: number | null;
+}
+
+async function connect(): Promise<{
+  query: (q: string, v?: unknown[]) => Promise<QueryResult>;
+  end: () => Promise<void>;
+}> {
   return (await connectScriptPg()) as unknown as {
-    query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }>;
+    query: (q: string, v?: unknown[]) => Promise<QueryResult>;
     end: () => Promise<void>;
   };
 }
@@ -163,12 +234,12 @@ async function connect(): Promise<{ query: (q: string, v?: unknown[]) => Promise
  * `listCorpusDocs`): a row this repo owns no file for stays an orphan and is left alone.
  */
 export async function readAuthoredRows(
-  client: { query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }> },
+  client: { query: (q: string, v?: unknown[]) => Promise<QueryResult<DocRow>> },
   section: string | null = SECTION,
 ): Promise<Map<string, DocRow>> {
   const scoped = section !== null;
   const { rows } = await client.query(
-    `SELECT doc_id, content, content_hash, content_mode, retired_at
+    `SELECT doc_id, content, content_hash, updated_at, content_mode, retired_at
        FROM harness_shared.harness_docs
       WHERE workspace_id = $1 AND harness_slug = $2
         AND content_mode = 'authored'${scoped ? ' AND doc_id LIKE $3' : ''}
@@ -176,6 +247,13 @@ export async function readAuthoredRows(
     scoped ? [WORKSPACE_ID, HARNESS_SLUG, `${section}/%`] : [WORKSPACE_ID, HARNESS_SLUG],
   );
   return new Map(rows.map((r) => [r.doc_id, r]));
+}
+
+export interface ExpectedDocVersion {
+  /** The content_hash observed in the same snapshot as the file read. */
+  contentHash: string;
+  /** The updated_at observed in the same snapshot as the file read. */
+  updatedAt: Date | string;
 }
 
 /**
@@ -186,17 +264,29 @@ export async function readAuthoredRows(
  * projector, and this script only ever addresses rows already selected as `authored`.
  */
 export async function writeContent(
-  client: { query: (q: string, v?: unknown[]) => Promise<unknown> },
+  client: { query: (q: string, v?: unknown[]) => Promise<QueryResult> },
   docId: string,
   content: string,
-): Promise<void> {
+  expected: ExpectedDocVersion,
+): Promise<boolean> {
   const frontmatter = deriveFrontmatterIndex(content);
-  await client.query(
+  const result = await client.query(
     `UPDATE harness_shared.harness_docs
         SET content = $4, content_hash = $5, frontmatter = $6::jsonb, updated_at = now()
-      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3`,
-    [WORKSPACE_ID, HARNESS_SLUG, docId, content, sha256(content), frontmatter ? JSON.stringify(frontmatter) : null],
+      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
+        AND content_hash = $7 AND updated_at = $8
+      RETURNING doc_id`,
+    [
+      WORKSPACE_ID,
+      HARNESS_SLUG,
+      docId,
+      content,
+      sha256(content),
+      expected.contentHash,
+      expected.updatedAt,
+    ],
   );
+  return result.rows.length > 0 || result.rowCount === 1;
 }
 
 /**
@@ -286,6 +376,11 @@ async function main(): Promise<number> {
   // per-section runs exist so each section's round trip can be proven on its own rather
   // than inferred from an aggregate green (WI-37747).
   const sectionArg = argv.find((a) => a.startsWith('--section='))?.slice('--section='.length) ?? null;
+  const exactSelection = parseExactDocSelection(argv);
+  if (exactSelection.errors.length) {
+    for (const error of exactSelection.errors) console.error(`✗ ${error}`);
+    return 2;
+  }
 
   const docsRoot = resolveDocsRoot();
 
@@ -325,12 +420,27 @@ async function main(): Promise<number> {
   }
   let failed = false;
   try {
-    const rows = await readAuthoredRows(client, sectionArg);
-    const files = sectionArg ? listSectionDocs(docsRoot, sectionArg) : listCorpusDocs(docsRoot);
+    const allFiles = exactSelection.docIds.length || !sectionArg
+      ? listCorpusDocs(docsRoot)
+      : listSectionDocs(docsRoot, sectionArg);
+    const missing = exactSelection.docIds.filter((docId) => !allFiles.includes(docId));
+    if (missing.length) {
+      console.error(`✗ exact selection contains ${missing.length} file(s) not present in the docs corpus:`);
+      for (const docId of missing) console.error(`  - ${docId}`);
+      return 2;
+    }
+    const files = exactSelection.docIds.length
+      ? allFiles.filter((docId) => exactSelection.docIds.includes(docId))
+      : allFiles;
+    const rowSnapshot = await readAuthoredRows(client, exactSelection.docIds.length ? null : sectionArg);
+    const rows = exactSelection.docIds.length
+      ? new Map([...rowSnapshot].filter(([docId]) => exactSelection.docIds.includes(docId)))
+      : rowSnapshot;
     const fileSet = new Set(files);
 
     console.log(`project-authored-docs: ${WORKSPACE_ID}/${HARNESS_SLUG}/${sectionArg ?? '(whole corpus)'}`);
     console.log(`  docs root      ${relative(ROOT, docsRoot)}`);
+    if (exactSelection.docIds.length) console.log(`  exact files    ${exactSelection.docIds.join(', ')}`);
     console.log(`  files          ${fmt(files.length)}`);
     console.log(`  rows           ${fmt(rows.size)} (content_mode='authored')`);
 
@@ -431,6 +541,7 @@ async function main(): Promise<number> {
     if (ingest) {
       const tally = { bootstrap: 0, current: 0, drifted: 0, create: 0, reconciled: 0 };
       const drifted: string[] = [];
+      const conflicts: string[] = [];
       for (const docId of files) {
         const text = readFileSync(join(docsRoot, docId), 'utf8');
         const row = rows.get(docId) ?? null;
@@ -440,10 +551,23 @@ async function main(): Promise<number> {
         if (verdict === 'drifted') {
           drifted.push(docId);
           if (!reconcile) continue;
-          tally.reconciled += 1;
         }
         if (!splitFrontmatter(content).present) noFrontmatter.push(docId);
-        await writeContent(client, docId, content);
+        // `row` is present for both writable verdicts: a missing row is `create`, which
+        // remains an explicit anchor step rather than an implicit INSERT here.
+        if (!row) continue;
+        const updated = await writeContent(client, docId, content, {
+          contentHash: row.content_hash,
+          updatedAt: row.updated_at,
+        });
+        if (!updated) {
+          // The row changed after readAuthoredRows() took its snapshot. The CAS predicate
+          // makes this a refusal, never a stale overwrite of newer canonical PG prose.
+          conflicts.push(docId);
+          failed = true;
+          continue;
+        }
+        if (verdict === 'drifted') tally.reconciled += 1;
       }
       console.log(`\n  INGEST (file → PG, the bootstrap direction)`);
       console.log(`    bootstrap    ${fmt(tally.bootstrap)} row(s) had empty content and were populated`);
@@ -463,6 +587,12 @@ async function main(): Promise<number> {
         } else {
           console.log(`    ✓ reconciled ${fmt(tally.reconciled)} (accepted the FILE as canonical, deliberately)`);
         }
+      }
+      if (conflicts.length) {
+        console.error(`\n    ✗ REFUSING ${conflicts.length} write(s): canonical PG changed after the snapshot was read`);
+        for (const conflict of conflicts.slice(0, 10)) console.error(`      - ${conflict}`);
+        if (conflicts.length > 10) console.error(`      … and ${conflicts.length - 10} more`);
+        console.error(`      No stale file content was written over those newer rows. Re-run from a fresh snapshot and an explicit --doc/--files allowlist.`);
       }
     } else {
       const tally = { wrote: 0, current: 0, absent: 0, empty: 0 };

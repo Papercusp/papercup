@@ -16,7 +16,9 @@ import {
   GENERATOR_OWNED_DOCS,
   listCorpusDocs,
   listSectionDocs,
+  parseExactDocSelection,
   retireOrphansRefusal,
+  writeContent,
 } from '../../../../../scripts/project-authored-docs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -199,6 +201,71 @@ describe('authored-doc projection (P-008)', () => {
       const { content } = ingestVerdict({ fileText: projected, row: { content: '' } });
       expect(content).toEqual(SAMPLE);
       expect(content).not.toContain(PROJECTION_MARKER);
+    });
+  });
+
+  describe('reconcile writes — optimistic concurrency', () => {
+    it('refuses a stale file when PG changed after the read snapshot', async () => {
+      const canonical = SAMPLE;
+      const newer = SAMPLE.replace('Some prose.', 'A newer canonical edit.');
+      let current = {
+        content: newer,
+        contentHash: sha256(newer),
+        updatedAt: '2026-08-21T17:00:00.000Z',
+      };
+      let statement = '';
+      let parameters: unknown[] = [];
+      const client = {
+        query: async (sql: string, values?: unknown[]) => {
+          statement = sql;
+          parameters = values ?? [];
+          const expectedHash = parameters[5];
+          const expectedUpdatedAt = parameters[6];
+          if (current.contentHash !== expectedHash || current.updatedAt !== expectedUpdatedAt) {
+            return { rows: [], rowCount: 0 };
+          }
+          current = {
+            content: String(parameters[3]),
+            contentHash: String(parameters[4]),
+            updatedAt: '2026-08-21T17:01:00.000Z',
+          };
+          return { rows: [{ doc_id: 'agent-insights/a-doc.mdx' }], rowCount: 1 };
+        },
+      };
+
+      const accepted = await writeContent(client, 'agent-insights/a-doc.mdx', canonical, {
+        contentHash: sha256(canonical),
+        updatedAt: '2026-08-21T16:59:00.000Z',
+      });
+
+      expect(accepted).toBe(false);
+      expect(current.content).toBe(newer);
+      expect(statement).toContain('AND content_hash = $7 AND updated_at = $8');
+      expect(parameters.slice(5)).toEqual([sha256(canonical), '2026-08-21T16:59:00.000Z']);
+    });
+  });
+
+  describe('parseExactDocSelection — narrow reconcile scopes', () => {
+    it('accepts repeated doc/files flags and de-duplicates exact paths', () => {
+      expect(
+        parseExactDocSelection([
+          '--ingest',
+          '--reconcile',
+          '--doc=agent-insights/a-doc.mdx',
+          '--files',
+          'reference/a.md,agent-insights/a-doc.mdx',
+        ]),
+      ).toEqual({
+        docIds: ['agent-insights/a-doc.mdx', 'reference/a.md'],
+        errors: [],
+      });
+    });
+
+    it('rejects absolute and traversal paths', () => {
+      expect(parseExactDocSelection(['--doc=/tmp/a.mdx', '--files=../b.md'])).toMatchObject({
+        docIds: [],
+        errors: ['invalid exact doc path: /tmp/a.mdx', 'invalid exact doc path: ../b.md'],
+      });
     });
   });
 
