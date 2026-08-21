@@ -146,6 +146,31 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
+  it('EI-21045433666635330: a candidate-bound wait whose probe produced NO reading at all is unknown, never stalled', async () => {
+    // activeRun is entirely null here -- the probe never observed anything (a
+    // skipped/unresolvable root, a swallowed probe exception) -- as distinct from the
+    // "run disappears" test below, where activeRun is a real object confirming a
+    // negative reading. A candidate-bound wait must not fall through to the
+    // timestamp-staleness heuristic (and possibly "stalled"/takeover) on an absent
+    // observation the same way it correctly would not for an unbound wait.
+    const current = snapshot({ activeRun: null });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'papercusp',
+      candidateSha: 'ed20de6d',
+      ownerId: 'su-1',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: current,
+    });
+    const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current });
+    expect(observed.state).toBe('unknown');
+    expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
+      classification: 'unknown',
+      nextAction: 're-await',
+    });
+  });
+
   it('keeps a candidate-bound wait on the stalled path when its run disappears', async () => {
     const current = snapshot({
       activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },

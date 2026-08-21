@@ -49,17 +49,29 @@ function checkpointObservationState(
 
   if (activeRun?.active === true) return 'active';
 
+  // The live probe produced NO reading at all — not "confirmed not running", just
+  // never observed (a skipped/unresolvable probe root, a swallowed probe exception,
+  // or `includeActiveRun` never having been asked for it). That is genuinely unknown
+  // regardless of whether the wait names a specific candidate: an absent observation
+  // is not evidence the named run isn't there, and must not be allowed to fall through
+  // to the timestamp-staleness heuristic below, which cannot distinguish "no signal"
+  // from "a stale one" and can misclassify an active, un-probed writer as stalled
+  // (EI-21045433666635330). This check MUST run before the candidate-bound early
+  // return: that return exists to withhold `idle` (a real claim that no run is
+  // expected), never to withhold `unknown` (a claim only that nothing was observed).
+  if (activeRun == null) return 'unknown';
+
   // A candidate-bound wait is asking about a specific run. An idle routine
   // cannot safely declare that run "expected idle"; keep the old stalled/absent
-  // diagnosis for that targeted case.
+  // diagnosis for that targeted case — this only applies once we know the probe
+  // DID observe something (activeRun is non-null here).
   if (candidateBound) return undefined;
 
   // `active` on the routine is configuration/liveness of the scheduler, not
   // proof that a checkpoint is currently running. An explicit pause is even
   // stronger evidence that no run is expected right now.
-  if (routine?.active === true || explicitlyPaused) {
-    if (activeRun == null) return 'unknown';
-    if (activeRun.candidate == null) return 'idle';
+  if ((routine?.active === true || explicitlyPaused) && activeRun.candidate == null) {
+    return 'idle';
   }
 
   return undefined;

@@ -130,6 +130,18 @@ export function classifyVerifiedWaitTimeout(
   if (observation.state === "unknown") {
     return { ...base, classification: "unknown", nextAction: "re-await" };
   }
+  // EI-21045433666635330: `active` is the adapter's OWN authoritative liveness probe
+  // (e.g. a systemd/run-lock read) confirming the producer is executing right now —
+  // strictly stronger evidence than the timestamp-cadence heuristic below, which only
+  // infers liveness from how recently a progress/fire marker moved. A genuinely active
+  // producer can go quiet on that heuristic (a long-running phase with no new progress
+  // line inside `expectedCadenceMs`) without being stalled at all; falling through to
+  // the heuristic in that case is exactly what misclassified an active writer as
+  // stalled. An explicit `active` observation must win outright, never be weighed
+  // against a staleness inference it already supersedes.
+  if (observation.state === "active") {
+    return { ...base, classification: "progressing", nextAction: "re-await" };
+  }
 
   if (!observation.producerPresent) {
     return { ...base, classification: "absent", nextAction: "wake-owner-or-takeover" };

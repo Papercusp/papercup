@@ -66,6 +66,18 @@ describe("classifyVerifiedWaitTimeout", () => {
     ).toMatchObject({ classification: "unknown", nextAction: "re-await" });
   });
 
+  it("EI-21045433666635330: never falls back to the staleness heuristic when the adapter observed the producer as actively running, even with a stale progress marker", () => {
+    expect(
+      classifyVerifiedWaitTimeout(
+        certificate({ issuedAtMs: 1_000, lastProgressAtMs: 900 }),
+        // lastProgressAtMs is far older than expectedCadenceMs (500ms) relative to
+        // checkedAtMs, which alone would land on "stalled" below — but state:"active"
+        // is the adapter's own authoritative liveness probe and must win outright.
+        observation({ checkedAtMs: 2_000, lastProgressAtMs: 900, state: "active" }),
+      ),
+    ).toMatchObject({ classification: "progressing", nextAction: "re-await" });
+  });
+
   it("classifies a present producer with no fresh progress as stalled", () => {
     expect(
       classifyVerifiedWaitTimeout(
