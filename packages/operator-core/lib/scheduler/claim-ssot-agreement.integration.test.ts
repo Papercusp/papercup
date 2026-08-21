@@ -242,9 +242,11 @@ beforeAll(async () => {
   // and revision-requested work to the submitter. Approval re-admits the still-open row.
   // Apply the real migration so the queryable SSOT and the existing TS claim fragment must agree.
   await db.sql.unsafe(readMigration('860-agent-review-claim-floor.sql')).simple();
-  // P-005: floor #16 reserves strict credential/device/external-service owner actions while
-  // retaining floor #6 as a separate legacy needsHuman compatibility cohort until P-006.
+  // P-005: floor #16 reserves strict credential/device/external-service owner actions.
   await db.sql.unsafe(readMigration('863-owner-action-claim-floor.sql')).simple();
+  // P-006/migration 864 retires the ambiguous legacy payload.needsHuman floor while retaining
+  // the stable public claim-floor signature through its subtractive v16 wrapper.
+  await db.sql.unsafe(readMigration('864-migrate-legacy-human-parks-to-agent-review.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -271,6 +273,7 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('WI-PLAIN'); // plain open/untaken/local bug
     await seed('WI-CHANGE', { kind: 'change' });
     await seed('WI-TASK', { kind: 'task' });
+    await seed('WI-LEGACY-HUMAN', { payload: { needsHuman: true } });
     await seed('WI-REVIEW-APPROVED', {
       kind: 'change',
       payload: {
@@ -292,11 +295,6 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('WI-REMOTE', { origin: 'remote', authorPubkey: 'foreign-peer-key' }); // 3. federated-remote (true peer)
     await seed('WI-HOLD', { payload: { _claimHold: true } }); // 4. claim-hold
     await seed('WI-OBS', { kind: 'change', payload: { lane: 'observation' } }); // 5. observation-lane
-    await seed('WI-NEEDSHUMAN', {
-      payload: {
-        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-NEEDSHUMAN', round: 1 },
-      },
-    }); // 15a. post-864 pending-review replacement for the retired needsHuman fixture
     await seed('WI-OWNER-ACTION', { payload: { needsOwnerAction: true } }); // 16. strict owner action
     await seed('WI-EXTBLOCK', { payload: { externalBlockers: [{ status: 'active' }] } }); // 7. external-blocker
     await seed('WI-FEDDET', { payload: { _ei: { created_by: 'system:replication-liveness' } } }); // 8. federation-detector
@@ -352,6 +350,7 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
       'WI-DEP-OK',
       'WI-DONE-PLAN-FREE',
       'WI-DRAFT-FREE',
+      'WI-LEGACY-HUMAN',
       'WI-OP',
       'WI-PLAIN',
       'WI-REVIEW-APPROVED',
