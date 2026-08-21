@@ -75,7 +75,11 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
   });
 
   it('reports confined:false on a stranded UNCONFINED row — EI-19315479997523199 (this is what lets the handler tell "routine operator restart" apart from "a confined job died unexpectedly")', () => {
-    const row = fakeRow({ state: 'stranded', confined: false, exitReason: 'process identity linux:boot-x:1 is gone from the kernel' });
+    const row = fakeRow({
+      state: 'stranded',
+      confined: false,
+      exitReason: 'process identity linux:boot-x:1 is gone from the kernel',
+    });
     expect(diagnoseFromLedger(row)).toEqual({
       kind: 'confirmed_dead',
       state: 'stranded',
@@ -91,8 +95,13 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
       pid: 2820845,
       processIdentity: 'linux:boot-abc:123456',
       scopeUnit: 'pc-tsk0000001.scope',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
     });
-    const probe = (pid: number) => (pid === 2820845 ? 'linux:boot-abc:123456' : null);
+    const probe = (pid: number) => ({
+      processIdentity: pid === 2820845 ? 'linux:boot-abc:123456' : null,
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+      cmdline: 'bash -o pipefail -c npm run test:affected',
+    });
     expect(diagnoseFromLedger(row, probe)).toEqual({
       kind: 'confirmed_alive',
       pid: 2820845,
@@ -102,20 +111,72 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
   });
 
   it('does NOT report confirmed_alive when the probed identity differs (a DIFFERENT process now holds that pid — PID reuse)', () => {
-    const row = fakeRow({ state: 'running', pid: 999, processIdentity: 'linux:boot-abc:111' });
-    const probe = () => 'linux:boot-abc:999'; // a different process now owns pid 999
+    const row = fakeRow({
+      state: 'running',
+      pid: 999,
+      processIdentity: 'linux:boot-abc:111',
+      scopeUnit: 'pc-tsk0000001.scope',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+    });
+    const probe = () => ({
+      processIdentity: 'linux:boot-abc:999',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+      cmdline: 'bash -o pipefail -c npm run test:affected',
+    }); // a different process now owns pid 999
     expect(diagnoseFromLedger(row, probe)).toEqual({ kind: 'ledger_inconclusive' });
   });
 
   it('does NOT report confirmed_alive when the probe finds nothing (process genuinely gone) — falls to inconclusive, not a death claim', () => {
-    const row = fakeRow({ state: 'running', pid: 999, processIdentity: 'linux:boot-abc:111' });
-    const probe = () => null;
+    const row = fakeRow({
+      state: 'running',
+      pid: 999,
+      processIdentity: 'linux:boot-abc:111',
+      scopeUnit: 'pc-tsk0000001.scope',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+    });
+    const probe = () => ({ processIdentity: null, cgroupPath: null, cmdline: '' });
+    expect(diagnoseFromLedger(row, probe)).toEqual({ kind: 'ledger_inconclusive' });
+  });
+
+  it('never reports progress from CPU movement in a shared or mismatched cgroup', () => {
+    const row = fakeRow({
+      state: 'running',
+      pid: 999,
+      processIdentity: 'linux:boot-abc:111',
+      scopeUnit: 'pc-tsk0000001.scope',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+    });
+    const probe = () => ({
+      processIdentity: 'linux:boot-abc:111',
+      cgroupPath: '/papercusp.slice/shared-workers.slice',
+      cmdline: 'bash -o pipefail -c npm run test:affected',
+    });
+    expect(diagnoseFromLedger(row, probe)).toEqual({ kind: 'ledger_inconclusive' });
+  });
+
+  it('never reports progress after the pinned process execs a different command', () => {
+    const row = fakeRow({
+      state: 'running',
+      pid: 999,
+      processIdentity: 'linux:boot-abc:111',
+      scopeUnit: 'pc-tsk0000001.scope',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+    });
+    const probe = () => ({
+      processIdentity: 'linux:boot-abc:111',
+      cgroupPath: '/papercusp.slice/pc-tsk0000001.scope',
+      cmdline: 'node unrelated-worker.mjs',
+    });
     expect(diagnoseFromLedger(row, probe)).toEqual({ kind: 'ledger_inconclusive' });
   });
 
   it('reports ledger_inconclusive when the row is non-terminal but carries no pid/processIdentity to re-probe', () => {
     const row = fakeRow({ state: 'pending', pid: null, processIdentity: null });
-    expect(diagnoseFromLedger(row, () => 'should-not-be-called')).toEqual({ kind: 'ledger_inconclusive' });
+    expect(
+      diagnoseFromLedger(row, () => {
+        throw new Error('should-not-be-called');
+      }),
+    ).toEqual({ kind: 'ledger_inconclusive' });
   });
 
   it('never calls the probe for a terminal row — the recorded exit is authoritative on its own', () => {
@@ -123,7 +184,7 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
     let called = false;
     diagnoseFromLedger(row, () => {
       called = true;
-      return 'linux:boot-abc:1';
+      return { processIdentity: 'linux:boot-abc:1', cgroupPath: '/x', cmdline: 'x' };
     });
     expect(called).toBe(false);
   });

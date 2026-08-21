@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -25,6 +26,7 @@ import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-c
 import { getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
+import { readProcessCgroupPath, readProcessCmdline } from '../../task-manager/cgroup-read';
 
 /**
  * Cap on the spill log we will read whole to classify a dead typecheck. A tsc
@@ -204,9 +206,31 @@ export function strandedJobAdvice(confined: boolean): string {
         'Not a bug in your command.';
 }
 
+export interface TaskProcessLivenessProbe {
+  processIdentity: string | null;
+  cgroupPath: string | null;
+  cmdline: string;
+}
+
+function cmdlineFingerprint(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function persistedCmdline(row: TaskRow): string {
+  return row.argv.join(' ').trim();
+}
+
+function probeTaskProcess(pid: number): TaskProcessLivenessProbe {
+  return {
+    processIdentity: readProcessIdentity(pid),
+    cgroupPath: readProcessCgroupPath(pid),
+    cmdline: readProcessCmdline(pid),
+  };
+}
+
 export function diagnoseFromLedger(
   row: TaskRow | null,
-  probeIdentity: (pid: number) => string | null = readProcessIdentity,
+  probe: (pid: number) => TaskProcessLivenessProbe = probeTaskProcess,
 ): LedgerLivenessVerdict {
   if (!row) return { kind: 'no_ledger_row' };
   if (isTerminalState(row.state)) {
@@ -219,12 +243,20 @@ export function diagnoseFromLedger(
     };
   }
   // pending/running/unaccounted/foreign: the ledger THINKS a process is alive.
-  // Re-probe the recorded pid's identity — a bare pid re-check would be fooled by
-  // PID reuse (happens ~daily on this box under fleet load); comparing the full
-  // identity string is not.
-  if (row.pid && row.processIdentity) {
-    const nowIdentity = probeIdentity(row.pid);
-    if (nowIdentity && nowIdentity === row.processIdentity) {
+  // Re-probe every identity pin before calling a verifier alive. PID identity
+  // prevents PID reuse, the dedicated cgroup proves CPU movement belongs to this
+  // task rather than a shared worker pool, and the command fingerprint prevents a
+  // same-process exec from inheriting the old task's identity. Missing data fails
+  // to inconclusive; liveness is never inferred from a partial pin set.
+  if (row.pid && row.processIdentity && row.confined && row.scopeUnit && row.cgroupPath && row.argv.length > 0) {
+    const now = probe(row.pid);
+    const expectedCmdline = persistedCmdline(row);
+    if (
+      now.processIdentity === row.processIdentity &&
+      now.cgroupPath === row.cgroupPath &&
+      now.cmdline.length > 0 &&
+      cmdlineFingerprint(now.cmdline) === cmdlineFingerprint(expectedCmdline)
+    ) {
       return { kind: 'confirmed_alive', pid: row.pid, scopeUnit: row.scopeUnit ?? null, taskId: row.taskId };
     }
   }
