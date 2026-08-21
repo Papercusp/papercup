@@ -1181,6 +1181,10 @@ import './plans/add-item';
 // the completion gate reads: every plan item traced to as-built code and cited, with
 // citations resolved against the real tree at write time.
 import './plans/audit';
+// unshipped-plans-live-reconciliation-audit-2026-08-20 P-005 — manual-only,
+// read-only portfolio audit. Same implementation is registered as a system action;
+// this is its purpose-built run-now lever (no schedule row, no lifecycle writes).
+import './plans/audit-unshipped';
 // Phase 5 — whole-document write (CAS) + legacy-frontmatter conversion.
 import './plans/set-content';
 import './plans/set-content-chunk';
