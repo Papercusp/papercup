@@ -48,6 +48,24 @@ describe("classifyVerifiedWaitTimeout", () => {
     ).toBe("progressing");
   });
 
+  it("re-awaits an intentionally idle producer instead of recommending takeover", () => {
+    expect(
+      classifyVerifiedWaitTimeout(
+        certificate({ issuedAtMs: 1_000, lastProgressAtMs: 900 }),
+        observation({ checkedAtMs: 2_000, lastProgressAtMs: 900, state: "idle" }),
+      ),
+    ).toMatchObject({ classification: "expected-idle", nextAction: "re-await" });
+  });
+
+  it("does not turn an unknown producer probe into a takeover", () => {
+    expect(
+      classifyVerifiedWaitTimeout(
+        certificate({ issuedAtMs: 1_000, lastProgressAtMs: 900 }),
+        observation({ checkedAtMs: 2_000, lastProgressAtMs: 900, state: "unknown" }),
+      ),
+    ).toMatchObject({ classification: "unknown", nextAction: "re-await" });
+  });
+
   it("classifies a present producer with no fresh progress as stalled", () => {
     expect(
       classifyVerifiedWaitTimeout(

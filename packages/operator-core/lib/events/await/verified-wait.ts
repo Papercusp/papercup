@@ -39,10 +39,23 @@ export interface ProducerHealthCertificate {
   details?: Record<string, unknown>;
 }
 
+/**
+ * A producer's configured routine is not the same thing as an in-flight run.
+ * The checkpoint adapter uses these states when the authoritative run probe can
+ * tell us that the routine is idle, or cannot tell whether a run exists.
+ */
+export type ProducerHealthObservationState = "active" | "idle" | "unknown";
+
 export interface ProducerHealthObservation {
   checkedAtMs: number;
   /** False only when the authoritative producer record no longer exists. */
   producerPresent: boolean;
+  /**
+   * Optional source-specific state. `idle` and `unknown` are deliberately
+   * non-takeover outcomes: a configured producer with no candidate is not
+   * evidence that its owner is stalled.
+   */
+  state?: ProducerHealthObservationState;
   lastProgressAtMs: number | null;
   lastFireAtMs: number | null;
   /** Authoritative completion state; does not infer completion from liveness. */
@@ -53,6 +66,8 @@ export interface ProducerHealthObservation {
 
 export type VerifiedWaitTimeoutClassification =
   | "progressing"
+  | "expected-idle"
+  | "unknown"
   | "stalled"
   | "absent"
   | "already-complete";
@@ -103,6 +118,17 @@ export function classifyVerifiedWaitTimeout(
 
   if (observation.completedAtMs != null || observation.lastFireAtMs != null) {
     return { ...base, classification: "already-complete", nextAction: "resume" };
+  }
+
+  // A routine row being active only means it is configured to run. When its
+  // authoritative adapter reports no candidate/run, the correct timeout
+  // action is to re-await, not to wake someone for a takeover. `unknown` is
+  // likewise conservative when the run probe could not establish a state.
+  if (observation.state === "idle") {
+    return { ...base, classification: "expected-idle", nextAction: "re-await" };
+  }
+  if (observation.state === "unknown") {
+    return { ...base, classification: "unknown", nextAction: "re-await" };
   }
 
   if (!observation.producerPresent) {

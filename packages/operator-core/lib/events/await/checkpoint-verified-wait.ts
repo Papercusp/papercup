@@ -1,5 +1,9 @@
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from '../../git-pipeline-stats';
-import type { ProducerHealthCertificate, ProducerHealthObservation } from './verified-wait';
+import type {
+  ProducerHealthCertificate,
+  ProducerHealthObservation,
+  ProducerHealthObservationState,
+} from './verified-wait';
 import { PRODUCER_HEALTH_CERTIFICATE_VERSION } from './verified-wait';
 
 export interface CheckpointProducerDetails extends Record<string, unknown> {
@@ -32,6 +36,33 @@ function matchingVerdict(
     const runMatches = !details.runId || event.detail.runId === details.runId;
     return candidateMatches && runMatches;
   });
+}
+
+function checkpointObservationState(
+  snapshot: GitPipelineSnapshot,
+  details: CheckpointProducerDetails,
+): ProducerHealthObservationState | undefined {
+  const routine = snapshot.routines?.greenCheckpoint;
+  const activeRun = snapshot.activeRun;
+  const candidateBound = Boolean(details.candidateSha || details.runId);
+  const explicitlyPaused = routine?.pause?.reason != null;
+
+  if (activeRun?.active === true) return 'active';
+
+  // A candidate-bound wait is asking about a specific run. An idle routine
+  // cannot safely declare that run "expected idle"; keep the old stalled/absent
+  // diagnosis for that targeted case.
+  if (candidateBound) return undefined;
+
+  // `active` on the routine is configuration/liveness of the scheduler, not
+  // proof that a checkpoint is currently running. An explicit pause is even
+  // stronger evidence that no run is expected right now.
+  if (routine?.active === true || explicitlyPaused) {
+    if (activeRun == null) return 'unknown';
+    if (activeRun.candidate == null) return 'idle';
+  }
+
+  return undefined;
 }
 
 export function checkpointProducerCertificate(input: {
@@ -76,9 +107,11 @@ export async function observeCheckpointProducer(
   );
   const verdict = matchingVerdict(snapshot, certificate.issuedAtMs, details);
   const producerPresent = snapshot.activeRun?.active === true || snapshot.routines?.greenCheckpoint?.active === true;
+  const state = checkpointObservationState(snapshot, details);
   return {
     checkedAtMs: snapshot.generatedAtMs,
     producerPresent,
+    ...(state ? { state } : {}),
     lastProgressAtMs: checkpointProgressAtMs(snapshot),
     lastFireAtMs: verdict?.createdAtMs ?? null,
     completedAtMs: verdict?.createdAtMs ?? null,
@@ -86,6 +119,9 @@ export async function observeCheckpointProducer(
       pipeline: details.pipeline,
       active: snapshot.activeRun?.active ?? false,
       candidate: snapshot.activeRun?.candidate ?? null,
+      ...(state ? { producerState: state } : {}),
+      routineActive: snapshot.routines?.greenCheckpoint?.active ?? false,
+      routinePauseReason: snapshot.routines?.greenCheckpoint?.pause?.reason ?? null,
       verdictStatus: verdict?.status ?? null,
     },
   };
