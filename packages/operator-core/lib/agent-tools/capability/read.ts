@@ -12,6 +12,7 @@ import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
+import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
 
 /**
  * Exported so the bash-substitution audit can PIN its model to it
@@ -92,7 +93,7 @@ export function doorSafePageBytes(absPath: string, requestedBytes: number): numb
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, or relative to the project dir.',
+    'Read a file with line-numbered text windows, or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
   guidance: {
     when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
@@ -109,7 +110,8 @@ export default defineTool({
   // fs-write/bash tool allowlist and capability grant.
   agentRoles: [...AGENT_ROLES, 'judge'],
   args: z.object({
-    file_path: z.string().min(1).describe('Absolute path, ~/-relative, or relative to the project dir.'),
+    file_path: z.string().min(1).optional().describe('Absolute path, ~/-relative, or relative to the project dir.'),
+    uri: z.string().min(1).optional().describe('A papercusp://scratch URI alias for file_path, as emitted by result-door cursors.'),
     offset: z.number().int().nonnegative().optional().describe('1-based line to start from.'),
     limit: z.number().int().positive().optional().describe(`Max lines to read (default ${DEFAULT_LIMIT}).`),
     tail: z
@@ -137,7 +139,16 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
-    const abs = resolveReadPath(args.file_path, baseDir);
+    const filePath = args.file_path ?? args.uri;
+    if (!filePath) return err('missing_path', 'file_path or uri must be supplied.');
+
+    let abs: string;
+    try {
+      abs = resolveReadPath(filePath, baseDir);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return err('invalid_path', msg);
+    }
 
     let bytes: Buffer;
     try {
@@ -245,6 +256,10 @@ export default defineTool({
  * `head -40 ~/mac-verify-build-waiter.sh`).
  */
 export function resolveReadPath(filePath: string, baseDir: string): string {
+  if (filePath.startsWith(`${SCRATCH_SCHEME}/`)) return safeScratchFilesystemPath(filePath);
+  if (filePath.startsWith('papercusp://')) {
+    throw new Error(`unsupported URI scheme; expected ${SCRATCH_SCHEME}/…`);
+  }
   if (filePath === '~') return homedir();
   if (filePath.startsWith('~/')) return resolve(homedir(), filePath.slice(2));
   return isAbsolute(filePath) ? filePath : resolve(baseDir, filePath);

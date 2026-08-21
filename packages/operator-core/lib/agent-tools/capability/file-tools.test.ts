@@ -10,9 +10,9 @@
  * so guardFileLock treats the path as coordinated and tries to resolve identity
  * (no identity on the test ctx → throws). That is EI-5826 (the EI-5541 class).
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import readTool from './read';
 import writeTool from './write';
@@ -82,6 +82,47 @@ describe('capability:read', () => {
     }
 
     expect(Buffer.concat(recovered)).toEqual(original);
+  });
+
+  it('accepts a result-door papercusp://scratch URI as a byte-page alias', async () => {
+    const previousScratchRoot = process.env.PAPERCUSP_SCRATCH_ROOT;
+    const scratchRoot = join(DIR, 'result-door-scratch');
+    const uri = 'papercusp://scratch/test-workspace/work_items:get/77777777-8888-4999-8aaa-bbbbbbbbbbbb/spill.md';
+    const file = join(
+      scratchRoot,
+      'test-workspace',
+      'work_items:get',
+      '77777777-8888-4999-8aaa-bbbbbbbbbbbb',
+      'spill.md',
+    );
+    const original = Buffer.from('spill header\nrecovered bytes\n', 'utf8');
+    process.env.PAPERCUSP_SCRATCH_ROOT = scratchRoot;
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, original);
+
+    try {
+      const r = (await readTool.handler!({ uri, byte_offset: 0, byte_limit: 512 }, ctx)) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+      expect(r.isError).not.toBe(true);
+      const page = parse(r) as { ok: boolean; data: string; byte_length: number };
+      expect(page.ok).toBe(true);
+      expect(Buffer.from(page.data, 'base64')).toEqual(original);
+      expect(page.byte_length).toBe(original.length);
+    } finally {
+      if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
+      else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
+    }
+  });
+
+  it('rejects a non-scratch URI instead of resolving it under the project directory', async () => {
+    const r = (await readTool.handler!({ uri: 'papercusp://not-scratch/file', byte_offset: 0, byte_limit: 512 }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(r.isError).toBe(true);
+    expect(parse(r).reason).toBe('invalid_path');
   });
 
   it('rejects incomplete or mixed byte windows', async () => {
