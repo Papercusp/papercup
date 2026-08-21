@@ -42,6 +42,10 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { factMeasurementHint } from '../../fact-measurement-detector';
+import {
+  suggestDependsOnCells,
+  type DependsOnSuggestion,
+} from '../../cell-transcription-detector';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { acquireWithContentionRetry } from '../locks/contention-retry';
 
@@ -97,6 +101,65 @@ export function overwroteAuthorField(input: {
       `⚠ CROSS-AUTHOR OVERWRITE — this write replaced ${prior.createdBy}'s fact for key "${input.key}". ` +
       `The prior body is included only as a bounded excerpt; if that fact was still valid, recover it ` +
       `from facts:list/history or re-assert it before proceeding.`,
+  };
+}
+
+/**
+ * P-007 — the OTHER half of the dependency-disclosure story.
+ *
+ * `dependencyWarning` in the handler reports declared dependencies that could not be
+ * anchored. THIS reports the dependency the body's own text suggests the caller MEANT to
+ * declare and did not: a fact stating a live value with no `dependsOn` is never marked
+ * stale when that value changes, so it keeps folding into orients as standing context
+ * long after it stopped being true.
+ *
+ * SUGGESTION-ONLY, by spec ("attach-mode only after measured precision"): nothing is
+ * attached and nothing is refused. A wrong auto-attached dependency is strictly worse
+ * than none — it would report this fact fresh or stale on an unrelated subject's account
+ * — so attach-mode waits until precision has been measured in production.
+ *
+ * Exported (like {@link truncationField}) so the SHAPE is testable without a database:
+ * the pure matcher is proven next door in cell-transcription-detector.test.ts, and a
+ * matcher that works while this wiring emits nothing is exactly the gap that discipline
+ * exists to close.
+ *
+ * Fail-soft, matching every other advisory in this handler: an advisory that can fail a
+ * write is a worse trade than the friction it prevents. `suggestDependsOnCells` is pure
+ * and returns [] rather than throwing, but it is wrapped anyway so a future edit to it
+ * can never turn facts:assert into an outage.
+ */
+export function dependsOnSuggestionField(
+  body: string,
+  declaredCells: readonly string[],
+): {
+  suggested: DependsOnSuggestion[];
+  accept: { dependsOn: string[] };
+  note: string;
+} | null {
+  let suggested: DependsOnSuggestion[] = [];
+  try {
+    suggested = suggestDependsOnCells(body, declaredCells);
+  } catch {
+    return null;
+  }
+  if (suggested.length === 0) return null;
+  return {
+    suggested,
+    // Accept-in-one-call: hand back the exact argument to re-send, already merged with
+    // whatever the caller declared, so acting on this costs a copy rather than a trip to
+    // the schema docs and a manual union the caller can get wrong.
+    accept: {
+      dependsOn: [
+        ...declaredCells.map((c) => (typeof c === 'string' ? c.trim() : '')).filter(Boolean),
+        ...suggested.map((s) => s.cell),
+      ],
+    },
+    note:
+      `This fact's body states ${suggested.length} value(s) a registered CELL answers authoritatively, but the ` +
+      'fact does not depend on those cells — so nothing will ever mark it stale when they change, and it will ' +
+      'keep folding into orients as standing context long after it stopped being true. Re-assert with the ' +
+      '`accept.dependsOn` above to arm staleness detection. NOTHING was attached or changed by this suggestion; ' +
+      'if you are deliberately recording HISTORICAL state, ignore it.',
   };
 }
 
@@ -566,45 +629,7 @@ export default defineTool({
     // warn-only: no field at all on the clean case.
     const unresolvedDeps = fact.dependsOn.filter((d) => !d.digest);
     const droppedDeps = declaredCells.filter((c) => !fact.dependsOn.some((d) => d.cell === c.trim()));
-    // P-007: the OTHER half of the dependency-disclosure story. `dependencyWarning`
-    // below reports declared dependencies that could not be anchored; this reports the
-    // dependency the body's own text suggests the caller MEANT to declare and did not.
-    //
-    // Suggestion-only, by spec: nothing is attached and nothing is refused. A wrong
-    // auto-attached dependency is strictly worse than none — it would report this fact
-    // fresh or stale on an unrelated subject's account — so attach-mode waits until
-    // precision has been measured in production.
-    //
-    // Fail-soft, matching every other advisory in this handler: an advisory that can fail
-    // a write is a worse trade than the friction it prevents. suggestDependsOnCells is
-    // pure and returns [] rather than throwing, but it is wrapped anyway so that a future
-    // edit to it can never turn facts:assert into an outage.
-    let dependsOnSuggestions: DependsOnSuggestion[] = [];
-    try {
-      dependsOnSuggestions = suggestDependsOnCells(slotted.body, declaredCells);
-    } catch {
-      dependsOnSuggestions = [];
-    }
-    const dependsOnSuggestion =
-      dependsOnSuggestions.length > 0
-        ? {
-            suggested: dependsOnSuggestions,
-            // Accept-in-one-call: hand back the exact argument to re-send, so acting on
-            // this costs a copy rather than a trip to the schema docs.
-            accept: {
-              dependsOn: [
-                ...declaredCells.map((c) => c.trim()).filter(Boolean),
-                ...dependsOnSuggestions.map((s) => s.cell),
-              ],
-            },
-            note:
-              `This fact's body states ${dependsOnSuggestions.length} value(s) a registered CELL answers ` +
-              'authoritatively, but the fact does not depend on those cells — so nothing will ever mark it stale ' +
-              'when they change, and it will keep folding into orients as standing context long after it stopped ' +
-              'being true. Re-assert with the `accept.dependsOn` above to arm staleness detection. NOTHING was ' +
-              'attached or changed by this suggestion; if you are deliberately recording HISTORICAL state, ignore it.',
-          }
-        : null;
+    const dependsOnSuggestion = dependsOnSuggestionField(slotted.body, declaredCells);
     const dependencyWarning =
       unresolvedDeps.length > 0 || droppedDeps.length > 0
         ? {

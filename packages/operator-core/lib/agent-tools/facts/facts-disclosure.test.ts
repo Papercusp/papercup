@@ -7,7 +7,7 @@
  * (your write was lossy / this read is huge) and said nothing.
  */
 import { describe, expect, it } from 'vitest';
-import assertTool, { truncationField } from './assert';
+import assertTool, { truncationField, dependsOnSuggestionField } from './assert';
 import factsListTool, {
   FACTS_LIST_EXCERPT_NOTE,
   projectFact,
@@ -80,6 +80,48 @@ describe('clampFactBody — boundary-aware clip (cold-carry-system-hardening-202
 
   it('leaves an under-cap body untouched', () => {
     expect(clampFactBody('short and complete.')).toBe('short and complete.');
+  });
+});
+
+/**
+ * P-007 — the dependsOn suggestion, at the WIRING seam.
+ *
+ * The matcher's own precision guards are proven next door in
+ * cell-transcription-detector.test.ts. THIS block exists because a correct matcher wired
+ * to nothing emits nothing, and both halves look identical from a green unit suite —
+ * the same gap that made P-006's boundary-only tests unable to see a written value.
+ */
+describe('dependsOnSuggestionField — facts:assert suggests the dependency the body implies (P-007)', () => {
+  const TRANSCRIBING = 'main is 3 commits behind staging right now';
+
+  it('returns null on the clean path — no field at all when nothing is transcribed', () => {
+    // The whole-file convention: an advisory costs nothing on the common path.
+    expect(dependsOnSuggestionField('a fact with no live values in it', [])).toBeNull();
+  });
+
+  it('suggests the cell and carries the evidence that produced it', () => {
+    const out = dependsOnSuggestionField(TRANSCRIBING, [])!;
+    expect(out).not.toBeNull();
+    expect(out.suggested.map((s) => s.cell)).toContain('git.pipelinePosition');
+    expect(TRANSCRIBING).toContain(out.suggested[0].value);
+  });
+
+  it('accept.dependsOn is re-sendable AS-IS — it MERGES the caller\'s declared cells, never replaces them', () => {
+    // The failure this pins: emitting only the suggestion would make an obedient caller
+    // re-assert with their own declared dependency silently DROPPED. A one-call accept
+    // that quietly loses caller input is worse than no accept field at all.
+    const out = dependsOnSuggestionField(TRANSCRIBING, ['deploy.3070.sha'])!;
+    expect(out.accept.dependsOn).toContain('deploy.3070.sha');
+    expect(out.accept.dependsOn).toContain('git.pipelinePosition');
+  });
+
+  it('says plainly that nothing was attached, so the caller is not left guessing', () => {
+    const out = dependsOnSuggestionField(TRANSCRIBING, [])!;
+    expect(out.note).toMatch(/NOTHING was attached or changed/);
+  });
+
+  it('stays silent when the caller already declared the cell', () => {
+    expect(dependsOnSuggestionField(TRANSCRIBING, ['git.pipelinePosition'])).toBeNull();
   });
 });
 

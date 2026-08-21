@@ -14,6 +14,8 @@ import {
   detectCellTranscriptions,
   cellTranscriptionHint,
   formatCellTranscriptionHint,
+  suggestDependsOnCells,
+  MAX_DEPENDS_ON_SUGGESTIONS,
   CONTEXT_WINDOW,
 } from './cell-transcription-detector';
 import { registerBuiltinCells } from './cell-registrations';
@@ -170,6 +172,93 @@ describe('the advisory text', () => {
       'deployed abc1234, def5678, 9abcdef, feedbee, cafebabe are all live releases',
     )!;
     expect(hint).toMatch(/and \d+ more/);
+  });
+});
+
+/**
+ * P-007 — dependsOn SUGGESTIONS.
+ *
+ * Same precision-over-recall contract as the detector above, for the same EI-10949
+ * reason, one notch sharper: these suggestions share a response with facts:assert's
+ * genuinely load-bearing disclosures (truncation, unresolved dependencies, eviction,
+ * the P-006 normalization receipt). A chatty suggestion here does not just annoy —
+ * it devalues those. So the guards below are the subject under test, and a
+ * suggestion that fires when it should not is a FAILURE, not a nuisance.
+ */
+describe('P-007 dependsOn suggestions — precision guards', () => {
+  // The shared positive control. Every "does not suggest" test below is only
+  // meaningful if this one still fires — otherwise a broken matcher would make the
+  // whole block pass by suggesting nothing, ever.
+  const TRANSCRIBING_BODY = 'main is 3 commits behind staging right now';
+
+  it('POSITIVE CONTROL: suggests the cell whose value the body transcribes', () => {
+    const out = suggestDependsOnCells(TRANSCRIBING_BODY);
+    expect(out.length).toBeGreaterThan(0);
+    expect(out[0].cell).toBe('git.pipelinePosition');
+    // The evidence travels with the suggestion — that is what makes it checkable
+    // against the text the caller just typed rather than taken on faith.
+    expect(TRANSCRIBING_BODY).toContain(out[0].value);
+    expect(out[0].what).toBeTruthy();
+  });
+
+  it('does NOT suggest a cell the caller ALREADY declared', () => {
+    // Guard 2. Restating the caller's own input back to them as advice is the purest
+    // form of the trust-tax EI-10949 describes.
+    expect(suggestDependsOnCells(TRANSCRIBING_BODY, ['git.pipelinePosition'])).toEqual([]);
+  });
+
+  it('matches an already-declared cell despite case and surrounding whitespace', () => {
+    // The declared list is caller-typed, so it arrives however they typed it. Missing a
+    // match here re-suggests something they already declared, which is guard 2 failing
+    // in the direction that is invisible until an agent complains about the noise.
+    expect(suggestDependsOnCells(TRANSCRIBING_BODY, ['  GIT.PipelinePosition  '])).toEqual([]);
+  });
+
+  it('collapses repeated mentions of one cell into a SINGLE suggestion', () => {
+    // Guard 3. The detector dedupes by cell+VALUE because it reports transcriptions;
+    // a dependency is per-CELL, so three positions are still one dependency.
+    const out = suggestDependsOnCells(
+      'main is 3 commits behind staging, and staging is 12 commits behind, ' +
+        'and we are behind by 40 commits overall',
+    );
+    expect(out.filter((s) => s.cell === 'git.pipelinePosition')).toHaveLength(1);
+  });
+
+  it('never returns more than the cap', () => {
+    const out = suggestDependsOnCells(
+      'deployed abc1234 is live and main is 3 commits behind staging and ' +
+        'the release serving def5678 is running',
+    );
+    expect(out.length).toBeLessThanOrEqual(MAX_DEPENDS_ON_SUGGESTIONS);
+  });
+
+  it('does NOT suggest for a CITATION rather than a live-state claim', () => {
+    // This is the guard that carries the most weight and the one most likely to rot:
+    // it inherits the detector's context-window requirement. If the matcher were ever
+    // loosened to fire on a bare value, this is the test that catches it — the
+    // positive control above proves the [] here is a real refusal, not a dead matcher.
+    expect(suggestDependsOnCells('the number 3 appears in the changelog')).toEqual([]);
+  });
+
+  it('is fail-soft on anything unparseable', () => {
+    // An advisory that can throw turns facts:assert into an outage — the one failure
+    // mode a tier-3 mechanism must not have.
+    for (const bad of [null, undefined, 42, {}, [], '']) {
+      expect(suggestDependsOnCells(bad as unknown)).toEqual([]);
+    }
+    expect(suggestDependsOnCells(TRANSCRIBING_BODY, undefined)).not.toEqual([]);
+  });
+
+  it('tolerates a malformed declared-cells list without dropping real suggestions', () => {
+    // declaredCells is caller input reaching a pure helper; a null inside it must not
+    // take out the suggestion path (and must not silently suppress every suggestion,
+    // which would be a failure that looks exactly like "nothing to suggest").
+    const out = suggestDependsOnCells(TRANSCRIBING_BODY, [
+      null as unknown as string,
+      '',
+      '   ',
+    ]);
+    expect(out.length).toBeGreaterThan(0);
   });
 });
 
