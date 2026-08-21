@@ -273,6 +273,7 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:unguarded-halt-rescue': { spend: 'llm', why: 'Wakes halted sessions, and a wake bills a turn' },
   'system:loop-wake': { spend: 'llm', why: "Delivers a wake to the loop's owning session" },
   'system:scout-cycle': { spend: 'llm', why: 'Runs a budgeted Scout ideation cycle (in-process LLM ideators/critics)' },
+  'system:goal-holder-launch': { spend: 'llm', why: 'Launches a replacement agent for an existing goal' },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },

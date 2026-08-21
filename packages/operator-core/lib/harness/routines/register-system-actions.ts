@@ -275,6 +275,11 @@ import './plan-run-action';
 import '../../overwatch/loop';
 import './release-actions';
 import './fleet-headcount-action';
+// goal-live-holder-guarantee-2026-08-18 P-007: the deterministic launch door
+// for replacing the holder of an EXISTING goal. The P-009 reconciler calls the
+// exported core directly; this registration also makes the operation available
+// as `system:goal-holder-launch` with goalId in payload_template.
+import './goal-holder-launch-action';
 import './improvement-actions';
 // knowledge-pack-loop-integrity-2026-07-19: fleet-lessons last-mile delivery
 // (P-006) + the knowledge-hygiene cleanup routine (P-008).
