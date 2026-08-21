@@ -141,6 +141,19 @@ export function sanitizePortableTurns(turns: PortableTurn[]): {
   return { turns: safeTurns, redactions, controlBytesRemoved, delimiterEscapes };
 }
 
+export interface TrackedClaudeSourceDeps {
+  configDirForOwner?: typeof sessionClaudeConfigDir;
+  findLive?: typeof findCanonicalClaudeLiveJsonl;
+  readLive?: typeof readStableLiveJsonl;
+  readArchive?: typeof readCanonicalClaudeArchive;
+  archiveStore?: typeof pgSessionArchiveStore;
+}
+
+function isMissingClaudeLiveSource(error: unknown): boolean {
+  if (error instanceof Error && error.message === 'canonical live Claude JSONL is missing') return true;
+  return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
+}
+
 export async function assertNoPortableAuthority(source: AdvSessionRow): Promise<void> {
   if (!source.coordOwnerId) throw new Error('source is missing its tracked coord identity');
   const roster = await mergeRosterWithAssignments({ workspaceId: source.workspaceId });
@@ -157,14 +170,41 @@ export async function assertNoPortableAuthority(source: AdvSessionRow): Promise<
   if (reasons.length) throw new Error(`source carries live operational authority (${reasons.join('; ')}); port refused`);
 }
 
-export async function acquireTrackedClaudeSource(source: AdvSessionRow): Promise<StableSource> {
+export async function acquireTrackedClaudeSource(
+  source: AdvSessionRow,
+  deps: TrackedClaudeSourceDeps = {},
+): Promise<StableSource> {
   if (source.agent !== 'claude' || source.role != null) throw new Error('V1 ports require a tracked plain Claude SU source');
   if (!source.sessionId || !source.coordOwnerId || !source.cwd) throw new Error('source is missing tracked Claude identity/cwd');
+  const readArchive = () => (deps.readArchive ?? readCanonicalClaudeArchive)(
+    { sessionId: source.sessionId! },
+    (deps.archiveStore ?? pgSessionArchiveStore)(),
+  );
   if (source.endedAt) {
-    return readCanonicalClaudeArchive({ sessionId: source.sessionId }, pgSessionArchiveStore());
+    return readArchive();
   }
-  const path = await findCanonicalClaudeLiveJsonl(sessionClaudeConfigDir(source.coordOwnerId), source.sessionId);
-  return readStableLiveJsonl(path);
+  try {
+    const path = await (deps.findLive ?? findCanonicalClaudeLiveJsonl)(
+      (deps.configDirForOwner ?? sessionClaudeConfigDir)(source.coordOwnerId),
+      source.sessionId,
+    );
+    return await (deps.readLive ?? readStableLiveJsonl)(path);
+  } catch (liveError) {
+    // Inspect and prepare deliberately reacquire the source around a
+    // human-paced confirmation. Archive-at-death can remove the inspected
+    // live JSONL during that gap, even while the tracked row has already been
+    // reactivated (endedAt=null). The immutable canonical archive is the safe
+    // fallback; prepare's expectedSourceHash still refuses any byte drift.
+    if (!isMissingClaudeLiveSource(liveError)) throw liveError;
+    try {
+      return await readArchive();
+    } catch (archiveError) {
+      throw new AggregateError(
+        [liveError, archiveError],
+        'canonical Claude source is unavailable: live JSONL is missing and archive fallback failed',
+      );
+    }
+  }
 }
 
 export function inspectAcquiredSessionPort(input: {

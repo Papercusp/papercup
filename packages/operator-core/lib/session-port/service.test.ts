@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { AdvSessionRow } from '../adv-sessions';
 import type { SessionPortRow } from './store';
 import {
+  acquireTrackedClaudeSource,
   deriveSessionPortIdempotencyKey,
   inspectAcquiredSessionPort,
   prepareInspectedSessionPort,
@@ -63,6 +64,62 @@ const target = {
   availableInputTokens: 40_000,
   contextSize: 'trimmed' as const,
 };
+
+describe('tracked Claude source acquisition', () => {
+  it('falls back to the canonical archive when cleanup deletes the inspected live JSONL', async () => {
+    const archived = {
+      ...source('archived history'),
+      source: 'archive-manifest' as const,
+      relpath: `projects/cwd/${row.sessionId}.jsonl`,
+    };
+    const readArchive = vi.fn(async () => archived);
+
+    await expect(acquireTrackedClaudeSource(row, {
+      configDirForOwner: () => '/config',
+      findLive: async () => { throw new Error('canonical live Claude JSONL is missing'); },
+      readArchive,
+      archiveStore: () => ({} as never),
+    })).resolves.toBe(archived);
+    expect(readArchive).toHaveBeenCalledWith({ sessionId: row.sessionId }, expect.anything());
+  });
+
+  it('falls back when the live JSONL disappears after its path was resolved', async () => {
+    const archived = {
+      ...source('archived history'),
+      source: 'archive-manifest' as const,
+      relpath: `projects/cwd/${row.sessionId}.jsonl`,
+    };
+    const gone = Object.assign(new Error('open live JSONL: no such file'), { code: 'ENOENT' });
+
+    await expect(acquireTrackedClaudeSource(row, {
+      configDirForOwner: () => '/config',
+      findLive: async () => '/config/projects/cwd/session.jsonl',
+      readLive: async () => { throw gone; },
+      readArchive: async () => archived,
+      archiveStore: () => ({} as never),
+    })).resolves.toBe(archived);
+  });
+
+  it('does not hide an ambiguous or unsafe live-source failure behind the archive', async () => {
+    const readArchive = vi.fn();
+    await expect(acquireTrackedClaudeSource(row, {
+      configDirForOwner: () => '/config',
+      findLive: async () => { throw new Error('canonical live Claude JSONL is ambiguous'); },
+      readArchive,
+      archiveStore: () => ({} as never),
+    })).rejects.toThrow(/ambiguous/);
+    expect(readArchive).not.toHaveBeenCalled();
+  });
+
+  it('reports both source tiers unavailable when the archive fallback also misses', async () => {
+    await expect(acquireTrackedClaudeSource(row, {
+      configDirForOwner: () => '/config',
+      findLive: async () => { throw new Error('canonical live Claude JSONL is missing'); },
+      readArchive: async () => { throw new Error('canonical Claude archive not found'); },
+      archiveStore: () => ({} as never),
+    })).rejects.toThrow(/live JSONL is missing and archive fallback failed/);
+  });
+});
 
 describe('session-port preparation service', () => {
   it('inspects without exposing internal transcript data and redacts before persistence', async () => {
