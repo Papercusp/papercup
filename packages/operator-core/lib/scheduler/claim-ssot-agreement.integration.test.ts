@@ -241,7 +241,7 @@ beforeAll(async () => {
   // abolish-human-review D-003: floor #15 reserves pending review work to the reviewer lane
   // and revision-requested work to the submitter. Approval re-admits the still-open row.
   // Apply the real migration so the queryable SSOT and the existing TS claim fragment must agree.
-  await db.sql.unsafe(readMigration('860-agent-review-claim-floor.sql.DRAFT')).simple();
+  await db.sql.unsafe(readMigration('860-agent-review-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();

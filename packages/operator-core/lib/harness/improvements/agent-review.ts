@@ -18,6 +18,7 @@ import {
   type EngineerIssue,
 } from '../../issues-engineer';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
+import { depsBlockedExclusionSql } from '../../work-items';
 import {
   agentReviewEligibility,
   agentReviewPendingSelectorSql,
@@ -315,6 +316,7 @@ export async function claimNextAgentReview(
        AND state = 'open'
        AND kind = 'change'
        AND (assignee IS NULL OR btrim(assignee) = '')
+       AND ${depsBlockedExclusionSql(sql)}
        AND ${agentReviewPendingSelectorSql(sql)}
        AND COALESCE(payload, '{}'::jsonb) -> 'agentReview' ->> 'submittedBy' IS DISTINCT FROM ${input.reviewer}
        AND ${input.harnessSlug ? sql`scope = ${`harness:${input.harnessSlug}`}` : sql`TRUE`}
@@ -328,4 +330,3 @@ export async function claimNextAgentReview(
   }
   return null;
 }
-

@@ -122,6 +122,17 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
         "as one of its two paths, incl. the 3-deep and 6-deep chains.",
     },
   ],
+  [
+    'harness/improvements/agent-review.ts#claimNextAgentReview',
+    {
+      klass: 'self-select-gating',
+      note:
+        'ISSUE-family reviewer self-select. Applies depsBlockedExclusionSql before the ' +
+        'agentReview=pending lane predicate, so review routing cannot bypass an unresolved ' +
+        'dependency. The helper call is asserted below and the helper itself is covered by ' +
+        'blocking-floor-single-source.test.ts plus the cross-door agreement suite.',
+    },
+  ],
 
   // ---- by-id doors: these MUST NOT gate (D-008) ---------------------------
   [
@@ -318,6 +329,18 @@ describe('the two structural claims the classification rests on', () => {
       /harness_shared\.|SELECT /i.test(body),
       'getNextWorkItemDefault now contains its own SQL. See above — it is no longer a wrapper.',
     ).toBe(false);
+  });
+
+  it('the agent-review reviewer door applies the shared issue dependency floor', () => {
+    const src = read('harness/improvements/agent-review.ts');
+    const start = src.indexOf('export async function claimNextAgentReview(');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\n}', start));
+    expect(
+      body.includes('depsBlockedExclusionSql(sql)'),
+      'claimNextAgentReview is a self-select door, so it must apply the shared issue-family ' +
+        'dependency floor before serving pending review work.',
+    ).toBe(true);
   });
 
   it('BOTH by-id doors keep the security floor and neither grows a readiness floor (D-008)', () => {
