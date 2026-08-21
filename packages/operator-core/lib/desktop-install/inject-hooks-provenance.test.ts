@@ -328,7 +328,7 @@ describe('installInjectionHooks — install provenance', () => {
     expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
     const stamp = await readInstallStamp(path.join(home, '.papercusp', 'hooks', 'cc'));
     expect(stamp?.sourceDir).toBe(source.ccDir);
-    expect(stamp?.sourceCommittedAt).toBe('2026-08-13T12:05:00Z');
+    expect(stamp?.sourceCommittedAt).toBe('2026-08-13T12:05:00.000Z');
     expect(stamp?.sourceSha).toMatch(/^[0-9a-f]{40}$/);
     expect(stamp?.unit).toMatch(/^hono-host:/);
     expect(log.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(
