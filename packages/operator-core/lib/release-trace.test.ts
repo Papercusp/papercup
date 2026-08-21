@@ -379,7 +379,7 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.name).not.toBe('git-sync:await');
   });
 
-  it('still awaits origin/staging when no verdict covers the requested candidate', () => {
+  it('awaits origin egress when a local commit is not yet on origin/staging', () => {
     const out = buildReleaseTrace(
       input({
         position: position({
@@ -392,7 +392,10 @@ describe('buildReleaseTrace', () => {
     expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
       'cannot test it',
     );
-    expect(out.nextVerb).toMatchObject({ name: 'git-sync:await', args: { sha } });
+    expect(out.nextVerb).toMatchObject({
+      name: 'events:await',
+      args: { event: `git-sync:egressed:${sha}` },
+    });
   });
 
   // EI-18672078222841101 — the stampede. Three agents read a red here within 15 minutes and

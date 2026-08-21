@@ -309,6 +309,16 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       : null;
   }
   if (!position.positions.onStaging && !targetWasGateTested) {
+    if (position.positions.committedLocal) {
+      return {
+        // A local commit has already fired git-sync:committed:<sha>; waiting on
+        // that local event again strands release recovery. The missing proof is
+        // the bridged origin/staging egress event.
+        name: 'events:await',
+        args: { event: `git-sync:egressed:${targetSha}` },
+        reason: 'The target commit exists locally but origin/staging egress is not confirmed; await its exact bridge egress before asking the gate to test it.',
+      };
+    }
     return {
       name: 'git-sync:await',
       args: { sha: targetSha },
