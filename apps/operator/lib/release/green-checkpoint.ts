@@ -10141,6 +10141,51 @@ export function realCheckpointDeps(
               ],
               { timeoutMs: SETUP_TREE_TIMEOUT_MS },
             );
+            // WI-40231: `git worktree add` populates the SUPERPROJECT ONLY — every
+            // submodule lands UNINITIALIZED (`git submodule status` prefixes each with
+            // `-`). This tree is where a release-fixer must REPRODUCE the red, so that is
+            // not cosmetic: operator-core reaches into `libs/papercusp` by RELATIVE path
+            // (packages/operator-core/test/_org-test-db.ts imports
+            // `../../../libs/papercusp/...`), a path node_modules resolution can never
+            // repair, so `lint:tsc` in this worktree fails TS2307 "Cannot find module"
+            // NO MATTER what the fixer edits. The fixer then cannot tell a real red from
+            // its own broken tree.
+            //
+            // Measured: on candidate 3a3e4587 three consecutive fixers were dispatched and
+            // `repairHead` never advanced — none could produce a commit. Every OTHER tree
+            // the gate uses (integration root, checkpoint tree) reports 0 uninitialized
+            // submodules; this worktree was the only one that did not.
+            //
+            // Deliberately NON-FATAL: a submodule that cannot be fetched must not wedge the
+            // freeze — the queue write and fixer dispatch above still have to happen — but
+            // it is logged LOUDLY so the next reader is handed the cause instead of
+            // inferring it from a TS2307. GIT_TERMINAL_PROMPT=0 stops a credential prompt
+            // from hanging the gate for the whole SETUP_TREE_TIMEOUT_MS window.
+            const submodules = await exec(
+              "git",
+              [
+                "-C",
+                queue.worktreePath,
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+              ],
+              {
+                timeoutMs: SETUP_TREE_TIMEOUT_MS,
+                allowNonZero: true,
+                killProcessGroupOnTimeout: true,
+                env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+              },
+            );
+            if (submodules.code !== 0) {
+              log(
+                `warn: frozen repair worktree ${queue.worktreePath} has INCOMPLETE submodules ` +
+                  `(git submodule update --init exited ${submodules.code}) — a relative-path ` +
+                  `import into a submodule (e.g. lint:tsc over libs/papercusp) will fail TS2307 ` +
+                  `in that tree regardless of the fix: ${(submodules.stderr || submodules.stdout || "").trim().slice(0, 500)}`,
+              );
+            }
           },
           async finalizeFrozenRepairWorktree(
             queue: FrozenCandidateRepairQueue,
