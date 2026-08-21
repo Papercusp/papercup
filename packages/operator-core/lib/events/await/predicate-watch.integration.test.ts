@@ -13,6 +13,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { OrgTestDb } from '../../../test/_org-test-db';
 import type { PredicateOp } from './predicate-watch';
 import type { CellSpec } from '../../cell-registry';
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // P-005 drives its predicates off the REAL cell specs, so a registration edit moves the
 // test with it instead of leaving it polling a path the cell no longer declares.
 import { GATE_CANDIDATE_CELL, GIT_PIPELINE_POSITION_CELL } from '../../cell-registrations';
@@ -51,6 +54,15 @@ const pw = await import('./predicate-watch');
 const store = await import('./store');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
+const HERE = dirname(fileURLToPath(import.meta.url));
+const MIGRATION_871_ARMED = resolve(
+  HERE,
+  '../../../../../libs/papercusp/libs/db/sql/871-lifecycle-bound-watches.sql',
+);
+const MIGRATION_871 = existsSync(MIGRATION_871_ARMED)
+  ? MIGRATION_871_ARMED
+  : `${MIGRATION_871_ARMED}.DRAFT`;
+
 let seq = 0;
 /** Register the paired await FIRST (the GC invariant), then the watch row. */
 async function seedWatch(opts: {
@@ -60,6 +72,7 @@ async function seedWatch(opts: {
   op?: PredicateOp;
   value?: unknown;
   path?: string;
+  boundTo?: { kind: string; ref: string };
 }) {
   const id = globalThis.crypto.randomUUID();
   const eventKey = `predicate:${id}`;
@@ -68,6 +81,7 @@ async function seedWatch(opts: {
     subscriberId: subscriber,
     eventKey,
     once: opts.awaitOnce ?? opts.once ?? true,
+    boundTo: opts.boundTo,
   });
   const row = await pw.registerPredicateWatch({
     id,
@@ -83,6 +97,7 @@ async function seedWatch(opts: {
     value: opts.value ?? 127,
     intervalSec: opts.intervalSec ?? 60,
     once: opts.once ?? true,
+    boundTo: opts.boundTo,
   });
   return { row, awaitRow, eventKey, subscriber };
 }
@@ -101,6 +116,10 @@ describe('predicate watches (real PG)', () => {
   beforeAll(async () => {
     db = await createOrgTestDb();
     h.sql = db.adminSql;
+    // The allocator keeps migration 871 parked as .DRAFT until verification is
+    // green. Apply that exact source to this throwaway DB so the pre-arm test
+    // exercises the real DDL without exposing a half-verified migration to boot.
+    await h.sql.unsafe(readFileSync(MIGRATION_871, 'utf8'));
   }, 120_000);
 
   afterAll(async () => {
@@ -118,6 +137,52 @@ describe('predicate watches (real PG)', () => {
     expect(row.lastPolledAt).not.toBeNull();
     const due = await pw.claimDuePredicateWatches();
     expect(due.map((d) => d.id)).not.toContain(row.id);
+  });
+
+  it('persists a lifecycle binding and names it in both match and terminal-error payloads', async () => {
+    const binding = { kind: 'plan-lane', ref: 'state-plane#P-013' };
+    const matched = await seedWatch({ once: true, op: 'gt', value: 3, boundTo: binding });
+    expect(matched.row.boundTo).toEqual(binding);
+    expect(matched.awaitRow.boundTo).toEqual(binding);
+
+    pw.configurePredicateDispatch(async () => ({ wm: 4 }));
+    await expect(pw.evalPredicateWatch(matched.row)).resolves.toMatchObject({ fired: true });
+    expect(h.emits.at(-1)?.payload).toMatchObject({
+      observed: 4,
+      bound_to: binding,
+      armed_because: 'interest machinery bound this watch to plan-lane:state-plane#P-013',
+    });
+
+    const errored = await seedWatch({ once: true, boundTo: binding });
+    await h.sql`
+      UPDATE harness_shared.predicate_watches
+         SET consecutive_errors = ${pw.PREDICATE_MAX_CONSECUTIVE_ERRORS - 1}
+       WHERE id = ${errored.row.id}`;
+    pw.configurePredicateDispatch(async () => {
+      throw new Error('resolver unavailable');
+    });
+    await expect(
+      pw.evalPredicateWatch((await pw.getPredicateWatch(errored.row.id))!),
+    ).resolves.toMatchObject({ fired: true, deactivated: true });
+    expect(h.emits.at(-1)?.payload).toMatchObject({
+      predicateError: 'resolver unavailable',
+      bound_to: binding,
+      armed_because: 'interest machinery bound this watch to plan-lane:state-plane#P-013',
+    });
+  });
+
+  it('migration 871 rejects whitespace-only and extra-key lifecycle addresses', async () => {
+    const { row, awaitRow } = await seedWatch({ once: false });
+    await expect(h.sql`
+      UPDATE harness_shared.predicate_watches
+         SET bound_to = ${{ kind: 'fleet-leadership', ref: '   ' }}
+       WHERE id = ${row.id}`
+    ).rejects.toThrow(/predicate_watches_bound_to_shape/);
+    await expect(h.sql`
+      UPDATE harness_shared.event_awaits
+         SET bound_to = ${{ kind: 'work-item', ref: 'WI-1', extra: true }}
+       WHERE id = ${awaitRow.id}`
+    ).rejects.toThrow(/event_awaits_bound_to_shape/);
   });
 
   it('claim-by-stamp: a backdated row is claimed exactly once per window', async () => {
