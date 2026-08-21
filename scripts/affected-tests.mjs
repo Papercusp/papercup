@@ -362,6 +362,10 @@ const dry = has("--dry") || has("--dry-run");
 // WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
 const rangeFrom = arg("--range-from", null);
 const rangeTo = arg("--range-to", null);
+// A repo-wide guard that derives its subject from git must use the same base as this
+// runner's authoritative changed-path derivation. In prefix mode, the two-dot range
+// is the source of truth, so the guard's one-sided diff starts at rangeFrom.
+const repoWideGuardBase = rangeFrom && rangeTo ? rangeFrom : base;
 // --changed-paths a,b,c — compute the affected set from these paths instead of a
 // git diff. See affectedWorkspaces() for why a git-based probe cannot answer
 // "what would touching X select?" on this tree.
@@ -1834,6 +1838,10 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // the older copy. A guard's exit contract is part of its REGISTRATION, not a private
     // detail — change one and this entry has to move with it.
     notCheckedIsNonGating: true,
+    // The runner owns the authoritative diff base. Without forwarding it, this guard
+    // defaults to HEAD and becomes NOT_CHECKED as soon as git-sync commits the edit
+    // that selected it.
+    forwardBase: true,
     // TS-family only: nothing else can declare a runtime export for a factory to omit.
     appliesTo: (f) => /\.[cm]?tsx?$/.test(f),
   },
@@ -2547,6 +2555,7 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
     ws,
     script: guard.script,
     notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
+    ...(guard.forwardBase ? { guardBase: repoWideGuardBase } : {}),
   });
 }
 
@@ -2761,7 +2770,10 @@ outSync(
 // planned count instead of the pre-selection zero.
 plannedTaskCount = tasks.length;
 outSync(`Running ${tasks.length} task(s):`);
-for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
+for (const t of tasks) {
+  const guardBase = t.guardBase ? ` (guard base: ${t.guardBase})` : "";
+  outSync(`  - ${t.ws.name} :: ${t.script}${guardBase}`);
+}
 outSync(
   formatTaskBudgetMarker({
     ...SCHEDULER_CONFIG,
@@ -3096,11 +3108,16 @@ const taskContexts = tasks.map((t) => ({
   isQuarantined: quarantined.has(t.ws.name),
   // EI-11132: when this script declares --passWithNoTests AND the workspace genuinely
   // has matching test files on disk, disable passWithNoTests for THIS task.
-  guardArgs: emptySuiteGuardArgs({
-    scriptText: t.ws.scripts[t.script] ?? "",
-    wsAbsDir: join(ROOT, t.ws.dir),
-    script: t.script,
-  }),
+  // A guard that diffs git must see the same base this runner used to select it;
+  // otherwise a clean-after-git-sync tree looks like a no-op to the child process.
+  guardArgs: [
+    ...emptySuiteGuardArgs({
+      scriptText: t.ws.scripts[t.script] ?? "",
+      wsAbsDir: join(ROOT, t.ws.dir),
+      script: t.script,
+    }),
+    ...(t.guardBase ? ["--base", t.guardBase] : []),
+  ],
   cacheProvenance: dependencyProvenanceForTask(t),
 }));
 const durationHistory = readDurationHistory(TASK_DURATION_HISTORY_PATH);

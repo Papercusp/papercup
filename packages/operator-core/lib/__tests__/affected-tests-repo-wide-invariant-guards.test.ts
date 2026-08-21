@@ -36,7 +36,9 @@
  *   3. it fires for changes that cannot possibly violate the invariant;
  *   4. the `lint:chunk-safe` script disappears from operator-core's package.json,
  *      which would make the attachment a silent no-op — the same failure shape as
- *      WI-6077's missing `test` script.
+ *      WI-6077's missing `test` script;
+ *   5. the vimock strand guard receives the runner's authoritative diff base, so
+ *      git-sync cannot turn a selected guard run into a HEAD-vs-HEAD no-op.
  *
  * It does NOT assert that the guard itself is correct; that is
  * child-output-guard.test.ts's job.
@@ -89,6 +91,8 @@ const OUTSIDE_TS_PATH = 'apps/operator/lib/release/deploy-cli.ts';
 const INSIDE_TS_PATH = 'packages/operator-core/lib/terminal-spawn.ts';
 /** A non-source path that cannot introduce a stream accumulator. */
 const NON_SOURCE_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
+const VIMOCK_GUARD_SCRIPT = 'lint:vimock-export-strands';
+const VIMOCK_GUARD_TASK = `${HOST_WORKSPACE} :: ${VIMOCK_GUARD_SCRIPT}`;
 
 /**
  * Run the real CLI in --dry mode: it resolves the affected set and BUILDS the task
@@ -96,10 +100,11 @@ const NON_SOURCE_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
  * standalone-packages guard uses — asserting on behavior keeps this test honest if
  * the mechanism is ever reimplemented differently.
  */
-function dryTasks(changedPaths: string): string {
+function dryTasks(changedPaths: string, base?: string): string {
+  const baseArgs = base ? ['--base', base] : [];
   const res = spawnSync(
     process.execPath,
-    [AFFECTED_TESTS, '--changed-paths', changedPaths, '--dry'],
+    [AFFECTED_TESTS, '--changed-paths', changedPaths, ...baseArgs, '--dry'],
     { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000 },
   );
   // Fail loudly rather than letting a crashed probe read as "guard absent" — a
@@ -169,6 +174,17 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
         'and simply stops checking (the WI-6077 missing-`test`-script failure shape).',
     ).toBeTruthy();
     expect(pkg.scripts?.[GUARD_SCRIPT]).toContain('child-output-guard.test.ts');
+  });
+
+  it('forwards the runner base to the vimock strand guard', () => {
+    const base = 'HEAD^';
+    const out = dryTasks(OUTSIDE_TS_PATH, base);
+    expect(
+      out,
+      `${VIMOCK_GUARD_TASK} must receive the same base that affected-tests used for its ` +
+        'authoritative changed-path derivation; otherwise git-sync leaves the guard comparing ' +
+        'HEAD with itself and reporting NOT_CHECKED',
+    ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base})`);
   });
 });
 
