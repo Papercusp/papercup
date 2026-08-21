@@ -106,6 +106,7 @@ describe('harness_plans index-list query shape', () => {
     expect(H.statements[0]!.text).toContain('LIMIT $');
     expect(H.statements[0]!.text).toContain('status = $');
     expect(H.statements[0]!.text).toContain('created_at >= $');
+    expect(H.statements[0]!.text).toContain('forced_past');
   });
 
   it('keeps the workspace-wide statement shape stable across optional filters', async () => {
@@ -135,5 +136,6 @@ describe('harness_plans index-list query shape', () => {
       queryWithoutPlaceholderNumbers(H.statements[0]!.text),
     );
     expect(H.statements[1]!.values).toHaveLength(H.statements[0]!.values.length);
+    expect(H.statements[0]!.text).toContain('forced_past');
   });
 });

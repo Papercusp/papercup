@@ -77,6 +77,7 @@ const row = (over: Record<string, unknown>): unknown => ({
   owner: null,
   initiative: null,
   template: null,
+  forcedPast: null,
   archived: false,
   isLegacy: false,
   items: [],
@@ -127,6 +128,33 @@ afterEach(async () => {
 });
 
 describe("plans:list — groupBy aggregates", () => {
+  it("surfaces the permanent forced-past marker on each plan row", async () => {
+    M.listPlanIndexRows.mockResolvedValue([
+      row({
+        planSlug: "forced",
+        forcedPast: {
+          count: 1,
+          latest: {
+            reason: "explicit exception",
+            checks: ["audit_coverage_stale"],
+            forcedAt: "2026-08-20T22:30:00.000Z",
+            forcedBy: { ownerId: "su-forcer", ownerLabel: "Forcing agent" },
+            legacy: false,
+          },
+        },
+      }),
+    ]);
+
+    const { plans } = await run({});
+    expect(plans[0]).toMatchObject({
+      slug: "forced",
+      forcedPast: {
+        count: 1,
+        latest: { reason: "explicit exception", checks: ["audit_coverage_stale"] },
+      },
+    });
+  });
+
   it("counts every matched row per dimension value", async () => {
     M.listPlanIndexRows.mockResolvedValue([
       row({ planSlug: "a", status: "active" }),

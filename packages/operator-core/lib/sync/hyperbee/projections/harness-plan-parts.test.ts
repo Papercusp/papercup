@@ -6,8 +6,10 @@
  * malformed wire row is rejected.
  */
 import { describe, it, expect } from 'vitest';
+import type postgres from 'postgres';
 import { InMemoryPlanPartsStore } from '../../../plan-parts/store';
 import { buildHarnessPlanPartsProjection, _testing, type PlanPartWireRow } from './harness-plan-parts';
+import { stampForcedPastWaiver, summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
 
 function part(planSlug: string, partKey: string, body: string, overrides: Partial<PlanPartWireRow> = {}): PlanPartWireRow {
   return { harness_slug: 'h', plan_slug: planSlug, part_key: partKey, kind: 'item', body, ordinal: 0, tombstone: false, ...overrides };
@@ -27,6 +29,42 @@ function rig(flag: boolean) {
 }
 
 describe('harness-plan-parts projection', () => {
+  it('recomputes forced_past when a federated part recomposes canonical content', async () => {
+    const baseline = stampForcedPastWaiver(
+      '---\nslug: p1\nstatus: active\n---\n\n# Plan\n\n## Now\n\nold\n',
+      {
+        reason: 'verified exception',
+        checks: ['audit_coverage_stale'],
+        forcedBy: { ownerId: 'su-forcer', ownerLabel: 'Forcing agent' },
+      },
+      new Date('2026-08-20T22:30:00.000Z'),
+    )!;
+    const expected = summarizeForcedPast(baseline)!;
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join(' ').replace(/\s+/g, ' ').trim().toUpperCase(), values });
+      return Promise.resolve([]);
+    }) as unknown as postgres.Sql;
+    const store = new InMemoryPlanPartsStore();
+    const proj = buildHarnessPlanPartsProjection({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      store,
+      sql,
+      isFlagOn: async () => true,
+      readLocalContent: async () => baseline,
+    });
+
+    await proj.writeToPg(
+      part('p1', 'section:now', '## Now\n\nchanged', { kind: 'section' }),
+      { authorPubkey: 'A', origin: 'remote', ts: 200 },
+    );
+
+    const update = calls.find((c) => c.text.startsWith('UPDATE HARNESS_SHARED.HARNESS_PLANS'))!;
+    expect(update.text).toContain('FORCED_PAST');
+    expect(update.values).toContain(JSON.stringify(expected));
+  });
+
   it('composeKey == plan_slug/part_key (matches part_fed_key)', () => {
     expect(_testing.composeKey(part('p1', 'item:P-001', 'x'))).toBe('p1/item:P-001');
   });

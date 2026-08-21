@@ -25,7 +25,7 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
-import { summarizeForcedPast, type ForcedPastSummary } from '../../agent-tools/plans/forced-past-stamp';
+import { summarizeForcedPast, type ForcedPastSummary } from '../../../agent-tools/plans/forced-past-stamp';
 import {
   decideContentWriteAuthority,
   resolveContentWriteMode,
@@ -297,9 +297,11 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
-  const forcedPast = row.forced_past === undefined
-    ? summarizeForcedPast(row.content)
-    : row.forced_past;
+  // The markdown log is canonical. Never trust the optional wire-side index:
+  // an older peer may omit it and a stale/malformed sender may disagree with
+  // content. Recomputing once at projection time keeps the bounded column true
+  // without making every plans:get/list call parse the document.
+  const forcedPast = summarizeForcedPast(row.content);
   // P-018 / D-012 — author-scoped write authority. Only a cross-member REMOTE op is gated (a local
   // op is the operator's own write; own-slug is already 'apply'). In a trusted hive the mode is
   // 'member' → always ok, owner never bound (byte-identical to today). In an open/author-scoped

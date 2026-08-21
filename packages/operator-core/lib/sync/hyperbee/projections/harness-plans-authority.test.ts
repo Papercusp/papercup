@@ -8,18 +8,20 @@ import { describe, it, expect } from 'vitest';
 import type postgres from 'postgres';
 import { buildHarnessPlansProjection, type HarnessPlanRow } from './harness-plans';
 import type { ProvenanceContext } from '../projection';
+import { stampForcedPastWaiver, summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
 
 interface Recorded {
   text: string;
+  values: unknown[];
 }
 
 /** A minimal tagged-template stand-in for postgres.Sql: records each query's normalized text and
  *  returns a queued SELECT result (the owner row), [] otherwise. */
 function fakeSql(ownerRow: { owner_author_pubkey: string | null } | null) {
   const calls: Recorded[] = [];
-  const tag = (strings: TemplateStringsArray, ..._values: unknown[]) => {
+  const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join(' ').replace(/\s+/g, ' ').trim().toUpperCase();
-    calls.push({ text });
+    calls.push({ text, values });
     if (text.startsWith('SELECT OWNER_AUTHOR_PUBKEY')) {
       return Promise.resolve(ownerRow ? [ownerRow] : []);
     }
@@ -65,6 +67,29 @@ function deleted(calls: Recorded[]): boolean {
 }
 
 describe('harness-plans author-scoped write authority (P-018/D-012)', () => {
+  it('recomputes forced_past from canonical content and ignores a stale wire projection', async () => {
+    const content = stampForcedPastWaiver(
+      '# Plan\n',
+      {
+        reason: 'verified exception',
+        checks: ['acceptance_unaudited'],
+        forcedBy: { ownerId: 'su-forcer', ownerLabel: 'Forcing agent' },
+      },
+      new Date('2026-08-20T22:30:00.000Z'),
+    )!;
+    const expected = summarizeForcedPast(content)!;
+    const stale = { count: 99, latest: { ...expected.latest, reason: 'forged wire value' } };
+    const { sql, calls } = fakeSql(null);
+    const proj = buildHarnessPlansProjection(baseOpts({ sql, resolveWriteMode: async () => 'member' }) as never);
+
+    await proj.writeToPg({ ...PLAN_ROW, content, forced_past: stale }, remoteProvenance);
+
+    const insert = calls.find((c) => c.text.startsWith('INSERT INTO HARNESS_SHARED.HARNESS_PLANS'))!;
+    expect(insert.text).toContain('FORCED_PAST');
+    expect(insert.values).toContain(JSON.stringify(expected));
+    expect(insert.values).not.toContain(JSON.stringify(stale));
+  });
+
   it('member mode: a remote op applies unchanged (insert runs), no owner read', async () => {
     const { sql, calls } = fakeSql(null);
     const proj = buildHarnessPlansProjection(baseOpts({ sql, resolveWriteMode: async () => 'member' }) as never);

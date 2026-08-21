@@ -23,7 +23,7 @@ import type { PendingMembershipContent } from '../pending-membership-content';
 import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store';
 import { ensurePlanPartsBaseline } from '../../../plan-parts/federation';
 import { canonicalHarnessSlug } from '../../../harness/operator-home-harness';
-import { summarizeForcedPast } from '../../agent-tools/plans/forced-past-stamp';
+import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
 export interface PlanPartWireRow {
@@ -125,7 +125,8 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
     const sql = opts.sql ?? getOrgPg().sql;
     const fedTs = provenance?.ts ?? null;
     const { frontmatter: fm, isLegacy } = parsePlan(content);
-    const forcedPastJson = JSON.stringify(summarizeForcedPast(content));
+    const forcedPast = summarizeForcedPast(content);
+    const forcedPastJson = forcedPast === null ? null : JSON.stringify(forcedPast);
     await sql`
       UPDATE harness_shared.harness_plans
          SET content       = ${content},

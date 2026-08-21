@@ -30,6 +30,16 @@ const M = vi.hoisted(() => ({
       harnessSlug: "papercup",
       version: 1,
       promotePolicy: null,
+      forcedPast: {
+        count: 1,
+        latest: {
+          reason: "auditor unavailable",
+          checks: ["acceptance_unaudited"],
+          forcedAt: "2026-08-20T22:30:00.000Z",
+          forcedBy: { ownerId: "su-forcer", ownerLabel: "Forcing agent" },
+          legacy: false,
+        },
+      },
     },
   })),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
@@ -201,6 +211,23 @@ describe("plans:get — cache wiring", () => {
         ],
       },
     });
+  });
+
+  it("surfaces the permanent forced-past marker on ordinary and meta reads", async () => {
+    const sections = await run({ slug: "alpha" });
+    expect(sections.results[0]).toMatchObject({
+      forcedPast: {
+        count: 1,
+        latest: {
+          reason: "auditor unavailable",
+          checks: ["acceptance_unaudited"],
+          forcedBy: { ownerId: "su-forcer" },
+        },
+      },
+    });
+
+    const meta = await run({ slug: "alpha", mode: "meta" });
+    expect(meta.results[0]).toMatchObject({ forcedPast: { count: 1 } });
   });
 
   it("keeps meta reads lean and does not fetch rubric/audit decorations", async () => {

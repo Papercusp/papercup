@@ -305,7 +305,8 @@ export async function withPlanLock<T>(
       // WI-40139 / D-005: the append-only markdown log remains canonical, while
       // this bounded jsonb projection makes the permanent waiver visible on the
       // cheap plans:get/list paths without reparsing the document on every read.
-      const forcedPastJson = JSON.stringify(summarizeForcedPast(newBody));
+      const forcedPast = summarizeForcedPast(newBody);
+      const forcedPastJson = forcedPast === null ? null : JSON.stringify(forcedPast);
       // P-005: `template` (the type) is frontmatter-DERIVED (mirrors `initiative`),
       // re-derived on every content write. `template_data` (the instance data) is
       // NOT touched here — it is preserved on conflict (omitted from the SET) and

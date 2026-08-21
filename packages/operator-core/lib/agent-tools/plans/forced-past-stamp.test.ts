@@ -3,6 +3,7 @@ import {
   stampForcedPastWaiver,
   forcedPastEntry,
   FORCED_PAST_SECTION_HEADING,
+  summarizeForcedPast,
 } from './forced-past-stamp';
 
 const TODAY = new Date('2026-08-14T09:00:00.000Z');
@@ -87,5 +88,38 @@ describe('stampForcedPastWaiver', () => {
     const a = forcedPastEntry({ reason: 'r', checks: ['b_check', 'a_check'] }, TODAY);
     const b = forcedPastEntry({ reason: 'r', checks: ['a_check', 'b_check'] }, TODAY);
     expect(a).toBe(b);
+  });
+
+  it('summarizes the append-only log as a bounded count + latest projection', () => {
+    const first = stampForcedPastWaiver(
+      PLAN,
+      {
+        reason: 'first reason',
+        checks: ['acceptance_unaudited'],
+        forcedBy: { ownerId: 'su-first', ownerLabel: 'First agent' },
+      },
+      TODAY,
+    )!;
+    const second = stampForcedPastWaiver(
+      first,
+      {
+        reason: 'second reason',
+        checks: ['audit_coverage_stale'],
+        forcedBy: { ownerId: 'su-second', ownerLabel: 'Second agent' },
+      },
+      new Date('2026-09-01T09:00:00.000Z'),
+    )!;
+
+    expect(summarizeForcedPast(second)).toEqual({
+      count: 2,
+      latest: {
+        reason: 'second reason',
+        checks: ['audit_coverage_stale'],
+        forcedAt: '2026-09-01T09:00:00.000Z',
+        forcedBy: { ownerId: 'su-second', ownerLabel: 'Second agent' },
+        legacy: false,
+      },
+    });
+    expect(summarizeForcedPast(PLAN)).toBeNull();
   });
 });
