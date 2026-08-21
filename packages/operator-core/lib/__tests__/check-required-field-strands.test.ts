@@ -8,8 +8,14 @@
  * this guard exists to prevent. Several tests below pin the nested case specifically.
  */
 import { describe, expect, it } from 'vitest';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
 import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, submoduleFor } from '../../../../scripts/check-required-field-strands.mjs';
+
+const ROOT = resolve(__dirname, '../../../..');
 
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
@@ -480,4 +486,37 @@ describe('exitForNoFindings — "no findings" is not a clean bill unless somethi
   it('ignores identicalFiles when the set was INFERRED, not declared (identical tracking is a declared-mode signal)', () => {
     expect(exitForNoFindings({ examinedFiles: ['a.ts'], identicalFiles: ['a.ts'], declared: false })).toBe(0);
   });
+});
+
+describe('invalid base revisions — never reinterpret a bad revision as a clean diff', () => {
+  it('fails closed with EXIT_NOT_CHECKED instead of printing a false-green headline', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'required-field-strands-invalid-base-'));
+    try {
+      cpSync(join(ROOT, 'scripts'), join(tmp, 'scripts'), { recursive: true });
+      symlinkSync(join(ROOT, 'node_modules'), join(tmp, 'node_modules'));
+      mkdirSync(join(tmp, 'packages/operator-core/lib'), { recursive: true });
+      const file = join(tmp, 'packages/operator-core/lib/a.ts');
+      writeFileSync(file, 'export interface A { id: string; }\n');
+
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: tmp, encoding: 'utf8' });
+      git('init', '-q', '.');
+      git('config', 'user.email', 'required-field-strands@test.invalid');
+      git('config', 'user.name', 'required-field-strands');
+      git('add', '-A');
+      git('commit', '-qm', 'base');
+      writeFileSync(file, 'export interface A { id: string; required: number; }\n');
+
+      const result = spawnSync('node', ['scripts/check-required-field-strands.mjs', '--base', 'not-a-real-revision'], {
+        cwd: tmp,
+        encoding: 'utf8',
+      });
+      const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+      expect(result.status).toBe(2);
+      expect(output).toContain('cannot resolve base revision');
+      expect(output).not.toContain('✓');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

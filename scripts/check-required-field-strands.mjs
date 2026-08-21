@@ -66,6 +66,28 @@ function git(args, { allowFail = false, cwd = ROOT } = {}) {
 }
 
 /**
+ * `git diff <revision> -- <paths>` can silently reinterpret an unknown revision as a
+ * pathspec and return a working-tree diff with status 0. That is especially dangerous
+ * here: the subsequent `git show <revision>:<file>` calls can then yield empty text, so
+ * the guard counts files as examined and reports a false clean bill. Validate the base as
+ * a revision before asking `git diff` to compare it. Keep the expression intact because
+ * callers commonly pass ancestry selectors such as `C^`.
+ */
+function resolvesRevision(revision) {
+  if (typeof revision !== 'string' || revision.length === 0) return false;
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--end-of-options', revision], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * EI-20020054576584970: the guard was structurally blind to every file inside a submodule,
  * and that blindness is what let the 2026-08-12 incident through — `ActiveLockRow.lock_id`
  * in libs/papercusp/packages/locks/src/su-lock-store.ts stranded a mock fixture and froze
@@ -373,6 +395,14 @@ function main() {
   const runTypecheck = argv.includes('--typecheck');
   const baseIdx = argv.indexOf('--base');
   const base = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
+
+  // Do not let an invalid revision fall through to `git diff`, which accepts some
+  // unknown tokens as pathspecs and exits 0. A false-green detector is worse than an
+  // explicit NOT CHECKED result, so fail closed before collecting any candidates.
+  if (!resolvesRevision(base)) {
+    console.error(`check-required-field-strands: cannot resolve base revision '${base ?? ''}'`);
+    process.exit(EXIT_NOT_CHECKED);
+  }
 
   // `--files=a,b,c` DECLARES the set instead of inferring it. Mirrors lint:tsc, which
   // learned the same lesson: on a tree the whole fleet edits, an inferred "changed set"
