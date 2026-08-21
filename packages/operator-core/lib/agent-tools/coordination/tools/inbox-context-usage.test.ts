@@ -135,15 +135,14 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
 });
 
 describe('fleet wind-down renderer recurrence (EI-21012758172744411)', () => {
-  it('POSITVE: a critical no-PTY member with verified authorization is told to call loop:end', () => {
+  it('POSITIVE: a critical no-PTY member with verified authorization is told to call loop:end', () => {
     const line = renderContextUsageLine(95, 100, false, true);
     const gauge = renderBandedContextGauge(95, 100, false, true);
     expect(line).toContain('typed fleet wind-down authorizes loop:end');
     expect(line).not.toContain('session:request-compaction');
     expect(gauge).toContain('call loop:end under the typed fleet wind-down authorization');
     expect(gauge).not.toContain('session:request-compaction');
-    expect(gauge).not.toContain('session:end');
-    expect(gauge).not.toContain('respawn');
+    expect(gauge).toContain('do not call session:end or respawn');
   });
 
   it('NEGATIVE: an unverified or inapplicable authorization keeps the safe no-PTY guidance', () => {

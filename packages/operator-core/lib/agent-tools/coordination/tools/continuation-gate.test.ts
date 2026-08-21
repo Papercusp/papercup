@@ -279,7 +279,7 @@ describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
     cues: [cue()],
   } as const;
 
-  it('POSITVE: accepts the complete claimless + current-fleet + typed-control + typed-cue tuple', () => {
+  it('POSITIVE: accepts the complete claimless + current-fleet + typed-control + typed-cue tuple', () => {
     expect(isFleetWindDownLoopEndAuthorized(authorized)).toBe(true);
   });
 
@@ -297,7 +297,7 @@ describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
       { cues: [cue({ [CUE_AUTHORITY_FIELD]: { authority: 'hive-queen', authorityRef: fleet, scope: 'hive-wide' } })] },
       { cues: [cue({ [CUE_AUTHORITY_FIELD]: { authority: 'fleet-leader', authorityRef: fleet, scope: 'hive-wide' } })] },
       { cues: [cue({ [CUE_AUTHORITY_FIELD]: { authority: 'fleet-leader', authorityRef: 'other-fleet', scope: 'fleet-members', scopeRef: 'other-fleet' } })] },
-      { cues: [cue({ summary: 'Fleet drain-fleet WIND-DOWN, but omit the loop:end action' })] },
+      { cues: [cue({ summary: 'Fleet drain-fleet WIND-DOWN — release claims' })] },
     ];
     for (const over of cases) {
       expect(isFleetWindDownLoopEndAuthorized({ ...authorized, ...over })).toBe(false);
@@ -313,7 +313,7 @@ describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
 });
 
 describe('fleet wind-down authorization reaches the critical no-PTY gate only', () => {
-  it('POSITVE: the authorized tuple selects loop:end at the critical threshold', () => {
+  it('POSITIVE: the authorized tuple selects loop:end at the critical threshold', () => {
     const v = evaluateContinuationGate({
       contextPct: CONTEXT_GAUGE_CRITICAL_PCT,
       unreadInbox: 0,
@@ -324,8 +324,7 @@ describe('fleet wind-down authorization reaches the critical no-PTY gate only', 
     expect(v.fleetWindDownLoopEndAuthorized).toBe(true);
     expect(v.guidance).toMatch(/AUTHORIZED FLEET WIND-DOWN/);
     expect(v.guidance).toContain('loop:end');
-    expect(v.guidance).not.toContain('session:end');
-    expect(v.guidance).not.toContain('respawn');
+    expect(v.guidance).toContain('do not call session:end or respawn');
   });
 
   it('NEGATIVE: authorization cannot bypass the critical no-PTY preconditions', () => {
