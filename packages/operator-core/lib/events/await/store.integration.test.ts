@@ -612,7 +612,13 @@ describe('verified-wait fallback campaign (PG)', () => {
     expect(claimed?.id).toBe(row.id);
 
     const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
-      snapshot: async () => checkpointSnapshot(),
+      // `activeRun: null` means the probe produced no reading (`unknown`), not
+      // that a previously observed producer disappeared. Use an explicit
+      // inactive run to model the confirmed absence this case asserts.
+      snapshot: async () =>
+        checkpointSnapshot({
+          activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+        }),
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
     expect(result).toMatchObject({ classification: 'absent', nextAction: 'wake-owner-or-takeover' });
