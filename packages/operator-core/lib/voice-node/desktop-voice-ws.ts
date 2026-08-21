@@ -56,6 +56,15 @@ export function getDesktopVoicePort(): number | null {
 }
 
 /**
+ * Test-only seam: expose the bound address so integration tests can verify
+ * the listener is actually loopback-only, rather than relying on the
+ * application-layer remote-address check after accepting a remote socket.
+ */
+export function _getDesktopVoiceWsAddressForTests(): ReturnType<WebSocketServer['address']> {
+  return dvState.wss?.address() ?? null;
+}
+
+/**
  * Test-only seam: close the listening server and reset module state so a
  * subsequent `startDesktopVoiceWs()` binds fresh. Never called in production.
  */
@@ -97,7 +106,7 @@ async function tryListen(port: number, attempt: number): Promise<void> {
     }
     return;
   }
-  const wss = new WebSocketServer({ port, path: WS_PATH });
+  const wss = new WebSocketServer({ host: '127.0.0.1', port, path: WS_PATH });
   wss.on('connection', handleConnection);
   wss.on('listening', () => {
     dvState.chosenPort = port;

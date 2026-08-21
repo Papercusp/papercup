@@ -9,9 +9,15 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import net from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { FRAME_CTRL, FrameDecoder, encodeCtrl, encodeFrame } from '@papercusp/p2p-voice';
-import { bridgeConnection, type BridgeWs } from './desktop-voice-ws';
+import {
+  _getDesktopVoiceWsAddressForTests,
+  _stopDesktopVoiceWsForTests,
+  bridgeConnection,
+  startDesktopVoiceWs,
+  type BridgeWs,
+} from './desktop-voice-ws';
 
 const MIX = 0x03;
 
@@ -44,7 +50,8 @@ describe('desktop voice WS bridge (P-015)', () => {
   let dir = '';
   let server: net.Server | null = null;
 
-  afterEach(() => {
+  afterEach(async () => {
+    await _stopDesktopVoiceWsForTests();
     try {
       server?.close();
     } catch {
@@ -53,6 +60,15 @@ describe('desktop voice WS bridge (P-015)', () => {
     server = null;
     if (dir) rmSync(dir, { recursive: true, force: true });
     dir = '';
+    vi.unstubAllEnvs();
+  });
+
+  it('binds the listener to loopback instead of every guest interface', async () => {
+    vi.stubEnv('DESKTOP_VOICE_WS_PORT', '0');
+    startDesktopVoiceWs();
+    await waitFor(() => _getDesktopVoiceWsAddressForTests() !== null);
+
+    expect(_getDesktopVoiceWsAddressForTests()).toMatchObject({ address: '127.0.0.1' });
   });
 
   it('pipes CTRL up and status + MIX down, verbatim', async () => {
