@@ -1399,6 +1399,35 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
 }
 
 /**
+ * EI-20854484804457933: fold a newly-computed gate_health value over the value read from the
+ * same routine row without losing a more-informative failing-test set. A later observation that
+ * did not produce a fresh verdict is allowed to update its other diagnostics, but an empty list
+ * from that observation is not evidence that the previously recorded failures disappeared.
+ *
+ * The final SQL write repeats this rule against the row's value at UPDATE time, because another
+ * trackGateStall caller can commit between this function's SELECT and UPDATE. Keeping both
+ * layers is intentional: this fold handles the ordinary sequential path and the SQL predicate
+ * closes the stale read/modify/write race.
+ */
+export function mergeGateHealthMonotonic(
+  previous: { failingTests?: unknown } | null | undefined,
+  next: Record<string, unknown>,
+): Record<string, unknown> {
+  const previousFailingTests = Array.isArray(previous?.failingTests)
+    ? previous.failingTests.filter((test): test is string => typeof test === 'string')
+    : [];
+  const nextFailingTests = Array.isArray(next.failingTests)
+    ? next.failingTests.filter((test): test is string => typeof test === 'string')
+    : [];
+  const preservesPreviousFailures =
+    previousFailingTests.length > 0 &&
+    nextFailingTests.length === 0 &&
+    next.lastFromFresh !== true &&
+    next.lastVerdict !== 'green';
+  return preservesPreviousFailures ? { ...next, failingTests: previousFailingTests } : next;
+}
+
+/**
  * EI-19321275470651356: the log line `trackGateStall` emits for a `'noop'` tick.
  *
  * `'noop'` covers two conditions whose correct operator response is OPPOSITE, so they
@@ -2096,9 +2125,37 @@ export async function trackGateStall(
       inconclusive: null,
     };
   }
+  // EI-20854484804457933: fold the value read above before writing, then repeat the
+  // information-preserving guard against the CURRENT row value inside SQL. The latter is
+  // necessary because two checkpoint observations can SELECT concurrently and the older,
+  // less-informative snapshot can otherwise land after the completed run's populated verdict.
+  next = mergeGateHealthMonotonic(gh, next);
   await sql.unsafe(
     `UPDATE harness_shared.routines
-        SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
+        SET metadata = jsonb_set(
+          COALESCE(metadata, '{}'::jsonb),
+          '{gate_health}',
+          CASE
+            WHEN jsonb_array_length(
+              CASE WHEN jsonb_typeof(metadata->'gate_health'->'failingTests') = 'array'
+                THEN metadata->'gate_health'->'failingTests' ELSE '[]'::jsonb END
+            ) > 0
+            AND jsonb_array_length(
+              CASE WHEN jsonb_typeof($2::jsonb->'gate_health'->'failingTests') = 'array'
+                THEN $2::jsonb->'gate_health'->'failingTests' ELSE '[]'::jsonb END
+            ) = 0
+            AND COALESCE(($2::jsonb->'gate_health'->>'lastFromFresh')::boolean, false) = false
+            AND COALESCE($2::jsonb->'gate_health'->>'lastVerdict', '') <> 'green'
+            THEN jsonb_set(
+              $2::jsonb->'gate_health',
+              '{failingTests}',
+              metadata->'gate_health'->'failingTests',
+              true
+            )
+            ELSE $2::jsonb->'gate_health'
+          END,
+          true
+        ), updated_at = now()
       WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
     [ctx.installSlug, JSON.stringify({ gate_health: next })],
   );

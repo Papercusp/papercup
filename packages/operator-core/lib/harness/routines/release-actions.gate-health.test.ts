@@ -1,7 +1,6 @@
 /**
  * EI-7472 regression: `trackGateStall` writes the whole `gate_health` jsonb key
- * (the final UPDATE uses `metadata || {gate_health: next}`, a SHALLOW top-level
- * merge that REPLACES `gate_health`). The `watchdogAlerted` field is owned by the
+ * through an atomic path merge. The `watchdogAlerted` field is owned by the
  * separate green-stall-watchdog sweep, NOT this writer — so `next` must carry it
  * through or every red tick silently drops it, and the watchdog re-fires its
  * one-shot STALLED severe-event ~hourly for the life of a red streak (fleet-wide
@@ -85,6 +84,7 @@ vi.mock('../../severe-event-broadcast', async (importOriginal) => ({
 
 import {
   trackGateStall,
+  mergeGateHealthMonotonic,
   measureCandidateStaleness,
   gateRedStreakBroadcast,
   resolveIntegrationRoot,
@@ -96,9 +96,7 @@ import type { SystemActionCtx } from './system-actions';
 
 const ctx = { installSlug: 'test-slug', workspaceId: 'test-ws' } as unknown as SystemActionCtx;
 
-/** The final metadata write is `UPDATE harness_shared.routines SET metadata = … || $2`
- *  where `$2 = JSON.stringify({ gate_health: next })`. Pull the last such write's
- *  gate_health object back out. */
+/** Pull the last gate_health payload from the captured metadata write. */
 function lastGateHealthWrite(): Record<string, unknown> | null {
   for (let i = calls.length - 1; i >= 0; i--) {
     const c = calls[i];
@@ -312,6 +310,41 @@ describe('trackGateStall gate_health cross-writer preservation (EI-7472)', () =>
     expect(written!.watchdogAlerted).toBe(false);
     // Sanity: the green verdict reset the streak.
     expect(written!.consecutiveReds).toBe(0);
+  });
+});
+
+describe('trackGateStall monotonic gate_health merge (EI-20854484804457933)', () => {
+  it('preserves a completed run’s populated failures across a later non-fresh empty observation', async () => {
+    const prior = {
+      consecutiveReds: 1,
+      lastGreenAt: Date.now(),
+      lastFromFresh: true,
+      lastVerdict: 'not-green',
+      failingTests: ['real-failure.test.ts'],
+    };
+    seededGh = prior;
+
+    // The later observation has no failing set and cannot prove a fresh verdict (`from` is
+    // absent). The old whole-key replacement wrote `[]` here and erased the completed red.
+    const folded = mergeGateHealthMonotonic(prior, {
+      failingTests: [],
+      lastFromFresh: false,
+      lastVerdict: 'not-green',
+      observedCandidate: 'candidate-re',
+    });
+    expect(folded.failingTests).toEqual(prior.failingTests);
+
+    await trackGateStall(ctx, 'not-green', 'candidate-real');
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.failingTests).toEqual(['real-failure.test.ts']);
+    // Existing gate_health identifiers are intentionally short-sha'd to 12 characters.
+    expect(written!.observedCandidate).toBe('candidate-re');
+
+    const update = [...calls].reverse().find((call) => /UPDATE\s+harness_shared\.routines/i.test(call.query));
+    expect(update?.query).toContain('jsonb_array_length');
+    expect(update?.query).toContain('lastFromFresh');
   });
 });
 
