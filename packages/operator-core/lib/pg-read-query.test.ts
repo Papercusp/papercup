@@ -14,6 +14,7 @@ import {
   describeReferencedTableColumns,
   buildTenantScopeAdvisory,
   buildSilentNullPathAdvisory,
+  buildJsonbTypeofNegationAdvisory,
   buildClaimabilityAdvisory,
   buildCorpusNamespaceAdvisory,
   buildNativeToolAttributionAdvisory,
@@ -1131,6 +1132,49 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
       buildSilentNullPathAdvisory(
         "SELECT title FROM harness_shared.engineer_issues WHERE title = 'payload->''_ei''->>severity'",
       ),
+    ).toBeNull();
+  });
+});
+
+describe('buildJsonbTypeofNegationAdvisory (nullable JSONB predicates)', () => {
+  const TRAP =
+    "SELECT count(*) FILTER (WHERE NOT (jsonb_typeof(e.body->'sections') = 'array')) " +
+    'FROM harness_shared.coord_event_log e';
+
+  it('flags the negated comparison that drops absent-key rows', () => {
+    const advisory = buildJsonbTypeofNegationAdvisory(TRAP) ?? '';
+    expect(advisory).toContain('nullable jsonb_typeof negation');
+    expect(advisory).toContain('absent-key rows');
+    expect(advisory).toContain('coalesce');
+  });
+
+  it('handles direct NOT, nested function arguments, and inequality operators', () => {
+    const sql =
+      "SELECT * FROM t WHERE NOT ((jsonb_typeof(coalesce(payload->'sections', '{}'::jsonb)) <> 'object'))";
+    expect(buildJsonbTypeofNegationAdvisory(sql)).toContain('nullable jsonb_typeof negation');
+  });
+
+  it('stays silent for the positive comparison and for IS NULL checks', () => {
+    expect(
+      buildJsonbTypeofNegationAdvisory(
+        "SELECT * FROM t WHERE jsonb_typeof(payload->'sections') = 'array'",
+      ),
+    ).toBeNull();
+    expect(
+      buildJsonbTypeofNegationAdvisory(
+        "SELECT * FROM t WHERE NOT (jsonb_typeof(payload->'sections') IS NULL)",
+      ),
+    ).toBeNull();
+  });
+
+  it('does not match the shape when it appears only in a string or comment', () => {
+    expect(
+      buildJsonbTypeofNegationAdvisory(
+        "SELECT 'NOT (jsonb_typeof(payload->''sections'') = ''array'')' AS note",
+      ),
+    ).toBeNull();
+    expect(
+      buildJsonbTypeofNegationAdvisory('SELECT 1 -- NOT (jsonb_typeof(payload) = \'array\')'),
     ).toBeNull();
   });
 });

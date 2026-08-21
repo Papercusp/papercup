@@ -25,6 +25,7 @@ import {
   buildNativeToolAttributionAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
+  buildJsonbTypeofNegationAdvisory,
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -226,6 +227,12 @@ export default defineTool({
       } catch {
         nullPathAdvisory = null;
       }
+      let jsonbTypeofAdvisory: string | null = null;
+      try {
+        jsonbTypeofAdvisory = buildJsonbTypeofNegationAdvisory(sql);
+      } catch {
+        jsonbTypeofAdvisory = null;
+      }
       // A read that answers the WRONG QUESTION correctly: status='open' (or the
       // candidate view) treated as "what can be claimed". Distinct again from
       // both above — the row set is right for the question asked, and wrong for
@@ -295,6 +302,7 @@ export default defineTool({
           claimabilityAdvisory,
           backlogFlowAdvisory,
           nullPathAdvisory,
+          jsonbTypeofAdvisory,
           splitEvidenceAdvisory,
           nativeToolAdvisory,
           corpusNamespaceAdvisory,

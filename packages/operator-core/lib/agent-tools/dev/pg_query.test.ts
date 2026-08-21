@@ -157,6 +157,14 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(res as never).advisory).toContain('always-NULL accessor');
   });
 
+  it('attaches the nullable-jsonb negation advisory to a successful result', async () => {
+    const sql =
+      "SELECT count(*) FILTER (WHERE NOT (jsonb_typeof(body->'sections') = 'array')) " +
+      'FROM harness_shared.coord_event_log';
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never).advisory).toContain('nullable jsonb_typeof negation');
+  });
+
   it('attaches the epoch-unit advisory to a tool_invocations recency read', async () => {
     const sql =
       'SELECT min(invoked_at) FROM harness_shared.tool_invocations ' +

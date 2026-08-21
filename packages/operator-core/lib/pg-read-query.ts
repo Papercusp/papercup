@@ -1232,6 +1232,65 @@ export function buildSilentNullPathAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * Flag a negated comparison on `jsonb_typeof(...)`.
+ *
+ * PostgreSQL's `jsonb_typeof` returns SQL NULL when its input is absent/NULL.
+ * Therefore `NOT (jsonb_typeof(payload->'sections') = 'array')` is also NULL,
+ * not TRUE, and a WHERE/FILTER silently excludes exactly the rows the caller
+ * meant to count. This is a query-shape trap rather than a relation-specific
+ * schema fact, so the advisory is deliberately generic and best-effort.
+ */
+export function buildJsonbTypeofNegationAdvisory(rawSql: string): string | null {
+  const masked = rawSql.split('');
+  for (const [from, to] of sqlLiteralAndCommentRanges(rawSql)) {
+    for (let i = from; i < to; i++) {
+      if (masked[i] !== '\n') masked[i] = ' ';
+    }
+  }
+  const code = masked.join('');
+  const skipWhitespace = (from: number): number => {
+    let i = from;
+    while (i < code.length && /\s/.test(code[i] ?? '')) i++;
+    return i;
+  };
+  const functionName = 'jsonb_typeof';
+  const notRe = /\bNOT\b/gi;
+
+  for (let not = notRe.exec(code); not; not = notRe.exec(code)) {
+    let cursor = skipWhitespace(not.index + not[0].length);
+    while (code[cursor] === '(') cursor = skipWhitespace(cursor + 1);
+    if (code.slice(cursor, cursor + functionName.length).toLowerCase() !== functionName) continue;
+    cursor += functionName.length;
+    if (/[a-z0-9_$]/i.test(code[cursor] ?? '')) continue;
+    cursor = skipWhitespace(cursor);
+    if (code[cursor] !== '(') continue;
+
+    const open = cursor;
+    let depth = 1;
+    let close = -1;
+    for (cursor = open + 1; cursor < code.length; cursor++) {
+      if (code[cursor] === '(') depth++;
+      else if (code[cursor] === ')' && --depth === 0) {
+        close = cursor;
+        break;
+      }
+    }
+    if (close === -1) continue;
+
+    cursor = skipWhitespace(close + 1);
+    if (!/^(?:=|<>|!=|<=|>=|<|>)/.test(code.slice(cursor))) continue;
+    return (
+      '⚠ nullable jsonb_typeof negation: a missing JSONB key makes ' +
+      '`jsonb_typeof(...)` NULL, and `NOT (comparison)` stays NULL, so a WHERE/FILTER ' +
+      'silently drops the absent-key rows. Use `coalesce(jsonb_typeof(...) = ..., false)` ' +
+      'or test key presence with `?` / `NOT (... ? \'key\')`. (EI-19423706381923521.)'
+    );
+  }
+
+  return null;
+}
+
+/**
  * Flag a read that treats `status = 'open'` (or the candidate VIEW) as the
  * answer to "what can be claimed".
  *
