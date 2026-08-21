@@ -36,6 +36,9 @@ import {
   countTimeoutSignatures,
   attributeFailedTask,
   renderFailingFilesSummary,
+  failureEntryKey,
+  classifyStaleFailureEntries,
+  formatStaleFailureSummary,
 } from "./lib/vitest-summary.mjs";
 import { selectRelatedTests } from "./lib/related-tests.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
@@ -516,6 +519,26 @@ function sh(cmd) {
   }).trim();
 }
 
+// EI-21082496866331715: the shared tree can move while a long suite is running. Capture the
+// candidate ref before any child starts so a report can distinguish a file that was judged at the
+// old ref from one that is still the same blob at report time. Git reads are fail-soft: inability
+// to resolve a ref or blob is an attribution gap, not permission to call a failure stale.
+function gitOutput(args) {
+  try {
+    return (
+      execFileSync("git", args, {
+        cwd: ROOT,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim() || null
+    );
+  } catch {
+    return null;
+  }
+}
+
+const RUN_START_HEAD = gitOutput(["rev-parse", "HEAD"]);
+
 // Collect every file changed vs `base` — committed (base...HEAD), uncommitted
 // (working tree vs HEAD), and untracked.
 //
@@ -618,6 +641,51 @@ function invariantGuardChangedPaths() {
     invariantGuardChangedPathsCache = [];
   }
   return invariantGuardChangedPathsCache;
+}
+
+const AUTHORED_DOCS_ROOT = "apps/operator-docs/src/content/docs";
+const AUTHORED_DOC_GUARD_SCRIPT = "gen:authored-docs:check";
+const AUTHORED_DOC_PROJECTOR = "scripts/project-authored-docs.ts";
+const AUTHORED_DOCS_CONFIG = ".papercusp/docs.json";
+// Keep this mirror explicit, like scripts/project-authored-docs.ts: the files are owned by
+// gen:doc-projections, so passing them to the PG-backed authored-doc check would make one
+// generator's output look like a hand-edited authored document.
+const GENERATOR_OWNED_AUTHORED_DOCS = new Set([
+  "reference/agent-insights-index.md",
+  "reference/blueprint-catalog.md",
+  "reference/plans-index.md",
+  "reference/role-registry.md",
+  "reference/tool-catalog.md",
+]);
+
+/**
+ * Narrow the authored-doc drift check to the candidate docs that exist on disk.
+ *
+ * A projector/config change can alter the whole corpus, so it deliberately returns no args and
+ * leaves the check in full-corpus mode. A changed generated doc is likewise not an authored-doc
+ * candidate; when it is the only matching path, returning [] preserves the full-corpus check.
+ */
+function authoredDocGuardArgs() {
+  const changed = invariantGuardChangedPaths();
+  if (changed.includes(AUTHORED_DOC_PROJECTOR) || changed.includes(AUTHORED_DOCS_CONFIG))
+    return [];
+
+  const docsPrefix = `${AUTHORED_DOCS_ROOT}/`;
+  const docIds = [
+    ...new Set(
+      changed
+        .filter((file) => file.startsWith(docsPrefix) && /\.mdx?$/.test(file))
+        .map((file) => file.slice(docsPrefix.length))
+        .filter((docId) => !docId.startsWith("/") && !docId.split("/").includes(".."))
+        .filter((docId) => !GENERATOR_OWNED_AUTHORED_DOCS.has(docId))
+        .filter((docId) => existsSync(join(ROOT, AUTHORED_DOCS_ROOT, docId))),
+    ),
+  ].sort();
+  return docIds.length ? [`--files=${docIds.join(",")}`] : [];
+}
+
+function formatGuardArgs(args) {
+  return args?.length ? ` (guard args: ${args.join(" ")})` : "";
 }
 
 /**
@@ -1249,13 +1317,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // run — see the no-DB degrade note in project-authored-docs.ts. That degrade is what makes
     // registration honest rather than a permanently-red leg the fleet learns to ignore.
     workspace: "@papercusp/operator-core",
-    script: "gen:authored-docs:check",
+    script: AUTHORED_DOC_GUARD_SCRIPT,
     // No hostSuiteRatchet: authored-doc-projection.test.ts unit-tests the projection HELPERS,
     // it never execs `--check` over the real corpus, so no suite run implies this has executed.
     appliesTo: (f) =>
-      f.startsWith("apps/operator-docs/src/content/docs/") ||
-      f === "scripts/project-authored-docs.ts" ||
-      f === ".papercusp/docs.json",
+      f.startsWith(`${AUTHORED_DOCS_ROOT}/`) ||
+      f === AUTHORED_DOC_PROJECTOR ||
+      f === AUTHORED_DOCS_CONFIG,
   },
   {
     // EI-20272515693397454 — the SAME class as the entry above, one table over. There
@@ -2242,6 +2310,28 @@ for (const dir of workspaces) {
   wsByDir.set(dir, meta);
 }
 
+function failureRepoPath(entry) {
+  const workspace = wsByName.get(entry.workspace);
+  const file = String(entry.file ?? "").replaceAll("\\", "/");
+  // The parser returns workspace-relative paths. Reject an unexpected absolute/traversal path
+  // rather than allowing a failure line to make us inspect a different workspace's blob.
+  if (
+    !workspace ||
+    !file ||
+    file.startsWith("/") ||
+    file.split("/").some((part) => part === "..")
+  ) {
+    return null;
+  }
+  return `${workspace.dir}/${file}`;
+}
+
+function gitBlobAt(ref, repoPath) {
+  return ref && repoPath
+    ? gitOutput(["rev-parse", `${ref}:${repoPath}`])
+    : null;
+}
+
 function depsOf(pkg) {
   return new Set(
     Object.keys({
@@ -2549,14 +2639,19 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   // invariant inside it.
   if (guard.hostSuiteRatchet && coversHostSuite(tasks, ws.name)) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
+  const guardArgs =
+    guard.script === AUTHORED_DOC_GUARD_SCRIPT ? authoredDocGuardArgs() : [];
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
   if (!printAffected)
-    outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
+    outSync(
+      `(repo-wide invariant guard: ${ws.name} :: ${guard.script})${formatGuardArgs(guardArgs)}`,
+    );
   tasks.push({
     ws,
     script: guard.script,
     notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
     ...(guard.forwardBase ? { guardBase: repoWideGuardBase } : {}),
+    ...(guardArgs.length ? { guardArgs } : {}),
   });
 }
 
@@ -2711,11 +2806,11 @@ const derivationSummary = summarizeDerivation({
   range: rangeFrom && rangeTo ? `${rangeFrom}..${rangeTo}` : null,
 });
 outSync(
-  formatDerivationMarker(derivationSummary, {
+  `${formatDerivationMarker(derivationSummary, {
     workspaces: affected.length,
     guards: selectedInvariantGuards.length,
     tasks: tasks.length,
-  }),
+  })} runStartHead=${RUN_START_HEAD ?? "unknown"}`,
 );
 for (const line of derivationBannerLines(derivationSummary, {
   workspaces: affected.length,
@@ -2773,7 +2868,9 @@ plannedTaskCount = tasks.length;
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) {
   const guardBase = t.guardBase ? ` (guard base: ${t.guardBase})` : "";
-  outSync(`  - ${t.ws.name} :: ${t.script}${guardBase}`);
+  outSync(
+    `  - ${t.ws.name} :: ${t.script}${guardBase}${formatGuardArgs(t.guardArgs)}`,
+  );
 }
 outSync(
   formatTaskBudgetMarker({
@@ -3117,6 +3214,7 @@ const taskContexts = tasks.map((t) => ({
       wsAbsDir: join(ROOT, t.ws.dir),
       script: t.script,
     }),
+    ...(t.guardArgs ?? []),
     ...(t.guardBase ? ["--base", t.guardBase] : []),
   ],
   cacheProvenance: dependencyProvenanceForTask(t),
@@ -3928,6 +4026,30 @@ if (failed) {
     entries: failedFileEntries,
     unattributed: unattributedTasks,
     transformCulprits: transformCulpritPaths,
+  })) {
+    errSync(line);
+  }
+  // EI-21082496866331715: git-sync may commit a fix while a long task is still running. Compare
+  // each named failure's blob at the captured start ref with the current HEAD, but keep this as an
+  // advisory block: the existing task/file verdict contracts and exit code must not change.
+  const reportHead = gitOutput(["rev-parse", "HEAD"]);
+  const runStartBlobs = Object.create(null);
+  const reportBlobs = Object.create(null);
+  for (const entry of failedFileEntries) {
+    const key = failureEntryKey(entry);
+    const repoPath = failureRepoPath(entry);
+    runStartBlobs[key] = gitBlobAt(RUN_START_HEAD, repoPath);
+    reportBlobs[key] = gitBlobAt(reportHead, repoPath);
+  }
+  const staleFailureClassification = classifyStaleFailureEntries({
+    entries: failedFileEntries,
+    runStartBlobs,
+    reportBlobs,
+  });
+  for (const line of formatStaleFailureSummary({
+    runStartHead: RUN_START_HEAD,
+    reportHead,
+    stale: staleFailureClassification.stale,
   })) {
     errSync(line);
   }
