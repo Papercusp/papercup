@@ -34,6 +34,7 @@ import {
   gitnexusFacade,
   gitnexusOpForIntent,
   gitnexusRefusal,
+  truncationNotice,
 } from './gitnexus-facade.ts';
 import { isTrustworthyEmpty } from './contracts.ts';
 import { ACCEPTANCE_CORPUS } from './acceptance-corpus.ts';
@@ -125,12 +126,25 @@ describe.skipIf(!AVAILABLE)('gitnexus facade — live backend', () => {
   it(
     'impact discriminates by direction and errors honestly on an unknown target',
     async () => {
+      // limit:5 keeps the answer inside the bridge's 20,000-char response
+      // budget so the JSON parses. See the truncation test below for what
+      // happens above it — that is a real, measured boundary, not a guess.
       const down = await gitnexusFacade('impact', {
         name: 'managedSpawn',
         direction: 'downstream',
+        limit: 5,
       });
       expect(down.error).toBeNull();
       expect(down.truncation.totalAvailable).toBeGreaterThan(0);
+
+      const up = await gitnexusFacade('impact', {
+        name: 'managedSpawn',
+        direction: 'upstream',
+        limit: 5,
+      });
+      // Direction must actually change the answer. If it did not, `impact`
+      // would share `query`'s defect of not varying with its input (D-021).
+      expect(up.truncation.totalAvailable).not.toBe(down.truncation.totalAvailable);
 
       const missing = await gitnexusFacade('impact', {
         name: 'zzz_no_such_symbol_control_zzz',
@@ -140,6 +154,33 @@ describe.skipIf(!AVAILABLE)('gitnexus facade — live backend', () => {
       // presented as a real answer.
       expect(missing.error).toMatch(/not found/i);
       expect(isTrustworthyEmpty(missing)).toBe(true);
+    },
+    60_000,
+  );
+
+  it(
+    'a budget-exceeding answer is reported as TRUNCATED, never as empty',
+    async () => {
+      // The defect this pins: the bridge applies its 20,000-char budget to the
+      // serialized JSON without preserving validity, so a large answer comes
+      // back cut mid-string and unparseable. Reported naively that reads as
+      // "no impact" — the exact inversion of the truth, since the largest
+      // blast radii are what overflow the budget in the first place.
+      const big = await gitnexusFacade('impact', {
+        name: 'managedSpawn',
+        direction: 'downstream',
+        limit: 100,
+      });
+      expect(big.truncation.truncated).toBe(true);
+      // Asserted against the ONE canonical notice rather than a hand-copied
+      // spelling of it. What this still catches is the thing that matters:
+      // the truncated path being taken at all, instead of the answer falling
+      // through to "unparseable envelope" or to a measured-looking zero. The
+      // notice's own wording contract is pinned in the unit suite.
+      expect(big.error).toBe(truncationNotice('impact'));
+      expect(big.freshness.health).toBe('degraded');
+      // Must not masquerade as a measured zero.
+      expect(big.truncation.totalAvailable).not.toBe(0);
     },
     60_000,
   );
