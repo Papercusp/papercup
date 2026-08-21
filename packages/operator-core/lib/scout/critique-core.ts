@@ -24,7 +24,7 @@
  */
 import { dedupSignature, titleSimilarity } from '../harness/improvements/digest';
 
-export type CorpusKind = 'plan' | 'decision' | 'idea' | 'improvement';
+export type CorpusKind = 'plan' | 'decision' | 'idea' | 'improvement' | 'memory' | 'digest-pattern';
 
 /** A prior the Hive has already considered — what novelty is measured against. */
 export interface CorpusEntry {

@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_DREAM_PASS_CONFIG,
+  DEFAULT_DREAM_REVIEW_CONFIG,
   DEFAULT_DREAM_SAMPLER_CONFIG,
   DREAM_FRAGMENT_KINDS,
   resolveDreamPassConfig,
+  resolveDreamReviewConfig,
   resolveDreamSamplerConfig,
 } from './dream-config';
 
@@ -58,5 +60,39 @@ describe('resolveDreamPassConfig', () => {
     [{ timeoutMs: Number.POSITIVE_INFINITY }, 'timeoutMs'],
   ] as const)('rejects invalid pass config %o', (override, message) => {
     expect(() => resolveDreamPassConfig(override)).toThrow(message);
+  });
+});
+
+describe('resolveDreamReviewConfig', () => {
+  it('ships a stricter independent-review default than the cheap dreamer', () => {
+    expect(DEFAULT_DREAM_REVIEW_CONFIG).toEqual({
+      model: 'claude-opus-5',
+      duplicateSimilarityThreshold: 0.85,
+      minTotalScore: 5,
+      maxNoteChars: 600,
+      maxOutputTokens: 1_024,
+      timeoutMs: 180_000,
+    });
+    expect(DEFAULT_DREAM_REVIEW_CONFIG.model).not.toBe(DEFAULT_DREAM_PASS_CONFIG.model);
+  });
+
+  it('trims overrides without mutating the defaults', () => {
+    expect(resolveDreamReviewConfig({ model: ' reviewer-model ', minTotalScore: 6 })).toMatchObject({
+      model: 'reviewer-model',
+      minTotalScore: 6,
+    });
+    expect(DEFAULT_DREAM_REVIEW_CONFIG.minTotalScore).toBe(5);
+  });
+
+  it.each([
+    [{ model: '   ' }, 'model'],
+    [{ duplicateSimilarityThreshold: 0 }, 'duplicateSimilarityThreshold'],
+    [{ duplicateSimilarityThreshold: 1.1 }, 'duplicateSimilarityThreshold'],
+    [{ minTotalScore: 7 }, 'minTotalScore'],
+    [{ maxNoteChars: 0 }, 'maxNoteChars'],
+    [{ maxOutputTokens: 1.5 }, 'maxOutputTokens'],
+    [{ timeoutMs: Number.POSITIVE_INFINITY }, 'timeoutMs'],
+  ] as const)('rejects invalid review config %o', (override, message) => {
+    expect(() => resolveDreamReviewConfig(override)).toThrow(message);
   });
 });

@@ -57,7 +57,7 @@ export interface RunDreamPassOptions {
   admissionBackstopGraceMs?: number;
 }
 
-function validateFragments(fragments: readonly DreamFragment[]): void {
+export function validateDreamFragments(fragments: readonly DreamFragment[]): void {
   if (fragments.length < DREAM_PASS_MIN_FRAGMENTS || fragments.length > DREAM_PASS_MAX_FRAGMENTS) {
     throw new RangeError(`dream pass requires ${DREAM_PASS_MIN_FRAGMENTS}-${DREAM_PASS_MAX_FRAGMENTS} fragments`);
   }
@@ -76,7 +76,7 @@ export function buildDreamPassPrompt(
   fragments: readonly DreamFragment[],
   options: BuildDreamPassPromptOptions = {},
 ): { system: string; user: string } {
-  validateFragments(fragments);
+  validateDreamFragments(fragments);
   const maxFragmentChars = options.maxFragmentChars ?? DEFAULT_DREAM_SAMPLER_CONFIG.maxTextChars;
   const maxInsightChars = options.maxInsightChars ?? DEFAULT_DREAM_PASS_CONFIG.maxInsightChars;
   if (!Number.isInteger(maxFragmentChars) || maxFragmentChars <= 0) {
