@@ -816,6 +816,17 @@ export interface PipelinePosition {
      */
     checkpointRunInFlight?: {
       active: boolean;
+      /** Checkpoint CLI result-marker presence from the most recent finished manual run. */
+      terminalMarker?: boolean;
+      /** EI-210996: systemd-owned abnormal-terminal evidence for that finished run. */
+      terminalEvidence?: {
+        source: 'systemd-exec-stop-post';
+        candidate: string | null;
+        serviceResult: string;
+        exitCode: string;
+        exitStatus: string;
+        abnormal: boolean;
+      };
       /**
        * EI-19395922387569240: WHERE `active` came from, because the two sources have very
        * different trust — the same reasoning as `candidateSource` below.
@@ -3310,6 +3321,12 @@ export function mapCheckpointRunInFlight(
   const candMarker = active && !marker && candidateMarker ? candidateMarker : null;
   return {
     active,
+    ...(!active && cachedDescribesNow && cachedRun!.terminalMarker !== undefined
+      ? { terminalMarker: cachedRun!.terminalMarker }
+      : {}),
+    ...(!active && cachedDescribesNow && cachedRun!.terminalEvidence
+      ? { terminalEvidence: cachedRun!.terminalEvidence }
+      : {}),
     // Emitted only when the lock answered, so the cache-only shape is byte-identical to before.
     ...(lockDecides ? { activeSource: 'run-lock' as const } : {}),
     // The marker is an observation the run published about ITSELF; `candidate` here is at best a

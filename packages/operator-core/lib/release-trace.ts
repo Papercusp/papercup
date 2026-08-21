@@ -112,6 +112,18 @@ function gateIsActivelyJudgingTarget(input: Pick<ReleaseTraceInput, 'position' |
   return checkpointRun?.active === true && sameSha(input.position.targetSha, checkpointRun.candidate);
 }
 
+/** EI-210996: recognize a producer death from evidence written by systemd, not by the
+ * checkpoint process that may have been SIGKILLed. Candidate matching prevents a stale
+ * finished-unit log from contaminating a newer exact-SHA trace. */
+function checkpointRunTerminalInconclusive(input: Pick<ReleaseTraceInput, 'position' | 'gate'>) {
+  const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
+  const evidence = checkpointRun?.terminalEvidence;
+  return checkpointRun?.active === false && checkpointRun.terminalMarker === false && evidence?.abnormal === true &&
+    sameSha(input.position.targetSha, evidence.candidate)
+    ? evidence
+    : null;
+}
+
 /**
  * Prefer the canonical gate owner over a historical release-fixer record.
  *
@@ -214,8 +226,18 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const add = (code: string, blocking: boolean, summary: string) => constraints.push({ code, blocking, summary });
   const targetWasGateTested = gateJudgedTarget(input);
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
+  const terminalInconclusive = checkpointRunTerminalInconclusive(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
+  if (terminalInconclusive) {
+    add(
+      'checkpoint-run-inconclusive',
+      true,
+      `The checkpoint for ${terminalInconclusive.candidate ?? position.targetSha ?? 'this target'} ended ` +
+        `${terminalInconclusive.serviceResult}/${terminalInconclusive.exitCode}:${terminalInconclusive.exitStatus} ` +
+        'without a valid checkpoint result marker. This is explicitly INCONCLUSIVE, not red or green.',
+    );
+  }
   if (position.dirtyUncommitted) {
     add('dirty-path', true, 'The path has uncommitted edits; its reported target SHA predates those edits.');
   }
@@ -291,6 +313,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const targetWasGateTested = gateJudgedTarget(input);
   const checkpointRun = gate.checkpointRunInFlight ?? position.gate.checkpointRunInFlight;
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
+  const terminalInconclusive = checkpointRunTerminalInconclusive(input);
   if (!targetSha) {
     return {
       name: 'dev:pipeline_position',
@@ -320,6 +343,16 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
           reason: 'This path is loaded from staging by its runtime; a release deploy cannot activate it.',
         }
       : null;
+  }
+  if (terminalInconclusive) {
+    return {
+      name: 'release:checkpoint-run',
+      args: {},
+      reason:
+        `The previous checkpoint for ${terminalInconclusive.candidate ?? targetSha} terminated ` +
+        `${terminalInconclusive.serviceResult}/${terminalInconclusive.exitCode}:${terminalInconclusive.exitStatus} ` +
+        'without a verdict. Its terminal state is inconclusive; launch one fresh guarded verdict after fixing the cause.',
+    };
   }
   if (!position.positions.onStaging && !targetWasGateTested) {
     if (targetIsUnderActiveVerification) {

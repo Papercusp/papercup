@@ -205,6 +205,14 @@ export interface ActiveCheckpointCheck {
    *  This is reported on trusted post-unit exits while preserving `active:false` for a unit
    *  that really finished. */
   terminal_marker?: boolean;
+  /**
+   * EI-210996: out-of-process terminal evidence appended by systemd's ExecStopPost.
+   * Unlike the checkpoint CLI's own result marker, this survives SIGKILL/OOM because
+   * the user manager writes it after the main process has exited. `candidate` comes
+   * from the same immutable per-run log, so readers can refuse to attribute an old
+   * abnormal exit to a newer candidate.
+   */
+  terminal_evidence?: CheckpointSystemdTerminalEvidence;
   /** Stable symlink for the active manual run's output (`/tmp/<unit>.log`). Null/absent
    *  when liveness came only from the shared run lock (for example the hourly cron), because
    *  that process does not publish its output path through the manual systemd unit. Readers
@@ -530,6 +538,18 @@ function parseSystemctlShow(stdout: string): Record<string, string> {
  *  would pull side effects into this low-level launcher. */
 const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
 
+/** Written by the transient unit's ExecStopPost, outside the checkpoint process. */
+export const GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER = '__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__';
+
+export interface CheckpointSystemdTerminalEvidence {
+  source: 'systemd-exec-stop-post';
+  candidate: string | null;
+  service_result: string;
+  exit_code: string;
+  exit_status: string;
+  abnormal: boolean;
+}
+
 /** Return true only for the standalone production result line, with valid result JSON. Captured
  *  suite fixtures are prefixed/defanged and must not turn a finished-unit probe into a verdict. */
 function hasCheckpointResultMarker(log: string | null): boolean {
@@ -553,12 +573,41 @@ function hasCheckpointResultMarker(log: string | null): boolean {
 
 /** Read the stable unit path only for a trusted post-unit transition. Null preserves the
  *  distinction between an unreadable log and a readable log that contains no verdict. */
-function readTerminalMarker(
+export function parseCheckpointSystemdTerminalEvidence(
+  log: string | null,
+): CheckpointSystemdTerminalEvidence | undefined {
+  if (!log) return undefined;
+  let tuple: Omit<CheckpointSystemdTerminalEvidence, 'source' | 'candidate' | 'abnormal'> | undefined;
+  for (const line of log.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith(`${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} `)) continue;
+    const match = trimmed.match(
+      /^__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=(\S+) exit_code=(\S+) exit_status=(\S+)$/,
+    );
+    if (!match) continue;
+    tuple = { service_result: match[1]!, exit_code: match[2]!, exit_status: match[3]! };
+  }
+  if (!tuple) return undefined;
+  const candidates = parseCheckpointCandidates(log);
+  return {
+    source: 'systemd-exec-stop-post',
+    candidate: candidates[candidates.length - 1] ?? null,
+    ...tuple,
+    abnormal: !(tuple.service_result === 'success' && tuple.exit_code === 'exited' && tuple.exit_status === '0'),
+  };
+}
+
+function readTerminalState(
   unit: string,
   readLogTail: (logPath: string) => string | null,
-): boolean | undefined {
+): { terminalMarker?: boolean; terminalEvidence?: CheckpointSystemdTerminalEvidence } {
   const log = readLogTail(checkpointLatestLogPath(unit));
-  return log == null ? undefined : hasCheckpointResultMarker(log);
+  if (log == null) return {};
+  const terminalEvidence = parseCheckpointSystemdTerminalEvidence(log);
+  return {
+    terminalMarker: hasCheckpointResultMarker(log),
+    ...(terminalEvidence ? { terminalEvidence } : {}),
+  };
 }
 
 function gitOutput(root: string, args: string[], execFn: ExecSyncLike): string | null {
@@ -1072,11 +1121,12 @@ export function checkActiveCheckpointRun(
         held_externally: true,
       };
     }
-    const terminalMarker = readTerminalMarker(unit, readLogTail);
+    const terminal = readTerminalState(unit, readLogTail);
     return {
       active: false,
       unit,
-      ...(terminalMarker === undefined ? {} : { terminal_marker: terminalMarker }),
+      ...(terminal.terminalMarker === undefined ? {} : { terminal_marker: terminal.terminalMarker }),
+      ...(terminal.terminalEvidence ? { terminal_evidence: terminal.terminalEvidence } : {}),
     };
   }
   // EI-9180 self-heal: MainPID=0 means systemd has no main process to report (nothing to
@@ -1084,11 +1134,12 @@ export function checkActiveCheckpointRun(
   // `kill(pid, 0)` proves is gone means systemd's ActiveState is stale — don't trust it.
   const mainPid = Number(props.MainPID ?? '0');
   if (Number.isFinite(mainPid) && mainPid > 0 && !pidAlive(mainPid)) {
-    const terminalMarker = readTerminalMarker(unit, readLogTail);
+    const terminal = readTerminalState(unit, readLogTail);
     return {
       active: false,
       unit,
-      ...(terminalMarker === undefined ? {} : { terminal_marker: terminalMarker }),
+      ...(terminal.terminalMarker === undefined ? {} : { terminal_marker: terminal.terminalMarker }),
+      ...(terminal.terminalEvidence ? { terminal_evidence: terminal.terminalEvidence } : {}),
     };
   }
   const startedAt =
@@ -1298,6 +1349,14 @@ export function buildCheckpointSystemdArgv(
   const inner =
     `${link}${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
     `apps/operator/lib/release/green-checkpoint.ts > ${target} 2>&1`;
+  // EI-210996: the checkpoint process cannot publish its own verdict after SIGKILL/OOM.
+  // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
+  // tuple to this run's immutable log. `%%`/`$$` deliberately survive systemd's own
+  // specifier/environment expansion and become printf placeholders + shell variables.
+  const terminalMarkerCommand =
+    `/bin/sh -c 'printf "\\n${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} ` +
+    `service_result=%%s exit_code=%%s exit_status=%%s\\n" ` +
+    `"$$SERVICE_RESULT" "$$EXIT_CODE" "$$EXIT_STATUS" >> "${target}"'`;
   // WI-4494: a detached unit does NOT inherit the launcher's env (same reason the partial-green
   // flag above has to be forwarded explicitly), so the record target must be passed as --setenv or
   // the run has no idea whose gate it is judging and silently declines to record.
@@ -1311,6 +1370,8 @@ export function buildCheckpointSystemdArgv(
     `--unit=${checkpointUnitForRoot(root)}`,
     `--property=MemoryMax=${memoryMaxG}G`,
     '--property=MemorySwapMax=0',
+    '--property=ManagedOOMPreference=avoid',
+    `--property=ExecStopPost=${terminalMarkerCommand}`,
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,

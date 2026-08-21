@@ -333,6 +333,17 @@ export interface GitPipelineSnapshot {
    *  every other snapshot read. */
   activeRun: {
     active: boolean;
+    /** Whether the checkpoint CLI emitted its own valid terminal result line. */
+    terminalMarker?: boolean;
+    /** EI-210996: systemd-owned terminal tuple, available even after SIGKILL/OOM. */
+    terminalEvidence?: {
+      source: 'systemd-exec-stop-post';
+      candidate: string | null;
+      serviceResult: string;
+      exitCode: string;
+      exitStatus: string;
+      abnormal: boolean;
+    };
     /** Stable symlink to the active manual run's log. Absent when the run was observed only
      *  through the shared lock and its output path is therefore unknown. */
     logPath?: string | null;
@@ -634,6 +645,15 @@ export interface GitPipelineSnapshotOpts {
    *  checkActiveCheckpointRun, dynamic-imported only when opted in). */
   probeActiveRun?: (root: string) => {
     active: boolean;
+    terminal_marker?: boolean;
+    terminal_evidence?: {
+      source: 'systemd-exec-stop-post';
+      candidate: string | null;
+      service_result: string;
+      exit_code: string;
+      exit_status: string;
+      abnormal: boolean;
+    };
     log_path?: string | null;
     candidate?: string | null;
     started_at?: string | null;
@@ -646,6 +666,15 @@ export interface GitPipelineSnapshotOpts {
  *  `activeRun` shape (systemd timestamp → epoch ms; absent fields → null). */
 export function mapActiveRun(r: {
   active: boolean;
+  terminal_marker?: boolean;
+  terminal_evidence?: {
+    source: 'systemd-exec-stop-post';
+    candidate: string | null;
+    service_result: string;
+    exit_code: string;
+    exit_status: string;
+    abnormal: boolean;
+  };
   log_path?: string | null;
   candidate?: string | null;
   // EI-19327704778173646: refire provenance from the probe, carried through so a caller
@@ -660,6 +689,19 @@ export function mapActiveRun(r: {
   const progressAtMs = r.progress_at ? Date.parse(r.progress_at) : NaN;
   return {
     active: r.active,
+    ...(r.terminal_marker === undefined ? {} : { terminalMarker: r.terminal_marker }),
+    ...(r.terminal_evidence
+      ? {
+          terminalEvidence: {
+            source: r.terminal_evidence.source,
+            candidate: r.terminal_evidence.candidate,
+            serviceResult: r.terminal_evidence.service_result,
+            exitCode: r.terminal_evidence.exit_code,
+            exitStatus: r.terminal_evidence.exit_status,
+            abnormal: r.terminal_evidence.abnormal,
+          },
+        }
+      : {}),
     ...(r.log_path ? { logPath: r.log_path } : {}),
     candidate: r.candidate ?? null,
     // Emitted ONLY on an actual refire, so the common reply shape is unchanged.

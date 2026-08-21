@@ -37,6 +37,7 @@ import {
   CHECKPOINT_MAX_RUNTIME_SEC,
   MANUAL_CHECKPOINT_WATCHDOG_ENV,
   MANUAL_CHECKPOINT_WATCHDOG_MS,
+  GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER,
   CHECKPOINT_RUN_LOCK_STALE_MS,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
@@ -92,6 +93,12 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(argv).toContain('--no-block');
     expect(argv).toContain('--property=MemoryMax=16G');
     expect(argv).toContain('--property=MemorySwapMax=0');
+    expect(argv).toContain('--property=ManagedOOMPreference=avoid');
+    const stopPost = argv.find((arg) => arg.startsWith('--property=ExecStopPost='));
+    expect(stopPost).toContain(GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER);
+    expect(stopPost).toContain('service_result=%%s');
+    expect(stopPost).toContain('$$SERVICE_RESULT');
+    expect(stopPost).toContain('>> "/tmp/cp.log"');
     expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
     expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);
     expect(argv).toContain('--working-directory=/tree');
@@ -389,6 +396,35 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     );
 
     expect(r).toMatchObject({ active: false, terminal_marker: false });
+  });
+
+  it('EI-210996: exposes systemd-owned OOM terminal evidence as abnormal and candidate-bound', () => {
+    const log = [
+      '[green-checkpoint] checkpointing candidate 1f64eb2d (base abc12345)',
+      `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=oom-kill exit_code=killed exit_status=KILL`,
+    ].join('\n');
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' }),
+      () => null,
+      undefined,
+      undefined,
+      undefined,
+      vi.fn(() => log),
+    );
+
+    expect(r).toMatchObject({
+      active: false,
+      terminal_marker: false,
+      terminal_evidence: {
+        source: 'systemd-exec-stop-post',
+        candidate: '1f64eb2d',
+        service_result: 'oom-kill',
+        exit_code: 'killed',
+        exit_status: 'KILL',
+        abnormal: true,
+      },
+    });
   });
 
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {
