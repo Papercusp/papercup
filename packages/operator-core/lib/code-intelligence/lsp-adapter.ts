@@ -517,6 +517,266 @@ export async function lspQuery(
   }
 }
 
+/**
+ * How long to wait for a `publishDiagnostics` push after the project is ready.
+ * Diagnostics are not requestable on this server version, so this is the only
+ * bound available; on timeout we report DEGRADED rather than "clean".
+ */
+const DIAGNOSTICS_PUSH_TIMEOUT_MS = 15_000;
+
+/** LSP `DiagnosticSeverity`, 1-based per spec. */
+const SEVERITY_NAME: Record<number, string> = {
+  1: 'error',
+  2: 'warning',
+  3: 'information',
+  4: 'hint',
+};
+
+/**
+ * Read the diagnostics the server has published for one file.
+ *
+ * The false-empty trap here is DIFFERENT from the definition path's, and worse
+ * in one specific way: diagnostics are PUSHED, so a file the server has never
+ * spoken about produces exactly the same empty array as a genuinely clean one.
+ * We therefore require an OBSERVED publish for the URI and return
+ * `health:'degraded'` + an error when none arrived — "I have not been told"
+ * must never render as "this file is clean".
+ */
+export async function lspDiagnostics(query: {
+  file: string;
+  rootPath: string;
+}): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  const intent: CodeIntelIntent = 'diagnostics';
+  const fail = (error: string, health: BackendHealth = 'unhealthy'): CodeIntelAnswer => ({
+    backend: 'lsp-adapter',
+    intent,
+    query: query.file,
+    sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: { health, indexedAt: null, staleVsDisk: null, indexedCommit: null },
+    latencyMs: Date.now() - started,
+    error,
+  });
+
+  const language = languageForFile(query.file);
+  if (!language) return fail(`no pinned language server for file ${query.file}`, 'unknown');
+
+  try {
+    const client = await getClient(language, query.rootPath);
+    const uri = await ensureOpen(client, query.file);
+    const ready = await awaitProjectReady(client);
+    if (!ready) {
+      return fail(
+        `language server did not finish loading the project within ` +
+          `${PROJECT_READY_TIMEOUT_MS}ms; diagnostics from a half-loaded program ` +
+          `are not evidence of a clean file`,
+        'degraded',
+      );
+    }
+
+    const deadline = Date.now() + DIAGNOSTICS_PUSH_TIMEOUT_MS;
+    while (!client.diagnostics.has(uri) && Date.now() < deadline) {
+      if (client.health === 'unhealthy') return fail(client.lastError ?? 'server died');
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    const entry = client.diagnostics.get(uri);
+    if (!entry) {
+      return fail(
+        `no textDocument/publishDiagnostics received for ${query.file} within ` +
+          `${DIAGNOSTICS_PUSH_TIMEOUT_MS}ms. Reporting DEGRADED rather than "clean": ` +
+          `an absent push is silence, not a clean bill of health`,
+        'degraded',
+      );
+    }
+
+    const rel = query.file.startsWith(query.rootPath + '/')
+      ? query.file.slice(query.rootPath.length + 1)
+      : query.file;
+    const sites: SymbolSite[] = entry.diags.map((d) => ({
+      path: rel,
+      line1: toOneIndexed('lsp-adapter', d.range?.start?.line),
+      kind: SEVERITY_NAME[d.severity ?? 0] ?? null,
+      detail: [d.source, d.code, d.message].filter(Boolean).join(' ') || null,
+    }));
+
+    return {
+      backend: 'lsp-adapter',
+      intent,
+      query: query.file,
+      sites,
+      truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+      freshness: {
+        health: client.health,
+        indexedAt: new Date(entry.receivedAt).toISOString(),
+        staleVsDisk: false,
+        indexedCommit: null,
+      },
+      latencyMs: Date.now() - started,
+      error: null,
+    };
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * Search declared symbols across the workspace by name (`workspace/symbol`).
+ *
+ * `rootFile` picks WHICH pinned server answers — the protocol has one symbol
+ * index per server, so a TypeScript query cannot see Rust symbols and vice
+ * versa. We take a representative file rather than guessing from the query
+ * string, because guessing would silently answer from the wrong index.
+ */
+export async function lspWorkspaceSymbols(query: {
+  name: string;
+  rootPath: string;
+  language: LspLanguage;
+  limit?: number;
+}): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  const intent: CodeIntelIntent = 'symbol-search';
+  const limit = query.limit ?? 50;
+  const fail = (error: string, health: BackendHealth = 'unhealthy'): CodeIntelAnswer => ({
+    backend: 'lsp-adapter',
+    intent,
+    query: query.name,
+    sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: { health, indexedAt: null, staleVsDisk: null, indexedCommit: null },
+    latencyMs: Date.now() - started,
+    error,
+  });
+
+  try {
+    const client = await getClient(query.language, query.rootPath);
+    const ready = await awaitProjectReady(client);
+    if (!ready) {
+      return fail(
+        `language server did not finish loading the project within ` +
+          `${PROJECT_READY_TIMEOUT_MS}ms; a symbol index that is still building ` +
+          `returns a PARTIAL list that looks complete`,
+        'degraded',
+      );
+    }
+
+    const raw = await client.connection.sendRequest('workspace/symbol', { query: query.name });
+    const list = Array.isArray(raw) ? raw : [];
+    const all = list
+      .map((entry): SymbolSite | null => {
+        const e = entry as { location?: unknown; containerName?: string; kind?: number };
+        const site = toSite(e.location, query.rootPath);
+        if (!site) return null;
+        return { ...site, detail: e.containerName ?? null };
+      })
+      .filter((s): s is SymbolSite => s !== null);
+
+    const sites = all.slice(0, limit);
+    return {
+      backend: 'lsp-adapter',
+      intent,
+      query: query.name,
+      sites,
+      truncation: {
+        // Stated, never inferred from length: the caller must be able to tell
+        // a 50-of-50 cut from a true 50.
+        truncated: all.length > limit,
+        totalAvailable: all.length,
+        continuation: null,
+      },
+      freshness: {
+        health: client.health,
+        indexedAt: new Date(client.startedAt).toISOString(),
+        staleVsDisk: null,
+        indexedCommit: null,
+      },
+      latencyMs: Date.now() - started,
+      error: null,
+    };
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * Compute a rename's affected sites WITHOUT applying anything.
+ *
+ * This asks the server for a `WorkspaceEdit` and reads it as a REPORT. Nothing
+ * in this adapter writes a file: applying an edit would bypass the PreToolUse
+ * lock arbitration that keeps this shared checkout collision-free, which is
+ * why application is a separately gated capability (P-013) rather than a flag
+ * on this function. The name carries "preview" for the same reason the
+ * corpus's PREVIEW_ONLY_ALLOWLIST exists — the promise is verified by the
+ * no-mutation case, not by the name.
+ */
+export async function lspRenamePreview(query: LspQuery & { newName: string }): Promise<CodeIntelAnswer> {
+  const started = Date.now();
+  const intent: CodeIntelIntent = 'rename-preview';
+  const q = `${query.file}:${query.line1}:${query.character}→${query.newName}`;
+  const fail = (error: string, health: BackendHealth = 'unhealthy'): CodeIntelAnswer => ({
+    backend: 'lsp-adapter',
+    intent,
+    query: q,
+    sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: { health, indexedAt: null, staleVsDisk: null, indexedCommit: null },
+    latencyMs: Date.now() - started,
+    error,
+  });
+
+  const language = languageForFile(query.file);
+  if (!language) return fail(`no pinned language server for file ${query.file}`, 'unknown');
+
+  try {
+    const client = await getClient(language, query.rootPath);
+    const uri = await ensureOpen(client, query.file);
+    const ready = await awaitProjectReady(client);
+    if (!ready) {
+      return fail(
+        `language server did not finish loading the project within ` +
+          `${PROJECT_READY_TIMEOUT_MS}ms; a rename plan computed from a half-loaded ` +
+          `program MISSES call sites, which is the most dangerous possible partial answer`,
+        'degraded',
+      );
+    }
+
+    const raw = (await client.connection.sendRequest('textDocument/rename', {
+      textDocument: { uri },
+      position: { line: query.line1 - 1, character: query.character },
+      newName: query.newName,
+    })) as
+      | { changes?: Record<string, Array<{ range?: { start?: { line?: number } }; newText?: string }>> }
+      | null;
+
+    const sites: SymbolSite[] = [];
+    for (const [editUri, edits] of Object.entries(raw?.changes ?? {})) {
+      for (const edit of edits ?? []) {
+        const site = toSite({ uri: editUri, range: edit.range }, query.rootPath);
+        if (site) sites.push({ ...site, detail: edit.newText ?? null });
+      }
+    }
+
+    return {
+      backend: 'lsp-adapter',
+      intent,
+      query: q,
+      sites,
+      truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
+      freshness: {
+        health: client.health,
+        indexedAt: new Date(client.startedAt).toISOString(),
+        staleVsDisk: false,
+        indexedCommit: null,
+      },
+      latencyMs: Date.now() - started,
+      error: null,
+    };
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
+}
+
 /** Shut down every live language server. Safe to call repeatedly. */
 export async function shutdownAllLspClients(): Promise<number> {
   const clients = [...state.clients.values()];
