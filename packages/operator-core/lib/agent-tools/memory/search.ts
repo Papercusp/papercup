@@ -105,11 +105,12 @@ export default defineTool({
   description:
     "Search the user's persistent memories by semantic similarity. Returns matched facts ranked by relevance.",
   guidance: {
-    when: 'When the user references specific context from past sessions ("what did I tell you about pricing?"). Pre-turn auto-injection covers most cases; only call this for targeted lookups.',
+    when:
+      'When the user references specific context from past sessions ("what did I tell you about pricing?"). Default recall returns only facts CURRENT now. For "what did we believe then?", pass `as_of:<ISO timestamp>`; for a lifecycle audit, pass `include_superseded:true` to include closed rows and inspect `metadata.validity` / `superseded_by`. Pre-turn auto-injection covers most current-fact lookups; call this for targeted or historical recall.',
     notWhen:
       "For lookups by exact metadata (kind), use memory:list — it's faster than vector search for filter-only queries.",
     chaining:
-      'Pair with memory:update / memory:forget when the user corrects something you recall. A hit carrying `staleness` has referents that no longer resolve (last nightly anchor sweep) — treat it as evidence to reconcile, never as binding guidance; absence of the field means no dead anchors.',
+      'Pair with memory:remember { supersede:<old-id> } when a NEW fact replaces a recalled one; use memory:update for the SAME fact in place, or memory:forget for removal (soft when history should remain, hard for privacy). A hit carrying `staleness` has referents that no longer resolve (last nightly anchor sweep) — treat it as evidence to reconcile, never as binding guidance; absence of the field means no dead anchors.',
     seeAlso: [
       'memory:remember (write a new durable fact)',
       'memory:list (filter-only lookup by exact metadata — faster than vector search)',

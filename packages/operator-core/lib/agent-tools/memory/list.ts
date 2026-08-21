@@ -30,9 +30,11 @@ export default defineTool({
     'List all memories for the current user. Supports filtering by kind and harness scope.',
   guidance: {
     when:
-      'When the user asks to inspect their memory ("what have you stored about me?") or you need a filter-only query.',
+      'When the user asks to inspect their memory ("what have you stored about me?") or you need a filter-only query. Default listing returns only facts CURRENT now. Pass `as_of:<ISO timestamp>` for the rows valid at a historical instant, or `include_superseded:true` for the full lifecycle; temporal rows carry `metadata.validity`.',
     notWhen:
       'For semantic lookup ("what did I say about X?"), use memory:search instead.',
+    chaining:
+      'Use the returned ids with memory:remember { supersede:<old-id> } when a NEW fact replaces an old one, memory:update for an in-place correction, or memory:forget { soft:true } when a fact stopped being true but should remain in history.',
     seeAlso: [
       'memory:search (semantic recall instead of a metadata filter)',
       'memory:update (amend a memory you found)',

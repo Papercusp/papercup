@@ -378,3 +378,101 @@ describe('getHostSnapshot() run-queue decomposition', () => {
     expect(getHostSnapshot().now).toBeTruthy();
   });
 });
+
+/**
+ * The CPU-PSI saturation falsifier (EI-20495650388693372, EI-20633522682837476).
+ *
+ * THE GAP THIS PINS. `procsRunning`/`procsBlocked` (above) say WHAT KIND of load
+ * `load` is — a runnable burst or a pile of D-state tasks. Neither says whether
+ * anything is actually STARVED by it, which is the falsifier for "the box is
+ * overloaded". `psiCpuSome60` was added to the {@link HostSnapshot} interface with
+ * that exact justification, but the interface field alone proves nothing — a
+ * documented-but-never-populated field is indistinguishable from a real one until
+ * something asserts it is actually SET. (It shipped exactly that way once: the
+ * field and its doc comment landed, `getHostSnapshot()` never called
+ * `readPsiSome60('/proc/pressure/cpu', …)`, and no test caught it because none
+ * existed.) Per this file's D-028 doctrine, the load-bearing assertion is not "the
+ * field can be read" but that it is a DIFFERENT number from `psiMemSome60` at the
+ * same instant — a reader that accidentally sourced both legs from
+ * `/proc/pressure/memory` would still pass a presence-only test.
+ */
+describe("getHostSnapshot() CPU PSI (the load average's saturation companion)", () => {
+  beforeEach(() => {
+    resetHostSnapshotCache();
+    cpuPsiReadCount = 0;
+    cpuPsiRead = () => 'some avg10=0.50 avg60=1.08 avg300=0.20 total=42\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n';
+    psiReadCount = 0;
+    psiRead = () => 'some avg10=1.00 avg60=3.25 avg300=0.10 total=1\nfull avg10=0.00 avg60=2.64 avg300=0.00 total=6942659778\n';
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    cpuPsiRead = null;
+    resetHostSnapshotCache();
+  });
+
+  it('parses the CPU psi avg60 out of the pressure line, alongside `load`', () => {
+    const snap = getHostSnapshot();
+    expect(snap.psiCpuSome60).toBe(1.08);
+    expect(snap.load).toHaveLength(3);
+  });
+
+  it('is a DIFFERENT number from memory PSI at the same instant — the copy-paste falsifier', () => {
+    // A reader that (by bug) sourced psiCpuSome60 from '/proc/pressure/memory' a
+    // second time would pass a presence-only assertion. This is the one that
+    // catches it: the two fixtures above deliberately carry different avg60s.
+    const snap = getHostSnapshot();
+    expect(snap.psiCpuSome60).toBe(1.08);
+    expect(snap.psiMemSome60).toBe(3.25);
+    expect(snap.psiCpuSome60).not.toBe(snap.psiMemSome60);
+  });
+
+  it('OMITS CPU psi rather than reporting 0 when the pressure file cannot be read', () => {
+    // Matching the memory leg's rule: system-wide /proc/pressure/cpu also never
+    // tracks "full" (measured: cpu full total=0 exactly on this host), so a
+    // fabricated 0 here would be indistinguishable from the real absence-of-
+    // pressure reading — the exact inversion of "I could not tell".
+    cpuPsiRead = () => {
+      throw new Error('ENOENT');
+    };
+    resetHostSnapshotCache();
+    const snap = getHostSnapshot();
+    expect(snap).not.toHaveProperty('psiCpuSome60');
+    // ...and the rest of the snapshot — including the OTHER psi leg — still
+    // arrives; one dead leg must not degrade the others.
+    expect(snap.now).toBeTruthy();
+    expect(snap.psiMemSome60).toBe(3.25);
+    expect(snap.load).toHaveLength(3);
+  });
+
+  it('OMITS CPU psi rather than guessing when the line is unparseable', () => {
+    cpuPsiRead = () => 'garbage without an avg60 field\n';
+    resetHostSnapshotCache();
+    expect(getHostSnapshot()).not.toHaveProperty('psiCpuSome60');
+  });
+
+  it('caches the CPU pressure read instead of re-reading it per orient', () => {
+    const a = getHostSnapshot();
+    const b = getHostSnapshot();
+    expect(a.psiCpuSome60).toBe(1.08);
+    expect(b.psiCpuSome60).toBe(1.08);
+    expect(cpuPsiReadCount).toBe(1);
+  });
+
+  it('re-reads CPU pressure once the cache window has elapsed', () => {
+    vi.useFakeTimers();
+    resetHostSnapshotCache();
+    getHostSnapshot();
+    vi.advanceTimersByTime(PSI_CACHE_MS + 1);
+    getHostSnapshot();
+    expect(cpuPsiReadCount).toBe(2);
+  });
+
+  it('never throws when the CPU-psi leg fails', () => {
+    cpuPsiRead = () => {
+      throw new Error('boom');
+    };
+    resetHostSnapshotCache();
+    expect(() => getHostSnapshot()).not.toThrow();
+    expect(getHostSnapshot().now).toBeTruthy();
+  });
+});
