@@ -1245,6 +1245,52 @@ export function sampleReplicationLiveness(
   }
 }
 
+/**
+ * EI-20453145044075727 — intra-pass liveness HEARTBEAT.
+ *
+ * `sampleReplicationLiveness` is fed exactly ONCE per merge pass, at the TOP
+ * of the pass, before the (possibly long-running) fold body runs. A single
+ * pass over one log's backlog is BOUNDED to `maxOpsPerPass` (the per-author
+ * read budget, boot.ts), not to any wall-clock limit — read-merge.ts's own
+ * docs say a pass over a large backlog can legitimately outlast the 240s
+ * bg-host watchdog and never return within that window. The `sampling_stale`
+ * dead-man axis (`SAMPLING_STALE_AFTER_MS`, 60s) cannot tell that apart from
+ * a genuinely wedged merge loop, because nothing re-feeds the registry while
+ * the fold is still running — so BOTH the actively-folding log AND any other
+ * admitted log merely queued behind it (already sampled once at pass start,
+ * untouched since) read `sampling_stale` for the whole legitimately-slow
+ * pass, even while the substrate handle stays healthy/booted.
+ *
+ * `mergeAdmittedLogsIncremental`'s `onCursorAdvance` hook already fires
+ * periodically (every `MERGE_PERSIST_EVERY_OPS`, and once more at the end of
+ * each log's fold) DURING a pass, carrying the cursor's current per-log
+ * positions — exactly the "the merge loop is still alive and making
+ * progress" signal the dead-man axis is missing. Wire it here.
+ *
+ * Deliberately does NOT create new registry entries and touches ONLY
+ * `lastSampleMs` — never `knownLength`/`mergedPosition`/`peersCount`/etc.
+ * Those remain the sole responsibility of `sampleReplicationLiveness`'s
+ * once-per-pass call (which has the real peers/swarm counts this hook does
+ * not), so this cannot mask a genuine no_replicator/frozen stall — only the
+ * sampling_stale dead-man axis, which is what a live cursor advance actually
+ * proves. A key with no existing state (not yet sampled this process
+ * lifetime, or already dropped) is silently ignored.
+ */
+export function touchReplicationLivenessSamples(
+  workspaceId: string,
+  harnessSlug: string,
+  keyHexes: Iterable<string>,
+  opts: { nowMs?: number } = {},
+): void {
+  const logs = registry.get(hKey(workspaceId, harnessSlug));
+  if (!logs) return;
+  const now = opts.nowMs ?? Date.now();
+  for (const keyHex of keyHexes) {
+    const st = logs.get(keyHex);
+    if (st) st.lastSampleMs = now;
+  }
+}
+
 function deriveVerdict(
   st: LogState,
   now: number,

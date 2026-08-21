@@ -15,6 +15,7 @@ import {
   setOpenStallEiProbeForTests,
   setReplicationRepairHandler,
   setDhtUniverseAssertion,
+  touchReplicationLivenessSamples,
   _resetReplicationLivenessForTests,
   SAMPLING_STALE_AFTER_MS,
   SWARM_CHURN_TOLERANCE_MS,
@@ -613,6 +614,57 @@ describe('read-time verdicts + registry lifecycle', () => {
     const [h] = getReplicationLiveness({ nowMs: now, graceMs: GRACE });
     expect(h!.logs[0]!.verdict).toBe('sampling_stale');
     expect(h!.counts.samplingStale).toBe(1);
+  });
+
+  describe('EI-20453145044075727: touchReplicationLivenessSamples (intra-pass heartbeat)', () => {
+    it('a heartbeat inside the dead-man window keeps a legitimately-slow, actively-progressing log off sampling_stale', () => {
+      let now = 1_000_000;
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+        { graceMs: GRACE, nowMs: now },
+      );
+      // A single merge pass over a large backlog can legitimately run past
+      // SAMPLING_STALE_AFTER_MS without sampleReplicationLiveness being fed
+      // again — but the fold's own onCursorAdvance hook fires meanwhile.
+      now += SAMPLING_STALE_AFTER_MS - 1;
+      touchReplicationLivenessSamples(WS, HS, [KEY], { nowMs: now });
+      // Now push PAST another full dead-man window from the heartbeat. Without
+      // the fix this would already have read sampling_stale at `now` above;
+      // with it, the clock only just restarted at the heartbeat.
+      now += SAMPLING_STALE_AFTER_MS - 1;
+      const [h] = getReplicationLiveness({ nowMs: now, graceMs: GRACE });
+      expect(h!.logs[0]!.verdict).not.toBe('sampling_stale');
+      expect(h!.logs[0]!.verdict).toBe('live');
+      expect(h!.counts.samplingStale).toBe(0);
+    });
+
+    it('still reports sampling_stale once the heartbeats themselves stop (a genuinely wedged merge loop is not masked)', () => {
+      let now = 1_000_000;
+      sampleReplicationLiveness(
+        WS,
+        HS,
+        { keyHex: KEY, knownLength: 5, mergedPosition: 5, peersCount: 1 },
+        { graceMs: GRACE, nowMs: now },
+      );
+      now += SAMPLING_STALE_AFTER_MS / 2;
+      touchReplicationLivenessSamples(WS, HS, [KEY], { nowMs: now });
+      // Nothing touches the registry again after this — the dead-man axis must
+      // still fire once SAMPLING_STALE_AFTER_MS elapses past the LAST heartbeat.
+      now += SAMPLING_STALE_AFTER_MS;
+      const [h] = getReplicationLiveness({ nowMs: now, graceMs: GRACE });
+      expect(h!.logs[0]!.verdict).toBe('sampling_stale');
+    });
+
+    it('is a safe no-op for a key with no tracked state (never sampled, or already dropped)', () => {
+      const now = 1_000_000;
+      expect(() =>
+        touchReplicationLivenessSamples(WS, HS, [KEY], { nowMs: now }),
+      ).not.toThrow();
+      // No entry was created — the harness still has zero tracked logs.
+      expect(getReplicationLiveness({ harnessSlug: HS, nowMs: now })).toHaveLength(0);
+    });
   });
 
   it('filters by workspace/harness, exposes counts, and drops state on revoke/close', () => {
