@@ -278,6 +278,30 @@ Code-truth refusal codes are `plan_items_unfinished`, `acceptance_unaudited`, `a
 
 Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Full payloads, citation-root rules, and repair recipes: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
 
+## Verify mixed-family work-item citations against the base table
+
+When checking whether a work-item citation is real, do not treat a zero-row
+lookup in `harness_shared.engineer_issues` as proof that the citation is
+fabricated. `engineer_issues` is an issue-family view (bug/change/task) with
+harness scope; it does not cover feature-family `WI-`/`F-` rows. Those rows live
+in the canonical `harness_shared.work_items` table under `feature_id`, so a
+mixed `EI-`/`WI-`/`F-` citation set must be checked there (or with
+`work_items:get`) before an absence claim is made. Preserve the applicable
+`workspace_id` and `harness_slug` predicates when using the base-table query:
+
+```sql
+SELECT feature_id, item_kind, status, workspace_id, harness_slug
+  FROM harness_shared.work_items
+ WHERE workspace_id = '<workspace-id>'
+   AND harness_slug = '<harness-slug>'
+   AND feature_id IN ('<EI-or-WI-or-F-id>', ...);
+```
+
+The view's `issue_id` and the base table's `feature_id` are relation-specific;
+neither relation uses a generic `id` column for this check. Only call a
+citation fabricated after the family-correct lookup and a nearby-id sanity
+check both support genuine absence.
+
 
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 
