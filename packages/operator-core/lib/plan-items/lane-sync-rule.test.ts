@@ -15,7 +15,11 @@
 import { describe, it, expect } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import './lane-sync-rule'; // registers plan-item-lane-sync:blocked-by-changed
-import { blockedByChangedItem, statusChangedItem } from './lane-sync-rule';
+import {
+  blockedByChangedItem,
+  dependencyTerminalityChangedItem,
+  statusChangedItem,
+} from './lane-sync-rule';
 import { matchReactions, reactionRulesFor } from '../events/registry';
 import { fanOutBulkEvent } from '../events/engine';
 import { PLAN_ITEM_LANE_RESYNC_ACTION } from '../events/builtin-actions';
@@ -23,6 +27,7 @@ import type { ToolInvocationEvent } from '../events/types';
 
 const RULE_ID = 'plan-item-lane-sync:blocked-by-changed';
 const STATUS_RULE_ID = 'plan-item-lane-sync:status-changed';
+const DEPENDENCY_STATUS_RULE_ID = 'plan-item-lane-sync:dependency-terminality-changed';
 const ctx = {
   uiClientId: 'agent-1',
   spawnId: 'spawn-1',
@@ -195,5 +200,63 @@ describe('plan-item-lane-sync:status-changed — blocked -> wip regression', () 
       statusBulkEvent([{ ...resumed, ok: false, error: 'claim_conflict' }]),
     )!;
     expect(matchReactions(failed!).find((a) => a.ruleId === STATUS_RULE_ID)).toBeUndefined();
+  });
+});
+
+describe('plan-item-lane-sync:dependency-terminality-changed — dependent lane regression', () => {
+  const completed = {
+    ok: true,
+    slug: 'p-dependency',
+    itemId: 'P-001',
+    oldStatus: 'wip',
+    newStatus: 'done',
+  };
+
+  it('extracts both completion and reopen edges, but ignores edges that preserve terminality', () => {
+    const [done] = fanOutBulkEvent(statusBulkEvent([completed]))!;
+    expect(dependencyTerminalityChangedItem(done!)).toEqual({
+      planSlug: 'p-dependency',
+      itemId: 'P-001',
+      harnessSlug: 'papercusp',
+    });
+
+    const [reopened] = fanOutBulkEvent(
+      statusBulkEvent([{ ...completed, oldStatus: 'dropped', newStatus: 'todo' }]),
+    )!;
+    expect(dependencyTerminalityChangedItem(reopened!)).toEqual({
+      planSlug: 'p-dependency',
+      itemId: 'P-001',
+      harnessSlug: 'papercusp',
+    });
+
+    for (const unchanged of [
+      { ...completed, oldStatus: 'todo', newStatus: 'wip' },
+      { ...completed, oldStatus: 'done', newStatus: 'dropped' },
+      { ...completed, oldStatus: 'done', newStatus: 'done' },
+      { ...completed, ok: false, error: 'claim_conflict' },
+    ]) {
+      const [event] = fanOutBulkEvent(statusBulkEvent([unchanged]))!;
+      expect(dependencyTerminalityChangedItem(event!)).toBeNull();
+    }
+  });
+
+  it('fires the SAME canonical lane-resync action in dependency mode', () => {
+    expect(reactionRulesFor('plans:set-status').map((r) => r.id)).toContain(
+      DEPENDENCY_STATUS_RULE_ID,
+    );
+    const bulk = statusBulkEvent([completed]);
+    expect(
+      matchReactions(bulk).find((a) => a.ruleId === DEPENDENCY_STATUS_RULE_ID),
+    ).toBeUndefined();
+
+    const [fanned] = fanOutBulkEvent(bulk)!;
+    const action = matchReactions(fanned!).find(
+      (a) => a.ruleId === DEPENDENCY_STATUS_RULE_ID,
+    );
+    expect(action).toBeDefined();
+    expect(action!.fire).toBe(PLAN_ITEM_LANE_RESYNC_ACTION);
+    expect(action!.args.dependencies).toEqual([
+      { planSlug: 'p-dependency', itemId: 'P-001', harnessSlug: 'papercusp' },
+    ]);
   });
 });

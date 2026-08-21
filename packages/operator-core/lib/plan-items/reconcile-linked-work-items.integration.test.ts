@@ -131,6 +131,9 @@ const {
   resyncPlanItemLaneNow,
   planLaneBlockerRef,
 } = await import('./reconcile-linked-work-items');
+const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import(
+  '../events/builtin-actions'
+);
 const { updateExternalBlockerHistory } = await import('../external-blockers');
 
 const WS = DEFAULT_COORD_WORKSPACE;
@@ -1005,6 +1008,62 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       'WI-6096',
       false,
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+  });
+
+  it('a terminal dependency edge opens only dependents whose full blocker set is resolved', async () => {
+    await edge({ plan: 'pdependency', item: 'P-002', srcRef: 'WI-ready' });
+    await edge({ plan: 'pdependency', item: 'P-003', srcRef: 'WI-still-blocked' });
+
+    const readyRef = planLaneBlockerRef('pdependency', 'P-002');
+    const stillBlockedRef = planLaneBlockerRef('pdependency', 'P-003');
+    const { blockers: readyBlockers } = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref: readyRef, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    const { blockers: stillBlockedBlockers } = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref: stillBlockedRef, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    const ready = stub({
+      id: 'WI-ready',
+      state: 'blocked',
+      payload: { externalBlockers: readyBlockers },
+    });
+    const stillBlocked = stub({
+      id: 'WI-still-blocked',
+      state: 'blocked',
+      payload: { externalBlockers: stillBlockedBlockers },
+    });
+    h3.getPlanRow.mockResolvedValue({
+      items: [
+        { id: 'P-001', status: 'done', blockedBy: [] },
+        { id: 'P-004', status: 'todo', blockedBy: [] },
+        { id: 'P-002', status: 'todo', blockedBy: ['P-001'] },
+        { id: 'P-003', status: 'todo', blockedBy: ['P-001', 'P-004'] },
+      ],
+    });
+
+    const action = await fireBuiltinReactionAction(
+      PLAN_ITEM_LANE_RESYNC_ACTION,
+      { dependencies: [{ planSlug: 'pdependency', itemId: 'P-001', harnessSlug: null }] },
+      WS,
+    );
+
+    expect(action.ok).toBe(true);
+    expect(ready.state).toBe('open');
+    expect(stillBlocked.state).toBe('blocked');
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-ready',
+      false,
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalledWith(
+      'WI-still-blocked',
+      false,
+      expect.anything(),
     );
   });
 

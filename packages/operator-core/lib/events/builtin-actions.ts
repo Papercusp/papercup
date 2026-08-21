@@ -23,6 +23,7 @@ import { coalescedInvalidateByTags } from "../cache/debounced-invalidate";
 import { invalidateL2ByTags } from "../cache/l2-tier";
 import {
   reconcileLinkedWorkItemsForCompletedPlanItems,
+  resyncDependentPlanItemLanesNow,
   resyncPlanItemLaneNow,
   type CompletedPlanItem,
 } from "../plan-items/reconcile-linked-work-items";
@@ -138,10 +139,14 @@ function toLaneResyncItems(value: unknown): LaneResyncItem[] {
  * plan-items/reconcile-linked-work-items.ts. Always `{ok:true}` (the sweep is
  * internally fail-safe per item) unless the args are entirely malformed.
  *
- * `plan-item.resyncLane { items: {planSlug,itemId,harnessSlug}[] }`
+ * `plan-item.resyncLane { items?: {planSlug,itemId,harnessSlug}[],
+ *                        dependencies?: {planSlug,itemId,harnessSlug}[] }`
  * (EI-18732669095544832) — for each item, re-classify its CURRENT effective
  * lane (blocked-by-graph aware) and sync it onto every linked work-item RIGHT
  * NOW, instead of waiting for the 15-min `plan-item-orphan-reconcile` sweep.
+ * EI-21018197537550703 extends the SAME action with `dependencies`: each target
+ * is a dependency whose terminality changed, so the action re-reads the plan,
+ * enumerates its direct dependents, and resyncs their current effective lanes.
  * See plan-items/reconcile-linked-work-items.ts's `resyncPlanItemLaneNow`.
  * Always `{ok:true}` (fail-safe per item) unless the args are entirely
  * malformed.
@@ -182,11 +187,19 @@ export async function fireBuiltinReactionAction(
     }
     case PLAN_ITEM_LANE_RESYNC_ACTION: {
       const items = toLaneResyncItems(args.items);
-      if (items.length === 0) return { ok: true };
+      const dependencies = toLaneResyncItems(args.dependencies);
+      if (items.length === 0 && dependencies.length === 0) return { ok: true };
       // Per-item best-effort — resyncPlanItemLaneNow itself never throws, but keep
       // the loop resilient to a stray rejection either way.
       for (const it of items) {
         await resyncPlanItemLaneNow(it.planSlug, it.itemId, it.harnessSlug).catch(() => null);
+      }
+      for (const dependency of dependencies) {
+        await resyncDependentPlanItemLanesNow(
+          dependency.planSlug,
+          dependency.itemId,
+          dependency.harnessSlug,
+        ).catch(() => []);
       }
       return { ok: true };
     }

@@ -801,6 +801,38 @@ export async function resyncPlanItemLaneNow(
   }
 }
 
+/**
+ * EI-21018197537550703: resync every plan item whose `blockedBy` names one
+ * dependency whose terminality just changed. The dependency edge itself is
+ * intentionally left untouched; each dependent is re-classified from the
+ * CURRENT plan graph by {@link resyncPlanItemLaneNow}, so another unresolved
+ * blocker keeps the lane parked while the last resolved blocker opens it.
+ *
+ * This is the dependency-target mode behind the existing
+ * `plan-item.resyncLane` builtin action. It reuses the canonical per-item writer
+ * instead of introducing a second lane mutation path. Fail-closed + never
+ * throws; the periodic orphan sweep remains the backstop.
+ */
+export async function resyncDependentPlanItemLanesNow(
+  planSlug: string,
+  dependencyItemId: string,
+  harnessSlug?: string | null,
+): Promise<string[]> {
+  try {
+    const row = await getPlanRow(planSlug, { harnessSlug: harnessSlug ?? undefined }).catch(() => null);
+    if (!row) return [];
+    const dependentItemIds = planItemsForRow(row)
+      .filter((item) => item.blockedBy.includes(dependencyItemId))
+      .map((item) => item.id);
+    for (const itemId of dependentItemIds) {
+      await resyncPlanItemLaneNow(planSlug, itemId, harnessSlug).catch(() => null);
+    }
+    return dependentItemIds;
+  } catch {
+    return [];
+  }
+}
+
 interface OrphanCandidate {
   planSlug: string;
   itemId: string;

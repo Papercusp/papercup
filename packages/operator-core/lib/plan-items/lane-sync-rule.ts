@@ -20,8 +20,9 @@
  * action `plan-item.resyncLane`, which re-reads the plan item's CURRENT effective
  * lane and syncs it onto every linked work-item RIGHT NOW — inline, synchronous
  * with the caller's turn, no 15-minute wait. The periodic sweep remains the
- * fail-safe backstop for any OTHER path that can move an item's effective lane
- * (e.g. a dependency's own status changing).
+ * fail-safe backstop for any OTHER path that can move an item's effective lane.
+ * A dependency's own terminality changing is handled below by pointing the SAME
+ * canonical lane-resync action at every direct dependent.
  *
  * This is symmetric by construction: it fires whenever `blockedBy` is set to
  * anything (CLEARING a blocker un-parks; ADDING one parks), because
@@ -55,6 +56,10 @@ interface SetStatusItemResult {
   itemId?: string;
   oldStatus?: string | null;
   newStatus?: string;
+}
+
+function isTerminalStatus(status: string | null | undefined): boolean {
+  return status === 'done' || status === 'dropped';
 }
 
 /**
@@ -93,12 +98,47 @@ export function statusChangedItem(
   return null;
 }
 
+/** Extract a status edge that changes whether this item satisfies `blockedBy`
+ * dependencies. Only nonterminal <-> terminal edges matter: todo -> wip leaves
+ * dependents blocked, while done -> dropped leaves them satisfied. */
+export function dependencyTerminalityChangedItem(
+  e: ToolInvocationEvent,
+): { planSlug: string; itemId: string; harnessSlug: string | null } | null {
+  const r = e.result?.data as SetStatusItemResult | undefined;
+  if (
+    r?.ok === true &&
+    typeof r.slug === 'string' &&
+    typeof r.itemId === 'string' &&
+    typeof r.newStatus === 'string' &&
+    isTerminalStatus(r.oldStatus) !== isTerminalStatus(r.newStatus)
+  ) {
+    const harnessSlug = typeof e.ctx?.harnessSlug === 'string' ? e.ctx.harnessSlug : null;
+    return { planSlug: r.slug, itemId: r.itemId, harnessSlug };
+  }
+  return null;
+}
+
 registerReactionRule({
   id: 'plan-item-lane-sync:blocked-by-changed',
   on: 'plans:set-item-blocked-by',
   when: (e) => blockedByChangedItem(e) !== null,
   fire: PLAN_ITEM_LANE_RESYNC_ACTION,
   args: (e) => ({ items: [blockedByChangedItem(e)!] }),
+  onlyOnSuccess: true,
+  source: 'plan-item-lane-sync',
+});
+
+// EI-21018197537550703: a dependency reaching done/dropped (or reopening from
+// terminal) changes the effective lane of every item that names it in blockedBy,
+// without changing those dependent items' own stored status or blockedBy list.
+// Reuse plan-item.resyncLane in dependency mode: the builtin re-reads the plan,
+// enumerates direct dependents, and classifies each against ALL current blockers.
+registerReactionRule({
+  id: 'plan-item-lane-sync:dependency-terminality-changed',
+  on: 'plans:set-status',
+  when: (e) => dependencyTerminalityChangedItem(e) !== null,
+  fire: PLAN_ITEM_LANE_RESYNC_ACTION,
+  args: (e) => ({ dependencies: [dependencyTerminalityChangedItem(e)!] }),
   onlyOnSuccess: true,
   source: 'plan-item-lane-sync',
 });
