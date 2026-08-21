@@ -75,6 +75,22 @@ describe('plans:add-decision — itemRefs alias for refs', () => {
   });
 });
 
+describe('plans:add-decision — decision references do not inflate allocation (EI-19989843927675996)', () => {
+  it('ignores cross-plan D-NNN citations inside decision bodies', () => {
+    const body = [
+      '## Decisions',
+      '',
+      '### D-001 — Existing decision',
+      'Body.',
+      '',
+      '### D-002 — Citing another plan',
+      'This defers to unified-agent-state-plane-2026-07-27#D-054 and also cites D-088.',
+    ].join('\n');
+
+    expect(allocateNextDecisionId(body)).toBe('D-003');
+  });
+});
+
 /**
  * EI-19383795443003151: an MCP write can time out client-side with no
  * response, leaving the outcome unknown. `plans:add-decision` only ever
