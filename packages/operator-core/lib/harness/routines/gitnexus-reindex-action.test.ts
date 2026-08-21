@@ -19,6 +19,7 @@ import {
   GITNEXUS_ANALYZE_HEAP_MB,
   GITNEXUS_ANALYZE_SEMI_SPACE_MB,
   GITNEXUS_ANALYZE_STACK_KB,
+  GITNEXUS_LBUG_MAX_DB_BYTES,
   decideReindex,
   readRegistryEntry,
   shouldSkipForHive,
@@ -173,6 +174,33 @@ describe('analyzeNodeArgs — the stack budget + argv order (P-004)', () => {
     const p = analyzeCliPath();
     expect(p.startsWith('/')).toBe(true);
     expect(p).toContain('gitnexus');
+  });
+});
+
+describe('analyzeEnv — the LadybugDB ceiling pin (P-004)', () => {
+  it('pins the LadybugDB max size rather than inheriting the upstream default', () => {
+    expect(analyzeEnv({}).GITNEXUS_LBUG_MAX_DB_SIZE).toBe(String(GITNEXUS_LBUG_MAX_DB_BYTES));
+  });
+
+  it('STILL pins the DB ceiling when an operator overrides the heap', () => {
+    // The heap branch early-returns. If the DB pin were applied after it, supplying a
+    // heap would silently drop the ceiling too — two unrelated knobs, one of which
+    // quietly disables the other, with nothing failing.
+    const env = analyzeEnv({ NODE_OPTIONS: '--max-old-space-size=4096' });
+    expect(env.NODE_OPTIONS).toBe('--max-old-space-size=4096');
+    expect(env.GITNEXUS_LBUG_MAX_DB_SIZE).toBe(String(GITNEXUS_LBUG_MAX_DB_BYTES));
+  });
+
+  it('honours an explicit caller-supplied DB ceiling', () => {
+    expect(analyzeEnv({ GITNEXUS_LBUG_MAX_DB_SIZE: '999' }).GITNEXUS_LBUG_MAX_DB_SIZE).toBe('999');
+  });
+
+  it('leaves real headroom over the measured on-disk database', () => {
+    // Measured 2026-08-21: the lbug database file is 3.97 GiB (.gitnexus/ 6.5 GB total)
+    // over 19,479 files. If a future graph ever approaches this ceiling, analyze starts
+    // failing -- this assertion is the tripwire that says so while it is still cheap.
+    const measuredDbGib = 3.97;
+    expect(GITNEXUS_LBUG_MAX_DB_BYTES / 1024 ** 3).toBeGreaterThan(measuredDbGib * 3);
   });
 });
 

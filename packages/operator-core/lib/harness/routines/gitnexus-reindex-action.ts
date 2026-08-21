@@ -95,6 +95,31 @@ export const GITNEXUS_ANALYZE_SEMI_SPACE_MB = 128;
  *  argv flag. See analyzeNodeArgs. */
 export const GITNEXUS_ANALYZE_STACK_KB = 4_096;
 
+/**
+ * P-004 — the LADYBUGDB size ceiling, PINNED rather than inherited.
+ *
+ * This is the `maxDBSize` handed to the native LadybugDB constructor. It is an mmap
+ * VIRTUAL address-space reservation, not resident memory — measured on the live worker:
+ * VmSize 230 GiB against VmHWM 10.42 GiB — so the number costs nothing until pages are
+ * actually touched, and it is NOT the memory hazard. GITNEXUS_ANALYZE_HEAP_MB is.
+ *
+ * It is pinned here for a different reason: DRIFT. Upstream's default is 16 GiB, chosen
+ * against an assumption its own comment states — "the GitNexus self-index uses < 50 MiB".
+ * That assumption does not hold for this repo. Measured 2026-08-21: `.gitnexus/` is
+ * 6.5 GB with the database file itself at 3.97 GiB over 19,479 files / 191,008 nodes,
+ * i.e. ~25% of the ceiling already consumed and growing with the tree. A repo operating
+ * that close to a number chosen for a 50 MiB workload should own that number explicitly
+ * rather than inherit whatever a future gitnexus release happens to pick.
+ *
+ * Deliberately set to the SAME 16 GiB currently in force: this is a pin, not a retune —
+ * no behaviour change today, and an upstream default change can no longer silently move
+ * our envelope. Raising it is cheap (VA only) IF the measured DB approaches it; the
+ * follow-up that WATCHES for that is filed rather than assumed, because a ceiling with
+ * nobody watching it fails silently, and per D-016 a mid-analyze failure leaves
+ * orphan shadow/WAL residue gitnexus cannot itself recover from.
+ */
+export const GITNEXUS_LBUG_MAX_DB_BYTES = 16 * 1024 * 1024 * 1024;
+
 /** Skip when the box is genuinely oversubscribed — load ABOVE 1.5x cores means real run-queue
  *  queueing, and a 4-minute CPU-heavy index is exactly the wrong thing to pile on. (This box
  *  is 128 cores and idles around 0.5/core, so this defers only during a real storm.) */
@@ -248,11 +273,18 @@ export function analyzeEnv(
   heapMb: number = GITNEXUS_ANALYZE_HEAP_MB,
   semiSpaceMb: number = GITNEXUS_ANALYZE_SEMI_SPACE_MB,
 ): NodeJS.ProcessEnv {
-  const existing = (base.NODE_OPTIONS ?? '').trim();
-  if (/--max-old-space-size/.test(existing)) return { ...base };
+  // The LadybugDB ceiling is pinned on every spawn, independent of the heap branch
+  // below: an operator overriding the HEAP must not silently also drop the DB pin.
+  // An explicit caller-supplied value still wins.
+  const withDbCap: NodeJS.ProcessEnv = {
+    ...base,
+    GITNEXUS_LBUG_MAX_DB_SIZE: base.GITNEXUS_LBUG_MAX_DB_SIZE ?? String(GITNEXUS_LBUG_MAX_DB_BYTES),
+  };
+  const existing = (withDbCap.NODE_OPTIONS ?? '').trim();
+  if (/--max-old-space-size/.test(existing)) return withDbCap;
   const semi = /--max-semi-space-size/.test(existing) ? '' : ` --max-semi-space-size=${semiSpaceMb}`;
   return {
-    ...base,
+    ...withDbCap,
     NODE_OPTIONS: `${existing} --max-old-space-size=${heapMb}${semi}`.trim(),
   };
 }
