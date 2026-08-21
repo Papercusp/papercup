@@ -25,7 +25,7 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
-import { summarizeForcedPast, type ForcedPastSummary } from '../../../agent-tools/plans/forced-past-stamp';
+import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
 import {
   decideContentWriteAuthority,
   resolveContentWriteMode,
@@ -86,9 +86,9 @@ export interface HarnessPlanRow {
   template_data?: unknown;
   promote_policy?: unknown;
   input_schema?: unknown;
-  /** Bounded index of the canonical append-only waiver log (optional for
-   *  pre-861 peers; receivers reconstruct it from content when absent). */
-  forced_past?: ForcedPastSummary | null;
+  /** Optional redundant wire value from post-861 peers. It is deliberately
+   *  opaque and ignored: receivers recompute the index from canonical content. */
+  forced_past?: unknown;
   supersedes: string[];
   superseded_by: string | null;
   archived: boolean;
