@@ -482,15 +482,29 @@ export async function shutdownAllLspClients(): Promise<number> {
   state.clients.clear();
   await Promise.all(
     clients.map(async (c) => {
-      try {
-        await c.connection.sendRequest('shutdown');
-        c.connection.sendNotification('exit');
-      } catch {
-        /* already gone */
-      } finally {
-        c.connection.dispose();
-        if (!c.child.killed) c.child.kill('SIGTERM');
+      // Only speak to a server whose pipe is actually still open. Writing to a
+      // destroyed stream raises ERR_STREAM_DESTROYED as an UNHANDLED rejection
+      // (vscode-jsonrpc writes asynchronously), which Vitest reports as an
+      // unhandled error and warns can cause false-positive tests — so this is a
+      // correctness guard, not tidiness.
+      const writable = c.child.exitCode === null && !c.child.killed && c.child.stdin?.writable;
+      if (writable) {
+        try {
+          await c.connection.sendRequest('shutdown');
+          // sendNotification also returns a promise that can reject once the
+          // server closes its end in response to `shutdown` — await it so the
+          // rejection is HANDLED here rather than surfacing globally.
+          await c.connection.sendNotification('exit');
+        } catch {
+          /* the server closed its pipe first — expected on a clean exit */
+        }
       }
+      try {
+        c.connection.dispose();
+      } catch {
+        /* already disposed */
+      }
+      if (c.child.exitCode === null && !c.child.killed) c.child.kill('SIGTERM');
     }),
   );
   return clients.length;
