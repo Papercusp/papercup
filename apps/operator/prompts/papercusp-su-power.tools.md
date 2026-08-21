@@ -138,6 +138,10 @@ work-item-scoped conversation threads).
   gitnexus`, the pinned-resolver fix has not deployed yet (P-006) — fall back to
   `rg` + `lsp:query` for that question class until it does, and do NOT read the
   absence as "no call chains exist".
+
+  📖 Versions, re-provisioning, and the four failure modes that return a
+  CONFIDENT WRONG ANSWER (zero-indexed gitnexus lines, a server queried before
+  project load, cold-start/RSS budgets): `/internal/docs/agent-insights/code-intelligence-backends-runbook`.
 - **`notifications:recent`** — the app's recent toast/error stream; first
   stop for "why did the app just error?"
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway OS process by PID to
