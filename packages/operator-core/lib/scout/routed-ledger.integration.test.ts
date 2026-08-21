@@ -23,8 +23,15 @@ vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
 // via a lazy import — mock the SSE seam so the grade tests can assert it.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
-const { recordRoutedIdea, readRoutedIdeas, gradeRoutedIdea, getScoutLensOutcomes, refreshScoutOutcomes, getScoutLensWeights } =
-  await import('./routed-ledger');
+const {
+  recordRoutedIdea,
+  readRoutedIdeas,
+  gradeRoutedIdea,
+  getScoutLensOutcomes,
+  refreshScoutOutcomes,
+  getScoutLensWeights,
+  buildScoutOutcomeReaders,
+} = await import('./routed-ledger');
 const invalidate = vi.mocked((await import('../sync-sse')).notifySyncInvalidate);
 const { createOrgTestDb } = await import('../../test/_org-test-db');
 // EI-11978: prove the aged-out win is genuinely OUTSIDE the raw feed window, so
@@ -619,6 +626,88 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       expect(byId.get('i-wi-dropped')).toBe('lost');
       expect(byId.get('i-wi-deprecated')).toBe('lost');
       expect(byId.get('i-wi-open')).toBe('pending');
+    });
+  });
+
+  // Goal Rail P-005: the pure classifier already pins achieved -> won and
+  // killed -> lost. This suite proves the production, migrated-PG seam that
+  // supplies those terminal entries and persists the resulting learning signal.
+  // A dedicated cycle keeps both goal ideas out of every count-sensitive case
+  // above, and the fixtures never touch the organic routed-idea ledger.
+  describe('Goal Rail P-005: terminal goals close the routed-idea learning loop', () => {
+    const CYCLE = 'p005-goal-terminal';
+    const ACHIEVED_GOAL = 'p005-goal-achieved';
+    const KILLED_GOAL = 'p005-goal-killed';
+
+    beforeAll(async () => {
+      const achievedAt = new Date('2026-08-20T20:00:00.000Z');
+      const killedAt = new Date('2026-08-20T20:01:00.000Z');
+      await db.adminSql`
+        INSERT INTO harness_shared.goals
+          (id, workspace_id, install_slug, title, status, created_at, updated_at)
+        VALUES
+          (${ACHIEVED_GOAL}, ${WS}, ${HARNESS}, 'P-005 achieved goal', 'achieved', ${achievedAt}, ${achievedAt}),
+          (${KILLED_GOAL}, ${WS}, ${HARNESS}, 'P-005 killed goal', 'killed', ${killedAt}, ${killedAt})`;
+      await recordRoutedIdea({
+        ideaId: 'i-goal-achieved', lens: 'analogical', rail: 'goal', routedRef: `goal:${ACHIEVED_GOAL}`,
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+      await recordRoutedIdea({
+        ideaId: 'i-goal-killed', lens: 'reframing', rail: 'goal', routedRef: `goal:${KILLED_GOAL}`,
+        harnessSlug: HARNESS, cycleId: CYCLE, workspaceId: WS,
+      });
+    }, 60_000);
+
+    it('renders achieved and killed goals as production Change Feed terminal entries', async () => {
+      const completions = await buildScoutOutcomeReaders({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        cycleId: CYCLE,
+      }).completions();
+      const byRef = new Map(completions.map((entry) => [entry.ref, entry]));
+
+      expect(byRef.get(`goal:${ACHIEVED_GOAL}`)).toMatchObject({
+        id: `goal:${ACHIEVED_GOAL}`,
+        kind: 'completion',
+        title: 'Goal achieved: P-005 achieved goal',
+        detail: 'Status: achieved',
+        harness: HARNESS,
+        ref: `goal:${ACHIEVED_GOAL}`,
+      });
+      expect(byRef.get(`goal:${KILLED_GOAL}`)).toMatchObject({
+        id: `goal:${KILLED_GOAL}`,
+        kind: 'completion',
+        title: 'Goal killed: P-005 killed goal',
+        detail: 'Status: killed',
+        harness: HARNESS,
+        ref: `goal:${KILLED_GOAL}`,
+      });
+    });
+
+    it('classifies achieved as won and killed as lost through the production readers', async () => {
+      const report = await getScoutLensOutcomes({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        cycleId: CYCLE,
+      });
+      expect(report.byLens.analogical).toMatchObject({ won: 1, lost: 0, pending: 0 });
+      expect(report.byLens.reframing).toMatchObject({ won: 0, lost: 1, pending: 0 });
+    });
+
+    it('refreshScoutOutcomes persists won/lost plus the checked timestamp', async () => {
+      await refreshScoutOutcomes({ workspaceId: WS, harnessSlug: HARNESS, cycleId: CYCLE });
+      const rows = await db.adminSql<
+        { idea_id: string; outcome: string | null; outcome_checked_at: string | null }[]
+      >`
+        SELECT idea_id, outcome, outcome_checked_at
+          FROM harness_shared.scout_routed_ideas
+         WHERE workspace_id = ${WS}
+           AND idea_id IN ('i-goal-achieved', 'i-goal-killed')`;
+      const byId = new Map(rows.map((row) => [row.idea_id, row]));
+      expect(byId.get('i-goal-achieved')).toMatchObject({ outcome: 'won' });
+      expect(byId.get('i-goal-killed')).toMatchObject({ outcome: 'lost' });
+      expect(byId.get('i-goal-achieved')?.outcome_checked_at).toBeTruthy();
+      expect(byId.get('i-goal-killed')?.outcome_checked_at).toBeTruthy();
     });
   });
 });
