@@ -30,7 +30,7 @@
  *                                      a FLOOR — the owner can only RAISE it).
  *   owner-steering:max-bees          — int; concurrency ceiling for running agents
  *                                      (effective = MIN(system ceiling, this)).
- *   owner-steering:idle-activities   — { gym?, scout?, curation?, plan-review? }
+ *   owner-steering:idle-activities   — { gym?, scout?, dream?, curation?, plan-review? }
  *                                      booleans; each defaults ON, `false`
  *                                      suppresses that idle activity (gym /
  *                                      Scout-ideation / doc+memory curation /
@@ -107,7 +107,7 @@ export const OWNER_STEERING_KEYS = {
  *  Queen's idle review+iteration of Scout-routed draft plans (the Queen↔Scout
  *  feedback loop, queen-scout-feedback-loop-2026-06-20 D-003 #2 — review never
  *  starves placement). */
-export const IDLE_ACTIVITY_KINDS = ['gym', 'scout', 'curation', 'plan-review'] as const;
+export const IDLE_ACTIVITY_KINDS = ['gym', 'scout', 'dream', 'curation', 'plan-review'] as const;
 export type IdleActivityKind = (typeof IDLE_ACTIVITY_KINDS)[number];
 export type IdleActivityToggles = Partial<Record<IdleActivityKind, boolean>>;
 

@@ -96,6 +96,12 @@ export const FLAGS = {
   // (WI-39501, owner ask 2026-08-16). Default ON (derived FLAG_DEFAULTS — not in
   // DARK_FLAGS); OFF removes the control, nothing else changes.
   LEARNING_LOOP_CONTROL: "papercusp-learning-loop-control",
+  // REM dream recombination (rem-dream-recombination-2026-08-17 D-001):
+  // gates the feature surface (run ledger, Learning controls, Analyze view),
+  // NOT autonomous spend. Default ON (derived FLAG_DEFAULTS — not in
+  // DARK_FLAGS). Automatic dreaming has its own inactive routine/owner toggle
+  // and therefore remains OFF on every fresh pot until deliberately enabled.
+  DREAM_CYCLE: "papercusp-dream-cycle",
   // holepunch-video-shared-harnesses-2026-06-05: gates the desktop P2P video
   // channel (the participant-grid VideoGrid). Runtime default ON (derived
   // FLAG_DEFAULTS — not in DARK_FLAGS), made DELIBERATE by
