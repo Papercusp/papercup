@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
 import { resolveIntegrationRoot, integrationRootEvidence } from './release-actions';
+import { pipelineName } from '../../release/pipeline-name';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
@@ -634,6 +635,23 @@ function aheadOfMainPlanJson(): string {
 // PAPERCUSP_INTEGRATION_ROOT explicitly to the real repo root, computed from
 // THIS file's own location (import.meta.url), independent of process.cwd().
 const REPO_ROOT = fileURLToPath(new URL('../../../../../', import.meta.url));
+
+// EI-20981232855780375 follow-up: the `pipeline` stamped on gate-verdict events is the
+// SANITIZED BASENAME of REPO_ROOT (pipeline-name.ts), so it is whatever this checkout
+// happens to be called. Hardcoding the literal 'papercusp' asserts the directory name of
+// ONE checkout, not the behaviour: it passes in the staging tree (basename `papercusp`)
+// and can NEVER pass in the green-checkpoint's own tree (`papercusp-checkpoint`) or in a
+// gate repair worktree (`green-candidate-…`). That is a test that reds the gate forever
+// while looking green to every developer who runs it locally — measured: the two
+// checkpoint runs after this test landed both failed here with
+// `green-checkpoint:red:papercusp-checkpoint`.
+//
+// Derive the expectation from the SAME input the emitter uses. The structural claim the
+// test exists for — a bare key PLUS a `<key>:<pipeline>` sibling, with `pipeline` stamped
+// consistently across key, summary and payload — is asserted exactly as before, and is now
+// checked wherever the suite runs rather than only in a directory literally named
+// `papercusp`.
+const EXPECTED_PIPELINE = pipelineName(REPO_ROOT);
 
 beforeAll(() => {
   process.env.PAPERCUSP_INTEGRATION_ROOT = REPO_ROOT;
@@ -1831,16 +1849,19 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
 
     expect(emitAwaitedEvent).toHaveBeenCalledTimes(2);
     const calls = emitAwaitedEvent.mock.calls.map(([args]) => args as Record<string, unknown>);
-    expect(calls.map((args) => args.key)).toEqual(['green-checkpoint:red', 'green-checkpoint:red:papercusp']);
+    expect(calls.map((args) => args.key)).toEqual([
+      'green-checkpoint:red',
+      `green-checkpoint:red:${EXPECTED_PIPELINE}`,
+    ]);
     for (const args of calls) {
       expect(args).toMatchObject({
         source: 'green-checkpoint',
-        summary: '[papercusp] green-checkpoint: abc123de not green — main held',
-        cancelSiblingKeysFor: ['release:green', 'release:green:papercusp'],
+        summary: `[${EXPECTED_PIPELINE}] green-checkpoint: abc123de not green — main held`,
+        cancelSiblingKeysFor: ['release:green', `release:green:${EXPECTED_PIPELINE}`],
         payload: {
           sha: 'abc123def456789',
           from: 'fedcba987654321',
-          pipeline: 'papercusp',
+          pipeline: EXPECTED_PIPELINE,
           summary: 'lint:identity-leak',
           failingTests: [],
           logPath: '/tmp/green-checkpoint.log',
