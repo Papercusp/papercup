@@ -57,6 +57,12 @@ export interface GracefulRecycleOpts {
   /** Hard-exit backstop if the drain or the substrate teardown hangs. Default 8000. */
   hardExitMs?: number;
   /**
+   * Close host-owned process resources (for example PG LISTEN clients) during
+   * every recycle path, including when native substrate teardown is skipped.
+   * Best-effort: a failure must not prevent the bounded exit path.
+   */
+  closeAdditionalResources?: () => Promise<unknown>;
+  /**
    * Exit code on recycle. NON-ZERO (default 75 = EX_TEMPFAIL) so the host restarts
    * under `Restart=on-failure` as well as `Restart=always` (EI-1613, R4-1). The
    * SIGTERM/deploy drain path is separate and still exits 0 (an intentional stop).
@@ -160,6 +166,7 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
   const hardExitMs = opts.hardExitMs ?? 8000;
   const recycleExitCode = opts.recycleExitCode ?? 75;
   const exit = opts.exit ?? ((code: number) => process.exit(code));
+  const closeAdditionalResources = opts.closeAdditionalResources ?? (async () => {});
   const closeSubstrate = opts.closeSubstrate ?? closeAllBootedHarnesses;
   const isSaturated = opts.isSaturated ?? isLoopElevated;
   const skipSubstrateTeardown = opts.skipSubstrateTeardown ?? false;
@@ -201,6 +208,17 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
 
   const hardExit = setTimeout(() => exitOnce(recycleExitCode), hardExitMs);
   (hardExit as { unref?: () => void }).unref?.();
+
+  // Process-owned LISTEN clients are independent of the native substrate. Run
+  // their explicit close in every path, including saturated/skip-substrate
+  // exits where `closeSubstrate` is deliberately not called.
+  const additionalResourcesDown = (async () => {
+    try {
+      await closeAdditionalResources();
+    } catch {
+      // Best-effort: resource cleanup must never block the bounded recycle.
+    }
+  })();
 
   // Substrate teardown starts immediately, concurrent with the HTTP drain —
   // UNLESS the loop is already under pressure (WI-3795/WI-3848): starting the
@@ -244,11 +262,12 @@ export function gracefulHostRecycle(opts: GracefulRecycleOpts): void {
       // best-effort: a teardown failure must never block the recycle
     }
   })();
+  const teardownDown = Promise.all([additionalResourcesDown, substrateDown]);
 
   try {
     if (typeof opts.server.close === 'function') {
       opts.server.close(() => {
-        void substrateDown.then(() => {
+        void teardownDown.then(() => {
           clearTimeout(hardExit);
           exitOnce(recycleExitCode);
         });
@@ -269,6 +288,8 @@ export interface GracefulShutdownOpts {
   on?: (sig: NodeJS.Signals, cb: () => void) => void;
   /** Test seam — forwarded to gracefulHostRecycle (defaults to process.exit). */
   exit?: (code: number) => void;
+  /** Forwarded to gracefulHostRecycle for process-owned resources such as PG LISTEN clients. */
+  closeAdditionalResources?: () => Promise<unknown>;
   /** Test seam — forwarded to gracefulHostRecycle. */
   closeSubstrate?: () => Promise<unknown>;
   /** Test seam — forwarded to gracefulHostRecycle (EI-16949). */
@@ -328,6 +349,7 @@ export function installGracefulShutdown(opts: GracefulShutdownOpts): void {
       server: opts.server,
       recycleExitCode: 0, // intentional stop, not the non-zero recycle code
       exit: opts.exit,
+      closeAdditionalResources: opts.closeAdditionalResources,
       closeSubstrate: opts.closeSubstrate,
       dropReplicationTracking: opts.dropReplicationTracking,
       isSaturated: opts.isSaturated,

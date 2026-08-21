@@ -225,6 +225,27 @@ describe('gracefulHostRecycle', () => {
     });
   });
 
+  it('closes additional process resources even when native substrate teardown is skipped', async () => {
+    const exit = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const closeAdditionalResources = vi.fn(() => Promise.resolve());
+    const { server, drain } = makeServer();
+
+    gracefulHostRecycle({
+      server,
+      exit,
+      closeSubstrate,
+      closeAdditionalResources,
+      skipSubstrateTeardown: true,
+    });
+
+    expect(closeAdditionalResources).toHaveBeenCalledTimes(1);
+    expect(closeSubstrate).not.toHaveBeenCalled();
+    drain();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+  });
+
   // EI-16949: whenever the real substrate teardown is SKIPPED (either the
   // WI-3795 isSaturated race-avoidance or the EI-9649 skipSubstrateTeardown
   // opt-out), the pure-JS replication-liveness registry cleanup must still
@@ -585,6 +606,30 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
     warnSpy.mockRestore();
+  });
+
+  it('forwards closeAdditionalResources so a SIGTERM closes process-owned LISTEN clients', async () => {
+    const exit = vi.fn();
+    const closeSubstrate = vi.fn(() => Promise.resolve());
+    const closeAdditionalResources = vi.fn(() => Promise.resolve());
+    const { server, drain } = makeServer();
+    const { on, fire } = fakeSignals();
+
+    installGracefulShutdown({
+      server,
+      on,
+      exit,
+      closeSubstrate,
+      closeAdditionalResources,
+      isSaturated: () => true,
+    });
+    fire('SIGTERM');
+
+    expect(closeAdditionalResources).toHaveBeenCalledTimes(1);
+    expect(closeSubstrate).not.toHaveBeenCalled();
+    drain();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(exit).toHaveBeenCalledExactlyOnceWith(0);
   });
 
   it('can drain SIGTERM and then hard-exit without running Node native teardown', async () => {

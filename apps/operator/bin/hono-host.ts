@@ -76,7 +76,10 @@ import {
 import nodeCluster from 'node:cluster';
 import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
 import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
-import { ensureInvalidationListener } from '@papercusp/operator-core/lib/sync-sse';
+import {
+  ensureInvalidationListener,
+  stopInvalidationListener,
+} from '@papercusp/operator-core/lib/sync-sse';
 import { ensureFlagChangeListener } from '@papercusp/operator-core/lib/flag-change-listener';
 import {
   startCluster,
@@ -455,6 +458,7 @@ function startRequestServers(): void {
         // strictly better than the SIGABRT crash + coredump + webview recovery flash.
         gracefulHostRecycle({
           server: server as { close?: (cb?: () => void) => void },
+          closeAdditionalResources: stopInvalidationListener,
           skipSubstrateTeardown: true,
           hardExitOnRecycle: true,
           // EI-16447: attribute the shared hard-exit log line to the ACTUAL
@@ -511,6 +515,7 @@ function startRequestServers(): void {
   if (process.env.PAPERCUSP_SIGTERM_DRAIN !== '0') {
     installGracefulShutdown({
       server: server as { close?: (cb?: () => void) => void },
+      closeAdditionalResources: stopInvalidationListener,
       hardExitOnRecycle: true,
     });
   }
@@ -562,6 +567,7 @@ function startRequestServers(): void {
       markShuttingDown();
       gracefulHostRecycle({
         server: server as { close?: (cb?: () => void) => void },
+        closeAdditionalResources: stopInvalidationListener,
         recycleExitCode: code,
         // WI-3849: lag-recycle is another full process exit. Avoid the same
         // Node native env teardown that aborts on SIGTERM/memory recycle.
