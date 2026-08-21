@@ -1328,9 +1328,17 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       expect([...captured().matchAll(/BOOT:(\d+)/g)]).toHaveLength(1);
 
       await controlInject(sock, 'recycle', 'CARRIED');
-      await sleep(2500); // kill + respawn + budget(700) exhausted → drop recorded
-
-      const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      // Under the full integration suite, CPU scheduling can delay the fresh
+      // child beyond the old one-shot 2500ms sleep even though the host is
+      // progressing normally. Poll for the observable respawn marker within a
+      // bounded budget so this test measures the carry-drop contract rather
+      // than a scheduler-specific wall-clock slice.
+      const bootsDeadline = Date.now() + 8_000;
+      let bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      while (bootsAfter.length < 2 && Date.now() < bootsDeadline) {
+        await sleep(50);
+        bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      }
       expect(bootsAfter).toHaveLength(2); // respawned, even though the carry drops
       // The carry was NEVER injected (the fresh child never reached its prompt)…
       expect(captured()).not.toContain('ECHO:CARRIED');
