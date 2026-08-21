@@ -37,7 +37,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { defineTool, SU_ROLES, fuzzyEnum } from '@papercusp/agent-mcp';
+import { defineTool, SU_ROLES, fuzzyEnumAsync } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
@@ -88,7 +88,7 @@ import type { ColorScheme } from '../../console-color-schemes';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
-import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
+import { localModelIdsAsync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
 import { listFacts } from '../../agent-facts/store';
 import { getModes } from '../../modes/store';
@@ -1165,7 +1165,7 @@ export default defineTool({
       .string()
       .optional()
       .describe('psu --role: the su role each member runs as (default the standard su collaborator).'),
-    model: fuzzyEnum(localModelIdsSync, {
+    model: fuzzyEnumAsync(localModelIdsAsync, {
       applies: isOmpLocalModel,
       // A leader passes the PROVIDER-PREFIXED spec (ollama-cc/…); the backend registry stores the
       // BARE id — normalize both so a valid prefixed ornith model is never false-rejected.

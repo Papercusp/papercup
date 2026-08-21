@@ -11,6 +11,7 @@
     "./provisioning": "./src/provisioning.ts",
     "./auth": "./src/auth.ts",
     "./plugin-events": "./src/plugin-events.ts",
+    "./validation-context": "./src/validation-context.ts",
     "./_bulk": "./src/_bulk.ts",
     "./goals": "./src/tools/goals/_core.ts",
     "./goal-deps": "./src/tools/goals/goal-deps.ts"

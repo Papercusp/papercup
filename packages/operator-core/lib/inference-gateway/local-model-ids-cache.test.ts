@@ -7,8 +7,10 @@ vi.mock('./local-backend-store', () => ({
 import { listLocalBackends } from './local-backend-store';
 import type { LocalBackendRecord } from './local-backend-store';
 import { runWithWorkspace } from '../workspace-als';
+import { runWithValidationWorkspace } from '@papercusp/agent-mcp/validation-context';
 import {
   localModelIdsSync,
+  localModelIdsAsync,
   __refreshLocalModelIdsForTests,
   __resetLocalModelIdsCacheForTests,
 } from './local-model-ids-cache';
@@ -114,5 +116,14 @@ describe('localModelIdsSync — WI-4395 (per-workspace snapshot, resolved at the
     mockListLocalBackends.mockRejectedValueOnce(new Error('db down'));
     const result = await runWithWorkspace('ws-c', () => __refreshLocalModelIdsForTests());
     expect(result).toEqual(['m1']); // unchanged — fail-open
+  });
+});
+
+describe('localModelIdsAsync — validation workspace scoping', () => {
+  it('uses the explicit validation workspace before falling back to the process workspace', async () => {
+    mockListLocalBackends.mockResolvedValueOnce([backend({ kind: 'llama-server', models: ['ornith-valid'] })]);
+    const result = await runWithValidationWorkspace('ws-validation', () => localModelIdsAsync());
+    expect(result).toEqual(['ornith-valid']);
+    expect(mockListLocalBackends).toHaveBeenCalledWith({ workspaceId: 'ws-validation' });
   });
 });

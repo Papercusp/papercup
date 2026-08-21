@@ -50,6 +50,10 @@ vi.mock('../../../workspace-registry', () => ({
   activeWorkspaceId: () => 'ws-1',
 }));
 
+vi.mock('../../../inference-gateway/local-model-ids-cache', () => ({
+  localModelIdsAsync: vi.fn(async () => ['ornith-valid']),
+}));
+
 // Keep the handler's launch-context compose-write out of the real ~/.papercusp
 // during tests — point the workspace home at a throwaway tmp dir.
 vi.mock('../../../papercusp-root', () => ({
@@ -208,6 +212,7 @@ import tool, {
 } from '../launch-on-plan';
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
+import { standardValidate } from '@papercusp/tooldef';
 
 beforeEach(() => {
   assembleRolePromptMock.mockReset();
@@ -241,6 +246,18 @@ describe('launch-tool routing guidance', () => {
     expect(tool.guidance?.when).toContain('capability:terminal');
     expect(tool.guidance?.notWhen).toContain('capability:launch-agent');
     expect(tool.guidance?.notWhen).toContain('launching-agents-which-tool-for-which-door');
+  });
+});
+
+describe('launch-on-plan model argument validation', () => {
+  it('rejects a local-model typo through the async Standard Schema path', async () => {
+    const parsed = await standardValidate(tool.args, {
+      name: 'fleet-test',
+      plan: 'my-plan',
+      model: 'ollama-cc/ornith-typo',
+    });
+    expect(parsed.ok).toBe(false);
+    if (!parsed.ok) expect(parsed.issues.some((issue) => issue.message.includes('ornith-valid'))).toBe(true);
   });
 });
 

@@ -111,3 +111,35 @@ export function fuzzyEnum(
     });
   });
 }
+
+/**
+ * Async counterpart for dynamic sets backed by an async store. Standard Schema
+ * validation already awaits async Zod refinements; using this variant makes a
+ * cold cache load its authoritative set before deciding whether to fail open.
+ */
+export function fuzzyEnumAsync(
+  allowed: readonly string[] | (() => readonly string[] | Promise<readonly string[]>),
+  opts: FuzzyEnumOpts = {},
+): z.ZodType<string> {
+  const label = opts.label ?? 'value';
+  const maxListed = opts.maxListed ?? 25;
+  const norm = opts.normalize;
+  return z.string().superRefine(async (value, ctx) => {
+    if (opts.applies && !opts.applies(value)) return;
+    const list = typeof allowed === 'function' ? await allowed() : allowed;
+    if (!list || list.length === 0) return; // FAIL-OPEN: nothing to check against
+    const target = norm ? norm(value) : value;
+    const pairs = list.map((orig) => ({ orig, key: norm ? norm(orig) : orig }));
+    if (pairs.some((p) => p.key === target)) return;
+    const nearest = nearestByLevenshtein(target, pairs.map((p) => p.key), { k: opts.k, maxRatio: opts.maxRatio })
+      .map((key) => pairs.find((p) => p.key === key)?.orig ?? key);
+    const shown = list.slice(0, maxListed);
+    const more = list.length > shown.length ? ` (+${list.length - shown.length} more)` : '';
+    const suggestion = nearest.length ? ` Did you mean ${nearest.map((s) => `\`${s}\``).join(' / ')}?` : '';
+    ctx.addIssue({
+      code: 'custom',
+      params: { fuzzyEnum: true, got: value, nearest, allowed: shown },
+      message: `\`${value}\` is not a valid ${label}.${suggestion} Allowed: [${shown.join(', ')}]${more}`,
+    });
+  });
+}

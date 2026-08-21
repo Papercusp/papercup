@@ -21,11 +21,13 @@
  * cache BY workspace, so one workspace's resolution can never serve (or starve) another's.
  */
 import { listLocalBackends } from './local-backend-store';
+import { currentValidationWorkspaceId } from '@papercusp/agent-mcp/validation-context';
 import { activeWorkspaceId } from '../workspace-registry';
 
 interface WorkspaceSnapshot {
   models: string[];
   lastRefreshAt: number;
+  refreshPromise?: Promise<string[]>;
 }
 
 const snapshots = new Map<string, WorkspaceSnapshot>();
@@ -42,17 +44,33 @@ function entryFor(ws: string): WorkspaceSnapshot {
 
 /** Kick a debounced background refresh for `ws` when its snapshot is stale; returns immediately. */
 function refreshSoon(ws: string): void {
+  void refreshFor(ws);
+}
+
+/** Load the current workspace set, deduplicating concurrent cold-cache reads. */
+function refreshFor(ws: string): Promise<string[]> {
   const entry = entryFor(ws);
   const now = Date.now();
-  if (now - entry.lastRefreshAt < REFRESH_TTL_MS) return;
+  if (entry.lastRefreshAt > 0 && now - entry.lastRefreshAt < REFRESH_TTL_MS) return Promise.resolve(entry.models);
+  if (entry.refreshPromise) return entry.refreshPromise;
   entry.lastRefreshAt = now; // debounce even if the load fails
-  void listLocalBackends({ workspaceId: ws })
+  entry.refreshPromise = listLocalBackends({ workspaceId: ws })
     .then((backends) => {
       entry.models = [...new Set(backends.flatMap((b) => b.models))];
+      return entry.models;
     })
     .catch(() => {
       /* fail-open: keep the previous snapshot; retry after the TTL */
+      return entry.models;
     });
+  void entry.refreshPromise.finally(() => {
+    entry.refreshPromise = undefined;
+  });
+  return entry.refreshPromise;
+}
+
+function validationWorkspaceId(): string {
+  return currentValidationWorkspaceId() ?? activeWorkspaceId();
 }
 
 /**
@@ -64,14 +82,19 @@ function refreshSoon(ws: string): void {
  * fuzzyEnum fails open rather than reject a real model before the gateway registry is loaded.
  */
 export function localModelIdsSync(): string[] {
-  const ws = activeWorkspaceId();
+  const ws = validationWorkspaceId();
   refreshSoon(ws);
   return entryFor(ws).models;
 }
 
+/** Async resolver used by validation paths that can await a cold-cache refresh. */
+export async function localModelIdsAsync(): Promise<string[]> {
+  return refreshFor(validationWorkspaceId());
+}
+
 /** Test seam: await one refresh so a test can assert against a known registry. */
 export async function __refreshLocalModelIdsForTests(): Promise<string[]> {
-  const ws = activeWorkspaceId();
+  const ws = validationWorkspaceId();
   const entry = entryFor(ws);
   // refreshSoon fires-and-forgets; do the awaited load directly for determinism. Stamp
   // lastRefreshAt on the way out (success OR failure) so an immediately-following

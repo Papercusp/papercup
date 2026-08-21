@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { fuzzyEnum, nearestByLevenshtein } from './fuzzy-enum';
+import { fuzzyEnum, fuzzyEnumAsync, nearestByLevenshtein } from './fuzzy-enum';
 
 describe('nearestByLevenshtein', () => {
   it('returns the closest candidate for a near-miss', () => {
@@ -94,5 +94,20 @@ describe('fuzzyEnum', () => {
       expect(issue.params.got).toBe('gren');
       expect(issue.params.nearest).toContain('green');
     }
+  });
+});
+
+describe('fuzzyEnumAsync', () => {
+  it('awaits an async resolver before rejecting a cold-cache typo', async () => {
+    const schema = fuzzyEnumAsync(async () => ['ollama-cc/ornith-valid'], { label: 'local model' });
+    const result = await schema.safeParseAsync('ollama-cc/ornith-typo');
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toContain('Did you mean `ollama-cc/ornith-valid`?');
+    }
+  });
+
+  it('fails open when an async resolver returns no candidates', async () => {
+    await expect(fuzzyEnumAsync(async () => []).safeParseAsync('anything')).resolves.toMatchObject({ success: true });
   });
 });

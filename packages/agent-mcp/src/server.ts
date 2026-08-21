@@ -40,6 +40,7 @@ import {
   applyEntityRefEnums,
 } from '@papercusp/tooldef';
 import { applyToolManifest } from './tool-manifest';
+import { runWithValidationWorkspace } from './validation-context';
 import {
   getResourceCatalog,
   matchResource,
@@ -238,7 +239,9 @@ export async function dispatch(opts: DispatchOptions): Promise<DispatchResult> {
   // Validate args via the tool's Standard Schema validator. EI-7068: unwrap a
   // degenerate double-encoded { args: "<json-string>" } shape FIRST, so a
   // client bug at the transport layer doesn't 400 every tool it touches.
-  const parsed = await standardValidate(tool.args, unwrapDoubleEncodedArgs(opts.args));
+  const parsed = await runWithValidationWorkspace(principal.workspaceId, () =>
+    standardValidate(tool.args, unwrapDoubleEncodedArgs(opts.args)),
+  );
   if (!parsed.ok) {
     return {
       ok: false,
