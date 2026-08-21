@@ -627,7 +627,18 @@ describe('verified-wait fallback campaign (PG)', () => {
       timeoutVerification: { classification: 'absent' },
     });
 
-    expect(await listVerifiedWaitTakeoversForSubscribers(['waiter-died'])).toEqual([
+    const noNewProducerActivity = async (cert: ProducerHealthCertificate) => ({
+      checkedAtMs: cert.verificationDeadlineMs,
+      producerPresent: true,
+      lastProgressAtMs: cert.lastProgressAtMs,
+      lastFireAtMs: cert.lastFireAtMs,
+      completedAtMs: null,
+    });
+    expect(
+      await listVerifiedWaitTakeoversForSubscribers(['waiter-died'], 24, {
+        observeProducer: noNewProducerActivity,
+      }),
+    ).toEqual([
       expect.objectContaining({
         classification: 'absent',
         owner: { ownerId: 'su-producer', workItemId: 'WI-producer' },
@@ -638,7 +649,26 @@ describe('verified-wait fallback campaign (PG)', () => {
     // EI-20540454577146535: the SAME verified-timeout verdict, once WI-producer has
     // since closed, must stop recommending a takeover of it.
     await rootSql`INSERT INTO harness_shared.work_items (feature_id, status) VALUES ('WI-producer', 'done')`;
-    expect(await listVerifiedWaitTakeoversForSubscribers(['waiter-died'])).toEqual([]);
+    expect(
+      await listVerifiedWaitTakeoversForSubscribers(['waiter-died'], 24, {
+        observeProducer: noNewProducerActivity,
+      }),
+    ).toEqual([]);
+
+    // A producer that resumed after the timeout must also clear the stale remedy,
+    // even when its owning work-item is still open.
+    await rootSql`DELETE FROM harness_shared.work_items WHERE feature_id = 'WI-producer'`;
+    const resumed = async (cert: ProducerHealthCertificate) => ({
+      checkedAtMs: cert.verificationDeadlineMs + 1_000,
+      producerPresent: true,
+      state: 'active' as const,
+      lastProgressAtMs: cert.verificationDeadlineMs + 500,
+      lastFireAtMs: null,
+      completedAtMs: null,
+    });
+    expect(
+      await listVerifiedWaitTakeoversForSubscribers(['waiter-died'], 24, { observeProducer: resumed }),
+    ).toEqual([]);
   });
 
   it('slow-but-progressing producer: renews the same one-shot row without consuming it', async () => {

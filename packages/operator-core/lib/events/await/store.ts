@@ -23,6 +23,7 @@ import { normalizeEventKey } from './announce-key';
 import { keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
 import { withEffectiveDeadlines } from './effective-deadline';
+import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import type {
   AwaitPolicy,
   AwaitRow,
@@ -34,7 +35,11 @@ import type {
   WakeChannel,
   WakeHandle,
 } from './types';
-import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
+import type {
+  ProducerHealthCertificate,
+  ProducerHealthObservation,
+  VerifiedWaitTimeoutResult,
+} from './verified-wait';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -469,9 +474,43 @@ export interface VerifiedWaitTakeoverAlert {
   remedy: string;
 }
 
+export interface VerifiedWaitTakeoverReadDeps {
+  /** Test seam; production uses the checkpoint adapter's live producer probe. */
+  observeProducer?: (certificate: ProducerHealthCertificate) => Promise<ProducerHealthObservation>;
+}
+
+function laterThan(current: number | null, previous: number | null): boolean {
+  return current != null && (previous == null || current > previous);
+}
+
+/**
+ * A timeout verdict is actionable only while the producer is still in the state
+ * that caused it. The durable timeout row is deliberately a snapshot, so a
+ * later run-lock/progress/completion must suppress the old takeover remedy.
+ * Re-check failures keep the old alert visible (fail-open): losing the freshness
+ * probe must not hide a genuinely stalled producer.
+ */
+function takeoverSuperseded(
+  alert: Pick<VerifiedWaitTakeoverAlert, 'checkedAtMs' | 'lastProgressAtMs' | 'lastFireAtMs'>,
+  observation: ProducerHealthObservation,
+): boolean {
+  const verdictActivityAtMs = Math.max(
+    alert.checkedAtMs,
+    alert.lastProgressAtMs ?? Number.NEGATIVE_INFINITY,
+    alert.lastFireAtMs ?? Number.NEGATIVE_INFINITY,
+  );
+  return (
+    observation.state === 'active' ||
+    laterThan(observation.lastProgressAtMs, verdictActivityAtMs) ||
+    laterThan(observation.lastFireAtMs, verdictActivityAtMs) ||
+    laterThan(observation.completedAtMs, verdictActivityAtMs)
+  );
+}
+
 export async function listVerifiedWaitTakeoversForSubscribers(
   subscriberIds: readonly string[],
   sinceHours = 24,
+  deps: VerifiedWaitTakeoverReadDeps = {},
 ): Promise<VerifiedWaitTakeoverAlert[]> {
   const ids = [...new Set(subscriberIds.filter((id) => !!id))];
   if (ids.length === 0) return [];
@@ -480,7 +519,7 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   const boundedHours = Math.min(Math.max(sinceHours, 1), 168);
   const rows = await sql`
     SELECT DISTINCT ON (subscriber_id, event_key)
-           subscriber_id, event_key, fired_at, timeout_verification
+           subscriber_id, event_key, fired_at, producer_health, timeout_verification
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
        AND subscriber_id = ANY(${ids as string[]}::text[])
@@ -490,7 +529,7 @@ export async function listVerifiedWaitTakeoversForSubscribers(
      ORDER BY subscriber_id, event_key, fired_at DESC
      LIMIT 500
   `;
-  const alerts = rows.flatMap((row: any) => {
+  const candidates = rows.flatMap((row: any) => {
     const result = parseJsonb<VerifiedWaitTimeoutResult>(row.timeout_verification);
     if (
       !result ||
@@ -501,24 +540,27 @@ export async function listVerifiedWaitTakeoversForSubscribers(
     }
     const ownerTarget = result.owner.workItemId ?? result.owner.ownerId;
     return [{
-      subscriberId: row.subscriber_id,
-      eventKey: row.event_key,
-      firedAt: new Date(row.fired_at).toISOString(),
-      classification: result.classification,
-      nextAction: result.nextAction,
-      producer: result.producer,
-      owner: result.owner,
-      checkedAtMs: result.checkedAtMs,
-      verificationDeadlineMs: result.verificationDeadlineMs,
-      lastProgressAtMs: result.lastProgressAtMs,
-      lastFireAtMs: result.lastFireAtMs,
-      ...(result.evidence ? { evidence: result.evidence } : {}),
-      remedy: ownerTarget
-        ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
-        : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
-    } satisfies VerifiedWaitTakeoverAlert];
+      alert: {
+        subscriberId: row.subscriber_id,
+        eventKey: row.event_key,
+        firedAt: new Date(row.fired_at).toISOString(),
+        classification: result.classification,
+        nextAction: result.nextAction,
+        producer: result.producer,
+        owner: result.owner,
+        checkedAtMs: result.checkedAtMs,
+        verificationDeadlineMs: result.verificationDeadlineMs,
+        lastProgressAtMs: result.lastProgressAtMs,
+        lastFireAtMs: result.lastFireAtMs,
+        ...(result.evidence ? { evidence: result.evidence } : {}),
+        remedy: ownerTarget
+          ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
+          : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
+      } satisfies VerifiedWaitTakeoverAlert,
+      certificate: parseJsonb<ProducerHealthCertificate>(row.producer_health),
+    }];
   });
-  if (alerts.length === 0) return alerts;
+  if (candidates.length === 0) return [];
   // EI-20540454577146535: `timeout_verification` is a SNAPSHOT written once, when the
   // fallback verifier fired — it is never re-checked against the work item's CURRENT
   // state. Filed live: a checkpoint response recommended wake-owner-or-takeover for
@@ -526,10 +568,35 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   // stale warning that can steer a monitor to seize completed work. Suppress rows
   // whose owning work item has since gone terminal.
   const terminalOwners = await terminalWorkItemIds(
-    alerts.map((a) => a.owner.workItemId).filter((id): id is string => !!id),
+    candidates.map(({ alert }) => alert.owner.workItemId).filter((id): id is string => !!id),
   );
-  if (terminalOwners.size === 0) return alerts;
-  return alerts.filter((a) => !a.owner.workItemId || !terminalOwners.has(a.owner.workItemId));
+  const nonTerminal = candidates.filter(
+    ({ alert }) => !alert.owner.workItemId || !terminalOwners.has(alert.owner.workItemId),
+  );
+  if (nonTerminal.length === 0) return [];
+
+  const observeProducer = deps.observeProducer ?? observeCheckpointProducer;
+  const observations = new Map<string, Promise<ProducerHealthObservation | null>>();
+  const currentObservation = (certificate: ProducerHealthCertificate) => {
+    const key = JSON.stringify({ producer: certificate.producer, details: certificate.details ?? null });
+    const existing = observations.get(key);
+    if (existing) return existing;
+    const pending = observeProducer(certificate).catch(() => null);
+    observations.set(key, pending);
+    return pending;
+  };
+
+  const fresh = await Promise.all(
+    nonTerminal.map(async ({ alert, certificate }) => {
+      // Certificates were added after the original timeout projection. Keep
+      // legacy rows visible because there is no authoritative producer to probe.
+      if (!certificate) return alert;
+      const observation = await currentObservation(certificate);
+      if (!observation || takeoverSuperseded(alert, observation)) return null;
+      return alert;
+    }),
+  );
+  return fresh.filter((alert): alert is VerifiedWaitTakeoverAlert => alert !== null);
 }
 
 /**
