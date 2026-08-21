@@ -37,6 +37,7 @@
  * avoids by routing through it rather than hand-rolling the LIKE match).
  */
 import { claimWatchdogFire, recentWatchdogFires, scopedFireReason } from '../../pot/watchdog';
+import { RESTART_TARGET_UNITS } from '../../agent-tools/dev/restart-target-units';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 import {
   processBootCommitSha,
@@ -81,6 +82,46 @@ function routinesEnabledHere(): boolean {
 export function executorIdentity(): string {
   const port = process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT;
   return port ? `port-${port}` : `pid-${process.pid}`;
+}
+
+export interface ExecutorAlarmContext {
+  unit: string;
+  restartLever: string;
+  identityLabel: string;
+}
+
+/**
+ * Resolve the user-facing identity and sanctioned remediation for an executor.
+ *
+ * The routines primary is a child of `papercup-bg-host.service`; its worker PID
+ * is therefore not the systemd MainPID and is unsafe as a standalone alarm
+ * identity. Keep the mapping pure so the alarm text has a focused regression
+ * bar and unknown identities fail visibly instead of suggesting a PID action.
+ */
+export function executorAlarmContext(identity: string): ExecutorAlarmContext {
+  const knownByIdentity: Record<string, { unit: string; target: string }> = {
+    'port-3070': { unit: RESTART_TARGET_UNITS.dev, target: 'dev' },
+    'port-3170': { unit: RESTART_TARGET_UNITS.staging, target: 'staging' },
+    'port-3271': { unit: RESTART_TARGET_UNITS['bg-host'], target: 'bg-host' },
+  };
+  const known = knownByIdentity[identity];
+  if (known) {
+    return {
+      unit: known.unit,
+      restartLever: `dev:restart { target: '${known.target}', confirm: true }`,
+      identityLabel: `${known.unit} (executor identity ${identity})`,
+    };
+  }
+
+  const configuredUnit = process.env.PAPERCUSP_SYSTEMD_UNIT?.trim();
+  const unit = configuredUnit || 'systemd unit unresolved';
+  return {
+    unit,
+    restartLever: configuredUnit
+      ? `the sanctioned dev:restart target for ${configuredUnit}`
+      : 'resolve the owning service before choosing its sanctioned dev:restart target',
+    identityLabel: `${unit} (executor identity ${identity})`,
+  };
 }
 
 // ── pure decider (no DB, no git — everything injected) ────────────────────────
@@ -165,6 +206,7 @@ async function raiseExecutorStalenessAlarm(opts: {
 }): Promise<boolean> {
   const { workspaceId, installSlug, identity, verdict, now } = opts;
   const phase = phaseFor(identity);
+  const alarmContext = executorAlarmContext(identity);
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
@@ -179,12 +221,12 @@ async function raiseExecutorStalenessAlarm(opts: {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
         kind: 'intervention',
-        title: `Stale routine executor (${identity}) is running code older than the checkout`,
+        title: `Stale routine executor (${alarmContext.identityLabel}) is running code older than the checkout`,
         body: verdict.reason,
         importance: 'urgent',
         workspaceId,
         harnessSlug: installSlug,
-        data: { ageHours, identity },
+        data: { ageHours, identity, unit: alarmContext.unit, restartLever: alarmContext.restartLever },
       });
     } catch (e) {
       console.warn(`[stale-routine-executor] notify failed: ${e instanceof Error ? e.message : e}`);
@@ -193,13 +235,13 @@ async function raiseExecutorStalenessAlarm(opts: {
     const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
     await broadcastSevereEvent({
       summary:
-        `stale routine executor (${identity}) has run ${ageHours}h with code from its boot while ` +
+        `stale routine executor ${alarmContext.identityLabel} has run ${ageHours}h with code from its boot while ` +
         `PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved — scheduled-routine fixes committed since boot ` +
-        `are not loaded by this process; restart the host to pick up current code.`,
+        `are not loaded by this process; restart ${alarmContext.unit} with ${alarmContext.restartLever} to pick up current code.`,
       body:
-        `${verdict.reason}\n\nDo NOT kill/duplicate a tauri-dev-supervised process to "fix" this (CLAUDE.md: that has ` +
-        `already taken the owner's live desktop down once) — this needs an owner-coordinated restart of THAT host, ` +
-        `or the routine should stop carrying PAPERCUSP_DBOS_ROUTINES=1 if it no longer needs to run them.`,
+        `${verdict.reason}\n\nThe worker identity is not necessarily the systemd MainPID. Do NOT kill or duplicate a worker PID ` +
+        `to "fix" this; restart ${alarmContext.unit} with ${alarmContext.restartLever}, or stop carrying ` +
+        `PAPERCUSP_DBOS_ROUTINES=1 on that service if it no longer needs to run routines.`,
       category: 'severe-event',
       conditionKey: conditionKeyFor(identity),
       oneShot: true,

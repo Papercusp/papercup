@@ -9,7 +9,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { evaluateExecutorStaleness, executorIdentity, staleExecutorThresholdSec } from './stale-routine-executor-watchdog';
+import {
+  evaluateExecutorStaleness,
+  executorAlarmContext,
+  executorIdentity,
+  staleExecutorThresholdSec,
+} from './stale-routine-executor-watchdog';
 import { captureProcessBootIdentity, processBootTimeMs } from '../../dbos/process-boot-identity';
 
 const TWO_H = 2 * 3_600_000;
@@ -201,6 +206,32 @@ describe('executorIdentity — a stable per-process key that never conflates two
     } finally {
       if (savedHono !== undefined) process.env.PAPERCUSP_HONO_PORT = savedHono;
       if (savedPort !== undefined) process.env.PORT = savedPort;
+    }
+  });
+});
+
+describe('executorAlarmContext — identify the owning service before suggesting remediation', () => {
+  it('names bg-host service and the sanctioned restart lever instead of presenting a bare worker identity', () => {
+    const context = executorAlarmContext('port-3271');
+
+    expect(context.unit).toBe('papercup-bg-host.service');
+    expect(context.identityLabel).toContain('papercup-bg-host.service');
+    expect(context.identityLabel).toContain('executor identity port-3271');
+    expect(context.restartLever).toBe("dev:restart { target: 'bg-host', confirm: true }");
+    expect(context.identityLabel).not.toMatch(/^pid-/);
+  });
+
+  it('keeps an unresolvable PID identity explicit rather than turning it into a kill instruction', () => {
+    const savedUnit = process.env.PAPERCUSP_SYSTEMD_UNIT;
+    delete process.env.PAPERCUSP_SYSTEMD_UNIT;
+    try {
+      const context = executorAlarmContext('pid-1690541');
+
+      expect(context.unit).toBe('systemd unit unresolved');
+      expect(context.identityLabel).toContain('systemd unit unresolved');
+      expect(context.restartLever).toContain('resolve the owning service');
+    } finally {
+      if (savedUnit !== undefined) process.env.PAPERCUSP_SYSTEMD_UNIT = savedUnit;
     }
   });
 });
