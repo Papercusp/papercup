@@ -31,6 +31,7 @@ import {
   RELEASE_DEPLOY_UNIT,
   type DeployTerminalMarker,
 } from './release-deploy-terminal';
+import { isRecordableVerdict } from './release/gate-verdict-target';
 
 /**
  * The fixed transient systemd unit the detached deploy runs as. MUST match
@@ -222,7 +223,7 @@ export type DeployStateKind =
   | 'release-trigger-unavailable' // release-trigger is absent/inactive without usable pause provenance
   | 'gate-red' // the gate is RED — the green pin can't advance until the reds are fixed
   | 'gate-verdict-stale' // WI-4489: the blob says red, but the verdict is superseded/unverified — colour UNKNOWN, not red
-  | 'gate-wedged' // the green-checkpoint isn't firing (0 reds but stale) — surface to an operator
+  | 'gate-wedged' // the green-checkpoint isn't firing or produced no verdict — surface to an operator
   | 'staging-buffered' // staging has commits awaiting the next (green) checkpoint — normal, just wait
   | 'unknown';
 
@@ -352,6 +353,14 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
         logPath: typeof lastCheckpointEvent.detail?.logPath === 'string' ? lastCheckpointEvent.detail.logPath : null,
       }
     : null;
+  // A green_checkpoint event is not necessarily a verdict: skipped-* means the suite never
+  // judged the candidate (for example, skipped-locked means another run held the lock). Keep
+  // exposing that event as `lastVerdict` for diagnostics, but do not let the rolling gate-health
+  // fields turn a fresh no-op into the reassuring "wait one cycle" state. The active-run probe is
+  // authoritative when present: a non-verdict tick is expected while that run is still producing
+  // the real outcome, so it must not be classified as a wedge yet.
+  const latestCheckpointIsNonVerdict =
+    lastCheckpointEvent !== undefined && !isRecordableVerdict(lastCheckpointEvent.status);
   // EI-18646778682511611: a partial advance ('advanced-prefix', P-016/D-010) resets
   // `consecutiveReds` to 0 by design (trackGateStall treats it as "main is advancing,
   // not stalled") — but it is EXPLICITLY the case where the CANDIDATE/tip is still red
@@ -445,6 +454,12 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     recommendation =
       `${deployedBehindGreenPin} green commit(s) are deployable but not yet live on :3070. ` +
       `The auto-serve ships these each cycle; to expedite now run release:deploy { op: 'trigger', confirm: true } — it can only ship the green pin (safe even while the gate is currently red).`;
+  } else if (latestCheckpointIsNonVerdict && !checkpointRunActive) {
+    state = 'gate-wedged';
+    recommendation =
+      `The latest green-checkpoint tick was '${lastCheckpointEvent!.status}' and produced no gate verdict. ` +
+      `The gate's cached health is unverified until a checkpoint actually judges the candidate. ` +
+      `Run release:checkpoint-run for a FRESH verdict, or let the scheduled routine fire through; do not treat this tick as green or red.`;
   } else if (redAuthoritative) {
     state = 'gate-red';
     recommendation =

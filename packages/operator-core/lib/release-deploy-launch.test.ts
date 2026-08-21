@@ -226,6 +226,55 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.state).toBe('up-to-date');
     expect(s.nothingToDeploy).toBe(true);
   });
+
+  it('a latest non-verdict checkpoint tick is a wedge, not staging-buffered optimism', () => {
+    const skippedLocked: PipelineEventRow = {
+      id: 'skipped-locked-1',
+      kind: 'green_checkpoint',
+      status: 'skipped-locked',
+      detail: {},
+      createdAtMs: 2,
+    };
+    const olderVerdict: PipelineEventRow = {
+      id: 'advanced-1',
+      kind: 'green_checkpoint',
+      status: 'advanced',
+      detail: { green: true },
+      createdAtMs: 1,
+    };
+    const s = computeDeployStatus(
+      mkSnap(
+        { consecutiveReds: 0, fireStale: false },
+        { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 },
+        [skippedLocked, olderVerdict],
+      ),
+    );
+
+    expect(s.gate.lastVerdict?.status).toBe('skipped-locked');
+    expect(s.state).toBe('gate-wedged');
+    expect(s.recommendation).toMatch(/skipped-locked/);
+    expect(s.recommendation).toMatch(/no gate verdict|FRESH verdict/i);
+  });
+
+  it('does not classify a non-verdict tick as wedged while a checkpoint is active', () => {
+    const s = computeDeployStatus({
+      ...mkSnap(
+        { consecutiveReds: 0, fireStale: true, fireStaleReason: 'no fresh verdict' },
+        { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 },
+        [{ id: 'skipped-locked-2', kind: 'green_checkpoint', status: 'skipped-locked', detail: {}, createdAtMs: 2 }],
+      ),
+      activeRun: {
+        active: true,
+        candidate: 'candidate1234',
+        startedAtMs: 1,
+        elapsedSec: 60,
+      },
+    });
+
+    expect(s.state).toBe('staging-buffered');
+    expect(s.state).not.toBe('gate-wedged');
+    expect(s.recommendation).toMatch(/ACTIVE/);
+  });
 });
 
 describe('buildDeployCliArgs', () => {
