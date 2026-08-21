@@ -224,6 +224,25 @@ describe('with the task manager ON', () => {
     warn.mockRestore();
   });
 
+  it('does not warn when a clean client exit leaves the scope for reconciliation', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    m.readCgroupProcs.mockReturnValue([4242]);
+
+    finishSyncEnrolment(
+      e,
+      { state: 'exited', exitCode: 0 },
+      { scopeCgroupPath: '/user.slice/papercusp.slice/pc-test.scope' },
+    );
+
+    expect(closeTask).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('scope still holds processes'));
+    warn.mockRestore();
+    info.mockRestore();
+  });
+
   it('derives a confined scope path from the operator cgroup, never the client pid', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     expect(syncEnrolmentScopePath(e, 'bash-job')).toBe(

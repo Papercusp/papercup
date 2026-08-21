@@ -422,10 +422,14 @@ function wireExit(
 
   child.on('exit', (code, signal) => {
     if (payloadOutlivedClient()) {
-      console.warn(
+      const message =
         `[managed-spawn] task ${taskId}: the systemd-run client exited (${signal ? `signal ${signal}` : `code ${code}`}) ` +
-          'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).',
-      );
+        'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
+      // A clean systemd-run client exit is an expected handoff to the reconciler,
+      // not a warning. Keep abnormal exits loud so the task ledger still surfaces
+      // a client that died while its payload remained alive.
+      if (signal || code !== 0) console.warn(message);
+      else console.info(message);
       return;
     }
     if (signal) {

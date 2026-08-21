@@ -152,6 +152,20 @@ describe('confined task exit recording (WI-37509)', () => {
     expect(String(warn.mock.calls[0]![0])).toMatch(/scope still holds processes/);
   });
 
+  it('does not warn when a clean client exit hands a populated scope to the reconciler', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const { emitter } = await spawnConfined([3204532, 3204609, 3204726]);
+
+    emitter.emit('exit', 0, null);
+    await flush();
+
+    expect(L.closed).toEqual([]);
+    expect(warn).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(String(info.mock.calls[0]![0])).toMatch(/scope still holds processes/);
+  });
+
   it('DOES close the row when the scope is gone — the ordinary healthy ending', async () => {
     const { emitter } = await spawnConfined(null);
 

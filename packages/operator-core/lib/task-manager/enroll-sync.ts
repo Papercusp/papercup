@@ -206,10 +206,13 @@ export function finishSyncEnrolment(
   // doing so turns the live scope into `unaccounted` and removes the safe
   // taskId/scope cleanup handle. This mirrors managedSpawn's WI-37509 guard.
   if (enrolment.confined && opts.scopeCgroupPath && scopeHasProcesses(opts.scopeCgroupPath, opts.fs ?? nodeCgroupFs)) {
-    console.warn(
+    const message =
       `[task-manager] sync-enrolled task ${enrolment.taskId}: the systemd-run client exited ` +
-        'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).',
-    );
+      'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
+    // Code 0 is the normal systemd-run handoff; reserve warnings for an
+    // abnormal client ending while the payload is still alive.
+    if (outcome.state === 'exited' && outcome.exitCode === 0) console.info(message);
+    else console.warn(message);
     return;
   }
   void closeTask(enrolment.taskId, outcome).catch(() => {});

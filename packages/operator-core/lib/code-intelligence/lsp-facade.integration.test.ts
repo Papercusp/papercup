@@ -352,27 +352,27 @@ describe(`concurrent-start budget ${skipReason}`, () => {
       // looked correct, so only the ledger showed it — which is why this
       // asserts the INVENTORY, not the answers.
       // A clean slate is required to count servers — but shutting a sidecar
-      // down inside a test body surfaces managed-spawn's KNOWN WI-37509 warn:
+      // down inside a test body surfaces managed-spawn's known WI-37509 handoff:
       // `typescript-language-server` spawns `tsserver` as a grandchild, so at
       // the instant the systemd-run client exits the scope is briefly still
       // non-empty and the row is left for the reconciler. That is expected
       // behaviour, not our defect (the client now exits code 0, i.e. via the
-      // protocol, not a signal). Capture warns and assert they are ONLY that —
-      // a blanket console.warn mock here would also swallow a real one.
+      // protocol, not a signal). It is informational, not a warning; capture
+      // both channels so a regression cannot re-red this otherwise-valid test.
       const warnings: string[] = [];
+      const infos: string[] = [];
       const warnSpy = vi
         .spyOn(console, 'warn')
         .mockImplementation((...a: unknown[]) => void warnings.push(a.join(' ')));
+      const infoSpy = vi.spyOn(console, 'info').mockImplementation((...a: unknown[]) => void infos.push(a.join(' ')));
       try {
         await shutdownAllLspClients();
       } finally {
         warnSpy.mockRestore();
+        infoSpy.mockRestore();
       }
-      for (const w of warnings) {
-        expect(w, `unexpected warning during shutdown: ${w}`).toMatch(
-          /scope still holds processes|WI-37509/,
-        );
-      }
+      expect(warnings).toHaveLength(0);
+      expect(infos.some((line) => /scope still holds processes|WI-37509/.test(line))).toBe(true);
       expect(lspClientInventory()).toHaveLength(0);
 
       const shared = { file: IMPORT_SITE, line1: 41, character: 11, rootPath: REPO_ROOT };
