@@ -230,10 +230,23 @@ export async function scanOutboxHealth(
   opts: { maxDepth: number; maxAgeMs: number; nowMs?: number; workspaceId?: string; harness?: string },
 ): Promise<OutboxHealth> {
   const nowMs = opts.nowMs ?? Date.now();
+  // WI-3896 / mig 645 follow-up (EI-21009625512310918): a QUARANTINED row
+  // (`quarantined_at IS NOT NULL`) is left undrained ON PURPOSE by
+  // outbox-drain.ts's poison-row triage — it is a deliberate decision, never a
+  // silent stall — and must be excluded here exactly as `load-drain-stats.ts`'s
+  // `loadSubstrateDrainStats` already excludes it (same table, same
+  // "undrained" concept, same mig 645 fix). Before this exclusion, a single
+  // permanently-quarantined row kept `oldestUndrainedAgeMs` growing without
+  // bound forever, so this SLO scan re-alarmed on a harness that was in fact
+  // healthy and draining fresh writes in near-real-time — the exact
+  // perpetual-false-positive class the outbox-drain-quarantine-runbook
+  // documents, just reached through this monitor's own independent query
+  // instead of `loadSubstrateDrainStats`'s.
   const rows = await sql<Array<{ depth: number; oldest_ts: number | null }>>`
     SELECT COUNT(*)::int AS depth, MIN(ts) AS oldest_ts
       FROM harness_shared.substrate_outbox
      WHERE drained_at IS NULL
+       AND quarantined_at IS NULL
        AND (${opts.workspaceId ?? null}::text IS NULL OR workspace_id = ${opts.workspaceId ?? null})
        AND (${opts.harness ?? null}::text IS NULL OR harness_slug = ${opts.harness ?? null})`;
   const depth = Number(rows[0]?.depth ?? 0);
