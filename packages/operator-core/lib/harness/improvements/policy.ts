@@ -421,6 +421,29 @@ export function infraEnvironmentHit(c: Pick<ImprovementCandidate, 'watchdogKey' 
   // (watchdog-and-exposed-systems-improvement-2026-06-18 P-010). The class is the
   // watchdogKey SUFFIX, not its source segment, so INFRA_SIGNAL_SOURCES misses it.
   if (c.watchdogKey && /:rate-limit$/.test(c.watchdogKey)) return 'external provider rate-limit (capacity)';
+  // EI-20983096990125721: `shared-hive:peer-federation-silence:<harness>` reports a
+  // REMOTE PEER's liveness/announce-admission state — its own alert text says so
+  // plainly ("The peers are ABSENT, not slow — nothing current can be folded. Suspect
+  // the announce/admission path or peer liveness, NOT this host's merge loop.", see
+  // judgePeerFederationSilence in shared-pot-loop/fleet-monitors.ts). A worker cannot
+  // make a departed peer re-announce or force its admission any more than it can fix a
+  // port mapping, so this incident kind is infra-environment (owner-escalate, never
+  // auto) even though its SOURCE segment ("shared-hive") is shared with sibling
+  // incident kinds (double-completion, outbox-health, presence-ghost, ...) that ARE
+  // genuine, code-fixable defects — hence a targeted middle-segment match
+  // (`shared-hive:<kind>:<harness>` — see planSharedHiveCapture) rather than adding
+  // "shared-hive" to INFRA_SIGNAL_SOURCES wholesale, which would also gate away those
+  // siblings' real bugs from auto-fix.
+  //
+  // Without this, the watchdog re-captures the SAME incident every tick (dedupScope:
+  // 'open' + a stable watchdogKey), which the D-005 default classified `code-bug` →
+  // tier=auto — the exact repeat-dispatch shape `stalled-feature` was fixed for
+  // (EI-805/EI-287: "burned 4 consecutive auto-implement dispatch attempts
+  // re-confirming this same non-auto-fixable root cause"). Measured here: repeatCount
+  // 24 on one open item before this fix landed.
+  if (c.watchdogKey && /^shared-hive:peer-federation-silence:/.test(c.watchdogKey)) {
+    return 'shared-hive peer federation silence (peer liveness/announce-admission, not code)';
+  }
   const infraPath = (c.paths ?? []).find((p) => INFRA_PATH_PATTERNS.some((pat) => matchGlob(pat, p)));
   if (infraPath) return `path "${infraPath}"`;
   return null;
