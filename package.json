@@ -109,6 +109,8 @@
     "tokens:check": "node design-tokens/tokens-check.mjs",
     "gen:borrowable": "node scripts/gen-borrowable-catalog.mjs",
     "gen:borrowable:check": "node scripts/gen-borrowable-catalog.mjs --check",
+    "gen:gitnexus-bridge": "node scripts/gen-gitnexus-bridge-runtime.mjs",
+    "gen:gitnexus-bridge:check": "node scripts/gen-gitnexus-bridge-runtime.mjs --check",
     "gen:contract": "tsx scripts/gen-testing-domains-contract.ts",
     "gen:contract:check": "tsx scripts/gen-testing-domains-contract.ts --check",
     "gen:agent-env": "tsx scripts/gen-agent-env.ts",
