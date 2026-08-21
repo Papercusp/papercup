@@ -1738,6 +1738,8 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     spawnConsoleMock.mockReset();
     fetchGatewayHeadroomMock.mockReset();
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 1 });
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockReset();
   });
@@ -1755,6 +1757,10 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     expect(payload.opened).toEqual([]);
     expect(payload.message).toMatch(/already has 2 LIVE members/);
     expect(spawnConsoleMock).not.toHaveBeenCalled();
+    // EI-20386584937642609: a suppressed no-op must leave an authored fleet claim
+    // spec untouched; there is no launch wave that needs a new spec.
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+    expect(payload.claimSpecApplied).toBeNull();
   });
 
   it('opens only the DEFICIT when some members are live (2 requested, 1 alive → 1 opened)', async () => {

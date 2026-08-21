@@ -1589,6 +1589,75 @@ export default defineTool({
     // fleet was newly created rather than joined).
     const spawningLeader = wantsSpawnedLeader && leaderSpawnSkipped === null;
 
+    // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
+    // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
+    // minutes apart (2026-07-03 second incident: leader 10040 re-fired at +5 min and +9 min — each
+    // burst was past the 60s window and opened 2 more ornith terminals while its members were alive
+    // and working). Presence is authoritative once members register; the window below covers only
+    // the boot gap before they do. A read failure never blocks a launch (fail open to the window).
+    // This guard deliberately runs before claim-spec reads/writes: a suppressed no-op must not
+    // re-stamp an authored lane when there is no launch wave to prepare.
+    let liveMembers = 0;
+    let liveMemberOwnerIds: string[] = [];
+    try {
+      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId);
+      let live = localLive;
+      if (remotePlacement) {
+        // WI-5211: remote members never register in LOCAL coord_presence — they announce
+        // via session-presence gossip (shared_session_presence, mig 479). Without this
+        // union a remote re-call always sees liveMembers=0 and publishes a whole second
+        // wave onto the other machines. Best-effort: federated roster unavailable ⇒ the
+        // local count alone (the relaunch window still guards the double-fire case).
+        try {
+          const federated = await listFederatedFleetMembers({
+            workspaceId,
+            fleetSlug,
+            staleMs: PRESENCE_STALE_MS,
+          });
+          live = [...new Set([...localLive, ...federated.map((m) => m.ownerId)])].filter((id) => id !== ownerId);
+        } catch {
+          live = localLive;
+        }
+      }
+      liveMemberOwnerIds = live;
+      liveMembers = live.length;
+    } catch {
+      liveMemberOwnerIds = [];
+      liveMembers = 0;
+    }
+    if (liveMembers >= count) {
+      const lines = [
+        `Fleet \`${fleetSlug}\` already has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'} — you asked for ${count}, so NO new terminals were opened.`,
+        'Your fleet is running: monitor it, do not relaunch. Re-call this tool only after members have actually drained (their presence goes stale), or with a HIGHER count to top up.',
+        planSlug
+          ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
+          : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
+      ];
+      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
+      return json({
+        ok: true,
+        fleet: fleetSlug,
+        leaderRole,
+        plan: planSlug,
+        harness,
+        agent,
+        account: args.account?.trim() || null,
+        requested: count,
+        liveMembers,
+        sizingAdvisory: null,
+        memberBaselineApplied: false,
+        claimSpecApplied: null,
+        memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
+        memberLaunchContextPath: null,
+        perMemberLaunchContextPaths: null,
+        briefReadError: null,
+        opened: [],
+        failed: [],
+        relaunchSuppressed: true,
+        message: lines.join('\n'),
+      });
+    }
+
     // #4 (fleet-launch-plan-scoped-claim-spec, 2026-07-08) + EI-7671 + EI-10409: set the
     // fleet-level claim spec BEFORE any member terminal opens — scoping every member's
     // scheduler:get_next self-pull to THIS plan (`plan = <slug>`), AND to args.claimKinds when
@@ -1815,72 +1884,6 @@ export default defineTool({
       );
     }
 
-    // LIVE-MEMBER deficit guard: a fleet that already has enough LIVE members gets NO new wave,
-    // regardless of timing. The rate window alone cannot stop a doom-looping leader that re-fires
-    // minutes apart (2026-07-03 second incident: leader 10040 re-fired at +5 min and +9 min — each
-    // burst was past the 60s window and opened 2 more ornith terminals while its members were alive
-    // and working). Presence is authoritative once members register; the window below covers only
-    // the boot gap before they do. A read failure never blocks a launch (fail open to the window).
-    let liveMembers = 0;
-    let liveMemberOwnerIds: string[] = [];
-    try {
-      const localLive = (await liveFleetMemberIds(fleetSlug, workspaceId)).filter((id) => id !== ownerId);
-      let live = localLive;
-      if (remotePlacement) {
-        // WI-5211: remote members never register in LOCAL coord_presence — they announce
-        // via session-presence gossip (shared_session_presence, mig 479). Without this
-        // union a remote re-call always sees liveMembers=0 and publishes a whole second
-        // wave onto the other machines. Best-effort: federated roster unavailable ⇒ the
-        // local count alone (the relaunch window still guards the double-fire case).
-        try {
-          const federated = await listFederatedFleetMembers({
-            workspaceId,
-            fleetSlug,
-            staleMs: PRESENCE_STALE_MS,
-          });
-          live = [...new Set([...localLive, ...federated.map((m) => m.ownerId)])].filter((id) => id !== ownerId);
-        } catch {
-          live = localLive;
-        }
-      }
-      liveMemberOwnerIds = live;
-      liveMembers = live.length;
-    } catch {
-      liveMemberOwnerIds = [];
-      liveMembers = 0;
-    }
-    if (liveMembers >= count) {
-      const lines = [
-        `Fleet \`${fleetSlug}\` already has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'} — you asked for ${count}, so NO new terminals were opened.`,
-        'Your fleet is running: monitor it, do not relaunch. Re-call this tool only after members have actually drained (their presence goes stale), or with a HIGHER count to top up.',
-        planSlug
-          ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
-          : `Until your fleet \`${fleetSlug}\` claim-lane is drained, your standing job each cycle:`,
-      ];
-      LEADER_STANDING_JOB.forEach((point, i) => lines.push(`  ${i + 1}. ${point}`));
-      return json({
-        ok: true,
-        fleet: fleetSlug,
-        leaderRole,
-        plan: planSlug,
-        harness,
-        agent,
-        account: args.account?.trim() || null,
-        requested: count,
-        liveMembers,
-        sizingAdvisory: null,
-        memberBaselineApplied: false,
-        claimSpecApplied,
-        memberBaselineHeadlines: MEMBER_BASELINE_RULES.map((r) => r.head),
-        memberLaunchContextPath: null,
-        perMemberLaunchContextPaths: null,
-        briefReadError: null,
-        opened: [],
-        failed: [],
-        relaunchSuppressed: true,
-        message: lines.join('\n'),
-      });
-    }
     // Only the DEFICIT opens — and the target size is deliberately independent of
     // the per-call terminal limit. A 27-member fleet may target 28 (opens one), while
     // a much larger deficit is advanced by at most MAX_MEMBERS terminals this wave.
