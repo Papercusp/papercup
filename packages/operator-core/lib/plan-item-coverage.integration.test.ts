@@ -174,6 +174,22 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     expect(c!.level).toBe('unclaimed');
   });
 
+  it('marks a linked blocked work-item in coverage so claimability readers can exclude it', async () => {
+    await insertIssue({ id: 'WI-blocked', state: 'blocked', plan: 'p1', item: 'P-001b' });
+
+    const cov = await getAllPlanItemCoverage();
+    expect(cov.get(planItemRef('p1', 'P-001b'))?.links).toEqual([
+      {
+        workItemId: 'WI-blocked',
+        rel: STAMP_ONLY_REL,
+        terminal: false,
+        blocked: true,
+        activity: 'free',
+        holder: null,
+      },
+    ]);
+  });
+
   it('a resolved/terminal stamped issue rolls up to level "complete"', async () => {
     await insertIssue({ id: 'WI-done', state: 'resolved', plan: 'p1', item: 'P-002' });
     const cov = await getAllPlanItemCoverage();

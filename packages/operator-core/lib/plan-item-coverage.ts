@@ -178,6 +178,8 @@ export interface CoverageWorkLink {
   rel: string;
   /** The linked work-item is in a terminal (done) state. */
   terminal: boolean;
+  /** The linked work-item is explicitly blocked and cannot be claimed. */
+  blocked?: true;
   /** Activity from the fleet view ('free' when no claim row exists). */
   activity: ItemActivity;
   /** Holder ownerId when live-held (progressing|alive), else null. */
@@ -311,7 +313,7 @@ export interface CompactCoverage {
    *  matters — its absence never removes the ROW: a reader must not be able to
    *  infer holder visibility from the shape of the list (D-056). */
   holder?: ClaimHolder;
-  links?: { id: string; rel: string; activity: ItemActivity; terminal: boolean }[];
+  links?: { id: string; rel: string; activity: ItemActivity; terminal: boolean; blocked?: true }[];
 }
 
 export function compactCoverage(cov: PlanItemCoverage): CompactCoverage {
@@ -326,6 +328,7 @@ export function compactCoverage(cov: PlanItemCoverage): CompactCoverage {
             rel: l.rel,
             activity: l.activity,
             terminal: l.terminal,
+            ...(l.blocked ? { blocked: true as const } : {}),
           })),
         }
       : {}),
@@ -477,8 +480,16 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const live = wiActivity.get(workItemId);
     const activity: ItemActivity = live?.activity ?? 'free';
     const holder = isLiveActivity(activity) ? (live?.holder ?? null) : null;
+    const blocked = row.issue_state === 'blocked' || row.feature_status === 'blocked';
     const arr = byRef.get(row.dst_ref) ?? [];
-    arr.push({ workItemId, rel: row.rel, terminal, activity, holder });
+    arr.push({
+      workItemId,
+      rel: row.rel,
+      terminal,
+      ...(blocked ? { blocked: true as const } : {}),
+      activity,
+      holder,
+    });
     byRef.set(row.dst_ref, arr);
     if (row.src_updated_at != null) {
       const ts = new Date(row.src_updated_at).getTime();
@@ -532,7 +543,14 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const live = wiActivity.get(row.work_item_id);
     const activity: ItemActivity = live?.activity ?? 'free';
     const holder = isLiveActivity(activity) ? (live?.holder ?? null) : null;
-    arr.push({ workItemId: row.work_item_id, rel: STAMP_ONLY_REL, terminal, activity, holder });
+    arr.push({
+      workItemId: row.work_item_id,
+      rel: STAMP_ONLY_REL,
+      terminal,
+      ...(row.status === 'blocked' ? { blocked: true as const } : {}),
+      activity,
+      holder,
+    });
     byRef.set(ref, arr);
     if (row.updated_ts != null) {
       const ts = Number(row.updated_ts);

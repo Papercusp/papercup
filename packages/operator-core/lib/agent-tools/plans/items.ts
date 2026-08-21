@@ -3,7 +3,7 @@
  *
  * Per agent-plan-tracking-2026-05-20.md §4.1.
  *
- *   actionable: true   → effectiveStatus === 'todo'
+ *   actionable: true   → effectiveStatus === 'todo' and no linked blocked work-item
  *                        (stored todo with all blockers done)
  *   needsHuman: true   → storedStatus === 'needs-human'
  *                        (the human's inbox, §4.3)
@@ -95,7 +95,7 @@ const argsSchema = z.object({
   actionable: z
     .boolean()
     .optional()
-    .describe('Return items pickable right now: effectiveStatus === "todo".'),
+    .describe('Return items pickable right now: effectiveStatus === "todo" with no linked blocked work-item.'),
   needsHuman: z
     .boolean()
     .optional()
@@ -324,18 +324,23 @@ export default defineTool({
     } catch {
       // Non-fatal — no coverage overlay.
     }
-    const rows = cached.rows.map((row) => {
+    // The cached plan read can only filter the plan item's own effective status.
+    // Linked work-item state is live coverage, so apply this claimability floor
+    // after refreshing coverage; otherwise a todo plan item linked to a blocked
+    // work-item is returned by actionable=true before the coverage overlay exists.
+    const rows = cached.rows.flatMap((row) => {
+      const cov = coverage.get(planItemRef(row.plan, row.item.id));
+      if (args.actionable && cov?.links.some((link) => link.blocked === true)) return [];
       const freshRow = { ...row };
       delete freshRow.coverage;
       delete freshRow.coverageDivergence;
-      const cov = coverage.get(planItemRef(row.plan, row.item.id));
-      return {
+      return [{
         ...freshRow,
         ...(cov ? { coverage: compactCoverage(cov) } : {}),
         ...(cov && isCoverageDivergent(row.item.effectiveStatus, cov.level)
           ? { coverageDivergence: true as const }
           : {}),
-      };
+      }];
     });
 
     ctxAny.metadata?.({

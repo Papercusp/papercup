@@ -185,4 +185,59 @@ describe("plans:items — cache wiring", () => {
     expect(M.listPlanRows).toHaveBeenCalledTimes(1);
     expect(M.getAllPlanItemCoverage).toHaveBeenCalledTimes(2);
   });
+
+  it("hides a todo item linked to a blocked work-item from actionable results", async () => {
+    const planItem = {
+      id: "P-001",
+      text: "blocked linked work-item",
+      storedStatus: "todo",
+      importance: "normal",
+      blockedBy: [],
+      decisionRefs: [],
+      phase: "Phase 1",
+      lineNumber: 0,
+      rawLine: "",
+      effectiveStatus: "todo",
+      unresolvedBlockers: [],
+      needsHuman: false,
+      staleBlockedHint: null,
+    };
+    M.listPlanRows.mockResolvedValue([{
+      planSlug: "blocked-linked-plan",
+      archived: false,
+      isLegacy: false,
+      status: "active",
+      content: "",
+      created: "2026-08-01T00:00:00.000Z",
+    }]);
+    M.planItemsForRow.mockReturnValue([planItem]);
+    M.getAllPlanItemCoverage.mockResolvedValue(new Map([
+      ["blocked-linked-plan#P-001", {
+        ref: "blocked-linked-plan#P-001",
+        links: [{
+          workItemId: "WI-BLOCKED",
+          rel: "relates",
+          terminal: false,
+          blocked: true,
+          activity: "free",
+          holder: null,
+        }],
+        directlyClaimed: false,
+        directHolder: null,
+        directActivity: null,
+        holder: null,
+        level: "unclaimed",
+        workers: [],
+        lastActivityAt: null,
+      }],
+    ]));
+
+    const actionable = await run({ actionable: true }) as { data: { items: unknown[] } };
+    expect(actionable.data.items).toEqual([]);
+
+    const all = await run({}) as {
+      data: { items: Array<{ coverage?: { links?: Array<{ blocked?: boolean }> } }> };
+    };
+    expect(all.data.items[0]?.coverage?.links?.[0]?.blocked).toBe(true);
+  });
 });
