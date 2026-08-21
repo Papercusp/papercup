@@ -214,9 +214,16 @@ export const DEFAULT_RESOURCE_BUDGET: Readonly<ResourceBudget> = Object.freeze({
  * merely unused.
  */
 export const FORBIDDEN_MUTATING_TOOL_PATTERNS: readonly RegExp[] = Object.freeze([
-  /^rename$/i,
-  /^apply[_-]?edit$/i,
-  /^workspace[_-]?edit$/i,
+  // `rename` ALONE is not enough: a real backend names it `rename_symbol`,
+  // which /^rename$/ waved straight through. Prefix-anchored, so an unrelated
+  // op like `refactor_preview` is untouched.
+  /^rename/i,
+  // `edit` as a leading or trailing word-part. Together these subsume the
+  // former /^apply[_-]?edit$/ and /^workspace[_-]?edit$/ while also catching
+  // `edit_file` (snake, leading) and `applyEdit` (camel, trailing) — the two
+  // spellings a single exact-anchored pattern cannot both cover.
+  /(^|[_-])edit/i,
+  /edit$/i,
   /write/i,
   /delete/i,
   /^format/i,
