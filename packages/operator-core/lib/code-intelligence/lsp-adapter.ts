@@ -199,7 +199,13 @@ interface LspClient {
   taskId: string;
   language: LspLanguage;
   rootUri: string;
-  openDocs: Set<string>;
+  /**
+   * URIs the server currently holds open, each stamped with the disk state we
+   * opened them AT (WI-40251). The stamp is what makes staleness detectable:
+   * an open document ignores disk per the LSP spec, so without it a peer's
+   * write is invisible and the server answers about text that is gone.
+   */
+  openDocs: Map<string, { mtimeMs: number; size: number }>;
   health: BackendHealth;
   lastError: string | null;
   startedAt: number;
@@ -686,10 +692,58 @@ export function healthForAnswer(
   return client.health === 'healthy' ? 'degraded' : client.health;
 }
 
-/** Open a document if the server has not seen it yet (LSP requires didOpen). */
+/**
+ * Open a document, or RE-open it if the file on disk has changed since we did.
+ *
+ * WI-40251, and the reason this is not merely `if (open) return`: per the LSP
+ * spec an OPEN document's CLIENT copy is authoritative and the server MUST
+ * ignore disk. So once opened, a document is frozen at the text we sent until
+ * we say otherwise. `lspResyncDocument` says otherwise — but its only caller is
+ * `lsp.apply`, so a write through ANY other path (Edit/Write via the lock hook,
+ * a git-sync pull, the merge-resolver, a human's editor) leaves the server
+ * answering about text that no longer exists, and reporting it as healthy.
+ *
+ * That is a FLEET bug, not a single-agent one: the client registry is
+ * module-scoped, so one warm server per language is shared by every agent and
+ * one agent's unsynced write corrupts everyone's answers. Staleness scales with
+ * agent count.
+ *
+ * The check is PULL rather than push (a lock-release hook) deliberately. Pull
+ * catches every staleness source, including the ones no lock brackets; a
+ * lock-release push would catch only agent writes through Edit/Write, and would
+ * invert the dependency by making the lock plane know about code-intelligence.
+ * A lock release is still a precise "content settled" signal worth exploiting
+ * later as an optimisation — but correctness must not depend on it.
+ *
+ * Cost is one `stat` per query on an already-open document. mtime+size is
+ * deliberate: it catches every writer here (git checkouts and normal writes all
+ * move mtime) without hashing file contents on the hot path.
+ */
 async function ensureOpen(client: LspClient, absPath: string): Promise<string> {
   const uri = pathToFileURL(absPath).href;
-  if (client.openDocs.has(uri)) return uri;
+  const seen = client.openDocs.get(uri);
+
+  let stamp: { mtimeMs: number; size: number } | null = null;
+  try {
+    const st = await stat(absPath);
+    stamp = { mtimeMs: st.mtimeMs, size: st.size };
+  } catch {
+    // Unstattable (deleted mid-flight, permissions). Fall through: if we have
+    // it open, keep the copy we have rather than dropping it; if we do not, the
+    // readFile below will surface the real error.
+    if (seen) return uri;
+  }
+
+  if (seen) {
+    if (stamp && seen.mtimeMs === stamp.mtimeMs && seen.size === stamp.size) return uri;
+    // Disk moved under us. Close before re-opening: the adapter never
+    // established incremental sync (documents open at version 1 and never
+    // advance), so didChange would carry a version the server has no baseline
+    // for. Re-opening restores the invariant the rest of the adapter assumes.
+    client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    client.openDocs.delete(uri);
+  }
+
   const text = await readFile(absPath, 'utf8');
   client.connection.sendNotification('textDocument/didOpen', {
     textDocument: {
@@ -699,7 +753,9 @@ async function ensureOpen(client: LspClient, absPath: string): Promise<string> {
       text,
     },
   });
-  client.openDocs.add(uri);
+  // Stamp from AFTER the read where the stat failed, so a transient stat error
+  // cannot pin a document as permanently fresh.
+  client.openDocs.set(uri, stamp ?? { mtimeMs: -1, size: -1 });
   return uri;
 }
 
