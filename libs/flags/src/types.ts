@@ -2714,6 +2714,18 @@ export const FLAGS = {
   // and additive. OFF is the kill-switch — every op refuses and no ast-grep
   // process is spawned.
   CODE_INTEL_AST_GREP: "papercusp-code-intel-ast-grep",
+  // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-016 (D-005, D-040): the
+  // PACKING leg — pinned Repomix 1.18.0 and code2prompt 4.2.0 behind `code:pack`,
+  // replacing the plugin's `npx repomix` (which resolved whatever was latest at
+  // call time, so two packs minutes apart could come from different engines).
+  //
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS). Safe to default ON
+  // because the hazards are excluded by CONSTRUCTION rather than by this
+  // default: the arg builders are pure functions that cannot emit
+  // --no-security-check, --remote, an output path, --hidden or --no-ignore, and
+  // a non-overridable secret deny-set is appended after caller input. OFF is
+  // the kill-switch — every op refuses and no packer process is spawned.
+  CODE_INTEL_PACKERS: "papercusp-code-intel-packers",
   // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may an OMP
   // session KEEP its native `lsp` builtin? Replaces the hard-coded `--no-lsp`
   // that apps/operator/scripts/psu-launcher.mjs passed on both omp branches.
