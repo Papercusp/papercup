@@ -464,8 +464,11 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     state = 'gate-red';
     recommendation =
       `The green gate is RED (${g.consecutiveReds} consecutive red${g.consecutiveReds === 1 ? '' : 's'})` +
-      `${g.lastFixerStatus ? `, release-fixer: ${g.lastFixerStatus}` : ''}. Your change can't reach the green pin until the reds are fixed. ` +
-      `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`;
+      `${g.lastFixerStatus ? `, release-fixer: ${g.lastFixerStatus}` : ''}. ` +
+      (g.failingTests.length === 0
+        ? `This verdict names no failing tests — do NOT go hunting for tests. Inspect the checkpoint run log${lastVerdict?.logPath ? ` at ${lastVerdict.logPath}` : ''} or ask the verdict owner for the non-test failure before taking action.`
+        : `Your change can't reach the green pin until the reds are fixed. ` +
+          `FIX the reds (even out of your lane); if a red is CONFIRMED-unrelated + you can't fix it quickly, quarantine that test by hand (accountably: reason + de-quarantine follow-up); force only with explicit OWNER sign-off. Never silently wait.`);
   } else if (g.consecutiveReds > 0 && g.verdictStale) {
     // The blob says red, but that red is provably superseded or simply unverified. Do NOT dress it
     // up as green either — the honest state is "we don't know", with the one action that resolves it.
