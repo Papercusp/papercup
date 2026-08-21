@@ -57,6 +57,11 @@ import {
   lintTscScopeFromArgv,
   formatLintTscResultMarker,
   mergeRatchetIntoBaseline,
+  MID_INSTALL_DIAGNOSTIC_MIN,
+  parseMissingModuleDiagnostics,
+  packageNameFromModuleSpecifier,
+  detectUnextractedDependencyDiagnostics,
+  formatMidInstallWarning,
 } from '../../../scripts/lint-tsc.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
@@ -65,6 +70,72 @@ import {
 } from '../../../scripts/lint-tsc-operator-vite.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import { TSC_HEAP_MB, tscChildEnv } from '../../../scripts/lib/tsc-baseline-gate.mjs';
+
+describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
+  const OUTPUT = [
+    "packages/operator-core/lib/voice-node/voice-relay.ts(110,31): error TS2307: Cannot find module 'hyperdht' or its corresponding type declarations.",
+    "packages/operator-core/lib/voice-node/voice-relay.ts(114,34): error TS7016: Could not find a declaration file for module 'blind-relay'. '/repo/node_modules/blind-relay/index.js' implicitly has an 'any' type.",
+    "packages/operator-core/lib/other.ts(1,1): error TS2307: Cannot find module '@not-a-dependency' or its corresponding type declarations.",
+  ].join('\n');
+
+  it('parses only module-resolution diagnostics and preserves their file/code/module fields', () => {
+    expect(parseMissingModuleDiagnostics(OUTPUT)).toEqual([
+      { file: 'packages/operator-core/lib/voice-node/voice-relay.ts', code: 'TS2307', module: 'hyperdht' },
+      { file: 'packages/operator-core/lib/voice-node/voice-relay.ts', code: 'TS7016', module: 'blind-relay' },
+      { file: 'packages/operator-core/lib/other.ts', code: 'TS2307', module: '@not-a-dependency' },
+    ]);
+  });
+
+  it('normalizes scoped and subpath specifiers without treating relative imports as packages', () => {
+    expect(packageNameFromModuleSpecifier('@scope/pkg/subpath.js')).toBe('@scope/pkg');
+    expect(packageNameFromModuleSpecifier('hyperdht/testnet.js')).toBe('hyperdht');
+    expect(packageNameFromModuleSpecifier('./local.js')).toBeNull();
+  });
+
+  it('requires the repeated-diagnostic floor and a matching dependency-doctor miss', () => {
+    expect(MID_INSTALL_DIAGNOSTIC_MIN).toBe(2);
+    expect(
+      detectUnextractedDependencyDiagnostics({
+        tscOutput: OUTPUT,
+        missing: [
+          { dep: 'hyperdht', workspace: 'packages/operator-core' },
+          { dep: 'blind-relay', workspace: 'packages/operator-core' },
+        ],
+      }),
+    ).toMatchObject({
+      dependencies: ['hyperdht', 'blind-relay'],
+      diagnostics: [
+        { code: 'TS2307', module: 'hyperdht' },
+        { code: 'TS7016', module: 'blind-relay' },
+      ],
+    });
+    expect(
+      detectUnextractedDependencyDiagnostics({
+        tscOutput: OUTPUT.split('\n')[0],
+        missing: [{ dep: 'hyperdht', workspace: 'packages/operator-core' }],
+      }),
+    ).toBeNull();
+    expect(
+      detectUnextractedDependencyDiagnostics({
+        tscOutput: OUTPUT,
+        missing: [{ dep: '@not-a-dependency', workspace: 'packages/operator-core' }],
+      }),
+    ).toBeNull();
+  });
+
+  it('formats the shared suspected-mid-install marker without claiming a pass', () => {
+    const signal = detectUnextractedDependencyDiagnostics({
+      tscOutput: OUTPUT,
+      missing: [{ dep: 'hyperdht' }, { dep: 'blind-relay' }],
+    });
+    expect(signal).not.toBeNull();
+    const lines = formatMidInstallWarning({ label: 'operator-core', ...signal! });
+    expect(lines[0]).toContain('TEST_FILE_MID_INSTALL_SUSPECTED');
+    expect(lines[0]).toContain('tscDiagnostics=2');
+    expect(lines[1]).toContain('doctor:deps=DECLARED_DEPS_UNEXTRACTED');
+    expect(lines[2]).toContain('remains non-zero');
+  });
+});
 
 describe('LINT_TSC_RESULT completion marker (EI-19395061642732083)', () => {
   // This gate is the repo's MANDATED post-edit check and takes ~150s — past the agent Bash

@@ -61,6 +61,11 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   parseTscErrors,
+  MID_INSTALL_DIAGNOSTIC_MIN,
+  parseMissingModuleDiagnostics,
+  packageNameFromModuleSpecifier,
+  detectUnextractedDependencyDiagnostics,
+  formatMidInstallWarning,
   syntaxBrokenFiles,
   countByFile,
   gitChangedFiles,
@@ -97,6 +102,11 @@ import {
 
 export {
   parseTscErrors,
+  MID_INSTALL_DIAGNOSTIC_MIN,
+  parseMissingModuleDiagnostics,
+  packageNameFromModuleSpecifier,
+  detectUnextractedDependencyDiagnostics,
+  formatMidInstallWarning,
   syntaxBrokenFiles,
   countByFile,
   gitChangedFiles,

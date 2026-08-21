@@ -21,6 +21,7 @@ import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
 
 /**
@@ -159,6 +160,112 @@ export function parseTscErrors(tscOutput) {
     if (bare) errors.push({ file: null, code: bare[1] });
   }
   return errors;
+}
+
+/**
+ * A module-resolution diagnostic that may be explained by a package being half-written during
+ * a concurrent npm install. This is intentionally narrower than every TS2307/TS7016: one
+ * missing module can be a real code defect, while a burst that names a directly-declared package
+ * absent from node_modules is the distinctive shared-tree failure this guard can substantiate.
+ *
+ * @typedef {object} MissingModuleDiagnostic
+ * @property {string | null} file
+ * @property {'TS7016' | 'TS2307'} code
+ * @property {string} module
+ */
+
+/**
+ * Two matching diagnostics are the minimum signal. A single TS7016 is common for an intentionally
+ * untyped package; two or more diagnostics for a package that the dependency doctor cannot find on
+ * disk is the measured concurrent-install shape (EI-19366483607548056).
+ */
+export const MID_INSTALL_DIAGNOSTIC_MIN = 2;
+
+const MISSING_MODULE_DIAGNOSTIC =
+  /error (TS7016|TS2307):\s+(?:Could not find a declaration file for module|Cannot find module)\s+['"]([^'"]+)['"]/;
+
+/**
+ * Parse only TS7016/TS2307 diagnostics whose message names a module specifier.
+ *
+ * @param {string} tscOutput
+ * @returns {MissingModuleDiagnostic[]}
+ */
+export function parseMissingModuleDiagnostics(tscOutput) {
+  const diagnostics = [];
+  for (const line of String(tscOutput ?? '').split('\n')) {
+    const match = line.match(MISSING_MODULE_DIAGNOSTIC);
+    if (!match) continue;
+    const located = line.match(LOCATED_DIAGNOSTIC);
+    diagnostics.push({
+      file: located?.[1] ?? null,
+      code: /** @type {'TS7016' | 'TS2307'} */ (match[1]),
+      module: match[2],
+    });
+  }
+  return diagnostics;
+}
+
+/**
+ * Match a module subpath (`@scope/pkg/subpath`) to its declared package name.
+ * Relative and absolute specifiers are deliberately not candidates.
+ *
+ * @param {string} moduleSpecifier
+ * @returns {string | null}
+ */
+export function packageNameFromModuleSpecifier(moduleSpecifier) {
+  const parts = String(moduleSpecifier ?? '').split('/');
+  if (parts[0] === '.' || parts[0] === '..' || parts[0] === '' || parts[0].startsWith('/')) return null;
+  if (parts[0].startsWith('@')) return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : null;
+  return parts[0] ?? null;
+}
+
+/**
+ * Decide whether the tsc output plus a dependency-doctor snapshot proves the mid-install shape.
+ * The returned diagnostics are the subset that actually match a missing direct dependency, so
+ * an unrelated TS2307 elsewhere cannot manufacture the warning.
+ *
+ * @param {{tscOutput:string, missing?:{dep:string,workspace?:string}[], minimum?:number}} input
+ * @returns {{diagnostics:MissingModuleDiagnostic[], dependencies:string[]} | null}
+ */
+export function detectUnextractedDependencyDiagnostics({ tscOutput, missing = [], minimum = MID_INSTALL_DIAGNOSTIC_MIN }) {
+  const diagnostics = parseMissingModuleDiagnostics(tscOutput);
+  const missingDeps = [...new Set(
+    missing
+      .map((entry) => (typeof entry?.dep === 'string' ? entry.dep : ''))
+      .filter(Boolean),
+  )];
+  if (missingDeps.length === 0) return null;
+  const matched = diagnostics.filter((diagnostic) =>
+    missingDeps.some(
+      (dep) =>
+        packageNameFromModuleSpecifier(diagnostic.module) === dep ||
+        diagnostic.module === dep ||
+        diagnostic.module.startsWith(`${dep}/`),
+    ),
+  );
+  if (matched.length < minimum) return null;
+  return {
+    diagnostics: matched,
+    dependencies: missingDeps.filter((dep) =>
+      matched.some((d) => d.module === dep || d.module.startsWith(`${dep}/`)),
+    ),
+  };
+}
+
+/**
+ * Format the shared marker used by test-file routing, enriched with the tsc/doctor evidence.
+ * This is reporting only: callers must retain tsc's original non-zero exit status.
+ *
+ * @param {{label:string, diagnostics:MissingModuleDiagnostic[], dependencies:string[]}} input
+ * @returns {string[]}
+ */
+export function formatMidInstallWarning({ label, diagnostics, dependencies }) {
+  const modules = [...new Set(diagnostics.map((diagnostic) => diagnostic.module))];
+  return [
+    `TEST_FILE_MID_INSTALL_SUSPECTED label=${label} tscDiagnostics=${diagnostics.length} codes=TS7016/TS2307 modules=${modules.join(',')}`,
+    `doctor:deps=DECLARED_DEPS_UNEXTRACTED dependencies=${dependencies.join(',')} — these diagnostics may be spurious while a peer runs npm install on the shared tree.`,
+    'The typecheck remains non-zero; do not treat this annotation as a pass. Check locks:list / `ps aux | grep "npm install"`, then retry after the install finishes.',
+  ];
 }
 
 /**
@@ -1958,6 +2065,25 @@ export async function runTscBaselineGate({
   }
 
   const errors = parseTscErrors(tscOutput);
+
+  // EI-19366483607548056 — a peer's concurrent npm install can remove declared packages while
+  // tsc is reading the shared tree. The resulting TS7016/TS2307 flood looks like unrelated code
+  // regressions. Reuse the existing dependency doctor as a read-only corroborating check, but
+  // only after a non-zero tsc result and only when the diagnostic modules match missing direct
+  // dependencies. This annotation never retries, swallows, or changes the tsc verdict.
+  if (tscThrew) {
+    try {
+      const suspect = detectUnextractedDependencyDiagnostics({
+        tscOutput,
+        missing: findUnextractedDeps({ repoRoot: root }),
+      });
+      if (suspect) {
+        for (const line of formatMidInstallWarning({ label, ...suspect })) console.error(line);
+      }
+    } catch {
+      // Diagnostic only: a broken dependency snapshot must never change the typecheck result.
+    }
+  }
 
   // EI-19478xxxxxx (WI-37485): the guard above only catches an EMPTY-output crash. A crash that
   // exits non-zero and prints NON-diagnostic garbage — most measured: a V8 "FATAL ERROR:
