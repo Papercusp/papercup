@@ -56,6 +56,11 @@ import './cell-registrations-wiring';
 // than quietly restoring the bug.
 import '../goals/stop-fanout';
 
+// code-intelligence-routing-lsp-gitnexus-2026-08-20 (P-012): the read-only
+// `lsp.*` facade over the pinned language servers. ONE tool with an op enum
+// rather than seven — D-007 makes prompt weight an acceptance criterion.
+import './lsp/query';
+
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.

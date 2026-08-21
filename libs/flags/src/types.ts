@@ -2655,6 +2655,18 @@ export const FLAGS = {
   // stays in TAB_IDS so the nuqs enum keeps parsing it — that is what makes
   // the snap-back reachable, and it is how the flag flips back ON cleanly.
   CONVERSATIONS_RAIL_TAB: "papercusp-conversations-rail-tab",
+  // code-intelligence-routing-lsp-gitnexus-2026-08-20 (D-002/D-007): the thin
+  // Papercusp-owned in-operator LSP adapter and the read-only `lsp.*` facade,
+  // speaking JSON-RPC to the PINNED official language servers
+  // (typescript-language-server + rust-analyzer) under ~/.papercusp/vendor/lsp.
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): the facade is
+  // strictly read-only and additive, so nothing else changes behavior when it
+  // is on. OFF is the kill-switch — every lsp.* verb refuses with
+  // flag_disabled and no language-server child is spawned, which is also the
+  // unwind path D-007 requires instead of the hard-coded `--no-lsp` that
+  // apps/operator/scripts/psu-launcher.mjs carries today (P-021 replaces it
+  // with a read of THIS flag).
+  CODE_INTEL_LSP: "papercusp-code-intel-lsp",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
