@@ -1380,15 +1380,21 @@ export async function stampAnnouncementsFired(
 ): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const rows = await sql`
-    UPDATE harness_shared.event_awaits
-       SET fired_at = now(), fired_reason = 'event', fired_by = ${meta.firedBy ?? null},
-           fired_payload = ${meta.payload !== undefined ? JSON.stringify(meta.payload) : null}::text::jsonb
-     WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
-       AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
-    RETURNING id
-  `;
-  return rows.length;
+  // P-018: share registerAnnouncement's per-key advisory transaction lock.
+  // Without this, an emit can commit a fired latch while a newer declaration
+  // is between superseding the old generation and inserting its replacement.
+  return sql.begin(async (tx) => {
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + eventKey}, 0))`;
+    const rows = await tx`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'event', fired_by = ${meta.firedBy ?? null},
+             fired_payload = ${meta.payload !== undefined ? JSON.stringify(meta.payload) : null}::text::jsonb
+       WHERE workspace_id = ${ws} AND policy = 'announce' AND event_key = ${eventKey}
+         AND fired_at IS NULL AND cancelled_at IS NULL AND superseded_at IS NULL
+      RETURNING id
+    `;
+    return rows.length;
+  }) as Promise<number>;
 }
 
 /** ACTIVE announcements (not cancelled, not lapsed) — the discovery read for

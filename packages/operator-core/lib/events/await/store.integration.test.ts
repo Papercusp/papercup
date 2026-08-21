@@ -28,6 +28,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
 
 const {
   registerAwait,
+  registerAnnouncement,
+  stampAnnouncementsFired,
   upsertInboxWakeAwait,
   cancelInboxWakeAwaits,
   cancelClaimableAwaits,
@@ -66,7 +68,7 @@ beforeAll(async () => {
   }
   const u = new URL(adminUri);
   u.pathname = `/${dbName}`;
-  rootSql = postgres(u.toString(), { max: 2, onnotice: () => {} });
+  rootSql = postgres(u.toString(), { max: 3, onnotice: () => {} });
   await rootSql.unsafe(`CREATE SCHEMA harness_shared`);
   // FAITHFUL to mig 163 + 175 (once/min_sleep_sec/urgency) + 183 (the partial unique
   // index) + 533 (payload_filter, EI-8998).
@@ -74,13 +76,14 @@ beforeAll(async () => {
     CREATE TABLE harness_shared.event_awaits (
       id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       workspace_id text NOT NULL DEFAULT 'default', subscriber_id text NOT NULL, event_key text NOT NULL,
-      policy text NOT NULL DEFAULT 'wake' CHECK (policy IN ('wake','notify')),
+      policy text NOT NULL DEFAULT 'wake' CHECK (policy IN ('wake','notify','announce')),
       note text, wake_handle jsonb,
       timeout_behavior text NOT NULL DEFAULT 'expire' CHECK (timeout_behavior IN ('expire','wake')),
       expires_ts timestamptz, created_at timestamptz NOT NULL DEFAULT now(),
       fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
       once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
       payload_filter jsonb,
+      scope_kind text, scope_ref text,
       causal_generation bigint, expected_condition jsonb, superseded_at timestamptz,
       fired_by text, fired_payload jsonb,
       -- migration 572 (composable-event-awaits): composed-TREE leaf columns. A plain
@@ -134,6 +137,35 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.work_items`;
 });
 
+async function waitForAnnouncementAdvisoryLock(eventKey: string, expected: 'held' | 'waiting') {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (expected === 'held') {
+      // A transaction-scoped try-lock in its own transaction deterministically
+      // tells us when the holder has acquired the key without stealing it.
+      const acquired = await rootSql.begin(async (tx) => {
+        const rows = await tx`
+          SELECT pg_try_advisory_xact_lock(hashtextextended(${'event-announce:' + eventKey}, 0)) AS acquired
+        `;
+        return rows[0]?.acquired === true;
+      });
+      if (!acquired) return;
+    } else {
+      const rows = await rootSql`
+        SELECT count(*)::int AS waiting
+          FROM pg_locks AS locks
+          JOIN pg_stat_activity AS activity ON activity.pid = locks.pid
+         WHERE locks.locktype = 'advisory'
+           AND locks.granted = false
+           AND activity.query LIKE '%pg_advisory_xact_lock%'
+      `;
+      if (Number(rows[0]?.waiting ?? 0) > 0) return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`timed out waiting for announcement advisory lock to be ${expected}`);
+}
+
 describe('await-event store (PG)', () => {
   it('registerAwait persists a one-shot watch; listActiveAwaits reads it back', async () => {
     const row = await registerAwait({
@@ -181,6 +213,51 @@ describe('await-event store (PG)', () => {
     expect(second.map((a) => a.subscriberId)).toEqual(['standing']); // one-shot NOT re-fired; standing still matches
     // listActiveAwaitsForKey now sees only the standing one (the one-shot has fired_at)
     expect((await listActiveAwaitsForKey('k:fire')).map((a) => a.subscriberId)).toEqual(['standing']);
+  });
+
+  it('serializes announcement latching behind the per-key generation lock', async () => {
+    const eventKey = 'gate:announcement-race';
+    await registerAnnouncement({
+      subscriberId: 'declarer',
+      eventKey,
+      scopeKind: 'global',
+      note: 'generation one',
+    });
+
+    let releaseHolder!: () => void;
+    const holderReleased = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    const holder = rootSql.begin(async (tx) => {
+      await tx`SELECT pg_advisory_xact_lock(hashtextextended(${'event-announce:' + eventKey}, 0))`;
+      await holderReleased;
+    });
+
+    let stampSettled = false;
+    let stampPromise: Promise<number> | undefined;
+    try {
+      await waitForAnnouncementAdvisoryLock(eventKey, 'held');
+      stampPromise = stampAnnouncementsFired(eventKey, { firedBy: 'emit-race', payload: { n: 1 } });
+      stampPromise.then(
+        () => {
+          stampSettled = true;
+        },
+        () => {
+          stampSettled = true;
+        },
+      );
+      await waitForAnnouncementAdvisoryLock(eventKey, 'waiting');
+      expect(stampSettled).toBe(false);
+    } finally {
+      releaseHolder();
+      await holder;
+      if (stampPromise) await stampPromise;
+    }
+
+    expect(await rootSql`
+      SELECT fired_at FROM harness_shared.event_awaits
+       WHERE event_key = ${eventKey} AND causal_generation = 1
+    `).toEqual([expect.objectContaining({ fired_at: expect.anything() })]);
   });
 
   // ── EI-8998: predicate/payload watches ───────────────────────────────────
