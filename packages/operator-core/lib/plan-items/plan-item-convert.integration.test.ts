@@ -300,6 +300,35 @@ describe('convert-at-pickup (D-015): one call = lease + mint + claim + back-link
     expect(await implementsEdges()).toHaveLength(1);
   });
 
+  it('WI-21000935885012621: does not resume a work-item parked by claimHold after release', async () => {
+    const first = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-A', ownerName: 'builder-1' });
+    expect(first.status).toBe('converted');
+    if (first.status !== 'converted') return;
+
+    const released = await wi.releaseWorkItem(first.workItem.id, {
+      harness: HARNESS,
+      expectedAssignee: 'sess-A',
+    });
+    expect(released?.assignee).toBeNull();
+    const parked = await wi.setWorkItemClaimHold(first.workItem.id, true, {
+      harness: HARNESS,
+      parkedBy: 'sess-A',
+      parkedReason: 'DO NOT RESUME — waiting for an explicit owner decision',
+    });
+    expect(parked).toMatchObject({ id: first.workItem.id, hold: true, applicable: true });
+
+    const next = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-B', ownerName: 'builder-2' });
+    expect(next.status).toBe('refused');
+    if (next.status === 'refused') expect(next.reason).toMatch(/claim.?hold|park/i);
+
+    const after = await wi.getWorkItem(first.workItem.id, HARNESS);
+    expect(after?.assignee).toBeNull();
+    expect((after?.payload as { _claimHold?: unknown } | null)?._claimHold).toBe(true);
+    expect(
+      await db.sql`SELECT owner FROM harness_shared.plan_item_claims WHERE plan_slug = ${PLAN} AND item_id = 'P-001'`,
+    ).toHaveLength(0);
+  });
+
   it('an item assigned to another agent-name is REFUSED — and nothing is created', async () => {
     await asg.assignItem({ workspaceId: WS, harnessSlug: HARNESS, planSlug: PLAN, itemId: 'P-001', assigneeName: 'builder-1', assignedByUser: 'user-x' });
     const r = await convert.convertPlanItem({ ...base, itemId: 'P-001', owner: 'sess-B', ownerName: 'builder-2' });

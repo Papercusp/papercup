@@ -45,12 +45,13 @@ import {
   getWorkItem,
   linkWorkItem,
   isWorkItemKind,
+  isClaimHoldParked,
   ISSUE_FAMILY_KINDS,
   type WorkItem,
   type WorkItemKind,
 } from '../work-items';
 import { claimPlanItem, type PriorHolderWarning } from './liveness';
-import type { LivenessMode, PlanItemClaim } from './claims';
+import { releaseClaim, type LivenessMode, type PlanItemClaim } from './claims';
 import { compilePlanItemBrief, decisionsForItem } from './compile-brief';
 import { resolveGoalContext } from '../modes/goal-context';
 import type { Sql } from 'postgres';
@@ -584,6 +585,28 @@ export async function convertPlanItem(opts: ConvertPlanItemOpts): Promise<Conver
     edgeMissing = existing !== null; // found by stamp ⇒ the edge was gone, re-link below.
   }
   if (existing && !TERMINAL_WORK_ITEM_STATES.has(existing.state)) {
+    // WI-21000935885012621: a plan-item pickup is a self-select/placement path, not an
+    // explicit work_items:claim { id } override. A prior work_items:release { claimHold:true }
+    // deliberately parked this execution record out of the pool; resuming it here would
+    // silently undo that durable disposition seconds after the release. The plan-item lease
+    // was acquired above, so release that lease before returning the refusal — otherwise the
+    // refused pickup would leave a new owner holding the plan lane with no execution record.
+    if (isClaimHoldParked(existing.payload)) {
+      await releaseClaim(
+        opts.workspaceId,
+        opts.harnessSlug,
+        opts.planSlug,
+        opts.itemId,
+        claimRes.claim.claimId,
+        opts.owner,
+      ).catch(() => false);
+      return {
+        status: 'refused',
+        reason:
+          `work item ${existing.id} is parked by claimHold; clear the durable park explicitly ` +
+          'before claiming this plan item again',
+      };
+    }
     let resumed = await claimWorkItem(existing.id, opts.owner, { harness: existing.harness ?? undefined });
     if (!resumed) {
       // Held by a lapsed peer. The plan-item lease (step 1) is the exclusion
