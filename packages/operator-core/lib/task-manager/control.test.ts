@@ -15,7 +15,7 @@ vi.mock('./store', () => ({
   },
 }));
 
-const { killTask, freezeTask, thawTask, limitTask, verifyPidStillOurs } = await import('./control');
+const { killTask, killScopeUnit, freezeTask, thawTask, limitTask, verifyPidStillOurs } = await import('./control');
 
 function row(over: Partial<TaskRow> & { taskId: string }): TaskRow {
   const r: TaskRow = {
@@ -245,6 +245,74 @@ describe('killTask — reapTerminalResidue (WI-37521)', () => {
     });
     expect(out).toMatchObject({ ok: false, error: 'incomplete' });
     expect(store.closed).toHaveLength(0);
+  });
+});
+
+describe('killScopeUnit — explicit orphan-scope teardown', () => {
+  it('resolves a validated Papercusp scope, requires a live cgroup, and verifies it empty', async () => {
+    let alive = true;
+    const calls: string[][] = [];
+    const out = await killScopeUnit('pc-orphan123.scope', {
+      fs: {
+        readFile: () => (alive ? '4242\n' : ''),
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'show') {
+          return {
+            stdout: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope\n',
+            stderr: '',
+          };
+        }
+        alive = false;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, scopeUnit: 'pc-orphan123.scope' });
+    expect(calls[0]).toEqual([
+      '--user',
+      'show',
+      '-p',
+      'ControlGroup',
+      '--value',
+      'pc-orphan123.scope',
+    ]);
+    expect(calls[1]).toEqual(['--user', 'kill', '--signal=SIGTERM', 'pc-orphan123.scope']);
+  });
+
+  it('refuses an invalid or empty scope without issuing a kill', async () => {
+    const exec = vi.fn(async () => ({
+      stdout: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope\n',
+      stderr: '',
+    }));
+    expect(await killScopeUnit('other-service.scope', { execFileAsync: exec as never })).toMatchObject({
+      ok: false,
+      error: 'no_target',
+    });
+    expect(exec).not.toHaveBeenCalled();
+
+    const empty = await killScopeUnit('pc-orphan123.scope', {
+      fs: { readFile: () => '', readDir: () => [], isDir: () => true },
+      execFileAsync: (async () => ({
+        stdout: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope\n',
+        stderr: '',
+      })) as never,
+    });
+    expect(empty).toMatchObject({ ok: false, error: 'not_live' });
+  });
+
+  it('never reports success while an orphan scope survives the verification window', async () => {
+    const out = await killScopeUnit('pc-orphan123.scope', {
+      sleep: async () => {},
+      fs: { readFile: () => '4242\n', readDir: () => [], isDir: () => true },
+      execFileAsync: (async () => ({
+        stdout: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope\n',
+        stderr: '',
+      })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
   });
 });
 

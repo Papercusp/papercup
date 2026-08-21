@@ -88,7 +88,7 @@ export default defineTool({
     notWhen:
       'NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job\'s OUTPUT use `capability:bash_output`.',
     chaining:
-      'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree), `processes:freeze` (pause without losing work), or `processes:limit` (retune the budget live).',
+      'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
       '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
@@ -153,6 +153,7 @@ export default defineTool({
         foreignTruncated: tick.scan.foreignTruncated,
         unaccountedGroups: tick.result.unaccounted.map((g) => ({
           cgroupPath: g.cgroupPath,
+          scopeUnit: g.scopeUnit,
           pids: g.pids,
           sample: g.sampleCmdline.slice(0, 160),
         })),

@@ -18,6 +18,10 @@ vi.mock('../../../task-manager/store', () => ({
   listTasks: vi.fn(async () => []),
 }));
 
+vi.mock('../../../task-manager/reconcile-tick', () => ({
+  reconcileTick: vi.fn(),
+}));
+
 await import('../list');
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('processes:list')!;
@@ -93,5 +97,63 @@ describe('processes:list structured output', () => {
     });
     const structured = dispatched.result?.structuredContent as { tasks: unknown[] };
     expect(structured.tasks).toHaveLength(25);
+  });
+
+  it('surfaces the validated scopeUnit for a live unaccounted group', async () => {
+    const { listTasks } = await import('../../../task-manager/store');
+    const { reconcileTick } = await import('../../../task-manager/reconcile-tick');
+    vi.mocked(listTasks).mockResolvedValueOnce([]);
+    vi.mocked(reconcileTick).mockResolvedValueOnce({
+      summary: { unaccounted: 1, unaccountedPids: 2 },
+      result: {
+        unaccounted: [
+          {
+            cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope',
+            scopeUnit: 'pc-orphan123.scope',
+            pids: [11, 12],
+            sampleCmdline: 'node orphan',
+          },
+        ],
+        foreign: [],
+      },
+      scan: { processes: 2, foreignTruncated: false },
+      degraded: false,
+      touched: 0,
+      strandedCount: 0,
+      endedUnobservedCount: 0,
+      unaccountedPersisted: 1,
+      residueCleared: 0,
+    } as never);
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'processes:list',
+      { live: true, limit: 2000 },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'processes-list-live-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: makeTx(),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      live: { unaccountedGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }> };
+    };
+    expect(structured.live.unaccountedGroups[0]).toMatchObject({
+      scopeUnit: 'pc-orphan123.scope',
+      cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope',
+      pids: [11, 12],
+    });
   });
 });

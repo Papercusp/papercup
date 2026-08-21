@@ -26,7 +26,7 @@ import { promisify } from 'node:util';
 import { readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { closeTask, getSubtree, getTask } from './store';
-import { isLiveOwnedState, type TaskRow } from './types';
+import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
 
 // Lazily promisified (NOT `const execFileAsync = promisify(execFile)` at module
 // scope): this module is reachable via a transitive import chain from test files
@@ -61,6 +61,10 @@ export type ControlError =
   | 'unsupported' // e.g. freeze on an unconfined task
   | 'command_failed'
   | 'incomplete'; // signal(s) sent, but the scope still holds processes after the verification window (EI-19478780721557822) — never `ok:true` on a bare "signalled"
+
+export type ScopeControlOutcome =
+  | { ok: true; scopeUnit: string; action: string; detail?: string }
+  | { ok: false; scopeUnit: string; action: string; error: ControlError; detail?: string };
 
 export interface ControlDeps {
   execFileAsync?: typeof execFileAsync;
@@ -156,6 +160,73 @@ export interface KillTaskOptions extends ControlDeps {
    * (like every `processes:kill` call) in the audit log.
    */
   reapTerminalResidue?: boolean;
+}
+
+/** Options for explicitly tearing down a scope that reconciliation discovered
+ * without a durable task row. This is deliberately separate from `killTask`:
+ * an unaccounted scope has no ledger state to close, so the only safe handle is
+ * the validated systemd scope unit plus a fresh cgroup probe. */
+export interface KillScopeUnitOptions extends ControlDeps {
+  signal?: NodeJS.Signals;
+  escalateAfterMs?: number;
+}
+
+const MANAGED_SCOPE_UNIT = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.scope$/;
+
+function isManagedScopeUnit(scopeUnit: string): boolean {
+  return MANAGED_SCOPE_UNIT.test(scopeUnit) && taskIdFromScopeUnit(scopeUnit) !== null;
+}
+
+/**
+ * Validate the cgroup path returned by systemd for an explicit scope handle.
+ * A caller supplies only the unit name; the path must come from systemd and
+ * must resolve to the Papercusp slice's exact scope directory before we walk or
+ * signal it. This prevents a lookalike unit name from turning into a foreign
+ * cgroup kill.
+ */
+function isManagedScopeCgroupPath(cgroupPath: string, scopeUnit: string): boolean {
+  return (
+    cgroupPath.startsWith('/') &&
+    !cgroupPath.includes('\0') &&
+    !cgroupPath.split('/').includes('..') &&
+    cgroupPath.includes('/papercusp.slice/') &&
+    cgroupPath.endsWith(`/${scopeUnit}`)
+  );
+}
+
+async function scopeCgroupPath(
+  scopeUnit: string,
+  d: ReturnType<typeof deps>,
+): Promise<{ ok: true; cgroupPath: string } | { ok: false; error: ControlError; detail: string }> {
+  if (!isManagedScopeUnit(scopeUnit)) {
+    return {
+      ok: false,
+      error: 'no_target',
+      detail: `scope ${scopeUnit} is not a validated Papercusp task scope unit`,
+    };
+  }
+  try {
+    const { stdout } = await d.execFileAsync(
+      'systemctl',
+      ['--user', 'show', '-p', 'ControlGroup', '--value', scopeUnit],
+      { timeout: 10_000, maxBuffer: 64 * 1024 },
+    );
+    const cgroupPath = stdout.trim();
+    if (!isManagedScopeCgroupPath(cgroupPath, scopeUnit)) {
+      return {
+        ok: false,
+        error: 'no_target',
+        detail: `systemd returned no validated Papercusp cgroup for scope ${scopeUnit}`,
+      };
+    }
+    return { ok: true, cgroupPath };
+  } catch (e) {
+    return {
+      ok: false,
+      error: 'command_failed',
+      detail: `could not resolve cgroup for scope ${scopeUnit}: ${(e as Error).message.slice(0, 300)}`,
+    };
+  }
 }
 
 export async function killTask(taskId: string, opts: KillTaskOptions = {}): Promise<ControlOutcome> {
@@ -287,6 +358,67 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
   };
 }
 
+/**
+ * Kill an orphaned Papercusp scope found by reconciliation, without inventing
+ * a ledger row. The scope unit is validated, systemd supplies the authoritative
+ * cgroup path, and the cgroup is positively non-empty before signalling. A
+ * bounded deep re-probe is required before success, matching `killTask`'s
+ * no-false-green contract. Automatic reconciliation remains report-only; this
+ * path exists only for an explicit operator `processes:kill { scopeUnit }`.
+ */
+export async function killScopeUnit(
+  scopeUnit: string,
+  opts: KillScopeUnitOptions = {},
+): Promise<ScopeControlOutcome> {
+  const d = deps(opts);
+  const action = 'kill';
+  const resolved = await scopeCgroupPath(scopeUnit, d);
+  if (!resolved.ok) return { ok: false, scopeUnit, action, error: resolved.error, detail: resolved.detail };
+
+  const initial = countCgroupProcesses(resolved.cgroupPath, d);
+  if (initial === 0) {
+    return {
+      ok: false,
+      scopeUnit,
+      action,
+      error: 'not_live',
+      detail: `scope ${scopeUnit} is empty or already released; refusing to signal a stale handle`,
+    };
+  }
+
+  const signal = opts.signal ?? 'SIGTERM';
+  const res = await systemctl(['kill', `--signal=${signal}`, scopeUnit], d);
+  if (!res.ok) {
+    return { ok: false, scopeUnit, action, error: 'command_failed', detail: res.detail };
+  }
+
+  let escalated = false;
+  if (opts.escalateAfterMs && opts.escalateAfterMs > 0) {
+    await d.sleep(opts.escalateAfterMs);
+    if (countCgroupProcesses(resolved.cgroupPath, d) > 0) {
+      escalated = true;
+      await systemctl(['kill', '--signal=SIGKILL', scopeUnit], d);
+    }
+  }
+
+  const { empty, survivors } = await waitForCgroupEmpty(resolved.cgroupPath, d);
+  if (!empty) {
+    return {
+      ok: false,
+      scopeUnit,
+      action,
+      error: 'incomplete',
+      detail: `scope ${scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — no ledger row was changed`,
+    };
+  }
+  return {
+    ok: true,
+    scopeUnit,
+    action,
+    detail: `scope ${scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} — verified empty`,
+  };
+}
+
 /** How many bounded re-probe retries to give a scope to actually empty after the
  *  final signal, and how long to wait between them. Retry-COUNT bounded, not
  *  wall-clock bounded, so a mocked `sleep` in tests resolves this instantly
@@ -301,13 +433,29 @@ const REPROBE_POLL_MS = 100;
  *  `cgroupPath` and would miss anything a descendant delegated into a sub-cgroup
  *  of its own). This is the same walk `processes:list` uses to enumerate what is
  *  actually alive, so "did the kill work" and "what's running" can't disagree. */
-function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): number {
-  if (!row.cgroupPath) return 0;
+function countCgroupProcesses(cgroupPath: string | null, d: ReturnType<typeof deps>): number {
+  if (!cgroupPath) return 0;
   const pids = new Set<number>();
-  for (const node of walkCgroupTree(absCgroupDir(row.cgroupPath), d.fs)) {
+  for (const node of walkCgroupTree(absCgroupDir(cgroupPath), d.fs)) {
     for (const pid of node.pids) pids.add(pid);
   }
   return pids.size;
+}
+
+function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): number {
+  return countCgroupProcesses(row.cgroupPath ?? null, d);
+}
+
+async function waitForCgroupEmpty(
+  cgroupPath: string,
+  d: ReturnType<typeof deps>,
+): Promise<{ empty: boolean; survivors: number }> {
+  let survivors = countCgroupProcesses(cgroupPath, d);
+  for (let i = 0; i < REPROBE_RETRIES && survivors > 0; i++) {
+    await d.sleep(REPROBE_POLL_MS);
+    survivors = countCgroupProcesses(cgroupPath, d);
+  }
+  return { empty: survivors === 0, survivors };
 }
 
 /** Re-probe up to REPROBE_RETRIES times (REPROBE_POLL_MS apart) for the scope to
@@ -317,12 +465,7 @@ async function waitForScopeEmpty(
   row: TaskRow,
   d: ReturnType<typeof deps>,
 ): Promise<{ empty: boolean; survivors: number }> {
-  let survivors = countScopeProcesses(row, d);
-  for (let i = 0; i < REPROBE_RETRIES && survivors > 0; i++) {
-    await d.sleep(REPROBE_POLL_MS);
-    survivors = countScopeProcesses(row, d);
-  }
-  return { empty: survivors === 0, survivors };
+  return waitForCgroupEmpty(row.cgroupPath ?? '', d);
 }
 
 /**

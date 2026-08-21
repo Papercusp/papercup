@@ -40,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.doUnmock('../../../process-kill');
+  vi.doUnmock('../../../task-manager/control');
 });
 
 // ── P-012 / D-009: the guidance must not advertise reach the tool lacks ──
@@ -144,5 +145,26 @@ describe('processes:kill (bulk keyed-array, P-006)', () => {
       [20, true],
     ]);
     expect(b.results[1].error).toBe('protected_kind');
+  });
+
+  it('accepts a live unaccounted scopeUnit and returns a keyed verified result', async () => {
+    const mock = vi.fn(async (scopeUnit: string, opts: { signal?: string; escalateAfterMs?: number }) => ({
+      ok: true,
+      scopeUnit,
+      action: 'kill',
+      detail: `scope ${scopeUnit} verified empty`,
+      opts,
+    }));
+    vi.doMock('../../../task-manager/control', () => ({ killTask: vi.fn(), killScopeUnit: mock }));
+    const { default: tool } = await import('../kill');
+    const b = parseEnvelope(
+      (await tool.handler({ scopeUnit: 'pc-orphan123.scope', signal: 'SIGKILL' }, MAKE_PRINCIPAL_CTX())) as never,
+    );
+    expect(mock).toHaveBeenCalledWith('pc-orphan123.scope', {
+      signal: 'SIGKILL',
+      escalateAfterMs: undefined,
+    });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, scopeUnit: 'pc-orphan123.scope' });
   });
 });

@@ -22,22 +22,22 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { killProcess } from '../../process-kill';
-import { killTask } from '../../task-manager/control';
+import { killScopeUnit, killTask } from '../../task-manager/control';
 import { toList, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 
 export default defineTool({
   name: 'processes:kill',
   profile: 'engineer',
   description:
-    'Send SIGTERM (or SIGKILL) in ONE call, addressed two ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling. Results are keyed by taskId/pid; one failure never fails the rest.',
+    'Send SIGTERM (or SIGKILL) in ONE call, addressed three ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. An explicitly supplied `scopeUnit`/`scopeUnits` is only for a live unaccounted Papercusp scope surfaced by `processes:list { live:true }`; systemd resolves and the handler re-probes its cgroup before reporting success. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling. Results are keyed by taskId/scopeUnit/pid; one failure never fails the rest.',
   guidance: {
     when: 'End a task you can name. `taskId` is the right handle for anything this operator launched through the task manager — it takes the whole subtree. `pid` remains for an AGENT process (`run.sh | omp | claude`) you only have a pid for.',
     notWhen:
       'NEVER pattern-match a name to build a kill list (`pkill -f <binary>` has twice killed the owner\'s live desktop window and peers\' test instances — both addressing modes here exist to make that impossible). For a runaway BUILD/TEST job started outside the chokepoint, `pid` returns `unsupported_kind` — start such jobs via `capability:bash { run_in_background: true }` so you hold a real handle. To PAUSE rather than end, use `processes:freeze`.',
     chaining:
-      '`processes:list` -> `taskId` -> here. Add `includeSubtree:true` to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned).',
+      '`processes:list` -> `taskId` or `live.unaccountedGroups[].scopeUnit` -> here. Add `includeSubtree:true` to taskId mode to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned).',
     returns:
-      '{ ok, results:[...], counts } — keyed, not positional. taskId `ok:true` is VERIFIED — the scope was re-probed (a bounded retry window, deep-walking nested cgroups too) and found empty before we report success; a signal that was sent but did not actually clear the subtree (re-parented/D-state/unkillable descendant) comes back `ok:false, error:"incomplete"` with a survivor count, and the row is left LIVE (not closed) so a retry or a fresh `processes:list` can still find it — never trust a bare "signalled" as "dead". Other taskId failures: `identity_mismatch` = the pid now belongs to something else, so we REFUSED (not a bug — the rail working); `not_live` = already ended or a residue row; `unsupported`/`command_failed`. pid failures: `pid_not_found` = genuinely absent; `unsupported_kind` = ALIVE but outside the six tracked kinds (never read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
+      '{ ok, results:[...], counts } — keyed, not positional. taskId `ok:true` is VERIFIED — the scope was re-probed (a bounded retry window, deep-walking nested cgroups too) and found empty before we report success; a signal that was sent but did not actually clear the subtree (re-parented/D-state/unkillable descendant) comes back `ok:false, error:"incomplete"` with a survivor count, and the row is left LIVE (not closed) so a retry or a fresh `processes:list` can still find it — never trust a bare "signalled" as "dead". scopeUnit is accepted only for a validated `pc-*.scope` returned by the live reconciler; its cgroup must be systemd-resolved under `papercusp.slice`, positively non-empty before signalling, and verified empty afterward. Other taskId failures: `identity_mismatch` = the pid now belongs to something else, so we REFUSED (not a bug — the rail working); `not_live` = already ended or a residue row; `unsupported`/`command_failed`. pid failures: `pid_not_found` = genuinely absent; `unsupported_kind` = ALIVE but outside the six tracked kinds (never read this as "gone" — EI-18698120633403217 was exactly that false claim); `protected_kind` = tracked but off-limits.',
   },
   capability: 'processes:kill',
   args: z
@@ -51,6 +51,17 @@ export default defineTool({
         .max(100)
         .optional()
         .describe('task-ledger ids from processes:list — kills each whole cgroup subtree'),
+      scopeUnit: z
+        .string()
+        .max(160)
+        .optional()
+        .describe('one live unaccounted Papercusp scope unit from processes:list { live:true }'),
+      scopeUnits: z
+        .array(z.string().max(160))
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('live unaccounted Papercusp scope units from processes:list { live:true }'),
       includeSubtree: z
         .boolean()
         .optional()
@@ -75,8 +86,10 @@ export default defineTool({
         Boolean(a.pid) ||
         (a.pids?.length ?? 0) > 0 ||
         Boolean(a.taskId) ||
-        (a.taskIds?.length ?? 0) > 0,
-      { message: 'pass `taskId`/`taskIds` (preferred) or `pid`/`pids`' },
+        (a.taskIds?.length ?? 0) > 0 ||
+        Boolean(a.scopeUnit) ||
+        (a.scopeUnits?.length ?? 0) > 0,
+      { message: 'pass `taskId`/`taskIds`, `scopeUnit`/`scopeUnits`, or `pid`/`pids`' },
     ),
   async handler(args, ctx) {
     // Task-addressed kills go through the cgroup: whole subtree, no recycled-pid
@@ -93,6 +106,19 @@ export default defineTool({
               reapTerminalResidue: args.reapTerminalResidue,
             }),
           { keyOf: (taskId) => ({ taskId }) },
+        )
+      : null;
+
+    const scopeUnits = [...new Set([...toList<string>(args.scopeUnit), ...toList<string>(args.scopeUnits)])];
+    const scopeEnv = scopeUnits.length
+      ? await runBulk(
+          scopeUnits,
+          async (scopeUnit) =>
+            killScopeUnit(scopeUnit, {
+              signal: args.signal,
+              escalateAfterMs: args.escalateAfterMs,
+            }),
+          { keyOf: (scopeUnit) => ({ scopeUnit }) },
         )
       : null;
 
@@ -115,16 +141,19 @@ export default defineTool({
         )
       : null;
 
-    if (taskEnv && !pidEnv) return bulkContent(taskEnv);
-    if (pidEnv && !taskEnv) return bulkContent(pidEnv);
-    // Both modes in one call: merge the keyed result lists rather than picking one,
+    if (taskEnv && !pidEnv && !scopeEnv) return bulkContent(taskEnv);
+    if (pidEnv && !taskEnv && !scopeEnv) return bulkContent(pidEnv);
+    if (scopeEnv && !taskEnv && !pidEnv) return bulkContent(scopeEnv);
+    // Multiple addressing modes in one call: merge the keyed result lists rather than picking one,
     // so a mixed batch reports every item instead of silently dropping half.
+    const envs = [taskEnv, pidEnv, scopeEnv].filter(Boolean) as Array<NonNullable<typeof taskEnv>>;
+    const base = envs[0]!;
     return bulkContent({
-      ...taskEnv!,
-      results: [...(taskEnv!.results ?? []), ...(pidEnv!.results ?? [])],
+      ...base,
+      results: envs.flatMap((env) => env.results ?? []),
       counts: {
-        ok: (taskEnv!.counts?.ok ?? 0) + (pidEnv!.counts?.ok ?? 0),
-        failed: (taskEnv!.counts?.failed ?? 0) + (pidEnv!.counts?.failed ?? 0),
+        ok: envs.reduce((n, env) => n + (env.counts?.ok ?? 0), 0),
+        failed: envs.reduce((n, env) => n + (env.counts?.failed ?? 0), 0),
       },
     } as typeof taskEnv);
   },
