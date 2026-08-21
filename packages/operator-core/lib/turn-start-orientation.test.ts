@@ -23,33 +23,36 @@ const withWork: OrientationState = {
   loopArmed: true,
 };
 
+/** The context generation most of these cases hold fixed; P-023's own block varies it. */
+const EPOCH = 3;
+
 describe('turn-start-orientation — when it speaks', () => {
   it('says NOTHING when there is nothing to say (no held work, no mail, no loop)', () => {
     expect(isEmptyOrientation(base)).toBe(true);
-    expect(composeOrientationBlock({ state: base, committed: null })).toBe('');
+    expect(composeOrientationBlock({ state: base, committed: null, epoch: EPOCH })).toBe('');
   });
 
   it('speaks in full on the FIRST turn (no committed cursor = baseline)', () => {
-    const out = composeOrientationBlock({ state: withWork, committed: null });
+    const out = composeOrientationBlock({ state: withWork, committed: null, epoch: EPOCH });
     expect(out).toContain('Orientation');
     expect(out).toContain('WI-1 (wip)');
     expect(out).toContain('2 directed msg(s) awaiting YOUR reply');
   });
 
   it('says NOTHING on a turn where nothing changed — the whole economy of the fold', () => {
-    const committed = fingerprintOrientation(withWork);
-    expect(composeOrientationBlock({ state: withWork, committed })).toBe('');
+    const committed = fingerprintOrientation(withWork, EPOCH);
+    expect(composeOrientationBlock({ state: withWork, committed, epoch: EPOCH })).toBe('');
   });
 
   it('speaks again the moment ANY tracked field changes', () => {
-    const committed = fingerprintOrientation(withWork);
+    const committed = fingerprintOrientation(withWork, EPOCH);
     for (const changed of [
       { ...withWork, unansweredDirected: 3 },
       { ...withWork, loopArmed: false },
       { ...withWork, held: [{ id: 'WI-1', status: 'blocked' }] },
       { ...withWork, held: [{ id: 'WI-2', status: 'wip' }] },
     ] as OrientationState[]) {
-      expect(composeOrientationBlock({ state: changed, committed })).not.toBe('');
+      expect(composeOrientationBlock({ state: changed, committed, epoch: EPOCH })).not.toBe('');
     }
   });
 
@@ -57,30 +60,31 @@ describe('turn-start-orientation — when it speaks', () => {
     // Binding-context surface: an agent shown only the changed line would read the
     // elided lines as absent state. orient-list-delta.ts made the same call for
     // orient's claimable/facts folds; this mirrors it deliberately.
-    const committed = fingerprintOrientation(withWork);
+    const committed = fingerprintOrientation(withWork, EPOCH);
     const out = composeOrientationBlock({
       state: { ...withWork, unansweredDirected: 3 },
       committed,
+      epoch: EPOCH,
     });
     expect(out).toContain('WI-1 (wip)'); // unchanged line still present
     expect(out).toContain('engine loop'); // unchanged line still present
   });
 
   it('a held-item STATUS change re-emits, not just an id change', () => {
-    const a = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'wip' }] });
-    const b = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'blocked' }] });
+    const a = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'wip' }] }, EPOCH);
+    const b = fingerprintOrientation({ ...base, held: [{ id: 'WI-1', status: 'blocked' }] }, EPOCH);
     expect(orientationUnchanged(a, b)).toBe(false);
   });
 
   it('held-item ORDER does not count as a change (the fingerprint sorts)', () => {
-    const a = fingerprintOrientation({
-      ...base,
-      held: [{ id: 'WI-1', status: 'wip' }, { id: 'WI-2', status: 'wip' }],
-    });
-    const b = fingerprintOrientation({
-      ...base,
-      held: [{ id: 'WI-2', status: 'wip' }, { id: 'WI-1', status: 'wip' }],
-    });
+    const a = fingerprintOrientation(
+      { ...base, held: [{ id: 'WI-1', status: 'wip' }, { id: 'WI-2', status: 'wip' }] },
+      EPOCH,
+    );
+    const b = fingerprintOrientation(
+      { ...base, held: [{ id: 'WI-2', status: 'wip' }, { id: 'WI-1', status: 'wip' }] },
+      EPOCH,
+    );
     expect(orientationUnchanged(a, b)).toBe(true);
   });
 
@@ -88,8 +92,61 @@ describe('turn-start-orientation — when it speaks', () => {
     // A delta must never make orientation worse than no delta — same posture as
     // idListUnchanged. Anything unparseable ⇒ deliver in full.
     for (const junk of [null, undefined, 'nope', 42, {}] as unknown[]) {
-      expect(orientationUnchanged(junk as never, fingerprintOrientation(withWork))).toBe(false);
+      expect(orientationUnchanged(junk as never, fingerprintOrientation(withWork, EPOCH))).toBe(
+        false,
+      );
     }
+  });
+});
+
+/**
+ * P-023 / D-008 — the epoch-boundary behaviour.
+ *
+ * These are the cases the pre-P-023 fold got WRONG, and they are worth stating as
+ * behaviour rather than as implementation: the cursor is keyed by OWNER, but what
+ * it dedups against is the agent's CONTEXT. A carry-respawn and a cold loop wake
+ * both keep the owner id and discard the context — and they are exactly the
+ * boundaries where orientation state is most likely to be byte-identical to the
+ * predecessor's last turn, because nothing changed except that the process
+ * restarted. So the old suppression was anti-correlated with need.
+ */
+describe('turn-start-orientation — the context boundary (P-023 / D-008)', () => {
+  it('SPEAKS across a context boundary even when nothing else changed at all', () => {
+    // The load-bearing case. Identical held items, identical mail, identical loop —
+    // only the context generation moved. Pre-P-023 this returned '' and a fresh
+    // successor was told nothing.
+    const committed = fingerprintOrientation(withWork, 7);
+    const out = composeOrientationBlock({ state: withWork, committed, epoch: 8 });
+    expect(out).not.toBe('');
+    expect(out).toContain('WI-1 (wip)');
+  });
+
+  it('still says nothing WITHIN one context generation — the economy is preserved', () => {
+    // The complement of the case above: this change must not turn a per-turn fold
+    // into a per-turn cost. Same epoch, same state ⇒ still silent.
+    const committed = fingerprintOrientation(withWork, 8);
+    expect(composeOrientationBlock({ state: withWork, committed, epoch: 8 })).toBe('');
+  });
+
+  it('treats a PRE-P-023 committed cursor (no epoch key) as changed, not as equal', () => {
+    // Migration posture: rows written before the epoch key existed must re-emit
+    // once rather than suppress forever against a generation they never recorded.
+    const legacy = { held: 'WI-1:wip', unanswered: 2, loop: 1 };
+    expect(orientationUnchanged(legacy, fingerprintOrientation(withWork, 0))).toBe(false);
+  });
+
+  it('a generation that never moves reproduces the OLD dedup exactly (0 = unknown)', () => {
+    // `currentSessionEpoch` answers 0 on a missing relation or a failed read, and
+    // that degradation must be the pre-P-023 behaviour — not a block on every turn.
+    const committed = fingerprintOrientation(withWork, 0);
+    expect(composeOrientationBlock({ state: withWork, committed, epoch: 0 })).toBe('');
+  });
+
+  it('carries the epoch on the fingerprint so a stage() cannot commit a silent one', () => {
+    expect(fingerprintOrientation(withWork, 8).epoch).toBe(8);
+    expect(orientationUnchanged(fingerprintOrientation(withWork, 7), fingerprintOrientation(withWork, 8))).toBe(
+      false,
+    );
   });
 });
 
@@ -103,6 +160,7 @@ describe('turn-start-orientation — what it says', () => {
     const out = composeOrientationBlock({
       state: { ...withWork, loopArmed: false },
       committed: null,
+      epoch: EPOCH,
     });
     expect(out).toContain('not armed');
     expect(out).toContain('halt silently');
@@ -112,6 +170,7 @@ describe('turn-start-orientation — what it says', () => {
     const out = composeOrientationBlock({
       state: { ...base, unansweredDirected: 1 },
       committed: null,
+      epoch: EPOCH,
     });
     expect(out).toContain('holding: nothing');
   });
@@ -124,7 +183,7 @@ describe('turn-start-orientation — what it costs', () => {
       unansweredDirected: 4,
       loopArmed: false,
     };
-    const out = composeOrientationBlock({ state, committed: null });
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
     expect(out.length).toBeLessThanOrEqual(ORIENTATION_BUDGET_CHARS);
   });
 
@@ -134,13 +193,18 @@ describe('turn-start-orientation — what it costs', () => {
       unansweredDirected: 4,
       loopArmed: false,
     };
-    const out = composeOrientationBlock({ state, committed: null, budgetChars: 160 });
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH, budgetChars: 160 });
     expect(out).toContain('awaiting YOUR reply');
     expect(out).not.toContain('engine loop');
   });
 
   it('emits NOTHING rather than a bare header when the budget fits no real line', () => {
-    const out = composeOrientationBlock({ state: withWork, committed: null, budgetChars: 10 });
+    const out = composeOrientationBlock({
+      state: withWork,
+      committed: null,
+      epoch: EPOCH,
+      budgetChars: 10,
+    });
     expect(out).toBe('');
   });
 });

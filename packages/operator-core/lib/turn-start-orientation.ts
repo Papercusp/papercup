@@ -109,10 +109,36 @@ export function isEmptyOrientation(state: OrientationState): boolean {
  * RELEASE re-emits. The `:status` half is the seam a status-carrying source
  * drops into, not a description of current behaviour — do not cite it as one.
  *
+ * ── WHY `epoch` IS PART OF THE KEY (P-023 / D-008) ───────────────────────────
+ *
+ * The cursor this fingerprint is stored under is keyed `(workspace_id, owner_id,
+ * surface)` — the OWNER. But what the fold actually dedups against is the
+ * agent's CONTEXT: the block is suppressed because "you were already told", and
+ * that is only true while the context it was told into still exists. Wherever
+ * those two diverge — the owner id survives but the context does not — the fold
+ * went silent for a successor that knew nothing, which is precisely the boundary
+ * it exists to serve.
+ *
+ * That divergence is not hypothetical and not rare. A carry-respawn and a cold
+ * loop wake both preserve the owner id and discard the context, and both are the
+ * cases where orientation state is MOST likely to be byte-identical to the
+ * predecessor's last turn (nothing changed — the process merely restarted). So
+ * the suppression was ANTI-CORRELATED with need: the more cleanly the boundary
+ * preserved state, the more certain the successor was told nothing.
+ *
+ * `epoch` is `memory_session_epochs.epoch` — the context generation the memory
+ * surfaced-ledger already dedups on for exactly this reason (D-002/D-006). Both
+ * folds ride the same rail; keying them the same way is what stops them
+ * disagreeing about what a boundary means.
+ *
+ * A committed value written before this key existed has no `epoch` field, so it
+ * compares unequal and re-emits once. That is the intended migration: fail-open,
+ * one extra block, never a silent stale suppression.
+ *
  * Keep this small — it is stored per agent per turn, and its only job is to
- * answer "same as last time?".
+ * answer "same as last time, in the same context?".
  */
-export function fingerprintOrientation(state: OrientationState): CursorState {
+export function fingerprintOrientation(state: OrientationState, epoch: number): CursorState {
   return {
     held: state.held
       .map((h) => `${h.id}:${h.status ?? ''}`)
@@ -120,6 +146,7 @@ export function fingerprintOrientation(state: OrientationState): CursorState {
       .join(','),
     unanswered: state.unansweredDirected,
     loop: state.loopArmed ? 1 : 0,
+    epoch,
   };
 }
 
@@ -131,7 +158,12 @@ export function orientationUnchanged(
   if (!committed || typeof committed !== 'object') return false;
   const a = committed as Record<string, unknown>;
   const b = next as Record<string, unknown>;
-  return a.held === b.held && a.unanswered === b.unanswered && a.loop === b.loop;
+  return (
+    a.held === b.held &&
+    a.unanswered === b.unanswered &&
+    a.loop === b.loop &&
+    a.epoch === b.epoch
+  );
 }
 
 /**
@@ -178,12 +210,21 @@ export function renderOrientationLines(state: OrientationState): string[] {
 export function composeOrientationBlock(input: {
   state: OrientationState;
   committed: CursorState | null;
+  /**
+   * The CONTEXT GENERATION this composition belongs to (see
+   * `fingerprintOrientation`). REQUIRED rather than defaulted: a caller that
+   * forgets it silently reinstates the epoch-blind suppression this parameter
+   * exists to remove, and a default would make that omission invisible. 0 is
+   * the honest value for "no generation known" (an unbumped or unreadable
+   * ledger), which degrades to the pre-P-023 behaviour rather than to noise.
+   */
+  epoch: number;
   budgetChars?: number;
 }): string {
-  const { state, committed } = input;
+  const { state, committed, epoch } = input;
   const budget = input.budgetChars ?? ORIENTATION_BUDGET_CHARS;
   if (isEmptyOrientation(state)) return '';
-  if (orientationUnchanged(committed, fingerprintOrientation(state))) return '';
+  if (orientationUnchanged(committed, fingerprintOrientation(state, epoch))) return '';
 
   const header = `## ${HEADING}`;
   const lines = renderOrientationLines(state);
@@ -208,6 +249,14 @@ export interface OrientationDeps {
   held: (ownerId: string, workspaceId: string) => Promise<OrientationHeldItem[]>;
   unansweredDirected: (ownerId: string) => Promise<number>;
   loopArmed: (ownerId: string) => Promise<boolean>;
+  /**
+   * The agent's CONTEXT GENERATION (P-023 / D-008) — NOT part of the rendered
+   * state, only of the dedup key, which is why it is not on `OrientationState`.
+   * Reads `memory_session_epochs`, the same counter the memory surfaced-ledger
+   * dedups on, so the two folds on this rail cannot disagree about what a
+   * context boundary is.
+   */
+  contextEpoch: (ownerId: string) => Promise<number>;
 }
 
 /**
@@ -263,6 +312,24 @@ export function defaultOrientationDeps(): OrientationDeps {
       const { activeLoopOwners } = await import('./adv-roster');
       return (await activeLoopOwners()).has(ownerId);
     },
+    // P-023 / D-008. The memory ledger's own epoch reader, reused rather than
+    // re-derived: `currentSessionEpoch` is already best-effort by contract
+    // (0 on a missing relation or a failed read, cached process-wide), and 0
+    // is exactly the right degradation here — a generation that never moves
+    // reproduces the pre-P-023 dedup rather than emitting on every turn.
+    //
+    // ⚠ The ledger is keyed by `session_id`, and the turn-start memory port
+    // already passes the OWNER id as that key (`session: { sessionId: owner }`).
+    // Passing the same value here is what makes the two folds share one
+    // generation; a different key would silently give each its own.
+    contextEpoch: async (ownerId) => {
+      const [{ currentSessionEpoch }, { getOrgPg }] = await Promise.all([
+        import('./memory/session-epoch-ledger'),
+        import('@papercusp/db-org'),
+      ]);
+      const { sql } = getOrgPg();
+      return await currentSessionEpoch(sql, ownerId);
+    },
   };
 }
 
@@ -286,9 +353,17 @@ export async function buildTurnStartOrientationBlock(input: {
   try {
     const { ownerId, workspaceId } = input;
     if (!ownerId) return '';
-    const [{ ackAndRead, stage }, state] = await Promise.all([
+    // The epoch read joins the SAME Promise.all as the state read — it is one
+    // indexed single-row lookup, but the 2.5s wall makes "one more await" a real
+    // cost, and serializing it behind the state resolve would spend that wall for
+    // nothing. Independently `.catch()`ed to 0 for the same reason every other
+    // source is: a broken generation read must degrade the dedup to its old
+    // behaviour, never fail the block or the turn.
+    const epochDep = { ...defaultOrientationDeps(), ...(input.deps ?? {}) }.contextEpoch;
+    const [{ ackAndRead, stage }, state, epoch] = await Promise.all([
       import('./agent-tools/coordination/read-cursors'),
       resolveOrientationState(ownerId, workspaceId, input.deps ?? {}),
+      epochDep(ownerId).catch(() => 0),
     ]);
     if (isEmptyOrientation(state)) return '';
     const ack = await ackAndRead(ownerId, ORIENTATION_CURSOR_SURFACE).catch(() => null);
@@ -297,10 +372,15 @@ export async function buildTurnStartOrientationBlock(input: {
       // A failed cursor read ⇒ treat as baseline and DELIVER. Fail-open: a delta
       // must never make orientation worse than no delta.
       committed: ack?.committed ?? null,
+      epoch,
       ...(input.budgetChars === undefined ? {} : { budgetChars: input.budgetChars }),
     });
     if (block) {
-      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state)).catch(
+      // Staged with the SAME epoch the block was composed against — never a
+      // re-read. A second read here could land after a boundary and commit a
+      // generation the agent was never actually told about, which would
+      // reproduce the exact stale suppression this change removes.
+      await stage(ownerId, ORIENTATION_CURSOR_SURFACE, fingerprintOrientation(state, epoch)).catch(
         () => {},
       );
     }
