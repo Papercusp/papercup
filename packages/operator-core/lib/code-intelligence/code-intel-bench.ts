@@ -246,6 +246,13 @@ export interface BenchMeasurement {
   readonly trustworthyEmpty: boolean;
   readonly grade: GradeResult;
   readonly error: string | null;
+  /**
+   * True when the leg budget ran out before this probe was tried. Recorded
+   * EXPLICITLY rather than omitted: a probe that never ran must never be
+   * mistaken for one that ran and passed, and a short report is otherwise
+   * indistinguishable from a clean one.
+   */
+  readonly notAttempted: boolean;
 }
 
 /** What a backend costs while resident, against the shared budget. */
@@ -302,9 +309,19 @@ export interface LspLegOptions {
   readonly repoRoot: string;
   /** Shut every server down first so the first query per language is a true cold start. */
   readonly cold?: boolean;
-  /** Ceiling for the poll-to-correct loop. Generous on purpose: a short */
-  /** deadline records a TIMEOUT as a WRONG ANSWER, which is a lie about the backend. */
+  /**
+   * Ceiling for ONE probe's poll-to-correct loop. Generous on purpose: a short
+   * deadline records a TIMEOUT as a WRONG ANSWER, which is a lie about the backend.
+   */
   readonly deadlineMs?: number;
+  /**
+   * Ceiling for the WHOLE leg. Without this, `deadlineMs` multiplies by the probe
+   * count and a single slow probe starves the rest, so the harness times out and
+   * NO report is produced — the worst outcome, because it yields no data at all.
+   * With it, a slow probe is bounded and the remaining probes are reported as
+   * not-attempted, which is a partial result rather than a lost run.
+   */
+  readonly legBudgetMs?: number;
   readonly pollMs?: number;
   /** Restrict to these corpus case ids (default: every probe). */
   readonly only?: readonly string[];
@@ -331,6 +348,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     repoRoot,
     cold = true,
     deadlineMs = 120_000,
+    legBudgetMs = 600_000,
     pollMs = 250,
     only,
   } = opts;
@@ -341,6 +359,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
   const measurements: BenchMeasurement[] = [];
   const declinedIntents: { caseId: string; intent: CodeIntelIntent; error: string }[] = [];
   const languagesStarted = new Set<string>();
+  const legStarted = Date.now();
 
   for (const probe of probes) {
     const kase = corpusCase(probe.caseId);
@@ -349,6 +368,28 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     const cursor = resolveProbeCursor(probe, repoRoot);
     const ext = probe.file.slice(probe.file.lastIndexOf('.'));
     const serverWasCold = !languagesStarted.has(ext);
+
+    // Bound this probe by whichever runs out first: its own deadline, or what
+    // is left of the whole leg.
+    const remaining = legBudgetMs - (Date.now() - legStarted);
+    if (remaining <= 0) {
+      measurements.push({
+        caseId: kase.id,
+        intent: kase.intent,
+        backend: 'lsp-adapter',
+        serverWasCold: false,
+        timeToCorrectMs: null,
+        warmQueryMs: null,
+        attempts: 0,
+        correct: false,
+        trustworthyEmpty: true, // never queried, so it made no empty claim at all
+        grade: { correct: false, missing: [], extra: [], reason: 'not attempted' },
+        error: `leg budget of ${legBudgetMs}ms exhausted before this probe ran`,
+        notAttempted: true,
+      });
+      continue;
+    }
+    const probeDeadline = Math.min(deadlineMs, remaining);
     languagesStarted.add(ext);
 
     const started = Date.now();
@@ -357,7 +398,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     let grade: GradeResult = { correct: false, missing: [], extra: [], reason: 'never queried' };
 
     // Poll until CORRECT, not until answered — see the file header.
-    while (Date.now() - started < deadlineMs) {
+    while (Date.now() - started < probeDeadline) {
       attempts += 1;
       last = await lspQuery(kase.intent, cursor);
       grade = gradeSites(kase, last.sites);
@@ -393,6 +434,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
       trustworthyEmpty: last ? isTrustworthyEmpty(last) : false,
       grade,
       error: last?.error ?? null,
+      notAttempted: false,
     });
   }
 
@@ -492,7 +534,7 @@ export const MCP_LANGUAGE_SERVER_SERVED_INTENTS: readonly CodeIntelIntent[] = Ob
 export function formatLegReport(report: LspLegReport): string {
   const rows = report.measurements.map((m) =>
     [
-      m.correct ? 'PASS' : 'FAIL',
+      m.notAttempted ? 'SKIP' : m.correct ? 'PASS' : 'FAIL',
       m.caseId,
       m.intent,
       m.serverWasCold ? `cold=${m.timeToCorrectMs ?? 'never'}ms` : `warm-start`,
