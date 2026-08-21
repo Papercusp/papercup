@@ -739,4 +739,38 @@ describe('buildReleaseTrace', () => {
     );
     expect(out.staleWake.verdict).toBe('none');
   });
+
+  it('EI-210996: classifies candidate-bound abnormal termination without a result marker as inconclusive', () => {
+    const checkpointRun = {
+      active: false,
+      terminalMarker: false,
+      terminalEvidence: {
+        source: 'systemd-exec-stop-post' as const,
+        candidate: sha.slice(0, 8),
+        serviceResult: 'oom-kill',
+        exitCode: 'killed',
+        exitStatus: 'KILL',
+        abnormal: true,
+      },
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
+        }),
+        gate: { ...input().gate, checkpointRunInFlight: checkpointRun },
+      }),
+    );
+
+    expect(out.constraints.find((c) => c.code === 'checkpoint-run-inconclusive')?.summary).toMatch(
+      /explicitly INCONCLUSIVE, not red or green/,
+    );
+    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
+    expect(out.nextVerb?.reason).toContain('oom-kill/killed:KILL');
+  });
 });
