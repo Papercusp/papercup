@@ -268,8 +268,9 @@ describe('refreshCorestoreStateForSeed', () => {
 describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
   it('refuses a second cut before its backfill/INSERT callback runs', async () => {
     const tx = vi.fn(async () => [{ acquired: false }]) as never;
+    const begin = vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => run(tx));
     const pg = {
-      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => run(tx)),
+      begin,
     } as never;
     const backfillOrInsert = vi.fn(async () => 'must-not-run');
 
@@ -282,7 +283,7 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
       }),
     ).rejects.toThrow(/another seed cut is already refreshing or opening/);
     expect(backfillOrInsert).not.toHaveBeenCalled();
-    expect(pg.begin).toHaveBeenCalledTimes(1);
+    expect(begin).toHaveBeenCalledTimes(1);
     expect(tx).toHaveBeenCalledTimes(1);
   });
 
