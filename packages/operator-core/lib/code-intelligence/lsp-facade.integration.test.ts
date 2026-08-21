@@ -25,7 +25,12 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const flagMock = vi.hoisted(() => ({ enabled: true }));
-vi.mock('@papercusp/flags/server', () => ({
+// PARTIAL mock. The adapter's own import graph (managedSpawn → task-manager)
+// consumes other exports of this module — `onFlagChange` among them — so a
+// wholesale replacement breaks the very code under test, with an error that
+// masquerades as an LSP failure. Override only `getFlag`.
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
   getFlag: async () => flagMock.enabled,
 }));
 
