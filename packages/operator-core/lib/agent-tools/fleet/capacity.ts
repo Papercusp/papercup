@@ -238,6 +238,10 @@ export async function readProviderAvailability(
       // How many accounts the override excluded from the counts above — lets a caller distinguish
       // "genuinely no capacity" from "capacity exists but is fenced off by the owner's override".
       overrideExcludedCount,
+      // Keep the exact steer alongside the derived counts. A zero usable count can be a
+      // deliberate owner restriction, not quota exhaustion; consumers need the active input
+      // to explain that distinction without reconstructing it from a refusal.
+      sessionOverride: override,
       // EI-18664933641195210: break out WHY unusable accounts are unusable, so a poolExhausted advice
       // can name egress-throttle (owner-infra) vs usage-wall (just wait) instead of lumping both into
       // one vague "walled/rate-paused/edge-throttled" phrase that reads as generic quota exhaustion.

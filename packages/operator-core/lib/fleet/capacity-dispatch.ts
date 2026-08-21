@@ -18,6 +18,7 @@
  */
 import { tierOf, DEFAULT_GATEWAY_PRIORITY_MAP, type PriorityTierMap } from '@papercusp/papercusp-shared/agent';
 import type { GatewayHeadroom } from '../inference-gateway/observability';
+import type { AccountSessionOverride } from '../deployment/account-session-override';
 
 /** Pool-saturation signal — a projection of the gateway `/stats` headroom (observability.GatewayHeadroom). */
 export interface CapacitySignal {
@@ -110,6 +111,8 @@ export interface AccountPoolAvailability {
    * fail-safe-omit contract as the other optional fields here.
    */
   overrideExcludedCount?: number;
+  /** The live owner session override used to derive the counts above. */
+  sessionOverride?: AccountSessionOverride;
   /**
    * EI-19281217347369076 / EI-19928050541357086: how many of `total` accounts have an UNRELIABLE
    * reading feeding their `available`/`usageWalled`/`utilization` verdict — EITHER a recent,
@@ -506,10 +509,14 @@ export interface CapacityReport {
    * cross-check was passed or the accountAvailability omitted the count.
    */
   overrideExcludedAccounts: number | null;
+  /** The active owner session override used for the account-pool cross-check, when available. */
+  activeSessionOverride: AccountSessionOverride | null;
   /** LOUD contradiction flag (EI-12282): the gateway reports spare bee slots (dispatchBudget > 0) while the
    *  real account pool has ZERO usable accounts for the provider — a fresh spawn will die on its first call.
    *  When true, `factor` is forced to 0, `recommendedHeadroom` to the floor, and `advice` is the loud hold. */
   poolExhausted: boolean;
+  /** Why the usable set is empty, when poolExhausted is true. */
+  exhaustionReason: 'session-override' | 'edge-throttle' | 'usage-wall' | 'unknown' | null;
   /** Real usable accounts (from the account-pool projection) that are `sustainedlyLimited`, when supplied.
    *  null when no cross-check was passed or the accountAvailability omitted the count (EI-18791793869559327). */
   sustainedlyLimitedAccounts: number | null;
@@ -615,7 +622,9 @@ export function buildCapacityReport(
       usableAccounts: opts.accountAvailability?.usable ?? null,
       availableAccounts: opts.accountAvailability?.available ?? null,
       overrideExcludedAccounts: opts.accountAvailability?.overrideExcludedCount ?? null,
+      activeSessionOverride: opts.accountAvailability?.sessionOverride ?? null,
       poolExhausted: false,
+      exhaustionReason: null,
       sustainedlyLimitedAccounts: opts.accountAvailability?.sustainedlyLimitedCount ?? null,
       degraded: false,
       blind: false,
@@ -651,6 +660,11 @@ export function buildCapacityReport(
   const poolExhausted =
     !restartRecovering && acct != null && acct.total > 0 && acct.usable <= 0 && (dispatchBudget ?? 0) > 0;
   if (poolExhausted) factor = 0;
+  const sessionOverrideExhausted =
+    poolExhausted &&
+    acct?.sessionOverride != null &&
+    acct.overrideExcludedCount === acct.total &&
+    acct.total > 0;
   // EI-18791793869559327: `poolExhausted` is a binary all-dead check (usable<=0) against a failure mode
   // that is fundamentally gradual — an account can be fully `usable` (not walled, not edge-throttled) and
   // still be `sustainedlyLimited` (the rate governor's own "repeatedly hitting penalties" verdict, already
@@ -702,6 +716,13 @@ export function buildCapacityReport(
   // exhaustion either way, which sent a real egress-proxy outage down the wrong (quota) diagnosis.
   const exhaustionCause = ((): string | null => {
     if (!poolExhausted) return null;
+    if (sessionOverrideExhausted) {
+      return (
+        ` — SESSION OVERRIDE: all ${acct!.total} ${acct!.provider ?? 'claude'} account(s) are fenced off by ` +
+        `the active forced/excluded account steer, so no route can succeed. Revise or clear the override; ` +
+        `this is not quota exhaustion.`
+      );
+    }
     const edge = acct!.edgeThrottledCount ?? 0;
     const wall = acct!.usageWalledCount ?? 0;
     if (edge === 0 && wall === 0) return null; // no breakdown supplied → unchanged generic phrasing
@@ -806,7 +827,9 @@ export function buildCapacityReport(
   const advice = blindCaveat + (restartRecovering
     ? `gateway restarting (uptime ${Math.round((hr.processUptimeMs ?? 0) / 1000)}s) → startup capacity snapshot is recovering; place at normal ceiling and re-check next wake`
     : poolExhausted
-    ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)${exhaustionCause ?? ''}`
+    ? sessionOverrideExhausted
+      ? `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but the active session override fences all ${acct!.total} ${acct!.provider ?? 'claude'} accounts (0/${acct!.total} routable) → HOLD placements; revise or clear the override before spawning${exhaustionCause ?? ''}`
+      : `pool EXHAUSTED: gateway reports ~${dispatchBudget ?? 0} bee slots but ${acct!.usable}/${acct!.total} ${acct!.provider ?? 'claude'} accounts are usable (rest walled/rate-paused/edge-throttled) → HOLD placements; dispatchBudget is a QUEUE figure, not real inference capacity (fresh spawns will die on their first call)${exhaustionCause ?? ''}`
     : poolBlocked
     ? 'pool SATURATED (paused/rejected) → place ONLY top-ranked tier-1 work; hold bee batch until it recovers'
     : degraded
@@ -834,6 +857,18 @@ export function buildCapacityReport(
         }
       : undefined;
 
+  const edgeCount = acct?.edgeThrottledCount ?? 0;
+  const wallCount = acct?.usageWalledCount ?? 0;
+  const exhaustionReason: CapacityReport['exhaustionReason'] = !poolExhausted
+    ? null
+    : sessionOverrideExhausted
+      ? 'session-override'
+      : edgeCount > 0 && edgeCount >= wallCount
+        ? 'edge-throttle'
+        : wallCount > 0
+          ? 'usage-wall'
+          : 'unknown';
+
   return {
     reachable: true,
     ...(symptomKnowledge ? { symptomKnowledge } : {}),
@@ -852,7 +887,9 @@ export function buildCapacityReport(
     usableAccounts: acct?.usable ?? null,
     availableAccounts: acct?.available ?? null,
     overrideExcludedAccounts: acct?.overrideExcludedCount ?? null,
+    activeSessionOverride: acct?.sessionOverride ?? null,
     poolExhausted,
+    exhaustionReason,
     sustainedlyLimitedAccounts: acct?.sustainedlyLimitedCount ?? null,
     degraded,
     blind,

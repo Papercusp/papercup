@@ -24,6 +24,7 @@
 import { readOperatorState, writeOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { registerOverrideConcern, type OverrideEntry } from '../config-overrides/registry';
+import { AccountPoolError } from './account-pool';
 
 /** The decoded override. Both lists empty + no default ⇒ no steer at all (today's behaviour). */
 export interface AccountSessionOverride {
@@ -95,11 +96,90 @@ export interface AccountSessionOverridePatch {
   defaultAccountId?: string | null;
   /** Wipe every axis — both lists AND the default — back to no steer. */
   clear?: boolean;
+  /** Explicitly acknowledge narrowing a non-empty pool to zero routable accounts. */
+  confirmCollapse?: boolean;
 }
 
 /** Trim to a usable account id, or undefined. Empty/whitespace ⇒ undefined (= unset). */
 function asAccountId(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+}
+
+export interface AccountSessionOverrideValidation {
+  poolAccountIds: string[];
+  unknownAccountIds: string[];
+  conflictingAccountIds: string[];
+  effectiveAccountIds: string[];
+  errors: string[];
+  warning?: string;
+}
+
+/**
+ * Validate the restriction axes against a concrete pool snapshot. This stays pure so the
+ * write-time guard and its recurrence tests share exactly the same set semantics as the
+ * live admission filter.
+ */
+export function validateAccountOverrideAgainstPool(
+  override: AccountSessionOverride,
+  poolAccountIds: readonly string[],
+  confirmCollapse = false,
+): AccountSessionOverrideValidation {
+  const pool = [...new Set(poolAccountIds)];
+  const poolSet = new Set(pool);
+  const forced = [...new Set(override.forcedAccounts)];
+  const excluded = [...new Set(override.excludeAccounts)];
+  const configured = [...new Set([...forced, ...excluded])];
+  const unknownAccountIds = configured.filter((id) => !poolSet.has(id));
+  const excludedSet = new Set(excluded);
+  const conflictingAccountIds = forced.filter((id) => excludedSet.has(id));
+  const effectiveAccountIds = applyAccountOverride(pool, { forced, excludeAccounts: excluded });
+  const errors: string[] = [];
+
+  if (unknownAccountIds.length > 0) {
+    errors.push(
+      `session override names account id(s) not present in the account pool: ${unknownAccountIds.join(', ')}. ` +
+        'Refresh accounts:list and use the pool ids rather than a domain or display name.',
+    );
+  }
+  if (conflictingAccountIds.length > 0) {
+    errors.push(
+      `session override places account id(s) in both forcedAccounts and excludeAccounts: ${conflictingAccountIds.join(', ')}. ` +
+        'Remove each id from one axis before saving the override.',
+    );
+  }
+  if (pool.length > 0 && effectiveAccountIds.length === 0) {
+    const collapseMessage =
+      `session override would collapse the non-empty account pool (${pool.length} account(s)) to zero routable accounts. ` +
+      'If this narrowing is intentional, re-send with confirmCollapse:true; otherwise revise the override.';
+    if (confirmCollapse) {
+      return {
+        poolAccountIds: pool,
+        unknownAccountIds,
+        conflictingAccountIds,
+        effectiveAccountIds,
+        errors,
+        warning: `pool-collapse confirmed by caller (confirmCollapse:true): ${collapseMessage}`,
+      };
+    }
+    errors.push(collapseMessage);
+  }
+
+  return { poolAccountIds: pool, unknownAccountIds, conflictingAccountIds, effectiveAccountIds, errors };
+}
+
+/** Read the persisted pool ids without importing the IO-owning account-pool-store (cycle guard). */
+async function readAccountPoolIds(workspaceId: string): Promise<string[] | null> {
+  try {
+    const raw = await readOperatorState<{ accounts?: unknown }>('operator_account_pool', workspaceId);
+    if (!raw || !Array.isArray(raw.accounts)) return null;
+    return raw.accounts.filter((account): account is { id: string } => {
+      return !!account && typeof account === 'object' && typeof (account as { id?: unknown }).id === 'string';
+    }).map((account) => account.id);
+  } catch {
+    // The override is a fail-soft routing layer. If the pool itself cannot be read, preserve
+    // the existing write behaviour and let the next capacity/admission read expose the issue.
+    return null;
+  }
 }
 
 /** Read the workspace's account override (no hive needed; missing row ⇒ no steer). */
@@ -137,6 +217,15 @@ export async function setAccountOverride(
     excludeAccounts: patch.excludeAccounts !== undefined ? asStringArray(patch.excludeAccounts) : cur.excludeAccounts,
     ...(nextDefault ? { defaultAccountId: nextDefault } : {}),
   };
+  // Validate at the write boundary, before a bad id or an unsatisfiable override can become
+  // durable state. A missing/empty pool is intentionally not a collapse: setup may write the
+  // steer before the first account is registered, and a transient pool read must not wedge the
+  // account-control surface.
+  const poolAccountIds = await readAccountPoolIds(workspaceId);
+  if (poolAccountIds !== null) {
+    const validation = validateAccountOverrideAgainstPool(next, poolAccountIds, patch.confirmCollapse === true);
+    if (validation.errors.length > 0) throw new AccountPoolError(validation.errors.join(' '));
+  }
   await writeOperatorState(OVERRIDE_STATE_TABLE, next, workspaceId);
   return next;
 }
