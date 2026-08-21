@@ -8,6 +8,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  announceFleetItemCompleted,
   detectFleetTransitions,
   emitFleetClaimReleasedEvent,
   emitFleetItemCompletedEvent,
@@ -161,6 +162,30 @@ describe('the work-item co-fires', () => {
     await settle();
     expect(emit.mock.calls[0][0].key).toBe('fleet:item-completed:push-not-poll');
     expect(emit.mock.calls[0][0].payload).toMatchObject({ id: 'WI-1', state: 'resolved', assignee: 'su-a' });
+  });
+
+  it('resolves and attributes a terminal event from the pre-clear holder without mutating the post-state item', async () => {
+    const emit = vi.fn().mockResolvedValue(undefined);
+    const fleetOfAgent = vi.fn(async (_workspaceId: string, ownerId: string) =>
+      ownerId === 'su-a' ? 'push-not-poll' : null,
+    );
+    const item = { id: 'WI-1', state: 'resolved', assignee: null };
+
+    announceFleetItemCompleted(item, 'su-a', {
+      emit,
+      fleetOfAgent,
+      workspaceId: async () => 'workspace-1',
+    });
+    await settle();
+
+    expect(fleetOfAgent).toHaveBeenCalledWith('workspace-1', 'su-a');
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit.mock.calls[0][0].payload).toMatchObject({
+      id: 'WI-1',
+      state: 'resolved',
+      assignee: 'su-a',
+    });
+    expect(item.assignee).toBeNull();
   });
 
   it('fires NOTHING when the holder is in no fleet — an unfleeted release is not a fleet transition', async () => {

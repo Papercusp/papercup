@@ -393,6 +393,12 @@ export interface SettledEventsDeps {
   getItem?: typeof getWorkItem;
   listOut?: BlockingEdgeReader['listOut'];
   listIn?: BlockingEdgeReader['listIn'];
+  /**
+   * Holder from immediately before the terminal state write. Terminal writes
+   * release the row's assignee, but the fleet-scoped completion event must be
+   * attributed to the holder that actually settled it.
+   */
+  priorAssignee?: string | null;
   /** Batched in-edge read; when absent it is DERIVED from `listIn` (test compat). */
   listInMany?: BlockingEdgeReader['listInMany'];
   /** P-010: inject-notify a fix-target's subscribers. Default = fanoutForObject
@@ -807,7 +813,7 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
   // must never drop the sibling done / unblocked emits.
   try {
     const { announceFleetItemCompleted } = await import('./fleet-transition-events');
-    announceFleetItemCompleted(wi);
+    announceFleetItemCompleted(wi, deps.priorAssignee);
   } catch (e) {
     failSoft(`settled fleet-completed for ${wi.id}`, e);
   }

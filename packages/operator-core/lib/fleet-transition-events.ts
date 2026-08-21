@@ -480,18 +480,23 @@ export function announceFleetClaimReleased(
 
 /**
  * Resolve the settling holder's fleet and fire `fleet:item-completed:<slug>`.
- * The one-line call-site form for `emitWorkItemSettledEvents`. Fire-and-forget.
+ * The one-line call-site form for `emitWorkItemSettledEvents`. Terminal writes
+ * clear the item's assignee, so callers pass the pre-write holder explicitly.
+ * Fire-and-forget.
  */
 export function announceFleetItemCompleted(
   item: { id: string; state: string; title?: string | null; harness?: string | null; assignee?: string | null },
+  priorAssignee: string | null | undefined = item.assignee,
   deps: FleetAnnounceDeps = {},
 ): void {
-  if (!item.assignee) return; // an unheld item settling is not a fleet transition
+  if (!priorAssignee) return; // an unheld item settling is not a fleet transition
   void Promise.resolve()
     .then(async () => {
       const ws = await (deps.workspaceId ?? defaultWorkspaceId)();
-      const fleetSlug = await fleetSlugOfAgent(ws, item.assignee, deps);
-      emitFleetItemCompletedEvent(fleetSlug, item, deps);
+      const fleetSlug = await fleetSlugOfAgent(ws, priorAssignee, deps);
+      // Keep the post-state item truthful while giving the event its real
+      // attribution. This copy never escapes the event fanout.
+      emitFleetItemCompletedEvent(fleetSlug, { ...item, assignee: priorAssignee }, deps);
     })
     .catch((e: unknown) => failSoft(`item-completed announce for ${item.id}`, e));
 }

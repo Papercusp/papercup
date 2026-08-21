@@ -2971,6 +2971,10 @@ export async function setWorkItemState(
   });
   if (liveDriveRefusal) throw new Error(liveDriveRefusal);
   let result: WorkItem | null;
+  // Terminal state writes clear the claim before returning the post-state row.
+  // Keep the pre-write holder only for the event fanout; the returned WorkItem
+  // must continue to report the truthful, unclaimed terminal state.
+  const priorAssignee = wi.assignee;
   if (wi.family === 'issue') {
     // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
     // creation (an unresolved federation/replay-provenance defect, still under investigation —
@@ -3254,7 +3258,7 @@ export async function setWorkItemState(
     // have no later lifecycle edge on which to retry.
     await retireLifecycleBindingsForWorkItem(settled);
     void trackDetached(import('./work-items-events'))
-      .then((m) => m.emitWorkItemSettledEvents(settled))
+      .then((m) => m.emitWorkItemSettledEvents(settled, { priorAssignee }))
       .catch(() => {});
     // WI-4119: generated blocker follows are no longer useful once this
     // blocker settles. Keep cleanup on the lifecycle write path so it does not
