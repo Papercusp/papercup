@@ -21,6 +21,7 @@ import { describe, expect, it } from 'vitest';
 
 import { isLocalModelSpec } from './local-model-spec.mjs';
 import { mayKeepOmpNativeLsp } from './omp-native-lsp-gate';
+import { ompModelTierAllowsNativeLsp } from './omp-native-lsp-tier.mjs';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const read = (rel: string) => readFileSync(join(REPO_ROOT, rel), 'utf8');
@@ -204,9 +205,80 @@ describe('PAPERCUSP_OMP_NATIVE_LSP wiring (producers ↔ consumers)', () => {
     expect(emitting).toHaveLength(1);
     expect(emitting[0]).toContain('allowNativeLsp === true ? [] :');
 
-    // Both omp branches must reach it through the helper.
+    // All THREE omp branches must reach it through the helper: the two fresh
+    // paths (role + su) and — since P-023 — the RESUME path.
     const viaHelper = src.match(/\.\.\.ompLspArgs\(allowNativeLsp\)/g) ?? [];
-    expect(viaHelper).toHaveLength(2);
+    expect(viaHelper).toHaveLength(3);
+  });
+});
+
+/**
+ * P-023 (D-015) — THE RESUME PATH.
+ *
+ * The hole this pins was invisible to every assertion above, and the reason is
+ * worth stating because it generalises: P-021 converted two hard-coded
+ * `'--no-lsp'` literals into `ompLspArgs` calls, and every guard was written to
+ * count LITERALS and CONVERSIONS. `resumeArgsFor` had no literal to convert —
+ * it simply never emitted the flag at all — so a suite watching for a
+ * re-introduced literal could not see it. An omission leaves no token to count.
+ *
+ * Consequence before the fix: omp CLI flags do not persist into a resume, so
+ * EVERY resumed omp session kept the native `lsp` builtin unconditionally —
+ * including sessions on weak LOCAL models, the exact population the tier gate
+ * exists to exclude. Fail-open, in the one direction that matters.
+ *
+ * These assertions are structural (source-read) for the same reason the wiring
+ * block above is: `resumeArgsFor` is in a bare-node `.mjs` this TS suite cannot
+ * import. The BEHAVIOUR of the term it applies is pinned directly, below.
+ */
+describe('the omp RESUME path re-applies the gate (P-023)', () => {
+  const LAUNCHER = 'apps/operator/scripts/psu-launcher.mjs';
+
+  /** The `resumeArgsFor` omp branch, sliced out of the launcher source. */
+  function ompResumeBranch(src: string): string {
+    const start = src.indexOf('export function resumeArgsFor');
+    expect(start).toBeGreaterThan(-1);
+    const branch = src.indexOf("if (session.agent === 'omp')", start);
+    expect(branch).toBeGreaterThan(-1);
+    const end = src.indexOf("if (session.agent === 'codex')", branch);
+    expect(end).toBeGreaterThan(branch);
+    return src.slice(branch, end);
+  }
+
+  it('routes through ompLspArgs instead of silently emitting nothing', () => {
+    const branch = ompResumeBranch(read(LAUNCHER));
+    expect(branch).toContain('ompLspArgs(allowNativeLsp)');
+  });
+
+  it('applies the SHARED tier term, not a re-typed copy of it', () => {
+    const src = read(LAUNCHER);
+    // The whole point of omp-native-lsp-tier.mjs: a second hand-written
+    // `!isLocalModelSpec(model)` here would re-create the drift the gate file
+    // was written to prevent.
+    expect(src).toContain('omp-native-lsp-tier.mjs');
+    expect(ompResumeBranch(src)).toContain('ompModelTierAllowsNativeLsp(model)');
+  });
+
+  it('CONTROL: these matchers reject the pre-P-023 branch', () => {
+    // The real branch as it stood before the fix — flags re-passed, gate absent.
+    // Without this control the two assertions above would be satisfied by any
+    // file that merely MENTIONS the helper somewhere else, which is exactly the
+    // failure mode a source-read test has.
+    const preFix = [
+      "  if (session.agent === 'omp') {",
+      "    const args = session.ompThreadId ? ['-r', session.ompThreadId] : ['-c'];",
+      "    args.push('--approval-mode', 'yolo');",
+      "    if (coordExtPath) args.push('-e', coordExtPath);",
+      "    if (injectHookPath) args.push('--hook', injectHookPath);",
+      "    if (model) args.push(...modelArgsFor('omp', model));",
+      "    return { bin: 'omp', args };",
+      '  }',
+    ].join('\n');
+    expect(preFix).not.toContain('ompLspArgs');
+    expect(preFix).not.toContain('ompModelTierAllowsNativeLsp');
+    // And the omission really is invisible to a literal-counting guard — the
+    // assertion style that let this survive P-021 in the first place.
+    expect(preFix.includes("'--no-lsp'")).toBe(false);
   });
 });
 
@@ -234,5 +306,64 @@ describe('mayKeepOmpNativeLsp — the other terms', () => {
         flagEnabled: 'yes' as unknown as boolean,
       }),
     ).toBe(false);
+  });
+});
+
+/**
+ * ompModelTierAllowsNativeLsp — the term the RESUME path applies on its own.
+ *
+ * This is the half of the gate that fails CLOSED, which is why it is the half
+ * safe to enforce without the flag. Its behaviour is pinned here directly (the
+ * resume-path tests above can only read source, since the launcher is bare-node
+ * `.mjs`), and the delegation test below is what stops the two copies of this
+ * rule that P-023 was created to merge from quietly separating again.
+ */
+describe('ompModelTierAllowsNativeLsp — the shared tier term', () => {
+  it.each(LOCAL_SPECS)('a LOCAL model (%s) is never tier-eligible', (model) => {
+    expect(ompModelTierAllowsNativeLsp(model)).toBe(false);
+  });
+
+  it.each(CLOUD_SPECS)('a CLOUD model (%s) is tier-eligible', (model) => {
+    expect(ompModelTierAllowsNativeLsp(model)).toBe(true);
+  });
+
+  it.each([null, undefined, '', '   '])(
+    'an UNKNOWN/blank spec (%p) FAILS CLOSED — omp would run its local default',
+    (model) => {
+      expect(ompModelTierAllowsNativeLsp(model as string | null | undefined)).toBe(false);
+    },
+  );
+
+  /**
+   * The delegation, asserted behaviourally rather than by reading source: for
+   * every spec, the full gate with the flag ON must agree exactly with the tier
+   * term. If someone re-inlines a subtly different rule into either side, these
+   * diverge on the spec where they differ.
+   */
+  it('mayKeepOmpNativeLsp(flag ON) agrees with the tier term on EVERY spec', () => {
+    for (const model of [...CLOUD_SPECS, ...LOCAL_SPECS, '', null, undefined]) {
+      expect(mayKeepOmpNativeLsp({ agent: 'omp', model, flagEnabled: true })).toBe(
+        ompModelTierAllowsNativeLsp(model),
+      );
+    }
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL, matching this file's convention: the wrong
+   * implementation someone would write if they read "not local" as
+   * tier-eligible. It must DISAGREE with the real term on the unknown-model
+   * case — the case that carries the whole safety argument. If these ever
+   * agree, the control has gone stale and the block above pins nothing.
+   */
+  it('CONTROL: a naive !isLocalModelSpec term differs on the unknown model', () => {
+    const naiveTier = (model: string | null | undefined) => !isLocalModelSpec(model);
+    expect(naiveTier(null)).toBe(true); // the bug: absence read as "safe"
+    expect(ompModelTierAllowsNativeLsp(null)).toBe(false); // the fix
+    expect(naiveTier(null)).not.toBe(ompModelTierAllowsNativeLsp(null));
+    // …and they must still AGREE wherever a spec is actually present, or the
+    // control is not isolating the unknown-model case at all.
+    for (const model of [...CLOUD_SPECS, ...LOCAL_SPECS]) {
+      expect(naiveTier(model)).toBe(ompModelTierAllowsNativeLsp(model));
+    }
   });
 });

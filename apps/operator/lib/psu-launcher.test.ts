@@ -1823,19 +1823,69 @@ describe('psu-launcher arg parsing', () => {
       args: ['--continue', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions', NO_SUBAGENTS_DENY_FLAG, OWNER_DESKTOP_NOTIFY_DENY_FLAG],
     });
     // omp: thread target (or -c) + yolo; -e only when a coordExtPath is supplied.
+    // `--no-lsp` is present because omp CLI flags do NOT persist into a resume,
+    // so the native-lsp gate must be re-applied every time (P-023/D-015). With
+    // no model spec the tier term fails closed — see the dedicated block below.
     expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' })).toEqual({
       bin: 'omp',
-      args: ['-r', 'thr-1', '--approval-mode', 'yolo'],
+      args: ['-r', 'thr-1', '--approval-mode', 'yolo', '--no-lsp'],
     });
     expect(resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: null }, { coordExtPath: '/h/.papercusp/papercusp-coord.ts' })).toEqual({
       bin: 'omp',
-      args: ['-c', '--approval-mode', 'yolo', '-e', '/h/.papercusp/papercusp-coord.ts'],
+      args: ['-c', '--approval-mode', 'yolo', '-e', '/h/.papercusp/papercusp-coord.ts', '--no-lsp'],
     });
     expect(resumeArgsFor({ agent: 'codex', cwd: '/x' })).toEqual({
       bin: 'codex',
       args: ['--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume', '--last'],
     });
     expect(() => resumeArgsFor({ agent: 'gemini', cwd: '/x' })).toThrow();
+  });
+
+  /**
+   * P-023 (D-015) — the omp native-`lsp` gate on the RESUME path.
+   *
+   * omp CLI flags do not persist into a resume, so a gate applied only at fresh
+   * launch is not applied at all after the first resume. Before P-023 this
+   * branch never emitted `--no-lsp`, so every resumed omp session kept the
+   * builtin unconditionally — including sessions on weak LOCAL models, which is
+   * the population the tier gate exists to exclude.
+   *
+   * These assertions call the real function, so they fail if the fix is
+   * reverted — unlike the structural guards in omp-native-lsp-gate.test.ts,
+   * which can only read the launcher's source.
+   */
+  describe('resumeArgsFor re-applies the omp native-lsp gate (P-023)', () => {
+    const resumeOmp = (model: string | null) =>
+      resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' }, { model }).args;
+
+    it('a LOCAL model STRIPS the builtin — the case the hole exposed', () => {
+      for (const model of ['ornith', 'ollama/llama3', 'ornith:fast', 'ornith[1m]']) {
+        expect(resumeOmp(model)).toContain('--no-lsp');
+      }
+    });
+
+    it('an UNKNOWN model strips too — omp would fall back to its local default', () => {
+      // Fail-closed. `psu --resume` without an explicit --model is the common
+      // case, and "we were not told" is not evidence the model is safe.
+      expect(resumeOmp(null)).toContain('--no-lsp');
+    });
+
+    it('a CLOUD model KEEPS it — proving the gate can also say yes', () => {
+      // Without this the block above would pass just as well against a branch
+      // that hard-coded '--no-lsp' unconditionally, which is not the contract.
+      for (const model of ['sonnet:medium', 'gpt-5.5:high', 'fable[1m]']) {
+        expect(resumeOmp(model)).not.toContain('--no-lsp');
+      }
+    });
+
+    it('non-omp resumes never carry the flag — the builtin is omp-only', () => {
+      expect(resumeArgsFor({ agent: 'claude', cwd: '/x' }, { model: 'ornith' }).args).not.toContain(
+        '--no-lsp',
+      );
+      expect(resumeArgsFor({ agent: 'codex', cwd: '/x' }, { model: 'ornith' }).args).not.toContain(
+        '--no-lsp',
+      );
+    });
   });
 
   it('resumeArgsFor uses precise resume-by-id when a native sessionId is known', () => {
