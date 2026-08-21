@@ -393,12 +393,12 @@ export function buildBoundedPriorAttemptBrief(
     omission: {
       omittedRecords: compilation.records.length - admitted,
       omittedByAuthority: {},
-      // Sized, not populated: the envelope is a PESSIMISTIC probe for the
-      // admit loop, and it must reserve the bytes the omitted-ref list will
-      // eventually cost, or the last admitted record wins space that the
-      // omission block then has to overflow.
-      omittedRefs: [...omittedRefs.values()].slice(0, OMITTED_REF_CAP),
-      omittedRefsTruncated: omittedRefs.size > OMITTED_REF_CAP,
+      // P-017: DELIBERATELY empty during admission. The ref list is metadata
+      // ABOUT history already dropped, so it must never compete for bytes with
+      // the history still being kept — it is refilled from the leftovers after
+      // the content bound is enforced (see the refill pass below).
+      omittedRefs: [] as PriorAttemptOmittedRef[],
+      omittedRefsTruncated: false,
       sourceCount: compilation.sourceCount,
       deduplicatedCount: compilation.deduplicatedCount,
       truncated: admitted < compilation.records.length,
@@ -448,8 +448,8 @@ export function buildBoundedPriorAttemptBrief(
     omission: {
       omittedRecords,
       omittedByAuthority: Object.fromEntries([...omitted].filter(([, count]) => count > 0)),
-      omittedRefs: [...omittedRefs.values()].slice(0, OMITTED_REF_CAP),
-      omittedRefsTruncated: omittedRefs.size > OMITTED_REF_CAP,
+      omittedRefs: [],
+      omittedRefsTruncated: false,
       sourceCount: compilation.sourceCount,
       deduplicatedCount: compilation.deduplicatedCount,
       truncated: omittedRecords > 0,
@@ -457,17 +457,33 @@ export function buildBoundedPriorAttemptBrief(
     estimatedTokens: 0,
     serializedChars: 0,
   };
-  const noteOmitted = (authority: PriorAttemptAuthority) => {
-    result.omission.omittedByAuthority[authority] = (result.omission.omittedByAuthority[authority] ?? 0) + 1;
+  // P-017: refs for records dropped by the admit loop, plus any the enforcement
+  // pass below removes. Held OUTSIDE `result` until the content bound is met.
+  const pendingRefs: PriorAttemptOmittedRef[] = [...omittedRefs.values()];
+  const noteOmitted = (entry: PriorAttemptBriefRecord) => {
+    result.omission.omittedByAuthority[entry.authority] =
+      (result.omission.omittedByAuthority[entry.authority] ?? 0) + 1;
     result.omission.omittedRecords += 1;
     result.omission.truncated = true;
+    // A record the FINAL bound removed is just as omitted as one the admit loop
+    // rejected, and just as much in need of a way back to its source.
+    if (!pendingRefs.some((ref) => ref.rawRef === entry.rawRef)) {
+      pendingRefs.push({
+        authority: entry.authority,
+        scope: entry.scope,
+        rawRef: entry.rawRef,
+        workItemId: entry.workItemId,
+        specId: entry.specId,
+        at: entry.at,
+      });
+    }
   };
   // Enforce the advertised bound against the FINAL serialized shape. Protected
   // facts keep lossless refs even when their inline detail is the part removed.
   while (briefSize(result) > maxChars && result.attempts.length > 0) {
     const removed = result.attempts.pop()!;
     result.rawRefs = result.rawRefs.filter((ref) => ref !== removed.rawRef);
-    noteOmitted(removed.authority);
+    noteOmitted(removed);
   }
   while (briefSize(result) > maxChars && result.residue.length > 0) {
     const entry = result.residue[result.residue.length - 1]!;
@@ -489,8 +505,27 @@ export function buildBoundedPriorAttemptBrief(
     } else {
       result.authority.pop();
       result.rawRefs = result.rawRefs.filter((ref) => ref !== entry.rawRef);
-      noteOmitted(entry.authority);
+      noteOmitted(entry);
     }
+  }
+  // P-017 refill, LAST and lowest-priority. Every omitted record should be
+  // retrievable, but never at the cost of a fact still being reported: a ref
+  // list admitted alongside content can outgrow the budget faster than content
+  // can be stripped, and the enforcement pass above then strips the protected
+  // canonical rows to pay for it — measured at 8.5KB of refs inside a 5KB
+  // budget, with every current-spec/decision/retraction row evicted. So refs
+  // buy only the bytes the content did not want, and any shortfall is
+  // DISCLOSED rather than silently shortening the list.
+  for (const ref of pendingRefs.slice(0, OMITTED_REF_CAP)) {
+    result.omission.omittedRefs.push(ref);
+    if (briefSize(result) > maxChars) {
+      result.omission.omittedRefs.pop();
+      result.omission.omittedRefsTruncated = true;
+      break;
+    }
+  }
+  if (pendingRefs.length > result.omission.omittedRefs.length) {
+    result.omission.omittedRefsTruncated = true;
   }
   result.serializedChars = briefSize(result);
   result.estimatedTokens = Math.ceil(result.serializedChars / 4);

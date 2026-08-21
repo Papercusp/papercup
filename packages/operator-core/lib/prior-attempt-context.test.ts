@@ -189,8 +189,34 @@ describe('buildBoundedPriorAttemptBrief omission drill-down (P-017)', () => {
     );
     const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxRecords: 1 });
     expect(brief!.omission.omittedRecords).toBe(259);
-    expect(brief!.omission.omittedRefs).toHaveLength(200);
+    // Whatever the cap costs, a shortened list must SAY it is shortened —
+    // an exhausted list read as complete is a false "that is all of it".
+    expect(brief!.omission.omittedRefs.length).toBeLessThanOrEqual(200);
+    expect(brief!.omission.omittedRefs.length).toBeLessThan(brief!.omission.omittedRecords);
     expect(brief!.omission.omittedRefsTruncated).toBe(true);
+  });
+
+  it('never spends a canonical authority row on the omitted-ref list', () => {
+    // REGRESSION GUARD. Carrying the refs inside the size-enforcement envelope
+    // let an 84-record history put 8.5KB of refs inside a 5KB budget; the
+    // enforcement pass then stripped attempts, residue AND every protected
+    // current-spec/decision/retraction row trying to fit, so the brief dropped
+    // the facts it exists to guarantee in order to describe the ones it lost.
+    const sources: PriorAttemptSource[] = [
+      source({ rawRef: 'plan#SPEC-1@3', authority: 'current-spec', scope: 'same-spec', text: 'Current contract.' }),
+      source({ rawRef: 'plan#D-008', authority: 'plan-decision', text: 'Canonical authority wins.' }),
+      source({ rawRef: 'WI-2#comment:9', authority: 'retraction', scope: 'same-spec', text: 'False premise: the reader was absent.' }),
+      ...Array.from({ length: 80 }, (_, i) =>
+        source({ rawRef: `WI-${i + 10}#comment:1`, text: `Attempt ${i} ${'x'.repeat(300)}` }),
+      ),
+    ];
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxChars: 5_000 })!;
+    expect(brief.authority.map((record) => record.rawRef)).toEqual([
+      'plan#SPEC-1@3', 'plan#D-008', 'WI-2#comment:9',
+    ]);
+    expect(brief.serializedChars).toBeLessThanOrEqual(5_000);
+    // Refs yielded instead — and said so.
+    expect(brief.omission.omittedRefsTruncated).toBe(true);
   });
 
   it('counts a record rejected twice — budget then envelope overflow — as one omission', () => {
@@ -200,8 +226,15 @@ describe('buildBoundedPriorAttemptBrief omission drill-down (P-017)', () => {
     const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxChars: 2_000 });
     const refs = brief!.omission.omittedRefs.map((entry) => entry.rawRef);
     expect(new Set(refs).size).toBe(refs.length);
-    expect(refs.length).toBe(brief!.omission.omittedRecords);
-    expect(Object.values(brief!.omission.omittedByAuthority).reduce((a, b) => a + b, 0)).toBe(refs.length);
+    // The AUTHORITY tally is the one that must equal the omission count; the
+    // ref list may legitimately be shorter (it yields bytes first) but then
+    // says so.
+    expect(Object.values(brief!.omission.omittedByAuthority).reduce((a, b) => a + b, 0)).toBe(
+      brief!.omission.omittedRecords,
+    );
+    if (refs.length < brief!.omission.omittedRecords) {
+      expect(brief!.omission.omittedRefsTruncated).toBe(true);
+    }
   });
 });
 
@@ -286,7 +319,13 @@ describe('resolvePriorAttemptRefs (P-017 raw drill-down)', () => {
 
   it('returns the FULL text a bounded brief had to clip', async () => {
     const brief = await getClaimTimePriorAttemptBrief({ ...pointer, budget: { maxTextChars: 100 } }, deps as never);
-    const clipped = brief!.attempts.find((record) => record.authority === 'checkpoint')!;
+    // The collector promotes a checkpoint whose body withdraws a premise to
+    // canonical `retraction` authority, so look across both tiers rather than
+    // assuming which one holds it.
+    const clipped = [...brief!.authority, ...brief!.attempts].find(
+      (record) => record.rawRef === 'WI-9#checkpoint',
+    )!;
+    expect(clipped).toBeDefined();
     expect(clipped.textTruncated).toBe(true);
     expect(clipped.text).not.toContain('False premise');
 
