@@ -388,7 +388,10 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
       { slug: materialized.slug, path: materialized.path },
       rollbackHarness,
     );
-    return fail(compensated.status, compensated.message);
+    return fail(
+      compensated instanceof MaterializeTemplateError ? compensated.status : 500,
+      compensated.message,
+    );
   }
 
   // Kick off the builder (best-effort): open a role chat in the new harness + send
