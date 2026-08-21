@@ -40,6 +40,17 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: false, id: 'c1', error: 'not_found' });
   });
 
+  it('points consult resolution at the typed close verb', async () => {
+    resolveM.mockResolvedValue({ error: 'consult_requires_typed_verb' } as never);
+    const b = await body({ id: 'consult-1', accepted_answer: 'answer' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'consult-1',
+      error: 'consult_requires_typed_verb',
+      hint: expect.stringContaining('consult:close'),
+    });
+  });
+
   it('on success reports state, capture target, and notified subscribers (keyed by id)', async () => {
     resolveM.mockResolvedValue({
       conversation: { id: 'c1', state: 'resolved' }, capture: 'mem0', delivered: 4,
