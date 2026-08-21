@@ -4,11 +4,13 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Agent insights — overview
-description: What an insight is, when to write one, how to read them.
+title: "Agent insights — overview"
+description: "What an insight is, when to write one, how to read them."
+type: Insight
+discovered: 2026-08-21
+status: active
 sidebar:
   order: 1
-type: Insight
 generated:
   by: agent
   at: 2026-05-20
@@ -36,8 +38,8 @@ Each insight answers three questions in three short sections:
 
 ## Contributing
 
-See [Agent policies §19](/internal/docs/agent-policies#19-agent-insights) for
-the full rule. Short version:
+See [authoring docs (PG-canonical)](/internal/docs/agent-insights/authoring-docs-pg-canonical)
+for the authoring mechanics. Short version:
 
 - Write one when you discover a non-obvious fact (PG quirk, library
   gotcha, subtle invariant, hidden cross-cutting rule).

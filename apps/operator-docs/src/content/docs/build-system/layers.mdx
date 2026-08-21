@@ -4,16 +4,19 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: TypeScript Layers
-description: The four-layer model — core / host / routes / client — and the inert tsconfig scaffold under apps/operator/layers/ that names them. The scaffold (Phase 6a) was dropped 2026-06-14; the boundary is now enforced physically by the package split.
+title: "TypeScript Layers"
+description: "The four-layer model — core / host / routes / client — and the inert tsconfig scaffold under apps/operator/layers/ that names them. The scaffold (Phase 6a) was dropped 2026-06-14; the boundary is now enforced physically by the package split."
+type: Insight
+discovered: 2026-08-21
+status: active
+plans:
+  - "host-architecture-2026-05-20-v2"
+  - "next-removal-2026-05-20"
+  - "endpoint-hono-elimination-2026-05-21"
+  - "route-audit-2026-05-20"
+  - "endpoint-route-migration-2026-05-20"
 sidebar:
   order: 3
-plans:
-  - host-architecture-2026-05-20-v2
-  - next-removal-2026-05-20
-  - endpoint-hono-elimination-2026-05-21
-  - route-audit-2026-05-20
-  - endpoint-route-migration-2026-05-20
 ---
 
 :::caution[Status — dropped 2026-06-14]
@@ -75,7 +78,7 @@ If you find yourself wanting to reach for `node:fs` in core code, the answer is 
 
 **What may NOT be imported:** React; client-only browser APIs.
 
-A handler that holds non-transport state (cookies, cost caps, feature locks, transcript persistence) is A1-class — it stays as a substantive shim and doesn't migrate to a `defineTool` projection. See [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the audit axes.
+A handler that holds non-transport state (cookies, cost caps, feature locks, transcript persistence) is A1-class — it stays as a substantive shim and doesn't migrate to a `defineTool` projection.
 
 ### client
 
@@ -119,4 +122,4 @@ In practice the handler moves (step 1) happened — `agent-tools/<feature>/<name
 
 The original trigger was: when ≥75% of the `app/api/*/route.ts` files had been audited (the Phase 4 milestone), or when an enforcement violation appeared that the scaffold should have caught. Neither happened on that path — Phase 4 was superseded by the endpoint-unification + hono-elimination arcs (`app/api` is now empty), and on 2026-06-14 the owner dropped Phase 6a outright (P-004). The tsconfigs stay as inert scaffolding.
 
-Sister doc: the [host-platform](https://github.com/papercusp/papercusp/tree/main/libs/host-platform) interface that `core` and `host` share, and [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the per-route audit rules.
+Sister doc: the [host-platform](https://github.com/papercusp/papercusp/tree/main/libs/host-platform) interface that `core` and `host` share.
