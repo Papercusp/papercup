@@ -502,7 +502,7 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that value is `invalid_input`; use `order:'updated'` for "the N most-recent plans") | a hand-written `harness_shared.harness_plans` query |
   | plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
   | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
-  | prose / full-text | `search:fulltext` · `search:semantic` | `ILIKE '%…%'` |
+  | prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
   | code graph / call sites | `gitnexus.query` (dot, not colon — a plugin-namespaced MCP tool, not the usual `server:verb` form) | a hand-walk of the tree, or raw `grep -r`/`rg` over source (grep gives file/line matches; gitnexus.query gives call chains + callers/callees) |
 
 ## Reaching for bash? These reads already have a tool
