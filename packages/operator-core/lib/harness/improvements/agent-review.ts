@@ -163,7 +163,9 @@ export async function enterAgentReview(
     preserveExisting: true,
     ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
   });
-  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, { unset: ['needsHuman'] });
+  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+    unset: ['needsHuman', 'needsOwnerAction'],
+  });
   if (!merged) throw new Error(`enterAgentReview: work item '${issue.id}' disappeared during enrollment`);
   if (issue.assignee) {
     const released = await deps.releaseIssue(issue.id, { expectedAssignee: issue.assignee });
@@ -185,7 +187,9 @@ export async function resubmitAgentReview(
     return { resubmitted: false, state: current, reason: `not-revision-requested:${current.status}` };
   }
   const next: AgentReviewState = { ...current, status: 'pending', round: current.round + 1 };
-  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, { unset: ['needsHuman'] });
+  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+    unset: ['needsHuman', 'needsOwnerAction'],
+  });
   if (!merged) throw new Error(`resubmitAgentReview: work item '${issue.id}' disappeared`);
   if (issue.assignee) {
     const released = await deps.releaseIssue(issue.id, { expectedAssignee: input.submittedBy });
@@ -267,7 +271,9 @@ export async function reconcileAgentReviewGrade(
     if (!feedback) throw new Error('agent-review-feedback-required');
     const next: AgentReviewState = { ...current, status: 'revision-requested' };
     const changed = current.status !== next.status;
-    const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, { unset: ['needsHuman'] });
+    const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+      unset: ['needsHuman', 'needsOwnerAction'],
+    });
     if (!merged) throw new Error(`agent review could not persist revision state on '${issue.id}'`);
     const commentAdded = await ensureComment(issue, revisionComment(current.round, grade, feedback, gradedBy), gradedBy, deps);
     if (changed) {
@@ -292,7 +298,9 @@ export async function reconcileAgentReviewGrade(
 
   const next: AgentReviewState = { ...current, status: 'approved' };
   const changed = current.status !== next.status;
-  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, { unset: ['needsHuman'] });
+  const merged = await deps.mergeIssuePayload(issue.id, { agentReview: next }, {
+    unset: ['needsHuman', 'needsOwnerAction'],
+  });
   if (!merged) throw new Error(`agent review could not persist approval state on '${issue.id}'`);
   await ensureComment(issue, approvalComment(current.round, grade, gradedBy), gradedBy, deps);
   if (issue.assignee) {

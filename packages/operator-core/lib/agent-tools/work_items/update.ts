@@ -35,7 +35,6 @@ import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
  */
 const PAYLOAD_FLAG_KEYS = {
   needsTwoMachineRig: 'needs_2_machine_rig',
-  needsHuman: 'needsHuman',
 } as const;
 
 type PayloadFlagArgs = { needsTwoMachineRig?: boolean; needsHuman?: boolean };
@@ -121,7 +120,19 @@ function payloadFlagPatch(it: PayloadFlagArgs): Record<string, unknown> {
     const v = (it as Record<string, unknown>)[arg];
     if (v !== undefined) patch[key] = v;
   }
+  // P-005: `needsHuman` remains the compatibility-shaped public INPUT, but new
+  // positive writes belong to the strictly named owner-capability path. The old
+  // key is migration input only; no live writer may keep growing that cohort.
+  if (it.needsHuman === true) patch.needsOwnerAction = true;
   return patch;
+}
+
+/** Keys cleared by the compatibility `needsHuman` input. True moves a row off the
+ * legacy key while setting needsOwnerAction; false re-admits it from either era. */
+function payloadFlagUnset(it: PayloadFlagArgs): string[] {
+  if (it.needsHuman === true) return ['needsHuman'];
+  if (it.needsHuman === false) return ['needsHuman', 'needsOwnerAction'];
+  return [];
 }
 
 /** Whether the caller asked for a genuinely PIPELINE-OWNED column edit (issue-family only). */
@@ -206,17 +217,14 @@ const FIELDS = {
     .describe(
       'WI-2796: mark (true) or unmark (false) this item as requiring a live ≥2-machine / Hetzner federation rig to work — scheduler:get_next / claim_next then exclude it from single-box self-select instead of letting single-box agents claim-then-release it repeatedly (EI-18151406094317010). Sets payload.needs_2_machine_rig.',
     ),
-  // work-item-claimability-clarity-2026-07-20 P-004: the RE-ADMIT lever. Sets/clears
-  // payload.needsHuman — the SAME human-review gate improvements:resolve sets when routing an
-  // item to a human. Clearing it (false) re-admits an over-flagged agent-fixable bug back into
-  // scheduler:get_next / claim_next self-select — the canonical, tool-mediated replacement for the
-  // raw `mergeIssuePayload(id,{needsHuman:false})` SQL a re-admit used to require. Applied via
-  // mergeWorkItemPayload (not a real column), exactly like needsTwoMachineRig above.
+  // Compatibility input retained for callers while the persisted route is split. `true`
+  // writes payload.needsOwnerAction and removes legacy payload.needsHuman; `false` unsets
+  // BOTH keys so rows from either era can be re-admitted without raw SQL.
   needsHuman: z
     .boolean()
     .optional()
     .describe(
-      'work-item-claimability-clarity P-004: mark (true) or CLEAR (false) payload.needsHuman — the human-review gate improvements:resolve sets. Clearing re-admits an over-flagged agent-fixable bug into scheduler:get_next / claim_next self-select (the re-admit lever — no raw SQL). Reserve true for a GENUINE human-capability need (owner-decision / credential / physical-device), not an auto-implement failure.',
+      'Compatibility input for the owner-action gate: true writes payload.needsOwnerAction=true and removes legacy payload.needsHuman; false unsets BOTH keys and re-admits the row. Reserve true for a genuine credential, physical-device, or external-service action only — product decisions use agent review.',
     ),
 };
 
@@ -271,7 +279,7 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig and self-select eligibility (WI-2796); needsHuman toggles the issue review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig; compatibility input needsHuman:true writes the strict payload.needsOwnerAction gate, while false clears both legacy and strict keys. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
     when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].',
     notWhen: 'Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.',
@@ -401,11 +409,13 @@ export default defineTool({
             );
             if (merged) item = merged;
           }
-          // WI-5689: needsHuman is likewise not a real column — apply it the same way,
-          // via mergeWorkItemPayload (re-fetches so the echoed `item` reflects the
-          // write, not a stale pre-merge snapshot).
+          // P-005: keep the public compatibility input while writing only the strict
+          // owner-action key. False unsets both eras; true also removes the legacy key.
           if (it.needsHuman !== undefined) {
-            const merged = await mergeWorkItemPayload(it.id, { needsHuman: it.needsHuman }, { harness: it.harness });
+            const merged = await mergeWorkItemPayload(it.id, payloadFlagPatch({ needsHuman: it.needsHuman }), {
+              harness: it.harness,
+              unset: payloadFlagUnset({ needsHuman: it.needsHuman }),
+            });
             if (merged) item = merged;
           }
           // EI-20189734665644353: an existing item needs a member-writable plan stamp before
@@ -441,7 +451,12 @@ export default defineTool({
             if (harnessForCheck) {
               try {
                 const [floor] = await explainIssueClaimFloors(harnessForCheck, [it.id]);
-                if (floor && (floor.refusedBy === 'observation-lane' || floor.refusedBy === 'needs-human')) {
+                if (
+                  floor &&
+                  (floor.refusedBy === 'observation-lane' ||
+                    floor.refusedBy === 'legacy-needs-human' ||
+                    floor.refusedBy === 'needs-owner-action')
+                ) {
                   claimabilityWarning =
                     `⚠ severity set to '${it.severity}', but this item is structurally UNCLAIMABLE and will stay ` +
                     `invisible to scheduler:get_next / claim_next regardless: ${floor.detail}. Raising severity ` +
@@ -515,6 +530,7 @@ export default defineTool({
             ...payloadFlagPatch(it),
             ...planItemPayloadPatch(it.plan_item, planHarness),
           };
+          const flagUnset = payloadFlagUnset(it);
           // EI-20578964155166663: a clear is an UNSET, and planItemPayloadPatch emits
           // nothing for it — so without this the feature-family path would silently
           // no-op `plan_item: null` while reporting ok, the exact shape of miss this
@@ -534,10 +550,12 @@ export default defineTool({
               /* leave the coverage edge; the stamp itself still clears below */
             }
           }
-          if (Object.keys(flagPatch).length > 0 || clearingStamp) {
+          if (Object.keys(flagPatch).length > 0 || flagUnset.length > 0 || clearingStamp) {
             const merged = await mergeWorkItemPayload(it.id, flagPatch, {
               harness: it.harness,
-              ...(clearingStamp ? { unset: ['plan_item'] } : {}),
+              ...((clearingStamp || flagUnset.length > 0)
+                ? { unset: [...flagUnset, ...(clearingStamp ? ['plan_item'] : [])] }
+                : {}),
             });
             if (merged) {
               if (clearingStamp) await unlinkPlanItemCoverage(it.id, outgoing, planHarness);
@@ -555,7 +573,10 @@ export default defineTool({
                 ok: false as const,
                 id: it.id,
                 error:
-                  `work_item '${it.id}' is feature-family: the admission flag(s) ${Object.keys(flagPatch).join(', ')} WERE applied, ` +
+                  `work_item '${it.id}' is feature-family: the admission flag(s) ${[
+                    ...Object.keys(flagPatch),
+                    ...flagUnset.map((key) => `unset:${key}`),
+                  ].join(', ')} WERE applied, ` +
                   `but its other fields are owned by the pipeline — re-send the field edit without them.`,
               };
             }

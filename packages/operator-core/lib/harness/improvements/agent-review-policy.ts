@@ -67,6 +67,7 @@ export function agentReviewEligibility(candidate: AgentReviewCandidate):
   if (candidate.kind !== 'change' && !isFeature) return { eligible: false, reason: 'not-review-kind' };
   if (candidate.origin === 'remote') return { eligible: false, reason: 'remote-owned' };
   if (payload.lane === 'observation') return { eligible: false, reason: 'observation' };
+  if (payload.needsOwnerAction === true) return { eligible: false, reason: 'owner-capability' };
 
   const directCapability = payload.humanCapability as ExternalBlockerCapability | undefined;
   if (directCapability && STRICT_OWNER_CAPABILITIES.has(directCapability)) {
