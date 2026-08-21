@@ -456,6 +456,16 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       last_activity_ts TIMESTAMPTZ DEFAULT clock_timestamp() NOT NULL,
       PRIMARY KEY (workspace_id, harness_slug, plan_slug, item_id)
     );
+    -- The watchdog recovery-window floor is unconditional in the claim SQL.
+    -- Keep the minimal read shape here: the rig does not exercise the watchdog
+    -- writer, but claim attempts must be able to observe an empty tick history.
+    CREATE TABLE harness_shared.watchdog_ticks (
+      id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+      workspace_id text NOT NULL,
+      tick_at timestamptz NOT NULL DEFAULT now(),
+      status text NOT NULL DEFAULT 'ran',
+      known_open_keys text[]
+    );
   `);
 
   // WI-1644: the writeToPg projection (harness-features.ts) INSERTs a wider
@@ -511,6 +521,11 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     '195-work-item-redundancy.sql',
     // Signal provenance (frontier P-002, migration 241): ISSUE_COLS selects signal_origin.
     '241-signal-provenance-origin.sql',
+    // Migration 675 normalizes the canonical plan content into plan_items /
+    // plan_decisions. The claim-floor path reads plan_items even when a rig test
+    // seeds no plan-linked rows, so omitting this derived relation makes every
+    // claim attempt fail with 42P01 before the test reaches its assertion.
+    '675-normalize-plan-items-decisions.sql',
   ]) {
     // EI-6887: shared strip-psql-meta-commands-and-txn-wrapper + apply helper.
     await applyMigrationForTest(sql, join(SQL_DIR, file));
@@ -854,6 +869,16 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       .join('\n'),
   );
 
+  // Migration 645 persists outbox poison-row quarantine. The fleet monitor
+  // deliberately excludes quarantined rows from depth/age SLOs and its test
+  // seeds one, so keep the fixture on the real column shape.
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '645-outbox-quarantine-persist.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
+      .join('\n'),
+  );
+
   // Migration 495 added drained_log_key so outbox-drain can attribute each drained
   // row to the live own-log key and detect prior-era orphan tails. The composition
   // rig uses a sliced baseline/migration subset, so keep the fixture schema aligned
@@ -887,6 +912,16 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
     readFileSync(join(SQL_DIR, '685-substrate-merge-cursor-apply-binding.sql'), 'utf8')
       .split('\n')
       .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l))
+      .join('\n'),
+  );
+
+  // Migration 854 adds the explicit lifecycle/identity columns selected by
+  // scanPeerFederationSilence. Without it, that monitor catches the undefined
+  // column and reports scan-failed instead of the honest no-remote-log state.
+  await sql.unsafe(
+    readFileSync(join(SQL_DIR, '854-substrate-merge-cursor-peer-lifecycle.sql'), 'utf8')
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('\\') && !/^(BEGIN|COMMIT);\s*$/i.test(l.trim()))
       .join('\n'),
   );
 
