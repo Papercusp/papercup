@@ -27,9 +27,14 @@
  * re-armed by editing a call site (enforcement: structural).
  *
  * Bounded + fail-soft, mirroring cargo-test-action / p2p-perf-actions: the child is its
- * own process-group leader so a timeout SIGTERM/SIGKILLs the whole tree (npx → node →
+ * own process-group leader so a timeout SIGTERM/SIGKILLs the whole tree (node →
  * tree-sitter workers), never just the wrapper, and a wedged analyze can therefore never
  * wedge the routines tick.
+ *
+ * RESOURCE-CAPPED (P-004): the child runs the PINNED gitnexus CLI under this process's
+ * own node with an explicit heap/semi-space/stack budget — see GITNEXUS_ANALYZE_HEAP_MB
+ * for the measured hazard (gitnexus self-grants 0.75x of a cgroup it does not own alone)
+ * and analyzeEnv/analyzeNodeArgs for why the budget is split across env and argv.
  */
 import { spawn, execFile } from 'node:child_process';
 import * as os from 'node:os';
@@ -216,7 +221,74 @@ export function decideReindex(i: ReindexDecisionInput): ReindexDecision {
  * a caller's choice — see this module's header for what happens without it.
  */
 export function buildAnalyzeArgs(root: string, repoName: string): string[] {
-  return ['--yes', 'gitnexus', 'analyze', root, '--skip-agents-md', '--name', repoName];
+  return ['analyze', root, '--skip-agents-md', '--name', repoName];
+}
+
+/**
+ * P-004 — the environment that CAPS the analyze child (see GITNEXUS_ANALYZE_HEAP_MB).
+ *
+ * Setting `--max-old-space-size` here is load-bearing in a way that is easy to miss:
+ * gitnexus's `ensureHeap()` returns EARLY when NODE_OPTIONS already carries that flag
+ * ("A user-supplied NODE_OPTIONS heap wins (no re-exec)" -- its own comment, and the
+ * override its OOM error text tells operators to use). So this both applies our cap
+ * AND suppresses the self-re-exec that would otherwise replace it with 0.75x-cgroup.
+ *
+ * Because that early return skips the WHOLE re-exec, every flag gitnexus would have
+ * applied there is now ours to carry. Semi-space is legal in NODE_OPTIONS and is set
+ * here; --stack-size is NOT (Node 24+) and travels as argv in analyzeNodeArgs. Dropping
+ * either would trade an OOM risk for a GC-churn or stack-overflow regression, and a
+ * mid-analyze crash is not a cheap failure here -- it leaves the orphan shadow/WAL
+ * residue that D-016 showed is unrecoverable by gitnexus itself.
+ *
+ * An operator-supplied heap is honoured untouched: this cap exists to stop gitnexus
+ * granting ITSELF the whole shared cgroup, not to override a human who chose a value.
+ */
+export function analyzeEnv(
+  base: NodeJS.ProcessEnv,
+  heapMb: number = GITNEXUS_ANALYZE_HEAP_MB,
+  semiSpaceMb: number = GITNEXUS_ANALYZE_SEMI_SPACE_MB,
+): NodeJS.ProcessEnv {
+  const existing = (base.NODE_OPTIONS ?? '').trim();
+  if (/--max-old-space-size/.test(existing)) return { ...base };
+  const semi = /--max-semi-space-size/.test(existing) ? '' : ` --max-semi-space-size=${semiSpaceMb}`;
+  return {
+    ...base,
+    NODE_OPTIONS: `${existing} --max-old-space-size=${heapMb}${semi}`.trim(),
+  };
+}
+
+/**
+ * P-004 — argv for spawning the PINNED gitnexus CLI under our own node.
+ *
+ * Two reasons this no longer goes through `npx`:
+ *   1. npx does not forward node flags to the target, and --stack-size can ONLY be an
+ *      argv flag (illegal in NODE_OPTIONS on Node 24+), so the cap is not expressible
+ *      through the npx form at all.
+ *   2. P-003 pinned an exact operator-owned gitnexus for precisely this reason and
+ *      `canaryBin()` already reads it; the analyze spawn was still resolving `gitnexus`
+ *      through ambient npx, so the two halves of this module disagreed about which
+ *      binary "gitnexus" means.
+ *
+ * Fewer wrapper layers also makes the timeout kill STRICTER, not looser: the old chain
+ * was npx -> sh -c -> node -> re-exec'd node, and only the process-group kill reached
+ * the leaf. Here the child IS the worker.
+ */
+export function analyzeNodeArgs(
+  cliPath: string,
+  root: string,
+  repoName: string,
+  stackKb: number = GITNEXUS_ANALYZE_STACK_KB,
+): string[] {
+  return [`--stack-size=${stackKb}`, cliPath, ...buildAnalyzeArgs(root, repoName)];
+}
+
+/** The pinned gitnexus CLI entrypoint. `canaryBin()` resolves the same install; this
+ *  resolves the JS entry node executes directly rather than the .bin shim. */
+export function analyzeCliPath(): string {
+  return (
+    process.env.PAPERCUSP_GITNEXUS_CLI ??
+    path.join(os.homedir(), '.papercusp', 'vendor', 'gitnexus', 'node_modules', 'gitnexus', 'dist', 'cli', 'index.js')
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -546,11 +618,18 @@ export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: nu
     // detached ⇒ own process-group leader, so a timeout kills the whole tree
     // (npx → node → tree-sitter workers), never just the wrapper. Same precedent as
     // cargo-test-action.ts / p2p-perf-actions.ts.
-    const child = spawn(process.env.GITNEXUS_NPX_BIN ?? 'npx', buildAnalyzeArgs(root, repoName), {
-      cwd: root,
-      env: process.env,
-      detached: true,
-    });
+    // P-004: run the PINNED cli under OUR node, with the resource cap applied. The
+    // node binary is this process's own (process.execPath), so the indexer cannot end
+    // up on a different runtime than the operator that supervises it.
+    const child = spawn(
+      process.env.GITNEXUS_NODE_BIN ?? process.execPath,
+      analyzeNodeArgs(analyzeCliPath(), root, repoName),
+      {
+        cwd: root,
+        env: analyzeEnv(process.env),
+        detached: true,
+      },
+    );
     let stdout = '';
     let stderr = '';
     let timedOut = false;

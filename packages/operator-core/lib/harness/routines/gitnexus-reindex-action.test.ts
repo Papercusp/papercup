@@ -13,6 +13,12 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildAnalyzeArgs,
+  analyzeEnv,
+  analyzeNodeArgs,
+  analyzeCliPath,
+  GITNEXUS_ANALYZE_HEAP_MB,
+  GITNEXUS_ANALYZE_SEMI_SPACE_MB,
+  GITNEXUS_ANALYZE_STACK_KB,
   decideReindex,
   readRegistryEntry,
   shouldSkipForHive,
@@ -62,6 +68,170 @@ describe('buildAnalyzeArgs', () => {
 
   it('does not pass --force (that would defeat any staleness short-circuit analyze does)', () => {
     expect(buildAnalyzeArgs('/repo', 'x')).not.toContain('--force');
+  });
+});
+
+// ===========================================================================
+// P-004 — ANALYZE RESOURCE CAP.
+//
+// The cap is split across TWO surfaces for a reason that is invisible from either one
+// alone, so each half is pinned here: the heap/semi-space go in NODE_OPTIONS (which
+// ALSO suppresses gitnexus's self-re-exec), and --stack-size can only be argv because
+// Node 24+ refuses it in NODE_OPTIONS. Get either half wrong and the failure is silent
+// — an uncapped 30 GiB heap, or a crash-on-startup, or a lost stack budget.
+//
+// Every block carries a CALIBRATION case: an assertion that fails if the mechanism does
+// nothing at all, so a suite of "was not overridden" assertions cannot pass green
+// against a function that never sets anything.
+// ===========================================================================
+
+describe('analyzeEnv — the heap cap (P-004)', () => {
+  it('caps the old-space heap at the measured budget', () => {
+    const env = analyzeEnv({}, GITNEXUS_ANALYZE_HEAP_MB);
+    expect(env.NODE_OPTIONS).toContain(`--max-old-space-size=${GITNEXUS_ANALYZE_HEAP_MB}`);
+  });
+
+  it('SUPPRESSES gitnexus self-re-exec by setting the flag it early-returns on', () => {
+    // Load-bearing, and the reason this is an env var rather than an argv flag:
+    // gitnexus's ensureHeap() returns early iff NODE_OPTIONS matches this exact
+    // substring. Without it, gitnexus re-execs and replaces our cap with 0.75x of a
+    // cgroup it shares with every other routine.
+    expect(analyzeEnv({}).NODE_OPTIONS).toMatch(/--max-old-space-size/);
+  });
+
+  it('preserves the semi-space tuning gitnexus would have applied to itself', () => {
+    // Suppressing the re-exec means we inherit responsibility for the flags it carried.
+    expect(analyzeEnv({}).NODE_OPTIONS).toContain(
+      `--max-semi-space-size=${GITNEXUS_ANALYZE_SEMI_SPACE_MB}`,
+    );
+  });
+
+  it('NEVER emits --stack-size into NODE_OPTIONS (Node 24+ exits 9 on it)', () => {
+    // Verified on node v25.9.0: "--stack-size= is not allowed in NODE_OPTIONS".
+    // Leaking it here would not degrade the cap, it would fail every analyze at startup.
+    expect(analyzeEnv({}).NODE_OPTIONS).not.toContain('--stack-size');
+    expect(analyzeEnv({ NODE_OPTIONS: '--stack-size=4096' }).NODE_OPTIONS).toBeDefined();
+  });
+
+  it('honours an operator-supplied heap instead of overriding it', () => {
+    const env = analyzeEnv({ NODE_OPTIONS: '--max-old-space-size=4096' });
+    expect(env.NODE_OPTIONS).toBe('--max-old-space-size=4096');
+    expect(env.NODE_OPTIONS).not.toContain(String(GITNEXUS_ANALYZE_HEAP_MB));
+  });
+
+  it('CALIBRATION: a base with no heap DOES get one — so "honours" above means something', () => {
+    // Without this, an analyzeEnv() that returned its input unchanged would pass every
+    // "was not overridden" assertion in this block.
+    expect(analyzeEnv({}).NODE_OPTIONS).toContain(`--max-old-space-size=${GITNEXUS_ANALYZE_HEAP_MB}`);
+  });
+
+  it('keeps unrelated NODE_OPTIONS content and unrelated env vars intact', () => {
+    const env = analyzeEnv({ NODE_OPTIONS: '--enable-source-maps', PATH: '/usr/bin' });
+    expect(env.NODE_OPTIONS).toContain('--enable-source-maps');
+    expect(env.NODE_OPTIONS).toContain(`--max-old-space-size=${GITNEXUS_ANALYZE_HEAP_MB}`);
+    expect(env.PATH).toBe('/usr/bin');
+  });
+
+  it('does not mutate the caller-supplied env object', () => {
+    const base: NodeJS.ProcessEnv = {};
+    analyzeEnv(base);
+    expect(base.NODE_OPTIONS).toBeUndefined();
+  });
+});
+
+describe('analyzeNodeArgs — the stack budget + argv order (P-004)', () => {
+  it('passes --stack-size as a real argv flag', () => {
+    expect(analyzeNodeArgs('/cli.js', '/repo', 'papercusp')).toContain(
+      `--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`,
+    );
+  });
+
+  it('puts every node flag BEFORE the script path', () => {
+    // node stops parsing its own flags at the first non-flag argument, so a --stack-size
+    // that lands after the cli path is silently forwarded to gitnexus as a no-op
+    // argument instead of raising the stack. Nothing fails loudly when this is wrong.
+    const args = analyzeNodeArgs('/cli.js', '/repo', 'papercusp');
+    expect(args.indexOf(`--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`)).toBeLessThan(
+      args.indexOf('/cli.js'),
+    );
+  });
+
+  it('still carries the mandatory --skip-agents-md through the node wrapper', () => {
+    // The guard from this module's header must survive the npx -> node refactor: it is
+    // the difference between a maintenance job and one that rewrites CLAUDE.md.
+    expect(analyzeNodeArgs('/cli.js', '/repo', 'papercusp')).toContain('--skip-agents-md');
+  });
+
+  it('runs the pinned cli path it is handed, not an ambient PATH lookup', () => {
+    const args = analyzeNodeArgs('/pinned/cli.js', '/repo', 'x');
+    expect(args).toContain('/pinned/cli.js');
+    expect(args).not.toContain('npx');
+    expect(args).not.toContain('--yes');
+  });
+
+  it('resolves a pinned absolute cli path, never a bare binary name', () => {
+    const p = analyzeCliPath();
+    expect(p.startsWith('/')).toBe(true);
+    expect(p).toContain('gitnexus');
+  });
+});
+
+describe('CONTROLS — the two cap guards are falsifiable (P-004)', () => {
+  // Deliberately-WRONG implementations, kept permanently. Without these, the guards
+  // above pass identically against code that never sets anything, and "69 passing"
+  // would say nothing about whether either trap is actually detected.
+
+  /** WRONG: node stops parsing its flags at the first non-flag arg, so this --stack-size
+   *  is silently handed to gitnexus as a no-op instead of raising the stack. */
+  const flagAfterScript = (cli: string, root: string, name: string): string[] => [
+    cli,
+    `--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`,
+    ...buildAnalyzeArgs(root, name),
+  ];
+
+  /** WRONG: leaks --stack-size into NODE_OPTIONS, which Node 24+ refuses at startup. */
+  const envLeakingStackSize = (): NodeJS.ProcessEnv => ({
+    NODE_OPTIONS: `--max-old-space-size=${GITNEXUS_ANALYZE_HEAP_MB} --stack-size=${GITNEXUS_ANALYZE_STACK_KB}`,
+  });
+
+  it('the argv-ORDER assertion distinguishes correct from wrong', () => {
+    const good = analyzeNodeArgs('/cli.js', '/repo', 'x');
+    const bad = flagAfterScript('/cli.js', '/repo', 'x');
+    const flag = `--stack-size=${GITNEXUS_ANALYZE_STACK_KB}`;
+    expect(good.indexOf(flag)).toBeLessThan(good.indexOf('/cli.js'));
+    expect(bad.indexOf(flag)).toBeGreaterThan(bad.indexOf('/cli.js'));
+  });
+
+  it('the NODE_OPTIONS assertion distinguishes correct from wrong', () => {
+    expect(analyzeEnv({}).NODE_OPTIONS).not.toContain('--stack-size');
+    expect(envLeakingStackSize().NODE_OPTIONS).toContain('--stack-size');
+  });
+});
+
+describe('the cap VALUE is defensible against what was measured (P-004)', () => {
+  // Measured live 2026-08-21 by external /proc sampling of a full analyze over
+  // 19,479 files: peak worker RSS 10.42 GiB, peak whole-tree RSS 10.59 GiB.
+  const MEASURED_PEAK_GIB = 10.59;
+  const BG_HOST_CGROUP_GIB = 40;
+
+  it('clears the measured peak with real headroom', () => {
+    expect(GITNEXUS_ANALYZE_HEAP_MB / 1024).toBeGreaterThan(MEASURED_PEAK_GIB * 1.25);
+  });
+
+  it('is genuinely a CAP — below what gitnexus would self-grant (0.75x the cgroup)', () => {
+    // If this ever inverts, the whole mechanism is inert: gitnexus's own number would
+    // be the smaller one and our "cap" would be raising the ceiling, not lowering it.
+    const selfGrantedMb = 0.75 * BG_HOST_CGROUP_GIB * 1024;
+    expect(GITNEXUS_ANALYZE_HEAP_MB).toBeLessThan(selfGrantedMb);
+  });
+
+  it('leaves room for the co-tenants sharing the cgroup', () => {
+    // The hazard is not analyze dying, it is the cgroup OOM killer reaping bg-host.
+    // Worst-case analyze (heap + native overhead) plus observed co-tenant usage must
+    // stay under the cap.
+    const worstCaseAnalyzeGib = GITNEXUS_ANALYZE_HEAP_MB / 1024 + 4;
+    const observedCoTenantsGib = 11.6;
+    expect(worstCaseAnalyzeGib + observedCoTenantsGib).toBeLessThan(BG_HOST_CGROUP_GIB);
   });
 });
 
