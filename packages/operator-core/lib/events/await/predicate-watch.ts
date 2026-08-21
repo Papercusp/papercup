@@ -39,7 +39,7 @@ import {
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
 import { listCellsUnchecked, canReadCell } from '../../cell-registry';
-import { assertLifecycleBinding } from './store';
+import { assertLifecycleBinding, withLifecycleBindingProvenance } from './store';
 import type { LifecycleBinding } from './types';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -833,7 +833,7 @@ export async function evalPredicateWatch(
       const isChanged = row.op === 'changed';
       await emitAwaitedEvent({
         key: row.eventKey,
-        payload: {
+        payload: withLifecycleBindingProvenance({
           observed,
           predicate: {
             tool: row.tool,
@@ -846,7 +846,7 @@ export async function evalPredicateWatch(
           // from the same resolver at the moment of acting. Omitted when no
           // registered cell matches or the reader is out of its audience.
           ...(reread ? { reread } : {}),
-        },
+        }, row.boundTo),
         summary: `predicate matched: ${row.tool} ${row.path} ${row.op}${
           isChanged
             ? ` from ${String(JSON.stringify(row.lastValue)).slice(0, 200)}`
@@ -867,10 +867,10 @@ export async function evalPredicateWatch(
       // The waiter must wake, not dangle — fire the key with an error payload.
       await emitAwaitedEvent({
         key: row.eventKey,
-        payload: {
+        payload: withLifecycleBindingProvenance({
           predicateError: msg.slice(0, 500),
           predicate: { tool: row.tool, path: row.path, op: row.op, value: row.value },
-        },
+        }, row.boundTo),
         summary: `predicate watch DEACTIVATED after ${row.consecutiveErrors + 1} consecutive errors: ${msg.slice(0, 200)}`,
         source: `predicate-watch:${row.ownerId}`,
       });
