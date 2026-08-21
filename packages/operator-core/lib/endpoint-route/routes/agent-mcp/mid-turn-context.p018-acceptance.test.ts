@@ -119,7 +119,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-su' }) }));
 // No hive resolution — an empty registry keeps the pull to user + harness.
-vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: async () => ({ projects: [] }) }));
+vi.mock('../../../harness-registry', async (orig) => ({
+  ...(await orig<typeof import('../../../harness-registry')>()), loadHarnessRegistry: async () => ({ projects: [] }) }));
 // Every PG read on the injection path is best-effort and degrades to "no
 // filtering" on an empty result; the epoch ledger is faked separately below
 // because this replay depends on it actually WORKING.

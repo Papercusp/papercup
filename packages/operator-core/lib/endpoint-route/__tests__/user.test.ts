@@ -35,7 +35,8 @@ vi.mock('../../memory/learning', () => ({
 }));
 vi.mock('../../memory/reembed', () => ({ reembedMemories: vi.fn(async () => ({ from: 'a', to: 'b', count: 0 })) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
-vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
+vi.mock('../../harness-registry', async (orig) => ({
+  ...(await orig<typeof import('../../harness-registry')>()), loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
   registeredMemoryBackends: vi.fn(() => ['fake']),

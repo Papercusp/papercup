@@ -32,7 +32,8 @@ vi.mock('../../../memory/list-user-memories', () => ({ listUserMemories: vi.fn(a
 vi.mock('../../../memory/feedback', () => ({ recordFeedback: vi.fn(async () => {}) }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
-vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
+vi.mock('../../../harness-registry', async (orig) => ({
+  ...(await orig<typeof import('../../../harness-registry')>()), loadHarnessRegistry: vi.fn(async () => ({ projects: [] })) }));
 
 import routes from './memory';
 import { getMemoryBackend } from '../../../memory/backend';

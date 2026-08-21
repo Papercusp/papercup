@@ -12,14 +12,16 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('@papercusp/flags/server', () => ({
+vi.mock('@papercusp/flags/server', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/flags/server')>()),
   setFlag: vi.fn(),
   setFlagOverride: vi.fn(),
   getFlag: vi.fn(),
 }));
 vi.mock('../../../flag-bus', () => ({ publishFlagChange: vi.fn() }));
 vi.mock('../../../flag-audit', () => ({ recordFlagAudit: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('@papercusp/flags', () => ({ ALL_FLAG_KEYS: ['papercusp-the-hive', 'papercusp-accept-delegated-seats'] }));
+vi.mock('@papercusp/flags', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/flags')>()), ALL_FLAG_KEYS: ['papercusp-the-hive', 'papercusp-accept-delegated-seats'] }));
 
 import { setFlag, setFlagOverride, getFlag } from '@papercusp/flags/server';
 import route from './set';

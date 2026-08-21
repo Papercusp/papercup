@@ -20,7 +20,8 @@ const generateBlueprintForClone = vi.fn();
 const commitInitialHiveRepo = vi.fn();
 const migrateConfigJsonToInstance = vi.fn();
 
-vi.mock('../../../harness-registry', () => ({
+vi.mock('../../../harness-registry', async (orig) => ({
+  ...(await orig<typeof import('../../../harness-registry')>()),
   loadHarnessRegistry: (...a: unknown[]) => loadHarnessRegistry(...a),
   mutateHarnessRegistry: (...a: unknown[]) => mutateHarnessRegistry(...a),
   isEphemeralForeignProject: () => false,

@@ -87,7 +87,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   }),
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('../../../harness-registry', () => ({ loadHarnessRegistry: async () => ({ projects: [] }) }));
+vi.mock('../../../harness-registry', async (orig) => ({
+  ...(await orig<typeof import('../../../harness-registry')>()), loadHarnessRegistry: async () => ({ projects: [] }) }));
 vi.mock('../../../harness-effective-config', () => ({ readEffectiveHarnessConfig: async () => ({}) }));
 vi.mock('../../../harness-prompt-overrides', () => ({ getPromptOverride: async () => null }));
 vi.mock('../../../memory/injection', () => ({ buildMemoryContextBlock: async () => null }));
