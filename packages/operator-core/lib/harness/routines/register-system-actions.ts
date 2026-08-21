@@ -292,6 +292,10 @@ import './p2p-perf-actions';
 // `system:scout-cycle` handler, so arming it silently no-op'd forever. register-scout-action.ts
 // now self-registers it, reusing the SAME `productionScoutRunner` blender:cycle already runs.
 import '../../scout/register-scout-action';
+// `system:dream-cycle` — REM recombination P-005. Two inactive per-pot
+// routines (manual control and the separate default-OFF auto setting) share
+// this replay-safe, governor-bounded action.
+import '../../dream/dream-cycle-action';
 import './session-dir-gc-action';
 // `system:telemetry-retention` — daily prune of the unbounded high-volume
 // diagnostic tables (route_invocations/tool_invocations); infra-audit R2 (plan
@@ -559,3 +563,7 @@ import './gitnexus-reindex-action';
 // is precondition-gated (refuses rather than writing when the pinned CLI or `ptool`
 // cannot be resolved) and writes only the artifact path an operator supplied.
 import './project-history-refresh-action';
+// unshipped-plans-live-reconciliation-audit-2026-08-20 P-005 — registered on the
+// canonical system-action seam but intentionally has NO seeded cadence. The
+// purpose-built plans:audit-unshipped tool fires the same implementation on demand.
+import './unshipped-plans-audit-action';

@@ -32,14 +32,19 @@
  */
 import type { Sql } from 'postgres';
 import { setAutoloop } from '../gym/control-plane';
+import { dreamLoopId, dreamRegistrationInput } from '../dream/dream-governor';
 import { gymLoopId, scoutLoopId } from '../learning-governor/core';
-import { deleteLearningLoop } from '../learning-governor/store';
+import { deleteLearningLoop, getLearningLoop, registerLearningLoop } from '../learning-governor/store';
 import { isWorkspaceCoordinationOn, workspaceBrainScopeKey } from '../workspace-brain-scope';
 
 /** The scout routine name a per-pot loop fires from (under the pot install_slug). */
 export const POT_SCOUT_ROUTINE_NAME = 'scout-cycle';
 /** The routines target_role the scout routine ticks. */
 export const SCOUT_CYCLE_TARGET_ROLE = 'system:scout-cycle';
+export const POT_DREAM_MANUAL_ROUTINE_NAME = 'dream-cycle-manual';
+export const POT_DREAM_AUTO_ROUTINE_NAME = 'dream-cycle-auto';
+export const DREAM_CYCLE_TARGET_ROLE = 'system:dream-cycle';
+export const DEFAULT_POT_DREAM_MANUAL_CRON = '0 */5 * * * *';
 
 /**
  * Per-pot scout cadence window: a cycle heartbeat fires twice an hour (every
@@ -118,6 +123,10 @@ export interface ProvisionPotLearningLoopInput {
    * within the 30-min window so N hives don't burst together.
    */
   scoutCron?: string;
+  /** Manual Start/Pause cadence; row still ships inactive. Default every 5m. */
+  dreamManualCron?: string;
+  /** Auto-dream heartbeat; row still ships inactive. Default = per-pot 30m stagger. */
+  dreamAutoCron?: string;
   now?: number;
 }
 
@@ -132,6 +141,12 @@ export interface ProvisionPotLearningLoopResult {
   scoutRoutineId?: string;
   /** Per-cycle scout budget the routine carries. */
   scoutMaxCostUsd?: number;
+  /** The inactive manual Start/Pause routine was written. */
+  dreamManualRoutine: boolean;
+  /** The separate inactive/default-OFF auto-dream routine was written. */
+  dreamAutoRoutine: boolean;
+  /** The bounded `dream:<pot>` learning-governor registrant was written. */
+  dreamGovernorRegistrant: boolean;
   /** Removes both rows — joins the create's undo stack (best-effort). */
   undo: () => Promise<void>;
   /** Present on a partial/failed provision; the create reports + warns, never fails. */
@@ -141,6 +156,11 @@ export interface ProvisionPotLearningLoopResult {
 /** Sanitize an install_slug + routine name into a routines.id (mirrors the seed scripts). */
 export function potScoutRoutineId(potSlug: string): string {
   return `rt_${potSlug}_${POT_SCOUT_ROUTINE_NAME}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
+}
+
+export function potDreamRoutineId(potSlug: string, mode: 'manual' | 'auto'): string {
+  const name = mode === 'manual' ? POT_DREAM_MANUAL_ROUTINE_NAME : POT_DREAM_AUTO_ROUTINE_NAME;
+  return `rt_${potSlug}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
 }
 
 async function scoutRoutineScope(workspaceId: string, potSlug: string): Promise<string> {
@@ -170,6 +190,14 @@ export async function provisionPotLearningLoop(
      WHERE workspace_id = ${workspaceId} AND install_slug = ${scoutScope} AND name = ${POT_SCOUT_ROUTINE_NAME}
      LIMIT 1`;
   const scoutRoutineExisted = existingScoutRows.length > 0;
+  const existingDreamRows = await sql<Array<{ name: string }>>`
+    SELECT name FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug}
+       AND name IN (${POT_DREAM_MANUAL_ROUTINE_NAME}, ${POT_DREAM_AUTO_ROUTINE_NAME})`;
+  const existingDreamNames = new Set(existingDreamRows.map((row) => row.name));
+  const dreamGovernorExisted = Boolean(
+    await getLearningLoop(sql, { workspaceId, loopId: dreamLoopId(potSlug) }),
+  );
 
   // (a) DARK gym autoloop row — enabled:false + budget:null. setAutoloop upserts;
   //     for a fresh pot this is a pure INSERT, so the undo can delete the row.
@@ -202,6 +230,47 @@ export async function provisionPotLearningLoop(
       updated_at = now()`;
   const scoutRoutine = true;
 
+  // (c) TWO independent, INACTIVE controls over one action. The manual row is
+  // what Learning-tab Start/Pause toggles. The auto row is the expensive,
+  // separate default-OFF setting; its action additionally self-gates on owner
+  // steering + measured idle capacity. DREAM_CYCLE gates the surface, not the
+  // rows' activation state.
+  const dreamRows = [
+    {
+      id: potDreamRoutineId(potSlug, 'manual'),
+      name: POT_DREAM_MANUAL_ROUTINE_NAME,
+      cron: input.dreamManualCron ?? DEFAULT_POT_DREAM_MANUAL_CRON,
+      mode: 'manual',
+    },
+    {
+      id: potDreamRoutineId(potSlug, 'auto'),
+      name: POT_DREAM_AUTO_ROUTINE_NAME,
+      cron: input.dreamAutoCron ?? staggeredPotScoutCron(`${potSlug}:dream`),
+      mode: 'auto',
+    },
+  ] as const;
+  for (const dream of dreamRows) {
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
+         payload_template, concurrency, catchup, active, next_fire_at)
+      VALUES (${dream.id}, ${potSlug}, ${workspaceId}, ${dream.name}, 'cron',
+              ${JSON.stringify({ cron: dream.cron })}::text::jsonb, ${DREAM_CYCLE_TARGET_ROLE},
+              ${JSON.stringify({ mode: dream.mode })}::text::jsonb,
+              'skip', 'skip-old', false, now())
+      ON CONFLICT (install_slug, name) DO UPDATE SET
+        target_role = EXCLUDED.target_role,
+        trigger_config = EXCLUDED.trigger_config,
+        payload_template = EXCLUDED.payload_template,
+        workspace_id = EXCLUDED.workspace_id,
+        updated_at = now()`;
+  }
+  const dreamManualRoutine = true;
+  const dreamAutoRoutine = true;
+
+  await registerLearningLoop(sql, dreamRegistrationInput({ workspaceId, potSlug }));
+  const dreamGovernorRegistrant = true;
+
   const undo = async (): Promise<void> => {
     // Best-effort: a create-rollback must never throw. Remove exactly what we laid down.
     try {
@@ -210,6 +279,23 @@ export async function provisionPotLearningLoop(
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${potSlug}`;
     } catch {
       /* ignore */
+    }
+    for (const dream of dreamRows) {
+      if (existingDreamNames.has(dream.name)) continue;
+      try {
+        await sql`
+          DELETE FROM harness_shared.routines
+           WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug} AND name = ${dream.name}`;
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!dreamGovernorExisted) {
+      try {
+        await deleteLearningLoop(sql, { workspaceId, loopId: dreamLoopId(potSlug) });
+      } catch {
+        /* ignore */
+      }
     }
     try {
       await sql`
@@ -228,6 +314,9 @@ export async function provisionPotLearningLoop(
     scoutRoutine,
     scoutRoutineId: routineId,
     scoutMaxCostUsd: maxCostUsd,
+    dreamManualRoutine,
+    dreamAutoRoutine,
+    dreamGovernorRegistrant,
     undo,
   };
 }
@@ -245,7 +334,9 @@ export interface TeardownPotLearningLoopResult {
   gymAutoloop: boolean;
   /** The inactive scout routine row was removed (or was already absent). */
   scoutRoutine: boolean;
-  /** The `gym:<pot>` / `scout:<pot>` learning-governor registrants were removed (or absent). */
+  /** Both inactive dream routine rows were removed (or already absent). */
+  dreamRoutines: boolean;
+  /** The `gym:<pot>` / `scout:<pot>` / `dream:<pot>` governor registrants were removed (or absent). */
   governorRegistrants: boolean;
   /** The install-scoped infrastructure routines (git/release and outbox drains) for this
    *  install were removed (or were already absent) — git-sync-dx-hardening P-007. */
@@ -258,8 +349,9 @@ export interface TeardownPotLearningLoopResult {
  * Removes EVERYTHING the provision laid down for this pot:
  *   (a) the dark gym_autoloop_config row keyed (workspace_id, harness_slug=potSlug),
  *   (b) the inactive scout routine (install_slug=potSlug, name='scout-cycle'),
- *   (c) the learning-governor registrants `gym:<pot>` + `scout:<pot>`.
- *   (d) the install-scoped infrastructure routines (git/release + outbox drains) seeded for
+   *   (c) the manual + auto dream routines and governor registrants
+   *       `gym:<pot>` + `scout:<pot>` + `dream:<pot>`.
+   *   (d) the install-scoped infrastructure routines (git/release + outbox drains) seeded for
  *       this install — they otherwise leak per benchmark run; both dissolve paths
  *       (pot:dissolve + dissolveBenchPot) flow through here.
  *
@@ -277,6 +369,7 @@ export async function teardownPotLearningLoop(
     potSlug,
     gymAutoloop: false,
     scoutRoutine: false,
+    dreamRoutines: false,
     governorRegistrants: false,
     gitSyncRoutines: false,
   };
@@ -303,6 +396,17 @@ export async function teardownPotLearningLoop(
 
   // (c) learning-governor registrants gym:<pot> + blender:<pot>.
   try {
+    await sql`
+      DELETE FROM harness_shared.routines
+       WHERE workspace_id = ${workspaceId} AND install_slug = ${potSlug}
+         AND name IN (${POT_DREAM_MANUAL_ROUTINE_NAME}, ${POT_DREAM_AUTO_ROUTINE_NAME})`;
+    result.dreamRoutines = true;
+  } catch {
+    /* best-effort */
+  }
+
+  // (c) learning-governor registrants gym:<pot> + blender:<pot> + dream:<pot>.
+  try {
     await deleteLearningLoop(sql, { workspaceId, loopId: gymLoopId(potSlug) });
     await deleteLearningLoop(sql, { workspaceId, loopId: scoutLoopId(potSlug) });
     // Pre-rename registrant rows (WI-2932): scoutLoopId minted `scout:<pot>`
@@ -310,6 +414,7 @@ export async function teardownPotLearningLoop(
     // strands an orphaned governor registrant. DELETE this line when the S2
     // contract migration rewrites/reaps the legacy loop ids.
     await deleteLearningLoop(sql, { workspaceId, loopId: `scout:${potSlug}` });
+    await deleteLearningLoop(sql, { workspaceId, loopId: dreamLoopId(potSlug) });
     result.governorRegistrants = true;
   } catch {
     /* best-effort */

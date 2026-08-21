@@ -273,10 +273,18 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:unguarded-halt-rescue': { spend: 'llm', why: 'Wakes halted sessions, and a wake bills a turn' },
   'system:loop-wake': { spend: 'llm', why: "Delivers a wake to the loop's owning session" },
   'system:scout-cycle': { spend: 'llm', why: 'Runs a budgeted Scout ideation cycle (in-process LLM ideators/critics)' },
+  'system:dream-cycle': {
+    spend: 'llm',
+    why: 'Runs a governor-bounded REM dreamer plus independent reviewer calls',
+  },
   'system:goal-holder-launch': { spend: 'llm', why: 'Launches a replacement agent for an existing goal' },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
+  'system:unshipped-plans-audit': {
+    spend: 'none',
+    why: 'Reads plan/work/blocker/acceptance/presence state and publishes evidence artifacts — no model call',
+  },
   'system:foreign-git-sync': { spend: 'none', why: 'Syncs a foreign (member) clone' },
   'system:green-checkpoint': { spend: 'none', why: 'Runs the gate suite and fast-forwards main' },
   'system:template-gym': { spend: 'none', why: 'Runs deterministic template and reference-consumer checks' },
@@ -548,7 +556,7 @@ export function routineNeedsAttention(input: {
 const DOCS_FAMILY = /doc|^knowledge-pack-/i;
 const WAKE_FAMILY = /(^|-)wake($|-)/i;
 const LEARNING_FAMILY =
-  /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|prospector|^oddsmith-|^scan$/i;
+  /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|^dream|prospector|^oddsmith-|^scan$/i;
 const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-/i;
 const CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|precompute|^knowledge-pack-/i;
 const FEDERATION_FAMILY = /^p2p-|hive|foreign|outbox|federation/i;
