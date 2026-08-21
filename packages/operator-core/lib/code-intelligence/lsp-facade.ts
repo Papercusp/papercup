@@ -31,11 +31,20 @@
  *     distinction, and a bare `[]` would forge it.
  *
  * ── code:run parity ────────────────────────────────────────────────────────
- * This module IS the `code:run` surface: it has no MCP-only argument shape and
- * no tool-context dependency, so `lspFacade(op, args)` behaves identically
- * whether it is reached from a registered tool or imported inside `code:run`.
- * `lspFacadeOpSpec()` exposes the same op list + argument contract the tool
- * layer registers from, so the two cannot drift into disagreement.
+ * MEASURED 2026-08-21, and NOT what it first looks like: `code:run` executes in
+ * a sandboxed VM with no `process` and no dynamic-import callback, so it cannot
+ * import this module — nor any other. Its only surface is the `tools.*` proxy.
+ *
+ * Parity therefore means: `tools.lsp.query({ op, ... })` inside `code:run` and a
+ * direct `lsp:query` MCP call reach THIS function with the same arguments and
+ * the same semantics. That holds by construction, because the registered
+ * handler (agent-tools/lsp/query.ts) adds no logic beyond resolving the
+ * workspace root and forwarding. `lspFacadeOpSpec()` is the shared op contract
+ * the tool's enum is derived from, so the two cannot drift into disagreement.
+ *
+ * ⚠ Do NOT write a `code:run` script that imports this file. It will fail with
+ * "A dynamic import callback was not specified" — a sandbox limit, not a
+ * missing export.
  */
 
 import { getFlag } from '@papercusp/flags/server';
