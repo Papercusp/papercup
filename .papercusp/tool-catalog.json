@@ -21553,7 +21553,7 @@
           "POST"
         ]
       },
-      "description": "Send SIGTERM (or SIGKILL) in ONE call, addressed two ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling. Results are keyed by taskId/pid; one failure never fails the rest.",
+      "description": "Send SIGTERM (or SIGKILL) in ONE call, addressed three ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. An explicitly supplied `scopeUnit`/`scopeUnits` is only for a live unaccounted Papercusp scope surfaced by `processes:list { live:true }`; systemd resolves and the handler re-probes its cgroup before reporting success. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling. Results are keyed by taskId/scopeUnit/pid; one failure never fails the rest.",
       "capabilities": [
         "processes:kill"
       ],
@@ -21561,7 +21561,7 @@
       "guidance": {
         "when": "End a task you can name. `taskId` is the right handle for anything this operator launched through the task manager — it takes the whole subtree. `pid` remains for an AGENT process (`run.sh | omp | claude`) you only have a pid for.",
         "notWhen": "NEVER pattern-match a name to build a kill list (`pkill -f <binary>` has twice killed the owner's live desktop window and peers' test instances — both addressing modes here exist to make that impossible). For a runaway BUILD/TEST job started outside the chokepoint, `pid` returns `unsupported_kind` — start such jobs via `capability:bash { run_in_background: true }` so you hold a real handle. To PAUSE rather than end, use `processes:freeze`.",
-        "chaining": "`processes:list` -> `taskId` -> here. Add `includeSubtree:true` to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned)."
+        "chaining": "`processes:list` -> `taskId` or `live.unaccountedGroups[].scopeUnit` -> here. Add `includeSubtree:true` to taskId mode to also signal logically-nested tasks that got their own scopes (an agent and everything it spawned)."
       }
     },
     {
@@ -21605,7 +21605,7 @@
       "guidance": {
         "when": "You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is eating memory, or whether anything bypassed the spawn chokepoint. Also the honest answer to \"is my background job still alive\" for anything started through managedSpawn.",
         "notWhen": "NOT a `ps` substitute — a process nothing in this operator launched is invisible unless it landed in our cgroup slice. For the six tracked AGENT process kinds use `dev:processes`; for a raw host process list, plain `ps`/`pgrep` is correct and is never gated. For a capability:bash job's OUTPUT use `capability:bash_output`.",
-        "chaining": "Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree), `processes:freeze` (pause without losing work), or `processes:limit` (retune the budget live)."
+        "chaining": "Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live."
       }
     },
     {
