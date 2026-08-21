@@ -85,6 +85,10 @@ describe('buildLoopWakePrompt — instructs VALID work-item states (EI-6978)', (
     expect(prompt).toContain('su-x');
     expect(prompt).not.toMatch(/\{(goal|harness|ownerId|intervalSec)\}/);
   });
+
+  it('wraps the replayed goal itself with agent-authored provenance markers', () => {
+    expect(prompt).toContain('⟦agent-authored-goal⟧do the thing⟦/agent-authored-goal⟧');
+  });
 });
 
 describe('buildLoopWakePrompt — kind guidance is not hardcoded to task (EI-7674)', () => {

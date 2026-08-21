@@ -252,11 +252,15 @@ export function buildLoopWakePrompt(opts: {
   workItem?: string | null;
 }): string {
   const base = opts.mode === 'monitor' ? MONITOR_LOOP_WAKE_PROMPT_TEMPLATE : DEFAULT_LOOP_WAKE_PROMPT_TEMPLATE;
+  // The goal is replayed as part of a machine-injected `user` turn. Keep the
+  // provenance adjacent to the text itself so a quoted fragment cannot be
+  // mistaken for an owner-authored directive after it leaves this preamble.
+  const agentAuthoredGoal = `⟦agent-authored-goal⟧${opts.goal}⟦/agent-authored-goal⟧`;
   let prompt = base
     .replace(/\{intervalSec\}/g, String(opts.intervalSec))
     .replace(/\{harness\}/g, opts.harness)
     .replace(/\{ownerId\}/g, opts.ownerId)
-    .replace(/\{goal\}/g, opts.goal);
+    .replace(/\{goal\}/g, () => agentAuthoredGoal);
   if (opts.carry === 'cold') prompt += COLD_LOOP_WAKE_ADDENDUM;
   if (opts.carry === 'cold' && opts.workItem) prompt += renderDrivenWorkItemLine(opts.workItem);
   if (opts.continuation === 'gated') prompt += GATED_LOOP_WAKE_ADDENDUM;
