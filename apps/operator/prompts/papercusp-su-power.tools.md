@@ -133,7 +133,11 @@ work-item-scoped conversation threads).
   output, proving the search term is never applied (measured, D-021); it is the
   one intent whose failure looks exactly like success. Raw `repomix.pack` skips
   the pinned version and the secret-scanning rails `code:pack` enforces
-  (D-040/D-041).
+  (D-040/D-041). ⚠ The gitnexus row reaches you through the plugin bridge, so
+  test it rather than assuming: if a call answers `Unknown namespace(s):
+  gitnexus`, the pinned-resolver fix has not deployed yet (P-006) — fall back to
+  `rg` + `lsp:query` for that question class until it does, and do NOT read the
+  absence as "no call chains exist".
 - **`notifications:recent`** — the app's recent toast/error stream; first
   stop for "why did the app just error?"
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway OS process by PID to

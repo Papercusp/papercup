@@ -165,7 +165,11 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   output, proving the search term is never applied (measured, D-021); it is the
   one intent whose failure looks exactly like success. Raw `repomix.pack` skips
   the pinned version and the secret-scanning rails `code:pack` enforces
-  (D-040/D-041). (Plugin tools — `design-phase.*`, `fetch_plus.*`,
+  (D-040/D-041). ⚠ The gitnexus row reaches you through the plugin bridge, so
+  test it rather than assuming: if a call answers `Unknown namespace(s):
+  gitnexus`, the pinned-resolver fix has not deployed yet (P-006) — fall back to
+  `rg` + `lsp:query` for that question class until it does, and do NOT read the
+  absence as "no call chains exist". (Plugin tools — `design-phase.*`, `fetch_plus.*`,
   `gitnexus.*` — surface on every su session since the plugin-host boot warm;
   EI-38's "workspace-scoped only" was the post-restart empty-registry window
   in disguise — see the `plugin-tools-empty-registry-window` insight.)
