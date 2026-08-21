@@ -170,4 +170,20 @@ describe('fleet metric scope resolver and query kernel', () => {
     );
     expect(result).toMatchObject({ ok: false, reason: expect.stringContaining('presence') });
   });
+
+  it('turns a datastore exception into an explicit unavailable envelope', async () => {
+    const result = await resolveFleetMetricScope(
+      { workspaceId: 'ws', harness: 'papercusp', fleet: 'fleet-a', flowMode: 'current-spec' },
+      deps({
+        getFleet: async () => {
+          throw new Error('registry offline');
+        },
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'fleet_metrics_unavailable',
+      reason: expect.stringContaining('registry offline'),
+    });
+  });
 });

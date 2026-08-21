@@ -166,7 +166,7 @@ function buildSegments(args: {
   return segments;
 }
 
-export async function resolveFleetMetricScope(
+async function resolveFleetMetricScopeUnsafe(
   request: FleetMetricScopeRequest,
   deps: FleetMetricScopeDeps = DEFAULT_DEPS,
 ): Promise<FleetMetricScopeResolution> {
@@ -319,6 +319,22 @@ export async function resolveFleetMetricScope(
     },
     everMemberIds: [...everMembers].sort(),
   };
+}
+
+export async function resolveFleetMetricScope(
+  request: FleetMetricScopeRequest,
+  deps: FleetMetricScopeDeps = DEFAULT_DEPS,
+): Promise<FleetMetricScopeResolution> {
+  try {
+    return await resolveFleetMetricScopeUnsafe(request, deps);
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+    return unavailable(
+      request,
+      `fleet metric scope read failed${detail}`,
+      'retry the canonical fleet/spec/membership readers',
+    );
+  }
 }
 
 export function selectFleetMetricCurrentItems(scope: ResolvedFleetMetricScope, items: readonly WorkItem[]): WorkItem[] {
