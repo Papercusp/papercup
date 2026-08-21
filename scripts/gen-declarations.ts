@@ -6,23 +6,23 @@
  *   npm run gen:declarations         # emit in place
  *   npm run gen:declarations:check   # verify the committed files are current
  *
- * `--check` is what CI and the vitest drift test call: it regenerates into a temp
- * directory and compares, so it never writes into the working tree. That matters
- * here beyond politeness — this repo has ONE checkout shared by the whole fleet,
- * so a check that wrote in place could clobber a peer mid-edit.
+ * Both modes compile into an isolated temp directory. `--check` compares that
+ * output without publishing it; normal generation publishes only after the
+ * compiler and stamping succeed. That matters here beyond politeness — this repo
+ * has ONE checkout shared by the whole fleet, and a failed compile must not leave
+ * the working tree missing declarations or carrying partial/untracked output.
  */
 import { execFileSync } from 'node:child_process';
 import {
+  copyFileSync,
   readFileSync,
   writeFileSync,
-  existsSync,
   mkdtempSync,
+  mkdirSync,
   rmSync,
-  readdirSync,
-  statSync,
-  unlinkSync,
+  existsSync,
 } from 'node:fs';
-import { join, dirname, relative } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -68,9 +68,9 @@ const TSC_JS = createRequire(import.meta.url).resolve('typescript/lib/tsc.js');
 const COMPILER_LABEL = relative(REPO_ROOT, TSC_JS) || TSC_JS;
 
 /** The `.mjs` inputs, read from the config so the two can never disagree. */
-function inputs(): string[] {
+function inputs(repoRoot: string, config: string): string[] {
   // The config carries `//` comments (tsc accepts JSONC), so strip them before parsing.
-  const raw = readFileSync(join(REPO_ROOT, CONFIG), 'utf8');
+  const raw = readFileSync(join(repoRoot, config), 'utf8');
   const stripped = raw.replace(/^\s*\/\/.*$/gm, '');
   const parsed = JSON.parse(stripped) as { files?: string[] };
   if (!parsed.files?.length) throw new Error(`${CONFIG} declares no \`files\``);
@@ -82,11 +82,13 @@ function declarationFor(mjs: string): string {
   return mjs.replace(/\.mjs$/, '.d.mts');
 }
 
-function runTsc(outDir?: string): void {
-  const args = ['-p', CONFIG, ...(outDir ? ['--outDir', outDir] : [])];
+type Compile = (repoRoot: string, config: string, outDir: string) => void;
+
+function runTsc(repoRoot: string, config: string, outDir: string): void {
+  const args = ['-p', config, ...(outDir ? ['--outDir', outDir] : [])];
   try {
     execFileSync(process.execPath, [TSC_JS, ...args], {
-      cwd: REPO_ROOT,
+      cwd: repoRoot,
       encoding: 'utf8',
       stdio: 'pipe',
     });
@@ -137,8 +139,8 @@ function bannerFor(mjs: string): string {
  * input. A "skip if already stamped" guard here would only be able to hide a
  * caller that stopped doing that.
  */
-function stamp(outRoot: string): void {
-  for (const mjs of inputs()) {
+function stamp(outRoot: string, declaredInputs: string[]): void {
+  for (const mjs of declaredInputs) {
     const path = join(outRoot, declarationFor(mjs));
     const text = readFileSync(path, 'utf8');
 
@@ -156,36 +158,65 @@ function stamp(outRoot: string): void {
   }
 }
 
-function generate(): void {
-  // Delete existing declarations FIRST. Once a `.d.mts` exists, an importing
-  // sibling's `./x.mjs` specifier resolves to the DECLARATION rather than the JS,
-  // which makes it a compilation input — and tsc refuses to overwrite its own
-  // input (TS5055). Without this, generation succeeds exactly once on a clean
-  // tree and fails for everyone afterwards.
-  for (const mjs of inputs()) {
-    const dts = join(REPO_ROOT, declarationFor(mjs));
-    if (existsSync(dts)) unlinkSync(dts);
+/**
+ * Publish only the declarations explicitly listed by the config.
+ *
+ * `tsc` may also emit declarations for reachable modules that are not in the
+ * config's `files` list. Those are compiler intermediates, not part of the
+ * committed generated surface, and publishing them creates the stray untracked
+ * files this command is meant to prevent.
+ */
+function publish(outRoot: string, repoRoot: string, declaredInputs: string[]): void {
+  const outputs = declaredInputs.map((mjs) => {
+    const rel = declarationFor(mjs);
+    const source = join(outRoot, rel);
+    const destination = join(repoRoot, rel);
+    if (!existsSync(source)) throw new Error(`tsc did not emit declared output: ${rel}`);
+    return { source, destination };
+  });
+
+  for (const { source, destination } of outputs) {
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(source, destination);
   }
-  runTsc();
-  stamp(REPO_ROOT);
-  console.log(
-    `✓ gen:declarations: emitted ${inputs().length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
-  );
 }
 
-function check(): void {
+/**
+ * Generate into an isolated tree, then publish the declared outputs.
+ *
+ * The optional compiler callback is a hermetic test seam: it lets the regression
+ * test simulate a compiler that emitted partial output before failing without
+ * touching this checkout. Production callers use `runTsc` (the default).
+ */
+export function generate(repoRoot = REPO_ROOT, config = CONFIG, compile: Compile = runTsc): void {
+  const declaredInputs = inputs(repoRoot, config);
+  const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-generate-'));
+  try {
+    compile(repoRoot, config, out);
+    stamp(out, declaredInputs);
+    publish(out, repoRoot, declaredInputs);
+    console.log(
+      `✓ gen:declarations: emitted ${declaredInputs.length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
+    );
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+}
+
+export function check(repoRoot = REPO_ROOT, config = CONFIG): void {
   // BEFORE the comparison, so a red names the compiler that produced the emit.
   console.log(`gen:declarations:check — compiler: ${COMPILER_LABEL}`);
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-check-'));
   try {
-    runTsc(out);
-    stamp(out);
+    const declaredInputs = inputs(repoRoot, config);
+    runTsc(repoRoot, config, out);
+    stamp(out, declaredInputs);
 
     const stale: string[] = [];
     const missing: string[] = [];
-    for (const mjs of inputs()) {
+    for (const mjs of declaredInputs) {
       const rel = declarationFor(mjs);
-      const committedPath = join(REPO_ROOT, rel);
+      const committedPath = join(repoRoot, rel);
       if (!existsSync(committedPath)) {
         missing.push(rel);
         continue;
@@ -204,7 +235,7 @@ function check(): void {
     // Hand-written declarations are not regenerated, so the byte-compare above says
     // nothing about them. This is the only thing that does (EI-20805816236289594).
     const parity = formatProblems(
-      exportParityProblems(REPO_ROOT, new Set(inputs().map(declarationFor))),
+      exportParityProblems(repoRoot, new Set(declaredInputs.map(declarationFor))),
     );
     if (parity.length) {
       console.error(`✗ hand-written declaration(s) out of sync with their source:\n   ${parity.join('\n   ')}`);
@@ -218,7 +249,7 @@ function check(): void {
     }
 
     console.log(
-      `✓ gen:declarations:check: ${inputs().length} declaration file(s) up to date; ` +
+      `✓ gen:declarations:check: ${declaredInputs.length} declaration file(s) up to date; ` +
         `hand-written declarations match their sources`,
     );
   } finally {
@@ -226,5 +257,8 @@ function check(): void {
   }
 }
 
-if (process.argv.includes('--check')) check();
-else generate();
+const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  if (process.argv.includes('--check')) check();
+  else generate();
+}
