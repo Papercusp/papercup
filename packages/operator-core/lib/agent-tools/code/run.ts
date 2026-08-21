@@ -187,10 +187,8 @@ export default defineTool({
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
     // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
     if (
-      result.ok &&
       !(args.dryRun ?? false) &&
-      !result.unknownRefs?.length &&
-      !result.childFailures?.length
+      isRecipeCaptureEligible(result, all)
     ) {
       similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
     }
@@ -468,6 +466,34 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
 };
 
 type OrchestrationRunResult = Awaited<ReturnType<typeof runToolOrchestration>>;
+
+type RecipeCaptureTool = {
+  effect?: string;
+  expose?: { mcp?: { name?: string } };
+};
+
+/**
+ * Recipe capture may proceed after a read-only semantic diagnostic: the script itself ran to
+ * completion and the recipe remains useful for the next invocation. Write-effect semantic
+ * rejections, thrown children, and unknown references remain capture blockers because they make
+ * replay unsafe or leave the script's behavior unverified.
+ */
+export function isRecipeCaptureEligible(
+  result: Pick<OrchestrationRunResult, 'ok' | 'unknownRefs' | 'childFailures'>,
+  tools: readonly RecipeCaptureTool[],
+): boolean {
+  if (!result.ok || result.unknownRefs?.length) return false;
+
+  const readTools = new Set(
+    tools
+      .filter((tool) => tool.effect === 'read')
+      .map((tool) => tool.expose?.mcp?.name)
+      .filter((name): name is string => typeof name === 'string'),
+  );
+  return (result.childFailures ?? []).every(
+    (failure) => failure.kind === 'semantic' && readTools.has(failure.tool),
+  );
+}
 
 const DRY_RUN_MUTATION_PREVIEW_CHAR_BUDGET = 20_000;
 const DRY_RUN_MUTATION_SAMPLE_LIMIT = 12;

@@ -57,6 +57,7 @@ import {
   annotateChildFailureWarning,
   bindInnerDispatch,
   shapeCodeRunSimilarRecipes,
+  isRecipeCaptureEligible,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
@@ -138,6 +139,44 @@ describe('code:run → recipe capture (P-003)', () => {
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
     expect(payload.ok).toBe(false);
     expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+
+  describe('capture eligibility for nested child failures', () => {
+    const read = { effect: 'read', expose: { mcp: { name: 'dev:pg-query' } } };
+    const write = { effect: 'write', expose: { mcp: { name: 'work_items:set_state' } } };
+
+    it('allows a semantic read diagnostic while the script completed', () => {
+      expect(
+        isRecipeCaptureEligible(
+          {
+            ok: true,
+            childFailures: [{ tool: 'dev:pg-query', kind: 'semantic' }],
+          },
+          [read, write],
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects a semantic write failure, a thrown child, and an unknown reference', () => {
+      expect(
+        isRecipeCaptureEligible(
+          { ok: true, childFailures: [{ tool: 'work_items:set_state', kind: 'semantic' }] },
+          [read, write],
+        ),
+      ).toBe(false);
+      expect(
+        isRecipeCaptureEligible(
+          { ok: false, childFailures: [{ tool: 'dev:pg-query', kind: 'uncertain' }] },
+          [read, write],
+        ),
+      ).toBe(false);
+      expect(
+        isRecipeCaptureEligible(
+          { ok: true, unknownRefs: ['nope.doStuff'], childFailures: [] },
+          [read, write],
+        ),
+      ).toBe(false);
+    });
   });
 
   it('stamps effective error metadata when the script fails', async () => {
