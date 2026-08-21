@@ -322,6 +322,30 @@ export function parseFreshnessNote(text: string): {
 export const OBSERVED_RESPONSE_BUDGET_CHARS = 20_000;
 
 /**
+ * The ONE wording for "the budget cut this answer".
+ *
+ * This is a function rather than two hand-written strings because the two call
+ * sites below (`impact`, and the shared `context` path) previously spelled the
+ * same contract three different ways — "TRUNCATED answer, not an empty one",
+ * "TRUNCATED, not empty", and a third variant hand-copied into the test's
+ * regex, which then failed against a message that was in fact correct. The
+ * contract is one sentence; it gets one source.
+ *
+ * The load-bearing half is the second clause. A truncated answer that reads as
+ * empty inverts the finding — the largest blast radii are precisely what
+ * overflow the budget — so the notice must deny emptiness explicitly, and
+ * `gitnexus-facade.test.ts` asserts that it does.
+ */
+export function truncationNotice(op: GitnexusFacadeOp): string {
+  return (
+    `gitnexus ${op} exceeded the ${OBSERVED_RESPONSE_BUDGET_CHARS}-char response ` +
+    'budget and was cut mid-JSON, so the result could not be parsed. This is a ' +
+    'TRUNCATED answer, not an empty one — re-run with a smaller `limit` ' +
+    '(limit:5 parses; limit:100 does not).'
+  );
+}
+
+/**
  * Extract the JSON body the bridge returns ahead of its markdown decoration.
  *
  * ⚠ The budget cut is applied to the SERIALIZED JSON and does not preserve
@@ -465,11 +489,7 @@ export async function gitnexusFacade(
           truncated: true,
           totalAvailable: null,
           ...fresh,
-          error:
-            `gitnexus impact exceeded the ${OBSERVED_RESPONSE_BUDGET_CHARS}-char ` +
-            'response budget and was cut mid-JSON, so the result could not be ' +
-            'parsed. This is a TRUNCATED answer, not an empty one — re-run with ' +
-            'a smaller `limit` (limit:5 parses; limit:100 does not).',
+          error: truncationNotice(op),
         });
       }
 
@@ -519,9 +539,7 @@ export async function gitnexusFacade(
         truncated,
         ...fresh,
         error: truncated
-          ? `gitnexus answer exceeded the ${OBSERVED_RESPONSE_BUDGET_CHARS}-char ` +
-            'response budget and was cut mid-JSON. TRUNCATED, not empty — ' +
-            're-run with a smaller `limit`.'
+          ? truncationNotice(op)
           : `gitnexus returned an unparseable envelope: ${text.slice(0, 200)}`,
       });
     }
