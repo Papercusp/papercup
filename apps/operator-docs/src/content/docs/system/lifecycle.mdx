@@ -4,19 +4,22 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Project lifecycle — idea to completion
-description: Authoritative walkthrough of how a project moves through the harness, traced from the live code (not stale prior docs).
+title: "Project lifecycle — idea to completion"
+description: "Authoritative walkthrough of how a project moves through the harness, traced from the live code (not stale prior docs)."
+type: Insight
+discovered: 2026-08-21
+status: active
+plans:
+  - "fumadocs-to-starlight-2026-05-20"
+  - "archive-legacy-orchestrator-deadcode-2026-06-06"
+  - "dbos-retire-legacy-orchestrator-2026-05-31"
+  - "dbos-system-completion-2026-06-01"
+  - "harness-state-storage-unification-2026-06-01"
+  - "plugin-system-pot-port-2026-06-11"
+  - "plans-central-harness-ux-2026-05-26"
+  - "un-hardcode-plan-2026-05-10"
 sidebar:
   order: 1
-plans:
-  - fumadocs-to-starlight-2026-05-20
-  - archive-legacy-orchestrator-deadcode-2026-06-06
-  - dbos-retire-legacy-orchestrator-2026-05-31
-  - dbos-system-completion-2026-06-01
-  - harness-state-storage-unification-2026-06-01
-  - plugin-system-pot-port-2026-06-11
-  - plans-central-harness-ux-2026-05-26
-  - un-hardcode-plan-2026-05-10
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -50,27 +53,7 @@ line citations below no longer resolve. A few cited files
 `expert-dispatcher.ts`) no longer exist at all. Treat the directory/file
 citations on this page as conceptual landmarks, not literal paths.
 
-**The per-harness-schema storage model is also retired.** Stage 1 and the
-"State summary" section below describe provisioning a per-harness Postgres
-schema `harness_<slug>` with ~11 physical tables from a
-`002-per-harness-template.sql` template. That model was **consolidated** into
-slug-keyed shared tables under `harness_shared` (migrations 116–121,
-`harness-state-storage-unification-2026-06-01` D-007): the per-harness
-`agent_chats` / `feature_audit` / `supervisor_notes` / `directive_summaries` /
-`messages` / `executed_actions` physical tables became
-`harness_shared.*_consolidated` tables (some surfaced as auto-updatable views),
-and the per-harness `config_token` + `harness_proposals` tables were dropped
-(`token_index` and `harness_proposals_shared` are authoritative). The template
-file no longer exists, and `bin/scaffold-harness-schema.sh` still points at it
-(stale). The cross-harness slug-keyed `harness_shared` tables
-(`harness_features_consolidated`, `harness_proposals_shared`, …) are live; the
-*per-harness physical schema* (and the `harness_features_all` UNION view
-regenerated over it) is the part that's gone. The migration set has advanced far
-past the 116–121 consolidation cited below — it now runs to **331+** (e.g.
-`306-harness-features-consolidated-schedule-fields.sql`), and the
-`002-per-harness-template.sql` template no longer exists at all. Read the live
-`libs/papercusp/libs/db/sql/` directory rather than the per-table snapshot in the
-"State summary" section.
+**Per-harness storage is consolidated.** The old per-harness physical-table model is retired. Migrations 032 and 116–121 moved entity state into harness_shared.*_consolidated tables keyed by harness_slug; a harness_\<slug> namespace, when present, exposes compatibility VIEWs only. The deleted 002-per-harness-template.sql and bin/scaffold-harness-schema.sh are not provisioning inputs. The live helper is packages/operator-core/lib/scaffold-harness-schema.ts: it creates the schema and slug-filtered views, never physical tables. Read the migrations and that helper for current behavior.
 </Aside>
 
 <Aside type="danger" title="What the Aside above does NOT cover (2026-06-20)">
@@ -233,20 +216,18 @@ The user **registers a project** (an existing dir on disk) as a harness. Three e
 
 | Entry point | Route | What gets created |
 |---|---|---|
-| Manually-typed slug + path in the operator UI | `POST /api/harness/projects` | Register slug → path mapping; provision PG schema |
+| Manually-typed slug + path in the operator UI | POST /api/harness/projects | Register the slug/path and ensure the shared-state compatibility views |
 | From a saved template | `POST /api/templates/<slug>/<version>/install` | Materialise template files into a target dir, then `POST /api/harness/projects` |
 | From a marketplace snapshot | `POST /api/marketplace/install` or `POST /api/snapshots/[id]/instantiate` | Fork a snapshot into a fresh harness |
 
-The handler at `apps/operator/app/api/_hono/harness.ts:714` (`harness.post('/projects', ...)`) does:
+The project-registration handler does:
 
-1. **Register the slug.** Adds `{ slug, path }` to the per-workspace registry at `<workspace-root>/registry.json` via `loadRegistry()` / `saveRegistry()` in `apps/operator/lib/harness-registry.ts`. The legacy `~/.restart-harness-projects.json` is CLI-only; operator code ignores it.
-2. **Provision the PG schema.** Runs `bin/scaffold-harness-schema.sh <slug>`, which applies `libs/papercusp/libs/db/sql/002-per-harness-template.sql` against `harness_<slug.replace(/-/g,'_')>`. This creates 11 tables (`harness_features`, `harness_issues`, `harness_snapshots`, `agent_runs`, `agent_chats`, `feature_audit`, `messages`, `directive_summaries`, `executed_actions`, `config_token`, `supervisor_notes`), installs `sync_consolidated_trg` on `harness_features` (mirrors INSERT/UPDATE/DELETE into `harness_shared.harness_features_consolidated`), and adds the schema's tables to the `zero_harness` Postgres publication. *Caveat: the code passes `cwd=/home/dev/Restart` (stale); the script actually lives at `papercupai-workspace/papercup/bin/`.*
-3. **Regenerate the cross-harness UNION view.** Runs `scripts/regenerate-harness-features-view.sh`, rewriting `harness_shared.harness_features_all` as `UNION ALL` across every per-harness `harness_features` table (read-only cross-harness aggregator).
-4. **Returns** `{ ok, project, provisioning }` — UI uses `provisioning[]` for per-stage success/failure.
+1. **Register the slug.** Add the slug → project-path mapping to the workspace harness registry.
+2. **Ensure compatibility views.** The live helper packages/operator-core/lib/scaffold-harness-schema.ts creates the harness_\<slug> namespace and slug-filtered auto-updatable VIEWs over the harness_shared.*_consolidated tables. It creates no physical per-harness tables, does not apply a deleted SQL template, and does not add a per-harness table set to a publication.
+3. **Keep shared state canonical.** Features, issues, runs, snapshots, chats, and related records are stored in the corresponding harness_shared consolidated tables, keyed by harness_slug; the per-harness views exist only for compatibility with slug-scoped writers.
+4. **Return** the registration and provisioning result to the caller.
 
-**Output of Stage 1:** a slug + project directory + per-harness Postgres schema, ready to receive features.
-
----
+**Output of Stage 1:** a slug + project directory + shared, slug-keyed state with compatibility views where the registered harness needs them.
 
 ## Stage 2 — Pre-loop bootstrap (planning)
 
@@ -668,30 +649,20 @@ Any of these can short-circuit the happy path:
 
 ### Postgres (canonical, queryable)
 
-Per-harness schema `harness_<slug.replace(/-/g,'_')>` — 11 tables created from `libs/papercusp/libs/db/sql/002-per-harness-template.sql`:
+Per-harness compatibility namespace:
 
-- `harness_features` — feature rows. Columns: `harness_slug`, `feature_id`, `title`, `summary`, `status`, `attempts`, `claims` (TEXT — JSON-encoded array of claim strings), `notes`, `metadata` (JSONB), `kind`, `project_id`, `expected_cost_cents`, `tags` (JSONB), `needs_human_review`, `ts`, `created_ts`, `updated_ts`, `parent_id` + `goal_id` (goal-ancestry — cross-schema FK), `taken_by` + `taken_at` + `expires_at` (atomic checkout via FOR UPDATE SKIP LOCKED), `deprecation_reason` (set when `status='deprecated'`)
-- `harness_issues` — validator + crosscheck + ui-qa issues
-- `harness_snapshots` — snapshot metadata (snapshot tarballs stay on disk)
-- `agent_runs` — per-invocation metadata: role, feature, run_id, cost, tokens, exit code (full stdout stays on disk in `.jsonl`). **Note**: name is `agent_runs`, NOT `harness_agent_runs`
-- `agent_chats` — per-harness chat thread metadata (per-feature agent-chat surface)
-- `feature_audit` — append-only audit trail of feature mutations
-- `messages` — inter-agent / user-to-agent messages
-- `directive_summaries` — summaries of operator directive cards
-- `executed_actions` — record of actions executed against this harness
-- `config_token` — per-harness config tokens
-- `supervisor_notes` — supervisor cron notes table
+- A registered harness may have a harness_\<slug> schema, but its relations are auto-updatable VIEWs over shared consolidated tables, not physical per-harness tables.
+- The live helper packages/operator-core/lib/scaffold-harness-schema.ts creates the schema and views for features, issues, runs, snapshots, chats, supervisor notes, directive summaries, and executed actions. It deliberately does not mint retired config-token, proposals, or new messages relations.
+- Canonical entity data lives in harness_shared.*_consolidated tables keyed by harness_slug. Schema changes belong in numbered migrations under libs/papercusp/libs/db/sql/; do not add runtime DDL or resurrect the deleted template.
 
 Cross-harness shared schema `harness_shared`:
 
 - `delegates` — Claude/agent conversation sessions for the voice layer + Oracle dock (column `agent_backend` distinguishes claude-code vs omp post-Wave-3 of the omp routing migration)
 - `user_actions` — user-initiated long-running actions. Actual `kind` values in code (verified by grep over `recordUserAction(slug, '<kind>'` calls): `replan`, `cleanup` (both in `harness.ts`), `snapshot.create` / `snapshot.publish` / `snapshot.fork` (snapshots routes), `branch.action` (branch action-run route), `expert.dispatch` (`expert-dispatcher.ts:154`). No `plugin.install` kind exists today, despite older comments referencing it. (The `consolidate` kind was retired alongside the route — `cleanup` covers the intent.)
 - `harness_proposals_shared` — **proposals live here**, NOT in a per-harness `harness_proposals` table. Single shared table; ProposalsPanel reads `proposalsShared.byHarness(slug)`.
-- `harness_features_all` — UNION ALL **view** across every per-harness `harness_features` table; rebuilt by `scripts/regenerate-harness-features-view.sh` whenever a new per-harness schema is added.
-- `harness_features_consolidated` — **trigger-maintained mirror table** of every per-harness `harness_features` row. Maintained in real-time by `sync_consolidated_trg` (template line 54): `INSERT … ON CONFLICT DO UPDATE` on AFTER INSERT/UPDATE, `DELETE` on AFTER DELETE. Trigger function: `harness_shared.sync_features_consolidated()` in `001-shared.sql`.
-   - **Columns** (PK `(harness_slug, feature_id)` + 21 mirrored): `title`, `summary`, `status`, `attempts`, `claims`, `notes`, `metadata`, `kind`, `project_id`, `expected_cost_cents`, `tags`, `needs_human_review`, `ts`, `created_ts`, `updated_ts`, `parent_id`, `goal_id`, `taken_by`, `taken_at`, `expires_at`. **Not mirrored:** `deprecation_reason`.
-   - **Indexes**: `(status)`, `(needs_human_review)`, `(harness_slug)`, `(updated_ts DESC)`.
-   - **Read path**: Zero queries `featuresConsolidated.all` / `.bySlug` / `.needsReview` (queries.ts:292) — the cross-harness Features grid subscribes here, distinct from the regenerated `harness_features_all` UNION view.
+- The shared consolidated tables are the canonical cross-harness stores; queries filter by harness_slug instead of UNIONing physical per-harness tables.
+- harness_features_consolidated and the other *_consolidated tables are base tables. Compatibility views under harness_\<slug> select from them; there is no per-harness trigger mirror to maintain.
+- The zero_harness publication, where still used by a legacy consumer, publishes canonical shared tables. New schema changes are migrations, not per-harness publication edits.
 
 All UI reads go through Zero-synced named queries (`libs/zero-harness/src/queries.ts`),
 which subscribe to the publication `zero_harness` on the `papercusp` Postgres database.
@@ -816,7 +787,7 @@ The split rule: **TTL when there's a clear lease and the writer can refresh on i
 | All API routes | `apps/operator/app/api/_hono/harness.ts` (mostly), `apps/operator/app/api/agent-mcp/*` (operator-scan, delegate-chat, agent-config), `apps/operator/app/api/agent-config/*` (settings) |
 | Chat-stream backend | `apps/operator/lib/claude-chat-stream.ts` (operator wrapper) → `libs/papercusp-shared/src/agent/chat-stream.ts` (shared runtime) |
 | Schema + Zero queries | `libs/zero-harness/src/{schema,queries}.ts` |
-| Per-harness PG provisioning | `bin/scaffold-harness-schema.sh` + SQL template `libs/papercusp/libs/db/sql/002-per-harness-template.sql` |
+| Per-harness PG compatibility views | packages/operator-core/lib/scaffold-harness-schema.ts |
 | Plugin lifecycle | `packages/operator-core/lib/plugin-host-runtime.ts` (`firePluginLifecycle` + `ServerActionRegistry` + plugin reaction-rule registration; the orchestrator-side `plugin-hooks.ts` shell-out and the `papercusp-fire-hook` CLI were retired 2026-06-12) |
 | Cleanup of ephemeral state | `apps/operator/lib/expirable-registry.ts` (TTL) + `apps/operator/lib/harness-status-sweep.ts` (PID-liveness); declarative manifest at `apps/operator/lib/expirable-registrations.ts` |
 
