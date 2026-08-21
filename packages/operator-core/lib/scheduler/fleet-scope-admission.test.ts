@@ -641,7 +641,8 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 33,
-        needsHuman: 80,
+        legacyNeedsHuman: 80,
+        needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 21,
         externalBlocker: 0,
@@ -708,7 +709,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.windDown).toBe(true);
       expect(miss.excludedBreakdown).toEqual(floorGatedBreakdown);
       expect(miss.excludedBreakdownSummary).toMatch(/federationDetector=169/);
-      expect(miss.excludedBreakdownSummary).toMatch(/needsHuman=80/);
+      expect(miss.excludedBreakdownSummary).toMatch(/legacyNeedsHuman=80/);
       expect(miss.excludedBreakdownSummary).toMatch(/claimHold=33/);
       expect(miss.excludedBreakdownSummary).toMatch(/observationLane=21/);
       // zero-count buckets are dropped from the summary, not padded in
@@ -742,7 +743,8 @@ describe('fleet scope assignment admission (P-016)', () => {
         excluded: {
           taken: 0,
           claimHold: 0,
-          needsHuman: 0,
+          legacyNeedsHuman: 0,
+          needsOwnerAction: 0,
           agentReview: 0,
           observationLane: 0,
           externalBlocker: 2,
@@ -833,7 +835,8 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 0,
-        needsHuman: 0,
+        legacyNeedsHuman: 0,
+        needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
         externalBlocker: 0,
@@ -1013,7 +1016,8 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 0,
-        needsHuman: 0,
+        legacyNeedsHuman: 0,
+        needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
         externalBlocker: 0,
@@ -1128,7 +1132,8 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 0,
-        needsHuman: 0,
+        legacyNeedsHuman: 0,
+        needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
         externalBlocker: 0,
@@ -1254,7 +1259,8 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 1,
-        needsHuman: 1,
+        legacyNeedsHuman: 1,
+        needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
         externalBlocker: 0,

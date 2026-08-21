@@ -14,6 +14,7 @@ function issue(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     assignee: 'improvement-runner',
     assignedBy: null,
     assignedAt: '2026-06-05T01:00:00Z',
+    parent: null,
     payload: null,
     foundDuring: null,
     linkedFeatureId: null,
@@ -27,6 +28,7 @@ function issue(p: Partial<EngineerIssue> & { id: string }): EngineerIssue {
     terminalOwner: null,
     terminalCompletionRef: null,
     featureOrder: null,
+    goalId: null,
     createdAt: '2026-06-04T00:00:00Z',
     updatedAt: '2026-06-04T00:00:00Z',
     closedAt: null,
@@ -171,7 +173,7 @@ describe('resolveImprovement — could-not-fix (retry path)', () => {
     const d = deps(issue({ id: 'EI-2', payload: { implementAttempts: 1 } }));
     const r = await resolveImprovement({ id: 'EI-2', outcome: 'could-not-fix', summary: 'repro is flaky, ran out of leads' }, d);
     expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', state: 'open' });
-    expect(r.routedToHuman).toBeUndefined();
+    expect(r.routedToOwnerAction).toBeUndefined();
     expect(r.routedToLeaderTriage).toBeUndefined();
     expect(d.rec.released).toEqual(['EI-2']);
     expect(d.rec.states).toHaveLength(0);
@@ -182,7 +184,7 @@ describe('resolveImprovement — could-not-fix (retry path)', () => {
     const d = deps(issue({ id: 'EI-2', payload: { implementAttempts: 3 } }));
     const r = await resolveImprovement({ id: 'EI-2', outcome: 'could-not-fix', summary: 'third strike, still failing' }, d);
     expect(r).toMatchObject({ ok: true, outcome: 'could-not-fix', state: 'blocked', routedToLeaderTriage: true });
-    expect(r.routedToHuman).toBeUndefined();
+    expect(r.routedToOwnerAction).toBeUndefined();
     // status → blocked (out of the ISSUE_FAMILY_CLAIMABLE_STATES=['open'] auto loop), NOT needsHuman
     expect(d.rec.states).toEqual([{ id: 'EI-2', state: 'blocked' }]);
     expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
@@ -210,7 +212,7 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
       d,
     );
     expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'blocked', routedToLeaderTriage: true });
-    expect(r.routedToHuman).toBeUndefined();
+    expect(r.routedToOwnerAction).toBeUndefined();
     expect(d.rec.states).toEqual([{ id: 'EI-3', state: 'blocked' }]);
     expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
     expect(d.rec.payloads[0].patch).toMatchObject({ blockedReason: expect.stringMatching(/needs-human-untyped/) });
@@ -273,7 +275,7 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
       d,
     );
     expect(r.routedToLeaderTriage).toBe(true);
-    expect(r.routedToHuman).toBeUndefined();
+    expect(r.routedToOwnerAction).toBeUndefined();
     expect(d.rec.states).toEqual([{ id: 'EI-3', state: 'blocked' }]);
     expect(d.rec.payloads.some((p) => 'needsHuman' in p.patch)).toBe(false);
   });

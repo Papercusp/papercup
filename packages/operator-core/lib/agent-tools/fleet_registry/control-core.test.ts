@@ -279,7 +279,8 @@ describe('applyFleetControl', () => {
         excluded: {
           taken: 0,
           claimHold: 33,
-          needsHuman: 80,
+          legacyNeedsHuman: 80,
+          needsOwnerAction: 0,
           agentReview: 0,
           observationLane: 21,
           externalBlocker: 0,
@@ -295,7 +296,7 @@ describe('applyFleetControl', () => {
       },
       spec: { specId: 'bug-drain', revision: 4, source: 'cup' as const },
       summary:
-        "[auto-drain-stamp 2026-07-21T00:00:00.000Z · spec bug-drain@4] 302 in-lane issue-family row(s) matched the fleet spec's filter; stranded by: federationDetector=169, needsHuman=80. Re-verify against the authoritative oracle (no hand-rolled SQL): scheduler:get_next { harness: 'papercusp' }.",
+        "[auto-drain-stamp 2026-07-21T00:00:00.000Z · spec bug-drain@4] 302 in-lane issue-family row(s) matched the fleet spec's filter; stranded by: federationDetector=169, legacyNeedsHuman=80. Re-verify against the authoritative oracle (no hand-rolled SQL): scheduler:get_next { harness: 'papercusp' }.",
       reVerifyCommand: "scheduler:get_next { harness: 'papercusp' }",
     };
 
