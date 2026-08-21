@@ -13,7 +13,7 @@ import { getJob, killJob, readJobOutput } from './bash-jobs';
 
 const DURABLE_TAIL_BYTES = 2_000;
 
-function workspaceIdForContext(ctx: { workspaceId?: string; principal?: { workspaceId?: string } }): string | undefined {
+function workspaceIdForContext(ctx: { workspaceId?: string; principal?: { workspaceId?: string } | null }): string | undefined {
   if (ctx.workspaceId && ctx.workspaceId !== '*') return ctx.workspaceId;
   if (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*') return ctx.principal.workspaceId;
   return undefined;
