@@ -1371,6 +1371,7 @@ export function classifyGateStallStatus(
     status === 'skipped-locked' ||
     status === 'migrations-pending' ||
     status === 'infra-inconclusive' ||
+    status === 'disk-headroom' ||
     status === 'deadline-exceeded' ||
     status === 'repair-in-progress' ||
     status === 'repair-staging-mismatch'
@@ -1467,6 +1468,15 @@ export function gateStallRecordOnlyLogMessage(status: string): string {
 }
 
 export function gateStallNoopLogMessage(status: string): string {
+  if (status === 'disk-headroom') {
+    return (
+      `${orchestratorStdoutTag()} 'disk-headroom' — this run ABORTED before checkout setup or tests ` +
+      `because the temp filesystem lacked safe byte/inode headroom. It rendered no code verdict, ` +
+      `so do not triage the prior red's files and do not re-fire until space is reclaimed. No peer ` +
+      `run is in flight. Leaving gate_health untouched (not a red; a frozen \`main\` is still ` +
+      `escalated by checkMainBehindStaging / evaluateGreenStall)`
+    );
+  }
   if (status === 'repair-in-progress') {
     return (
       `${orchestratorStdoutTag()} 'repair-in-progress' — the serialized frozen-candidate repair queue ` +
