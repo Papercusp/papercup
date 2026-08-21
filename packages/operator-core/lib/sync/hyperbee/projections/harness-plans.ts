@@ -25,6 +25,7 @@ import type { TableProjection, ProvenanceContext } from '../projection';
 import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
+import { summarizeForcedPast, type ForcedPastSummary } from '../../agent-tools/plans/forced-past-stamp';
 import {
   decideContentWriteAuthority,
   resolveContentWriteMode,
@@ -85,6 +86,9 @@ export interface HarnessPlanRow {
   template_data?: unknown;
   promote_policy?: unknown;
   input_schema?: unknown;
+  /** Bounded index of the canonical append-only waiver log (optional for
+   *  pre-861 peers; receivers reconstruct it from content when absent). */
+  forced_past?: ForcedPastSummary | null;
   supersedes: string[];
   superseded_by: string | null;
   archived: boolean;
@@ -293,6 +297,9 @@ async function writeToPg(
   const origin = provenance?.origin ?? 'local';
   const fedTs = provenance?.ts ?? null;
   const fedHlc = provenance?.fedHlc ?? null;
+  const forcedPast = row.forced_past === undefined
+    ? summarizeForcedPast(row.content)
+    : row.forced_past;
   // P-018 / D-012 — author-scoped write authority. Only a cross-member REMOTE op is gated (a local
   // op is the operator's own write; own-slug is already 'apply'). In a trusted hive the mode is
   // 'member' → always ok, owner never bound (byte-identical to today). In an open/author-scoped
@@ -313,13 +320,14 @@ async function writeToPg(
     await sql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-         title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, supersedes, superseded_by,
+         title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, forced_past, supersedes, superseded_by,
          archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
       VALUES
         (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
          ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
          ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
          ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
+         ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
          ${row.supersedes}, ${row.superseded_by},
          ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
       ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
@@ -335,7 +343,7 @@ async function writeToPg(
   await sql`
     INSERT INTO harness_shared.harness_plans
       (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-       title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, supersedes, superseded_by,
+       title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema, forced_past, supersedes, superseded_by,
        archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
@@ -343,6 +351,7 @@ async function writeToPg(
        -- jsonb: bind via JSON.stringify(x)::text::jsonb (sql.json throws under getOrgPg)
        ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
        ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
+       ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
        ${row.supersedes}, ${row.superseded_by},
        ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
     ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
@@ -361,6 +370,7 @@ async function writeToPg(
       template_data  = EXCLUDED.template_data,
       promote_policy = EXCLUDED.promote_policy,
       input_schema   = EXCLUDED.input_schema,
+      forced_past    = EXCLUDED.forced_past,
       supersedes    = EXCLUDED.supersedes,
       superseded_by = EXCLUDED.superseded_by,
       archived      = EXCLUDED.archived,

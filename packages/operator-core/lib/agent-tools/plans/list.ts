@@ -233,6 +233,8 @@ type ListRow = {
   initiative: string | null;
   /** Template TYPE this plan conforms to (frontmatter-derived), or null — P-005. */
   template: string | null;
+  /** Permanent acceptance-waiver marker; null when the plan has never been forced. */
+  forcedPast: PlanIndexRow["forcedPast"];
   archived: boolean;
   isLegacy: boolean;
   itemCounts: Partial<
@@ -756,6 +758,7 @@ export default defineTool({
               owner: row.owner,
               initiative: row.initiative,
               template: row.template,
+              forcedPast: row.forcedPast,
               archived: row.archived,
               isLegacy: row.isLegacy,
               itemCounts,

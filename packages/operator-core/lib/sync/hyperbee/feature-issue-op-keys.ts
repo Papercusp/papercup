@@ -475,6 +475,7 @@ function toPlanValue(row: Record<string, unknown>): HarnessPlanRow {
     template_data: row.template_data ?? null,
     promote_policy: row.promote_policy ?? null,
     input_schema: row.input_schema ?? null,
+    forced_past: row.forced_past ?? null,
     supersedes: Array.isArray(row.supersedes) ? row.supersedes.filter((s): s is string => typeof s === 'string') : [],
     superseded_by: strOrNull(row.superseded_by),
     archived: typeof row.archived === 'boolean' ? row.archived : false,

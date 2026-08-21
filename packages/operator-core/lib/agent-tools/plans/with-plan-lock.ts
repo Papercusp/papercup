@@ -22,6 +22,7 @@
 import { withWorkspace } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { hashPlanContent } from './content-hash';
+import { summarizeForcedPast } from './forced-past-stamp';
 import { writePlanIndexRows } from './plan-index-rows';
 import {
   resolvePlanScope,
@@ -301,6 +302,10 @@ export async function withPlanLock<T>(
       const decisionsJson = JSON.stringify(idx.decisions);
       // v2 P-001: the structured promote-policy, parsed once at write-time (deriveIndexFromContent).
       const promotePolicyJson = JSON.stringify(idx.promotePolicy);
+      // WI-40139 / D-005: the append-only markdown log remains canonical, while
+      // this bounded jsonb projection makes the permanent waiver visible on the
+      // cheap plans:get/list paths without reparsing the document on every read.
+      const forcedPastJson = JSON.stringify(summarizeForcedPast(newBody));
       // P-005: `template` (the type) is frontmatter-DERIVED (mirrors `initiative`),
       // re-derived on every content write. `template_data` (the instance data) is
       // NOT touched here — it is preserved on conflict (omitted from the SET) and
@@ -342,12 +347,12 @@ export async function withPlanLock<T>(
         INSERT INTO harness_shared.harness_plans (
           workspace_id, harness_slug, plan_slug, content, content_hash, version,
           title, status, created, updated, owner, initiative, template, supersedes, superseded_by,
-          is_legacy, items, decisions, now_state, now_next, promote_policy, origin
+          is_legacy, items, decisions, now_state, now_next, promote_policy, forced_past, origin
         ) VALUES (
           ${workspaceId}, ${harnessSlug}, ${slug}, ${newBody}, ${hash}, ${newVersion},
           ${idx.title}, ${idx.status}, ${idx.created}, ${idx.updated}, ${idx.owner}, ${idx.initiative}, ${idx.template},
           ${idx.supersedes}, ${idx.supersededBy}, ${idx.isLegacy},
-          ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext}, ${promotePolicyJson}::text::jsonb, 'local'
+          ${itemsJson}::text::jsonb, ${decisionsJson}::text::jsonb, ${idx.nowState}, ${idx.nowNext}, ${promotePolicyJson}::text::jsonb, ${forcedPastJson}::text::jsonb, 'local'
         )
         ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
           content       = EXCLUDED.content,
@@ -368,6 +373,7 @@ export async function withPlanLock<T>(
           now_state     = EXCLUDED.now_state,
           now_next      = EXCLUDED.now_next,
           promote_policy = EXCLUDED.promote_policy,
+          forced_past   = EXCLUDED.forced_past,
           -- EI-117: a genuine local write must RESET origin — without this a row
           -- last touched by a hyperbee projection (origin='remote') keeps that
           -- origin, the CDC capture trigger skips the local write, and the edit

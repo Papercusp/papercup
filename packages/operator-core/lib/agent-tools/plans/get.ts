@@ -544,6 +544,9 @@ export default defineTool({
               // v2 P-001: the structured promote-policy ({ policy, warnings }) read from the row column —
               // agents read it here instead of parsing the `## Promote` markdown. null until mig-331 repopulate.
               promotePolicy: row.promotePolicy,
+              // WI-40139 / D-005: permanent, bounded proof that this plan has
+              // ever been shipped through an explicit code-truth waiver.
+              forcedPast: row.forcedPast,
               sectionIndex: sections.map((s) => ({
                 heading: s.heading,
                 level: s.level,

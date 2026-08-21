@@ -21,6 +21,7 @@ import { existsSync, realpathSync } from 'node:fs';
 import * as path from 'node:path';
 import { parsePlan, type ParsedPlan, type PlanItem, type PlanStatus } from './parser';
 import { hashPlanContent } from './content-hash';
+import { summarizeForcedPast, type ForcedPastSummary } from './forced-past-stamp';
 import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import type { Sql } from 'postgres';
 import { withWorkspace } from '@papercusp/db-org';
@@ -170,6 +171,9 @@ export interface PlanRow {
   /** v2 P-001: the parsed `## Promote` policy ({ policy, warnings }); NULL when the row hasn't been
    *  repopulated since mig 331 (consumers fall back to parsing content until the next write). */
   promotePolicy: ParsePromoteResult | null;
+  /** Bounded projection of the append-only acceptance-waiver log. The markdown
+   *  content remains canonical; this is the cheap permanent read marker. */
+  forcedPast: ForcedPastSummary | null;
   // Scheduled/recurring plans (scheduled-recurring-plans-2026-06-16, mig 299).
   /** Authored recurrence set + policy; NULL ⇒ not scheduled (D-004). */
   schedule: PlanSchedule | null;
@@ -218,6 +222,7 @@ interface PlanDbRow {
   now_state: string | null;
   now_next: string | null;
   promote_policy: unknown;
+  forced_past?: unknown;
   schedule: unknown;
   schedule_active: boolean;
   scheduled_at: string | null;
@@ -261,6 +266,12 @@ function rowFromDb(r: PlanDbRow): PlanRow {
     // v2 P-001: surface the structured promote-policy; null when the column hasn't been repopulated
     // (the row predates mig 331's lazy-populate) → consumers fall back to parsing content.
     promotePolicy: (r.promote_policy as ParsePromoteResult | null) ?? null,
+    // A null/missing projection can occur on a pre-861 row or an older federated
+    // op. Full-row reads have content available, so self-heal from the canonical
+    // log; index-only list reads pass content='' and stay null until backfilled.
+    forcedPast:
+      (r.forced_past as ForcedPastSummary | null | undefined) ??
+      summarizeForcedPast(r.content),
     schedule: (r.schedule as PlanSchedule | null) ?? null,
     scheduleActive: r.schedule_active ?? false,
     scheduledAt: r.scheduled_at,
@@ -625,7 +636,7 @@ export async function getPlanRow(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next, promote_policy,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data, input_schema
+               template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND plan_slug = ${slug}
@@ -664,6 +675,7 @@ export async function getPlanRow(
         template: null,
         template_data: null,
         input_schema: null,
+        forced_past: null,
       } as PlanDbRow);
     }
     throw err;
@@ -790,7 +802,7 @@ export async function listPlanRows(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data, input_schema
+               template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -830,6 +842,7 @@ export async function listPlanRows(
           template: null,
           template_data: null,
           input_schema: null,
+          forced_past: null,
         } as PlanDbRow),
       );
     }
@@ -977,7 +990,7 @@ export async function listPlanIndexRows(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template
+               template, forced_past
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
            AND (${filters.includeArchived} OR archived = false)
@@ -1031,6 +1044,7 @@ export async function listPlanIndexRows(
           template: null,
           template_data: null,
           input_schema: null,
+          forced_past: null,
         } as PlanDbRow);
         return rest;
       });
@@ -1096,7 +1110,7 @@ export async function listPlanIndexRowsForWorkspace(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, ${itemsCol}, ${heavyCols} now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template
+               template, forced_past
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}
            AND (${filters.includeArchived} OR archived = false)
@@ -1150,6 +1164,7 @@ export async function listPlanIndexRowsForWorkspace(
           template: null,
           template_data: null,
           input_schema: null,
+          forced_past: null,
         } as PlanDbRow);
         return rest;
       });
@@ -1253,7 +1268,7 @@ export async function listPlanRowsMatchingAnyToken(
                op_status, op_started_at, op_updated_at, current_wave, op_priority,
                archived, is_legacy, updated_at, items, now_state, now_next,
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
-               template, template_data, input_schema
+               template, template_data, input_schema, forced_past
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          ${archivedFilter}
@@ -1300,6 +1315,7 @@ export async function listPlanRowsMatchingAnyToken(
             template: null,
             template_data: null,
             input_schema: null,
+            forced_past: null,
           } as PlanDbRow),
         ),
         truncated,
