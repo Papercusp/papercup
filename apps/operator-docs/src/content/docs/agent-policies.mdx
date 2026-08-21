@@ -133,10 +133,12 @@ A passing typecheck is not a working feature. Before you say "done":
 - **For schema / migration changes**: apply the migration locally
   and verify the queries that touch it.
 - **For docs changes**: hit the docs route and confirm it renders.
-- **Always**: run the project's lint + typecheck before yielding.
-  For Papercup that's `npm run typecheck && npm run lint` from the
-  repo root or the relevant `apps/<name>/`. If those fail, the
-  change isn't done.
+- **Always**: run the project's typecheck and the relevant maintained lint gates before yielding.
+  For Papercup, run `npm run typecheck` plus the applicable scoped `lint:*`
+  scripts (for example, `npm run lint:mdx` for docs or
+  `npm run lint:as-committed` for committed-file coverage) from the repo root
+  or the relevant `apps/<name>/`. There is no aggregate root `npm run lint`
+  command. If a required check fails, the change isn't done.
 
 If you can't verify a change for some reason (no dev server, no test
 infrastructure for that surface), **say so explicitly**. "Typecheck
