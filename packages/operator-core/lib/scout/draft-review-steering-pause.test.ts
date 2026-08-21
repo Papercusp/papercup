@@ -44,11 +44,22 @@ const {
   vi.hoisted(() => ({
     listBlenderMaintenanceScopes: vi.fn(),
     listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
-    deliverScoutNudge: vi.fn().mockResolvedValue(undefined),
-    resolveMugOwner: vi.fn(),
-    claimWatchdogFire: vi.fn(),
-    routineStorageSlug: vi.fn(),
-    draftRows: { current: [] as Array<{ plan_slug: string; title: string | null; updated_at_ms: number }> },
+  deliverScoutNudge: vi.fn().mockResolvedValue(undefined),
+  resolveMugOwner: vi.fn(),
+  claimWatchdogFire: vi.fn(),
+  routineStorageSlug: vi.fn(),
+  draftRows: {
+    current: [] as Array<{
+      plan_slug: string;
+      title: string | null;
+      updated_at_ms: number;
+      workspace_id?: string;
+      harness_slug?: string;
+      items?: unknown;
+      decisions?: unknown;
+      content?: string;
+    }>,
+  },
   }));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -83,7 +94,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   draftRows.current = [staleDraftRow()];
   listBlenderMaintenanceScopes.mockResolvedValue([{ workspaceId: 'ws-1', installSlug: 'pot-1' }]);
-  routineStorageSlug.mockResolvedValue('pot-1');
+  routineStorageSlug.mockImplementation(async (installSlug: string) => installSlug);
   claimWatchdogFire.mockResolvedValue(true);
   resolveMugOwner.mockResolvedValue('mug-owner-1');
   // Owner steering: HARD PAUSED, for every test in this file.
@@ -124,6 +135,37 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
     const results = await scoutDraftReviewSweep();
     expect(deliverScoutNudge).toHaveBeenCalledTimes(2);
     expect(results.map((r) => r.outcome)).toEqual(['nudged', 'nudged']);
+  });
+
+  it('unions plan-discovered legacy scopes with registered scopes', async () => {
+    draftRows.current = [
+      {
+        ...staleDraftRow('registered-draft'),
+        workspace_id: 'ws-1',
+        harness_slug: 'pot-1',
+        content: '\norigin: scout\n',
+      },
+      {
+        ...staleDraftRow('legacy-draft'),
+        workspace_id: 'ws-2',
+        harness_slug: 'legacy-pot',
+        content: '\norigin: scout\n',
+      },
+    ];
+    listBlenderMaintenanceScopes.mockResolvedValue([{ workspaceId: 'ws-1', installSlug: 'pot-1' }]);
+    routineStorageSlug.mockImplementation(async (installSlug: string) => installSlug);
+
+    const results = await scoutDraftReviewSweep();
+
+    expect(deliverScoutNudge).toHaveBeenCalledTimes(2);
+    expect(results.map(({ workspaceId, installSlug }) => `${workspaceId}:${installSlug}`)).toEqual([
+      'ws-1:pot-1',
+      'ws-2:legacy-pot',
+    ]);
+    expect(results).toEqual([
+      expect.objectContaining({ evaluatedWorkspaceCount: 2, evaluatedScopeCount: 2 }),
+      expect.objectContaining({ evaluatedWorkspaceCount: 2, evaluatedScopeCount: 2 }),
+    ]);
   });
 });
 
