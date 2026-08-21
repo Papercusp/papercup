@@ -33,7 +33,6 @@ import { frontierPlacementKindClause } from '../datatype-frontier-placement';
 import { autoPickableWhereSql } from '../work-items-admission';
 import {
   claimHoldExclusionSql,
-  legacyNeedsHumanExclusionSql,
   needsOwnerActionExclusionSql,
   crossMachineRigExclusionSql,
 } from '../work-items';
@@ -586,9 +585,8 @@ export async function fetchEscalatedIssueFrontierRows(
        -- claim-hold, or last-mile LIVE-rig/VM verification) still counted as a "ready to
        -- place" frontier item, driving recurring false Mug-dark blocker escalations
        -- (live-verified 2026-07-17: 4/10 of the current escalated-issue frontier carried
-       -- payload.needsHuman:true). Mirror the SAME legacy + strict owner-action,
-       -- claim-hold, and rig floors, one source of truth.
-       AND ${legacyNeedsHumanExclusionSql(sql)}
+       -- payload.needsHuman:true). Migration 864 retired that ambiguous legacy payload
+       -- floor; mirror the remaining typed owner-action, claim-hold, and rig floors.
        AND ${needsOwnerActionExclusionSql(sql)}
        AND ${claimHoldExclusionSql(sql)}
        AND ${crossMachineRigExclusionSql(sql, false)}

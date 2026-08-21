@@ -11,7 +11,6 @@
 
 /** The exclusion helpers required by the current DBOS routines import graph. */
 export const REQUIRED_DBOS_WORK_ITEMS_EXPORTS = [
-  'legacyNeedsHumanExclusionSql',
   'needsOwnerActionExclusionSql',
 ] as const;
 

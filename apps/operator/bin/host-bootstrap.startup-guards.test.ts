@@ -161,14 +161,13 @@ describe('host-bootstrap emits a machine-readable source-pass verdict', () => {
 });
 
 describe('host-bootstrap validates the bundled DBOS work-items import contract', () => {
-  it('uses the sidecar build marker and checks both current exclusion exports before startDbos()', () => {
+  it('uses the sidecar build marker and checks the current exclusion export before startDbos()', () => {
     expect(bootSrc).toContain('__PAPERCUSP_BUNDLED_SIDECAR__');
     expect(bootSrc).toContain('assertDbosWorkItemsImportContract');
     expect(bootSrc).toContain('import(\'@papercusp/operator-core/lib/work-items\')');
     // The boot site delegates the export list to the dependency-free contract helper;
     // assert the names where that list is authored instead of coupling this wiring test
     // to implementation details inside host-bootstrap.
-    expect(dbosWorkItemsContractSrc).toContain('legacyNeedsHumanExclusionSql');
     expect(dbosWorkItemsContractSrc).toContain('needsOwnerActionExclusionSql');
 
     const contractCheck = bootSrc.indexOf('assertDbosWorkItemsImportContract(workItems)');

@@ -67,7 +67,6 @@ import {
   ISSUE_FAMILY_CLAIMABLE_STATES,
   releaseCooldownSec,
   claimHoldExclusionSql,
-  legacyNeedsHumanExclusionSql,
   needsOwnerActionExclusionSql,
   observationLaneExclusionSql,
   externalBlockersExclusionSql,
@@ -901,7 +900,7 @@ export interface IssueClaimExclusionBreakdown {
  *  here fails immediately instead of silently widening the queue. Add a floor to the
  *  subquery ⇒ add it here. */
 export const ALL_ISSUE_CLAIM_FLOORS_PASS =
-  `ok_untaken AND ok_claim_hold AND ok_legacy_needs_human AND ok_needs_owner_action ` +
+  `ok_untaken AND ok_claim_hold AND ok_needs_owner_action ` +
   `AND ok_agent_review AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
   `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
@@ -940,7 +939,6 @@ export function issueClaimCandidateSubquery(
       (${compiled})                                                     AS spec_match,
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
-      (${legacyNeedsHumanExclusionSql(sql)})                             AS ok_legacy_needs_human,
       (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
       (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
@@ -1050,7 +1048,7 @@ export async function aggregateIssueClaimExclusions(
       )::int AS claimable_with_paths,
       count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_legacy_needs_human)::int AS legacy_needs_human,
+      0::int                                                                         AS legacy_needs_human,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_owner_action)::int AS needs_owner_action,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_agent_review)::int     AS agent_review,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int     AS observation_lane,
@@ -1207,7 +1205,7 @@ export async function sampleIssueClaimExclusions(
     SELECT
       ${sampleOf('NOT ok_untaken', '')}        AS taken,
       ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
-      ${sampleOf('NOT ok_legacy_needs_human')}  AS legacy_needs_human,
+      ARRAY[]::text[]                          AS legacy_needs_human,
       ${sampleOf('NOT ok_needs_owner_action')}  AS needs_owner_action,
       ${sampleOf('NOT ok_agent_review')}         AS agent_review,
       ${sampleOf('NOT ok_observation')}         AS observation_lane,
