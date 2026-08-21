@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 752,
+  "count": 753,
   "tools": [
     {
       "name": "ablation:report",
@@ -14760,6 +14760,80 @@
         "when": "A loop objective should continue under a deliberate successor session instead of being ended and recreated.",
         "notWhen": "The original objective is finished — use loop:end. Moving work-item ownership without its loop — use work_items tools.",
         "chaining": "Use loop:status for both owners after transfer; the destination receives subsequent wakes and resumes from the transferred cold carry-note."
+      }
+    },
+    {
+      "name": "lsp:query",
+      "http": {
+        "path": "/api/agent-tools/lsp/query",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Compiler-accurate, READ-ONLY code intelligence from the pinned language server (TypeScript/Rust). `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns { sites:[{path,line1,kind,detail}], truncation, freshness:{health}, latencyMs, error }; `line1` is ALWAYS one-indexed (the LSP wire is zero-indexed — this converts, so a cited line matches grep). NEVER writes: refactor_preview reports the sites a rename would touch and applies nothing. CRITICAL: an empty `sites` proves absence ONLY when error===null AND freshness.health===\"healthy\" — a disabled flag, a still-loading project, an unhandled file type and a dead server each return sites:[] WITH an error naming which.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "You need the truth about TS/Rust code rather than a text match: where a symbol is really declared (across package boundaries and re-exports), every reference, implementations of an interface, a file's diagnostics, or the exact sites a rename would hit.",
+        "notWhen": "Exhaustive text/regex search (ripgrep) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.",
+        "chaining": "op:\"workspace_symbols\" { name } to find a position → op:\"symbol\"/\"references\" { file, line1, character }. On a degraded answer, op:\"health\" reports each server + the taskId processes:kill takes."
       }
     },
     {
