@@ -215,6 +215,29 @@ const fakeSql = Object.assign(
     },
   },
 );
+/**
+ * EI-21065771379277001: `sql.begin` — assigned AFTER construction because referencing
+ * `fakeSql` inside its own `Object.assign` initializer is a circular self-reference
+ * (same shape as operator-state-pg.test.ts / operator-rate-limit.test.ts).
+ *
+ * WHY A FAKE NEEDS IT AT ALL. Production's org client is a real postgres.js client, so
+ * transactional call sites legitimately reach for `.begin` — here, the announce latch's
+ * per-key advisory lock (`stampAnnouncementsFired`, events/await/store.ts). A fake that
+ * offered only the tagged template + `.unsafe` made that call throw `sql.begin is not a
+ * function`. The emit path catches it FAIL-SOFT and `console.warn`s ("never break the
+ * emit"), and `vitest-fail-on-console` then turns that warn into a failure of whatever
+ * test merely TOUCHED an announced event — here `git-sync:committed` — with no assertion
+ * of its own being wrong. That is why 27 tests in this file went red at once without any
+ * of them changing.
+ *
+ * The tx is the same tagged template: these suites assert on `templateCalls`/`unsafeCalls`,
+ * and a single-connection fake needs no isolation to model that faithfully. The latch's
+ * two statements target `event_awaits` / `pg_advisory_xact_lock`, so they do not disturb
+ * the `harness_shared.routines` filters the tenant-scoping assertions use.
+ */
+(fakeSql as unknown as { begin: <T>(cb: (tx: unknown) => Promise<T>) => Promise<T> }).begin = <T>(
+  cb: (tx: unknown) => Promise<T>,
+): Promise<T> => cb(fakeSql);
 // Spread the real module so pure exports (e.g. `generated`) survive the mock —
 // a minimal stub breaks at collection when a transitive import derefs them (EI-14928).
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
