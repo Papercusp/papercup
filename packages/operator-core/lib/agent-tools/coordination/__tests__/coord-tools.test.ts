@@ -337,7 +337,7 @@ describe('coord:escalate handler', () => {
       (e: { msg_id: string }) => e.msg_id === first.msg_id,
     );
     expect(mine).toHaveLength(1);
-    expect(mine[0].summary).toBe('Mug stalled ~7h — 8 auto-eligible items stuck');
+    expect(mine[0].summary).toBe('Mug stalled ~10h — 12 auto-eligible items stuck');
   });
 
   it('still opens distinct rows for distinct conditionKeys', async () => {
