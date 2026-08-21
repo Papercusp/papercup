@@ -126,6 +126,51 @@ describe('release:trace tool contract', () => {
     );
   });
 
+  it('preserves the cancelled no-verdict authority for the pure release:trace guard', async () => {
+    const cancelled = {
+      status: 'cancelled',
+      candidate: 'abcd1234',
+      detail: 'externally SIGTERMed before a result marker was published',
+      observedAtMs: 123,
+    };
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: {
+        verdictStale: false,
+        consecutiveReds: 0,
+        failingTests: [],
+        fireStale: false,
+        inconclusive: cancelled,
+      },
+    };
+    const cancelledRun = {
+      active: false,
+      activeSource: 'run-lock' as const,
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      asOfAgeMs: 0,
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({
+      targetSha: 'abcd1234',
+      gate: { checkpointRunInFlight: cancelledRun },
+    });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+    await tool.handler({ sha: 'abcd1234' } as never, {} as never);
+
+    expect(mocks.buildReleaseTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: expect.objectContaining({ inconclusive: cancelled }),
+      }),
+    );
+  });
+
   it('returns an unknown, retryable result when the pipeline snapshot exceeds its budget', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();

@@ -773,4 +773,40 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
     expect(out.nextVerb?.reason).toContain('oom-kill/killed:KILL');
   });
+
+  it('EI-21103060581352507: refuses to await a candidate whose checkpoint was cancelled and has no producer', () => {
+    const cancelledRun = {
+      active: false,
+      activeSource: 'run-lock' as const,
+      candidate: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      asOfAgeMs: 0,
+    };
+    const cancelled = {
+      status: 'cancelled',
+      candidate: sha.slice(0, 8),
+      detail: 'externally SIGTERMed before a result marker was published',
+      observedAtMs: 123,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: cancelledRun, inconclusive: cancelled },
+        }),
+        gate: {
+          ...input().gate,
+          checkpointRunInFlight: cancelledRun,
+          inconclusive: cancelled,
+        },
+      }),
+    );
+
+    expect(out.constraints.find((c) => c.code === 'checkpoint-run-cancelled')?.summary).toMatch(
+      /externally cancelled without a verdict/i,
+    );
+    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run', args: {} });
+    expect(out.nextVerb?.reason).toMatch(/do not await a candidate-bound result/i);
+  });
 });

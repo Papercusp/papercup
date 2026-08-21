@@ -257,6 +257,10 @@ export default defineTool({
           // observedCandidate can legitimately name an older verdict while this run
           // is judging a newer candidate.
           checkpointRunInFlight: position.gate?.checkpointRunInFlight,
+          // EI-21103060581352507: preserve the gate's terminal no-verdict
+          // authority so release:trace can refuse an await for a cancelled
+          // candidate whose measured producer is already gone.
+          inconclusive: snapshot.gate.inconclusive,
           // EI-18672078222841101: who already owns this red. Unlike `failingTests` above
           // this is NOT blanked on a stale verdict — `describeGateRedOwnership` renders the
           // staleness itself ('verdict-stale'), which is exactly the case that misled a

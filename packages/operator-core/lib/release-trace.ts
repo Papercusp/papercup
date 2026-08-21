@@ -33,6 +33,12 @@ export interface ReleaseTraceGate {
    * one names the candidate currently being judged by an in-flight run.
    */
   checkpointRunInFlight?: PipelinePosition['gate']['checkpointRunInFlight'];
+  /**
+   * The latest checkpoint attempt that rendered no verdict. This is needed when
+   * a measured idle run-lock is paired with an external cancellation: there is
+   * no producer left for a candidate-bound `checkpoint:await` to wake from.
+   */
+  inconclusive?: PipelinePosition['gate']['inconclusive'];
   /** EI-18672078222841101: who already owns this red (see `GateRedOwnership`). Optional so
    *  an unwired/legacy caller renders exactly as before. This is the surface that matters
    *  most: `release:trace` is what an agent reads when it decides whether to investigate,
@@ -121,6 +127,21 @@ function checkpointRunTerminalInconclusive(input: Pick<ReleaseTraceInput, 'posit
   return checkpointRun?.active === false && checkpointRun.terminalMarker === false && evidence?.abnormal === true &&
     sameSha(input.position.targetSha, evidence.candidate)
     ? evidence
+    : null;
+}
+
+/** EI-21103060581352507: a cancelled checkpoint has no future verdict to wake an
+ * awaiter once the live run-lock has measured that its producer is gone. Keep the
+ * guard exact-SHA and fail closed on the lock reading: an absent/unmeasured run
+ * must not be mistaken for a terminal cancellation of the requested candidate. */
+function checkpointRunCancelledNoProducer(input: Pick<ReleaseTraceInput, 'position' | 'gate'>) {
+  const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
+  const inconclusive = input.gate.inconclusive ?? input.position.gate.inconclusive;
+  return checkpointRun?.active === false &&
+    checkpointRun.activeSource === 'run-lock' &&
+    inconclusive?.status === 'cancelled' &&
+    sameSha(input.position.targetSha, inconclusive.candidate)
+    ? inconclusive
     : null;
 }
 
@@ -227,6 +248,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const targetWasGateTested = gateJudgedTarget(input);
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   const terminalInconclusive = checkpointRunTerminalInconclusive(input);
+  const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
   if (terminalInconclusive) {
@@ -236,6 +258,14 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
       `The checkpoint for ${terminalInconclusive.candidate ?? position.targetSha ?? 'this target'} ended ` +
         `${terminalInconclusive.serviceResult}/${terminalInconclusive.exitCode}:${terminalInconclusive.exitStatus} ` +
         'without a valid checkpoint result marker. This is explicitly INCONCLUSIVE, not red or green.',
+    );
+  }
+  if (cancelledNoProducer) {
+    add(
+      'checkpoint-run-cancelled',
+      true,
+      `The checkpoint for ${cancelledNoProducer.candidate ?? position.targetSha ?? 'this target'} was externally cancelled ` +
+        'without a verdict, and the measured run-lock is idle; no producer remains for a candidate-bound checkpoint:await.',
     );
   }
   if (position.dirtyUncommitted) {
@@ -314,6 +344,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const checkpointRun = gate.checkpointRunInFlight ?? position.gate.checkpointRunInFlight;
   const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   const terminalInconclusive = checkpointRunTerminalInconclusive(input);
+  const cancelledNoProducer = checkpointRunCancelledNoProducer(input);
   if (!targetSha) {
     return {
       name: 'dev:pipeline_position',
@@ -352,6 +383,16 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
         `The previous checkpoint for ${terminalInconclusive.candidate ?? targetSha} terminated ` +
         `${terminalInconclusive.serviceResult}/${terminalInconclusive.exitCode}:${terminalInconclusive.exitStatus} ` +
         'without a verdict. Its terminal state is inconclusive; launch one fresh guarded verdict after fixing the cause.',
+    };
+  }
+  if (cancelledNoProducer) {
+    return {
+      name: 'release:checkpoint-run',
+      args: {},
+      reason:
+        `The checkpoint for ${cancelledNoProducer.candidate ?? targetSha} was externally cancelled without a verdict, ` +
+        'and the measured run-lock is idle; do not await a candidate-bound result from that stopped producer. ' +
+        'Launch one fresh guarded verdict after the cancellation cause is resolved.',
     };
   }
   if (!position.positions.onStaging && !targetWasGateTested) {
