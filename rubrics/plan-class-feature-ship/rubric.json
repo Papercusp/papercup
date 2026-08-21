@@ -5,7 +5,7 @@
   "description": "The CLASS rubric feature-shipping plans' acceptance rubrics reference (acceptance-rubrics-on-every-plan-2026-08-11 D-006): the repo's shared completion invariants, encoded once so per-plan bespoke criteria stay at 3-7 outcome lines. Graded at plan completion by a NON-implementer.",
   "methodRef": null,
   "ratingScale": ["pass", "partial", "fail", "unknown"],
-  "version": "0.1.0",
+  "version": "0.2.0",
   "source": "first-party",
   "criteria": [
     {
@@ -42,6 +42,13 @@
       "model": "Docs, tool guidance, and prompts affected by the change say what the shipped system now does — a new durable surface is discoverable.",
       "method": "Check the surfaces the change touches: CLAUDE.md doc-parts, tool description/guidance, agent-insights runbooks; confirm none contradicts the shipped behavior.",
       "driftMarkers": "A new tool/table/flag with no doc trail; stale guidance steering agents into the old behavior."
+    },
+    {
+      "key": "audit-citations-spot-checked",
+      "title": "The independent grader audits the audit",
+      "model": "The independent grader opens a sample of the implementer's plan-audit citations and confirms each sampled code/test reference resolves against the current tree and actually supports the audited item — the audit verdict itself is never accepted as proof.",
+      "method": "Read the subject plan's effective per-item audit. Spot-check at least one resolving code/test citation (and expand the sample after any mismatch): open the cited current blob, compare it with the item requirement and audit claim, and record what was checked. Treat doc, workitem, and none citations as declarations of non-verification, never substitutes for code truth.",
+      "driftMarkers": "A grade copied from the audit's PASS label; no cited blob opened; a stale blob hash ignored; doc/work-item prose treated as proof that code exists."
     }
   ]
 }

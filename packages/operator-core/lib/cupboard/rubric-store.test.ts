@@ -358,4 +358,22 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
       if (r.methodRef) expect(readLocalRubricMethod(r)).toBeTruthy();
     }
   });
+
+  it('every plan-class rubric requires the independent grader to spot-check audit citations', () => {
+    const shipped = listLocalRubrics([{ dir: inRepo, layer: 'bundled' }]);
+    const planClasses = shipped.filter((r) => r.rubricId.startsWith('plan-class-'));
+
+    expect(planClasses.map((r) => r.rubricId)).toEqual([
+      'plan-class-bugfix',
+      'plan-class-feature-ship',
+      'plan-class-investigation',
+      'plan-class-migration',
+    ]);
+    for (const rubric of planClasses) {
+      const spotCheck = rubric.criteria.filter((c) => c.key === 'audit-citations-spot-checked');
+      expect(spotCheck, rubric.rubricId).toHaveLength(1);
+      expect(spotCheck[0]!.method).toMatch(/code\/test citation/);
+      expect(spotCheck[0]!.method).toMatch(/doc, workitem, and none/);
+    }
+  });
 });
