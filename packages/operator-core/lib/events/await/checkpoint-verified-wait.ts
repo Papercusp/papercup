@@ -61,10 +61,25 @@ function checkpointObservationState(
   // expected), never to withhold `unknown` (a claim only that nothing was observed).
   if (activeRun == null) return 'unknown';
 
-  // A candidate-bound wait is asking about a specific run. An idle routine
-  // cannot safely declare that run "expected idle"; keep the old stalled/absent
-  // diagnosis for that targeted case — this only applies once we know the probe
-  // DID observe something (activeRun is non-null here).
+  // EI-20971831715218093: a candidate-bound wait cannot conclude a stalled/absent
+  // producer merely because the checkpoint mechanism is not currently judging ANY
+  // candidate (activeRun.candidate == null). That reading is "hasn't started judging
+  // yet" every bit as much as "started and went quiet" -- the routine can sit with no
+  // active candidate while unrelated, live upstream work (e.g. a separate affected-
+  // test verifier task the checkpoint launch waits on) genuinely progresses. Falling
+  // through to the timestamp-staleness heuristic below in that state misreads the
+  // routine's own last-tick timestamp (which can be arbitrarily old on a slow cadence)
+  // as evidence the producer went stale, and recommends an owner takeover for a
+  // producer that was never stalled. Prefer the conservative `unknown` (re-await) —
+  // never a positive `idle` claim, since a candidate-bound wait cannot safely assert
+  // no run is expected for ITS candidate either.
+  if (candidateBound && activeRun.candidate == null) return 'unknown';
+
+  // A candidate-bound wait is asking about a specific run. Once we know a DIFFERENT
+  // candidate is (or was) the one being judged, an idle routine still cannot safely
+  // declare our candidate "expected idle"; keep the old stalled/absent diagnosis for
+  // that targeted case — this only applies once we know the probe DID observe an
+  // actual candidate (activeRun.candidate is non-null here).
   if (candidateBound) return undefined;
 
   // `active` on the routine is configuration/liveness of the scheduler, not
