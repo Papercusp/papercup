@@ -333,6 +333,9 @@ export function getHostSnapshot(): HostSnapshot {
   const psi = readPsiSome60('/proc/pressure/memory', nowMs);
   if (psi !== undefined) snap.psiMemSome60 = psi;
 
+  const psiCpu = readPsiSome60('/proc/pressure/cpu', nowMs);
+  if (psiCpu !== undefined) snap.psiCpuSome60 = psiCpu;
+
   const runq = readRunQueue(nowMs);
   if (runq.running !== undefined) snap.procsRunning = runq.running;
   if (runq.blocked !== undefined) snap.procsBlocked = runq.blocked;

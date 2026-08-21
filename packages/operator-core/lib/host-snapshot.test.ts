@@ -21,6 +21,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
  *  existing idiom — see release/origin-freshness-watchdog.test.ts). */
 let psiRead: () => string;
 let psiReadCount = 0;
+/** `/proc/pressure/cpu` fixture (EI-20495650388693372's CPU-PSI leg). Deliberately
+ *  NULL by default, same opt-in discipline as {@link statRead}: the pre-existing
+ *  memory-PSI / run-queue tests above must keep falling through to whatever the
+ *  real box answers for `/proc/pressure/cpu` (readable or not — either way none of
+ *  them assert on `psiCpuSome60`), rather than being silently re-pointed at a
+ *  fixture added for a later leg. */
+let cpuPsiRead: (() => string) | null = null;
+let cpuPsiReadCount = 0;
 /** `/proc/stat` fixture. Deliberately NULL by default so the interception is
  *  OPT-IN: the pre-existing tests above must keep reading the real file and stay
  *  byte-identical in behaviour, rather than being silently re-pointed at a
@@ -34,6 +42,10 @@ vi.mock('node:fs', async (importOriginal) => ({
     if (p === '/proc/pressure/memory') {
       psiReadCount += 1;
       return psiRead();
+    }
+    if (p === '/proc/pressure/cpu' && cpuPsiRead) {
+      cpuPsiReadCount += 1;
+      return cpuPsiRead();
     }
     if (p === '/proc/stat' && statRead) {
       statReadCount += 1;
