@@ -1855,8 +1855,17 @@ describe('psu-launcher arg parsing', () => {
    * which can only read the launcher's source.
    */
   describe('resumeArgsFor re-applies the omp native-lsp gate (P-023)', () => {
+    // psu-launcher.mjs is untyped JS, so TS infers resumeArgsFor's options as
+    // `{ model?: null }` from its `model = null` default — a string spec, which
+    // is the real runtime contract, does not fit. Cast once at the boundary
+    // rather than leave three raw errors: `lint:tsc:operator` is a PER-FILE
+    // baseline gate and a green-checkpoint leg, so new errors in this file fail
+    // the gate even though the file carries a large recorded baseline.
+    type ResumeOpts = Parameters<typeof resumeArgsFor>[1];
+    const withModel = (model: string | null) => ({ model }) as unknown as ResumeOpts;
+
     const resumeOmp = (model: string | null) =>
-      resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' }, { model }).args;
+      resumeArgsFor({ agent: 'omp', cwd: '/x', ompThreadId: 'thr-1' }, withModel(model)).args;
 
     it('a LOCAL model STRIPS the builtin — the case the hole exposed', () => {
       for (const model of ['ornith', 'ollama/llama3', 'ornith:fast', 'ornith[1m]']) {
@@ -1879,12 +1888,12 @@ describe('psu-launcher arg parsing', () => {
     });
 
     it('non-omp resumes never carry the flag — the builtin is omp-only', () => {
-      expect(resumeArgsFor({ agent: 'claude', cwd: '/x' }, { model: 'ornith' }).args).not.toContain(
-        '--no-lsp',
-      );
-      expect(resumeArgsFor({ agent: 'codex', cwd: '/x' }, { model: 'ornith' }).args).not.toContain(
-        '--no-lsp',
-      );
+      expect(
+        resumeArgsFor({ agent: 'claude', cwd: '/x' }, withModel('ornith')).args,
+      ).not.toContain('--no-lsp');
+      expect(
+        resumeArgsFor({ agent: 'codex', cwd: '/x' }, withModel('ornith')).args,
+      ).not.toContain('--no-lsp');
     });
   });
 

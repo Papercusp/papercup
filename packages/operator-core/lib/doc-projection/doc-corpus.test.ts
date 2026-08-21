@@ -161,6 +161,19 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the acceptance-rubric mandate part post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-21',
+      plan: 'none — part authored directly into harness_doc_parts, projected in commit 09f2b5fc7b',
+      // Same shape as the 2026-08-11 entry above: part `verify-mixed-family-work-item-citations`
+      // ("Verify mixed-family work-item citations against the base table") was ADDED to
+      // harness_doc_parts after the manifest snapshot was frozen, so the manifest predates it.
+      // Verified rather than assumed: the manifest holds 253 partKeys, a known key
+      // ('preamble-papercup-agent-guide') IS present, and BOTH post-load keys — this one and the
+      // 2026-08-11 acceptance-rubric part — are absent from it. Hence the delta is NEGATIVE: the
+      // corpus legitimately carries one block more than the frozen part count (252, not 251).
+      why: 'added the mixed-family citation-verification part post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {
