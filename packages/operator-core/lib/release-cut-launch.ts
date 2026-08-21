@@ -32,6 +32,9 @@ export const CUT_LOG = `/tmp/${CUT_UNIT}.log`;
 /** Written "DONE:<exit-code>" by the detached wrapper when release-local.sh finishes —
  *  the authoritative completion signal a cut has no external event (unlike deploy). */
 export const CUT_DONE = `/tmp/${CUT_UNIT}.done`;
+/** Written when the detached wrapper starts. If the unit later disappears without a
+ *  DONE sentinel, this marker distinguishes an interrupted cut from a never-launched one. */
+export const CUT_STARTED = `/tmp/${CUT_UNIT}.started`;
 
 export type Channel = 'stable' | 'beta' | 'alpha';
 export const CHANNELS: readonly Channel[] = ['stable', 'beta', 'alpha'] as const;
@@ -64,6 +67,9 @@ export function cutLogFor(platform?: Platform): string {
 }
 export function cutDoneFor(platform?: Platform): string {
   return platform ? `/tmp/${CUT_UNIT}-${platform}.done` : CUT_DONE;
+}
+export function cutStartedFor(platform?: Platform): string {
+  return platform ? `/tmp/${CUT_UNIT}-${platform}.started` : CUT_STARTED;
 }
 
 /** Map a single platform leg to the `CutLegs` flags release-local.sh reads (WITH_MAC=1 /
@@ -184,6 +190,7 @@ export function buildCutArgv(
   const unit = cutUnitFor(platform);
   const log = cutLogFor(platform);
   const done = cutDoneFor(platform);
+  const started = cutStartedFor(platform);
   // A first pass writes these version fields before cutting the seed. A retry
   // validates that exact residue in release:cut, then restores only those files
   // so release-local.sh starts from a clean provenance baseline and reapplies the
@@ -191,7 +198,7 @@ export function buildCutArgv(
   const resumeReset = runtime.reuseSeed
     ? 'git restore -- package.json src-tauri/Cargo.toml src-tauri/tauri.conf.json && '
     : '';
-  const inner = `rm -f ${done}; ` + `${resumeReset}${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
+  const inner = `rm -f ${done}; printf 'STARTED:%s\\n' "$(date +%s)" > ${started}; ` + `${resumeReset}${envPrefix} bin/release-local.sh '${version}' '${channel}' > ${log} 2>&1; ` + `echo "DONE:$?" > ${done}`;
   return [
     '--user',
     '--collect',
@@ -288,7 +295,7 @@ export function launchDetachedCut(opts: LaunchCutOpts, spawnFn: SpawnLike = spaw
 
 // ─── Status (poll a detached cut) ──────────────────────────────────────────────
 
-export type CutStateKind = 'idle' | 'running' | 'done' | 'failed';
+export type CutStateKind = 'idle' | 'running' | 'done' | 'failed' | 'interrupted';
 
 export interface CutStatus {
   state: CutStateKind;
@@ -329,8 +336,10 @@ function tailLines(text: string, n: number): string {
 /**
  * Read the current cut status. READ-ONLY. The DONE sentinel is authoritative for
  * completion (the launch `rm -f`s it at start, so a stale sentinel from a prior cut is
- * cleared the moment a new cut begins). Precedence: unit-active ⇒ running; else sentinel
- * ⇒ done/failed by exit code; else ⇒ idle.
+ * cleared the moment a new cut begins). The started marker is written by the detached
+ * wrapper before the builder runs, so an inactive unit with that marker but no DONE
+ * sentinel is an interrupted cut, not an idle host. Precedence: unit-active ⇒ running;
+ * else sentinel ⇒ done/failed by exit code; else started marker ⇒ interrupted; else idle.
  */
 export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
   const exists = deps.existsSync ?? ((p: string) => fs.existsSync(p));
@@ -339,6 +348,7 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
   const unit = cutUnitFor(deps.platform);
   const logPath = cutLogFor(deps.platform);
   const donePath = cutDoneFor(deps.platform);
+  const startedPath = cutStartedFor(deps.platform);
 
   const running = active(unit);
   let exitCode: number | null = null;
@@ -350,11 +360,13 @@ export function readCutStatus(deps: ReadCutStatusDeps = {}): CutStatus {
       doneSeen = true;
     }
   }
+  const startedSeen = exists(startedPath);
   const logTail = exists(logPath) ? tailLines(read(logPath), 40) : null;
 
   let state: CutStateKind;
   if (running) state = 'running';
   else if (doneSeen) state = exitCode === 0 ? 'done' : 'failed';
+  else if (startedSeen) state = 'interrupted';
   else state = 'idle';
 
   return { state, running, exitCode, logTail, logPath, donePath };

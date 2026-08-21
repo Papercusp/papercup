@@ -21,10 +21,12 @@ import {
   CUT_UNIT,
   CUT_DONE,
   CUT_LOG,
+  CUT_STARTED,
   PLATFORMS,
   cutUnitFor,
   cutLogFor,
   cutDoneFor,
+  cutStartedFor,
   legsForPlatform,
   abortLeg,
   deriveBuildSha,
@@ -110,6 +112,7 @@ describe('buildCutArgv', () => {
   });
   it('runs the cutter LOCAL-only, clears the stale sentinel, records the exit code', () => {
     expect(inner).toContain(`rm -f ${CUT_DONE}`);
+    expect(inner).toContain(`> ${CUT_STARTED}`);
     expect(inner).toContain("PAPERCUSP_PUBLISH_GITHUB='0'");
     expect(inner).toContain(`PAPERCUSP_EXPECTED_SOURCE_SHA='${sourceSha}'`);
     expect(inner).toContain(`PAPERCUSP_RELEASE_OWNER_NAME='Avi O'\"'\"'Neil'`);
@@ -155,6 +158,16 @@ describe('readCutStatus', () => {
   });
   it('idle when nothing is running and no sentinel exists', () => {
     expect(readCutStatus(noFiles).state).toBe('idle');
+  });
+  it('interrupted when a launched unit stops before writing its DONE sentinel', () => {
+    const s = readCutStatus({
+      isUnitActive: () => false,
+      existsSync: (p) => p === CUT_STARTED,
+      readFileSync: () => 'STARTED:1723708996',
+    });
+    expect(s.state).toBe('interrupted');
+    expect(s.running).toBe(false);
+    expect(s.exitCode).toBeNull();
   });
   it('surfaces the last log lines when a log exists', () => {
     const log = Array.from({ length: 60 }, (_, i) => `line${i}`).join('\n');
@@ -496,6 +509,7 @@ describe('readCutStatus with a platform', () => {
     expect(s.state).toBe('running');
     expect(s.logPath).toBe(macLog);
     expect(s.donePath).toBe(macDone);
+    expect(cutStartedFor('mac')).toBe('/tmp/papercup-release-cut-mac.started');
   });
   it('two legs are fully independent — one done, the other still running', () => {
     const done = new Set([cutDoneFor('mac')]);

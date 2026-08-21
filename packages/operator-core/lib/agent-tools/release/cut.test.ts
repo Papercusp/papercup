@@ -423,6 +423,22 @@ describe('release:cut — status (read-only)', () => {
     expect(b.note).toMatch(/in flight/);
     expect(launchM).not.toHaveBeenCalled();
   });
+
+  it('reports an interrupted cut instead of collapsing a stopped unit to idle', async () => {
+    const interrupted: CutStatus = {
+      state: 'interrupted',
+      running: false,
+      exitCode: null,
+      logTail: 'stopped by systemd',
+      logPath: '/tmp/papercup-release-cut.log',
+      donePath: '/tmp/papercup-release-cut.done',
+    };
+    statusM.mockReturnValue(interrupted);
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({ ok: true, op: 'status', state: 'interrupted' });
+    expect(b.note).toMatch(/interrupted/i);
+    expect(launchM).not.toHaveBeenCalled();
+  });
 });
 
 describe('release:cut — handoff (LOCAL deliverable)', () => {

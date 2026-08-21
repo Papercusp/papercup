@@ -673,6 +673,8 @@ export default defineTool({
             ? `The last ${legNote} finished OK. ${args.platform ? "Once every leg is done, verify (recipes:run release-verify-provenance) then release:cut{op:handoff,version}." : 'Verify it (recipes:run release-verify-provenance), then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
             : status.state === 'failed'
               ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
+              : status.state === 'interrupted'
+                ? `The last ${legNote} was INTERRUPTED before its DONE sentinel was written. Inspect the log tail above / ${status.logPath}; fix or intentionally restart it.`
               : `No cut in flight and no recent result for ${legNote} on this host.`;
       return json({ ok: true, op: 'status', ...(args.platform ? { platform: args.platform } : {}), ...status, note });
     }
