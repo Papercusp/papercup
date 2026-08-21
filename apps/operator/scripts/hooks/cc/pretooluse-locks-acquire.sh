@@ -241,6 +241,128 @@ if not raw_paths:
     allow()
 
 
+# ── Claude native-batch identity ──────────────────────────────────────
+# Claude invokes PreToolUse once per native tool_use, but several tool_use
+# blocks from one assistant message may arrive concurrently.  The transcript
+# is the only stable batch boundary exposed to this hook: locate the assistant
+# JSONL entry containing the current tool_use_id and derive the batch from all
+# native file-edit blocks in that entry.  Codex has no transcript_path on its
+# apply_patch hook payload, so it keeps the per-call path set above.
+EDIT_TOOL_NAMES = {'Edit', 'Write', 'MultiEdit'}
+MAX_BATCH_TRANSCRIPT_BYTES = 4 * 1024 * 1024
+batch_info = None
+transcript_path = payload.get('transcript_path') or payload.get('transcriptPath') or ''
+
+
+def _tool_use_blocks(entry):
+    blocks = []
+    message = entry.get('message') if isinstance(entry, dict) else None
+    content = message.get('content') if isinstance(message, dict) else None
+    if isinstance(content, list):
+        blocks.extend(
+            block for block in content
+            if isinstance(block, dict) and block.get('type') == 'tool_use'
+        )
+    # A few transcript adapters flatten tool_use entries at the top level.
+    if isinstance(entry, dict) and entry.get('type') == 'tool_use':
+        blocks.append(entry)
+    return blocks
+
+
+def _block_paths(block):
+    if not isinstance(block, dict) or block.get('name') not in EDIT_TOOL_NAMES:
+        return []
+    tool_input = block.get('input')
+    if not isinstance(tool_input, dict):
+        return []
+    paths = []
+    for key in ('file_path', 'path'):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            paths.append(value)
+            break
+    # MultiEdit adapters sometimes expose the edits as a list while retaining
+    # no top-level file_path.  Accept that shape only when every entry names a
+    # file; an incomplete union must fall back to the safer per-call path set.
+    if not paths and isinstance(tool_input.get('edits'), list):
+        nested = []
+        for edit in tool_input['edits']:
+            if not isinstance(edit, dict):
+                return []
+            value = edit.get('file_path') or edit.get('path')
+            if not isinstance(value, str) or not value:
+                return []
+            nested.append(value)
+        paths.extend(nested)
+    return paths
+
+
+def _read_batch_descriptor(path, current_tool_id):
+    """Return the transcript-derived native edit batch, or None when unknown."""
+    if not isinstance(path, str) or not path or not isinstance(current_tool_id, str) or not current_tool_id:
+        return None
+    try:
+        stat = os.stat(path)
+        if stat.st_size > MAX_BATCH_TRANSCRIPT_BYTES:
+            return None
+        with open(path, 'rb') as transcript:
+            raw_bytes = transcript.read()
+    except Exception:
+        return None
+
+    # The current assistant entry is at the tail.  Drop a possibly torn first
+    # line when a future transcript grows beyond this bounded read window.
+    if len(raw_bytes) > MAX_BATCH_TRANSCRIPT_BYTES:
+        raw_bytes = raw_bytes[-MAX_BATCH_TRANSCRIPT_BYTES:]
+        raw_bytes = raw_bytes.split(b'\n', 1)[-1]
+    for line in raw_bytes.splitlines():
+        try:
+            entry = json.loads(line)
+        except Exception:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        blocks = _tool_use_blocks(entry)
+        if not any(block.get('id') == current_tool_id for block in blocks):
+            continue
+        edit_blocks = [block for block in blocks if block.get('name') in EDIT_TOOL_NAMES]
+        if len(edit_blocks) < 2:
+            return None
+        tool_ids = []
+        paths = []
+        for block in edit_blocks:
+            block_id = block.get('id')
+            block_paths = _block_paths(block)
+            if not isinstance(block_id, str) or not block_id or not block_paths:
+                return None
+            tool_ids.append(block_id)
+            paths.extend(block_paths)
+        if current_tool_id not in tool_ids:
+            return None
+        canonical_transcript = os.path.realpath(path)
+        batch_key = hashlib.sha256(
+            (canonical_transcript + '\0' + '\0'.join(tool_ids)).encode('utf-8', 'replace')
+        ).hexdigest()[:40]
+        return {
+            'batch_id': batch_key,
+            'transcript_path': canonical_transcript,
+            'tool_ids': tool_ids,
+            'raw_paths': paths,
+            'current_tool_id': current_tool_id,
+        }
+    return None
+
+
+if transcript_path and tool_name in EDIT_TOOL_NAMES and tool_use_id:
+    batch_info = _read_batch_descriptor(transcript_path, tool_use_id)
+    if batch_info:
+        # The rest of this hook applies foreign/worktree/symlink policy to the
+        # complete union, not just the one tool whose hook happened to win the
+        # race.  An incomplete or unreadable transcript deliberately leaves the
+        # original per-call behavior intact.
+        raw_paths = batch_info['raw_paths']
+
+
 # ── P-109 leg (i): FOREIGN-WORKSPACE guard (p2p-work-distribution, design §2) ──
 # Two registry-derived directional policies, evaluated by the operator
 # (POST /api/su-locks/foreign-guard → lib/p2p/foreign-guard.ts):
@@ -783,6 +905,193 @@ for x in repo_relative:
     seen.add(x)
     deduped_repo_relative.append(x)
 repo_relative = deduped_repo_relative
+
+
+# ── Claude batch election/state ────────────────────────────────────────
+# The hooks are separate short-lived processes, so the batch barrier lives in
+# the shared cache directory.  O_CREAT|O_EXCL elects exactly one leader; its
+# terminal state is atomically replaced after the union acquire.  Followers
+# never call locks:acquire themselves, which is the property that prevents a
+# parallel Claude batch from being partially admitted.
+batch_role = None
+batch_terminal = None
+
+
+def _batch_path(suffix):
+    return os.path.join(cache_dir, 'batch-' + batch_info['batch_id'] + suffix)
+
+
+def _batch_write_json(path, value):
+    try:
+        tmp = path + '.tmp-' + str(os.getpid())
+        with open(tmp, 'w') as f:
+            json.dump(value, f)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        try:
+            os.remove(tmp)
+        except Exception:
+            pass
+        return False
+
+
+def _batch_read_state():
+    if not batch_info:
+        return None
+    try:
+        with open(_batch_path('.state.json')) as f:
+            state = json.load(f)
+        if (isinstance(state, dict)
+                and state.get('batch_id') == batch_info['batch_id']):
+            return state
+    except Exception:
+        pass
+    return None
+
+
+def _batch_claim_is_stale():
+    try:
+        with open(_batch_path('.leader')) as f:
+            claim = json.load(f)
+        pid = claim.get('pid') if isinstance(claim, dict) else None
+        if isinstance(pid, int) and pid > 0:
+            try:
+                os.kill(pid, 0)
+                return False
+            except ProcessLookupError:
+                return True
+            except PermissionError:
+                return False
+        started = claim.get('started_at') if isinstance(claim, dict) else None
+        return not isinstance(started, (int, float)) or time.time() - started > 30
+    except FileNotFoundError:
+        return True
+    except Exception:
+        return False
+
+
+def _batch_try_elect():
+    if not batch_info:
+        return False
+    path = _batch_path('.leader')
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as f:
+            json.dump({
+                'batch_id': batch_info['batch_id'],
+                'pid': os.getpid(),
+                'owner': owner,
+                'started_at': time.time(),
+            }, f)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return False
+
+
+def _batch_mark_tool(status):
+    if not batch_info or not tool_use_id:
+        return
+    marker = {
+        'batch_id': batch_info['batch_id'],
+        'tool_use_id': tool_use_id,
+        'transcript_path': batch_info['transcript_path'],
+        'status': status,
+        'owner': owner,
+    }
+    _batch_write_json(os.path.join(cache_dir, tool_use_id + '.batch'), marker)
+
+
+def _batch_terminal_state(status, **extra):
+    if not batch_info:
+        return False
+    state = {
+        'version': 1,
+        'batch_id': batch_info['batch_id'],
+        'status': status,
+        'transcript_path': batch_info['transcript_path'],
+        'tool_use_ids': batch_info['tool_ids'],
+        'paths': repo_relative[:100],
+        'owner': owner,
+        'updated_at': time.time(),
+    }
+    state.update(extra)
+    return _batch_write_json(_batch_path('.state.json'), state)
+
+
+def _batch_wait_for_terminal():
+    """Wait for the elected leader, or take over only after it is gone."""
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        state = _batch_read_state()
+        if state and state.get('status') in ('granted', 'allowed', 'denied'):
+            return 'follower', state
+        if _batch_claim_is_stale():
+            try:
+                os.remove(_batch_path('.leader'))
+            except FileNotFoundError:
+                pass
+            except Exception:
+                pass
+            if _batch_try_elect():
+                _batch_terminal_state(
+                    'running', leader_pid=os.getpid(), started_at=time.time(),
+                )
+                return 'leader', None
+        time.sleep(0.03)
+    return 'timeout', None
+
+
+def _batch_prepare():
+    if not batch_info:
+        return None, None
+    state = _batch_read_state()
+    if state and state.get('status') in ('granted', 'allowed', 'denied'):
+        return 'follower', state
+    if _batch_try_elect():
+        if not _batch_terminal_state(
+                'running', leader_pid=os.getpid(), started_at=time.time()):
+            try:
+                os.remove(_batch_path('.leader'))
+            except Exception:
+                pass
+            return 'timeout', None
+        return 'leader', None
+    return _batch_wait_for_terminal()
+
+
+def _batch_consume(state):
+    if not isinstance(state, dict):
+        deny('locks: batch state was unavailable; retry the complete Claude edit batch.')
+    status = state.get('status')
+    _batch_mark_tool(status)
+    if status in ('granted', 'allowed'):
+        write_marker('last-decision.json', {
+            'ts': now_iso(),
+            'decision': 'batch-follower-' + status,
+            'owner': owner,
+            'tool': tool_name,
+            'paths': repo_relative[:50],
+            'batch_id': batch_info['batch_id'],
+        })
+        _clear_transient_streak()
+        allow()
+    deny(state.get('reason') or 'locks: the Claude edit batch was denied; retry the complete batch.')
+
+
+if batch_info:
+    batch_info['paths'] = repo_relative[:100]
+    batch_info['domains'] = sorted(repo_domains)
+    batch_role, batch_terminal = _batch_prepare()
+    if batch_role == 'follower':
+        _batch_consume(batch_terminal)
+    if batch_role == 'timeout':
+        deny(
+            'locks: Claude edit batch leader did not publish a terminal decision. '
+            'No partial edit is permitted; retry the complete batch.'
+        )
 
 # ── Acquire (no server-side wait: block immediately so the agent can
 #    replan now rather than hang the edit). ──────────────────────────────
