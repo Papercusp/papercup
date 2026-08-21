@@ -10,8 +10,19 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const h = vi.hoisted(() => ({
+  purgeJournalForMemory: vi.fn(async () => 0),
+  clearL1: vi.fn(),
+}));
+
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
+}));
+vi.mock('../../memory/write-journal', () => ({
+  purgeJournalForMemory: h.purgeJournalForMemory,
+}));
+vi.mock('../../cache/instance', () => ({
+  getOperatorCache: () => ({ clearL1: h.clearL1 }),
 }));
 
 import forget from './forget';
@@ -20,12 +31,14 @@ import { getMemoryBackend } from '../../memory/backend';
 type FakeBackend = {
   name: string;
   available: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
   forget: ReturnType<typeof vi.fn>;
 };
 
 const fakeBackend = (): FakeBackend => ({
   name: 'fake',
   available: vi.fn(async () => ({ ok: true })),
+  get: vi.fn(async (id: string) => ({ id, text: `fact ${id}`, scope: 'scope-a' })),
   forget: vi.fn(async () => undefined),
 });
 
@@ -38,7 +51,10 @@ const body = async (args: unknown): Promise<{ ok: boolean; reason?: string; resu
   (((await forget.handler(args as never, {} as never)) as Out).data);
 
 describe('memory:forget handler (bulk keyed-array)', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.purgeJournalForMemory.mockResolvedValue(0);
+  });
 
   it('inline { id } deletes one and returns a single result', async () => {
     const b = fakeBackend();
@@ -47,6 +63,15 @@ describe('memory:forget handler (bulk keyed-array)', () => {
     expect(r).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(r.results[0]).toMatchObject({ ok: true, id: 'm1' });
     expect(b.forget).toHaveBeenCalledWith('m1');
+    expect(h.purgeJournalForMemory).toHaveBeenCalledWith({
+      id: 'm1',
+      mode: 'hard',
+      snapshot: { scope: 'scope-a', text: 'fact m1' },
+    });
+    expect(h.purgeJournalForMemory.mock.invocationCallOrder[0]).toBeLessThan(
+      b.forget.mock.invocationCallOrder[0],
+    );
+    expect(h.clearL1).toHaveBeenCalledTimes(1);
   });
 
   it('ids:[…] deletes many; per-item results keyed by id', async () => {
@@ -66,6 +91,18 @@ describe('memory:forget handler (bulk keyed-array)', () => {
     const r = await body({ ids: ['m1', 'bad', 'm2'] });
     expect(r).toMatchObject({ ok: true, counts: { ok: 2, failed: 1 } });
     expect(r.results[1]).toMatchObject({ ok: false, id: 'bad', error: 'delete blew up' });
+  });
+
+  it('a journal purge failure preserves the canonical row for a safe retry', async () => {
+    const b = fakeBackend();
+    h.purgeJournalForMemory.mockRejectedValueOnce(new Error('journal unavailable'));
+    useBackend(b);
+
+    const r = await body({ id: 'm1' });
+
+    expect(r.results[0]).toMatchObject({ ok: false, id: 'm1', error: 'journal unavailable' });
+    expect(b.forget).not.toHaveBeenCalled();
+    expect(h.clearL1).not.toHaveBeenCalled();
   });
 
   it('availability gate short-circuits the whole batch (no per-id delete)', async () => {

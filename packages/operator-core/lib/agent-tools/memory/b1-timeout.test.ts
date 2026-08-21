@@ -16,6 +16,7 @@ vi.mock('../../memory/write-journal', () => ({
   // path); write-journal's own behavior is covered in write-journal.test.ts.
   journalPendingWrite: vi.fn(async () => null),
   markJournalCommitted: vi.fn(async () => {}),
+  purgeJournalForMemory: vi.fn(async () => 0),
 }));
 vi.mock('../../memory/backend', () => ({
   getMemoryBackend: vi.fn(),
