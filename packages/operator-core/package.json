@@ -146,6 +146,7 @@
     "rrule": "^2.8.1",
     "sodium-native": "^5.1.0",
     "undici": "^7.24.7",
+    "vscode-jsonrpc": "8.2.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
