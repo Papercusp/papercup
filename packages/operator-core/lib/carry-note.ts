@@ -106,6 +106,9 @@ export interface CheckEntry {
   /** Evidence pointer for a VERIFIED claim — what was observed, where ("tick 1944 @02:38Z, pg read").
    *  Absent ⇒ the claim renders as PREDICTED. */
   verified?: string;
+  /** Evidence that was supplied as verification but contains a contradiction marker
+   *  (for example, "STILL RUNNING"). It renders as CONTESTED, never VERIFIED. */
+  contested?: string;
   /** Epoch ms the check was first recorded — preserved across rewrites of the same claim. */
   sinceMs?: number;
 }
@@ -173,7 +176,7 @@ export const CARRY_NOTE_MAX_CHECKS = 12;
  * must not re-create is EI-18723223344390510, where a nested row quietly dropped
  * fields and destroyed a verified check's evidence with no signal.
  */
-export const CARRY_ROW_SOFT_CAPS = { claim: 500, recheck: 300, verified: 300 } as const;
+export const CARRY_ROW_SOFT_CAPS = { claim: 500, recheck: 300, verified: 300, contested: 300 } as const;
 
 /** Soft cap on each narrative field (`did`/`left`/`insight`/`next`), same contract. */
 export const CARRY_TEXT_SOFT_CAP = 8000;
@@ -189,9 +192,39 @@ export const CARRY_TRUNCATION_MARKER = '…[truncated]';
 export type CarryArgRepair = {
   /** Dotted path of the repaired field, e.g. `checks[2].recheck`. */
   field: string;
-  kind: 'truncated' | 'renamed';
+  kind: 'truncated' | 'renamed' | 'downgraded';
   detail: string;
 };
+
+/**
+ * Evidence markers that contradict the affirmative meaning of `verified`.
+ *
+ * A carried ✓ is a license for the next wake to skip its re-check, so a false ✓
+ * is materially more dangerous than a false ?. Keep this detector deliberately
+ * conservative: when the evidence contains one of these phrases, downgrade the
+ * row and preserve the evidence as CONTESTED rather than granting confidence.
+ */
+const VERIFICATION_CONFLICT_PATTERNS: ReadonlyArray<RegExp> = [
+  /\bstill\s+running\b/i,
+  /\bin[-\s]flight\b/i,
+  /\bpending\b/i,
+  /\boutstanding\b/i,
+  /\bnot\s+verified\b/i,
+  /\bunverified\b/i,
+  /\bawait(?:ing|s)\b/i,
+  /\bnot\s+(?:(?:the|this|a|an|its)\s+)?(?:[a-z][\w-]*\s+){0,5}verdict\b/i,
+];
+
+/** Return the exact contradiction phrase found in verification evidence, if any. */
+export function findVerificationConflict(evidence: string | null | undefined): string | null {
+  const text = typeof evidence === 'string' ? evidence : '';
+  if (!text.trim()) return null;
+  for (const pattern of VERIFICATION_CONFLICT_PATTERNS) {
+    const match = pattern.exec(text);
+    if (match?.[0]) return match[0];
+  }
+  return null;
+}
 
 /** Truncate `v` to `cap`, recording a repair. Returns `v` untouched when within cap. */
 export function truncateCarryField(v: string, cap: number, field: string, repairs: CarryArgRepair[]): string {
@@ -396,7 +429,8 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
 /** Fixed legend rendered under the `## Checks` heading so a cold successor reads the
  *  rows correctly with zero prior knowledge. Starts with `_` so line-parsers skip it. */
 export const CARRY_NOTE_CHECKS_LEGEND =
-  '_✓ = VERIFIED (evidence attached) · ? = PREDICTED — run the re-check before relying on it · ' +
+  '_✓ = VERIFIED (evidence attached) · ⚠ = CONTESTED (evidence contradicts verification; re-check now) · ' +
+  '? = PREDICTED — run the re-check before relying on it · ' +
   '[scope: …] = ALL the probe observed; a claim quantified beyond it is NOT verified by it_';
 
 /** Max length of a row `id`. Long enough to be descriptive (`gate-green-at-tip`),
@@ -484,14 +518,18 @@ export function parseWallLine(line: string): WallEntry | null {
 export function renderCheckLine(c: CheckEntry): string {
   const recheck = (c.recheck ?? '').trim();
   const verified = (c.verified ?? '').trim();
+  const contested = (c.contested ?? '').trim();
+  const conflict = findVerificationConflict(verified);
+  const evidence = contested || verified;
+  const marker = contested || conflict ? '⚠' : verified ? '✓' : '?';
   const id = sanitizeCarryRowId(c.id);
   const scope = describeProbeScope(recheck);
   const since =
     c.sinceMs != null && Number.isFinite(c.sinceMs) ? ` (since ${new Date(c.sinceMs).toISOString()})` : '';
-  return `- ${verified ? '✓' : '?'} ${scope ? `${renderProbeScopeMarker(scope)} ` : ''}${
+  return `- ${marker} ${scope ? `${renderProbeScopeMarker(scope)} ` : ''}${
     id ? `[#${id}] ` : ''
   }${stripProbeScopeMarker(c.claim.trim())}${recheck ? ` — re-check: ${recheck}` : ''}${
-    verified ? ` — evidence: ${verified}` : ''
+    evidence ? ` — evidence: ${evidence}` : ''
   }${since}`;
 }
 
@@ -506,7 +544,7 @@ export function renderCheckLine(c: CheckEntry): string {
  * pays for elsewhere; there is one source, and both directions read it.
  */
 const CHECK_LINE_RE = new RegExp(
-  `^-\\s+(?:([✓?])\\s+)?(?:${PROBE_SCOPE_MARKER_RE.source}\\s+)?(?:\\[#([A-Za-z0-9._:-]{1,40})\\]\\s+)?(.+?)` +
+  `^-\\s+(?:([✓?⚠])\\s+)?(?:${PROBE_SCOPE_MARKER_RE.source}\\s+)?(?:\\[#([A-Za-z0-9._:-]{1,40})\\]\\s+)?(.+?)` +
     `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+evidence:\\s+(.+?))?(?:\\s+\\(since\\s+([^)]+)\\))?\\s*$`,
 );
 
@@ -530,7 +568,10 @@ export function parseCheckLine(line: string): CheckEntry | null {
   const recheck = (m[4] ?? '').trim();
   if (recheck) out.recheck = recheck;
   const verified = (m[5] ?? '').trim();
-  if (verified) out.verified = verified;
+  if (verified) {
+    if (m[1] === '⚠' || findVerificationConflict(verified)) out.contested = verified;
+    else out.verified = verified;
+  }
   if (m[6]) {
     const t = Date.parse(m[6]);
     if (Number.isFinite(t)) out.sinceMs = t;
@@ -793,7 +834,14 @@ export function withCarryNoteChecks(body: string, checks: CheckEntry[]): string 
  *  from the prior row when omitted (a re-write must not silently drop evidence),
  *  stamp `nowMs` on new ones, cap at {@link CARRY_NOTE_MAX_CHECKS}. */
 export function normalizeCheckEntries(
-  entries: ReadonlyArray<{ id?: string; claim: string; recheck?: string; verified?: string; sinceMs?: number }>,
+  entries: ReadonlyArray<{
+    id?: string;
+    claim: string;
+    recheck?: string;
+    verified?: string;
+    contested?: string;
+    sinceMs?: number;
+  }>,
   prior: ReadonlyArray<CheckEntry>,
   nowMs: number = Date.now(),
 ): CheckEntry[] {
@@ -808,19 +856,37 @@ export function normalizeCheckEntries(
     const existing = priorByKey.get(key);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
-    let verified = (e.verified ?? existing?.verified ?? '').trim();
+    // An explicit evidence field is an update, including an empty string that
+    // deliberately clears inherited evidence. `contested` is the lossless
+    // downgrade target for evidence that contradicts the affirmative ✓ meaning.
+    let verified = (e.verified !== undefined ? e.verified : existing?.verified ?? '').trim();
+    let contested = (
+      e.contested !== undefined ? e.contested : e.verified !== undefined ? '' : existing?.contested ?? ''
+    ).trim();
+    if (e.contested !== undefined) verified = '';
+    const conflict = findVerificationConflict(verified);
+    if (conflict) {
+      contested = verified;
+      verified = '';
+    }
     // Review fold #5: evidence never goes stale SILENTLY — stamp the verification
     // instant into the evidence text when it is NEWLY supplied (inherited evidence
     // keeps its original stamp), so a ✓ observed 20 wakes ago visibly carries its
     // age instead of rendering with fresh-evidence authority.
-    const newlySupplied = Boolean((e.verified ?? '').trim()) && (e.verified ?? '').trim() !== (existing?.verified ?? '').trim();
-    if (verified && newlySupplied && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(verified)) {
+    const suppliedEvidence = (e.verified ?? e.contested ?? '').trim();
+    const existingEvidence = (existing?.verified ?? existing?.contested ?? '').trim();
+    const newlySupplied = Boolean(suppliedEvidence) && suppliedEvidence !== existingEvidence;
+    if (newlySupplied && verified && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(verified)) {
       verified = `${verified} @${new Date(nowMs).toISOString()}`;
+    }
+    if (newlySupplied && contested && !/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(contested)) {
+      contested = `${contested} @${new Date(nowMs).toISOString()}`;
     }
     out.push({
       ...(id ? { id } : {}),
       claim,
       ...(recheck ? { recheck } : {}),
+      ...(contested ? { contested } : {}),
       ...(verified ? { verified } : {}),
       sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
     });
@@ -881,7 +947,14 @@ export function mergeCarryRows(opts: {
   /** An EXPLICIT walls arg — `[]` clears; `undefined` defers to the note/prior. */
   walls?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; sinceMs?: number }>;
   /** An EXPLICIT checks arg — `[]` clears; `undefined` defers to the note/prior. */
-  checks?: ReadonlyArray<{ id?: string; claim: string; recheck?: string; verified?: string; sinceMs?: number }>;
+  checks?: ReadonlyArray<{
+    id?: string;
+    claim: string;
+    recheck?: string;
+    verified?: string;
+    contested?: string;
+    sinceMs?: number;
+  }>;
   /** Whether this call writes a narrative at all (structured fields or a raw note). */
   hasNoteWrite: boolean;
   /**
@@ -1094,6 +1167,100 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
       flagged.push(line.length > 160 ? `${line.slice(0, 157)}…` : line);
       if (flagged.length >= 3) break;
     }
+  }
+  return flagged;
+}
+
+/**
+ * Carry-note commands are read as instructions by the next wake, but their
+ * preconditions can be false by the time that wake arrives. Keep the detector
+ * deliberately narrow: these are the known singleton/shared-infrastructure
+ * mutators where repeating an otherwise plausible imperative can replace an
+ * in-flight run, restart a shared host, or mutate the shared tree.
+ */
+const SINGLETON_MUTATING_TARGETS = [
+  'release:checkpoint-run',
+  'release:deploy',
+  'release:cut',
+  'git-sync:run',
+  'dev:restart',
+  'db:migrate',
+  'plans:arm-schedule',
+  'loop:arm',
+  'fleet:launch-on-plan',
+  'fleet:take-leadership',
+  'systemctl',
+  'git push',
+  'git reset',
+  'git clean',
+  'git checkout',
+] as const;
+
+const SINGLETON_ACTION_VERBS =
+  /\b(fire|run|execute|invoke|start|restart|stop|trigger|launch|deploy|migrate|arm|push|reset|clean|checkout)\b/gi;
+const NEGATED_SINGLETON_ACTION_RE =
+  /\b(?:do\s+not|don't|never|avoid|refuse\s+to)\b[^.!?\n]{0,120}\b(?:fire|run|execute|invoke|start|restart|stop|trigger|launch|deploy|migrate|arm|push|reset|clean|checkout|systemctl|git)\b/i;
+const RUNNABLE_RECHECK_COMMAND_RE =
+  /(?:\b[a-z][\w-]*:[a-z][\w-]*\b|(?:^|[\s`([{])(?:systemctl|git|npm|pnpm|yarn|node|npx|tsx|ps|pgrep|curl|wget|rg|grep|find|sed|awk|jq|psql|sqlite3|docker|kubectl|launchctl|test|stat|ls|cat|bash|sh)\b|\|\||&&|[|;<>])/i;
+
+export interface ImperativeActionLintMatch {
+  line: string;
+  target: string;
+}
+
+function targetNeedles(target: string): string[] {
+  const parts = target.toLowerCase().split(/[:\s_-]+/).filter((part) => part.length >= 4);
+  return [...new Set([target.toLowerCase(), ...parts])];
+}
+
+function hasRunnableCorrespondingCheck(
+  target: string,
+  checks: ReadonlyArray<{ claim: string; recheck?: string }>,
+): boolean {
+  const needles = targetNeedles(target);
+  return checks.some((check) => {
+    const recheck = (check.recheck ?? '').trim();
+    if (!recheck || !RUNNABLE_RECHECK_COMMAND_RE.test(recheck)) return false;
+    const body = `${check.claim ?? ''} ${recheck}`.toLowerCase();
+    return needles.some((needle) => body.includes(needle));
+  });
+}
+
+/**
+ * Advisory lint for the dangerous subset of imperative carry-note prose.
+ *
+ * A matching `checks` row must name the same mutator (or a distinctive part of
+ * its name) and carry a runnable `recheck`; a conclusion-only row, a wall, or a
+ * prose instruction does not clear the warning. The write remains fail-open.
+ */
+export function lintUncheckedImperativeActions(
+  prose: string,
+  checks: ReadonlyArray<{ claim: string; recheck?: string }>,
+): ImperativeActionLintMatch[] {
+  const flagged: ImperativeActionLintMatch[] = [];
+  for (const rawLine of (prose ?? '').split('\n')) {
+    const line = rawLine.trim();
+    if (!line || NEGATED_SINGLETON_ACTION_RE.test(line)) continue;
+    for (const target of SINGLETON_MUTATING_TARGETS) {
+      const targetAt = line.toLowerCase().indexOf(target.toLowerCase());
+      if (targetAt < 0) continue;
+
+      SINGLETON_ACTION_VERBS.lastIndex = 0;
+      const actionWords = [...line.matchAll(SINGLETON_ACTION_VERBS)];
+      const hasNearbyImperative = actionWords.some((match) => {
+        const at = match.index ?? -1;
+        return at >= 0 && Math.abs(at - targetAt) <= 120;
+      });
+      if (!hasNearbyImperative) continue;
+      if (hasRunnableCorrespondingCheck(target, checks)) continue;
+
+      flagged.push({
+        line: line.length > 240 ? `${line.slice(0, 237)}…` : line,
+        target,
+      });
+      break;
+    }
+    if (flagged.length >= 3) break;
   }
   return flagged;
 }

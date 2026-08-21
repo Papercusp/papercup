@@ -22,6 +22,7 @@ import {
   normalizeWallEntries,
   normalizeCheckEntries,
   lintUncheckedExternalClaims,
+  lintUncheckedImperativeActions,
   rescueTaggedCarryNoteBlob,
   mergeCarryRows,
   carryRowKey,
@@ -209,6 +210,38 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(parseCheckLine(renderCheckLine({ claim: 'just a claim' }))).toEqual({ claim: 'just a claim' });
   });
 
+  it('downgrades contradictory verification evidence to CONTESTED and preserves it visibly', () => {
+    const now = Date.parse('2026-07-19T05:00:00.000Z');
+    const downgraded = normalizeCheckEntries(
+      [{ claim: 'the suite is green', recheck: 'run the suite', verified: 'STILL RUNNING at compaction' }],
+      [],
+      now,
+    );
+    expect(downgraded[0]).toMatchObject({
+      claim: 'the suite is green',
+      recheck: 'run the suite',
+      contested: expect.stringContaining('STILL RUNNING'),
+    });
+    expect(downgraded[0]).not.toHaveProperty('verified');
+
+    const rendered = renderCheckLine(downgraded[0]!);
+    expect(rendered).toContain('- ⚠ ');
+    expect(rendered).toContain('STILL RUNNING');
+    expect(parseCheckLine(rendered)).toEqual(downgraded[0]);
+  });
+
+  it('renders an explicitly contested row with ⚠ and never upgrades it to ✓', () => {
+    const row: CheckEntry = {
+      claim: 'the suite is green',
+      recheck: 'run the suite',
+      contested: 'pending final verdict',
+    };
+    const rendered = renderCheckLine(row);
+    expect(rendered).toContain('- ⚠ ');
+    expect(rendered).not.toContain('- ✓ ');
+    expect(parseCheckLine(rendered)).toEqual(row);
+  });
+
   it('parseCheckLine rejects non-row lines including the legend', () => {
     expect(parseCheckLine('')).toBeNull();
     expect(parseCheckLine(CARRY_NOTE_CHECKS_LEGEND)).toBeNull();
@@ -364,6 +397,7 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(out.indexOf('## Checks')).toBeGreaterThan(out.indexOf('## Next action'));
     expect(out.indexOf('## Walls')).toBeGreaterThan(out.indexOf('## Checks'));
     expect(out).toContain(CARRY_NOTE_CHECKS_LEGEND);
+    expect(CARRY_NOTE_CHECKS_LEGEND).toContain('⚠');
     expect(parseCarryNote(out)).toEqual(fields);
   });
 
@@ -453,6 +487,33 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
     const [flag] = lintUncheckedExternalClaims(long, '');
     expect(flag.length).toBeLessThanOrEqual(160);
     expect(flag.endsWith('…')).toBe(true);
+  });
+});
+
+describe('lintUncheckedImperativeActions — singleton mutators need a runnable precondition', () => {
+  it('flags an imperative singleton invocation with no corresponding check', () => {
+    const matches = lintUncheckedImperativeActions(
+      "If no objection has arrived, FIRE IT NOW: tools:invoke { name:'release:checkpoint-run' }",
+      [],
+    );
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ target: 'release:checkpoint-run' });
+    expect(matches[0]?.line).toContain('FIRE IT NOW');
+  });
+
+  it('requires both correspondence and a runnable recheck to clear the warning', () => {
+    const prose = 'run release:checkpoint-run only after the active-run precondition is checked';
+    expect(lintUncheckedImperativeActions(prose, [{ claim: 'checkpoint run is safe' }])).toHaveLength(1);
+    expect(
+      lintUncheckedImperativeActions(prose, [
+        { claim: 'checkpoint run is safe', recheck: 'systemctl --user list-units --all | grep green-checkpoint' },
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does not warn for read-only commands or explicit prohibitions', () => {
+    expect(lintUncheckedImperativeActions('run the focused tests and inspect state:read', [])).toEqual([]);
+    expect(lintUncheckedImperativeActions('Do NOT fire release:checkpoint-run while one is active', [])).toEqual([]);
   });
 });
 

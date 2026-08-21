@@ -282,6 +282,34 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it('warns when left/next imperatively invokes a singleton mutator without its precondition', async () => {
+    const b = body(
+      await call({
+        next: "FIRE IT NOW: tools:invoke { name:'release:checkpoint-run' }",
+      }),
+    );
+    expect(b.ok).toBe(true);
+    expect(b.imperativeLint?.flagged).toBe(true);
+    expect(b.imperativeLint?.matches[0]).toMatchObject({ target: 'release:checkpoint-run' });
+    expect(setLoopCarryNote).toHaveBeenCalled();
+  });
+
+  it('clears the imperative warning only with a matching runnable checks recheck', async () => {
+    const b = body(
+      await call({
+        left: 'run release:checkpoint-run only when no active run exists',
+        checks: [
+          {
+            claim: 'checkpoint run is safe only when no active singleton exists',
+            recheck: 'systemctl --user list-units --all | grep green-checkpoint',
+          },
+        ],
+      }),
+    );
+    expect(b.ok).toBe(true);
+    expect(b.imperativeLint).toBeUndefined();
+  });
+
   // outage-must-not-be-silent-2026-08-02 P-009 — the absence-claim leg.
   //
   // The pre-existing checksLint keys on a distinctive token (hash / WI-EI id / ISO instant)
@@ -763,6 +791,42 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       // The evidence survives, so the row still renders VERIFIED. This is the exact
       // data EI-18723223344390510 used to destroy silently.
       expect(out.checks[0]).toEqual({ claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 pass' });
+    });
+
+    it('downgrades contradictory verification evidence at the writer boundary and reports the repair', async () => {
+      const b = body(
+        await call({
+          did: 'checkpointed the affected suite',
+          checks: [{ claim: 'the suite is green', recheck: 'run the suite', verified: 'STILL RUNNING at compaction' }],
+        }),
+      );
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'checks[0].verified',
+            kind: 'downgraded',
+            detail: expect.stringContaining('STILL RUNNING'),
+          }),
+        ]),
+      );
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      expect(written).toContain('- ⚠ ');
+      expect(written).toContain('STILL RUNNING');
+      expect(written).not.toContain('- ✓ ');
+    });
+
+    it('keeps clean verification evidence as VERIFIED', async () => {
+      const b = body(
+        await call({
+          did: 'checkpointed the affected suite',
+          checks: [{ claim: 'the suite is green', recheck: 'run the suite', verified: '30/30 passed' }],
+        }),
+      );
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toBeUndefined();
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      expect(written).toContain('- ✓ ');
     });
 
     it('maps descriptive label/name rows to `claim` while preserving an explicit claim', () => {

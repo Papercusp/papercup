@@ -26,7 +26,9 @@ import { resolvePotHomeSlug } from '../../pot/wake';
 import { CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import {
   lintUncheckedExternalClaims,
+  lintUncheckedImperativeActions,
   mergeCarryRows,
+  parseCarryNote,
   renderCarryNote,
   renderCheckLine,
   renderWallLine,
@@ -41,6 +43,7 @@ import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_ROW_ID_MAX,
   coerceCarryRowShape,
+  findVerificationConflict,
   sanitizeCarryRowId,
   truncateCarryField,
   type CarryArgRepair,
@@ -306,16 +309,26 @@ export default defineTool({
                     'short) renders the row VERIFIED; omitting it entirely renders PREDICTED. There is no separate ' +
                     'boolean flag to set.',
                 ),
+              contested: z
+                .string()
+                .max(CARRY_ROW_SOFT_CAPS.contested * CARRY_CAP_HARD_MULTIPLE)
+                .optional()
+                .describe(
+                  'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
+                    'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
+                ),
             }),
           ).max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
         )
         .optional()
         .describe(
-          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?} rows (compact claim strings ' +
+          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?, contested?} rows (compact claim strings ' +
             'are accepted and mapped to {claim}; the non-owner analog ' +
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
-            'relying on it. Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
+            'relying on it. If its evidence says STILL RUNNING, pending, outstanding, in-flight, unverified, or awaiting, ' +
+            'the writer downgrades it to `contested` and reports the repair; contested rows render ⚠ and require a re-check. ' +
+            'Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
             "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows; " +
             "pass rowsMode:'replace' to retire them; [] clears under replace.",
@@ -433,7 +446,7 @@ export default defineTool({
       const v = fields[key];
       if (typeof v === 'string') fields[key] = truncateCarryField(v, CARRY_TEXT_SOFT_CAP, key, repairs);
     }
-    const capRows = <T extends { id?: string; claim: string; recheck?: string; verified?: string }>(
+    const capRows = <T extends { id?: string; claim: string; recheck?: string; verified?: string; contested?: string }>(
       rows: T[] | undefined,
       label: string,
     ): T[] | undefined =>
@@ -458,11 +471,36 @@ export default defineTool({
         out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `${label}[${i}].claim`, repairs);
         if (typeof out.recheck === 'string')
           out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `${label}[${i}].recheck`, repairs);
+        // A ✓ is an affirmative claim. If its evidence contradicts that claim,
+        // preserve the exact evidence but store it as contested so neither the
+        // carry note nor a wake can present it as settled. Do this BEFORE capping
+        // the evidence: a conflict marker near the tail must not be truncated away
+        // and accidentally restore a false ✓.
+        if (typeof out.verified === 'string') {
+          const conflict = findVerificationConflict(out.verified);
+          if (conflict) {
+            out.contested = out.verified;
+            delete out.verified;
+            repairs.push({
+              field: `${label}[${i}].verified`,
+              kind: 'downgraded',
+              detail:
+                `verification evidence contains contradiction marker "${conflict}" — stored as contested evidence; re-check before relying on this claim`,
+            });
+          }
+        }
         if (typeof out.verified === 'string')
           out.verified = truncateCarryField(
             out.verified,
             CARRY_ROW_SOFT_CAPS.verified,
             `${label}[${i}].verified`,
+            repairs,
+          );
+        if (typeof out.contested === 'string')
+          out.contested = truncateCarryField(
+            out.contested,
+            CARRY_ROW_SOFT_CAPS.contested,
+            `${label}[${i}].contested`,
             repairs,
           );
         return out;
@@ -578,6 +616,29 @@ export default defineTool({
     // a carried claim with no probe (the phantom-re-anchor shape). Never blocks.
     const probeText = [...checks.map(renderCheckLine), ...walls.map(renderWallLine)].join('\n');
     const uncheckedClaims = hasNoteWrite ? lintUncheckedExternalClaims(narrativeBody, probeText) : [];
+
+    // EI-20079511619330371: a carry-note's `left`/`next` is read as an
+    // instruction at wake time, even though its singleton/shared-state
+    // precondition may have changed after this write. Keep the warning
+    // advisory and only clear it with a matching checks row carrying a
+    // runnable recheck; a conclusion in prose (or a wall) is insufficient.
+    const imperativeActions = (() => {
+      if (!hasNoteWrite) return [];
+      try {
+        // The production renderer emits canonical headings, but the handler's
+        // routing tests intentionally replace it with a sentinel. Prefer the
+        // original structured fields when this write supplied them; parse the
+        // merged body for raw canonical notes and carried-forward text.
+        const parsed = parseCarryNote(narrativeBody);
+        const source = hasStructured ? fields : parsed;
+        return lintUncheckedImperativeActions(
+          [source.left, source.next].filter((value): value is string => Boolean(value?.trim())).join('\n'),
+          checks,
+        );
+      } catch {
+        return []; // advisory lint must never cost the checkpoint write
+      }
+    })();
 
     // outage-must-not-be-silent-2026-08-02 P-009: the ABSENCE-claim leg of the same lint.
     //
@@ -999,6 +1060,19 @@ export default defineTool({
                       'not decay — it hardens into settled fact. Either NARROW the claim to what the probe saw, ' +
                       'or WIDEN the probe and re-run it. Advisory only; the write was kept.',
                     rows: scopeOverreach,
+                  },
+                }
+              : {}),
+            ...(imperativeActions.length > 0
+              ? {
+                  imperativeLint: {
+                    flagged: true,
+                    note:
+                      'imperative_lint: this carry-note instructs the next wake to invoke a singleton/shared-state ' +
+                      'mutator whose precondition may be stale by wake time. Park the PRECONDITION as a runnable ' +
+                      'checks:[{ claim, recheck }] row naming the same action; do not carry only the conclusion. ' +
+                      'Advisory only; the write was kept.',
+                    matches: imperativeActions,
                   },
                 }
               : {}),
