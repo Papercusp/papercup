@@ -1051,6 +1051,109 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
   }
 }
 
+/**
+ * The RAW `WorkspaceEdit` behind `lspRenamePreview`, both encodings intact.
+ *
+ * `lspRenamePreview` flattens the edit into `SymbolSite[]` for an agent to
+ * read, and in doing so it (a) drops `documentChanges` — the encoding a server
+ * uses when it wants to say more than "replace this range" — and (b) discards
+ * the newText/range pairing needed to actually apply anything. Both are correct
+ * for a REPORT and useless for an application, so P-013's writer takes this
+ * instead of re-deriving an edit from the flattened sites.
+ *
+ * Still read-only: this sends `textDocument/rename` and returns what came back.
+ * Nothing here touches the filesystem. The application lives in `lsp-apply.ts`,
+ * behind its own flag and its own lock.
+ */
+export async function lspRenameWorkspaceEdit(
+  query: LspQuery & { newName: string },
+): Promise<
+  | { ok: true; edit: unknown; projectRoot: string; language: LspLanguage }
+  | { ok: false; error: string; health: BackendHealth }
+> {
+  const language = languageForFile(query.file);
+  if (!language) return { ok: false, error: `no pinned language server for file ${query.file}`, health: 'unknown' };
+
+  const project = resolveProjectRoot(language, query.file, query.rootPath);
+  if (project.error) return { ok: false, error: project.error, health: 'unhealthy' };
+
+  try {
+    const client = await getClient(language, project.root);
+    const uri = await ensureOpen(client, query.file);
+    const ready = await awaitProjectReady(client);
+    if (!ready) {
+      // The same refusal `lspRenamePreview` makes, and for a stronger reason
+      // here: a rename plan computed from a half-loaded program MISSES call
+      // sites, and this caller WRITES. A partial rename that compiles is the
+      // worst outcome available — it renames the definition and leaves callers
+      // pointing at a symbol that no longer exists, or worse, at a different one.
+      return {
+        ok: false,
+        error:
+          `language server did not finish loading the project within ` +
+          `${readyTimeoutFor(client.language)}ms; refusing to compute an edit for application`,
+        health: 'degraded',
+      };
+    }
+
+    const edit = await client.connection.sendRequest('textDocument/rename', {
+      textDocument: { uri },
+      position: { line: query.line1 - 1, character: query.character },
+      newName: query.newName,
+    });
+    return { ok: true, edit, projectRoot: project.root, language };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), health: 'unhealthy' };
+  }
+}
+
+/**
+ * Tell a live server that a file we had open now holds different text.
+ *
+ * REQUIRED for an honest post-write diagnostic delta, and the reason is the
+ * same asymmetry P-013 is built around: per the LSP spec, for an OPEN document
+ * the client's copy is authoritative and the server MUST ignore disk. So after
+ * `lsp.apply` writes, every diagnostic the server reports still describes the
+ * PRE-write text — a delta computed from it would be confidently wrong, and
+ * wrong in the reassuring direction ("no new errors").
+ *
+ * `didClose` + `didOpen` rather than `didChange`: the adapter never established
+ * incremental sync (documents are opened at `version: 1` and never advanced),
+ * so a `didChange` would be a version the server has no baseline for. Re-opening
+ * restores exactly the invariant the rest of the adapter assumes.
+ *
+ * A no-op when no server is live for that language/root, or when the document
+ * was never opened — both mean there is nothing holding a stale copy.
+ */
+export function lspResyncDocument(absPath: string, rootPath: string, newText: string): boolean {
+  const language = languageForFile(absPath);
+  if (!language) return false;
+  const project = resolveProjectRoot(language, absPath, rootPath);
+  if (project.error) return false;
+  const client = state.clients.get(clientKey(language, project.root));
+  if (!client || client.health === 'unhealthy') return false;
+
+  const uri = pathToFileURL(absPath).href;
+  if (!client.openDocs.has(uri)) return false;
+  try {
+    client.connection.sendNotification('textDocument/didClose', { textDocument: { uri } });
+    client.connection.sendNotification('textDocument/didOpen', {
+      textDocument: {
+        uri,
+        languageId: client.language === 'typescript' ? 'typescript' : 'rust',
+        version: 1,
+        text: newText,
+      },
+    });
+    return true;
+  } catch {
+    // A dead pipe here costs us the delta's accuracy, not the write that already
+    // landed. Report false so the caller marks the delta UNMEASURED rather than
+    // reporting a clean one it did not earn.
+    return false;
+  }
+}
+
 /** Shut down every live language server. Safe to call repeatedly. */
 export async function shutdownAllLspClients(): Promise<number> {
   const clients = [...state.clients.values()];

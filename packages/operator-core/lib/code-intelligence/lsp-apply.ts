@@ -341,10 +341,18 @@ export function positionToOffset(text: string, starts: number[], pos: LspPositio
   if (pos.line < 0 || pos.line >= starts.length) return null;
   const lineStart = starts[pos.line];
   const lineEnd = pos.line + 1 < starts.length ? starts[pos.line + 1] : text.length;
-  // The line's own content excludes its terminator; a position may sit at the
-  // very end of the content (an append), so `<=` is correct here.
-  const lineLen = Math.max(0, lineEnd - lineStart - (text.charCodeAt(lineEnd - 1) === 10 ? 1 : 0));
-  if (pos.character > lineLen) return null;
+  // The line's own CONTENT excludes its terminator — and under CRLF that is two
+  // characters, not one. Trimming only the `\n` would leave the bound one too
+  // generous, which quietly weakens the bounds check into accepting an edit
+  // whose offsets were computed against a different file. Since that check is
+  // this module's second staleness detector (invariant 5), a permissive bound
+  // costs a real refusal.
+  let contentEnd = lineEnd;
+  if (contentEnd > lineStart && text.charCodeAt(contentEnd - 1) === 10 /* \n */) contentEnd--;
+  if (contentEnd > lineStart && text.charCodeAt(contentEnd - 1) === 13 /* \r */) contentEnd--;
+  // A position may sit at the very end of the content (an append), so the
+  // comparison is `>` and not `>=`.
+  if (pos.character > contentEnd - lineStart) return null;
   return lineStart + pos.character;
 }
 
@@ -520,3 +528,245 @@ export interface ApplySuccess {
 }
 
 export type ApplyResult = ApplySuccess | ApplyRefusal;
+
+// ───────────────────────────────────────────────────────────────────────────
+// The orchestrator.
+//
+// Every effect is injected. That is not test decoration — P-013's condition is
+// "keep production read-only if any invariant is not proven", and three of the
+// six invariants are only observable at a race or a fault that a live language
+// server and a live Postgres lock table will not reproduce on demand: the
+// fail-CLOSED lock (invariant 2) needs the acquire to FAULT, the content
+// compare-and-swap (invariant 4) needs a peer to write in the window between
+// planning and locking, and the rollback (invariant 6) needs a write to fail
+// midway through a multi-file set. Injected seams make all three ordinary test
+// cases instead of things we assert about in a comment.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** What the lock layer can answer. Structural, so this module does not depend
+ *  on the locks package at type level and stays cheap to unit test. */
+export type LockOutcome<T> =
+  | { acquired: true; result: T; coordinated: boolean }
+  | { acquired: false; lockUnavailable?: boolean; error?: string; busy?: unknown[] };
+
+export interface ApplyRenameRequest {
+  /** Absolute path of the file the cursor is in. */
+  file: string;
+  /** ONE-indexed line, as a human, grep or editor states it. */
+  line1: number;
+  /** Zero-indexed character offset within the line. */
+  character: number;
+  /** The proposed new name. */
+  newName: string;
+  /** Project root. Every write must resolve inside it. */
+  rootPath: string;
+  /**
+   * OPTIONAL caller-side compare-and-swap: sha256 per path (absolute or
+   * root-relative) as the caller saw it in a preview. Closes the preview→apply
+   * window, which is longer than the plan→apply window this module closes on
+   * its own and which only the caller can bound.
+   */
+  expect?: Record<string, string>;
+}
+
+export interface ApplyDeps {
+  /** Both gates: the read facade's flag AND the write flag. */
+  flagsEnabled: () => Promise<{ ok: true } | { ok: false; message: string }>;
+  /** Ask the language server for the rename's WorkspaceEdit. Read-only. */
+  computeEdit: (
+    req: ApplyRenameRequest,
+  ) => Promise<{ ok: true; edit: unknown; projectRoot: string } | { ok: false; error: string }>;
+  realpath: (p: string) => string;
+  readText: (absPath: string) => Promise<string>;
+  writeText: (absPath: string, text: string) => Promise<void>;
+  /** Atomic, FAIL-CLOSED acquire over the whole target set. */
+  withLock: <T>(absPaths: string[], run: () => Promise<T>) => Promise<LockOutcome<T>>;
+  /** Re-open a written document on the server so diagnostics describe the new text. */
+  resync: (absPath: string, rootPath: string, newText: string) => boolean;
+  /** Diagnostic count for one file, or `null` when it could not be measured. */
+  diagnosticCount: (absPath: string, rootPath: string) => Promise<number | null>;
+  now: () => number;
+}
+
+/**
+ * Apply a rename across the workspace, or refuse and change nothing.
+ *
+ * The ordering below is load-bearing, not incidental:
+ *
+ *   compute → resolve+confine → hash (PLAN) → LOCK → hash (CURRENT) → CAS
+ *     → validate+apply in memory → write all → rollback on any failure
+ *     → resync + diagnostics
+ *
+ * Hashing twice around the lock is what makes the CAS mean anything: a single
+ * hash taken inside the lock proves only that we read what we then wrote, which
+ * is true of every corrupt write too. The pair proves the file did not move
+ * between the instant the offsets were computed and the instant they became
+ * exclusive. And the in-memory apply completes for EVERY file before the first
+ * byte is written, so a malformed edit in file 9 of 10 refuses without having
+ * touched files 1–8.
+ */
+export async function applyRenameEdit(
+  req: ApplyRenameRequest,
+  deps: ApplyDeps,
+): Promise<ApplyResult> {
+  const started = deps.now();
+
+  const gate = await deps.flagsEnabled();
+  if (!gate.ok) return refuse('flag_disabled', gate.message);
+
+  const computed = await deps.computeEdit(req);
+  if (!computed.ok) return refuse('backend_error', computed.error, [req.file]);
+
+  const resolved = resolveEditTargets(
+    computed.edit as RawWorkspaceEdit,
+    computed.projectRoot,
+    deps.realpath,
+  );
+  if (!resolved.ok) return resolved;
+  const { targets } = resolved;
+
+  // PLAN-TIME hashes: what each file held when the server computed the offsets.
+  const planned = new Map<string, string>();
+  for (const t of targets) {
+    try {
+      planned.set(t.absPath, contentSha(await deps.readText(t.absPath)));
+    } catch (err) {
+      return refuse(
+        'missing_file',
+        `cannot read ${t.relPath}: ${err instanceof Error ? err.message : String(err)}`,
+        [t.relPath],
+      );
+    }
+  }
+
+  const expected = req.expect ? new Map(Object.entries(req.expect)) : undefined;
+
+  const outcome = await deps.withLock(
+    targets.map((t) => t.absPath),
+    async (): Promise<ApplyResult> => {
+      // ── Inside the lock. Nothing else may write these paths from here. ──
+      const current = new Map<string, string>();
+      const originals = new Map<string, string>();
+      for (const t of targets) {
+        let text: string;
+        try {
+          text = await deps.readText(t.absPath);
+        } catch (err) {
+          return refuse(
+            'missing_file',
+            `${t.relPath} disappeared before the lock was held: ` +
+              `${err instanceof Error ? err.message : String(err)}`,
+            [t.relPath],
+          );
+        }
+        originals.set(t.absPath, text);
+        current.set(t.absPath, contentSha(text));
+      }
+
+      // INVARIANT 4.
+      const stale = checkContentCas(targets, planned, current, expected);
+      if (stale) return stale;
+
+      // INVARIANT 5, in memory, for EVERY file before ANY write.
+      const nextText = new Map<string, string>();
+      let editsApplied = 0;
+      for (const t of targets) {
+        const applied = applyTextEdits(originals.get(t.absPath)!, t.edits);
+        if (!applied.ok) {
+          return { ...applied, paths: applied.paths.length ? applied.paths : [t.relPath] };
+        }
+        nextText.set(t.absPath, applied.text);
+        editsApplied += applied.applied;
+      }
+
+      // INVARIANT 6. Write, and undo everything if any write fails.
+      const written: string[] = [];
+      try {
+        for (const t of targets) {
+          await deps.writeText(t.absPath, nextText.get(t.absPath)!);
+          written.push(t.absPath);
+        }
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        const restoreFailures: string[] = [];
+        for (const abs of written) {
+          try {
+            await deps.writeText(abs, originals.get(abs)!);
+          } catch {
+            restoreFailures.push(abs);
+          }
+        }
+        return refuse(
+          'apply_failed',
+          restoreFailures.length === 0
+            ? `write failed (${detail}); all ${written.length} already-written file(s) were ` +
+              `restored, so the tree is unchanged`
+            : `write failed (${detail}) AND ${restoreFailures.length} file(s) could not be ` +
+              `restored: ${restoreFailures.join(', ')}. THE TREE IS IN A MIXED STATE — inspect ` +
+              `these paths.`,
+          restoreFailures.length === 0 ? targets.map((t) => t.relPath) : restoreFailures,
+        );
+      }
+
+      // ── The write landed. Everything below is reporting, and a failure here
+      //    must degrade the REPORT, never retract the write. ──
+      const diagFiles: DiagnosticDeltaEntry[] = [];
+      let measured = true;
+      let note: string | null = null;
+
+      for (const t of targets) {
+        const before = await deps.diagnosticCount(t.absPath, computed.projectRoot);
+        const resynced = deps.resync(t.absPath, computed.projectRoot, nextText.get(t.absPath)!);
+        const after = resynced ? await deps.diagnosticCount(t.absPath, computed.projectRoot) : null;
+        if (before === null || after === null) {
+          measured = false;
+          if (!note) {
+            note = resynced
+              ? 'diagnostics were unavailable for at least one file; the delta is UNMEASURED, not clean'
+              : 'at least one document could not be re-synced with the server, so its diagnostics ' +
+                'would still describe the PRE-write text; the delta is UNMEASURED, not clean';
+          }
+          continue;
+        }
+        diagFiles.push({ path: t.relPath, before, after, delta: after - before });
+      }
+
+      return {
+        ok: true,
+        filesChanged: targets.map((t) => t.relPath),
+        editsApplied,
+        diagnostics: summarizeDiagnosticDelta(diagFiles, measured, note),
+        contentAfter: Object.fromEntries(
+          targets.map((t) => [t.relPath, contentSha(nextText.get(t.absPath)!)]),
+        ),
+        latencyMs: deps.now() - started,
+      };
+    },
+  );
+
+  if (!outcome.acquired) {
+    // INVARIANT 2. The two non-acquired shapes are genuinely different states
+    // and an agent acts differently on each: `file_locked` means a NAMED peer is
+    // editing (coordinate, or wait for their lock to lapse), `lock_unavailable`
+    // means the lock authority itself could not answer (retry; nobody is
+    // holding anything). Collapsing them would tell an agent to go talk to
+    // nobody.
+    if (outcome.lockUnavailable) {
+      return refuse(
+        'lock_unavailable',
+        `the file-lock authority could not be reached (${outcome.error ?? 'unknown fault'}), so ` +
+          `this ${targets.length}-file rename would have run unarbitrated on a shared checkout. ` +
+          `Refused; retry when the authority is back.`,
+        targets.map((t) => t.relPath),
+      );
+    }
+    return refuse(
+      'file_locked',
+      `another agent holds one or more of the ${targets.length} file(s) this rename would write. ` +
+        `Coordinate with the holder, or retry once their lock releases.`,
+      targets.map((t) => t.relPath),
+    );
+  }
+
+  return outcome.result;
+}
