@@ -8,8 +8,10 @@
  * → fixerAlive=true → skip.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { hostname } from 'node:os';
 import type postgres from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
+import { launcherBootId } from '../../fleet/spawn-reclaim';
 import { releaseFixerSpawnAlive, decideReleaseFixerDispatch } from './release-actions';
 
 const SPAWNED_DDL = `
@@ -18,7 +20,10 @@ const SPAWNED_DDL = `
     session_owner text,
     run_id text,
     status text NOT NULL,
-    heartbeat_at timestamptz
+    heartbeat_at timestamptz,
+    pid integer,
+    launcher_host text,
+    launcher_boot_id text
   )`;
 
 let db: FreshPgDb;
@@ -39,11 +44,18 @@ beforeEach(async () => {
   await sql`TRUNCATE harness_shared.spawned_agents`;
 });
 
-async function seedSpawn(spawnId: string, status: string, heartbeatAgoMin: number | null): Promise<void> {
+async function seedSpawn(
+  spawnId: string,
+  status: string,
+  heartbeatAgoMin: number | null,
+  identity: { pid?: number | null; launcherHost?: string | null; launcherBootId?: string | null } = {},
+): Promise<void> {
   await sql`
-    INSERT INTO harness_shared.spawned_agents (spawn_id, session_owner, run_id, status, heartbeat_at)
+    INSERT INTO harness_shared.spawned_agents
+      (spawn_id, session_owner, run_id, status, heartbeat_at, pid, launcher_host, launcher_boot_id)
     VALUES (${spawnId}, ${spawnId}, ${spawnId}, ${status},
-            ${heartbeatAgoMin == null ? null : sql`now() - make_interval(mins => ${heartbeatAgoMin})`})`;
+            ${heartbeatAgoMin == null ? null : sql`now() - make_interval(mins => ${heartbeatAgoMin})`},
+            ${identity.pid ?? null}, ${identity.launcherHost ?? null}, ${identity.launcherBootId ?? null})`;
 }
 
 describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)', () => {
@@ -60,6 +72,24 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
   it('a RUNNING fixer with a STALE heartbeat (crashed mid-run, beats stopped) is gone → re-dispatch', async () => {
     await seedSpawn('s-fixer-stale', 'running', 30); // > 10-min STALE_MS window
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-stale')).toBe(false);
+  });
+
+  it('a same-host fixer from a prior launcher boot is gone even with a fresh heartbeat and no PID', async () => {
+    await seedSpawn('s-fixer-prior-boot', 'running', 1, {
+      launcherHost: hostname(),
+      launcherBootId: 'prior-launcher-boot',
+      pid: null,
+    });
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-prior-boot')).toBe(false);
+  });
+
+  it('a same-host fixer with a recorded but absent PID is gone', async () => {
+    await seedSpawn('s-fixer-absent-pid', 'running', 1, {
+      launcherHost: hostname(),
+      launcherBootId: launcherBootId(),
+      pid: 999_999_999,
+    });
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-absent-pid')).toBe(false);
   });
 
   it('a COMPLETED (done) fixer is no longer covering the gate → re-dispatch', async () => {

@@ -10,7 +10,9 @@
  * dispatcher that decides "don't spawn another one" must never be able to disagree.
  */
 import type postgres from 'postgres';
+import { hostname } from 'node:os';
 import { STALE_MS } from '../liveness';
+import { isSpawnProcessAlive, launcherBootId } from '../fleet/spawn-reclaim';
 
 /** The durable escalation phase for a release-fixer that died before its first turn. */
 export const RELEASE_FIXER_NO_TURN_PHASE = 'green-checkpoint-release-fixer-no-turn';
@@ -108,13 +110,35 @@ export async function releaseFixerSpawnAlive(
   const graceSec = Math.max(1, Math.round(STALE_MS / 1000));
   try {
     const rows = (await sql.unsafe(
-      `SELECT 1 FROM harness_shared.spawned_agents
+      `SELECT launcher_host, launcher_boot_id, pid
+         FROM harness_shared.spawned_agents
         WHERE spawn_id = $1 AND status IN ('running','restarting')
           AND heartbeat_at IS NOT NULL AND (now() - heartbeat_at) < make_interval(secs => $2)
         LIMIT 1`,
       [spawnId, graceSec],
-    )) as unknown[];
-    return rows.length > 0;
+    )) as Array<{
+      launcher_host?: string | null;
+      launcher_boot_id?: string | null;
+      pid?: number | string | null;
+    }>;
+    const row = rows[0];
+    if (!row) return false;
+
+    // A PID is only meaningful within the launcher boot that recorded it. A
+    // same-host row from an earlier boot is provably orphaned even when its
+    // heartbeat was refreshed before the host noticed the restart; treating the
+    // heartbeat as proof here is exactly how release:trace rendered a dead
+    // release-fixer as owned-live (EI-20984152070842112).
+    const localHost = hostname();
+    const sameHost = row.launcher_host === localHost;
+    if (sameHost && row.launcher_boot_id && row.launcher_boot_id !== launcherBootId()) return false;
+
+    // For a same-host row with a recorded child, use the existing PID-reuse-
+    // hardened probe. Missing/invalid PIDs retain the heartbeat fallback for
+    // legacy and admission-gap rows; the boot mismatch check above handles the
+    // cross-restart case even when that PID is absent.
+    if (sameHost && row.pid != null) return isSpawnProcessAlive(Number(row.pid));
+    return true;
   } catch {
     return null;
   }
