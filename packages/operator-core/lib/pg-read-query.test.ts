@@ -1088,6 +1088,40 @@ describe('buildSilentNullPathAdvisory (WI-6674 — the always-NULL accessor)', (
     });
   });
 
+  // ── work_items.attempts — nullable on the compatibility view. Issue-family
+  // rows project NULL, so ordinary comparisons silently discard the dominant
+  // never-attempted population (`attempts = 0` is not true for NULL).
+  describe('work_items.attempts nullable predicates', () => {
+    it('flags ordinary comparisons that silently discard NULL attempts', () => {
+      for (const predicate of ['attempts = 0', 'attempts > 0', "attempts IN (0, 1)", 'attempts BETWEEN 0 AND 1']) {
+        const advisory = buildSilentNullPathAdvisory(
+          `SELECT count(*) FROM harness_shared.work_items WHERE ${predicate}`,
+        );
+        expect(advisory, predicate).toContain('nullable predicate');
+        expect(advisory, predicate).toContain('COALESCE(attempts, 0)');
+      }
+    });
+
+    it('stays silent when the caller handles NULL explicitly', () => {
+      for (const predicate of ['attempts IS NULL', 'attempts IS NOT NULL', 'COALESCE(attempts, 0) = 0']) {
+        expect(
+          buildSilentNullPathAdvisory(
+            `SELECT count(*) FROM harness_shared.work_items WHERE ${predicate}`,
+          ),
+          predicate,
+        ).toBeNull();
+      }
+    });
+
+    it('does not treat attempts on another relation as the work_items trap', () => {
+      expect(
+        buildSilentNullPathAdvisory(
+          'SELECT count(*) FROM harness_shared.harness_features_consolidated WHERE attempts = 0',
+        ),
+      ).toBeNull();
+    });
+  });
+
   // ── lane lives at the TOP level of payload, never under _ei. Measured
   // 2026-08-02: payload ? 'lane' true for 12,694 rows, payload->'_ei' ? 'lane'
   // for ZERO — so the _ei form silently counts every observation as real work.

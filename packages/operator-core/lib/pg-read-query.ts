@@ -1091,6 +1091,8 @@ interface SilentNullPathTrap {
   why: string;
   /** What to select instead. */
   useInstead: string;
+  /** A nullable-predicate trap warns about NULL rows without claiming every row is NULL. */
+  warningKind?: 'always-null-accessor' | 'nullable-predicate';
 }
 
 /**
@@ -1183,6 +1185,21 @@ const SILENT_NULL_PATH_TRAPS: SilentNullPathTrap[] = [
     useInstead:
       "`payload->>'lane'` (the `_ei` blob carries severity/source/found_during, not lane)",
   },
+  {
+    // `attempts` is nullable on the compatibility view. Issue-family rows
+    // project it as NULL and the open population measured 17,288/17,318 NULL
+    // (99.8%, 2026-08-03), so `attempts = 0` silently drops "never attempted".
+    // This is a nullable-predicate trap, not an always-NULL accessor: explicit
+    // IS NULL/IS NOT NULL and COALESCE forms remain valid and stay silent.
+    relation: 'work_items',
+    pathRe: /\battempts\s*(?:<>|!=|>=|<=|=|>|<|\bin\b|\bbetween\b)/i,
+    path: 'attempts',
+    warningKind: 'nullable-predicate',
+    why:
+      'this compatibility VIEW projects `attempts` as NULL for issue-family rows, and the observed open population was 17,288 of 17,318 rows (99.8%) with NULL attempts. SQL comparison predicates treat NULL as UNKNOWN, so `attempts = 0` or `attempts > 0` silently excludes those rows',
+    useInstead:
+      '`COALESCE(attempts, 0)` when NULL means never attempted; use `attempts IS NULL` / `attempts IS NOT NULL` for explicit nullness, or prefer `work_items:list` / `work_items:claimable`',
+  },
 ];
 
 /**
@@ -1221,11 +1238,18 @@ export function buildSilentNullPathAdvisory(rawSql: string): string | null {
       }
     }
     if (!real) continue;
-    parts.push(
-      `⚠ always-NULL accessor: ${hit} — this query reads \`${trap.path}\`, but ${trap.why}. ` +
-        `Use ${trap.useInstead}. A predicate on this path matches ZERO rows, which reads exactly ` +
-        'like "there are none" (WI-6674).',
-    );
+    if (trap.warningKind === 'nullable-predicate') {
+      parts.push(
+        `⚠ nullable predicate: ${hit} — this query compares \`${trap.path}\`, but ${trap.why}. ` +
+          `Use ${trap.useInstead}.`,
+      );
+    } else {
+      parts.push(
+        `⚠ always-NULL accessor: ${hit} — this query reads \`${trap.path}\`, but ${trap.why}. ` +
+          `Use ${trap.useInstead}. A predicate on this path matches ZERO rows, which reads exactly ` +
+          'like "there are none" (WI-6674).',
+      );
+    }
   }
 
   return parts.length ? parts.join(' ') : null;
