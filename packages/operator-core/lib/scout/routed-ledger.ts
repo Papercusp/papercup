@@ -44,8 +44,14 @@ import { trackDetached } from '../detached-imports';
  * ideation pass, and must never enlarge either learning roster.
  */
 export const AGENT_REVIEW_LEDGER_ORIGIN = 'agent-review' as const;
-export type RoutedIdeaLens = SuIdeationLens | 'su-ideate' | typeof AGENT_REVIEW_LEDGER_ORIGIN;
-export type RoutedIdeaOrigin = 'scout' | 'su-ideate' | 'drill' | ShadowVariantOrigin | typeof AGENT_REVIEW_LEDGER_ORIGIN;
+export type RoutedIdeaLens = SuIdeationLens | 'su-ideate' | 'dream' | typeof AGENT_REVIEW_LEDGER_ORIGIN;
+export type RoutedIdeaOrigin =
+  | 'scout'
+  | 'su-ideate'
+  | 'dream'
+  | 'drill'
+  | ShadowVariantOrigin
+  | typeof AGENT_REVIEW_LEDGER_ORIGIN;
 
 /** Input to {@link recordRoutedIdea} — the provenance P-007 persists at routing time. */
 export interface RecordRoutedIdeaInput {
@@ -85,8 +91,9 @@ export interface RecordRoutedIdeaInput {
   /**
    * The ORIGIN dimension (su-loop-capability-parity P-005 / D-009), ORTHOGONAL to `lens`:
    * 'scout' (default — a Scout-routed idea, counts toward per-lens weight learning),
-   * 'su-ideate' (an SU session's IDEATE-pass origination), or 'drill' (a
-   * vaccination-planted release probe). Both non-scout origins are excluded from
+   * 'su-ideate' (an SU session's IDEATE-pass origination), 'dream' (an independently
+   * reviewed REM recombination), or 'drill' (a vaccination-planted release probe).
+   * These non-scout origins are excluded from
    * Scout lens-weight learning. NOT a pseudo-lens.
    *
    * `'shadow-variant'` (counterfactual-critique-lab D-001) is the fourth: a
