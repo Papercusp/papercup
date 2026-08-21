@@ -183,6 +183,22 @@ function readRubricDir(dir: string, ref: string, layer: 'bundled' | 'user'): Loc
 }
 
 /**
+ * Read a candidate rubric dir as a USER-layer rubric, for the Cupboard install path
+ * (cupboard-plan-rubric-recipe-sharing-2026-08-21 P-004). Deliberately the SAME
+ * `readRubricDir` the store enumeration uses, so a dir that installs is exactly a
+ * dir that will later resolve — an installer with its own parser could accept
+ * something `listLocalRubrics` then silently skips, which is the failure mode that
+ * makes an install look successful and the rubric never appear.
+ *
+ * Layer is fixed to 'user' because that is the only layer a Cupboard install writes
+ * (the bundled layer is read-only and ships in the release build). Null ⇒ not a
+ * valid rubric dir; the caller 422s rather than placing it.
+ */
+export function readLocalRubricDirForInstall(dir: string, ref: string): LocalRubric | null {
+  return readRubricDir(dir, ref, 'user');
+}
+
+/**
  * Enumerate every rubric across the layered roots. A user-layer ref shadows a
  * bundled one. Non-dir entries (README.md) and dirs without a valid rubric.json are
  * skipped. Sorted by ref for stable output.
