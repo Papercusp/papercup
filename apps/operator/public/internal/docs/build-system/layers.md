@@ -63,7 +63,7 @@ If you find yourself wanting to reach for `node:fs` in core code, the answer is 
 
 **What may NOT be imported:** React; client-only browser APIs.
 
-A handler that holds non-transport state (cookies, cost caps, feature locks, transcript persistence) is A1-class — it stays as a substantive shim and doesn't migrate to a `defineTool` projection. See [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the audit axes.
+A handler that holds non-transport state (cookies, cost caps, feature locks, transcript persistence) is A1-class — it stays as a substantive shim and doesn't migrate to a `defineTool` projection.
 
 ### client
 
@@ -108,4 +108,4 @@ In practice the handler moves (step 1) happened — `agent-tools/<feature>/<name
 
 The original trigger was: when ≥75% of the `app/api/*/route.ts` files had been audited (the Phase 4 milestone), or when an enforcement violation appeared that the scaffold should have caught. Neither happened on that path — Phase 4 was superseded by the endpoint-unification + hono-elimination arcs (`app/api` is now empty), and on 2026-06-14 the owner dropped Phase 6a outright (P-004). The tsconfigs stay as inert scaffolding.
 
-Sister doc: the [host-platform](https://github.com/papercusp/papercusp/tree/main/libs/host-platform) interface that `core` and `host` share, and [agent-policies §endpoint-system migration](/internal/docs/agent-policies) for the per-route audit rules.
+Sister doc: the [host-platform](https://github.com/papercusp/papercusp/tree/main/libs/host-platform) interface that `core` and `host` share.

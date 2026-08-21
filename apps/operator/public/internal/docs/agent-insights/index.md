@@ -25,8 +25,8 @@ Each insight answers three questions in three short sections:
 
 ## Contributing
 
-See [Agent policies §19](/internal/docs/agent-policies#19-agent-insights) for
-the full rule. Short version:
+See [authoring docs (PG-canonical)](/internal/docs/agent-insights/authoring-docs-pg-canonical)
+for the authoring mechanics. Short version:
 
 * Write one when you discover a non-obvious fact (PG quirk, library
   gotcha, subtle invariant, hidden cross-cutting rule).

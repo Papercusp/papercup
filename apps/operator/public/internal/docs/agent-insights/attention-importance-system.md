@@ -38,8 +38,7 @@ Plan items carry an **importance** — a 4th axis orthogonal to status:
 `blocked-by:`. It drives the Planning-tab sort/badges, the orchestrator's
 halt-on-`urgent`, and (eventually) the push threshold. Source of truth:
 `@papercusp/plan-parser` (`IMPORTANCE_LEVELS`, `PlanItem.importance`); spec
-at [plan-format §Importance](/internal/docs/spec/plan-format#importance);
-rubric in [agent-policies §18](/internal/docs/agent-policies).
+at [plan-format §Importance](/internal/docs/spec/plan-format#importance).
 
 The Planning tab also shows a **unified attention feed**: one
 `AttentionItem` read-model (`packages/operator-core/lib/attention/`) that every

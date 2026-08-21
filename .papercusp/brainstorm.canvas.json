@@ -1,5 +1,36 @@
 {
-  "elements": [],
+  "elements": [
+    {
+      "id": "GNRyLAG-An9cIZxkxFFGR",
+      "type": "embeddable",
+      "x": 116.5625,
+      "y": 111,
+      "width": 260,
+      "height": 230,
+      "angle": 0,
+      "strokeColor": "#1e1e1e",
+      "backgroundColor": "transparent",
+      "fillStyle": "solid",
+      "strokeWidth": 2,
+      "strokeStyle": "solid",
+      "roughness": 1,
+      "opacity": 100,
+      "groupIds": [],
+      "frameId": null,
+      "index": "a0",
+      "roundness": {
+        "type": 3
+      },
+      "seed": 1895716148,
+      "version": 6,
+      "versionNonce": 1500078604,
+      "isDeleted": false,
+      "boundElements": null,
+      "updated": 1787324107518,
+      "link": "https://twitter.com/Interior/status/463440424141459456",
+      "locked": false
+    }
+  ],
   "appState": {
     "viewBackgroundColor": "transparent",
     "gridSize": 20,
