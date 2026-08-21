@@ -442,6 +442,131 @@ export async function regenerateToolCatalogBeforeCommit(
   }
 }
 
+const TOOL_ROUTING_GENERATOR_PATH = 'scripts/gen-tool-routing.ts';
+const TOOL_ROUTING_TABLE_PATH = 'packages/operator-core/lib/bash-substitution/routing-table.ts';
+const TOOL_ROUTING_PAIRS_PREFIX = 'packages/operator-core/lib/bash-substitution/pairs/';
+const TOOL_ROUTING_TRACKED_PATHS = [TOOL_ROUTING_GENERATOR_PATH, TOOL_ROUTING_TABLE_PATH] as const;
+
+/** The exact source surface that can change the generated tool-routing projection. */
+export function affectsToolRouting(path: string): boolean {
+  return (
+    (path.startsWith(TOOL_ROUTING_PAIRS_PREFIX) && path.endsWith('.ts') && !path.endsWith('.test.ts')) ||
+    path === TOOL_ROUTING_TABLE_PATH ||
+    path === TOOL_ROUTING_GENERATOR_PATH
+  );
+}
+
+export interface ToolRoutingCheckResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+export type RunToolRoutingCheck = (repoPath: string) => Promise<ToolRoutingCheckResult>;
+
+export interface ToolRoutingCheckerContext {
+  runGit: RunGit;
+  repoPath: string;
+  log: (message: string) => void;
+}
+
+/**
+ * Run the generated routing check in a bounded child. The generator reads the
+ * canonical doc-part store, so a broken DB/client or a half-written peer module
+ * must be observable without allowing it to wedge the fleet-wide git-sync pass.
+ */
+const defaultRunToolRoutingCheck: RunToolRoutingCheck = (repoPath) =>
+  new Promise((resolve) => {
+    const timeoutMs = envMs('PAPERCUSP_GIT_SYNC_TOOL_ROUTING_TIMEOUT_MS', 60_000);
+    const child = spawn(join(repoPath, 'node_modules', '.bin', 'tsx'), [TOOL_ROUTING_GENERATOR_PATH, '--check'], {
+      cwd: repoPath,
+      env: process.env,
+    });
+    const out = collectChildOutput(child);
+    let settled = false;
+    let timedOut = false;
+    let closeFallback: ReturnType<typeof setTimeout> | null = null;
+    const finish = (code: number): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killer);
+      if (closeFallback) clearTimeout(closeFallback);
+      resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
+    };
+    const killer = setTimeout(() => {
+      timedOut = true;
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}tool-routing check timed out after ${timeoutMs}ms`);
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already gone */
+      }
+      // A broken child implementation must not defeat the timeout by never
+      // emitting close after the kill.
+      closeFallback = setTimeout(() => finish(-1), 5_000);
+      closeFallback.unref?.();
+    }, timeoutMs);
+    killer.unref?.();
+    child.on('error', (e) => {
+      out.stderr.append(`${out.stderr.peek() ? '\n' : ''}${String(e)}`);
+      finish(-1);
+    });
+    child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
+  });
+
+/**
+ * Run the generated tool-routing drift check immediately before the
+ * superproject commit when a routing source is dirty. This is intentionally
+ * FAIL-SOFT: status/tracking checks, checker errors, nonzero exits, and timeouts
+ * are logged and return normally so a stale generated projection cannot wedge
+ * git-sync's commit of the rest of the shared tree.
+ */
+export async function checkToolRoutingBeforeCommit(
+  context: ToolRoutingCheckerContext,
+  runCheck: RunToolRoutingCheck = defaultRunToolRoutingCheck,
+): Promise<void> {
+  const { runGit, repoPath, log } = context;
+  try {
+    const status = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+    if (status.code !== 0) {
+      log(`[git-sync] ${repoPath}: could not inspect dirty paths for tool-routing check — skipping fail-soft`);
+      return;
+    }
+    const affected = parseDirtyPaths(status.stdout).filter(affectsToolRouting);
+    if (affected.length === 0) return;
+
+    // Do not run this Papercusp-specific check in arbitrary repositories that
+    // merely happen to contain one routing-shaped dirty path.
+    const tracked = await runGit(['ls-files', '--', ...TOOL_ROUTING_TRACKED_PATHS], repoPath);
+    const trackedPaths = new Set(
+      tracked.stdout
+        .split('\n')
+        .map((p) => p.trim())
+        .filter(Boolean),
+    );
+    if (tracked.code !== 0 || !TOOL_ROUTING_TRACKED_PATHS.every((path) => trackedPaths.has(path))) return;
+
+    let result: ToolRoutingCheckResult;
+    try {
+      result = await runCheck(repoPath);
+    } catch (e) {
+      result = { code: -1, stdout: '', stderr: String(e) };
+    }
+    if (result.code !== 0) {
+      const detail = (result.stderr || result.stdout || `exit ${result.code}`).trim().slice(0, 300);
+      log(
+        `[git-sync] ${repoPath}: generated tool-routing check failed (${detail}) — continuing with the commit fail-soft; run \`npm run gen:tool-routing\` to repair`,
+      );
+      return;
+    }
+    log(
+      `[git-sync] ${repoPath}: generated tool-routing check passed before commit (${affected.length} routing-affecting dirty path(s))`,
+    );
+  } catch (e) {
+    log(`[git-sync] ${repoPath}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`);
+  }
+}
+
 const GITHUB_HTTPS_INSTEAD_OF_ARGS = ['-c', 'url.https://github.com/.insteadOf=git@github.com:'] as const;
 
 /**
@@ -744,6 +869,9 @@ export interface RunGitSyncOpts {
   /** WI-39922: pre-superproject-commit repair for the tracked tool catalog.
    *  Defaults to the conditional, bounded, fail-soft regenerator above. */
   toolCatalogRegenerator?: ToolCatalogRegenerator;
+  /** EI-20428405431869483: pre-superproject-commit generated routing drift check.
+   *  Defaults to the conditional, bounded, fail-soft checker above. */
+  toolRoutingChecker?: ToolRoutingChecker;
 }
 
 /** Default content-guard file reader — the working-tree bytes that `add -A` would
@@ -2742,6 +2870,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const readText = opts.readText ?? defaultReadText;
   const writeText = opts.writeText ?? defaultWriteText;
   const toolCatalogRegenerator = opts.toolCatalogRegenerator ?? regenerateToolCatalogBeforeCommit;
+  const toolRoutingChecker = opts.toolRoutingChecker ?? checkToolRoutingBeforeCommit;
   const protectedPaths = [...new Set((opts.excludePaths ?? []).map((path) => path.trim()).filter(Boolean))];
   const repoO = {
     remote,
@@ -2974,6 +3103,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
   const commitRes = await step('git-sync:pointer-bump', async () => {
+    // EI-20428405431869483: detect generated routing drift while the dirty source
+    // is still present, before the catch-all commit makes the source clean.
+    try {
+      await toolRoutingChecker({ runGit, repoPath: repo, log });
+    } catch (e) {
+      log(
+        `[git-sync] ${repo}: tool-routing pre-commit check threw (${String(e)}) — continuing with the commit fail-soft`,
+      );
+    }
     // WI-39922: close the edit→auto-commit window that let a stale tracked catalog
     // reach the green gate hours later. Keep the catch HERE even though the default
     // implementation is defensive: an injected/future regenerator must never turn

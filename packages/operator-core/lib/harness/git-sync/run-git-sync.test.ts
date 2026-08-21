@@ -31,6 +31,8 @@ import {
   STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
+  affectsToolRouting,
+  checkToolRoutingBeforeCommit,
   regenerateToolCatalogBeforeCommit,
   type RunGit,
 } from './run-git-sync';
@@ -133,6 +135,97 @@ describe('WI-39922 tool-catalog pre-commit regeneration', () => {
     await regenerateToolCatalogBeforeCommit({ runGit, repoPath: '/unrelated-repo', log: () => {} }, runGenerator);
 
     expect(runGenerator).not.toHaveBeenCalled();
+  });
+});
+
+describe('EI-20428405431869483 generated tool-routing pre-commit check', () => {
+  it('limits the dirty-path trigger to routing sources, excluding pair tests', () => {
+    expect(affectsToolRouting('packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts')).toBe(true);
+    expect(affectsToolRouting('packages/operator-core/lib/bash-substitution/pairs/model-drift.test.ts')).toBe(false);
+    expect(affectsToolRouting('packages/operator-core/lib/bash-substitution/routing-table.ts')).toBe(true);
+    expect(affectsToolRouting('scripts/gen-tool-routing.ts')).toBe(true);
+    expect(affectsToolRouting('packages/operator-core/lib/bash-substitution/routing-table.test.ts')).toBe(false);
+    expect(affectsToolRouting('README.md')).toBe(false);
+  });
+
+  it('runs the bounded check for an affected dirty source when canonical surfaces are tracked', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      if (args[0] === 'status') {
+        return {
+          code: 0,
+          stdout: ' M packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts\0',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout:
+            'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const runCheck = vi.fn(async () => ({ code: 0, stdout: 'routing clean', stderr: '' }));
+    const logs: string[] = [];
+
+    await checkToolRoutingBeforeCommit({ runGit, repoPath: '/fake', log: (message) => logs.push(message) }, runCheck);
+
+    expect(runCheck).toHaveBeenCalledOnce();
+    expect(calls.map((args) => args[0])).toEqual(['status', 'ls-files']);
+    expect(logs.join('\n')).toMatch(/generated tool-routing check passed before commit/);
+  });
+
+  it('does nothing for irrelevant dirty paths and pair test files', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      return {
+        code: 0,
+        stdout:
+          ' M README.md\0 M packages/operator-core/lib/bash-substitution/pairs/model-drift.test.ts\0 M packages/operator-core/lib/bash-substitution/routing-table.test.ts\0',
+        stderr: '',
+      };
+    };
+    const runCheck = vi.fn(async () => ({ code: 0, stdout: '', stderr: '' }));
+
+    await checkToolRoutingBeforeCommit({ runGit, repoPath: '/fake', log: () => {} }, runCheck);
+
+    expect(runCheck).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.[0]).toBe('status');
+  });
+
+  it('keeps a failed check fail-soft so the git-sync commit can continue', async () => {
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') {
+        return {
+          code: 0,
+          stdout: ' M scripts/gen-tool-routing.ts\0',
+          stderr: '',
+        };
+      }
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout:
+            'scripts/gen-tool-routing.ts\npackages/operator-core/lib/bash-substitution/routing-table.ts\n',
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const logs: string[] = [];
+
+    await checkToolRoutingBeforeCommit(
+      { runGit, repoPath: '/fake', log: (message) => logs.push(message) },
+      async () => ({ code: 1, stdout: '', stderr: 'canonical routing part is stale' }),
+    );
+
+    expect(logs.join('\n')).toMatch(/generated tool-routing check failed.*continuing with the commit fail-soft/);
   });
 });
 
@@ -348,6 +441,40 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(out.status).toBe('synced');
     expect(logs.join('\n')).toMatch(/tool-catalog regeneration failed.*continuing with the commit fail-soft/);
     expect(git(originDir, 'show', 'main:packages/operator-core/lib/agent-tools/example.ts')).toContain('version = 2');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
+  it('EI-20428405431869483: a failed routing check remains fail-soft and the affected pair still commits', async () => {
+    const generator = join(repo, 'scripts', 'gen-tool-routing.ts');
+    const routingTable = join(repo, 'packages', 'operator-core', 'lib', 'bash-substitution', 'routing-table.ts');
+    const pair = join(repo, 'packages', 'operator-core', 'lib', 'bash-substitution', 'pairs', 'dependency-install.ts');
+    mkdirSync(join(repo, 'scripts'), { recursive: true });
+    mkdirSync(join(repo, 'packages', 'operator-core', 'lib', 'bash-substitution', 'pairs'), { recursive: true });
+    writeFileSync(generator, '// routing generator fixture\n');
+    writeFileSync(routingTable, '// routing table fixture\n');
+    writeFileSync(pair, 'export const version = 1;\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '--no-verify', '-m', 'seed routing fixture');
+    git(repo, 'push', 'origin', 'main');
+
+    writeFileSync(pair, 'export const version = 2;\n');
+    const logs: string[] = [];
+    const runCheck = vi.fn(async () => ({
+      code: 1,
+      stdout: '',
+      stderr: 'canonical routing part is stale',
+    }));
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      log: (message) => logs.push(message),
+      toolRoutingChecker: (context) => checkToolRoutingBeforeCommit(context, runCheck),
+    });
+
+    expect(runCheck).toHaveBeenCalledOnce();
+    expect(out.status).toBe('synced');
+    expect(logs.join('\n')).toMatch(/generated tool-routing check failed.*continuing with the commit fail-soft/);
+    expect(git(originDir, 'show', 'main:packages/operator-core/lib/bash-substitution/pairs/dependency-install.ts')).toContain('version = 2');
     expect(git(repo, 'status', '--porcelain')).toBe('');
   });
 
