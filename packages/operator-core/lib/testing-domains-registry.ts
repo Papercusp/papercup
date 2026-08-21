@@ -1667,7 +1667,7 @@ const PAPERCUSP_IDS = [
   'plans', 'operator', 'design', 'plugins', 'transport', 'instance-spec', 'mobile',
   'provisioning', 'docs', 'dogfood',
   // Subsystems + catch-alls added by the test-framework coverage audit.
-  'gym', 'inference-gateway', 'behaviour-suite', 'dream', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
+  'gym', 'scout', 'inference-gateway', 'behaviour-suite', 'dream', 'dbos', 'workspace', 'adv', 'operator-core', 'operator-ui-lib', 'libraries', 'harness-framework',
   // First-party Rust crates (Cargo) surfaced via per-crate manifestPath cargo runners (EI-1610) — the repo has no root Cargo workspace.
   'rust',
   // papercusp-desktop bash self-tests, previously referenced by nothing (EI-18725214765732588).

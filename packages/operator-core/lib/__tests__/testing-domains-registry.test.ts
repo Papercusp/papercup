@@ -122,6 +122,15 @@ describe('Phase 1 — universal vs Papercusp split (testing-shell-cross-project 
     for (const id of ['test-runs', 'vitals', 'chaos-desktop', 'ai-explore']) expect(papercuspIds.has(id)).toBe(true);
   });
 
+  it('surfaces the defined Scout domain in both Papercusp and admin registries', () => {
+    const scout = papercuspRegistry.find((d) => d.id === 'scout');
+    expect(scout).toMatchObject({
+      id: 'scout',
+      sections: [{ id: 'lib', globs: ['packages/operator-core/lib/scout/**/*.test.ts'] }],
+    });
+    expect(adminRegistry.some((d) => d.id === 'scout')).toBe(true);
+  });
+
   it('adminRegistry composes universal + Papercusp domains', () => {
     // The composition invariant is the real assertion; the absolute count was
     // brittle (was `toBe(29)`, now ≥30 and growing).
