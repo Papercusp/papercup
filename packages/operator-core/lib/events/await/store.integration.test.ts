@@ -113,6 +113,13 @@ beforeAll(async () => {
       last_fired_by text, last_payload jsonb, fire_count bigint NOT NULL DEFAULT 1,
       PRIMARY KEY (workspace_id, event_key)
     )`);
+  // EI-20540454577146535: a minimal stand-in for the harness_shared.work_items VIEW —
+  // only the two columns terminalWorkItemIds() reads (store.ts). Real callers see a
+  // cross-family view; this fixture only needs feature_id/status to exist.
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.work_items (
+      workspace_id text NOT NULL DEFAULT 'default', feature_id text NOT NULL, status text
+    )`);
   hb.sql = rootSql;
 }, 90_000);
 
@@ -124,6 +131,7 @@ beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.event_awaits RESTART IDENTITY`;
   await rootSql`TRUNCATE harness_shared.event_wake_deliveries RESTART IDENTITY`;
   await rootSql`TRUNCATE harness_shared.event_key_fires`;
+  await rootSql`TRUNCATE harness_shared.work_items`;
 });
 
 describe('await-event store (PG)', () => {
@@ -411,6 +419,40 @@ describe('await-event store (PG)', () => {
       evidence: { phase: 'suite' },
     });
     expect(alerts[0]?.remedy).toContain('claim/take over WI-42');
+  });
+
+  // ── EI-20540454577146535: a stalled/absent verdict is a snapshot taken when the
+  // fallback verifier fired; it must not survive the owning work item going terminal.
+  it('suppresses a takeover row once its owning work item has since gone terminal', async () => {
+    const stalled = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:papercusp' });
+    const result = {
+      classification: 'stalled',
+      nextAction: 'wake-owner-or-takeover',
+      producer: { kind: 'green-checkpoint', id: 'run-42' },
+      owner: { ownerId: 'su-producer', workItemId: 'WI-39333' },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+      evidence: { phase: 'suite' },
+    };
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'verified-timeout',
+             timeout_verification = ${JSON.stringify(result)}::jsonb
+       WHERE id = ${stalled.id}
+    `;
+
+    // The producer/item has since closed (state=done) -- the row must not surface.
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, status) VALUES ('WI-39333', 'done')`;
+    expect(await listVerifiedWaitTakeoversForSubscribers(['sub-a'])).toEqual([]);
+
+    // A work item this read cannot resolve at all (never existed / cross-workspace
+    // collision / lookup gap) fails OPEN -- the pre-fix behavior, still surfaced.
+    await rootSql`UPDATE harness_shared.work_items SET status = 'wip' WHERE feature_id = 'WI-39333'`;
+    expect(await listVerifiedWaitTakeoversForSubscribers(['sub-a'])).toHaveLength(1);
+    await rootSql`DELETE FROM harness_shared.work_items WHERE feature_id = 'WI-39333'`;
+    expect(await listVerifiedWaitTakeoversForSubscribers(['sub-a'])).toHaveLength(1);
   });
 
   // ── EI-9000 (fleet-reliability-verification-2026-07-10 P-005): live-awaiter counts ──

@@ -35,6 +35,7 @@ import type {
   WakeHandle,
 } from './types';
 import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -489,7 +490,7 @@ export async function listVerifiedWaitTakeoversForSubscribers(
      ORDER BY subscriber_id, event_key, fired_at DESC
      LIMIT 500
   `;
-  return rows.flatMap((row: any) => {
+  const alerts = rows.flatMap((row: any) => {
     const result = parseJsonb<VerifiedWaitTimeoutResult>(row.timeout_verification);
     if (
       !result ||
@@ -517,6 +518,56 @@ export async function listVerifiedWaitTakeoversForSubscribers(
         : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
     } satisfies VerifiedWaitTakeoverAlert];
   });
+  if (alerts.length === 0) return alerts;
+  // EI-20540454577146535: `timeout_verification` is a SNAPSHOT written once, when the
+  // fallback verifier fired — it is never re-checked against the work item's CURRENT
+  // state. Filed live: a checkpoint response recommended wake-owner-or-takeover for
+  // WI-39333 forty-three minutes after that item had already closed (state=done), a
+  // stale warning that can steer a monitor to seize completed work. Suppress rows
+  // whose owning work item has since gone terminal.
+  const terminalOwners = await terminalWorkItemIds(
+    alerts.map((a) => a.owner.workItemId).filter((id): id is string => !!id),
+  );
+  if (terminalOwners.size === 0) return alerts;
+  return alerts.filter((a) => !a.owner.workItemId || !terminalOwners.has(a.owner.workItemId));
+}
+
+/**
+ * Which of these work-item ids are terminal RIGHT NOW — read fresh, never inferred
+ * from the (possibly stale) certificate that produced the takeover alert.
+ *
+ * Best-effort and fails OPEN (empty set ⇒ nothing suppressed): a lookup failure, or
+ * an id this read cannot resolve, must never hide a genuinely stalled producer just
+ * because the freshness check itself broke — that would trade one wrong verdict for
+ * another. A `feature_id` collision across workspaces (F-B3: a bare `WI-`/`F-` id is
+ * unique only within a workspace+harness, not globally) is treated as terminal ONLY
+ * when EVERY matching row is, for the same reason: suppressing could otherwise hide
+ * the alert for the live namesake.
+ */
+async function terminalWorkItemIds(ids: readonly string[]): Promise<Set<string>> {
+  const distinct = [...new Set(ids)];
+  if (distinct.length === 0) return new Set();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql`
+      SELECT feature_id, status
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${distinct}::text[])
+    `;
+    const statusesById = new Map<string, boolean[]>();
+    for (const r of rows as any[]) {
+      const list = statusesById.get(r.feature_id) ?? [];
+      list.push(ANY_FAMILY_TERMINAL_STATES.includes(r.status ?? ''));
+      statusesById.set(r.feature_id, list);
+    }
+    const terminal = new Set<string>();
+    for (const [id, verdicts] of statusesById) {
+      if (verdicts.length > 0 && verdicts.every(Boolean)) terminal.add(id);
+    }
+    return terminal;
+  } catch {
+    return new Set();
+  }
 }
 
 /**
