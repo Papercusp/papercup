@@ -36,9 +36,10 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 const reg = vi.hoisted(() => ({ registered: new Set<string>() }));
 
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     getOrgPg: () => ({ sql: h.sql }),
     // Same shape as the real withWorkspace (tx + workspace GUC), bound to the
