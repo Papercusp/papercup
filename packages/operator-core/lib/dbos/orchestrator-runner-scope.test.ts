@@ -56,6 +56,24 @@ vi.mock('../harness-invoke-once', () => ({
   resolveSpawnBackendModel: () => ({ backend: 'omp', model: '' }),
 }));
 
+const E = vi.hoisted(() => ({
+  finishCalls: [] as unknown[][],
+}));
+vi.mock('../task-manager/enroll-sync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../task-manager/enroll-sync')>();
+  return {
+    ...actual,
+    finishSyncEnrolment: (...args: unknown[]) => {
+      E.finishCalls.push(args);
+      return actual.finishSyncEnrolment(
+        args[0] as Parameters<typeof actual.finishSyncEnrolment>[0],
+        args[1] as Parameters<typeof actual.finishSyncEnrolment>[1],
+        args[2] as Parameters<typeof actual.finishSyncEnrolment>[2],
+      );
+    },
+  };
+});
+
 import { spawnInvokeOnce } from './orchestrator-runner';
 import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
 
@@ -89,6 +107,7 @@ const savedMemEnv = process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G;
 
 beforeEach(() => {
   S.probe = { ok: true }; // default: a host that CAN make user scopes
+  E.finishCalls = [];
   // PIN the task-manager flag rather than inheriting it. `taskManagerEnabledSync()`
   // reads a module-level cache that fails open (`cached !== false`), so an unpinned
   // test silently tracks whatever the ambient default happens to be — and when
@@ -144,6 +163,18 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(args.slice(-3)).toEqual(['/x/invoke-once', '--role', 'cup']);
     expect(args.join(' ')).toContain('/x/invoke-once --role cup');
     expect(spawnOpts.detached).toBe(true); // pgid tree-kill still covers the scope wrapper
+  });
+
+  it('passes the named scope cgroup path when closing enrollment (EI-21045581515656760)', async () => {
+    delete process.env.PAPERCUSP_AGENT_SPAWN_SCOPE;
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+
+    const r = await spawnInvokeOnce(process.cwd(), 'cup', [], {});
+
+    expect(r.exitCode).toBe(0);
+    expect(E.finishCalls).toHaveLength(1);
+    const scopeCgroupPath = (E.finishCalls[0]?.[2] as { scopeCgroupPath?: string } | undefined)?.scopeCgroupPath;
+    expect(scopeCgroupPath).toMatch(/\/papercusp-agent-session\.slice\/[^/]+\.scope$/);
   });
 
   // The other half of the enrolment contract (task-manager-no-escape P-009). Confinement

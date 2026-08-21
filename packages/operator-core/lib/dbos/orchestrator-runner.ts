@@ -93,6 +93,7 @@ import {
   beginSyncEnrolment,
   completeSyncEnrolment,
   finishSyncEnrolment,
+  syncEnrolmentScopePath,
 } from '../task-manager/enroll-sync';
 import { warmScopeProbe, scopeSupportKnown } from '../task-manager/managed-spawn';
 import { trackDetached } from '../detached-imports';
@@ -586,6 +587,11 @@ function runChild(
       },
       { confine: useScope },
     );
+    // `systemd-run --scope` may exit after handing the payload to the named
+    // scope. Keep the enrollment row live in that handoff window so the
+    // reconciler, rather than this client close event, owns the real payload's
+    // terminal transition (WI-37509 / EI-21045581515656760).
+    const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'agent-session');
     /* WI-6499 gates ENROLMENT on the task-manager flag, and defines flag-OFF as
        "byte-identical-to-pre-feature behaviour — an unconfined, unledgered spawn".
        That definition is right for a spawn seam the task manager INTRODUCED
@@ -760,7 +766,7 @@ function runChild(
           state: 'exited',
           exitCode: code,
           exitReason: 'scope launch failed — retried unconfined',
-        });
+        }, { scopeCgroupPath });
         resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, false, execFailureRetried));
         return;
       }
@@ -770,7 +776,7 @@ function runChild(
           state: 'exited',
           exitCode: code,
           exitReason: `exec-shaped failure (empty stdio, ${Date.now() - launchedAt}ms) — retried once`,
-        });
+        }, { scopeCgroupPath });
         console.error(
           `[dbos-invoke] role=${role} exited ${code} in ${Date.now() - launchedAt}ms with BOTH streams empty — ` +
             `treating as a transient exec failure, retrying once (WI-5601)`,
@@ -789,7 +795,7 @@ function runChild(
             : aborted
               ? 'aborted (fleet:cancel)'
               : null,
-      });
+      }, { scopeCgroupPath });
       // A child we aborted may exit 0 (it caught SIGTERM and shut down) or via the
       // signal — normalize to a non-zero "aborted" outcome so callers don't read a
       // cancelled run as a clean success.
@@ -843,13 +849,17 @@ function runChild(
           state: 'exited',
           exitCode: null,
           exitReason: `scope spawn error — retried unconfined: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        }, { scopeCgroupPath });
         resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, false));
         return;
       }
       settled = true;
       const msg = err instanceof Error ? err.message : String(err);
-      finishSyncEnrolment(enrolment, { state: 'exited', exitCode: null, exitReason: `spawn error: ${msg}` });
+      finishSyncEnrolment(
+        enrolment,
+        { state: 'exited', exitCode: null, exitReason: `spawn error: ${msg}` },
+        { scopeCgroupPath },
+      );
       console.error(`[dbos-invoke] role=${role} spawn error: ${msg}`);
       resolve({ output: '', exitCode: 1, stderr: msg, rawStdoutTail: rawStdoutTail(stdout) });
     });
