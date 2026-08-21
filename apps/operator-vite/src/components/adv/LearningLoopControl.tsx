@@ -278,7 +278,7 @@ export default function LearningLoopControl() {
         .pc-lloop__amt { color: var(--fg-mute); }
         .pc-lloop--paused .pc-lloop__amt { color: inherit; opacity: .8; }
         .pc-lloop__pp {
-          display: grid; place-items: center; width: 24px; height: 24px; border-radius: 8px;
+          display: grid; place-items: center; width: 24px; height: 24px; min-height: 24px; border-radius: 8px;
           border: 1px solid var(--border-strong); background: var(--bg-1);
           color: var(--fg-dim); cursor: pointer; padding: 0;
         }

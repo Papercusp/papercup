@@ -587,7 +587,7 @@ export default function ObservationsPanel({
         .pc-observations__retry { margin-left: 8px; padding: 2px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-2); color: var(--fg); font: inherit; font-size: 11px; cursor: pointer; }
         .pc-observations__retry:hover { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); }
         .pc-observations__viewtoggle { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-2); }
-        .pc-observations__viewtoggle button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 22px; border: 0; border-radius: 6px; background: none; color: var(--fg-mute); cursor: pointer; }
+        .pc-observations__viewtoggle button { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 22px; min-height: 22px; border: 0; border-radius: 6px; background: none; color: var(--fg-mute); cursor: pointer; }
         .pc-observations__viewtoggle button:hover { color: var(--fg); }
         .pc-observations__viewtoggle button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, var(--bg-2)); color: var(--fg); }
         .pc-observations__stacks { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; align-content: start; padding: 2px; }

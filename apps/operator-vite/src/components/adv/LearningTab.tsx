@@ -7155,7 +7155,7 @@ export function LearningStyles() {
       .pc-learning__star:hover { color: #fcd34d; }
       .pc-learning__star:disabled { opacity: 0.5; cursor: default; }
       .pc-learning__gradechip { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; font-size: 10px; font-weight: 700; border-radius: 999px; border: 1px solid rgba(251, 191, 36, 0.5); color: #fbbf24; white-space: nowrap; font-variant-numeric: tabular-nums; }
-      .pc-learning__notebtn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; background: none; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 6px; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
+      .pc-learning__notebtn { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; min-height: 22px; background: none; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 6px; color: var(--fg-mute, #7f9bb4); cursor: pointer; }
       .pc-learning__notebtn:hover { color: var(--fg-dim, #b9d4e8); border-color: var(--border-strong, rgba(125, 211, 252, 0.32)); }
       .pc-learning__gradepanel { grid-column: 1 / -1; display: flex; flex-direction: column; gap: 7px; margin-top: 7px; padding-top: 9px; border-top: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); cursor: default; }
       .pc-learning__gradepanelrow { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
@@ -7384,7 +7384,7 @@ export function LearningStyles() {
       .pc-learning__retainindex { min-width: 0; }
       .pc-learning__retaindetail { min-width: 0; padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 42%, var(--border)); border-radius: 9px; background: var(--bg-2); }
       .pc-learning__retaindetail > header { display: flex; align-items: center; justify-content: space-between; min-height: 24px; }
-      .pc-learning__retaindetail > header button { display: grid; place-items: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; }
+      .pc-learning__retaindetail > header button { display: grid; place-items: center; width: 24px; height: 24px; min-height: 24px; padding: 0; border: 0; background: transparent; color: var(--fg-mute); cursor: pointer; }
       .pc-learning__retaindetail > p { margin: 7px 0 10px; color: var(--fg); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
       .pc-learning__retaindetail > footer { display: flex; justify-content: flex-end; gap: 5px; margin-top: 10px; }
       .pc-learning__retaindetail > footer button { background: none; border: 1px solid var(--border); border-radius: 4px; color: var(--fg-dim); cursor: pointer; font-size: 11px; padding: 1px 7px; }
@@ -7418,7 +7418,7 @@ export function LearningStyles() {
       .pc-learning__orientaction { align-self: flex-start; margin-top: 4px; display: inline-flex; align-items: center; min-height: 25px; padding: 3px 11px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--border)); border-radius: 7px; background: color-mix(in srgb, var(--accent) 12%, var(--bg-2)); color: var(--accent); cursor: pointer; font: inherit; font-size: 11px; font-weight: 650; }
       .pc-learning__orientaction:hover { background: color-mix(in srgb, var(--accent) 20%, var(--bg-2)); }
       .pc-learning__orientaction:focus-visible, .pc-learning__orientdismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-      .pc-learning__orientdismiss { margin-left: auto; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer; font-size: 12px; }
+      .pc-learning__orientdismiss { margin-left: auto; display: grid; place-items: center; width: 22px; height: 22px; min-height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--fg-mute, #7f9bb4); cursor: pointer; font-size: 12px; }
       .pc-learning__orientdismiss:hover { color: var(--fg, #e6f1fa); background: var(--bg-2); }
       .pc-learning__empty { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; padding: 16px 12px; color: var(--fg-mute, #7f9bb4); font-size: 12px; }
       .pc-learning__empty--card { border: 1px dashed var(--border, rgba(125, 211, 252, 0.2)); border-radius: 12px; }

@@ -239,7 +239,7 @@ body.has-left-sidebar .pc-header {
   align-items: center;
   justify-content: center;
   width: 26px;
-  height: 22px;
+  height: 26px;
   flex-shrink: 0;
   border-radius: 6px;
   border: 1px solid var(--border, rgba(125, 211, 252, 0.22));
@@ -1758,6 +1758,7 @@ body.has-left-sidebar .pc-header {
   justify-content: center;
   width: 22px;
   height: 22px;
+  min-height: 22px;
   flex: 0 0 auto;
   border-radius: 7px;
   border: 1px solid var(--border, color-mix(in srgb, var(--accent-strong), transparent 85%));

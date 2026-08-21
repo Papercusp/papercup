@@ -212,7 +212,7 @@ const trendStyles = `
         .pc-benchtrend { margin: 0 0 4px; padding: 7px 10px 5px; border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 10px; background: var(--bg-2, rgba(255, 255, 255, 0.03)); }
         .pc-benchtrend__caption { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 3px; font-size: 10.5px; font-weight: 650; color: var(--fg-mute, #7f9bb4); }
         .pc-benchtrend__caption em { font-style: normal; font-weight: 500; opacity: 0.8; }
-        .pc-benchtrend__caption button { display: grid; place-items: center; width: 22px; height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg-mute); cursor: pointer; }
+        .pc-benchtrend__caption button { display: grid; place-items: center; width: 22px; height: 22px; min-height: 22px; padding: 0; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--fg-mute); cursor: pointer; }
         .pc-benchtrend__caption button:hover { color: var(--fg); border-color: var(--border-strong); }
         .pc-benchtrend svg { display: block; width: 100%; height: 72px; transition: height 160ms ease; }
         .pc-benchtrend.is-expanded svg { height: 180px; }

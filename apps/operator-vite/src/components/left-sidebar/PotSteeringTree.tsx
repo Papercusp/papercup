@@ -264,7 +264,7 @@ function TreeStyles() {
         background: color-mix(in srgb, var(--accent), transparent 93%);
       }
       .pc-queen__tree-caret {
-        display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px;
+        display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; min-height: 16px;
         padding: 0; border: none; background: none; cursor: pointer; color: var(--fg-mute, #7f9bb4); flex-shrink: 0;
       }
       .pc-queen__tree-caret:hover:not(:disabled) { color: var(--fg, #e7f7ff); }
