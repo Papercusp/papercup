@@ -6,14 +6,16 @@
 
 import { readFileSync } from 'node:fs';
 import { z } from 'zod';
-import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { defineTool, AGENT_ROLES, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { killTask } from '../../task-manager/control';
 import { getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { getJob, killJob, readJobOutput } from './bash-jobs';
 
 const DURABLE_TAIL_BYTES = 2_000;
 
-function workspaceIdForContext(ctx: { workspaceId?: string; principal?: { workspaceId?: string } | null }): string | undefined {
+function workspaceIdForContext(
+  ctx: Pick<UnifiedToolContext, 'workspaceId' | 'principal'>,
+): string | undefined {
   if (ctx.workspaceId && ctx.workspaceId !== '*') return ctx.workspaceId;
   if (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*') return ctx.principal.workspaceId;
   return undefined;
