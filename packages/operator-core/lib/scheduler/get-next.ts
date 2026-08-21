@@ -793,6 +793,30 @@ export function compileFilter(sql: OrgSql, filter: FilterNode | undefined) {
  * floor (the linked plan is currently `active` at all) — a caller seeing zero excluded
  * here can still miss via that guard; the advice text says so.
  */
+/**
+ * Coverage of the path metadata consumed by the live affinity rank term. This is
+ * deliberately measured over the POST-FLOOR claimable set, not `matchedByFilter`
+ * or a LIMIT-capped row page: those populations do not describe the work the
+ * scheduler can actually hand to an agent.
+ *
+ * A zero denominator is not a below-floor result. There is no claimable work whose
+ * affinity input could be measured, so emitting a warning would turn an empty lane
+ * into a false substrate alarm.
+ */
+export interface IssueClaimAffinityCoverage {
+  /** The full claimable survivor count — the denominator for this measurement. */
+  denominator: number;
+  /** Claimable survivors whose `payload.paths` is a non-empty JSON array. */
+  nonEmptyPaths: number;
+  /** Minimum share of claimable survivors carrying paths for affinity to stay healthy. */
+  floor: number;
+  /** True only when a non-empty denominator falls strictly below {@link floor}. */
+  belowFloor: boolean;
+}
+
+/** EI-16028: affinity is shipped, so its item-side input must not silently starve. */
+export const AFFINITY_PATH_COVERAGE_FLOOR = 0.5;
+
 export interface IssueClaimExclusionBreakdown {
   /** Issue-family rows (claimable status, this harness/workspace) the spec's OWN
    *  view.filter matches — BEFORE taken/floors. 0 here means the spec itself is the
@@ -806,6 +830,8 @@ export interface IssueClaimExclusionBreakdown {
    *  SAME inner subquery. This is the ONE number the whole claimability-clarity plan makes
    *  trustworthy — the `0 claimable` a wind-down / drain decision hinges on. */
   claimable: number;
+  /** EI-16028: machine-readable coverage guard for the live affinity rank input. */
+  affinityCoverage: IssueClaimAffinityCoverage;
   /** Of matchedByFilter, counts of why each is NOT self-selectable right now. Every
    *  floor after `taken` is counted only among the UNTAKEN subset (a taken row is
    *  trivially excluded for that reason alone — counting it again under e.g. claimHold
@@ -1012,6 +1038,16 @@ export async function aggregateIssueClaimExclusions(
     SELECT
       count(*) FILTER (WHERE spec_match)::int                                         AS matched,
       count(*) FILTER (WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})::int AS claimable,
+      count(*) FILTER (
+        WHERE spec_match
+          AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)}
+          AND jsonb_array_length(
+            CASE
+              WHEN jsonb_typeof(payload->'paths') = 'array' THEN payload->'paths'
+              ELSE '[]'::jsonb
+            END
+          ) > 0
+      )::int AS claimable_with_paths,
       count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_legacy_needs_human)::int AS legacy_needs_human,
@@ -1031,6 +1067,7 @@ export async function aggregateIssueClaimExclusions(
   `) as Array<{
     matched: number;
     claimable: number;
+    claimable_with_paths: number;
     taken: number;
     claim_hold: number;
     legacy_needs_human: number;
@@ -1048,9 +1085,17 @@ export async function aggregateIssueClaimExclusions(
     remote_origin: number;
   }>;
   const r = rows[0];
+  const claimable = r?.claimable ?? 0;
+  const nonEmptyPaths = r?.claimable_with_paths ?? 0;
   return {
     matchedByFilter: r?.matched ?? 0,
-    claimable: r?.claimable ?? 0,
+    claimable,
+    affinityCoverage: {
+      denominator: claimable,
+      nonEmptyPaths,
+      floor: AFFINITY_PATH_COVERAGE_FLOOR,
+      belowFloor: claimable > 0 && nonEmptyPaths / claimable < AFFINITY_PATH_COVERAGE_FLOOR,
+    },
     excluded: {
       taken: r?.taken ?? 0,
       claimHold: r?.claim_hold ?? 0,

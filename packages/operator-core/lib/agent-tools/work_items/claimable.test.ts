@@ -40,6 +40,12 @@ const tool = (await import('./claimable')).default;
 const BREAKDOWN = {
   matchedByFilter: 9,
   claimable: 3,
+  affinityCoverage: {
+    denominator: 3,
+    nonEmptyPaths: 2,
+    floor: 0.5,
+    belowFloor: false,
+  },
   excluded: {
     taken: 2,
     claimHold: 1,
@@ -148,6 +154,7 @@ describe('work_items:claimable handler', () => {
     );
     expect(out.claimableCount).toBe(3); // === breakdown.claimable (the authoritative number)
     expect(out.matchedByFilter).toBe(9);
+    expect(out.affinityCoverage).toEqual({ denominator: 3, nonEmptyPaths: 2, floor: 0.5, belowFloor: false });
     expect(out.returned).toBe(3);
     expect(out.claimable.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
     expect(out.excludedBreakdown.taken).toBe(2);
@@ -326,6 +333,23 @@ describe('work_items:claimable handler', () => {
       // Same read that returns claimableCount carries the caveat about claimableCount.
       expect(out.claimableCount).toBe(3);
       expect(out.note).toMatch(/COMPOSITION WARNING/);
+    });
+  });
+
+  describe('EI-16028: affinity path coverage guard', () => {
+    it('surfaces the full claimable denominator and path-bearing count, including the 50% floor', async () => {
+      const out = await run({ harness: 'papercup' });
+      expect(out.affinityCoverage).toEqual({ denominator: 3, nonEmptyPaths: 2, floor: 0.5, belowFloor: false });
+      expect(out.note).not.toMatch(/AFFINITY PATH COVERAGE WARNING/);
+    });
+
+    it('puts a below-floor warning on the same note as the claimable count', async () => {
+      BREAKDOWN.affinityCoverage = { denominator: 3, nonEmptyPaths: 1, floor: 0.5, belowFloor: true };
+      const out = await run({ harness: 'papercup', breakdownOnly: true });
+      expect(out.affinityCoverage).toEqual({ denominator: 3, nonEmptyPaths: 1, floor: 0.5, belowFloor: true });
+      expect(out.note).toContain('⚠ AFFINITY PATH COVERAGE WARNING');
+      expect(out.note).toContain('1/3 claimable row(s)');
+      expect(out.note).toContain('50% floor');
     });
   });
 

@@ -34,6 +34,7 @@ import launchOnPlan, {
   isSelfPublishedSeatOffer,
   extractKickoffWorkItemIds,
   looksLikeInlineLaunchContextText,
+  computeFleetTopUpWave,
   describeFleetFillOutcome,
   VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
   type MemberLaunchOpts,
@@ -1060,6 +1061,20 @@ describe('describeFleetFillOutcome (P-006 — `count` is a TARGET fleet size, an
     expect(r.complete).toBe(true);
   });
 
+  it('names the per-wave limit when a successful bounded wave leaves a larger target short', () => {
+    const r = describeFleetFillOutcome({
+      requested: 50,
+      liveMembers: 27,
+      attempted: 12,
+      opened: 12,
+      limitedBy: 'wave',
+    });
+    expect(r.complete).toBe(false);
+    expect(r.shortfall).toBe(11);
+    expect(r.clause).toMatch(/per-wave launch limit/);
+    expect(r.clause).not.toMatch(/capacity-clamped/);
+  });
+
   it('tolerates non-finite/negative inputs rather than emitting NaN into the launch message', () => {
     const r = describeFleetFillOutcome({
       requested: Number.NaN,
@@ -1094,6 +1109,33 @@ describe('count arg description (P-006 recurrence guard — the doc must not re-
     const d = String(countDescription);
     expect(d).toMatch(/fleetSize/);
     expect(d).toMatch(/shortfall/);
+  });
+
+  it('accepts a large-fleet target above the 12-terminal wave cap', () => {
+    const parsed = launchOnPlan.args.safeParse({ name: 'large-fleet', plan: 'p-plan', count: 28 });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('documents the per-call terminal cap separately from the target', () => {
+    expect(String(countDescription)).toMatch(/at most 12 NEW terminals/i);
+  });
+});
+
+describe('computeFleetTopUpWave (WI-40199 — target size is not the per-wave launch limit)', () => {
+  it('opens one canary when a 27-member fleet targets 28', () => {
+    expect(computeFleetTopUpWave(28, 27)).toEqual({
+      remainingDeficit: 1,
+      requestedOpenCount: 1,
+      waveCapped: false,
+    });
+  });
+
+  it('caps only the wave when the target deficit exceeds 12', () => {
+    expect(computeFleetTopUpWave(50, 27)).toEqual({
+      remainingDeficit: 23,
+      requestedOpenCount: 12,
+      waveCapped: true,
+    });
   });
 });
 

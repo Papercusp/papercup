@@ -64,7 +64,7 @@ export default defineTool({
     //     kind='bug' filter matches ZERO rows and reads exactly like a drained queue.
     //   · An unrecognized `spec` returns { ok:false, error, candidates } — never a silent
     //     whole-backlog fallback, which would look like a suddenly-huge lane.
-    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage.",
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `affinityCoverage` warns when fewer than 50% of claimable rows carry non-empty `payload.paths`; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage.",
   guidance: {
     when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
     notWhen:
@@ -267,6 +267,9 @@ export default defineTool({
       count: breakdown.claimable,
       /** In-lane issue-family rows the spec's own filter matched, BEFORE floors. */
       matchedByFilter: breakdown.matchedByFilter,
+      /** EI-16028: coverage of the affinity rank term's item-side path metadata over the
+       * full claimable survivor set (never the returned, LIMIT-capped page). */
+      affinityCoverage: breakdown.affinityCoverage,
       returned: claimable.length,
       claimable,
       /** EI-18835176695181727: alias of `claimable` — see `count` above. */
@@ -286,6 +289,9 @@ export default defineTool({
       states: states ? [...states] : null,
       note:
         '`claimableCount` is the authoritative claimable total (spec_match AND all ~12 floors — the SAME oracle scheduler:get_next runs). excludedBreakdown buckets OVERLAP, so they do NOT sum to matched−claimable. READ ONLY — nothing was claimed; take one via work_items:claim / scheduler:get_next.' +
+        (breakdown.affinityCoverage.belowFloor
+          ? ` ⚠ AFFINITY PATH COVERAGE WARNING: ${breakdown.affinityCoverage.nonEmptyPaths}/${breakdown.affinityCoverage.denominator} claimable row(s) carry non-empty payload.paths, below the ${Math.round(breakdown.affinityCoverage.floor * 100)}% floor; affinity ranking is under-informed (EI-16028).`
+          : '') +
         (admitted.degenerate
           ? ` ⚠ COMPOSITION WARNING: ${Math.round((admitted.lowSeverityShare ?? 0) * 100)}% of this lane is nit/minor severity` +
             (admitted.peakDay ? ` and ${admitted.peakDay.count} of it was filed on a single day (${admitted.peakDay.day})` : '') +

@@ -225,6 +225,63 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
   });
 });
 
+describe('EI-16028 — aggregateIssueClaimExclusions reports affinity path coverage over claimable survivors', () => {
+  it('counts only post-floor claimable rows and warns when fewer than half carry payload.paths', async () => {
+    // These five rows survive every claim floor. Only the two non-empty arrays are
+    // affinity inputs; an empty array, a scalar, and a null payload must not count.
+    await seedIssue('WI-AFF-1', { paths: ['packages/operator-core/lib/scheduler/get-next.ts'] });
+    await seedIssue('WI-AFF-2', { paths: [] });
+    await seedIssue('WI-AFF-3', { paths: ['packages/operator-core/lib/agent-tools/work_items/claimable.ts'] });
+    await seedIssue('WI-AFF-4', { paths: 'not-an-array' });
+    await seedIssue('WI-AFF-5', null);
+    // A path-bearing row behind a floor must not inflate the coverage numerator.
+    await seedIssue('WI-AFF-6', { paths: ['ignored/because-taken.ts'] }, { takenBy: 'su-outside' });
+
+    const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
+
+    expect(out.matchedByFilter).toBe(6);
+    expect(out.claimable).toBe(5);
+    expect(out.affinityCoverage).toEqual({
+      denominator: 5,
+      nonEmptyPaths: 2,
+      floor: 0.5,
+      belowFloor: true,
+    });
+  });
+
+  it('treats exact 50% coverage as healthy and an empty claimable set as not below floor', async () => {
+    await seedIssue('WI-AFF-7', { paths: ['one.ts'] });
+    await seedIssue('WI-AFF-8', { paths: ['two.ts'] });
+    await seedIssue('WI-AFF-9', { paths: [] });
+    await seedIssue('WI-AFF-10', {});
+
+    const exactFloor = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    expect(exactFloor.affinityCoverage).toEqual({
+      denominator: 4,
+      nonEmptyPaths: 2,
+      floor: 0.5,
+      belowFloor: false,
+    });
+
+    await seedIssue('WI-AFF-11', { paths: ['not-claimable.ts'] }, { takenBy: 'su-outside' });
+    const stillExactFloor = await aggregateIssueClaimExclusions(undefined, { harness: H });
+    expect(stillExactFloor.affinityCoverage).toEqual(exactFloor.affinityCoverage);
+  });
+
+  it('does not warn for a zero-denominator lane even when excluded rows carry paths', async () => {
+    await seedIssue('WI-AFF-12', { paths: ['taken.ts'] }, { takenBy: 'su-outside' });
+    const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
+
+    expect(out.claimable).toBe(0);
+    expect(out.affinityCoverage).toEqual({
+      denominator: 0,
+      nonEmptyPaths: 0,
+      floor: 0.5,
+      belowFloor: false,
+    });
+  });
+});
+
 /**
  * WI-6673 — the claimable ROW projection must read severity from where it actually lives.
  *

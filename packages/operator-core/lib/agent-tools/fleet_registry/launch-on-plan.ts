@@ -190,6 +190,25 @@ function promotionFailsafeWarning(
 const MAX_MEMBERS = FLEET_MAX_MEMBERS;
 
 /**
+ * `count` is the desired LIVE fleet size, while {@link MAX_MEMBERS} limits the
+ * number of terminals one invocation may open. Keeping those two quantities
+ * separate lets a large existing fleet request a one-seat top-up without also
+ * permitting an accidentally huge launch wave.
+ */
+export function computeFleetTopUpWave(
+  targetCount: number,
+  liveMembers: number,
+  perWaveLimit = MAX_MEMBERS,
+): { remainingDeficit: number; requestedOpenCount: number; waveCapped: boolean } {
+  const target = Number.isFinite(targetCount) ? Math.max(0, Math.floor(targetCount)) : 0;
+  const live = Number.isFinite(liveMembers) ? Math.max(0, Math.floor(liveMembers)) : 0;
+  const limit = Number.isFinite(perWaveLimit) ? Math.max(0, Math.floor(perWaveLimit)) : 0;
+  const remainingDeficit = Math.max(0, target - live);
+  const requestedOpenCount = Math.min(remainingDeficit, limit);
+  return { remainingDeficit, requestedOpenCount, waveCapped: requestedOpenCount < remainingDeficit };
+}
+
+/**
  * EI-21010422711013687: every visible fleet launch carries a command that must
  * execute. A server-side gnome-terminal client can successfully open a window
  * while its D-Bus factory silently drops that command, leaving only a wrapper
@@ -516,6 +535,8 @@ export function describeFleetFillOutcome(o: {
   opened: number;
   /** Noun for a member, e.g. 'HEADLESS member'. Default 'member'. */
   noun?: string;
+  /** Why a successful bounded wave can still leave the fleet below target. */
+  limitedBy?: 'capacity' | 'wave';
 }): { fleetSize: number; shortfall: number; complete: boolean; clause: string } {
   const nonNeg = (n: number) => (Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0);
   const requested = nonNeg(o.requested);
@@ -533,7 +554,9 @@ export function describeFleetFillOutcome(o: {
     : `${opened} ${noun}${plural} opened — ⚠ fleet is ${fleetSize} of the ${requested} requested, SHORT BY ${shortfall}` +
       (failedThisWave > 0
         ? ` (${failedThisWave} of this wave's ${attempted} terminal${attempted === 1 ? '' : 's'} failed to open)`
-        : ' (the deficit was capacity-clamped — every terminal this wave attempted DID open, so the fleet is still under target)');
+        : o.limitedBy === 'wave'
+          ? ' (the remaining deficit exceeded the per-wave launch limit — every terminal this wave attempted DID open; re-read live membership before the next top-up)'
+          : ' (the deficit was capacity-clamped — every terminal this wave attempted DID open, so the fleet is still under target)');
   return { fleetSize, shortfall, complete, clause };
 }
 
@@ -1085,10 +1108,9 @@ export default defineTool({
       .number()
       .int()
       .min(1)
-      .max(MAX_MEMBERS)
       .optional()
       .describe(
-        `TARGET fleet size — NOT the number of new terminals to open (default 1, max ${MAX_MEMBERS}). Only the DEFICIT opens: with N members already LIVE, count:M opens M−N, and a fleet already at M opens NOTHING (relaunchSuppressed:true). Capacity can clamp that deficit further, so the fleet can end up SMALLER than count — read \`fleetSize\`/\`shortfall\` on the result, never the opened count alone (a clamped wave opens every terminal it attempted, so "all attempted opened" is NOT "the fleet is full"). To ADD N members to a running fleet, pass count = liveMembers + N.`,
+        `TARGET fleet size — NOT the number of new terminals to open (default 1). Only the DEFICIT opens: with N members already LIVE, count:M opens M−N, and a fleet already at M opens NOTHING (relaunchSuppressed:true). One call opens at most ${MAX_MEMBERS} NEW terminals even when the remaining deficit is larger; re-read live membership before another top-up. Capacity can clamp that wave further, so the fleet can end up SMALLER than count — read \`fleetSize\`/\`shortfall\` on the result, never the opened count alone (a bounded wave can open every terminal it attempted without filling the fleet). To ADD N members to a running fleet, pass count = liveMembers + N.`,
       ),
     placement: z
       .enum(['local', 'remote'])
@@ -1859,8 +1881,11 @@ export default defineTool({
         message: lines.join('\n'),
       });
     }
-    // Only the DEFICIT opens — a leader asking for 2 with 1 alive gets 1, never a stacked 3.
-    let openCount = count - liveMembers;
+    // Only the DEFICIT opens — and the target size is deliberately independent of
+    // the per-call terminal limit. A 27-member fleet may target 28 (opens one), while
+    // a much larger deficit is advanced by at most MAX_MEMBERS terminals this wave.
+    const topUpWave = computeFleetTopUpWave(count, liveMembers);
+    let openCount = topUpWave.requestedOpenCount;
     const requestedOpenCount = openCount;
 
     // ── WI-5211 REMOTE placement: distribute the deficit across the OTHER machines'
@@ -2134,7 +2159,7 @@ export default defineTool({
     }
     if (openCount <= 0) {
       const lines = [
-        `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${requestedOpenCount}, but capacity allows 0 new member terminals now.`,
+        `Fleet \`${fleetSlug}\` has ${liveMembers} LIVE member${liveMembers === 1 ? '' : 's'}; target ${count} leaves a deficit of ${topUpWave.remainingDeficit}, but capacity allows 0 new member terminals now.`,
         capacityClamp?.reason ?? 'capacity report unavailable',
         'NO new terminals were opened. Re-call this tool after capacity recovers; the live-member deficit guard will still open only the remaining deficit.',
         planSlug
@@ -3133,6 +3158,7 @@ export default defineTool({
       attempted: openCount,
       opened: opened.length,
       noun: args.headless ? 'HEADLESS member' : 'member',
+      limitedBy: capacityClamp?.clamped ? 'capacity' : topUpWave.waveCapped ? 'wave' : undefined,
     });
     lines.push(
       opened.length
