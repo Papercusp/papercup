@@ -19,12 +19,13 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // vi.mock factories are hoisted above module-level consts — vi.hoisted() is the
 // sanctioned way to share spies with them (a bare `const` here hits the TDZ).
-const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock } = vi.hoisted(() => ({
+const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock, findLiveHostMock } = vi.hoisted(() => ({
   listPresenceMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   sweepMock: vi.fn(async (..._a: unknown[]) => 0),
   tier1Mock: vi.fn(async (..._a: unknown[]) => new Map()),
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
+  findLiveHostMock: vi.fn(() => null),
 }));
 // importOriginal spread (not a bare factory): real presence-wakeability — kept
 // real below via its own importOriginal — imports PRESENCE_STALE_MS from
@@ -64,6 +65,10 @@ vi.mock('./presence-wakeability', async (importOriginal) => ({
 vi.mock('./presence-fleet', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   fetchPresenceFleet: fleetMock,
+}));
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  findLiveHost: findLiveHostMock,
 }));
 vi.mock('../../desktop-window-liveness', () => ({
   gatherOnDesktopSessions: vi.fn(async () => ({ owners: new Set<string>() })),
@@ -135,5 +140,15 @@ describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
     expect(wakeabilityMock).toHaveBeenCalledWith(['su-aaa', 'su-bbb', 'su-ccc']); // all locals
     expect(snap.summary.active).toBe(2);
     expect(snap.summary.stale).toBe(1);
+  });
+
+  it('positive live psu host keeps a non-wakeable su row out of ended', async () => {
+    const owner = 'su-pty-live';
+    listPresenceMock.mockResolvedValue([{ ...row(owner, false), agentRole: 'su', source: 'psu' }]);
+    wakeabilityMock.mockResolvedValue(new Map([[owner, { wakeable: false, liveTurn: false }]]));
+    findLiveHostMock.mockImplementation((id: string) => (id === owner ? { ownerId: id } : null));
+
+    const snap = await assemblePresenceSnapshot(RESOLVED, {});
+    expect(snap.active.find((r) => r.ownerId === owner)?.sessionState).toBe('recorded');
   });
 });
