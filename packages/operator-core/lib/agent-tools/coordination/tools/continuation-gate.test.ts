@@ -4,8 +4,11 @@ import {
   evaluateContinuationGate,
   continuationGateFromReads,
   countPendingInterrupts,
+  isFleetWindDownLoopEndAuthorized,
   isPendingInterrupt,
 } from './continuation-gate';
+import { CUE_AUTHORITY_FIELD } from '../cue-authority';
+import { CONTEXT_GAUGE_CRITICAL_PCT } from './inbox-context-usage';
 import { COMPACTION_HINT_PCT } from './inbox-context-usage';
 import { FLUSH_GATE_PCT } from './inbox-flush-gate';
 
@@ -254,5 +257,91 @@ describe('remedy selection by self-compaction availability', () => {
     expect(continuationGateFromReads(base).selfCompactionAvailable).toBeNull();
     // and the pass-through actually reaches the guidance, not just the field
     expect(continuationGateFromReads({ ...base, selfCompactionAvailable: false }).guidance).toMatch(/NOT available to this session/);
+  });
+});
+
+describe('isFleetWindDownLoopEndAuthorized (EI-21012758172744411)', () => {
+  const fleet = 'drain-fleet';
+  const cue = (over: Record<string, unknown> = {}) => ({
+    [CUE_AUTHORITY_FIELD]: {
+      authority: 'fleet-leader',
+      authorityRef: fleet,
+      scope: 'fleet-members',
+      scopeRef: fleet,
+    },
+    summary: `Fleet ${fleet} WIND-DOWN — release claims, then loop:end`,
+    ...over,
+  });
+  const authorized = {
+    activeClaimPresent: false,
+    currentFleet: fleet,
+    fleetControlState: 'winding-down',
+    cues: [cue()],
+  } as const;
+
+  it('POSITVE: accepts the complete claimless + current-fleet + typed-control + typed-cue tuple', () => {
+    expect(isFleetWindDownLoopEndAuthorized(authorized)).toBe(true);
+  });
+
+  it('NEGATIVE: a held claim blocks even a valid typed wind-down cue', () => {
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, activeClaimPresent: true })).toBe(false);
+  });
+
+  it('NEGATIVE: active control state does not authorize loop:end', () => {
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, fleetControlState: 'active' })).toBe(false);
+  });
+
+  it('NEGATIVE: free text, wrong authority, wrong scope, and wrong fleet are all fail-closed', () => {
+    const cases = [
+      { cues: [{ summary: 'WIND-DOWN now; loop:end' }] },
+      { cues: [cue({ [CUE_AUTHORITY_FIELD]: { authority: 'hive-queen', authorityRef: fleet, scope: 'hive-wide' } })] },
+      { cues: [cue({ [CUE_AUTHORITY_FIELD]: { authority: 'fleet-leader', authorityRef: fleet, scope: 'hive-wide' } })] },
+      { cues: [cue({ [CUE_AUTHORITY_FIELD]: { authority: 'fleet-leader', authorityRef: 'other-fleet', scope: 'fleet-members', scopeRef: 'other-fleet' } })] },
+      { cues: [cue({ summary: 'Fleet drain-fleet WIND-DOWN, but omit the loop:end action' })] },
+    ];
+    for (const over of cases) {
+      expect(isFleetWindDownLoopEndAuthorized({ ...authorized, ...over })).toBe(false);
+    }
+  });
+
+  it('NEGATIVE: missing membership, control, or cue reads remain denied instead of becoming an implicit allow', () => {
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, currentFleet: null })).toBe(false);
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, fleetControlState: null })).toBe(false);
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, cues: [] })).toBe(false);
+    expect(isFleetWindDownLoopEndAuthorized({ ...authorized, cues: null })).toBe(false);
+  });
+});
+
+describe('fleet wind-down authorization reaches the critical no-PTY gate only', () => {
+  it('POSITVE: the authorized tuple selects loop:end at the critical threshold', () => {
+    const v = evaluateContinuationGate({
+      contextPct: CONTEXT_GAUGE_CRITICAL_PCT,
+      unreadInbox: 0,
+      selfCompactionAvailable: false,
+      fleetWindDownLoopEndAuthorized: true,
+    });
+    expect(v.shouldContinue).toBe(false);
+    expect(v.fleetWindDownLoopEndAuthorized).toBe(true);
+    expect(v.guidance).toMatch(/AUTHORIZED FLEET WIND-DOWN/);
+    expect(v.guidance).toContain('loop:end');
+    expect(v.guidance).not.toContain('session:end');
+    expect(v.guidance).not.toContain('respawn');
+  });
+
+  it('NEGATIVE: authorization cannot bypass the critical no-PTY preconditions', () => {
+    const warm = evaluateContinuationGate({
+      contextPct: CONTEXT_GAUGE_CRITICAL_PCT,
+      unreadInbox: 0,
+      selfCompactionAvailable: true,
+      fleetWindDownLoopEndAuthorized: true,
+    });
+    const belowCritical = evaluateContinuationGate({
+      contextPct: CONTEXT_GAUGE_CRITICAL_PCT - 1,
+      unreadInbox: 0,
+      selfCompactionAvailable: false,
+      fleetWindDownLoopEndAuthorized: true,
+    });
+    expect(warm.guidance).not.toMatch(/AUTHORIZED FLEET WIND-DOWN/);
+    expect(belowCritical.guidance).not.toMatch(/AUTHORIZED FLEET WIND-DOWN/);
   });
 });
