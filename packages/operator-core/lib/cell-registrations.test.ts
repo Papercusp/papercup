@@ -507,3 +507,66 @@ describe('P-016: agent.goal registers under the D-038 contract', () => {
     expect(() => registerBuiltinCells()).not.toThrow();
   });
 });
+
+/**
+ * P-005 — REACH VERIFICATION over the REAL registry.
+ *
+ * Everything above validates cell DECLARATIONS. This asserts the property that
+ * actually matters to an agent: that the audiences those cells declare are reachable
+ * by the readers the documentation points at them. That is a different question, and
+ * it was false in production for ten days with every declaration test green.
+ *
+ * WHAT WAS BROKEN. `CLAUDE.md` directs su agents at the six pipeline cells
+ * (`gate.greenCheckpoint.*`, `git.*`, `deploy.3070.sha`) and tells them
+ * `dev:pipeline_position` "HANDS YOU THE HANDLE" to re-read them. But an operator-scope
+ * session presents `harnessSlug:'*'`, the harness check was a bare `===`, and so every
+ * one of those cells read as `absent` — measured 418 distinct agents / 358,755 calls in
+ * a 24h window. The plane block vanished with them, because `stampStatePlane` shares
+ * this oracle. Both symptoms are pinned below, against the real specs rather than
+ * fixtures, because a fixture is exactly what failed to catch this.
+ */
+describe('P-005 — declared audiences are actually reachable (real registry)', () => {
+  beforeEach(() => {
+    __resetCellRegistryForTests();
+    registerBuiltinCells();
+  });
+
+  /** The identity a cross-harness su/superuser session really presents. Not invented:
+   *  every `harnessSlug:'*'` caller in a measured 24h window carried role `operator`. */
+  const operatorScope = { ownerId: 'su-p005', roles: ['operator'], harnessSlug: '*' };
+
+  it('an operator-scope reader reaches EVERY registered cell', () => {
+    // listCellsUnchecked is the sanctioned admin enumeration (P-005 names it): the probe
+    // must see cells the reader cannot, or it could not detect one going unreachable.
+    const unreachable = listCellsUnchecked()
+      .filter((spec) => !getCell(spec.cell, operatorScope))
+      .map((spec) => spec.cell);
+
+    expect(
+      unreachable,
+      `these registered cells are UNREACHABLE by a normal operator-scope session ` +
+        `(role=operator, harnessSlug='*'): ${unreachable.join(', ')}. Agents are pointed at ` +
+        `these by name in CLAUDE.md and will get a bare "absent", which P-019 makes ` +
+        `deliberately indistinguishable from "no such cell" — so the failure is silent.`,
+    ).toEqual([]);
+  });
+
+  it('covers the six pipeline cells specifically, by name', () => {
+    // The regression itself. Named individually so a failure says WHICH cell went dark.
+    for (const spec of OPERATOR_PIPELINE_CELLS) {
+      expect(getCell(spec.cell, operatorScope), `${spec.cell} unreadable`).toBeTruthy();
+    }
+  });
+
+  it('the probe can still FAIL — a foreign-harness agent is refused', () => {
+    // Calibration. Without this, a canReadCell that returned true unconditionally would
+    // pass every assertion above, and the probe would be measuring nothing.
+    const sidestage = { ownerId: 'su-other', roles: ['operator'], harnessSlug: 'sidestage' };
+    for (const spec of OPERATOR_PIPELINE_CELLS) {
+      expect(getCell(spec.cell, sidestage), `${spec.cell} leaked to a foreign harness`).toBeFalsy();
+    }
+    // ...and it is a REFUSAL, not an empty registry: the same reader still sees the
+    // workspace-visible cells, so the negative above is about audience, not registration.
+    expect(getCell(AGENT_GOAL_CELL.cell, sidestage)).toBeTruthy();
+  });
+});
