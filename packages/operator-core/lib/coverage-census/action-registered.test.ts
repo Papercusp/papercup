@@ -20,8 +20,10 @@ import { SYSTEM_TARGET_PREFIX, getSystemAction, listSystemActions } from '../har
 const ACTION_NAME = 'coverage-census';
 
 describe('system:coverage-census registration', () => {
-  it('is registered once register-system-actions is imported', async () => {
-    await import('../harness/routines/register-system-actions');
+  it('is registered when the production ephemeral executor is imported', async () => {
+    // host-bootstrap imports ephemeral-executor directly for the ephemeral tier; this is the
+    // production module boundary that must load the system-action registry.
+    await import('../dbos/ephemeral-executor');
 
     // listSystemActions() is included in the failure message on purpose: when this goes red the
     // useful question is "what name DID it register under", and a bare undefined cannot say.

@@ -24,6 +24,10 @@
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getOrgPg, listActiveEphemeralRoutines, recordEphemeralFire } from '@papercusp/db-org';
 import { getSystemAction, SYSTEM_TARGET_PREFIX } from '../harness/routines/system-actions';
+// host-bootstrap imports this executor directly, without importing routines-workflow. Keep the
+// side-effect registry load on this production fire path or every `system:` ephemeral action is
+// absent and each cadence silently records "no system action ... registered" on every tick.
+import '../harness/routines/register-system-actions';
 import { backgroundWorkspaceIds } from '../workspace-registry';
 import { runWithWorkspace } from '../workspace-als';
 
