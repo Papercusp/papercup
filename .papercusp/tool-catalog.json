@@ -4575,7 +4575,7 @@
       ],
       "guidance": {
         "when": "A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again. Resolve several at once via items:[…] (each item supplies its own accepted answer).",
-        "notWhen": "Still gathering answers → leave it open. For an open-ended discussion that just ran its course, this still works (capture is skippable with capture:none).",
+        "notWhen": "Still gathering answers → leave it open. For an open-ended discussion that just ran its course, this still works (capture is skippable with capture:none). Consults must use consult:close so their typed outcome is recorded.",
         "chaining": "conversations:answer → conversations:resolve { id, accepted_post_id }. Provide accepted_answer to write a synthesized answer instead of quoting a single post."
       }
     },
@@ -14493,7 +14493,7 @@
           "POST"
         ]
       },
-      "description": "A systemd unit's journal lines, filtered SERVER-SIDE and distilled — the `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` answer as { entries:[{ts,unit,level,message,repeat}], matched, collapsed, truncated }. `grep` is pushed down to `journalctl --grep` so only matching lines are ever read, and consecutive identical lines collapse to one row + a count. Reads the journal only — it does not follow (`-f`) and does not restart anything.",
+      "description": "A host service's log lines, filtered SERVER-SIDE and distilled — `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` on Linux, or the equivalent macOS `log show` unified-log query — as { backend, entries:[{ts,unit,level,message,repeat}], matched, collapsed, truncated }. `grep` is pushed into the host logger's predicate so only matching lines are read, and consecutive identical lines collapse to one row + a count. Reads logs only — it does not follow (`-f`) and does not restart anything.",
       "capabilities": [
         "intel:read"
       ],
