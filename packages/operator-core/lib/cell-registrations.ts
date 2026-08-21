@@ -60,6 +60,7 @@ const OPERATOR_PIPELINE_VISIBILITY = { kind: 'harness', ref: 'papercusp' } as co
  */
 export const GIT_PIPELINE_POSITION_CELL: CellSpec = {
   cell: 'git.pipelinePosition',
+  registeredOn: '2026-07-27',
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'positions.deployed',
 
