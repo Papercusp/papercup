@@ -152,7 +152,7 @@ export async function withCutSeedSingleton<T>(input: {
   readonly hive: string;
   readonly run: (pg: postgres.Sql) => Promise<T>;
 }): Promise<T> {
-  return input.pg.begin(async (tx) => {
+  const [result] = await input.pg.begin(async (tx) => {
     const [{ acquired }] = await tx<{ acquired: boolean }[]>`
       SELECT pg_try_advisory_xact_lock(
         hashtextextended(${`${CUT_SEED_ADVISORY_LOCK_NAMESPACE}:${input.workspaceId}:${input.hive}`}, 0)
@@ -163,11 +163,12 @@ export async function withCutSeedSingleton<T>(input: {
         `[cut-seed] another seed cut is already refreshing or opening ` +
           `${input.workspaceId}::${input.hive}; refusing before backfill or corestore open. ` +
           'Wait for that cut to finish. If it was interrupted after refresh completed, resume with ' +
-          '--no-force-backfill rather than starting a second force-backfill.',
+        '--no-force-backfill rather than starting a second force-backfill.',
       );
     }
-    return input.run(tx as unknown as postgres.Sql);
+    return [input.run(tx as unknown as postgres.Sql)];
   });
+  return result;
 }
 
 /**

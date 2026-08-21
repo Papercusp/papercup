@@ -300,7 +300,7 @@ describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
         }
       }),
     } as never;
-    const run = vi.fn(async (transaction: typeof tx) => {
+    const run = vi.fn(async (transaction: unknown) => {
       expect(transaction).toBe(tx);
       expect(transactionOpen).toBe(true);
       return 'cut-opened';
