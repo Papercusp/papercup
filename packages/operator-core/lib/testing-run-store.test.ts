@@ -45,9 +45,13 @@ vi.mock('node:child_process', async (orig) => {
     execFileSync: (...a: unknown[]) => execFileSyncMock(...a),
   };
 });
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: persistSqlMock }),
-}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: persistSqlMock }),
+  };
+});
 
 type Store = typeof import('./testing-run-store');
 const req = (over: Partial<Parameters<Store['startRun']>[0]> = {}) =>
