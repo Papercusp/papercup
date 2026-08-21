@@ -377,6 +377,11 @@ const itemSpec = z.object({
   checks: checksSpec(),
 });
 
+// EI-21035020852712365: a terminal work-item is no longer an active work lane.
+// Keep the legacy spellings here because work_items:get may expose an older alias
+// on rows written before the unified lifecycle state was introduced.
+const TERMINAL_WORK_ITEM_STATES = new Set(['passed', 'deprecated', 'resolved', 'closed', 'done', 'dropped']);
+
 export default defineTool({
   name: 'work_items:checkpoint',
   profile: 'engineer',
@@ -386,7 +391,8 @@ export default defineTool({
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. ' +
-    'Refuses a peer-held item (`not_holder`). `rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows.',
+    'Refuses a peer-held item (`not_holder`) and active writes to terminal items (`terminal_item`); explicit clears remain allowed for finish cleanup. ' +
+    '`rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -402,6 +408,8 @@ export default defineTool({
       'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
       'Every write is verify-read: a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
       'and every refusal carries `errorCode` + recovery args. ' +
+      'A non-clear write to a terminal item is refused with `errorCode:"terminal_item"`; reopen it explicitly with ' +
+      '`work_items:set_state { id, state:"open", force:true }`, then claim it before resuming work. ' +
       'A blocked write carries `errorCode` (`shrink_blocked` / `append_base_unreadable`) plus structured `recovery` args: ' +
       '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
       'or `append:false, confirmShrink:true` for an intentional full replacement. ' +
@@ -548,6 +556,36 @@ export default defineTool({
         // Omitted checkpoint is therefore a dependency-only PATCH, just like the
         // checks-only PATCH below; explicit null/'' remains a deliberate clear.
         const isDependencyOnlyPatch = it.checkpoint === undefined && declaredDeps !== undefined && !wantsAppend;
+        const hasCheckpointBody = typeof it.checkpoint === 'string' && it.checkpoint.trim().length > 0;
+        const hasMetadataPatch =
+          it.checkpoint === undefined && (rawSuppliedChecks !== undefined || declaredDeps !== undefined);
+        const hasChecksWithExplicitClear =
+          typeof it.checkpoint === 'string' && it.checkpoint.trim().length === 0 && (rawSuppliedChecks?.length ?? 0) > 0;
+        const isActiveCheckpointWrite = hasCheckpointBody || hasMetadataPatch || hasChecksWithExplicitClear;
+        // EI-21035020852712365: a terminal item with no live claim can look like an
+        // ordinary unassigned item, so the ownership guard above used to let a
+        // successor write substantive corrective work onto a row that already read
+        // done/dropped. That made the work invisible to claim/lifecycle monitoring:
+        // the item stayed terminal and unassigned while a live session edited it.
+        // Refuse active writes rather than implicitly reopening and discarding the
+        // terminal completion. Explicit clears remain valid for finish cleanup.
+        if (item && TERMINAL_WORK_ITEM_STATES.has(String(item.state ?? '').trim().toLowerCase()) && isActiveCheckpointWrite) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error:
+              `terminal_item — work_item '${it.id}' is already terminal ('${item.state}'); ` +
+              'non-clear checkpoint writes are refused. Reopen it explicitly with ' +
+              "work_items:set_state { id, state: 'open', force: true }, then claim it before resuming work.",
+            errorCode: 'terminal_item',
+            recovery: {
+              reopen: {
+                args: { state: 'open', force: true },
+                description: 'Reopen the terminal item explicitly, then claim it before writing active checkpoint state.',
+              },
+            },
+          };
+        }
         let checkpointToStore = it.checkpoint;
         // WI-7190: this pre-read is a SEPARATE call (getWorkItemCheckpoint) from the
         // authoritative prior the write transaction reads a few lines below (inside
