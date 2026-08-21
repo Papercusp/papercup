@@ -55,6 +55,21 @@ export const FLEET_METRIC_WRITERS = {
   claimSpecHistory: 'harness_shared.cup_claim_spec_revisions',
 } as const;
 
+export const FLEET_METRIC_POPULATIONS = {
+  currentRunnableRoster: 'current-runnable-roster',
+  relevantRoster: 'relevant-roster',
+  everMembers: 'ever-members',
+  currentSpecWorkItems: 'current-spec-work-items',
+  atEventSpecWorkItemEvents: 'at-event-spec-work-item-events',
+  canonicalBugs: 'canonical-bug-work-items',
+  observations: 'observation-work-item-rows',
+  occurrences: 'work-item-occurrence-rows',
+  terminalAuthority: 'lifecycle-terminal-work-items',
+} as const;
+
+export const FLEET_METRIC_COMPARISON_RULE =
+  'compare only identical population, window, and unit; otherwise name an explicit reconciliation transform' as const;
+
 /**
  * The admission identity that every current-spec `claimable` count must satisfy.
  * Rank changes ordering only; it never changes membership in the measured set.
@@ -109,21 +124,79 @@ export const fleetMetricAtEventSpecScopeSchema = z.object({
   missingRevision: z.literal('unavailable-never-current-fallback'),
 });
 
-export const fleetMetricScopeSchema = z.object({
-  fleet: nonEmpty,
-  harness: nonEmpty,
-  window: fleetMetricWindowSchema,
-  /** Remaining stock is always a current-state question. */
-  stock: fleetMetricCurrentSpecScopeSchema,
-  /** Flow may intentionally be re-read through today's spec or historical revisions. */
-  flow: z.discriminatedUnion('mode', [fleetMetricCurrentSpecScopeSchema, fleetMetricAtEventSpecScopeSchema]),
-  attribution: z.object({
-    membership: z.literal('ever-members'),
-    writer: z.literal(FLEET_METRIC_WRITERS.membership),
-    memberCount: nonNegativeInt,
-    rule: z.literal('actor owner id is in the fleet append-only ever-member cohort'),
-  }),
-});
+export const fleetMetricScopeSchema = z
+  .object({
+    fleet: nonEmpty,
+    harness: nonEmpty,
+    window: fleetMetricWindowSchema,
+    /** Remaining stock is always a current-state question. */
+    stock: fleetMetricCurrentSpecScopeSchema,
+    /** Flow may intentionally be re-read through today's spec or historical revisions. */
+    flow: z.discriminatedUnion('mode', [fleetMetricCurrentSpecScopeSchema, fleetMetricAtEventSpecScopeSchema]),
+    attribution: z.object({
+      membership: z.literal(FLEET_METRIC_POPULATIONS.everMembers),
+      writer: z.literal(FLEET_METRIC_WRITERS.membership),
+      memberCount: nonNegativeInt,
+      rule: z.literal('actor owner id is in the fleet append-only ever-member cohort'),
+    }),
+    population: z.object({
+      currentRunnableRoster: z.literal(FLEET_METRIC_POPULATIONS.currentRunnableRoster),
+      relevantRoster: z.literal(FLEET_METRIC_POPULATIONS.relevantRoster),
+      attribution: z.literal(FLEET_METRIC_POPULATIONS.everMembers),
+      stock: z.literal(FLEET_METRIC_POPULATIONS.currentSpecWorkItems),
+      flow: z.enum([
+        FLEET_METRIC_POPULATIONS.currentSpecWorkItems,
+        FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents,
+      ]),
+      canonicalBugs: z.literal(FLEET_METRIC_POPULATIONS.canonicalBugs),
+      observations: z.literal(FLEET_METRIC_POPULATIONS.observations),
+      occurrences: z.literal(FLEET_METRIC_POPULATIONS.occurrences),
+      terminalAuthority: z.literal(FLEET_METRIC_POPULATIONS.terminalAuthority),
+      comparisonRule: z.literal(FLEET_METRIC_COMPARISON_RULE),
+    }),
+  })
+  .superRefine((scope, ctx) => {
+    if (scope.flow.specId !== scope.stock.specId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['flow', 'specId'],
+        message: 'stock and flow must resolve the same claim spec id',
+      });
+    }
+
+    if (scope.flow.mode === 'current-spec') {
+      if (scope.flow.revision !== scope.stock.revision || scope.flow.source !== scope.stock.source) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['flow'],
+          message: 'current-spec stock and flow must share spec revision and source',
+        });
+      }
+      if (scope.population.flow !== FLEET_METRIC_POPULATIONS.currentSpecWorkItems) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['population', 'flow'],
+          message: 'current-spec flow must declare the current-spec work-item population',
+        });
+      }
+      return;
+    }
+
+    if (scope.flow.currentRevision !== scope.stock.revision) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['flow', 'currentRevision'],
+        message: 'at-event flow currentRevision must match the current stock revision',
+      });
+    }
+    if (scope.population.flow !== FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['population', 'flow'],
+        message: 'at-event flow must declare the at-event-spec work-item-event population',
+      });
+    }
+  });
 
 export const fleetMetricExactnessSchema = z.discriminatedUnion('status', [
   z.object({

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   FLEET_METRIC_ADMISSION_PARITY,
+  FLEET_METRIC_COMPARISON_RULE,
+  FLEET_METRIC_POPULATIONS,
   FLEET_METRIC_REMAINING_PRECEDENCE,
   FLEET_METRIC_UNITS,
   FLEET_METRIC_WRITERS,
@@ -46,6 +48,18 @@ function currentSpecExample(): FleetMetricsResult {
           writer: FLEET_METRIC_WRITERS.membership,
           memberCount: 31,
           rule: 'actor owner id is in the fleet append-only ever-member cohort',
+        },
+        population: {
+          currentRunnableRoster: FLEET_METRIC_POPULATIONS.currentRunnableRoster,
+          relevantRoster: FLEET_METRIC_POPULATIONS.relevantRoster,
+          attribution: FLEET_METRIC_POPULATIONS.everMembers,
+          stock: FLEET_METRIC_POPULATIONS.currentSpecWorkItems,
+          flow: FLEET_METRIC_POPULATIONS.currentSpecWorkItems,
+          canonicalBugs: FLEET_METRIC_POPULATIONS.canonicalBugs,
+          observations: FLEET_METRIC_POPULATIONS.observations,
+          occurrences: FLEET_METRIC_POPULATIONS.occurrences,
+          terminalAuthority: FLEET_METRIC_POPULATIONS.terminalAuthority,
+          comparisonRule: FLEET_METRIC_COMPARISON_RULE,
         },
       },
       quality: {
@@ -154,6 +168,7 @@ describe('fleet metrics v1 contract', () => {
       appliedTo: 'each-event-at-its-event-time',
       missingRevision: 'unavailable-never-current-fallback',
     };
+    example.snapshot.scope.population.flow = FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents;
 
     const parsed = fleetMetricsResultSchema.parse(example);
     expect(parsed.ok).toBe(true);
@@ -164,6 +179,34 @@ describe('fleet metrics v1 contract', () => {
       revision: 'effective-at-event',
       missingRevision: 'unavailable-never-current-fallback',
     });
+  });
+
+  it('requires stock and flow to share one stored spec identity', () => {
+    const current = currentSpecExample();
+    if (!current.ok) throw new Error('fixture must be available');
+    current.snapshot.scope.flow.revision += 1;
+    expect(fleetMetricsResultSchema.safeParse(current).success).toBe(false);
+
+    const historical = currentSpecExample();
+    if (!historical.ok) throw new Error('fixture must be available');
+    historical.snapshot.scope.flow = {
+      mode: 'at-event-spec',
+      specId: historical.snapshot.scope.stock.specId,
+      currentRevision: historical.snapshot.scope.stock.revision + 1,
+      revision: 'effective-at-event',
+      historyWriter: FLEET_METRIC_WRITERS.claimSpecHistory,
+      appliedTo: 'each-event-at-its-event-time',
+      missingRevision: 'unavailable-never-current-fallback',
+    };
+    historical.snapshot.scope.population.flow = FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents;
+    expect(fleetMetricsResultSchema.safeParse(historical).success).toBe(false);
+  });
+
+  it('binds population metadata to the selected flow mode', () => {
+    const example = currentSpecExample();
+    if (!example.ok) throw new Error('fixture must be available');
+    example.snapshot.scope.population.flow = FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents;
+    expect(fleetMetricsResultSchema.safeParse(example).success).toBe(false);
   });
 
   it('rejects overlapping/omitted remaining dispositions disguised as a partition', () => {
