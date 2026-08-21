@@ -17,17 +17,17 @@ export function bareModelId(model: any): string;
 /**
  * The context window papercusp DECLARES to the Codex CLI for `model`, or null
  * when that model has no extended window to ask for (plan
- * codex-1m-context-window-2026-08-17 D-007).
+ * codex-1m-context-window-2026-08-17 D-008).
  *
  * NULL IS A MEANINGFUL ANSWER, not a failure: gpt-5.5, gpt-5.4-mini and
  * gpt-5.3-codex-spark report `max_context_window == context_window`, so there is
  * no bigger window to request and their launch argv must stay byte-identical to
  * today. Callers emit nothing on null — they must not substitute a default.
  *
- * Precedence: an installed model record's `max_context_window`, then the exact
- * 1M fallback table when that model has no readable record. The runtime max is
- * clamped to CODEX_MAX_CONFIGURED_WINDOW and refused unless it genuinely
- * EXCEEDS the model's own default window, so sub-1M behavior remains
+ * Precedence: the exact 1M policy table for known 1M-class models, then an
+ * installed model record's `max_context_window` for other models. Registry
+ * maxima are clamped to CODEX_MAX_CONFIGURED_WINDOW and refused unless they
+ * genuinely EXCEED the model's own default window, so sub-1M behavior remains
  * byte-identical and this can never talk an unknown model down.
  *
  * @param {string | null | undefined} model  a psu model spec, alias, or native id
@@ -195,13 +195,15 @@ export const DEFAULT_CONTEXT_WINDOWS: Readonly<{
 export const MAX_LAUNCH_CONTEXT_BYTES: number;
 /**
  * Codex models officially documented with a 1,050,000-token context window
- * that Papercusp exposes as selectors. The configured fallback is deliberately
+ * that Papercusp exposes as selectors. The configured value is deliberately
  * 1,000,000 (not 1,050,000): that is the exact Codex guide setting and leaves
  * the native 900,000 auto-compact backstop above Papercusp's 400k/200k cuts.
  *
- * A readable installed model record is runtime-authoritative, including when
- * its max_context_window is lower than this table. This table is used only when
- * the selected model has no installed record (plan D-007).
+ * D-008 makes this table authoritative for the known 1M-class ids. Codex may
+ * still report a lower EFFECTIVE window after applying runtime model metadata
+ * (828,400 on the measured 0.148.0 install), but that does not change the
+ * required top-level opt-in bytes. Registry maxima remain the fallback for
+ * unrecognised extended-window models.
  */
 export const CODEX_EXTENDED_WINDOW_FALLBACK: Readonly<{
     'gpt-5.6-sol': 1000000;

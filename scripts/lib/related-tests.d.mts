@@ -53,8 +53,16 @@ export function buildIndex({ rootDir, aliases, fs }?: {
     aliases?: Record<string, string> | undefined;
     fs?: RelatedFs | undefined;
 }): RelatedIndex;
-/** Transitive forward closure with memoization and a cycle guard. */
-export function transitiveDeps(index: any): (f: any) => any;
+/**
+ * Exact transitive forward closure, including cyclic import graphs.
+ *
+ * A plain DFS cannot safely memoize while it is breaking a cycle: the first root
+ * through a strongly-connected component sees a stack-truncated closure and
+ * poisons every later lookup with that partial set. Test selection then depends
+ * on file enumeration order and can silently miss a test. Collapse SCCs first;
+ * their condensation graph is acyclic, so memoization is exact.
+ */
+export function transitiveDeps(index: any): (file: any) => Set<any>;
 /**
  * Select the test files that a change to `changedPaths` could affect.
  *
