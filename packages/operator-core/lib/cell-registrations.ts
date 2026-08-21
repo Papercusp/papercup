@@ -197,6 +197,7 @@ const VERDICT_HOIST = 'verdictUnknown';
  */
 export const GATE_VERDICT_CELL: CellSpec = {
   cell: 'gate.greenCheckpoint.verdict',
+  registeredOn: '2026-07-27',
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'gate.consecutiveReds',
 
@@ -277,6 +278,7 @@ export const GATE_VERDICT_CELL: CellSpec = {
  */
 export const GATE_CANDIDATE_CELL: CellSpec = {
   cell: 'gate.greenCheckpoint.candidate',
+  registeredOn: '2026-07-27',
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'changeInCandidate.judgingSha',
 
@@ -416,6 +418,7 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
  */
 export const GATE_OWNERSHIP_CELL: CellSpec = {
   cell: 'gate.greenCheckpoint.ownership',
+  registeredOn: '2026-08-03',
   owner: 'gate-ownership-condition-singleton-2026-08-03',
   headline: 'gate.ownership.claimState',
 
@@ -472,6 +475,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
  */
 export const DEPLOYED_SHA_CELL: CellSpec = {
   cell: 'deploy.3070.sha',
+  registeredOn: '2026-07-27',
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'deployedSha',
 
@@ -537,6 +541,7 @@ export const DEPLOYED_SHA_CELL: CellSpec = {
  */
 export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
   cell: 'git.mainBehindStaging',
+  registeredOn: '2026-07-27',
   owner: 'su-2846407f-4f4c-4313-8db8-dce7592e269d',
   headline: 'verdictProvenance.mainBehindStaging',
 
@@ -597,6 +602,7 @@ export const MAIN_BEHIND_STAGING_CELL: CellSpec = {
  */
 export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
   cell: 'host.memoryPressure',
+  registeredOn: '2026-08-14',
   owner: 'su-30c473f3-c5b8-43d0-bba2-8d6b40e1aabd',
   headline: 'memory.pressure',
 
@@ -658,6 +664,7 @@ export const AGENT_GOAL_CELL: CellSpec = {
   // gate's literal there fails SILENTLY (getCell returns undefined and the surface
   // discloses nothing, forever). See the constant's own note.
   cell: AGENT_GOAL_CELL_ID,
+  registeredOn: '2026-07-27',
   owner: 'unified-agent-state-plane-2026-07-27',
   headline: 'goalRef',
 
@@ -777,6 +784,7 @@ export const AGENT_GOAL_CELL: CellSpec = {
  */
 export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
   cell: 'testing.census.population',
+  registeredOn: '2026-08-18',
   owner: 'deterministic-coverage-census-2026-08-17',
   headline: 'census.surfaces',
 
@@ -840,6 +848,7 @@ export const TESTING_CENSUS_POPULATION_CELL: CellSpec = {
  */
 export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
   cell: 'testing.coverage.floor',
+  registeredOn: '2026-08-18',
   owner: 'deterministic-coverage-census-2026-08-17',
   headline: 'coverage.pct',
 
