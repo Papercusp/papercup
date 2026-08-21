@@ -179,8 +179,51 @@ export interface D026QuiescenceEvidence {
 export interface D026QuiescenceReaderDeps {
   /** Injectable read-cut seam; production uses release:cut's read-only status reader. */
   readCutStatus?: typeof readCutStatus;
-  /** Injectable systemd probe for the restore leg. */
+  /** Injectable systemd probe for the restore leg (kept strict — see readD026QuiescenceEvidence). */
   isUnitActive?: (unit: string) => boolean;
+  /** Injectable systemd probe for the CUT unit specifically. Defaults to
+   *  `defaultIsCutQuiescing` (also recognizes `deactivating`); falls back to `isUnitActive`
+   *  when only that is supplied, so a caller/test injecting one shared probe for both units
+   *  keeps working unchanged. */
+  isCutActive?: (unit: string) => boolean;
+}
+
+/**
+ * EI-20517156511202200 (2026-08-20): `defaultIsUnitActive` (and the plain `systemctl
+ * --user is-active`) reports a unit as running only while its ActiveState is
+ * `active`/`activating`. But the whole point of the D-026 handoff is the window AFTER
+ * that — the cut's main script has exited and systemd has begun the stop sequence, while
+ * an orphaned process left in the cut's cgroup still holds the Corestore device lock the
+ * restore controller is explicitly waiting on. `systemctl is-active` reports that window
+ * as `deactivating`, and `defaultIsUnitActive` treats `deactivating` identically to
+ * `inactive`/`failed` (a non-zero exit is a non-zero exit) — so the cut reads as "not
+ * running" at precisely the moment it is still doing the one thing D-026 exists to
+ * protect. The reported incident measured the cut cgroup actively progressing during
+ * that exact window (PID 1253600, 3.06s CPU over a 3s sample, 57 tasks) while
+ * `cutActive` read false and the guard paged a `no-primary` blocker straight through an
+ * authorized, actively-progressing restore.
+ *
+ * `deactivating` therefore ALSO counts as "the cut still holds the section" for D-026's
+ * quiescence check — unlike `inactive`/`failed`/an unknown unit, where the cut is
+ * genuinely gone and a lingering restore-unit reading as active would be stale residue,
+ * not real protection. That is why ONLY the cut probe is widened here: the restore
+ * unit's own check stays strict `active`/`activating` (readD026QuiescenceEvidence),
+ * because a restore leg reading as `deactivating` means its EXIT trap has already fired
+ * and bg-host is (or is about to be) restored — exactly the moment suppression should end.
+ */
+export function defaultIsCutQuiescing(unit: string): boolean {
+  try {
+    const out = execFileSync('systemctl', ['--user', 'is-active', unit], { encoding: 'utf8' }).trim();
+    return out === 'active' || out === 'activating' || out === 'deactivating';
+  } catch (err) {
+    // `systemctl is-active` prints the ActiveState to stdout even on a non-zero exit (e.g.
+    // exit 3 for `deactivating`) — execFileSync still captures it on the thrown error's
+    // `.stdout` (encoding:'utf8' means it is already a string). Recover it instead of
+    // collapsing every non-zero-exit state to "gone", which is the exact defect above.
+    const stdout = (err as { stdout?: unknown } | null)?.stdout;
+    const out = typeof stdout === 'string' ? stdout.trim() : '';
+    return out === 'deactivating';
+  }
 }
 
 /**
@@ -196,7 +239,8 @@ export function readD026QuiescenceEvidence(
   deps: D026QuiescenceReaderDeps = {},
 ): D026QuiescenceEvidence {
   const active = deps.isUnitActive ?? defaultIsUnitActive;
-  const cut = (deps.readCutStatus ?? readCutStatus)({ isUnitActive: active });
+  const cutActiveProbe = deps.isCutActive ?? deps.isUnitActive ?? defaultIsCutQuiescing;
+  const cut = (deps.readCutStatus ?? readCutStatus)({ isUnitActive: cutActiveProbe });
   return {
     cutActive: cut.running,
     restoreActive: active(D026_RESTORE_UNIT),
