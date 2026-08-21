@@ -14,6 +14,30 @@ function signals(memory?: NonNullable<NonNullable<PerfSignalsV1['signals']['psi'
   };
 }
 
+const CGROUP_MEMORY: NonNullable<PerfSignalsV1['signals']['cgroupMemory']> = {
+  accounting: 'cgroup-v2-inclusive-descendants',
+  partial: false,
+  top: [
+    {
+      path: '/user.slice/user@1000.service/app.slice/papercup-dev-api.service',
+      memoryBytes: 48 * 1024 ** 3,
+      swapBytes: 4 * 1024 ** 3,
+      anonBytes: null,
+      fileBytes: null,
+      shmemBytes: null,
+      kernelBytes: null,
+      slabBytes: null,
+      sockBytes: null,
+      directPids: 17,
+    },
+  ],
+  scannedCgroups: 1,
+  candidateCgroups: 1,
+  maxScanned: 4096,
+  maxRows: 40,
+  budgetSec: 5,
+};
+
 function host(memFreePct: number): HostSnapshot {
   return {
     now: '2026-08-14T18:00:00.000Z',
@@ -48,6 +72,31 @@ describe('host.memoryPressure resolver lens', () => {
     });
     expect(out.memory.reasons.join(' ')).toMatch(/all tasks stalled on memory/);
     expect(out.host).toMatchObject({ memFreePct: 27, memTotalGb: 252 });
+  });
+
+  it('exposes the bounded cgroup owner projection for recurrence attribution', async () => {
+    const base = signals({ some: { avg60: 11.15 }, full: { avg60: 8.17 } });
+    const out = await buildHostMemoryPressurePayload({
+      nowMs: NOW,
+      readSignals: async () => ({
+        ...base,
+        signals: { ...base.signals, cgroupMemory: CGROUP_MEMORY },
+      }),
+      readHost: () => host(27),
+    });
+
+    expect(out.memory.cgroupAttribution).toEqual({
+      accounting: 'cgroup-v2-inclusive-descendants',
+      partial: false,
+      top: [
+        {
+          path: '/user.slice/user@1000.service/app.slice/papercup-dev-api.service',
+          memoryBytes: 48 * 1024 ** 3,
+          swapBytes: 4 * 1024 ** 3,
+          directPids: 17,
+        },
+      ],
+    });
   });
 
   it('keeps the free-memory falsifier independent from the PSI headline', async () => {

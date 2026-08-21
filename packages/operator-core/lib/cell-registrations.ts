@@ -632,7 +632,7 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.pressure' },
   shape:
-    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
+    '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, cgroupAttribution: { accounting, partial, top[{ path, memoryBytes, swapBytes, directPids }] }|null, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
 };
 
 /* ═══════════════════════════════════════════════════════════════════════════════

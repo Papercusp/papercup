@@ -97,6 +97,26 @@ export interface PerfSignalsV1 {
   };
 }
 
+/**
+ * Bounded memory-owner context exposed by the canonical pressure verdict.
+ *
+ * `memoryBytes` is inclusive of descendants (the cgroup-v2 accounting contract),
+ * so these rows are evidence for attribution, not values that may be summed. Keep
+ * the projection deliberately smaller than the raw capture: service paths and
+ * direct PID counts are enough to identify the likely producer without exposing
+ * command-line samples or turning a state read into a process dump.
+ */
+export interface MemoryPressureCgroupAttribution {
+  accounting: 'cgroup-v2-inclusive-descendants' | string;
+  partial: boolean;
+  top: Array<{
+    path: string;
+    memoryBytes: number;
+    swapBytes: number | null;
+    directPids: number | null;
+  }>;
+}
+
 export interface PerfBudgets {
   /** A request worker sustained above this %CPU is HOT (warn). Noisy on a many-core
    *  box, so never crit on its own — the event-loop-lag + reachability + CLOSE_WAIT
@@ -198,6 +218,8 @@ export interface MemoryPressureVerdict {
   /** PSI values are percentages of wall time over the trailing 60-second window. */
   psiMemorySome60: number | null;
   psiMemoryFull60: number | null;
+  /** Bounded owner context from the same capture; null when the producer omitted it. */
+  cgroupAttribution: MemoryPressureCgroupAttribution | null;
   /** The exact budget source and values used by the infra-liveness writer. */
   thresholds: {
     source: 'PERF_BUDGETS';
@@ -292,6 +314,28 @@ function lagP95(s: PerfSignalsV1['signals']): number | null {
   return typeof v === 'number' ? v : null;
 }
 
+/** Project only safe, bounded cgroup owner fields into the current-state verdict. */
+function summarizeCgroupMemory(
+  cgroup: PerfSignalsV1['signals']['cgroupMemory'],
+): MemoryPressureCgroupAttribution | null {
+  if (!cgroup || !Array.isArray(cgroup.top)) return null;
+  const top = [...cgroup.top]
+    .filter((row) => typeof row?.path === 'string' && typeof row?.memoryBytes === 'number')
+    .sort((a, b) => b.memoryBytes - a.memoryBytes)
+    .slice(0, 8)
+    .map((row) => ({
+      path: row.path,
+      memoryBytes: row.memoryBytes,
+      swapBytes: typeof row.swapBytes === 'number' ? row.swapBytes : null,
+      directPids: typeof row.directPids === 'number' ? row.directPids : null,
+    }));
+  return {
+    accounting: cgroup.accounting,
+    partial: cgroup.partial === true,
+    top,
+  };
+}
+
 /**
  * Evaluate ONLY the memory-pressure portion of a perf capture.
  *
@@ -318,6 +362,7 @@ export function evaluateMemoryPressure(
     stale: false,
     psiMemorySome60: null,
     psiMemoryFull60: null,
+    cgroupAttribution: null,
     thresholds,
     reasons: [],
     unknown: [],
@@ -354,6 +399,7 @@ export function evaluateMemoryPressure(
   const memory = signals.signals?.psi?.memory;
   const psiMemorySome60 = typeof memory?.some?.avg60 === 'number' ? memory.some.avg60 : null;
   const psiMemoryFull60 = typeof memory?.full?.avg60 === 'number' ? memory.full.avg60 : null;
+  const cgroupAttribution = summarizeCgroupMemory(signals.signals?.cgroupMemory);
   const unknown: MemoryPressureVerdict['unknown'] = [];
   if (stale) {
     unknown.push({
@@ -381,6 +427,7 @@ export function evaluateMemoryPressure(
     stale,
     psiMemorySome60,
     psiMemoryFull60,
+    cgroupAttribution,
     unknown,
   };
   if (stale) return common;

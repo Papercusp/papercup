@@ -320,6 +320,63 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(v.reasons.join(' ')).toMatch(/all tasks stalled on memory/);
   });
 
+  it('projects bounded cgroup owner context without treating inclusive rows as additive', () => {
+    const v = evaluatePerfSignals(
+      sig({
+        psi: { memory: { some: { avg60: 11.15 }, full: { avg60: 8.17 } } },
+        cgroupMemory: {
+          accounting: 'cgroup-v2-inclusive-descendants',
+          partial: false,
+          top: [
+            {
+              path: '/user.slice',
+              memoryBytes: 100_000,
+              swapBytes: 20_000,
+              anonBytes: 80_000,
+              fileBytes: 20_000,
+              shmemBytes: 0,
+              kernelBytes: 0,
+              slabBytes: 0,
+              sockBytes: 0,
+              directPids: 0,
+            },
+            {
+              path: '/user.slice/user@1000.service/app.slice/papercup-dev-api.service',
+              memoryBytes: 60_000,
+              swapBytes: 10_000,
+              anonBytes: 50_000,
+              fileBytes: 10_000,
+              shmemBytes: 0,
+              kernelBytes: 0,
+              slabBytes: 0,
+              sockBytes: 0,
+              directPids: 17,
+            },
+          ],
+          scannedCgroups: 2,
+          candidateCgroups: 2,
+          maxScanned: 4096,
+          maxRows: 40,
+          budgetSec: 5,
+        },
+      }),
+      NOW,
+    );
+    expect(v.memoryPressure.cgroupAttribution).toEqual({
+      accounting: 'cgroup-v2-inclusive-descendants',
+      partial: false,
+      top: [
+        { path: '/user.slice', memoryBytes: 100_000, swapBytes: 20_000, directPids: 0 },
+        {
+          path: '/user.slice/user@1000.service/app.slice/papercup-dev-api.service',
+          memoryBytes: 60_000,
+          swapBytes: 10_000,
+          directPids: 17,
+        },
+      ],
+    });
+  });
+
   it('does not alarm on a healthy memory PSI reading', () => {
     const v = evaluatePerfSignals(sig({ psi: { memory: { some: { avg60: 2 }, full: { avg60: 0 } } } }), NOW);
     expect(v.status).toBe('ok');
@@ -378,6 +435,7 @@ describe('evaluateMemoryPressure (host.memoryPressure shared writer)', () => {
       stale: false,
       psiMemorySome60: 11.15,
       psiMemoryFull60: 8.17,
+      cgroupAttribution: null,
       thresholds: {
         source: 'PERF_BUDGETS',
         psiMemorySomeWarn: 10,
