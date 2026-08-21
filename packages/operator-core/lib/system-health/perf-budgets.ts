@@ -382,10 +382,36 @@ function summarizeCgroupMemory(
       swapBytes: typeof row.swapBytes === 'number' ? row.swapBytes : null,
       directPids: typeof row.directPids === 'number' ? row.directPids : null,
     }));
+  const num = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+  // A capture predating the reclaim-event fields carries no `throttled` array at
+  // all. Project that as null — an empty array would assert "nothing was
+  // throttled", turning a MISSING measurement into a false all-clear, which is
+  // the same class of error as reading PSI silence as health.
+  const throttled = Array.isArray(cgroup.throttled)
+    ? cgroup.throttled
+        .filter((row) => typeof row?.path === 'string' && typeof row?.memoryBytes === 'number')
+        .slice(0, 8)
+        .map((row) => {
+          const highEvents = num(row.throttledHighEvents);
+          const maxEvents = num(row.throttledMaxEvents);
+          const oomKillEvents = num(row.oomKillEvents);
+          return {
+            path: row.path,
+            memoryBytes: row.memoryBytes,
+            highEvents,
+            maxEvents,
+            oomKillEvents,
+            subtreeMaxEvents: num(row.throttledMaxEventsSubtree),
+            subtreeOomKillEvents: num(row.oomKillEventsSubtree),
+            subtreeOnly: highEvents === 0 && maxEvents === 0 && oomKillEvents === 0,
+          };
+        })
+    : null;
   return {
     accounting: cgroup.accounting,
     partial: cgroup.partial === true,
     top,
+    throttled,
   };
 }
 
@@ -436,10 +462,45 @@ function formatCgroupOwner(row: MemoryPressureCgroupAttribution['top'][number]):
  *  number that INVITES attributing the stall to "low memory" (EI-21006730273601832:
  *  ~51 GiB MemAvailable was live at the very reading that paged full avg60=5.13). */
 function withCgroupAttribution(reason: string, attribution: MemoryPressureCgroupAttribution | null): string {
+  // PSI measures STALLS, so a cgroup that actually took reclaim events is causal
+  // evidence, while the largest cgroup is only circumstantial. Prefer the former
+  // and SAY WHICH ONE the reader is getting — labelling a size ranking
+  // "attributed" is what let 13 investigations mistake the biggest workload for
+  // the responsible one (EI-21025158485847408).
+  const stalling = attribution?.throttled?.find((row) => !row.subtreeOnly) ?? null;
+  if (stalling) {
+    const gb = (stalling.memoryBytes / 1024 ** 3).toFixed(2);
+    const parts = [
+      stalling.highEvents > 0 ? `${stalling.highEvents} MemoryHigh throttle(s)` : null,
+      stalling.maxEvents > 0 ? `${stalling.maxEvents} MemoryMax hit(s)` : null,
+      stalling.oomKillEvents > 0 ? `${stalling.oomKillEvents} oom-kill(s)` : null,
+    ].filter(Boolean);
+    return `${reason}; reclaim-attributed cgroup: ${stalling.path} (${gb}GB, ${parts.join(', ')})`;
+  }
+  // No cgroup owns an event, but an ancestor may still carry a subtree record of
+  // one whose cgroup has since been removed. That is the ONLY surviving evidence
+  // of a short-lived producer, so surface it rather than falling through to size.
+  const exited = attribution?.throttled?.find(
+    (row) => row.subtreeOnly && (row.subtreeMaxEvents > 0 || row.subtreeOomKillEvents > 0),
+  );
+  if (exited) {
+    const kills = exited.subtreeOomKillEvents > 0 ? `, ${exited.subtreeOomKillEvents} oom-kill(s)` : '';
+    return (
+      `${reason}; no live cgroup owns a reclaim event, but ${exited.path} retains ` +
+      `${exited.subtreeMaxEvents} MemoryMax hit(s)${kills} from descendants that have since exited — ` +
+      `attribute there, not to the largest cgroup`
+    );
+  }
   const owner = mostSpecificCgroupOwner(attribution);
-  return owner
-    ? `${reason}; largest attributed cgroup: ${formatCgroupOwner(owner)}`
-    : `${reason}; no cgroup memory attribution captured — mechanism unconfirmed, do not attribute to low free RAM`;
+  if (owner) {
+    // Explicitly mark this as the WEAK reading so it is not mistaken for cause.
+    const basis =
+      attribution?.throttled === null
+        ? 'capture predates reclaim-event attribution, so stall ownership is UNMEASURED'
+        : 'no cgroup recorded a reclaim event';
+    return `${reason}; largest cgroup by size (NOT confirmed as the staller — ${basis}): ${formatCgroupOwner(owner)}`;
+  }
+  return `${reason}; no cgroup memory attribution captured — mechanism unconfirmed, do not attribute to low free RAM`;
 }
 
 /**
