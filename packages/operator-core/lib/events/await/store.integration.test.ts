@@ -213,9 +213,10 @@ describe('await-event store (PG)', () => {
       armed_because: 'interest machinery bound this watch to fleet-leadership:alpha',
     });
 
-    await expect(
-      retireLifecycleBoundWatches(binding, { ownerIds: ['leader-a'] }),
-    ).resolves.toEqual({ awaits: 1, predicateWatches: 1 });
+    await expect(retireLifecycleBoundWatches(binding, { ownerIds: ['leader-a'] })).resolves.toEqual({
+      awaits: 1,
+      predicateWatches: 1,
+    });
     expect((await listActiveAwaits('leader-a')).map((row) => row.id)).toEqual([manual.id]);
     expect((await listActiveAwaits('leader-b')).map((row) => row.id)).toEqual([sibling.id]);
 
@@ -313,10 +314,12 @@ describe('await-event store (PG)', () => {
       if (stampPromise) await stampPromise;
     }
 
-    expect(await rootSql`
+    expect(
+      await rootSql`
       SELECT fired_at FROM harness_shared.event_awaits
        WHERE event_key = ${eventKey} AND causal_generation = 1
-    `).toEqual([expect.objectContaining({ fired_at: expect.anything() })]);
+    `,
+    ).toEqual([expect.objectContaining({ fired_at: expect.anything() })]);
   });
 
   // ── EI-8998: predicate/payload watches ───────────────────────────────────
@@ -725,9 +728,9 @@ describe('verified-wait fallback campaign (PG)', () => {
       lastFireAtMs: null,
       completedAtMs: null,
     });
-    expect(
-      await listVerifiedWaitTakeoversForSubscribers(['waiter-died'], 24, { observeProducer: resumed }),
-    ).toEqual([]);
+    expect(await listVerifiedWaitTakeoversForSubscribers(['waiter-died'], 24, { observeProducer: resumed })).toEqual(
+      [],
+    );
   });
 
   it('slow-but-progressing producer: renews the same one-shot row without consuming it', async () => {

@@ -36,11 +36,7 @@ import type {
   WakeChannel,
   WakeHandle,
 } from './types';
-import type {
-  ProducerHealthCertificate,
-  ProducerHealthObservation,
-  VerifiedWaitTimeoutResult,
-} from './verified-wait';
+import type { ProducerHealthCertificate, ProducerHealthObservation, VerifiedWaitTimeoutResult } from './verified-wait';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -121,9 +117,7 @@ function mapAwait(r: any): AwaitRow {
     memberPayload: parseJsonb(r.member_payload),
     producerHealthCertificate: parseJsonb<ProducerHealthCertificate>(r.producer_health),
     timeoutVerification: parseJsonb<VerifiedWaitTimeoutResult>(r.timeout_verification),
-    verificationClaimedAt: r.verification_claimed_at
-      ? new Date(r.verification_claimed_at).toISOString()
-      : null,
+    verificationClaimedAt: r.verification_claimed_at ? new Date(r.verification_claimed_at).toISOString() : null,
   };
 }
 
@@ -255,8 +249,9 @@ export async function retireLifecycleBoundWatches(
   const owners = [...new Set((opts.ownerIds ?? []).map((id) => id.trim()).filter(Boolean))];
   return boundedOrgTxn(async (tx) => {
     const bindingJson = JSON.stringify(normalized);
-    const awaits = owners.length > 0
-      ? await tx`
+    const awaits =
+      owners.length > 0
+        ? await tx`
           UPDATE harness_shared.event_awaits
              SET cancelled_at = now()
            WHERE bound_to = ${bindingJson}::text::jsonb
@@ -264,15 +259,16 @@ export async function retireLifecycleBoundWatches(
              AND cancelled_at IS NULL
              AND (once = false OR fired_at IS NULL)
           RETURNING id`
-      : await tx`
+        : await tx`
           UPDATE harness_shared.event_awaits
              SET cancelled_at = now()
            WHERE bound_to = ${bindingJson}::text::jsonb
              AND cancelled_at IS NULL
              AND (once = false OR fired_at IS NULL)
           RETURNING id`;
-    const predicateWatches = owners.length > 0
-      ? await tx`
+    const predicateWatches =
+      owners.length > 0
+        ? await tx`
           UPDATE harness_shared.predicate_watches
              SET active = false,
                  last_error = coalesce(last_error, 'gc: lifecycle binding retired')
@@ -280,7 +276,7 @@ export async function retireLifecycleBoundWatches(
              AND owner_id = ANY(${owners}::text[])
              AND active
           RETURNING id`
-      : await tx`
+        : await tx`
           UPDATE harness_shared.predicate_watches
              SET active = false,
                  last_error = coalesce(last_error, 'gc: lifecycle binding retired')
@@ -478,10 +474,7 @@ export async function cancelAwaitsByIds(ids: readonly number[]): Promise<number>
 }
 
 /** Cancel one of MY awaits (subscriber-scoped — you cannot cancel a peer's). */
-export async function cancelAwait(input: {
-  awaitId: number;
-  subscriberId: string;
-}): Promise<boolean> {
+export async function cancelAwait(input: { awaitId: number; subscriberId: string }): Promise<boolean> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
@@ -667,26 +660,28 @@ export async function listVerifiedWaitTakeoversForSubscribers(
       return [];
     }
     const ownerTarget = result.owner.workItemId ?? result.owner.ownerId;
-    return [{
-      alert: {
-        subscriberId: row.subscriber_id,
-        eventKey: row.event_key,
-        firedAt: new Date(row.fired_at).toISOString(),
-        classification: result.classification,
-        nextAction: result.nextAction,
-        producer: result.producer,
-        owner: result.owner,
-        checkedAtMs: result.checkedAtMs,
-        verificationDeadlineMs: result.verificationDeadlineMs,
-        lastProgressAtMs: result.lastProgressAtMs,
-        lastFireAtMs: result.lastFireAtMs,
-        ...(result.evidence ? { evidence: result.evidence } : {}),
-        remedy: ownerTarget
-          ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
-          : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
-      } satisfies VerifiedWaitTakeoverAlert,
-      certificate: parseJsonb<ProducerHealthCertificate>(row.producer_health),
-    }];
+    return [
+      {
+        alert: {
+          subscriberId: row.subscriber_id,
+          eventKey: row.event_key,
+          firedAt: new Date(row.fired_at).toISOString(),
+          classification: result.classification,
+          nextAction: result.nextAction,
+          producer: result.producer,
+          owner: result.owner,
+          checkedAtMs: result.checkedAtMs,
+          verificationDeadlineMs: result.verificationDeadlineMs,
+          lastProgressAtMs: result.lastProgressAtMs,
+          lastFireAtMs: result.lastFireAtMs,
+          ...(result.evidence ? { evidence: result.evidence } : {}),
+          remedy: ownerTarget
+            ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
+            : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
+        } satisfies VerifiedWaitTakeoverAlert,
+        certificate: parseJsonb<ProducerHealthCertificate>(row.producer_health),
+      },
+    ];
   });
   if (candidates.length === 0) return [];
   // EI-20540454577146535: `timeout_verification` is a SNAPSHOT written once, when the
@@ -795,7 +790,8 @@ export async function listWakeAwaitsForSubscriber(
   limit = 5,
 ): Promise<Array<{ eventKey: string; expiresTs: string | null; rootId: number | null }>> {
   const ws = eventsWs();
-  const rows = await boundedOrgTxn((tx) => tx`
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
     SELECT event_key, expires_ts, root_id
       FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws}
@@ -806,7 +802,8 @@ export async function listWakeAwaitsForSubscriber(
        AND (expires_ts IS NULL OR expires_ts > now())
      ORDER BY created_at DESC
      LIMIT ${limit}
-  `);
+  `,
+  );
   const mapped = rows.map((r: any) => ({
     eventKey: r.event_key as string,
     expiresTs: r.expires_ts ? new Date(r.expires_ts).toISOString() : null,
@@ -830,13 +827,15 @@ export async function listWakeAwaitsForSubscriber(
  *  (fail-soft), so a timeout degrades the same way a genuine empty result would. */
 export async function listActiveAwaitsForKey(eventKey: string): Promise<AwaitRow[]> {
   const ws = eventsWs();
-  const rows = await boundedOrgTxn((tx) => tx`
+  const rows = await boundedOrgTxn(
+    (tx) => tx`
     SELECT * FROM harness_shared.event_awaits
      WHERE workspace_id = ${ws} AND event_key = ${eventKey}
        AND fired_at IS NULL AND cancelled_at IS NULL
        AND policy <> 'announce'
      ORDER BY created_at ASC
-  `);
+  `,
+  );
   return rows.map(mapAwait);
 }
 
@@ -987,13 +986,9 @@ export async function fireAwaitsForKey(input: {
         `
       : [];
 
-  return [
-    ...onceRows,
-    ...claimedOnceFilterRows,
-    ...standingRows,
-    ...claimedPatternRows,
-    ...matchedStanding,
-  ].map(mapAwait);
+  return [...onceRows, ...claimedOnceFilterRows, ...standingRows, ...claimedPatternRows, ...matchedStanding].map(
+    mapAwait,
+  );
 }
 
 /**
@@ -1062,9 +1057,7 @@ export async function insertDeliveries(input: {
  * return them joined with their await's wake handle. `FOR UPDATE SKIP LOCKED`
  * keeps two hosts from double-claiming one row.
  */
-export async function claimDueDeliveries(input: {
-  limit?: number;
-}): Promise<DeliveryWork[]> {
+export async function claimDueDeliveries(input: { limit?: number }): Promise<DeliveryWork[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
@@ -1088,11 +1081,7 @@ export async function claimDueDeliveries(input: {
   return rows.map(mapWork);
 }
 
-export async function markDeliveryDelivered(
-  id: number,
-  channel: WakeChannel,
-  coalescedCount = 1,
-): Promise<void> {
+export async function markDeliveryDelivered(id: number, channel: WakeChannel, coalescedCount = 1): Promise<void> {
   const { sql } = getOrgPg();
   await sql`
     UPDATE harness_shared.event_wake_deliveries
@@ -1123,9 +1112,7 @@ export async function markDeliveriesCoalesced(ids: number[], intoDeliveryId: num
  * 'coalesced' deliveries are excluded (they spend no turn). Returns epoch ms per subscriber
  * (absent = never woken). Bounded by the handful of subscribers due this tick.
  */
-export async function lastWokenAtForSubscribers(
-  subscriberIds: string[],
-): Promise<Map<string, number>> {
+export async function lastWokenAtForSubscribers(subscriberIds: string[]): Promise<Map<string, number>> {
   const out = new Map<string, number>();
   if (subscriberIds.length === 0) return out;
   const { sql } = getOrgPg();
@@ -1238,9 +1225,7 @@ export async function markDeliveryDeferred(id: number, deferMs: number): Promise
 }
 
 /** Sweep half 1: stuck 'delivering' rows (host crashed mid-attempt) → pending. */
-export async function recoverStuckDeliveries(input: {
-  olderThanMs: number;
-}): Promise<number> {
+export async function recoverStuckDeliveries(input: { olderThanMs: number }): Promise<number> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
@@ -1353,10 +1338,7 @@ export async function expireLapsedAwaits(): Promise<number> {
  * via the inbox channel (which is how it actually reached the acker). The
  * D-007 cost saver: an acked wake never burns a resume turn.
  */
-export async function ackDelivery(input: {
-  deliveryId: number;
-  subscriberId: string;
-}): Promise<boolean> {
+export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<boolean> {
   const { sql } = getOrgPg();
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
@@ -1422,9 +1404,11 @@ export async function listRecentDeliveries(subscriberId: string, limit = 10): Pr
 }
 
 /** The D-007 meter: wake counts by subscriber + channel over a window. */
-export async function wakeMeter(input: {
-  sinceHours?: number;
-} = {}): Promise<Array<{ subscriberId: string; status: string; channel: string | null; count: number }>> {
+export async function wakeMeter(
+  input: {
+    sinceHours?: number;
+  } = {},
+): Promise<Array<{ subscriberId: string; status: string; channel: string | null; count: number }>> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const rows = await sql`
@@ -1532,10 +1516,7 @@ export interface NearMissKey {
  * candidate read + in-process normalize compare; callers treat any failure
  * as "no near misses" (D-001: advisory, never blocking).
  */
-export async function findNearMissKeys(
-  eventKey: string,
-  opts?: { excludeOwner?: string },
-): Promise<NearMissKey[]> {
+export async function findNearMissKeys(eventKey: string, opts?: { excludeOwner?: string }): Promise<NearMissKey[]> {
   const target = normalizeEventKey(eventKey);
   if (!target) return [];
   const { sql } = getOrgPg();
@@ -1563,9 +1544,7 @@ export async function findNearMissKeys(
       byKey.set(key, { kind, holders: new Set([sub]) });
     }
   }
-  return [...byKey.entries()]
-    .slice(0, 5)
-    .map(([key, v]) => ({ eventKey: key, kind: v.kind, holders: v.holders.size }));
+  return [...byKey.entries()].slice(0, 5).map(([key, v]) => ({ eventKey: key, kind: v.kind, holders: v.holders.size }));
 }
 
 /** Emit-time latch: stamp fired_at on the key's unfired announcement rows (kept,
@@ -1596,11 +1575,13 @@ export async function stampAnnouncementsFired(
 /** ACTIVE announcements (not cancelled, not lapsed) — the discovery read for
  *  events:catalog / coord:orient. The set is tiny (index-backed, migration 548);
  *  callers filter visibility in JS via announcementVisibleTo (announce-key.ts). */
-export async function listActiveAnnouncements(input: {
-  /** true (default) = only gates that have NOT fired yet; false includes latched ones. */
-  unfiredOnly?: boolean;
-  limit?: number;
-} = {}): Promise<AwaitRow[]> {
+export async function listActiveAnnouncements(
+  input: {
+    /** true (default) = only gates that have NOT fired yet; false includes latched ones. */
+    unfiredOnly?: boolean;
+    limit?: number;
+  } = {},
+): Promise<AwaitRow[]> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const unfiredOnly = input.unfiredOnly !== false;
@@ -1715,7 +1696,9 @@ export interface KeyFireEvidence {
 
 /** The family prefix an evidence probe uses: the key's first two `:` segments. */
 export function keyFireEvidencePrefix(eventKey: string): string {
-  const parts = String(eventKey ?? '').trim().split(':');
+  const parts = String(eventKey ?? '')
+    .trim()
+    .split(':');
   return parts.length <= 2 ? parts.join(':') : parts.slice(0, 2).join(':');
 }
 
@@ -1791,10 +1774,7 @@ export interface PatternMatchScope {
   truncated: boolean;
 }
 
-export async function probePatternMatchScope(
-  glob: string,
-  opts?: { limit?: number },
-): Promise<PatternMatchScope> {
+export async function probePatternMatchScope(glob: string, opts?: { limit?: number }): Promise<PatternMatchScope> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
   const pattern = String(glob ?? '').trim();
@@ -1875,5 +1855,10 @@ export async function inspectEventKey(eventKey: string): Promise<{
       deliveries: deliveryRows.map(mapDelivery),
       fireLatch: fireLatchRows.length > 0 ? mapKeyFire(fireLatchRows[0]) : null,
     };
-  }) as Promise<{ announcements: AwaitRow[]; waiters: AwaitRow[]; deliveries: DeliveryRow[]; fireLatch: KeyFireRow | null }>;
+  }) as Promise<{
+    announcements: AwaitRow[];
+    waiters: AwaitRow[];
+    deliveries: DeliveryRow[];
+    fireLatch: KeyFireRow | null;
+  }>;
 }

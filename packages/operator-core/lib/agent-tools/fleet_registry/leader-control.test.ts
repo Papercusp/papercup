@@ -100,7 +100,7 @@ beforeEach(() => {
 });
 
 describe('retireFleetLeaderWatches', () => {
-  it('retires only the departed owner\'s fleet-leadership binding', async () => {
+  it("retires only the departed owner's fleet-leadership binding", async () => {
     retireLifecycleBoundWatches.mockResolvedValue({ awaits: 5, predicateWatches: 1 });
 
     await expect(retireFleetLeaderWatches('leader-1', 'alpha')).resolves.toBe(6);
@@ -141,63 +141,58 @@ describe('ensureFleetLeaderControl', () => {
     expect(out.healthy).toBe(true);
     expect(out.repaired).toBe(true);
     expect(out.mode).toEqual({ healthy: true, changed: true });
-    expect(setMode).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: 'ws-1',
-      ownerId: 'leader-1',
-      modeId: 'auto',
-      enabled: true,
-    }));
-    expect(materializeLoop).toHaveBeenCalledWith(expect.objectContaining({
-      workspaceId: 'ws-1',
-      harnessSlug: 'papercusp',
-      ownerId: 'leader-1',
-      intervalSec: LEADER_MONITOR_INTERVAL_SEC,
-      carry: 'cold',
-      mode: 'monitor',
-    }));
-    expect(registerAwait).toHaveBeenCalledTimes(LEADER_TRANSITION_EVENTS.length);
-    expect(out.watches.added).toEqual(
-      LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:alpha`),
+    expect(setMode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        ownerId: 'leader-1',
+        modeId: 'auto',
+        enabled: true,
+      }),
     );
+    expect(materializeLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+        ownerId: 'leader-1',
+        intervalSec: LEADER_MONITOR_INTERVAL_SEC,
+        carry: 'cold',
+        mode: 'monitor',
+      }),
+    );
+    expect(registerAwait).toHaveBeenCalledTimes(LEADER_TRANSITION_EVENTS.length);
+    expect(out.watches.added).toEqual(LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:alpha`));
 
     const registrations = registerAwait.mock.calls.map(([args]) => args as Record<string, unknown>);
-    expect(registrations.every((args) =>
-      JSON.stringify(args.boundTo) === JSON.stringify({ kind: 'fleet-leadership', ref: 'alpha' }),
-    )).toBe(true);
+    expect(
+      registrations.every(
+        (args) => JSON.stringify(args.boundTo) === JSON.stringify({ kind: 'fleet-leadership', ref: 'alpha' }),
+      ),
+    ).toBe(true);
     expect(registrations.find((args) => args.eventKey === 'fleet:member-dead:alpha')).toMatchObject({
       payloadFilter: { not: { agentId: { equals: 'leader-1' } } },
     });
     expect(registrations.find((args) => args.eventKey === 'fleet:context-critical:alpha')).toMatchObject({
       payloadFilter: { not: { agentId: { equals: 'leader-1' } } },
     });
-    for (const eventKey of [
-      'fleet:claim-released:alpha',
-      'fleet:item-completed:alpha',
-      'fleet:drained:alpha',
-    ]) {
+    for (const eventKey of ['fleet:claim-released:alpha', 'fleet:item-completed:alpha', 'fleet:drained:alpha']) {
       expect(registrations.find((args) => args.eventKey === eventKey)).not.toHaveProperty('payloadFilter');
     }
   });
 
   it('repairs legacy self-transition watches while preserving the other watches as unfiltered', async () => {
-    listActiveAwaits.mockResolvedValue(
-      activeWatches().map(({ payloadFilter: _payloadFilter, ...row }) => row),
-    );
+    listActiveAwaits.mockResolvedValue(activeWatches().map(({ payloadFilter: _payloadFilter, ...row }) => row));
 
     const out = await ensureFleetLeaderControl(input);
 
     expect(out.healthy).toBe(true);
-    expect(out.watches.repaired).toEqual([
-      'fleet:member-dead:alpha',
-      'fleet:context-critical:alpha',
-    ]);
+    expect(out.watches.repaired).toEqual(['fleet:member-dead:alpha', 'fleet:context-critical:alpha']);
     expect(registerAwait).toHaveBeenCalledTimes(2);
     expect(registerAwait.mock.calls.map(([args]) => args.eventKey)).toEqual([
       'fleet:member-dead:alpha',
       'fleet:context-critical:alpha',
     ]);
-    expect(registerAwait.mock.calls.every(([args]) =>
-      args.payloadFilter?.not?.agentId?.equals === 'leader-1',
-    )).toBe(true);
+    expect(registerAwait.mock.calls.every(([args]) => args.payloadFilter?.not?.agentId?.equals === 'leader-1')).toBe(
+      true,
+    );
   });
 });

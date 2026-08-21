@@ -111,9 +111,7 @@ export async function reapEndedPresenceRows(
 
   const ownerIds = rows.map((r) => r.ownerId);
   const wakeability = await fetchWakeability(ownerIds);
-  const wakeableOwnerIds = new Set(
-    ownerIds.filter((id) => wakeability.get(id)?.wakeable === true),
-  );
+  const wakeableOwnerIds = new Set(ownerIds.filter((id) => wakeability.get(id)?.wakeable === true));
   const candidates: PresenceReapCandidate[] = rows.map((r) => ({
     ownerId: r.ownerId,
     heartbeatAt: r.heartbeatAt,

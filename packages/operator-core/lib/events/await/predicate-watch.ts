@@ -31,11 +31,7 @@
 import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import {
-  lookupByMcpName,
-  dispatchProjectedTool,
-  type UnifiedToolContext,
-} from '@papercusp/agent-mcp';
+import { lookupByMcpName, dispatchProjectedTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
 import { listCellsUnchecked, canReadCell } from '../../cell-registry';
@@ -695,9 +691,7 @@ let ungroupableSeq = 0;
  */
 export function canonicalArgsKey(args: Record<string, unknown> | null | undefined): string {
   try {
-    return (
-      JSON.stringify(canonicalizeForKey(args ?? {})) ?? `${GROUP_KEY_SEP}ungroupable:${++ungroupableSeq}`
-    );
+    return JSON.stringify(canonicalizeForKey(args ?? {})) ?? `${GROUP_KEY_SEP}ungroupable:${++ungroupableSeq}`;
   } catch {
     return `${GROUP_KEY_SEP}ungroupable:${++ungroupableSeq}`;
   }
@@ -776,7 +770,13 @@ export function deriveCellReread(row: {
         (c.changeSignal.path === row.path || c.materiality?.path === row.path),
     );
     if (!spec) return undefined;
-    if (!canReadCell(spec, { ownerId: row.ownerId, roles: row.role ? [row.role] : [], harnessSlug: row.harnessSlug ?? undefined })) {
+    if (
+      !canReadCell(spec, {
+        ownerId: row.ownerId,
+        roles: row.role ? [row.role] : [],
+        harnessSlug: row.harnessSlug ?? undefined,
+      })
+    ) {
       return undefined;
     }
     const rel = spec.callerRelativity;
@@ -833,20 +833,23 @@ export async function evalPredicateWatch(
       const isChanged = row.op === 'changed';
       await emitAwaitedEvent({
         key: row.eventKey,
-        payload: withLifecycleBindingProvenance({
-          observed,
-          predicate: {
-            tool: row.tool,
-            path: row.path,
-            op: row.op,
-            ...(isChanged ? { changedFrom: row.lastValue } : { value: row.value }),
+        payload: withLifecycleBindingProvenance(
+          {
+            observed,
+            predicate: {
+              tool: row.tool,
+              path: row.path,
+              op: row.op,
+              ...(isChanged ? { changedFrom: row.lastValue } : { value: row.value }),
+            },
+            // P-001: `observed` is FIRE-TIME and goes stale across the fire→delivery
+            // lag (a parked session boots, a respawn queues). The handle re-answers it
+            // from the same resolver at the moment of acting. Omitted when no
+            // registered cell matches or the reader is out of its audience.
+            ...(reread ? { reread } : {}),
           },
-          // P-001: `observed` is FIRE-TIME and goes stale across the fire→delivery
-          // lag (a parked session boots, a respawn queues). The handle re-answers it
-          // from the same resolver at the moment of acting. Omitted when no
-          // registered cell matches or the reader is out of its audience.
-          ...(reread ? { reread } : {}),
-        }, row.boundTo),
+          row.boundTo,
+        ),
         summary: `predicate matched: ${row.tool} ${row.path} ${row.op}${
           isChanged
             ? ` from ${String(JSON.stringify(row.lastValue)).slice(0, 200)}`
@@ -867,10 +870,13 @@ export async function evalPredicateWatch(
       // The waiter must wake, not dangle — fire the key with an error payload.
       await emitAwaitedEvent({
         key: row.eventKey,
-        payload: withLifecycleBindingProvenance({
-          predicateError: msg.slice(0, 500),
-          predicate: { tool: row.tool, path: row.path, op: row.op, value: row.value },
-        }, row.boundTo),
+        payload: withLifecycleBindingProvenance(
+          {
+            predicateError: msg.slice(0, 500),
+            predicate: { tool: row.tool, path: row.path, op: row.op, value: row.value },
+          },
+          row.boundTo,
+        ),
         summary: `predicate watch DEACTIVATED after ${row.consecutiveErrors + 1} consecutive errors: ${msg.slice(0, 200)}`,
         source: `predicate-watch:${row.ownerId}`,
       });

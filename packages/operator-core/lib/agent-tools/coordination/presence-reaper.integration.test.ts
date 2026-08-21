@@ -23,13 +23,8 @@ let admin: postgres.Sql;
 
 const TTL = 60 * 60 * 1000; // 1h for the test
 const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATION_871_ARMED = resolve(
-  HERE,
-  '../../../../../libs/papercusp/libs/db/sql/871-lifecycle-bound-watches.sql',
-);
-const MIGRATION_871 = existsSync(MIGRATION_871_ARMED)
-  ? MIGRATION_871_ARMED
-  : `${MIGRATION_871_ARMED}.DRAFT`;
+const MIGRATION_871_ARMED = resolve(HERE, '../../../../../libs/papercusp/libs/db/sql/871-lifecycle-bound-watches.sql');
+const MIGRATION_871 = existsSync(MIGRATION_871_ARMED) ? MIGRATION_871_ARMED : `${MIGRATION_871_ARMED}.DRAFT`;
 
 /** Seed a presence row with an explicit heartbeat age (seconds in the past).
  *  WI-5964: coord_presence_pkey is PRIMARY KEY(owner_id) ONLY — globally unique,

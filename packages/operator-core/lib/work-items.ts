@@ -3434,9 +3434,10 @@ export async function setWorkItemStateWithAliasInfo(
           aliased: current.state !== requestedState,
           requestedState,
           appliedState: current.state,
-          aliasNote: current.origin === 'remote'
-            ? "requested state 'needs-human' was ignored because this item is remote-owned and must reconcile on its authoring peer."
-            : "requested state 'needs-human' was ignored because this item is already in agent review.",
+          aliasNote:
+            current.origin === 'remote'
+              ? "requested state 'needs-human' was ignored because this item is remote-owned and must reconcile on its authoring peer."
+              : "requested state 'needs-human' was ignored because this item is already in agent review.",
         };
       }
       if (hasStrictOwnerAction(current.payload)) {
@@ -3509,13 +3510,14 @@ export async function setWorkItemStateWithAliasInfo(
   // Surface a note when the state was aliased OR an auto-gate flag was applied (the gate can
   // now fire WITHOUT aliasing, since blocked/needs-human store verbatim post-flip).
   const effectiveAliased = aliased || stateToApply !== requestedState;
-  const note = needsHumanRoute === 'leader-triage'
-    ? "requested state 'needs-human' lacked a strict typed owner capability — recorded as 'blocked' for fleet-leader triage instead."
-    : effectiveAliased
-    ? onAliasInfo
-      ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
-      : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
-    : (autoGateNote ?? undefined);
+  const note =
+    needsHumanRoute === 'leader-triage'
+      ? "requested state 'needs-human' lacked a strict typed owner capability — recorded as 'blocked' for fleet-leader triage instead."
+      : effectiveAliased
+        ? onAliasInfo
+          ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
+          : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
+        : (autoGateNote ?? undefined);
   return {
     workItem,
     aliased: effectiveAliased,

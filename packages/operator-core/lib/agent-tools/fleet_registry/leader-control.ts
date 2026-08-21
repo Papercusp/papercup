@@ -8,18 +8,8 @@
  */
 import { getModes, setMode } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
-import {
-  buildLoopWakePrompt,
-  getLoopStatus,
-  materializeLoop,
-  type LoopStatus,
-} from '../../harness/routines/loop';
-import {
-  cancelAwait,
-  listActiveAwaits,
-  registerAwait,
-  retireLifecycleBoundWatches,
-} from '../../events/await/store';
+import { buildLoopWakePrompt, getLoopStatus, materializeLoop, type LoopStatus } from '../../harness/routines/loop';
+import { cancelAwait, listActiveAwaits, registerAwait, retireLifecycleBoundWatches } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { getPresence } from '../coordination/presence';
@@ -111,9 +101,7 @@ function payloadFilterMatches(actual: unknown | null | undefined, expected: unkn
   return JSON.stringify(actual) === JSON.stringify(expected);
 }
 
-export async function ensureFleetLeaderControl(
-  input: EnsureFleetLeaderControlInput,
-): Promise<LeaderControlOutcome> {
+export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlInput): Promise<LeaderControlOutcome> {
   const errors: string[] = [];
   let repaired = false;
 
