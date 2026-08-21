@@ -64,7 +64,8 @@ describe('AdminTestRunsPlaywrightReporter worktree provenance', () => {
 
     const values = mocks.sql.mock.calls[0]!.slice(1);
     expect(values[0]).toBe('specs/example.spec.ts');
-    expect(values[10]).toBe('after-sha');
+    // `playwright` is a SQL-template literal, so commit_sha is value slot 9.
+    expect(values[9]).toBe('after-sha');
     expect(values).not.toContain('stale-cached-sha');
     expect(values.at(-1)).toBe(true);
   });
