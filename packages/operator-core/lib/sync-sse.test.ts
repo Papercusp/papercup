@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let capturedListen: ((raw: string) => void) | null = null;
 let capturedOnListen: (() => void) | null = null;
 const notifySql = vi.fn(async (..._args: unknown[]) => [] as unknown[]); // called as a tagged template
+const listenEnd = vi.fn(async (..._args: unknown[]) => {});
 type BridgeTarget = string | { name: string; args: Record<string, unknown> };
 let bridgeReturn: (name: string, args?: Record<string, unknown>) => BridgeTarget[] = () => [];
 const emitSysEvt = vi.fn();
@@ -28,6 +29,7 @@ beforeEach(() => {
   capturedListen = null;
   capturedOnListen = null;
   notifySql.mockClear();
+  listenEnd.mockClear();
   bridgeReturn = () => [];
   emitSysEvt.mockClear();
   listenFailuresRemaining = 0;
@@ -54,8 +56,8 @@ afterEach(() => {
 
 async function load() {
   vi.doMock('postgres', () => ({
-    default: () => ({
-      listen: (_ch: string, cb: (raw: string) => void, onListen?: () => void) => {
+      default: () => ({
+        listen: (_ch: string, cb: (raw: string) => void, onListen?: () => void) => {
         if (listenFailuresRemaining > 0) {
           listenFailuresRemaining--;
           return Promise.reject(new Error('simulated LISTEN failure (PG not up yet)'));
@@ -63,9 +65,10 @@ async function load() {
         capturedListen = cb;
         capturedOnListen = onListen ?? null;
         onListen?.();
-        return Promise.resolve();
-      },
-    }),
+          return Promise.resolve();
+        },
+        end: listenEnd,
+      }),
   }));
   vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
   vi.doMock('@papercusp/db-org', async (orig) => ({
@@ -303,6 +306,15 @@ describe('ensureInvalidationListener (EI-6468 / WI-1547: cache-ECA must not be i
       errSpy.mock.calls.some((c) => String(c[0]).includes('cache-ECA inert in this process')),
     ).toBe(true);
   });
+
+  it('stops the process LISTEN connection explicitly during host shutdown', async () => {
+    const { ensureInvalidationListener, stopInvalidationListener } = await load();
+    await expect(ensureInvalidationListener()).resolves.toBe(true);
+
+    await stopInvalidationListener();
+
+    expect(listenEnd).toHaveBeenCalledExactlyOnceWith({ timeout: 5 });
+  });
 });
 
 describe('boot wiring: hono-host.ts eagerly starts the invalidation LISTEN (EI-6468 / WI-1547 regression guard)', () => {
@@ -327,6 +339,7 @@ describe('boot wiring: hono-host.ts eagerly starts the invalidation LISTEN (EI-6
     const nextBoundary = src.indexOf('\nfunction ', fnStart + 1);
     const body = nextBoundary > -1 ? src.slice(fnStart, nextBoundary) : src.slice(fnStart);
     expect(body).toContain('ensureInvalidationListener()');
+    expect(body).toContain('closeAdditionalResources: stopInvalidationListener');
   });
 });
 

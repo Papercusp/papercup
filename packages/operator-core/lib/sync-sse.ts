@@ -250,6 +250,19 @@ export async function ensureInvalidationListener(
 }
 
 /**
+ * Close this process's `sync_invalidate` LISTEN source during host shutdown.
+ *
+ * The invalidation bus owns either a dedicated postgres-js connection or a
+ * ref-counted slot on the shared listen hub. Exposing the bus's stop seam lets
+ * the host send an explicit FIN/UNLISTEN before a recycle; otherwise a killed
+ * operator generation can leave an idle LISTEN backend behind until PostgreSQL
+ * notices the dead socket.
+ */
+export async function stopInvalidationListener(): Promise<void> {
+  await bus.stop();
+}
+
+/**
  * Server-side notify helper. Mutation/watcher code calls this after writes;
  * fires `pg_notify('sync_invalidate', ...)` which the LISTEN above fans out
  * to all SSE subscribers. Dedupe + 32KB payload cap live in the bus.
