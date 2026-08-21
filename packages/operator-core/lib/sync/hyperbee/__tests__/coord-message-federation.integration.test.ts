@@ -459,6 +459,27 @@ describe('coord_event_log federation (real PG)', () => {
       expect(wakeRecipients).toHaveBeenCalledTimes(1);
     });
 
+    it('an expected lifecycle ack reply is applied but does not re-wake the wound-down sender', async () => {
+      await insertRow({
+        msgId: 'orig-wind-down',
+        body: envelope('orig-wind-down', {
+          from: 'su-LOCAL',
+          to: ['su-A'],
+          wakeOnReply: true,
+          expectedLifecycleAck: { kind: 'fleet-wind-down', fleet: 'backend' },
+        }),
+      });
+      vi.mocked(wakeRecipients).mockClear();
+      await proj().writeToPg(remoteReplyRow('reply-wind-down', 'orig-wind-down'), {
+        authorPubkey: 'peerPubA',
+        origin: 'remote',
+      });
+      expect(wakeRecipients).not.toHaveBeenCalled();
+      expect(
+        await db.sql`SELECT 1 FROM harness_shared.coord_event_log WHERE workspace_id=${WS} AND msg_id='reply-wind-down'`,
+      ).toHaveLength(1);
+    });
+
     it('an original WITHOUT the wakeOnReply opt-in → no reply-wake', async () => {
       await insertRow({
         msgId: 'orig-2',

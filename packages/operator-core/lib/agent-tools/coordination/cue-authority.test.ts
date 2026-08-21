@@ -15,6 +15,9 @@ import {
   renderCueAuthorityTag,
   readCueAuthority,
   CUE_AUTHORITY_FIELD,
+  EXPECTED_LIFECYCLE_ACK_FIELD,
+  expectedFleetWindDownAck,
+  readExpectedLifecycleAck,
   type CueAuthorityStamp,
 } from './cue-authority';
 
@@ -132,5 +135,24 @@ describe('readCueAuthority (defensive envelope reader)', () => {
     expect(
       readCueAuthority({ [CUE_AUTHORITY_FIELD]: { authority: 'hive-queen', authorityRef: 'papercusp', scope: 'hive-wide', scopeRef: 42 } }),
     ).toEqual({ authority: 'hive-queen', authorityRef: 'papercusp', scope: 'hive-wide' });
+  });
+});
+
+describe('expected lifecycle acknowledgements (reserved envelope marker)', () => {
+  it('stamps and round-trips a fleet wind-down marker', () => {
+    const marker = expectedFleetWindDownAck(' backend ');
+    expect(marker).toEqual({ kind: 'fleet-wind-down', fleet: 'backend' });
+    expect(readExpectedLifecycleAck({ [EXPECTED_LIFECYCLE_ACK_FIELD]: marker })).toEqual(marker);
+  });
+
+  it('uses a non-empty fallback for a blank fleet slug', () => {
+    expect(expectedFleetWindDownAck('   ')).toEqual({ kind: 'fleet-wind-down', fleet: '(fleet)' });
+  });
+
+  it('rejects malformed markers so ordinary replies are unaffected', () => {
+    expect(readExpectedLifecycleAck({ [EXPECTED_LIFECYCLE_ACK_FIELD]: { kind: 'other', fleet: 'ops' } })).toBeNull();
+    expect(readExpectedLifecycleAck({ [EXPECTED_LIFECYCLE_ACK_FIELD]: { kind: 'fleet-wind-down', fleet: '' } })).toBeNull();
+    expect(readExpectedLifecycleAck({ [EXPECTED_LIFECYCLE_ACK_FIELD]: 'fleet-wind-down' })).toBeNull();
+    expect(readExpectedLifecycleAck({})).toBeNull();
   });
 });

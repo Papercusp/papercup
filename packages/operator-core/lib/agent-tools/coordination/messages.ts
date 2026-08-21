@@ -63,6 +63,12 @@ export interface SendOptions {
   to: string[];
   summary?: string;
   body?: string;
+  /**
+   * Internal body renderer for the rare envelope whose prose must quote its
+   * generated msg_id (for example, a control cue teaching coord:ack). This is
+   * evaluated after the id is minted and is never serialized as an envelope key.
+   */
+  bodyWithMsgId?: (msgId: string) => string;
   files?: string[];
   plan_slug?: string;
   related_msg_id?: string;
@@ -241,7 +247,11 @@ export async function sendMessage(
   };
   if (audienceKey.length) env.audience = audienceKey;
   if (opts.summary !== undefined) env.summary = opts.summary;
-  if (opts.body !== undefined) env.body = opts.body;
+  if (opts.bodyWithMsgId !== undefined) {
+    env.body = opts.bodyWithMsgId(env.msg_id);
+  } else if (opts.body !== undefined) {
+    env.body = opts.body;
+  }
   if (opts.category !== undefined) env.category = opts.category;
   if (opts.files !== undefined) env.files = opts.files;
   if (opts.plan_slug !== undefined) env.plan_slug = opts.plan_slug;

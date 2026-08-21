@@ -34,6 +34,7 @@ import { resolveAuthorCommsTier } from '../comms-tier-gate';
 import { quarantineCoordMessage, type QuarantineReason } from '../coord-quarantine-store';
 import { tryConsumeMemberMessageRate } from '../member-rate-gate';
 import { commsTierAtLeast, FALLBACK_COMMS_TIER, type CommsTier } from '../../../trust/comms-trust';
+import { readExpectedLifecycleAck } from '../../../agent-tools/coordination/cue-authority';
 
 /** The coord_event_log surfaces that federate (plan-events stay local — plans
  *  federate via harness_plans). */
@@ -449,12 +450,18 @@ async function writeToPg(
             ORDER BY id
             LIMIT 1
           `;
-          const ob = orig[0]?.body as { wakeOnReply?: unknown; from?: unknown } | undefined;
+          const ob = orig[0]?.body as {
+            wakeOnReply?: unknown;
+            from?: unknown;
+            expectedLifecycleAck?: unknown;
+          } | undefined;
           const originalFrom = typeof ob?.from === 'string' ? ob.from : null;
+          const expectedLifecycleAck = readExpectedLifecycleAck(ob ?? null);
           if (
             ob?.wakeOnReply === true &&
             originalFrom &&
             originalFrom !== b.from &&
+            !expectedLifecycleAck &&
             // P-003: the reply-wake spends one token from the same author budget.
             // WI-7043: DIRECTED — it re-invokes a specific named local agent.
             tryConsumeFederatedWake(authorPubkey ?? 'unknown', 1, Date.now(), 'directed')
