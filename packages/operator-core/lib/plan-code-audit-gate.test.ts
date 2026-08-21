@@ -1,5 +1,6 @@
 /**
- * plan-code-audit-gate.test.ts — per-item ship-time audit freshness (P-004).
+ * plan-code-audit-gate.test.ts — plan-item completion + per-item audit freshness
+ * (P-004/P-005).
  *
  * The rubric/vetting family has a separate suite. These tests pin the earlier
  * code-truth family: a narrow audit pass must not erase older item evidence, and
@@ -120,6 +121,86 @@ beforeEach(() => {
       },
     },
   }));
+});
+
+describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
+  it.each(['todo', 'wip', 'blocked', 'needs-human'])(
+    "refuses an unfinished item in status '%s' before reading the audit or rubric families",
+    async (status) => {
+      mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE);
+      mockPlanItems.mockResolvedValue([
+        { itemId: 'P-001', status, itemText: 'unfinished requirement' },
+      ]);
+
+      const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+      expect(verdict).toMatchObject({ satisfied: false, code: 'plan_items_unfinished' });
+      expect(verdict.message).toContain(`P-001 (${status})`);
+      expect(verdict.message).toContain("status:'dropped'");
+      expect(mockLatestAudit).not.toHaveBeenCalled();
+      expect(mockRubric).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['done', 'dropped'])("treats terminal status '%s' as complete", async (status) => {
+    mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status, itemText: 'terminal requirement' }]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(mockLatestAudit).not.toHaveBeenCalled();
+    expect(mockRubric).not.toHaveBeenCalled();
+  });
+
+  it('keeps the item family independently killable without reading plan-item state', async () => {
+    mockFlag.mockResolvedValue(false);
+    mockPlanItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'todo', itemText: 'unfinished requirement' },
+    ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(mockPlanItems).not.toHaveBeenCalled();
+  });
+
+  it('records a reasoned force past unfinished items when later gate families are off', async () => {
+    mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE);
+    mockPlanItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'blocked', itemText: 'blocked requirement' },
+    ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN, {
+      force: { reason: 'documented release exception' },
+    });
+
+    expect(verdict).toMatchObject({
+      satisfied: true,
+      skipped: 'flag-off',
+      forcedPast: {
+        reason: 'documented release exception',
+        checks: ['plan_items_unfinished'],
+      },
+    });
+  });
+
+  it('does not let an item-family force waive the independent rubric family', async () => {
+    mockFlag.mockImplementation(
+      async (flag) =>
+        flag === FLAGS.PLAN_ITEM_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE,
+    );
+    mockPlanItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'needs-human', itemText: 'unfinished requirement' },
+    ]);
+    mockRubric.mockResolvedValue(null);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN, {
+      force: { reason: 'waive code-truth checks only' },
+    });
+
+    expect(verdict).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
+  });
 });
 
 describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
