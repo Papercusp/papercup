@@ -736,20 +736,36 @@ def _scan_heredoc_runs_shell(command_line):
     return False
 
 
-def _scan_strip_written_heredocs(cmd):
-    """Drop heredoc BODIES that are only written to a file — their content is
-    inert data (`cat <<EOF > notes.txt` describing a dangerous command is not
-    running it). Bodies fed to a shell are KEPT so they stay scannable."""
+def _scan_strip_heredocs(cmd, *, strip_nonexecuted=False):
     def _repl(m):
         pre, post = m.group(1), m.group(4)
         line = pre + post
-        if '>' in line and not _scan_heredoc_runs_shell(line):
+        if not _scan_heredoc_runs_shell(line) and (strip_nonexecuted or '>' in line):
             return ''
         return m.group(0)
 
     return re.sub(
         r'^([^\n]*)<<-?\s*(["\']?)([A-Za-z_]\w*)\2([^\n]*)\n([\s\S]*?)^\s*\3\s*$',
         _repl, cmd, flags=re.M)
+
+
+def _scan_strip_written_heredocs(cmd):
+    """Drop heredoc BODIES that are only written to a file — their content is
+    inert data (`cat <<EOF > notes.txt` describing a dangerous command is not
+    running it). Bodies fed to a shell are KEPT so they stay scannable."""
+    return _scan_strip_heredocs(cmd)
+
+
+def _scan_strip_nonexecuted_heredocs(cmd):
+    """Drop heredoc bodies that are data, not shell commands.
+
+    Heavy-admission scans shell command positions, so a `cat <<EOF` body is
+    not executable command text even when it is printed to stdout. Keep bodies
+    that are piped into a shell: those really can execute a heavy command.
+    Other interpreters are data from the shell's perspective too; their own
+    language is outside this lightweight admission matcher.
+    """
+    return _scan_strip_heredocs(cmd, strip_nonexecuted=True)
 
 
 # Shell metacharacters neutralized when a MULTI-WORD quoted span is unwrapped.
@@ -4470,7 +4486,12 @@ def _heavy_admission():
     # earlier in the string slip past ungated — `npm run build && scripts/
     # pc-heavy.sh -- true` still stops peeling at `npm`, which isn't one of
     # these, so it still hits the heavy_re check below as before).
-    _lead = command.lstrip()
+    # The admission matcher operates on shell command positions. Do not let a
+    # newline inside quoted data or a non-shell heredoc body manufacture one:
+    # `echo "line one\nnpx vitest"` and `cat <<EOF\nnpx vitest\nEOF` are both
+    # light commands. Shell-fed heredocs stay intact because their body is
+    # executable shell input and must remain subject to admission.
+    _lead = _scan_dequote(_scan_strip_nonexecuted_heredocs(command)).lstrip()
     _pc_lead = _lead
     for _ in range(8):
         _next = re.sub(

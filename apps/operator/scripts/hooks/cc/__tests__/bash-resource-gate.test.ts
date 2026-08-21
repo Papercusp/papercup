@@ -1431,6 +1431,25 @@ describe('heavy-command admission control (WI-3821)', () => {
     expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
   });
 
+  /**
+   * EI-19320012246476716 — command-position matching must not treat literal
+   * newlines inside data as shell separators. The same matcher still denies a
+   * bare `npx vitest` control above, while these commands merely print/store
+   * text that names a heavy command.
+   */
+  it.each([
+    [
+      'a read-only heredoc body',
+      "cat <<'EOF'\nline one\nnpx vitest run x.test.ts\nEOF",
+    ],
+    [
+      'a multiline quoted argument',
+      'echo "line one\nnpx vitest run x.test.ts"',
+    ],
+  ])('does NOT false-positive on %s even over the threshold (EI-19320012246476716)', (_label, command) => {
+    expectAllow(runGate(bashCmd(command), { ...AGENT, ...OVER }));
+  });
+
   it('is skipped when PC_HEAVY_BYPASS=1 (the pc-heavy wrapper self-limits)', () => {
     expectAllow(runGate(bashCmd('npm run test:affected'), { ...AGENT, ...OVER, PC_HEAVY_BYPASS: '1' }));
   });
