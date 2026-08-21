@@ -510,6 +510,29 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       }
     }
 
+    // EI-20440191013804843: validate the credential-helper/write plane before
+    // paying for the secrets scan or attempting the real update. GitHub can
+    // accept ls-remote with one credential and then reject every write because
+    // gh's active account has an unverified email or lacks a required scope
+    // (notably `workflow`). `git push --dry-run` exercises the same receive-pack
+    // authentication and policy checks without mutating the remote, so the
+    // actionable rejection is recorded on this tick instead of being discovered
+    // only after the whole egress pipeline has run.
+    const preflight = await runGit(
+      ['push', '--dry-run', input.remoteUrl, `${spec.sha}:${spec.remoteRef}`],
+      input.repoPath,
+      { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
+    );
+    if (preflight.code !== 0) {
+      res.ok = false;
+      const message =
+        `push preflight ${spec.remoteRef}: ` +
+        (preflight.stderr.trim() || `exited ${preflight.code}`);
+      res.remoteErrors.push({ message, transient: preflight.code === -1 });
+      res.errors.push(message);
+      continue;
+    }
+
     // 3. Secrets gate over the published delta (fail-closed) — INCREMENTAL
     //    (WI-5738): resolve the furthest safe sha instead of accepting or
     //    refusing the whole range, so one bad commit blocks only itself and the

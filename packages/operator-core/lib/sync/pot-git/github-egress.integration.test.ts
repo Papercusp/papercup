@@ -288,7 +288,7 @@ describe('github-egress (P-001: canonical refs → GitHub, FF-only, secrets-gate
     expect(r.remoteErrors).toEqual([
       {
         message:
-          "push refs/heads/transport-probe: remote: Permission to repository denied.\n" +
+          "push preflight refs/heads/transport-probe: remote: Permission to repository denied.\n" +
           "error: failed to push some refs to 'https://example.invalid/repo.git'",
         transient: false,
       },

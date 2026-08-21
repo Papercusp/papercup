@@ -1,0 +1,69 @@
+import { describe, expect, it } from 'vitest';
+
+import { egressCanonicalRefs } from './github-egress';
+import type { RunGit } from './storage';
+
+const SHA = 'a'.repeat(40);
+const REMOTE = 'https://github.com/acme/widgets.git';
+const REF = 'refs/heads/staging';
+
+describe('egressCanonicalRefs credential write preflight', () => {
+  it('records an unverified-account rejection without attempting the real push', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      if (args[0] === 'ls-remote') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'push' && args[1] === '--dry-run') {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: 'remote: You must verify your email address.\nfatal: unable to access repository',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await egressCanonicalRefs({
+      repoPath: '/repo',
+      remoteUrl: REMOTE,
+      refs: [{ sha: SHA, remoteRef: REF }],
+      runGit,
+      scanSecrets: false,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.pushed).toEqual([]);
+    expect(result.remoteErrors).toEqual([
+      {
+        message: expect.stringContaining('You must verify your email address'),
+        transient: false,
+      },
+    ]);
+    expect(calls.filter((args) => args[0] === 'push')).toEqual([['push', '--dry-run', REMOTE, `${SHA}:${REF}`]]);
+  });
+
+  it('performs the real push only after the write preflight succeeds', async () => {
+    const calls: string[][] = [];
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      if (args[0] === 'ls-remote') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'push') return { code: 0, stdout: '', stderr: '' };
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await egressCanonicalRefs({
+      repoPath: '/repo',
+      remoteUrl: REMOTE,
+      refs: [{ sha: SHA, remoteRef: REF }],
+      runGit,
+      scanSecrets: false,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.pushed).toEqual([{ remoteRef: REF, from: null, to: SHA }]);
+    expect(calls.filter((args) => args[0] === 'push')).toEqual([
+      ['push', '--dry-run', REMOTE, `${SHA}:${REF}`],
+      ['push', REMOTE, `${SHA}:${REF}`],
+    ]);
+  });
+});
