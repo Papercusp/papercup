@@ -19579,7 +19579,7 @@
           "POST"
         ]
       },
-      "description": "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. A `dropped` flip REQUIRES a nonblank note or rationale so intentional departures stay recorded. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both are rejected with a per-item claim_conflict if a LIVE peer holds the item (you cannot claim or close someone else's in-flight work — coordinate or let the holder close it). Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
+      "description": "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. A `dropped` flip REQUIRES a nonblank note or rationale so intentional departures stay recorded. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both reject with per-item claim_conflict if a LIVE peer holds the item; coordinate or let the holder close it. Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
       "capabilities": [
         "plans:write"
       ],
