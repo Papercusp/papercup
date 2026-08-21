@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   defaultGetRegisteredSchedules,
   listDbosScheduledWorkflows,
@@ -72,10 +72,38 @@ describe('listDbosScheduledWorkflows', () => {
 });
 
 describe('defaultGetRegisteredSchedules', () => {
-  it('never throws and returns an array (SDK present, no schedules registered in the test process)', async () => {
-    const out = await defaultGetRegisteredSchedules();
-    expect(Array.isArray(out)).toBe(true);
-    // In a bare vitest process the workflow modules are not imported, so the
-    // SDK registry is empty — the contract under test is "no throw, array out".
+  it('preserves the SDK leading-dot key for empty className and joins its finite last fire', async () => {
+    const sdk = await import('@dbos-inc/dbos-sdk');
+    const getAssociatedInfo = vi.spyOn(sdk.DBOS, 'getAssociatedInfo').mockReturnValue([
+      {
+        methodReg: { className: '', name: 'scratchGc' },
+        methodConfig: { crontab: '0 * * * * *' },
+      },
+      {
+        methodReg: { className: 'Worker', name: 'tick' },
+        methodConfig: { crontab: '*/5 * * * * *', queueName: 'maint' },
+      },
+    ]);
+
+    try {
+      const registered = await defaultGetRegisteredSchedules();
+      expect(registered.map((entry) => entry.name)).toEqual(['.scratchGc', 'Worker.tick']);
+
+      const out = await listDbosScheduledWorkflows({
+        getRegisteredSchedules: () => registered,
+        getFireState: async (names) => {
+          expect(names).toEqual(['.scratchGc', 'Worker.tick']);
+          return new Map([
+            ['.scratchGc', { lastFireMs: 1_700_000_000_000, lastStatus: 'SUCCESS' }],
+          ]);
+        },
+      });
+      expect(out.find((entry) => entry.name === '.scratchGc')).toMatchObject({
+        lastFireMs: 1_700_000_000_000,
+        lastStatus: 'SUCCESS',
+      });
+    } finally {
+      getAssociatedInfo.mockRestore();
+    }
   });
 });

@@ -74,7 +74,10 @@ export async function defaultGetRegisteredSchedules(): Promise<RegisteredSchedul
       const className = r.methodReg?.className ?? '';
       const fn = r.methodReg?.name ?? '';
       out.push({
-        name: className ? `${className}.${fn}` : fn,
+        // Keep the SDK's exact scheduler key. Its scheduler loop builds this
+        // as `${className}.${name}`, including the leading dot for an empty
+        // class name; that is the key written to event_dispatch_kv.
+        name: `${className}.${fn}`,
         crontab: cfg.crontab,
         mode: cfg.mode ?? DEFAULT_MODE,
         queueName: cfg.queueName ?? null,
