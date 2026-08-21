@@ -28,7 +28,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -444,7 +444,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     taskId: spawned.taskId,
     language,
     rootUri: pathToFileURL(rootPath).href,
-    openDocs: new Set(),
+    openDocs: new Map(),
     health: 'unknown',
     lastError: null,
     startedAt: Date.now(),
@@ -1282,6 +1282,11 @@ export function lspResyncDocument(absPath: string, rootPath: string, newText: st
         text: newText,
       },
     });
+    // Re-stamp so ensureOpen's staleness check (WI-40251) does not immediately
+    // re-open a document we just synced by hand. Dropping the entry rather than
+    // stat-ing is deliberate: the caller wrote this text, so the next query
+    // re-reads and re-stamps from disk, which is the conservative direction.
+    client.openDocs.delete(uri);
     return true;
   } catch {
     // A dead pipe here costs us the delta's accuracy, not the write that already
