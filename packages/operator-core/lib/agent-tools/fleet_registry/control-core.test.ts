@@ -276,6 +276,7 @@ describe('applyFleetControl', () => {
       breakdown: {
         matchedByFilter: 302,
         claimable: 0,
+        affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
         excluded: {
           taken: 0,
           claimHold: 33,

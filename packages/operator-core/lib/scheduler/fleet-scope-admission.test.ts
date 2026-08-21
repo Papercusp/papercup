@@ -638,6 +638,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     const floorGatedBreakdown = {
       matchedByFilter: 302,
       claimable: 0,
+      affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       excluded: {
         taken: 0,
         claimHold: 33,
@@ -740,6 +741,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       const externalBlockerOnlyBreakdown = {
         matchedByFilter: 2,
         claimable: 0,
+        affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
         excluded: {
           taken: 0,
           claimHold: 0,
@@ -832,6 +834,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     const zeroMatchBreakdown = {
       matchedByFilter: 0,
       claimable: 0,
+      affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       excluded: {
         taken: 0,
         claimHold: 0,
@@ -1013,6 +1016,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     const zeroIssueFamilyBreakdown = {
       matchedByFilter: 0,
       claimable: 0,
+      affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       excluded: {
         taken: 0,
         claimHold: 0,
@@ -1129,6 +1133,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     const zeroIssueFamilyBreakdown = {
       matchedByFilter: 0,
       claimable: 0,
+      affinityCoverage: { denominator: 0, nonEmptyPaths: 0, floor: 0.5, belowFloor: false },
       excluded: {
         taken: 0,
         claimHold: 0,
@@ -1256,6 +1261,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     const divergentBreakdown = {
       matchedByFilter: 22,
       claimable: 19,
+      affinityCoverage: { denominator: 19, nonEmptyPaths: 19, floor: 0.5, belowFloor: false },
       excluded: {
         taken: 0,
         claimHold: 1,
