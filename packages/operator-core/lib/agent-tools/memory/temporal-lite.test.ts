@@ -71,7 +71,7 @@ import search from './search';
 import list from './list';
 import update from './update';
 import forget from './forget';
-import { getMemoryBackend } from '../../memory/backend';
+import { getMemoryBackend, type MemoryEntry } from '../../memory/backend';
 
 /** The P-015 scenario: the gemma-default fact was superseded 2026-07-10 by
  *  the harrier-default fact. Windows as the store holds them (columns). */
@@ -141,7 +141,7 @@ function fakeBackend(withInvalidateEntry = true) {
     available: vi.fn(async () => ({ ok: true })),
     search: vi.fn(async (_q: string, opts: { asOf?: string; includeSuperseded?: boolean }) => readFixture(opts)),
     list: vi.fn(async (opts: { asOf?: string; includeSuperseded?: boolean }) => readFixture(opts)),
-    get: vi.fn(async (id: string) => {
+    get: vi.fn(async (id: string): Promise<MemoryEntry | null> => {
       const row = FIXTURE.find((candidate) => candidate.id === id);
       if (!row) return null;
       return {
@@ -226,6 +226,12 @@ describe('memory:list temporal flags (P-006 read path)', () => {
       includeSuperseded: true,
     });
   });
+
+  it('rejects invalid timestamps at both public read boundaries', () => {
+    const bad = { as_of: 'not-a-timestamp' };
+    expect((search.args as { safeParse: (value: unknown) => { success: boolean } }).safeParse({ query: 'q', ...bad }).success).toBe(false);
+    expect((list.args as { safeParse: (value: unknown) => { success: boolean } }).safeParse(bad).success).toBe(false);
+  });
 });
 
 describe('temporal memory tool guidance (P-009 agent discipline)', () => {
@@ -239,6 +245,7 @@ describe('temporal memory tool guidance (P-009 agent discipline)', () => {
     expect(searchGuidance.when).toContain('Default recall returns only facts CURRENT now');
     expect(searchGuidance.when).toContain('as_of:<ISO timestamp>');
     expect(searchGuidance.when).toContain('include_superseded:true');
+    expect(String((search.args as { shape?: { as_of?: { description?: string } } }).shape?.as_of?.description ?? search.args)).toContain('half-open');
     expect(searchGuidance.chaining).toContain('supersede:<old-id>');
 
     expect(listGuidance.when).toContain('Default listing returns only facts CURRENT now');
@@ -347,14 +354,14 @@ describe('memory:update supersedes (P-004 write path)', () => {
     expect(b.invalidateEntry).not.toHaveBeenCalled();
 
     b.get.mockReset()
-      .mockResolvedValueOnce({ id: NEW_ID, text: 'new', scope: 'scope-a' })
-      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'scope-b' });
+      .mockResolvedValueOnce({ id: NEW_ID, text: 'new', scope: 'scope-a' } as MemoryEntry)
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'scope-b' } as MemoryEntry);
     out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
     expect(out.results[0].error).toContain('same scope');
 
     b.get.mockReset()
-      .mockResolvedValueOnce({ id: NEW_ID, text: 'new', scope: 'scope-a' })
-      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'scope-a', metadata: { entityType: 'person' } });
+      .mockResolvedValueOnce({ id: NEW_ID, text: 'new', scope: 'scope-a' } as MemoryEntry)
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'scope-a', metadata: { entityType: 'person' } } as MemoryEntry);
     out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
     expect(out.results[0].error).toContain('entity rows');
   });

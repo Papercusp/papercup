@@ -63,9 +63,9 @@ export default defineTool({
     as_of: z.string().max(64)
       .refine((v) => Number.isFinite(new Date(v).getTime()), 'as_of must be a parseable ISO 8601 timestamp')
       .optional()
-      .describe('TEMPORAL (temporal-lite): point-in-time listing — only memories whose validity window covers this ISO timestamp. Entries carry metadata.validity.'),
+      .describe('TEMPORAL (temporal-lite): point-in-time listing — only memories whose UTC half-open validity window covers this ISO timestamp (valid_at <= as_of < invalid_at). When combined with include_superseded, this window remains authoritative. Entries carry metadata.validity.'),
     include_superseded: z.boolean().optional()
-      .describe('TEMPORAL (temporal-lite): include superseded/soft-forgotten memories (validity window closed) — excluded by default. Superseded entries carry metadata.validity { status:"superseded", superseded_by }.'),
+      .describe('TEMPORAL (temporal-lite): without as_of, include superseded/soft-forgotten memories across the full lifecycle. With as_of, the UTC point-in-time window is authoritative. Superseded entries carry metadata.validity { status:"superseded", superseded_by }.'),
   }),
   async handler(args) {
     const user = await getSessionUserOrDefault();

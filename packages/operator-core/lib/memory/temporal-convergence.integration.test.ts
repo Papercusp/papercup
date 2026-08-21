@@ -33,7 +33,7 @@ describe('temporal supersession convergence (real PG)', () => {
     });
     (store as unknown as { pool: unknown }).pool = {
       query: async (text: string, params: unknown[] = []) => {
-        const rows = await db.sql.unsafe(text, params);
+        const rows = await db.sql.unsafe(text, params as never[]);
         return { rows: [...rows], rowCount: rows.count };
       },
       on: () => {},
@@ -49,7 +49,7 @@ describe('temporal supersession convergence (real PG)', () => {
     await db.sql.unsafe(`TRUNCATE ${SCHEMA}.memory_canonical`);
     await db.sql.unsafe(
       `INSERT INTO ${SCHEMA}.memory_canonical (id, payload) VALUES ($1, $2::jsonb)`,
-      [OLD_ID, JSON.stringify({ data: 'old fact', user_id: 'scope-a' })],
+      [OLD_ID, { data: 'old fact', user_id: 'scope-a' }],
     );
   });
 
@@ -72,13 +72,13 @@ describe('temporal supersession convergence (real PG)', () => {
   it('entity rows are never closed and get exposes canonical validity metadata', async () => {
     await db.sql.unsafe(
       `UPDATE ${SCHEMA}.memory_canonical SET payload = $2::jsonb WHERE id = $1`,
-      [OLD_ID, JSON.stringify({ data: 'old fact', user_id: 'scope-a', entityType: 'person' })],
+      [OLD_ID, { data: 'old fact', user_id: 'scope-a', entityType: 'person' }],
     );
-    const [{ is_entity }] = await db.sql.unsafe(
-      `SELECT payload ? 'entityType' AS is_entity FROM ${SCHEMA}.memory_canonical WHERE id = $1`,
+    const [{ payload }] = await db.sql.unsafe(
+      `SELECT payload FROM ${SCHEMA}.memory_canonical WHERE id = $1`,
       [OLD_ID],
     );
-    expect(is_entity).toBe(true);
+    expect(payload).toMatchObject({ entityType: 'person' });
     expect(await store.invalidate(OLD_ID, { supersededBy: WINNER_A })).toBe(false);
 
     await db.sql.unsafe(
@@ -93,5 +93,35 @@ describe('temporal supersession convergence (real PG)', () => {
       user_id: 'scope-a',
       validity: { status: 'superseded', superseded_by: WINNER_A },
     });
+  });
+
+  it('list enforces UTC half-open boundaries and as_of wins over include_superseded', async () => {
+    await db.sql.unsafe(
+      `UPDATE ${SCHEMA}.memory_canonical
+          SET valid_at = '2026-06-01T00:00:00Z', invalid_at = '2026-07-01T00:00:00Z', superseded_by = $2
+        WHERE id = $1`,
+      [OLD_ID, WINNER_A],
+    );
+    await db.sql.unsafe(
+      `INSERT INTO ${SCHEMA}.memory_canonical (id, payload, valid_at)
+       VALUES ($1, $2::jsonb, '2026-07-01T00:00:00Z')`,
+      [WINNER_A, { data: 'new fact', user_id: 'scope-a' }],
+    );
+
+    const [before, beforeCount] = await store.list({ user_id: 'scope-a', as_of: '2026-06-30T23:59:59.999Z' }, 10);
+    expect(before.map((row) => row.id)).toEqual([OLD_ID]);
+    expect(beforeCount).toBe(1);
+
+    const [boundary, boundaryCount] = await store.list({
+      user_id: 'scope-a',
+      as_of: '2026-07-01T00:00:00Z',
+      include_superseded: true,
+    }, 10);
+    expect(boundary.map((row) => row.id)).toEqual([WINNER_A]);
+    expect(boundaryCount).toBe(1);
+
+    const [lifecycle, lifecycleCount] = await store.list({ user_id: 'scope-a', include_superseded: true }, 10);
+    expect(lifecycle.map((row) => row.id).sort()).toEqual([OLD_ID, WINNER_A].sort());
+    expect(lifecycleCount).toBe(2);
   });
 });

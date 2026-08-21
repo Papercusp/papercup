@@ -157,13 +157,13 @@ export default defineTool({
       .refine((v) => Number.isFinite(new Date(v).getTime()), 'as_of must be a parseable ISO 8601 timestamp')
       .optional()
       .describe(
-        'TEMPORAL (temporal-lite): point-in-time recall — only memories whose validity window covers this ISO timestamp ("what did we believe then?"). Hits carry metadata.validity.',
+        'TEMPORAL (temporal-lite): point-in-time recall — only memories whose UTC half-open validity window covers this ISO timestamp (valid_at <= as_of < invalid_at). When combined with include_superseded, this point-in-time window remains authoritative; the flag does not widen it. Hits carry metadata.validity.',
       ),
     include_superseded: z
       .boolean()
       .optional()
       .describe(
-        'TEMPORAL (temporal-lite): include superseded/soft-forgotten memories (validity window closed) — excluded from recall by default. Superseded hits carry metadata.validity { status:"superseded", superseded_by }.',
+        'TEMPORAL (temporal-lite): without as_of, include superseded/soft-forgotten memories across the full lifecycle. With as_of, the UTC point-in-time window is authoritative. Superseded hits carry metadata.validity { status:"superseded", superseded_by }.',
       ),
   }),
   async handler(args, ctx) {
