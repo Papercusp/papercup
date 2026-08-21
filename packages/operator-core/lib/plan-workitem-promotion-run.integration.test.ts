@@ -38,7 +38,7 @@ const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   plans: new Map<
     string,
-    { items: { id: string; status: string; text?: string; blockedBy?: string[] }[]; title?: string }
+    { items: { id: string; status: string; text?: string; blockedBy?: string[]; phase?: string | null }[]; title?: string }
   >(),
   flagOn: true,
   specQuality: {
@@ -84,10 +84,17 @@ vi.mock('./agent-tools/plans/source', () => ({
           text: i.text ?? '',
           decisionRefs: [],
           blockedBy: i.blockedBy ?? [],
+          phase: i.phase ?? null,
         })),
       },
       row: {
-        items: p.items.map((i) => ({ id: i.id, status: i.status, text: i.text ?? '', blockedBy: i.blockedBy ?? [] })),
+        items: p.items.map((i) => ({
+          id: i.id,
+          status: i.status,
+          text: i.text ?? '',
+          blockedBy: i.blockedBy ?? [],
+          phase: i.phase ?? null,
+        })),
       },
     };
   },
@@ -227,6 +234,30 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(refs.has(planItemRef(PLAN, 'P-001'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-002'))).toBe(true);
     expect(refs.has(planItemRef(PLAN, 'P-003'))).toBe(false);
+  });
+
+  it('derives the rig floor from Phase 3 and clears it for a non-rig phase', async () => {
+    h.plans.set(PLAN, {
+      items: [
+        {
+          id: 'P-001',
+          status: 'todo',
+          text: 'Live rig drill',
+          phase: 'Phase 3 — Live 2-machine hive-git drill',
+        },
+        { id: 'P-002', status: 'todo', text: 'Single-box setup', phase: 'Phase 2 — Preparation' },
+      ],
+    });
+
+    expect((await run.promotePlanItems(base)).promoted).toBe(2);
+    const rows = await db.sql<{ title: string; payload: Record<string, unknown> }[]>`
+      SELECT title, payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind = 'feature'
+       ORDER BY feature_id
+    `;
+    expect(rows.map((row) => row.title)).toEqual(['Live rig drill', 'Single-box setup']);
+    expect(rows.map((row) => row.payload.needs_2_machine_rig)).toEqual([true, false]);
   });
 
   it('is IDEMPOTENT — re-running mints no duplicates (promoted=0, same rows)', async () => {
