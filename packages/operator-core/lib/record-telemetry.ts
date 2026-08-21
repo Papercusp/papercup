@@ -23,7 +23,7 @@ import type { TelemetryKind } from './telemetry-kinds';
 
 const REPORTS_KEY = 'telemetry_reports';
 
-/** Ring-buffer cap — must match the POST /desktop/telemetry-report route. */
+/** Shared ring-buffer cap for both HTTP and server-side telemetry ingress. */
 export const MAX_TELEMETRY_REPORTS = 100;
 
 export interface StoredTelemetryReport {
