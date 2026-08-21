@@ -452,8 +452,27 @@ export async function gitnexusFacade(
         repo,
         limit,
       });
-      const { json, text } = parseEnvelope(raw);
+      const { json, text, truncated } = parseEnvelope(raw);
       const fresh = parseFreshnessNote(text);
+
+      if (truncated) {
+        // Explicit truncation, per the Truncation contract: say the answer was
+        // cut. Do NOT present this as zero impact — a large blast radius is
+        // precisely what overflows the budget, so the truncated case
+        // correlates with the HIGHEST-risk answers.
+        return answer(op, query, startedAt, {
+          health: 'degraded',
+          truncated: true,
+          totalAvailable: null,
+          ...fresh,
+          error:
+            `gitnexus impact exceeded the ${OBSERVED_RESPONSE_BUDGET_CHARS}-char ` +
+            'response budget and was cut mid-JSON, so the result could not be ' +
+            'parsed. This is a TRUNCATED answer, not an empty one — re-run with ' +
+            'a smaller `limit` (limit:5 parses; limit:100 does not).',
+        });
+      }
+
       const upstreamError = typeof json?.error === 'string' ? json.error : null;
       if (upstreamError) {
         // An unknown target returns an explicit error rather than an empty
@@ -464,18 +483,23 @@ export async function gitnexusFacade(
           ...fresh,
         });
       }
+
       const impacted = typeof json?.impactedCount === 'number' ? json.impactedCount : null;
       const risk = typeof json?.risk === 'string' ? json.risk : null;
       return answer(op, query, startedAt, {
         health: 'healthy',
-        sites: [],
+        // `impact` answers a COUNT + risk grade, not a site list. The count
+        // rides on totalAvailable and the grade on the site detail, so an
+        // empty `sites` here is structural rather than an absence claim.
+        sites: risk
+          ? [{ path: '(impact summary)', line1: null, kind: 'impact', detail: `risk=${risk}` }]
+          : [],
         totalAvailable: impacted,
         ...fresh,
         error:
           impacted === null
             ? 'gitnexus impact returned no impactedCount; treat this as unmeasured, not zero.'
             : null,
-        ...(risk ? {} : {}),
       });
     }
 
@@ -485,23 +509,36 @@ export async function gitnexusFacade(
       ...(args.kind ? { kind: args.kind } : {}),
       repo,
     });
-    const { json, text } = parseEnvelope(raw);
+    const { json, text, truncated } = parseEnvelope(raw);
     const fresh = parseFreshnessNote(text);
 
     if (!json) {
       counters.failed += 1;
       return answer(op, query, startedAt, {
-        health: 'unhealthy',
-        error: `gitnexus returned an unparseable envelope: ${text.slice(0, 200)}`,
+        health: truncated ? 'degraded' : 'unhealthy',
+        truncated,
         ...fresh,
+        error: truncated
+          ? `gitnexus answer exceeded the ${OBSERVED_RESPONSE_BUDGET_CHARS}-char ` +
+            'response budget and was cut mid-JSON. TRUNCATED, not empty — ' +
+            're-run with a smaller `limit`.'
+          : `gitnexus returned an unparseable envelope: ${text.slice(0, 200)}`,
       });
     }
 
     const status = typeof json.status === 'string' ? json.status : null;
     if (op === 'health') {
+      // An indeterminate probe must carry an error, or an empty answer with
+      // health:'unknown' and error:null would fail isTrustworthyEmpty() — a
+      // silent, unbranchable "I don't know" is the one shape this plane
+      // forbids.
       return answer(op, query, startedAt, {
         health: status ? 'healthy' : 'unknown',
         ...fresh,
+        error: status
+          ? null
+          : 'gitnexus health probe returned no status field; liveness is ' +
+            'UNMEASURED. Do not read this as a healthy backend.',
       });
     }
 
