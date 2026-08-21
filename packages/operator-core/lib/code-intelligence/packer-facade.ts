@@ -391,16 +391,17 @@ export function buildRepomixArgs(args: PackerArgs): string[] {
         'default produces evidence nobody scoped.',
     );
   }
+  assertNotFlagShaped(args.include, 'include');
+  assertNotFlagShaped(args.ignore ?? [], 'ignore');
   const ignore = [...(args.ignore ?? []), ...SECRET_DENY_GLOBS];
+  // `--flag=value` throughout: an attached value is unambiguous to the parser,
+  // so no emitted token can be re-read as an option.
   const argv = [
     '--stdout',
     '--quiet',
-    '--style',
-    args.format === 'markdown' ? 'markdown' : 'xml',
-    '--include',
-    args.include.join(','),
-    '--ignore',
-    ignore.join(','),
+    `--style=${args.format === 'markdown' ? 'markdown' : 'xml'}`,
+    `--include=${args.include.join(',')}`,
+    `--ignore=${ignore.join(',')}`,
   ];
   if (args.compress) argv.push('--compress');
   assertNoForbidden(argv, REPOMIX_FORBIDDEN_FLAGS, 'repomix');
@@ -418,21 +419,26 @@ export function buildCode2PromptArgs(args: PackerArgs): string[] {
   if (args.include.length === 0) {
     throw new Error('code2prompt requires an explicit, non-empty include set (P-016).');
   }
+  assertNotFlagShaped(args.include, 'include');
+  assertNotFlagShaped(args.ignore ?? [], 'ignore');
+  if (args.baseRef !== undefined) assertNotFlagShaped([args.baseRef], 'baseRef');
   const exclude = [...(args.ignore ?? []), ...SECRET_DENY_GLOBS];
+  // Long `--flag=value` forms only. A short `-e <value>` would reintroduce the
+  // detached-value ambiguity this builder exists to close, and `--output-file=-`
+  // pins stdout in a form no parser can rebind.
   const argv = [
     args.rootPath,
-    '-O',
-    '-',
+    '--output-file=-',
     '--quiet',
-    '-F',
-    args.format === 'xml' ? 'xml' : 'markdown',
-    '-i',
-    args.include.join(','),
-    '-e',
-    exclude.join(','),
+    `--output-format=${args.format === 'xml' ? 'xml' : 'markdown'}`,
+    `--include=${args.include.join(',')}`,
+    `--exclude=${exclude.join(',')}`,
   ];
   if (args.baseRef) {
     // `--diff` is the working-tree diff; a base ref asks for a branch range.
+    // Detached form on purpose: `--git-diff-branch` takes TWO values, which the
+    // `=` form cannot express. Safe here only because assertNotFlagShaped above
+    // has already guaranteed baseRef cannot begin with '-'.
     argv.push('--git-diff-branch', args.baseRef, 'HEAD');
   } else {
     argv.push('--diff');
