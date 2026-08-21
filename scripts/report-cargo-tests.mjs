@@ -42,6 +42,7 @@ import { resolveScriptPgUrl } from './lib/pg-url.mjs';
 import {
   assessCargoDiskAdmission,
   CARGO_DISK_REFUSAL_EXIT_CODE,
+  ensureCargoCacheTag,
   cargoDiskPolicyFromEnv,
   classifyCargoRun,
   formatCargoDiskRefusal,
@@ -148,6 +149,25 @@ function runCargoTest(manifestAbs, extraArgs) {
       finishedAt: new Date(),
       diskAdmission,
     });
+  }
+
+  const configuredTargetDir = process.env.CARGO_TARGET_DIR;
+  if (configuredTargetDir) {
+    try {
+      // Cargo resolves a relative CARGO_TARGET_DIR from the child cwd below.
+      // Initialize the marker before spawning Cargo so an exclusive cleanup
+      // can safely use `cargo clean --target-dir` after this run exits.
+      ensureCargoCacheTag(resolve(REPO_ROOT, configuredTargetDir));
+    } catch (err) {
+      return Promise.resolve({
+        code: 1,
+        stdout: '',
+        stderr: `[report-cargo-tests] REFUSED before spawning Cargo: could not initialize CACHEDIR.TAG for ${configuredTargetDir}: ${err.message}`,
+        startedAt,
+        finishedAt: new Date(),
+        diskAdmission,
+      });
+    }
   }
 
   return new Promise((resolvePromise) => {

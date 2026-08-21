@@ -5,16 +5,20 @@
  * machine-readable result instead of collapsing both cases into "error".
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 
 import {
   assessCargoDiskAdmission,
+  CARGO_CACHE_TAG,
   CARGO_DISK_REFUSAL_EXIT_CODE,
   cargoDiskPolicyFromEnv,
   classifyCargoRun,
   detectCargoTermination,
+  ensureCargoCacheTag,
   formatCargoDiskRefusal,
   formatCargoResultLine,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
@@ -133,5 +137,40 @@ describe('cargo disk admission (EI-21047688909295463)', () => {
     expect(spawnAt).toBeGreaterThan(refusalAt);
     expect(REPORTER_SOURCE).toContain("cause: 'low-disk-admission-refused'");
     expect(REPORTER_SOURCE).toContain('code: CARGO_DISK_REFUSAL_EXIT_CODE');
+  });
+});
+
+describe('isolated Cargo target cleanup (EI-21048920599909117)', () => {
+  it('initializes the canonical tag so Cargo clean accepts a producer-created target', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-cache-tag-'));
+    const targetDir = resolve(root, 'isolated-target');
+    const manifestPath = resolve(TEST_DIR, '../../../../papercusp-desktop/src-tauri/Cargo.toml');
+
+    try {
+      ensureCargoCacheTag(targetDir);
+      writeFileSync(resolve(targetDir, 'sentinel'), 'safe-to-remove\n');
+      expect(readFileSync(resolve(targetDir, 'CACHEDIR.TAG'), 'utf8')).toBe(CARGO_CACHE_TAG);
+
+      const clean = spawnSync(
+        'cargo',
+        ['clean', '--manifest-path', manifestPath, '--target-dir', targetDir],
+        { encoding: 'utf8' },
+      );
+
+      expect(clean.status, clean.stderr || clean.stdout).toBe(0);
+      expect(clean.stderr).not.toContain('invalid signature in `CACHEDIR.TAG` file');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs tag initialization after disk admission and before the Cargo child starts', () => {
+    const admissionAt = REPORTER_SOURCE.indexOf('if (!diskAdmission.allowed)');
+    const tagAt = REPORTER_SOURCE.indexOf('ensureCargoCacheTag(resolve(REPO_ROOT, configuredTargetDir))');
+    const spawnAt = REPORTER_SOURCE.indexOf('spawn(resolveCargoBin()');
+
+    expect(admissionAt).toBeGreaterThan(-1);
+    expect(tagAt).toBeGreaterThan(admissionAt);
+    expect(spawnAt).toBeGreaterThan(tagAt);
   });
 });

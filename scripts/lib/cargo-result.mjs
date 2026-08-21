@@ -3,7 +3,46 @@
 // scripts are gate entry points, so a helper import must not pull in a service
 // or database module and turn a diagnostic into a runner failure.
 
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 const GIB = 1024 ** 3;
+
+/**
+ * Cargo's cache-directory marker. Cargo clean requires this exact tag before
+ * it will remove an explicitly selected target directory; keeping the marker
+ * on an isolated target makes disk-pressure reclamation safe after the test
+ * producer or its cargo child exits.
+ */
+export const CARGO_CACHE_TAG = [
+  'Signature: 8a477f597d28d172789f06886806bc55',
+  '# This file is a cache directory tag created by cargo.',
+  '# For information about cache directory tags see https://bford.info/cachedir/',
+  '',
+].join('\n');
+
+/**
+ * Initialize or repair Cargo's cache marker in a producer-selected target.
+ * The target is a disposable Cargo cache, so an existing regular marker with
+ * stale contents is repaired in place. Symlinks and other non-regular entries
+ * are rejected rather than followed into an unrelated path.
+ */
+export function ensureCargoCacheTag(targetDir) {
+  if (typeof targetDir !== 'string' || targetDir.length === 0) return null;
+
+  mkdirSync(targetDir, { recursive: true });
+  const tagPath = join(targetDir, 'CACHEDIR.TAG');
+  if (existsSync(tagPath)) {
+    const stat = lstatSync(tagPath);
+    if (!stat.isFile()) {
+      throw new Error(`CACHEDIR.TAG must be a regular file: ${tagPath}`);
+    }
+    if (readFileSync(tagPath, 'utf8') === CARGO_CACHE_TAG) return tagPath;
+  }
+
+  writeFileSync(tagPath, CARGO_CACHE_TAG, { encoding: 'utf8' });
+  return tagPath;
+}
 
 /**
  * Keep native-suite admission aligned with the standing disk alarm. WI-5080
