@@ -48,7 +48,13 @@ import {
   type SymbolSite,
 } from './contracts.ts';
 import { ACCEPTANCE_CORPUS, corpusCase, type CorpusCase } from './acceptance-corpus.ts';
-import { lspClientInventory, lspQuery, shutdownAllLspClients } from './lsp-adapter.ts';
+import {
+  languageForFile,
+  lspClientInventory,
+  lspQuery,
+  shutdownAllLspClients,
+  type LspLanguage,
+} from './lsp-adapter.ts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Probes
@@ -524,6 +530,98 @@ export const KNOWN_RSS_EXCEEDANCES: readonly {
       'For comparison the TypeScript server measured 66.6MB on the same run.',
   }),
 ]);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cold start
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The language a probe's cursor belongs to.
+ *
+ * Deliberately delegates to the adapter's own `languageForFile` rather than
+ * re-deriving from the extension: the leg keys `serverWasCold` off the raw
+ * extension, and a second, private extension→language table here would be free
+ * to disagree with the one that actually chose the server. A probe must never
+ * be graded against a language it was not answered by.
+ */
+export function probeLanguage(caseId: string): LspLanguage | null {
+  const probe = BENCH_PROBES.find((p) => p.caseId === caseId);
+  return probe ? languageForFile(probe.file) : null;
+}
+
+/**
+ * Cold starts that exceed `coldStartMsMax`, accepted for now and BOUNDED.
+ *
+ * The same discipline `KNOWN_RSS_EXCEEDANCES` applies to memory: an
+ * over-budget backend must be a NAMED, measured exceedance or a failure, and
+ * an accepted one must not be free to grow without limit.
+ */
+export const KNOWN_COLD_START_EXCEEDANCES: readonly {
+  readonly language: LspLanguage;
+  readonly observedMs: number;
+  /** Fails if a cold start grows past this — the exceedance stays bounded. */
+  readonly observedCeilingMs: number;
+  readonly why: string;
+}[] = Object.freeze([
+  Object.freeze({
+    language: 'rust' as LspLanguage,
+    observedMs: 10_760,
+    observedCeilingMs: 120_000,
+    why:
+      'rust-analyzer must run `cargo metadata` and build proc macros for the ' +
+      'papercusp-desktop/src-tauri crate graph before it can answer, so its ' +
+      'time-to-CORRECT cannot meet the 10s budget on this repo. Graded to ' +
+      'correct rather than to the `initialize` handshake (69ms), which is the ' +
+      'flattering number an agent never experiences — see the file header. ' +
+      'The ceiling is deliberately far above the 10,760ms measured: this ' +
+      'number is cache- and load-sensitive (a cold cargo cache is minutes, and ' +
+      'this box runs at high fleet load), so the ceiling is a tripwire for an ' +
+      'ORDER-OF-MAGNITUDE regression, not a performance target. A tight ' +
+      'ceiling here would be a flake generator, and a flaky gate test freezes ' +
+      'the whole fleet.',
+  }),
+]);
+
+/** One cold start graded against the budget. */
+export interface ColdStartVerdict {
+  readonly caseId: string;
+  readonly language: LspLanguage | null;
+  readonly timeToCorrectMs: number;
+  readonly overBudget: boolean;
+  /** True when over budget AND named in KNOWN_COLD_START_EXCEEDANCES. */
+  readonly accounted: boolean;
+  /** The accounting entry's ceiling, when there is one. */
+  readonly ceilingMs: number | null;
+}
+
+/**
+ * Grade every COLD probe's time-to-correct against `coldStartMsMax`.
+ *
+ * Only measurements that actually paid a cold start and actually reached a
+ * correct answer are graded: a probe that never graded correct is a
+ * CORRECTNESS failure and is reported as one elsewhere, and folding it in here
+ * would misreport it a second time as a latency breach.
+ */
+export function classifyColdStarts(
+  measurements: readonly BenchMeasurement[],
+): readonly ColdStartVerdict[] {
+  const out: ColdStartVerdict[] = [];
+  for (const m of measurements) {
+    if (!m.serverWasCold || m.notAttempted || m.timeToCorrectMs === null) continue;
+    const language = probeLanguage(m.caseId);
+    const known = KNOWN_COLD_START_EXCEEDANCES.find((k) => k.language === language);
+    const overBudget = m.timeToCorrectMs > DEFAULT_RESOURCE_BUDGET.coldStartMsMax;
+    out.push({
+      caseId: m.caseId,
+      language,
+      timeToCorrectMs: m.timeToCorrectMs,
+      overBudget,
+      accounted: overBudget && known !== undefined,
+      ceilingMs: known?.observedCeilingMs ?? null,
+    });
+  }
+  return out;
+}
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 

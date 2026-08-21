@@ -20,6 +20,7 @@ import {
   BENCH_PROBES,
   KNOWN_DIVERGENCES,
   KNOWN_RSS_EXCEEDANCES,
+  classifyColdStarts,
   classifyDivergence,
   formatLegReport,
   runLspAdapterLeg,
@@ -203,6 +204,45 @@ describe.skipIf(missing.length > 0)(
           `${c.language} grew past its recorded ceiling ` +
             `(observed ${known.observedMb}MB when accounted, now ${c.rssMb}MB)`,
         ).toBeLessThanOrEqual(known.observedCeilingMb);
+      }
+    });
+
+    it('meets the cold-start budget, or exceeds it only where accounted', () => {
+      // `coldStartMsMax` was a DEAD budget field until P-018: declared in
+      // ResourceBudget and read by nothing, in a repo where the measured rust
+      // cold start (10,760ms) already breached it. A budget nothing grades
+      // cannot fail, so a cold-start regression had no way to surface.
+      //
+      // Graded on timeToCorrectMs, NOT the `initialize` handshake. The
+      // handshake measured 69ms for rust against a 10s budget — it would
+      // always pass and would certify a number no agent ever experiences.
+      const unaccounted = classifyColdStarts(report.measurements)
+        .filter((c) => c.overBudget && !c.accounted)
+        .map(
+          (c) =>
+            `${c.caseId} (${c.language ?? 'unknown language'}): cold start to correct ` +
+            `${c.timeToCorrectMs}ms exceeds ${DEFAULT_RESOURCE_BUDGET.coldStartMsMax}ms ` +
+            `with no accounting entry`,
+        );
+      expect(unaccounted).toEqual([]);
+    });
+
+    it('keeps every accounted cold-start exceedance BOUNDED', () => {
+      // The half that stops "accounted" from meaning "unwatched".
+      //
+      // Deliberately NOT pinned in both directions the way KNOWN_DIVERGENCES
+      // is. A divergence is deterministic — it either happens or it does not —
+      // so a silent shrink there is stale prose worth failing on. A cold start
+      // is variance-prone (cargo cache state, fleet load), and rust's measured
+      // 10,760ms sits just above the 10,000ms budget: a both-directions pin
+      // would fail whenever a lucky run came in UNDER budget. That is a flake
+      // generator, and a flaky gate test freezes the whole fleet.
+      for (const c of classifyColdStarts(report.measurements)) {
+        if (!c.accounted || c.ceilingMs === null) continue;
+        expect(
+          c.timeToCorrectMs,
+          `${c.language} cold start grew past its recorded ceiling`,
+        ).toBeLessThanOrEqual(c.ceilingMs);
       }
     });
 
