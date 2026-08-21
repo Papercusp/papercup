@@ -215,7 +215,10 @@ export async function readScoutDraftCandidates(
   const limit = opts.limit ?? 50;
   const rows = await sql<DraftRow[]>`
     SELECT plan_slug, title,
-           (extract(epoch FROM updated_at) * 1000)::bigint AS updated_at_ms
+           (extract(epoch FROM updated_at) * 1000)::bigint AS updated_at_ms,
+           items,
+           decisions,
+           content
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${planWorkspaceId}
        AND harness_slug = ${planStorageSlug}
@@ -293,6 +296,18 @@ export interface ScoutDraftReviewResult {
   eligibleBacklogCount: number;
   staleCount: number;
   reason: string;
+}
+
+interface ResolvedScoutDraftScope {
+  workspaceId: string;
+  installSlug: string;
+  planStorageSlug: string;
+}
+
+interface ScoutDraftScopeResolutionFailure {
+  workspaceId: string;
+  installSlug: string;
+  error: unknown;
 }
 
 /**
@@ -382,14 +397,65 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
   const staleSec = scoutDraftReviewStaleSec();
   if (staleSec <= 0) return results; // kill switch
   try {
-    const scopes = await listBlenderMaintenanceScopes();
-    if (scopes.length === 0) {
+    const registeredScopes = await listBlenderMaintenanceScopes();
+    const { sql } = getOrgPg();
+
+    // The registry is the normal source for live maintenance scopes, but it is
+    // not the complete population of retained Scout plans. Legacy/default
+    // workspace rows can remain after a Hive registration is gone, so union the
+    // registry with scopes discovered directly from the plan store. The latter
+    // already carries the storage slug; using it as the install slug is the only
+    // identity available for an unregistered scope and keeps the durable nudge
+    // routed to the correct workspace.
+    let discoveredScopes: Array<{ workspaceId: string; planStorageSlug: string }> = [];
+    try {
+      discoveredScopes = await readScoutDraftScopes(sql);
+    } catch (e) {
+      // Discovery is an additive coverage leg. A transient failure must not
+      // suppress the registry-backed sweep that can still make progress.
+      console.warn(`[scout-draft-review] scope discovery failed: ${e instanceof Error ? e.message : e}`);
+    }
+
+    const resolvedScopes: ResolvedScoutDraftScope[] = [];
+    const resolutionFailures: ScoutDraftScopeResolutionFailure[] = [];
+    const seenStorageScopes = new Set<string>();
+    const addResolvedScope = (scope: ResolvedScoutDraftScope): void => {
+      const key = `${scope.workspaceId}\u0000${scope.planStorageSlug}`;
+      if (seenStorageScopes.has(key)) return;
+      seenStorageScopes.add(key);
+      resolvedScopes.push(scope);
+    };
+
+    for (const { workspaceId, installSlug } of registeredScopes) {
+      try {
+        addResolvedScope({
+          workspaceId,
+          installSlug,
+          planStorageSlug: await routineStorageSlug(installSlug, workspaceId),
+        });
+      } catch (error) {
+        // Preserve the existing per-scope fail-soft behavior: one broken slug
+        // resolver must not hide other registered or discovered scopes.
+        resolutionFailures.push({ workspaceId, installSlug, error });
+      }
+    }
+    for (const { workspaceId, planStorageSlug } of discoveredScopes) {
+      addResolvedScope({
+        workspaceId,
+        installSlug: planStorageSlug,
+        planStorageSlug,
+      });
+    }
+
+    if (resolvedScopes.length === 0 && resolutionFailures.length === 0) {
+      // Keep the existing empty-registry coverage alarm for workspaces whose
+      // plan rows are not discoverable (for example while the plan store is
+      // temporarily unavailable or a legacy row lacks a usable scope slug).
       const workspaceIds =
         typeof listBlenderMaintenanceWorkspaceIds === 'function'
           ? listBlenderMaintenanceWorkspaceIds()
           : [];
       if (workspaceIds.length === 0) return results;
-      const { sql } = getOrgPg();
       const now = opts.now ?? Date.now();
       const staleBeforeMs = now - staleSec * 1_000;
       let eligibleBacklogCount = 0;
@@ -399,7 +465,7 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
       if (eligibleBacklogCount > 0) {
         const reason =
           `${eligibleBacklogCount} eligible stale Scout draft(s) found in ${workspaceIds.length} workspace(s), ` +
-          'but no registered Blender scopes were evaluated';
+          'but no registered or plan-discovered Blender scopes were evaluated';
         console.warn(`[scout-draft-review] ALERT: ${reason}`);
         return [
           {
@@ -416,19 +482,34 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
       }
       return results;
     }
-    const { sql } = getOrgPg();
-    const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
-    const evaluatedScopeCount = scopes.length;
+
+    const evaluatedWorkspaceCount = new Set([
+      ...resolvedScopes.map(({ workspaceId }) => workspaceId),
+      ...resolutionFailures.map(({ workspaceId }) => workspaceId),
+    ]).size;
+    const evaluatedScopeCount = resolvedScopes.length + resolutionFailures.length;
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
-    for (const { workspaceId, installSlug } of scopes) {
+
+    for (const { workspaceId, installSlug, error } of resolutionFailures) {
+      results.push({
+        workspaceId,
+        installSlug,
+        outcome: 'error',
+        evaluatedWorkspaceCount,
+        evaluatedScopeCount,
+        eligibleBacklogCount: 0,
+        staleCount: 0,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    for (const { workspaceId, installSlug, planStorageSlug } of resolvedScopes) {
       try {
         // WI-6978: plans live under the Pot/Hive HOME, not a member harness's own
-        // slug. Fails open to the literal slug, so a resolver hiccup degrades to
-        // today's behaviour instead of silently disabling the watchdog. `installSlug`
-        // stays correct for the watchdog key + log lines below (alarm identity).
-        const planStorageSlug = await routineStorageSlug(installSlug, workspaceId);
+        // slug. Registered scopes resolve that home above; plan-discovered scopes
+        // already carry the storage slug from harness_plans.
         const candidates = await readScoutDraftCandidates(sql, workspaceId, planStorageSlug);
         const stale = selectStaleDrafts(candidates, { now, thresholdMs });
         if (stale.length === 0) continue;
