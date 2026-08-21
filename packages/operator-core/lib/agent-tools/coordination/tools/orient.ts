@@ -44,6 +44,9 @@ import { withBoundedTimeout } from '../../../bounded-timeout';
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { shapeOrient } from './orient-shape';
 import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
+// Type-only: the runtime half (interestFold) is dynamically imported at its use site,
+// like the other advisory folds, so a module-load failure cannot cost orientation.
+import type { InterestContext } from '../../../interest-profiles';
 import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
@@ -592,6 +595,11 @@ export interface OrientResult {
    *  ABSENT (never a false green) for a harness with no green-checkpoint routine, and on any
    *  read failure/timeout — see pipeline-health.ts. Both modes: a monitor tick wants this most. */
   pipeline?: OrientPipeline | null;
+  /** P-011 (state-plane-interest-and-hardening-2026-08-21): the fold tier of the
+   *  interest profiles — cells this caller's live contexts say are worth watching,
+   *  as HANDLES ONLY (D-001: never an ambient copy of a value). Absent, never an
+   *  empty shell, when nothing matched or the audience check dropped everything. */
+  interest?: import('../../../interest-fold').InterestFoldBlock | null;
   /** P-006 / EI-11409: compact schemas for the exact task/mode pack orient
    *  activated on this session. Re-delivered after compaction with a stable
    *  content watermark and replace-full resync contract. */
@@ -1765,6 +1773,45 @@ export async function composeOrient(
                 : 'the planNow leg degraded'),
           }
         : planNowResult.value;
+
+    // ── interest fold (P-011, state-plane-interest-and-hardening-2026-08-21) ──────
+    // The caller's live contexts, matched against P-010's interest profiles, folded
+    // as cell HANDLES (D-001 — never a value; see interest-fold.ts's header).
+    //
+    // Sited HERE, inside the planNow block, because this is where the two contexts it
+    // needs are already resolved: `effectivePlanSlug` (plan-holder) and the self row's
+    // claims (item-holder). Deriving either again would be a second, drifting answer to
+    // a question orient has already answered once.
+    //
+    // Runs on monitor ticks too, unlike the EI-8300-skipped legs. Those were skipped
+    // for their SUB-CALLS; this one is pure, IO-free, and bounded by the registry at a
+    // handful of rows, so there is no per-tick cost to budget away. It does NOT run
+    // without `cellIdentity`: the reader is the audience, and inventing one here would
+    // be the defaulted-audience failure that fails OPEN.
+    if (cellIdentity?.reader) {
+      try {
+        const contexts: InterestContext[] = [];
+        if (effectivePlanSlug) contexts.push('plan-holder');
+        // A collapsed claims COUNT is still positive evidence of holding items — the
+        // payload tier that collapses `claims[]` (EI-20108229813877389) must not be
+        // read as "holds nothing", which is the same false zero `myClaims` guards.
+        const rawClaimsForCtx: unknown = selfRow?.claims;
+        const holdsItems =
+          typeof rawClaimsForCtx === 'number' ? rawClaimsForCtx > 0 : (rawClaimsForCtx?.length ?? 0) > 0;
+        if (holdsItems) contexts.push('item-holder');
+
+        if (contexts.length > 0) {
+          const { interestFold } = await import('../../../interest-fold');
+          // No `subjects`: orient does not resolve a held item's primary PATH, so the
+          // per-path pipeline cell correctly comes back `unreadable { needs }` rather
+          // than as an unqualified handle that would answer about a different path.
+          const fold = interestFold({ contexts, reader: cellIdentity.reader });
+          if (fold) result.interest = fold;
+        }
+      } catch {
+        /* advisory leg — never break orientation for it */
+      }
+    }
   }
 
   // ── fleet legs (full mode only) — the caller's fleet was resolved ONCE above
