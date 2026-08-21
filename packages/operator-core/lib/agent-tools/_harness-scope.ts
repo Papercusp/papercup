@@ -133,8 +133,16 @@ export const HARNESS_REQUIRED_DETAIL =
   'workspace-scoped session rejects it as `harness_forbidden`. (A harness-scoped ' +
   'session supplies its concrete slug automatically.)';
 
-export function harnessRequiredDetail(ctx?: { workspaceId?: string | null }): string {
-  const workspaceId = ctx?.workspaceId?.trim();
+export function harnessRequiredDetail(
+  ctx?:
+    | { workspaceId?: string | null }
+    | { harnessSlug?: string | null }
+    | null,
+): string {
+  // Callers that resolve a scope carry `harnessSlug`, while plans resolvers also
+  // carry `workspaceId`; accept both context shapes without making the generic
+  // harness-scoped caller pretend every context has a workspace field.
+  const workspaceId = ctx && 'workspaceId' in ctx ? ctx.workspaceId?.trim() : undefined;
   if (isAllHarnessSentinel(workspaceId)) {
     return (
       "No harness specified. This is an unscoped (`--all-workspaces`) session, so pass " +
