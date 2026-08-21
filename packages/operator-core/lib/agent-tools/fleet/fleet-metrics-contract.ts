@@ -144,10 +144,7 @@ export const fleetMetricScopeSchema = z
       relevantRoster: z.literal(FLEET_METRIC_POPULATIONS.relevantRoster),
       attribution: z.literal(FLEET_METRIC_POPULATIONS.everMembers),
       stock: z.literal(FLEET_METRIC_POPULATIONS.currentSpecWorkItems),
-      flow: z.enum([
-        FLEET_METRIC_POPULATIONS.currentSpecWorkItems,
-        FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents,
-      ]),
+      flow: z.enum([FLEET_METRIC_POPULATIONS.currentSpecWorkItems, FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents]),
       canonicalBugs: z.literal(FLEET_METRIC_POPULATIONS.canonicalBugs),
       observations: z.literal(FLEET_METRIC_POPULATIONS.observations),
       occurrences: z.literal(FLEET_METRIC_POPULATIONS.occurrences),

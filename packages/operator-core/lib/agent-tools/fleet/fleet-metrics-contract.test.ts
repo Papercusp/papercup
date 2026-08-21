@@ -184,6 +184,7 @@ describe('fleet metrics v1 contract', () => {
   it('requires stock and flow to share one stored spec identity', () => {
     const current = currentSpecExample();
     if (!current.ok) throw new Error('fixture must be available');
+    if (current.snapshot.scope.flow.mode !== 'current-spec') throw new Error('fixture must use current spec');
     current.snapshot.scope.flow.revision += 1;
     expect(fleetMetricsResultSchema.safeParse(current).success).toBe(false);
 
