@@ -41,7 +41,7 @@ describe('conversations:resolve handler (bulk keyed-array)', () => {
   });
 
   it('points consult resolution at the typed close verb', async () => {
-    resolveM.mockResolvedValue({ error: 'consult_requires_typed_verb' } as never);
+    resolveM.mockResolvedValue({ error: 'consult_requires_typed_verb' });
     const b = await body({ id: 'consult-1', accepted_answer: 'answer' });
     expect(b.results[0]).toMatchObject({
       ok: false,
