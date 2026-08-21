@@ -26,13 +26,16 @@
  * must not be presented as time to verdict.
  */
 import { z } from 'zod';
+import { spawnSync } from 'node:child_process';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import {
   assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
+  checkpointCandidateContainsAncestor,
   checkpointCandidateContainment,
   checkpointEligibilityPendingId,
   classifyReplaceRequest,
+  currentCheckpointCandidate,
   launchDetachedCheckpoint,
   renderPreLaunchRefusal,
   REPLACE_STALE_MIN_AGE_SEC,
@@ -58,6 +61,104 @@ import {
 import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { clampText, LIMITS, softText } from '../limits';
+
+type RequiredAncestorPreflight = {
+  ok: boolean;
+  reason: 'contained' | 'not-ancestor' | 'unverifiable' | 'queue-unreadable';
+  requiredAncestor: string | null;
+  candidate: string | null;
+  candidateSource: 'frozen-repair-queue' | 'current-quiet-cut' | 'unresolved';
+  repairQueue: {
+    phase: string;
+    candidate: string;
+    repairHead: string;
+    fixerSpawnId: string | null;
+  } | null;
+  detail?: string;
+};
+
+/**
+ * EI-21047439235631660 — resolve the candidate the detached runner's policy will
+ * consult BEFORE a D-005-style required-ancestor launch.
+ *
+ * A persisted frozen-repair queue outranks the moving integration tip inside
+ * green-checkpoint.ts. The old tool preflight knew only current/quiet-cut staging, so it
+ * promised b836 while the writer bound 7490 from the queue. Read that existing queue (no
+ * parallel state surface), use its repairHead when present, then apply the exact ancestry
+ * check. Any queue-read/object-resolution failure is UNKNOWN and fails closed because the
+ * caller explicitly requested a lineage guarantee; ordinary calls without the arg keep the
+ * historical fail-open launch behavior.
+ */
+async function assessRequiredAncestorPreflight(
+  requiredAncestor: string,
+  predictedCandidate: string | null,
+): Promise<RequiredAncestorPreflight> {
+  const root = integrationRoot();
+  let repairQueue: RequiredAncestorPreflight['repairQueue'] = null;
+  try {
+    const [{ activeWorkspaceId }, { operatorHomeHarnessSlug }, { readFrozenCandidateRepairQueue }] =
+      await Promise.all([
+        import('../../workspace-registry'),
+        import('../../harness/operator-home-harness'),
+        import('../../harness/routines/release-actions'),
+      ]);
+    const queue = await readFrozenCandidateRepairQueue({
+      workspaceId: activeWorkspaceId(),
+      installSlug: operatorHomeHarnessSlug(),
+    });
+    if (queue) {
+      repairQueue = {
+        phase: queue.phase,
+        candidate: queue.candidate,
+        repairHead: queue.repairHead,
+        fixerSpawnId: queue.fixerSpawnId ?? null,
+      };
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      reason: 'queue-unreadable',
+      requiredAncestor: null,
+      candidate: null,
+      candidateSource: 'unresolved',
+      repairQueue: null,
+      detail: clampText(error instanceof Error ? error.message : String(error), LIMITS.SHORT_TITLE),
+    };
+  }
+
+  const execFn = (cmd: string, argv: string[]) => {
+    const result = spawnSync(cmd, argv, { encoding: 'utf8' });
+    return {
+      status: result.status,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+    };
+  };
+  const current = predictedCandidate ?? currentCheckpointCandidate(root, execFn).current_candidate;
+  const candidate = repairQueue?.repairHead ?? current;
+  const candidateSource = repairQueue
+    ? 'frozen-repair-queue' as const
+    : candidate
+      ? 'current-quiet-cut' as const
+      : 'unresolved' as const;
+  if (!candidate) {
+    return {
+      ok: false,
+      reason: 'unverifiable',
+      requiredAncestor: null,
+      candidate: null,
+      candidateSource,
+      repairQueue,
+    };
+  }
+
+  const check = checkpointCandidateContainsAncestor(root, requiredAncestor, candidate, execFn);
+  return {
+    ...check,
+    candidateSource,
+    repairQueue,
+  };
+}
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -215,13 +316,20 @@ export default defineTool({
       .array(z.string())
       .optional()
       .describe(
-        'Repo-relative files your change touches. The reply then reports callerEditsInCandidate { included, missing } — whether the commit this run judges actually CARRIES them, so a red you get back is unambiguously about your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.',
+        'Repo-relative files your change touches. The launch receipt reports callerEditsInCandidate { included, missing } for the PRE-LAUNCH PREDICTED candidate and marks candidateBinding.status="predicted-unconfirmed"; the detached writer can re-resolve onto a different commit (including a frozen-repair head), so release:trace must confirm its actual bound candidate before a red or green is treated as a verdict on your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.',
       ),
     waitForEligibility: z
       .boolean()
       .optional()
       .describe(
         'EI-20025784115349280: when the pre-launch check would refuse with would_exclude_declared_paths, enqueue a durable waiter that rechecks after the commits carrying your declared paths age into the quiet-cut window (wait_sec in that refusal, always ≤300s), then launches — instead of returning. The reply is immediate with pending_id, workflow_id, and completion_events for checkpoint:await; the MCP call never sleeps across the transport deadline. Ignored unless the refusal would fire.',
+      ),
+    requiredAncestorSha: z
+      .string()
+      .regex(/^[0-9a-fA-F]{4,64}$/)
+      .optional()
+      .describe(
+        'Optional fail-CLOSED lineage guard for a release-critical repair SHA. Before spawning, checkpoint-run reads the existing frozen-repair queue (which outranks staging inside the detached writer), chooses queue.repairHead when present or the current quiet-cut candidate otherwise, and requires `git merge-base --is-ancestor <requiredAncestorSha> <candidate>` exit 0. A miss or unreadable queue/object refuses without spending the singleton run. force:true does NOT bypass this explicit guarantee. Post-launch release:trace must still confirm the writer bound the same lineage.',
       ),
     // EI-20031402866608444: ACCEPTED, not ignored. This arg used to be undeclared, and the schema
     // is additionalProperties:false, so passing it was an `invalid_input` that launched NOTHING —
@@ -460,6 +568,10 @@ export default defineTool({
     // declared paths, a run already in flight, an unresolved candidate, an undecidable or
     // uncommitted miss, or a wait we cannot compute all LAUNCH. `force` skips it entirely.
     const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force });
+    const requiredAncestorPreflight =
+      !preflight.refuse && args.requiredAncestorSha
+        ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)
+        : null;
     // WI-37618: the refusal below is returned to the CALLER and recorded NOWHERE else.
     // `tool_invocations` keeps only transport metadata and `output_ref` is a reference, not a
     // body, so a refusal was indistinguishable in the ledger from a call that spent a ~55min
@@ -525,6 +637,15 @@ export default defineTool({
             ? 'wait-unavailable'
             : 'refused'
         : 'passed',
+      ...(requiredAncestorPreflight
+        ? {
+            requiredAncestorPreflight: requiredAncestorPreflight.ok ? 'passed' : 'refused',
+            requiredAncestorSha: requiredAncestorPreflight.requiredAncestor ?? args.requiredAncestorSha,
+            requiredAncestorCandidate: requiredAncestorPreflight.candidate,
+            requiredAncestorCandidateSource: requiredAncestorPreflight.candidateSource,
+            requiredAncestorReason: requiredAncestorPreflight.reason,
+          }
+        : {}),
       ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       ...(preflight.refuse
         ? {
@@ -608,6 +729,32 @@ export default defineTool({
                 `NOT launched yet — durable eligibility waiter ${waitReceipt.workflowId} will ` +
                 `recheck after ~${preflight.waitSec ?? 0}s and launch only if the declared paths are eligible. ` +
                 'Use checkpoint:await with one of completion_events for the detached verdict.',
+            }),
+          },
+        ],
+      };
+    }
+    if (requiredAncestorPreflight && !requiredAncestorPreflight.ok) {
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason:
+                requiredAncestorPreflight.reason === 'not-ancestor'
+                  ? 'required_ancestor_missing'
+                  : 'required_ancestor_unverifiable',
+              required_ancestor: requiredAncestorPreflight.requiredAncestor ?? args.requiredAncestorSha,
+              candidate: requiredAncestorPreflight.candidate,
+              candidate_source: requiredAncestorPreflight.candidateSource,
+              repair_queue: requiredAncestorPreflight.repairQueue,
+              detail: requiredAncestorPreflight.detail ?? null,
+              note:
+                requiredAncestorPreflight.reason === 'not-ancestor'
+                  ? `NOT launched: the ${requiredAncestorPreflight.candidateSource} candidate ${requiredAncestorPreflight.candidate?.slice(0, 12) ?? 'unknown'} does not contain required repair ${args.requiredAncestorSha}. The frozen-repair queue outranks moving staging, so launching anyway would repeat EI-210474: a receipt about current tip followed by a writer on an unrelated lineage. Let the existing queue fixer finish/reconcile or clear the queue through its owner, then retry; do not force past this explicit lineage guarantee.`
+                  : `NOT launched: required repair ancestry could not be verified (${requiredAncestorPreflight.reason}${requiredAncestorPreflight.detail ? `: ${requiredAncestorPreflight.detail}` : ''}). Because requiredAncestorSha asks for an exact safety guarantee, UNKNOWN refuses rather than spending the singleton run. Repair the queue/git read and retry.`,
             }),
           },
         ],
@@ -879,12 +1026,52 @@ export default defineTool({
     // hour before making both mistakes, which is the evidence that a rule you must recall
     // at exactly the right instant is a detector that only fires for someone who already
     // knows. It belongs in the return value.
+    const predictedCandidateSha = requiredAncestorPreflight?.candidate ?? result.willJudge?.candidate ?? null;
+    const reportedWillJudge = result.willJudge
+      ? {
+          ...result.willJudge,
+          candidate: predictedCandidateSha,
+          candidateSource: requiredAncestorPreflight?.candidateSource ?? 'current-quiet-cut',
+        }
+      : null;
     const containment = result.launched
       ? await checkpointCandidateContainment({
-          candidateSha: result.willJudge?.candidate ?? null,
+          candidateSha: predictedCandidateSha,
           tipSha: result.willJudge?.tip ?? null,
           paths: args.paths,
         })
+      : null;
+
+    // EI-21047439235631660 — `willJudge` is a PRE-LAUNCH prediction, not the detached
+    // writer's bound candidate. The distinction was already documented on the low-level
+    // type, but this handler erased it in two higher-level places: it returned the containment
+    // under the settled-sounding `callerEditsInCandidate` field and rendered the positive as
+    // "this is a real verdict on your change". Live repro: the receipt predicted b8360abd and
+    // positively included both declared files; the writer then followed a persisted frozen-
+    // repair queue and bound 7490aaa8, which contains neither b836 nor the required 65b repair.
+    //
+    // Keep the backwards-compatible field, but carry machine-readable reliability on BOTH
+    // the field and the launch envelope, and replace every settled sentence with prediction
+    // grammar. `release:trace` is the only post-launch binding authority; until it names the
+    // writer candidate, a launch receipt can prove only what the predicted candidate contains.
+    const candidateBinding = result.launched
+      ? {
+          status: 'predicted-unconfirmed' as const,
+          predictedCandidate: predictedCandidateSha,
+          actualCandidate: null,
+          verifyWith:
+            'release:trace — then git merge-base --is-ancestor <required-sha> <checkpointRunInFlight.candidate>',
+        }
+      : null;
+    const reportedContainment = containment
+      ? {
+          ...containment,
+          candidateReliability: 'predicted-unconfirmed' as const,
+          verifiedAgainstActualWriter: false,
+          warning: containment.missing.length
+            ? `⚠ PRE-LAUNCH PREDICTION ONLY — the predicted candidate lacks ${containment.missing.length} declared file(s) (${containment.missing.slice(0, 4).join(', ')}${containment.missing.length > 4 ? ', …' : ''}). The detached writer can bind another commit; confirm its actual candidate with release:trace before treating a red or green as evidence about your change.`
+            : null,
+        }
       : null;
 
     const excluded = result.willJudge?.excludedCommits ?? [];
@@ -904,12 +1091,19 @@ export default defineTool({
     // earlier either/or chain let the generic branch shadow a definitive positive, which
     // is the same "the reader must resolve it themselves" failure in a new place.
     const declaredAllIn =
-      !!containment && containment.source === 'caller-supplied' && !containment.missing.length && !!containment.included.length;
-    const containmentPart = containment?.warning
-      ? ` ${containment.warning}`
+      !!reportedContainment &&
+      reportedContainment.source === 'caller-supplied' &&
+      !reportedContainment.missing.length &&
+      !!reportedContainment.included.length;
+    const containmentPart = reportedContainment?.warning
+      ? ` ${reportedContainment.warning}`
       : declaredAllIn
-        ? ` ✓ the judged candidate carries all ${containment.included.length} file(s) you named — this is a real verdict on your change.`
+        ? ` ✓ pre-launch prediction: the predicted candidate carries all ${reportedContainment.included.length} file(s) you named. This is NOT yet proof that the detached writer carries them; confirm its bound candidate with release:trace.`
         : '';
+
+    const candidateBindingPart = candidateBinding
+      ? ` ⚠ CANDIDATE BINDING UNCONFIRMED: this receipt predicts ${candidateBinding.predictedCandidate?.slice(0, 12) ?? 'an unresolved candidate'}, but the detached writer re-resolves independently and may follow a persisted frozen-repair queue. Re-read release:trace for checkpointRunInFlight.candidate before acting on containment or verdict.`
+      : '';
 
     // The old text ended at "if your fix is among them" and listed SHAS — the one space the
     // reader has no information about. Answer in PATH space, which a caller can match
@@ -944,11 +1138,24 @@ export default defineTool({
           text: JSON.stringify({
             ok: result.launched,
             ...result,
-            ...(containment ? { callerEditsInCandidate: containment } : {}),
+            ...(reportedWillJudge ? { willJudge: reportedWillJudge } : {}),
+            ...(requiredAncestorPreflight
+              ? {
+                  requiredAncestor: {
+                    requiredSha: requiredAncestorPreflight.requiredAncestor,
+                    candidate: requiredAncestorPreflight.candidate,
+                    candidateSource: requiredAncestorPreflight.candidateSource,
+                    containedAtPreflight: requiredAncestorPreflight.ok,
+                    repairQueue: requiredAncestorPreflight.repairQueue,
+                  },
+                }
+              : {}),
+            ...(candidateBinding ? { candidateBinding } : {}),
+            ...(reportedContainment ? { callerEditsInCandidate: reportedContainment } : {}),
             note: result.launched
               ? result.replacedStale
-                ? `green-checkpoint suite launched (detached, up to ~55 min) after stopping a STALE prior run (was judging ${result.replacedStale.candidate?.slice(0, 12) ?? 'unknown'}, superseded by ${result.replacedStale.current_candidate?.slice(0, 12) ?? 'current staging'}). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`
-                : `green-checkpoint suite launched (detached, up to ~55 min). Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`
+                ? `green-checkpoint suite launched (detached, up to ~55 min) after stopping a STALE prior run (was judging ${result.replacedStale.candidate?.slice(0, 12) ?? 'unknown'}, superseded by ${result.replacedStale.current_candidate?.slice(0, 12) ?? 'current staging'}).${candidateBindingPart} Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`
+                : `green-checkpoint suite launched (detached, up to ~55 min).${candidateBindingPart} Watch /admin/git or the log for the verdict; if green it advances the pin. Then release:deploy { op:status } → op:trigger.${excludedWarning}`
               : `not launched: ${result.reason ?? 'unknown'} — a manual checkpoint may already be running (see the log), or a cron tick is mid-run (which is fine — it will produce the verdict).`,
           }),
         },

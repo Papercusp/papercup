@@ -41,6 +41,7 @@ import {
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
   classifyReplaceRequest,
+  checkpointCandidateContainsAncestor,
   checkpointCandidateContainment,
   renderContainmentWarning,
   assessPreLaunchExclusion,
@@ -236,6 +237,62 @@ describe('buildCheckpointSystemdArgv', () => {
   it('stamps nothing without a target — the run then does not record and its caller does (pre-WI-4494 behaviour)', () => {
     const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin', false, undefined, null);
     expect(argv.some((a) => a.includes('GATE_VERDICT'))).toBe(false);
+  });
+});
+
+describe('checkpointCandidateContainsAncestor (EI-21047439235631660)', () => {
+  const REQUIRED = '65b369adb8a9eb3fd7a2e3a93ab4eaedcad7c35e';
+  const CANDIDATE = '7490aaa814f1e2f6513bb8467e13acccf1ccace6';
+
+  function gitExec(mergeBaseStatus: number, missing?: 'ancestor' | 'candidate') {
+    return vi.fn((_cmd: string, args: string[]) => {
+      if (args.includes('rev-parse')) {
+        const ref = args.at(-1) ?? '';
+        if (missing === 'ancestor' && ref.startsWith(REQUIRED)) return { status: 1, stdout: '', stderr: '' };
+        if (missing === 'candidate' && ref.startsWith(CANDIDATE)) return { status: 1, stdout: '', stderr: '' };
+        return {
+          status: 0,
+          stdout: `${ref.startsWith(REQUIRED) ? REQUIRED : CANDIDATE}\n`,
+          stderr: '',
+        };
+      }
+      if (args.includes('merge-base')) return { status: mergeBaseStatus, stdout: '', stderr: '' };
+      return { status: 1, stdout: '', stderr: '' };
+    });
+  }
+
+  it('requires merge-base ancestry exit 0 — byte-similar detached repair lineage is not enough', () => {
+    const execFn = gitExec(1);
+    expect(checkpointCandidateContainsAncestor('/tree', REQUIRED, CANDIDATE, execFn)).toEqual({
+      ok: false,
+      reason: 'not-ancestor',
+      requiredAncestor: REQUIRED,
+      candidate: CANDIDATE,
+    });
+    expect(execFn).toHaveBeenCalledWith('git', [
+      '-C',
+      '/tree',
+      'merge-base',
+      '--is-ancestor',
+      REQUIRED,
+      CANDIDATE,
+    ]);
+  });
+
+  it('accepts only a resolved candidate that contains the resolved required ancestor', () => {
+    expect(checkpointCandidateContainsAncestor('/tree', REQUIRED, CANDIDATE, gitExec(0))).toEqual({
+      ok: true,
+      reason: 'contained',
+      requiredAncestor: REQUIRED,
+      candidate: CANDIDATE,
+    });
+  });
+
+  it.each(['ancestor', 'candidate'] as const)('fails closed as unverifiable when the %s object is absent', (missing) => {
+    expect(checkpointCandidateContainsAncestor('/tree', REQUIRED, CANDIDATE, gitExec(1, missing))).toMatchObject({
+      ok: false,
+      reason: 'unverifiable',
+    });
   });
 });
 

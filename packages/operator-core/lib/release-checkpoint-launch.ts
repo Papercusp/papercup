@@ -665,6 +665,48 @@ export function currentCheckpointCandidate(
   return { current_head: currentHead, current_candidate: aged, quiet_cut_sec: quietSec };
 }
 
+/**
+ * EI-21047439235631660 — prove that a checkpoint candidate contains a caller-required
+ * ancestor BEFORE spending the singleton gate run.
+ *
+ * This is deliberately a git-ancestry check, not a path/content heuristic: release safety
+ * decisions name exact repair SHAs, and a detached frozen-repair head can carry superficially
+ * similar bytes while living on a lineage that predates the required repair. Resolve both
+ * inputs to commits first so an invalid/missing object is reported as `unverifiable`, never
+ * conflated with the measured `not-ancestor` verdict from merge-base exit 1.
+ */
+export interface CheckpointRequiredAncestorCheck {
+  ok: boolean;
+  reason: 'contained' | 'not-ancestor' | 'unverifiable';
+  requiredAncestor: string | null;
+  candidate: string | null;
+}
+
+export function checkpointCandidateContainsAncestor(
+  root: string,
+  requiredAncestor: string,
+  candidate: string,
+  execFn: ExecSyncLike = defaultExecSync,
+): CheckpointRequiredAncestorCheck {
+  const ancestor = gitOutput(root, ['rev-parse', '--verify', `${requiredAncestor}^{commit}`], execFn);
+  const resolvedCandidate = gitOutput(root, ['rev-parse', '--verify', `${candidate}^{commit}`], execFn);
+  if (!ancestor || !resolvedCandidate) {
+    return {
+      ok: false,
+      reason: 'unverifiable',
+      requiredAncestor: ancestor,
+      candidate: resolvedCandidate,
+    };
+  }
+  const contained = gitOk(root, ['merge-base', '--is-ancestor', ancestor, resolvedCandidate], execFn);
+  return {
+    ok: contained,
+    reason: contained ? 'contained' : 'not-ancestor',
+    requiredAncestor: ancestor,
+    candidate: resolvedCandidate,
+  };
+}
+
 /** Default MainPID liveness probe: `kill(pid, 0)` — succeeds iff a process with that PID
  *  currently exists (and we have permission to signal it), without actually signalling it.
  *  Injectable so `checkActiveCheckpointRun` is unit-testable without touching real PIDs. */
