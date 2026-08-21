@@ -267,6 +267,26 @@ export interface CellSpec {
   /** Axis 4. */
   provenance: CellProvenance;
   /**
+   * P-008 / D-012 — the date this cell entered the registry, `YYYY-MM-DD` (UTC).
+   *
+   * The TENURE rule is the counterpart to the admission rule ("a read with 0 calls
+   * is never promoted"), and it cannot be evaluated without this. Zero reads means
+   * two OPPOSITE things depending on age — a dormant cell nobody wants, or a cell
+   * registered last week that has not had time to be adopted — and telemetry cannot
+   * tell them apart, because a cell that was never read leaves no first-seen row to
+   * date it from. Measured instance: P-008 names `testing.census.population` and
+   * `testing.coverage.floor` as its first subjects; both were registered 2026-08-18,
+   * so on a 14-day window 11 of those days PREDATE THEIR EXISTENCE. Read literally,
+   * the rule's first act would be to recommend cutting two three-day-old cells.
+   *
+   * OPTIONAL in the type, MANDATORY in the registry (asserted by
+   * `cell-tenure.test.ts`). Optional only to avoid stranding the 10+ test fixtures
+   * that construct a CellSpec; it is NOT optional for a real registration. Absence
+   * is fail-CLOSED, never fail-quiet: it yields the `tenure-unknown` verdict, so a
+   * forgotten field can only ever SUPPRESS a cut, never cause one.
+   */
+  registeredOn?: string;
+  /**
    * Axis 5 — ONE derivation, many lenses. Exactly one resolver; surfaces may PROJECT
    * or subset it and may NEVER re-derive it. Generalises
    * `presence-derivation-unification-2026-07-17` #D-001, whose enforcement model is
