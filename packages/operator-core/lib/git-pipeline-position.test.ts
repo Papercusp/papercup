@@ -163,8 +163,12 @@ function fakeGit(opts: {
    * default) models a baseline commit that does not resolve: `rev-parse` on
    * `${pathCommit}~1` fails `SHA_RE` (the literal string contains `~`), exactly
    * like a genuinely-unresolvable parent, so `markerBaselineCount` stays null.
-   */
+  */
   parentBlobAtTarget?: string;
+  /** Marker-baseline blobs keyed by an arbitrary commit-parent ref (for example
+   * `${newestInRef['origin/main']}~1`). This models the candidate's own parent
+   * when a later same-path commit has moved `pathCommit` forward. */
+  parentBlobs?: Record<string, string>;
 }): GitRunner {
   const root = '/repo';
   // EI-19325915429897280: the literal revision string `markerAtCommit` is called
@@ -204,6 +208,7 @@ function fakeGit(opts: {
       if (opts.parentBlobAtTarget !== undefined && targetParent && args[1] === targetParent) {
         return `100644 blob deadbeef\t${args[3]}`;
       }
+      if (opts.parentBlobs && args[1] in opts.parentBlobs) return `100644 blob deadbeef\t${args[3]}`;
       return null;
     }
     // The naive cross-boundary content probe: empty, because the superproject
@@ -215,6 +220,7 @@ function fakeGit(opts: {
       if (opts.blobAtRef && ref !== undefined && ref in opts.blobAtRef) return opts.blobAtRef[ref];
       // EI-19325915429897280: `show <pathCommit>~1:<path>` for the marker baseline.
       if (opts.parentBlobAtTarget !== undefined && ref === targetParent) return opts.parentBlobAtTarget;
+      if (opts.parentBlobs && ref !== undefined && ref in opts.parentBlobs) return opts.parentBlobs[ref];
       return null;
     }
     if (args[0] === 'rev-parse') {
@@ -231,6 +237,7 @@ function fakeGit(opts: {
       // contains a literal `~`, which SHA_RE rejects, faithfully modeling a baseline
       // that could not be measured.
       if (opts.parentBlobAtTarget !== undefined && targetParent && want === targetParent) return 'c'.repeat(40);
+      if (opts.parentBlobs && want in opts.parentBlobs) return 'd'.repeat(40);
       return want;
     }
     // WI-6646: the REF-SCOPED variant (`log -1 --pretty=%H <ref> -- <path>`) asks a
@@ -398,6 +405,8 @@ describe('gitPipelinePosition (P-002)', () => {
     const PEER = 'bbbb222222';
     /** The caller's own commit — already in main, and invisible to the bare legs. */
     const MINE = 'aaaa111111';
+    /** A later peer commit touching the same path after the caller's change. */
+    const LATER = 'cccc333333';
 
     it('EXPLAINS a false inMain when the ref already holds an earlier commit to the same path', async () => {
       const git = fakeGit({
@@ -483,6 +492,30 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.summary).toMatch(/main ✓/);
     });
 
+    it('a later same-path commit carrying the marker does not erase the correction', async () => {
+      const git = fakeGit({
+        pathCommit: LATER,
+        contains: { HEAD: [LATER], 'origin/staging': [LATER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE },
+        // main's version still carries the caller's marker twice. The later target
+        // commit's parent already carries those occurrences, so the old target-parent
+        // baseline would incorrectly decline the correction.
+        blobAtRef: { 'origin/main': 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n' },
+        parentBlobAtTarget: 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n',
+        // The candidate commit is the caller's change: its own parent has no marker.
+        parentBlobs: { [`${MINE}~1`]: 'nothing relevant here\n' },
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(true);
+      expect(res.positionsMarker?.inMain?.count).toBe(2);
+      expect(res.positionsNewerCommit).not.toContain('inMain');
+      expect(res.notes.join('\n')).toMatch(/CORRECTED to true by the marker/);
+      expect(res.summary).toMatch(/main ✓/);
+    });
+
     it('a MARKER removed by the target change CORRECTS an absent ref marker by strict count decrease', async () => {
       const git = fakeGit({
         pathCommit: PEER,
@@ -543,6 +576,9 @@ describe('gitPipelinePosition (P-002)', () => {
         // proves nothing about whether the change itself reached main.
         blobAtRef: { 'origin/main': 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n' },
         parentBlobAtTarget: 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n',
+        // Keep the candidate-specific fallback honest too: this marker was already
+        // present before the candidate commit, so it must not correct the leg.
+        parentBlobs: { [`${MINE}~1`]: 'function looksDeadOrStuck() {}\n// looksDeadOrStuck again\n' },
       });
       const res = await gitPipelinePosition(
         { path: P, marker: 'looksDeadOrStuck' },
@@ -2816,11 +2852,37 @@ describe('changeInCandidate (P-004)', () => {
     it('a confirmed-contained candidate says the verdict IS about your change', () => {
       const r = evaluateChangeInCandidate({
         relPath: 'a.ts',
-        candidates: { judgingSha: 'inflight123456', nextCandidateSha: null },
+        candidates: {
+          judgingSha: 'inflight123456',
+          judgingShaSource: 'in-flight-candidate',
+          nextCandidateSha: null,
+        },
         judging: { path: 'a.ts', inCandidate: true, reason: null, unknownReason: null },
         next: null,
       });
+      expect(r.judgingContainsPath).toBe(true);
       expect(r.detail).toMatch(/real verdict on your change/);
+    });
+
+    it('refuses inferred judged containment and preserves the next-candidate fields', () => {
+      const r = evaluateChangeInCandidate({
+        relPath: 'a.ts',
+        candidates: {
+          judgingSha: 'inferred123456',
+          judgingShaSource: 'run-probe',
+          nextCandidateSha: 'next123456',
+        },
+        judging: { path: 'a.ts', inCandidate: true, reason: null, unknownReason: null },
+        next: { path: 'a.ts', inCandidate: false, reason: 'newer-commit', unknownReason: null },
+        markerJudging: { marker: 'MY_FIX', present: true, count: 1, pathPresent: true },
+      });
+      expect(r).not.toHaveProperty('judgingContainsPath');
+      expect(r.judgingSha).toBe('inferred123456');
+      expect(r.judgingShaSource).toBe('run-probe');
+      expect(r.nextCandidateSha).toBe('next123456');
+      expect(r.nextContainsPath).toBe(false);
+      expect(r.detail).toMatch(/^REFUSED/);
+      expect(r.detail).toMatch(/Read instead:/);
     });
 
     it('an UNKNOWN containment claims nothing in either direction', () => {
@@ -3033,13 +3095,55 @@ describe('changeInCandidate (P-004)', () => {
           git,
           loadDeploy: async () => deploy(),
           loadSnapshot: async () => snap(),
-          resolveGateCandidates: async () => ({ judgingSha: 'judging1', nextCandidateSha: 'judging1' }),
+          resolveGateCandidates: async () => ({
+            judgingSha: 'judging1',
+            judgingShaSource: 'in-flight-candidate',
+            nextCandidateSha: 'judging1',
+          }),
         },
       );
       expect(res.changeInCandidate.judgingSha).toBe('judging1');
       expect(res.changeInCandidate.judgingContainsPath).toBe(false);
       expect(res.changeInCandidate.missingReason).toBe('uncommitted');
       expect(res.notes.join(' ')).toMatch(/CANDIDATE DOES NOT CONTAIN THIS FILE/);
+    });
+
+    it('hoists inferred judged containment as resolver-failed and shows the refusal in the summary', async () => {
+      const git: GitRunner = async (_repo, args) => {
+        if (args[0] === 'config') return null;
+        if (args[0] === 'status') return '';
+        if (args[0] === 'log' && args.includes('--pretty=%H')) return 'abc1234567';
+        if (args[0] === 'log' && args.includes('--pretty=%s')) return 'subj';
+        if (args[0] === 'rev-list') return '0';
+        if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith('^{commit}')) return 'c'.repeat(40);
+        if (args[0] === 'rev-parse' && args[1] === '--verify' && args[2].endsWith(':a.ts')) return '0'.repeat(40);
+        if (args[0] === 'hash-object') return '0'.repeat(40);
+        return null;
+      };
+      const res = await gitPipelinePosition(
+        { path: 'a.ts' },
+        {
+          git,
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () => snap(),
+          resolveGateCandidates: async () => ({
+            judgingSha: 'judging1',
+            judgingShaSource: 'run-probe',
+            nextCandidateSha: 'judging1',
+          }),
+        },
+      );
+      expect(res.changeInCandidate).not.toHaveProperty('judgingContainsPath');
+      expect(res.verdictUnknown).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            leg: 'changeInCandidate.judgingContainsPath',
+            unknown: expect.objectContaining({ code: 'resolver-failed' }),
+          }),
+        ]),
+      );
+      expect(res.summary).toMatch(/REFUSED/);
+      expect(res.notes.join(' ')).toMatch(/changeInCandidate\.judgingContainsPath/);
     });
 
     /**
@@ -3075,7 +3179,11 @@ describe('changeInCandidate (P-004)', () => {
             git: peerEditedGit(contents),
             loadDeploy: async () => deploy(),
             loadSnapshot: async () => snap(),
-            resolveGateCandidates: async () => ({ judgingSha: 'judging1', nextCandidateSha: 'judging1' }),
+            resolveGateCandidates: async () => ({
+              judgingSha: 'judging1',
+              judgingShaSource: 'in-flight-candidate',
+              nextCandidateSha: 'judging1',
+            }),
           },
         );
 
@@ -3160,7 +3268,11 @@ describe('changeInCandidate (P-004)', () => {
             git: splitGit(atJudging, atNext),
             loadDeploy: async () => deploy(),
             loadSnapshot: async () => snap(),
-            resolveGateCandidates: async () => ({ judgingSha: 'judging1', nextCandidateSha: 'next1' }),
+            resolveGateCandidates: async () => ({
+              judgingSha: 'judging1',
+              judgingShaSource: 'in-flight-candidate',
+              nextCandidateSha: 'next1',
+            }),
           },
         );
 

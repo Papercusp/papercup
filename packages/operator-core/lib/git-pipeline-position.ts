@@ -41,6 +41,7 @@ import {
   type PathContainment,
 } from './candidate-contains';
 import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contract';
+import { describeRefusal, refuseAnswer, type RefusedAnswer } from './field-reliability';
 import { describeRefireBudget } from './release/in-flight-retriage';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
@@ -1825,8 +1826,12 @@ export interface ChangeInCandidate {
    * "already marker-preferred per WI-7035"; WI-7035 only ever fixed `checkpointRunInFlight`.
    */
   judgingShaSource?: 'retriage-marker' | 'in-flight-candidate' | 'run-probe';
-  /** Does that candidate carry this path's WORKING-TREE content? null = not comparable. */
-  judgingContainsPath: boolean | null;
+  /**
+   * Does that candidate carry this path's WORKING-TREE content? null = not comparable.
+   * Omitted when `judgingShaSource === 'run-probe'`: the checkout-head inference can change
+   * between reads and cannot support a containment verdict about the run.
+   */
+  judgingContainsPath?: boolean | null;
   /** The commit a checkpoint fired right now would judge (post quiet-cut). */
   nextCandidateSha: string | null;
   nextContainsPath: boolean | null;
@@ -1961,6 +1966,23 @@ export function reconcileGateCandidates(
 }
 
 /**
+ * A checkout-head candidate is a useful hint about where the run may be, but it is not an
+ * observation of what the run is judging. Returning its path-blob comparison as a boolean
+ * launders that inference into a verdict-shaped field — the exact P-004 failure mode.
+ */
+function inferredJudgingContainmentRefusal(): RefusedAnswer {
+  return refuseAnswer({
+    question: 'Does the in-flight run judge a candidate that contains your change?',
+    because:
+      "judgingShaSource='run-probe' is a checkout-head inference, not a candidate marker published by the run; " +
+      'it can change between reads and cannot establish what this run\'s verdict includes.',
+    insteadRead:
+      "gate.checkpointRunInFlight.candidate when candidateSource is 'retriage-marker' or 'in-flight-candidate', " +
+      "or checkpoint:await for the run's own published candidate",
+  });
+}
+
+/**
  * Pure: turn the two candidates + their per-path containment into the caller-facing
  * verdict. Separated from the git/systemd reads so the phrasing — which is the whole
  * deliverable here — is unit-testable without a repo.
@@ -1977,20 +1999,29 @@ export function evaluateChangeInCandidate(args: {
   if (!relPath) return NO_CHANGE_IN_CANDIDATE;
   const markerJudging = args.markerJudging ?? null;
   const markerNext = args.markerNext ?? null;
+  const inferredJudgingContainment =
+    candidates.judgingShaSource === 'run-probe' && candidates.judgingSha !== null;
+  const judgingContainmentRefusal = inferredJudgingContainment ? inferredJudgingContainmentRefusal() : null;
   const base: ChangeInCandidate = {
     judgingSha: candidates.judgingSha,
     // WI-36259: carried through so the cell can say WHERE its headline came from. Spread
     // conditionally — an absent source must stay absent rather than becoming an explicit
     // `undefined` key, which serialises differently and would read as a declared unknown.
     ...(candidates.judgingShaSource ? { judgingShaSource: candidates.judgingShaSource } : {}),
-    judgingContainsPath: judging ? judging.inCandidate : null,
+    ...(judgingContainmentRefusal
+      ? {}
+      : { judgingContainsPath: judging ? judging.inCandidate : null }),
     nextCandidateSha: candidates.nextCandidateSha,
     nextContainsPath: next ? next.inCandidate : null,
     missingReason: judging?.reason ?? next?.reason ?? null,
     markerJudging,
     markerNext,
-    detail: null,
+    detail: judgingContainmentRefusal ? describeRefusal(judgingContainmentRefusal) : null,
   };
+
+  // The source itself is the uncertainty. Do not let a marker or a path comparison derived
+  // from this inferred candidate reintroduce the verdict-shaped answer we just withheld.
+  if (judgingContainmentRefusal) return base;
 
   /**
    * EI-18797292094433710: when the caller named a marker, IT is the answer — it speaks
@@ -2621,13 +2652,16 @@ export function computeStages(
      * the place that actually drives behaviour — `judgedRunCoversChange` feeds the
      * "nothing to do, a verdict is coming" arm, which is what leaves main pinned.
      */
+    const judgedContainmentRefused =
+      cic.judgingShaSource === 'run-probe' && cic.judgingSha !== null;
     const markerSaysPresent =
+      !judgedContainmentRefused &&
       !markerPartialAgainst(cic.markerJudging, cic.markerNext) &&
       (cic.markerJudging?.present === true || (!cic.judgingSha && cic.markerNext?.present === true));
     const notInCandidate =
       !markerSaysPresent && (cic.judgingContainsPath === false || cic.nextContainsPath === false);
     /** The judged run demonstrably covers this change — by identity OR by marker. */
-    const judgedRunCoversChange = cic.judgingContainsPath === true || markerSaysPresent;
+    const judgedRunCoversChange = !judgedContainmentRefused && (cic.judgingContainsPath === true || markerSaysPresent);
     /**
      * EI-19311755730915969 — LIVENESS IS `gate.checkpointRunInFlight.active`, NEVER
      * `cic.judgingSha`.
@@ -3678,12 +3712,17 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
    * lacked the fix read as an all-clear — the ✓ is the glyph a hurried caller stops at.
    */
   const markerPartial = markerPartialAgainst(cicSum.markerJudging, cicSum.markerNext);
+  const judgedContainmentRefused =
+    cicSum.judgingShaSource === 'run-probe' && cicSum.judgingSha !== null;
   const markerConfirmed =
+    !judgedContainmentRefused &&
     !markerPartial &&
     (cicSum.markerJudging?.present === true || (!cicSum.judgingSha && cicSum.markerNext?.present === true));
   const markerDenied = cicSum.markerJudging?.present === false || (!cicSum.judgingSha && cicSum.markerNext?.present === false);
-  const candidateNote = markerConfirmed
-    ? ` ✓ ${cicSum.detail}`
+  const candidateNote = judgedContainmentRefused
+    ? ` ⚠ ${cicSum.detail}`
+    : markerConfirmed
+      ? ` ✓ ${cicSum.detail}`
     : markerPartial || markerDenied || cicSum.judgingContainsPath === false || cicSum.nextContainsPath === false
       ? ` ⚠ ${cicSum.detail}`
       : '';
@@ -3969,12 +4008,14 @@ export async function gitPipelinePosition(
         // changeInCandidate/markerJudging — fixed there via `markerPartialAgainst`'s
         // count-comparison; this leg had no equivalent. Establish ONE baseline —
         // the marker's count at `targetSha`'s PARENT, i.e. the file immediately
-        // before the change under discussion — computed once outside the loop since
-        // it does not depend on `ref`, only on `targetSha`.
-        const markerBaseline = marker
+        // before the current path tip. A later same-path commit may make that
+        // baseline already contain the caller's marker; each ref can then fall back
+        // to its own earlier path commit's parent below.
+        const targetMarkerBaseline = marker
           ? await markerAtCommit(gitReadForMarker, `${targetSha}~1`, relPath, marker)
           : null;
-        const markerBaselineCount = typeof markerBaseline?.count === 'number' ? markerBaseline.count : null;
+        const targetMarkerBaselineCount =
+          typeof targetMarkerBaseline?.count === 'number' ? targetMarkerBaseline.count : null;
 
         for (const [leg, ref] of legs) {
           if (!ref) continue;
@@ -3986,9 +4027,40 @@ export async function gitPipelinePosition(
           // with a confident wrong story about why.
           if (positionsUnknown.includes(leg)) continue;
 
+          // Read this before the marker branch so a later same-path commit can supply
+          // the candidate's own parent as a second, change-specific baseline. The
+          // target's parent is no longer the caller's pre-change state once a peer has
+          // committed to the path after the caller's change.
+          const earlier = await newestTouchingInRef(git, root, ref, relPath);
+
           if (marker) {
             const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
             markerLegs[leg] = verdict;
+            let markerBaseline = targetMarkerBaseline;
+            let markerBaselineSha = `${targetSha}~1`;
+            // If the target-parent baseline already contains exactly the occurrences
+            // seen in the candidate, it cannot distinguish a carried-forward marker
+            // from one introduced by the caller. When the ref has an earlier same-path
+            // commit, compare that candidate commit with its own parent as well. This
+            // fixes the later-same-path decay while retaining the strict count guard:
+            // a pre-existing/non-unique marker still has no net change there.
+            if (
+              earlier?.sha &&
+              earlier.sha !== targetSha &&
+              (targetMarkerBaselineCount === null || verdict.count === targetMarkerBaselineCount)
+            ) {
+              const candidateBaseline = await markerAtCommit(
+                gitReadForMarker,
+                `${earlier.sha}~1`,
+                relPath,
+                marker,
+              );
+              if (typeof candidateBaseline.count === 'number') {
+                markerBaseline = candidateBaseline;
+                markerBaselineSha = `${earlier.sha}~1`;
+              }
+            }
+            const markerBaselineCount = typeof markerBaseline?.count === 'number' ? markerBaseline.count : null;
             // Require a STRICT count change against the pre-change baseline — never
             // bare presence. A count comparison can only under-claim (a change that
             // adds/removes no occurrence of the marker is simply not detected, the
@@ -4007,7 +4079,7 @@ export async function gitPipelinePosition(
                 `${leg}: CORRECTED to true by the marker. The newest commit touching '${relPath}' ` +
                   `(${targetSha.slice(0, 9)}) is not in ${ref} — but ${ref}'s own version of the file ` +
                   `contains your marker ${verdict.count}× against a baseline of ${markerBaselineCount}× at ` +
-                  `${targetSha.slice(0, 9)}~1 (before your change), a strict net-${strictlyAdded ? 'increase' : 'decrease'} ` +
+                  `${markerBaselineSha.slice(0, 9)} (before the marker-bearing change), a strict net-${strictlyAdded ? 'increase' : 'decrease'} ` +
                   `in occurrences, so YOUR change IS there. The false was about a later commit to the same file, ` +
                   `not about your change.`,
               );
@@ -4018,7 +4090,7 @@ export async function gitPipelinePosition(
                 notes.push(
                   `${leg}: marker '${marker}' is present in ${ref} (${verdict.count}×), but it is NOT unique ` +
                     `to your change — it already occurred ${markerBaselineCount}× before your change (at ` +
-                    `${targetSha.slice(0, 9)}~1), so its presence in ${ref} proves nothing either way. Pick a ` +
+                    `${markerBaselineSha.slice(0, 9)}), so its presence in ${ref} proves nothing either way. Pick a ` +
                     `marker string your change introduced, not a pre-existing identifier.`,
                 );
               } else {
@@ -4044,7 +4116,6 @@ export async function gitPipelinePosition(
             // which is still better than a bare false, but never claim the marker settled it.
           }
 
-          const earlier = await newestTouchingInRef(git, root, ref, relPath);
           if (earlier === null) continue; // read failed — say nothing rather than guess
           if (earlier.sha && earlier.sha !== targetSha) {
             positionsNewerCommit.push(leg);
@@ -4506,8 +4577,22 @@ export async function gitPipelinePosition(
       ...NO_CHANGE_IN_CANDIDATE,
       detail:
         'Containment is not measured for a submodule path: the gate judges the SUPERPROJECT, which stores only a gitlink for this submodule. ' +
-        'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
+      'Whether your change is in the judged build depends on the PIN the superproject candidate carries — check that the superproject has committed the bumped gitlink.',
     };
+  }
+
+  // P-004: a run-probe candidate is an inferred checkout-head read, so the path comparison
+  // above deliberately omitted its verdict-shaped boolean. Keep the refusal in-band as a
+  // resolver-failed leg: callers must not read the omitted field as a measured null/negative,
+  // and the summary must carry the same refusal for readers who do not inspect the hoist.
+  if (changeInCandidate.judgingShaSource === 'run-probe' && changeInCandidate.judgingSha !== null) {
+    verdictUnknown.push({
+      leg: 'changeInCandidate.judgingContainsPath',
+      unknown: cellUnknown(
+        'resolver-failed',
+        changeInCandidate.detail ?? describeRefusal(inferredJudgingContainmentRefusal()),
+      ),
+    });
   }
 
   /**
