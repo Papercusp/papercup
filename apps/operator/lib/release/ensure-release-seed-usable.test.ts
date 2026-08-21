@@ -25,7 +25,7 @@
  * the 475MB seed, and never writes inside the shared checkout.
  */
 
-import { chmod, cp, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,7 +51,11 @@ let root: string;
  * Build a temp tree the script will resolve against, with `npx` stubbed to exit `verdictExit`.
  * `seedFiles` controls the presence-only half of the predicate.
  */
-async function makeTree(verdictExit: number, seedFiles = { manifest: true, epochKeys: true }) {
+async function makeTree(
+  verdictExit: number,
+  seedFiles = { manifest: true, epochKeys: true },
+  npxBody?: string,
+) {
   const bin = join(root, 'papercusp-desktop/bin');
   const seed = join(root, 'papercusp-desktop/src-tauri/seed');
   const operator = join(root, 'apps/operator/lib/release');
@@ -71,7 +75,7 @@ async function makeTree(verdictExit: number, seedFiles = { manifest: true, epoch
   // exercises the real invocation + exit-code plumbing without tsx or a real payload.
   await writeFile(
     join(fakebin, 'npx'),
-    `#!/usr/bin/env bash\necho "[stub-verify] invoked: $*"\nexit ${verdictExit}\n`,
+    npxBody ?? `#!/usr/bin/env bash\necho "[stub-verify] invoked: $*"\nexit ${verdictExit}\n`,
     'utf8',
   );
   await chmod(join(fakebin, 'npx'), 0o755);
@@ -79,11 +83,21 @@ async function makeTree(verdictExit: number, seedFiles = { manifest: true, epoch
   return { script: join(bin, 'ensure-release-seed.sh'), fakebin };
 }
 
-async function runScript(verdictExit: number, seedFiles?: { manifest: boolean; epochKeys: boolean }) {
-  const { script, fakebin } = await makeTree(verdictExit, seedFiles);
+async function runScript(
+  verdictExit: number,
+  seedFiles?: { manifest: boolean; epochKeys: boolean },
+  npxBody?: string,
+  extraEnv: Record<string, string> = {},
+) {
+  const { script, fakebin } = await makeTree(verdictExit, seedFiles, npxBody);
   try {
     const { stdout, stderr } = await run('bash', [script], {
-      env: { ...process.env, PATH: `${fakebin}:${process.env.PATH ?? ''}`, PAPERCUSP_SEED_REQUIRED: '0' },
+      env: {
+        ...process.env,
+        PATH: `${fakebin}:${process.env.PATH ?? ''}`,
+        PAPERCUSP_SEED_REQUIRED: '0',
+        ...extraEnv,
+      },
       timeout: 60_000,
       maxBuffer: 8 * 1024 * 1024,
     });
@@ -134,5 +148,53 @@ describe('ensure-release-seed.sh seed_usable — three-way payload verdict', () 
   it('a missing epoch-keys.json still short-circuits before the payload check (WI-3346)', async () => {
     const out = await runScript(0, { manifest: true, epochKeys: false });
     expect(out).not.toMatch(/repair-net no-op/);
+  });
+
+  it('sparse refusal retries a full cut with --no-force-backfill only after refresh completion was logged', async () => {
+    const argsLog = join(root, 'cut-args.log');
+    const firstAttempt = join(root, 'first-attempt.done');
+    const liveStore = join(root, 'live-store');
+    await mkdir(liveStore, { recursive: true });
+    const npxBody = `#!/usr/bin/env bash
+if [[ "$*" == *verify-seed-payload-cli.ts* ]]; then
+  echo "[stub-verify] invoked: $*"
+  exit 1
+fi
+if [[ "$*" == *cut-seed-cli.ts* ]]; then
+  printf '%s\\n' "$*" >> "$TEST_CUT_ARGS_LOG"
+  if [[ ! -e "$TEST_FIRST_ATTEMPT" ]]; then
+    : > "$TEST_FIRST_ATTEMPT"
+    echo '[cut-seed] refreshed via the live operator for test-workspace::papercusp'
+    echo '[cut-seed] --sparse requires a fresh head snapshot at the own-log tail'
+    exit 1
+  fi
+  mkdir -p "$TEST_SEED_OUT"
+  printf '%s\\n' '{"stores":[]}' > "$TEST_SEED_OUT/manifest.json"
+  printf '%s\\n' '{}' > "$TEST_SEED_OUT/epoch-keys.json"
+  exit 0
+fi
+exit 1
+`;
+    const out = await runScript(
+      1,
+      { manifest: false, epochKeys: false },
+      npxBody,
+      {
+        PAPERCUSP_SEED_FORCE: '1',
+        PAPERCUSP_SEED_REUSE_CORESTORE: '0',
+        PAPERCUSP_SEED_STORE_DIR: liveStore,
+        PAPERCUSP_SEED_SPARSE: '1',
+        TEST_CUT_ARGS_LOG: argsLog,
+        TEST_FIRST_ATTEMPT: firstAttempt,
+        TEST_SEED_OUT: join(root, 'papercusp-desktop/src-tauri/seed'),
+      },
+    );
+    const attempts = (await readFile(argsLog, 'utf8')).trim().split('\n');
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]).toMatch(/--sparse/);
+    expect(attempts[0]).not.toMatch(/--no-force-backfill/);
+    expect(attempts[1]).not.toMatch(/--sparse/);
+    expect(attempts[1]).toMatch(/--no-force-backfill/);
+    expect(out).toMatch(/first sparse attempt completed refresh/);
   });
 });

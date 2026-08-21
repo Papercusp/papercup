@@ -16,6 +16,7 @@ import {
   collectSeedEpochKeys,
   graftCorestoreEntry,
   refreshCorestoreStateForSeed,
+  withCutSeedSingleton,
   readReusableCorestore,
   isCorestoreLockedError,
   waitForOperatorDrain,
@@ -264,6 +265,54 @@ describe('refreshCorestoreStateForSeed', () => {
   });
 });
 
+describe('withCutSeedSingleton (workspace+hive advisory lock)', () => {
+  it('refuses a second cut before its backfill/INSERT callback runs', async () => {
+    const tx = vi.fn(async () => [{ acquired: false }]) as never;
+    const pg = {
+      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => run(tx)),
+    } as never;
+    const backfillOrInsert = vi.fn(async () => 'must-not-run');
+
+    await expect(
+      withCutSeedSingleton({
+        pg,
+        workspaceId: 'papercusp-workspace',
+        hive: 'papercusp',
+        run: backfillOrInsert,
+      }),
+    ).rejects.toThrow(/another seed cut is already refreshing or opening/);
+    expect(backfillOrInsert).not.toHaveBeenCalled();
+    expect(pg.begin).toHaveBeenCalledTimes(1);
+    expect(tx).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds the transaction around the cut callback and forwards the transaction SQL handle', async () => {
+    const tx = vi.fn(async () => [{ acquired: true }]) as never;
+    let transactionOpen = false;
+    const pg = {
+      begin: vi.fn(async (run: (transaction: typeof tx) => Promise<unknown>) => {
+        transactionOpen = true;
+        try {
+          return await run(tx);
+        } finally {
+          transactionOpen = false;
+        }
+      }),
+    } as never;
+    const run = vi.fn(async (transaction: typeof tx) => {
+      expect(transaction).toBe(tx);
+      expect(transactionOpen).toBe(true);
+      return 'cut-opened';
+    });
+
+    await expect(
+      withCutSeedSingleton({ pg, workspaceId: 'ws-1', hive: 'papercusp', run }),
+    ).resolves.toBe('cut-opened');
+    expect(transactionOpen).toBe(false);
+    expect(run).toHaveBeenCalledWith(tx);
+  });
+});
+
 // --- WI-3232: offline-pot cutter helpers ---
 
 const GIT_ENTRY: SeedStoreEntry = {
@@ -408,6 +457,25 @@ describe('waitForOperatorDrain (WI-4487 — the operator owns the log append)', 
     expect(res.undrained).toBe(0);
     expect(calls.n).toBe(3);
     expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('resets the stall clock when an external refill raises the backlog', async () => {
+    // A second writer can refill rows after the first cut has reached a low-water mark.
+    // The refill is new progress to wait on; the old low-water-only detector would throw
+    // on the third poll even though the operator is about to drain the refill.
+    const { sql } = pgReturning([5, 9, 9, 0]);
+    let t = 0;
+    const res = await waitForOperatorDrain({
+      ...base,
+      pg: sql,
+      stallMs: 1_000,
+      now: () => t,
+      sleep: async () => {
+        t += 600;
+      },
+      warn: () => {},
+    });
+    expect(res.undrained).toBe(0);
   });
 
   it('keeps waiting while the backlog SHRINKS, however long it takes (a real backfill is ~8k rows)', async () => {
