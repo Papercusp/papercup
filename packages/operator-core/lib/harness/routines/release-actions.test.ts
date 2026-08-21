@@ -1796,24 +1796,37 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     failingTests: ['lib/broken.test.ts'],
   };
 
-  it('round-trips the full queue and clears only repair_queue without creating a parallel store', async () => {
+  it('round-trips the queue and scopes every read/write/clear to its workspace routine row', async () => {
     fakeSql.unsafe.mockResolvedValueOnce([{ repair_queue: queue }] as never);
 
     await expect(readFrozenCandidateRepairQueue(target)).resolves.toEqual({
       ...queue,
       schemaVersion: 2,
     });
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      1,
+      expect.stringMatching(
+        /WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
+      ),
+      ['ws-42', 'my-harness'],
+    );
 
     await writeFrozenCandidateRepairQueue(target, queue);
-    expect(fakeSql.unsafe).toHaveBeenCalledWith(
-      expect.stringContaining("metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb"),
-      ['my-harness', JSON.stringify({ repair_queue: queue })],
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      2,
+      expect.stringMatching(
+        /metadata = COALESCE\(metadata, '\{\}'::jsonb\) \|\| \$3::jsonb[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
+      ),
+      ['ws-42', 'my-harness', JSON.stringify({ repair_queue: queue })],
     );
 
     await writeFrozenCandidateRepairQueue(target, null);
-    expect(fakeSql.unsafe).toHaveBeenCalledWith(
-      expect.stringContaining("metadata = COALESCE(metadata, '{}'::jsonb) - 'repair_queue'"),
-      ['my-harness'],
+    expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
+      3,
+      expect.stringMatching(
+        /metadata = COALESCE\(metadata, '\{\}'::jsonb\) - 'repair_queue'[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
+      ),
+      ['ws-42', 'my-harness'],
     );
   });
 });

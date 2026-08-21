@@ -2475,8 +2475,10 @@ export async function readFrozenCandidateRepairQueue(
   const rows = (await sql.unsafe(
     `SELECT metadata->'repair_queue' AS repair_queue
        FROM harness_shared.routines
-      WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-    [target.installSlug],
+      WHERE workspace_id = $1
+        AND install_slug = $2
+        AND target_role = 'system:green-checkpoint'`,
+    [target.workspaceId, target.installSlug],
   )) as Array<{ repair_queue: unknown }>;
   return parseFrozenCandidateRepairQueue(rows[0]?.repair_queue);
 }
@@ -2490,16 +2492,20 @@ export async function writeFrozenCandidateRepairQueue(
   if (queue) {
     await sql.unsafe(
       `UPDATE harness_shared.routines
-          SET metadata = COALESCE(metadata, '{}'::jsonb) || $2::jsonb, updated_at = now()
-        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-      [target.installSlug, JSON.stringify({ repair_queue: queue })],
+          SET metadata = COALESCE(metadata, '{}'::jsonb) || $3::jsonb, updated_at = now()
+        WHERE workspace_id = $1
+          AND install_slug = $2
+          AND target_role = 'system:green-checkpoint'`,
+      [target.workspaceId, target.installSlug, JSON.stringify({ repair_queue: queue })],
     );
   } else {
     await sql.unsafe(
       `UPDATE harness_shared.routines
           SET metadata = COALESCE(metadata, '{}'::jsonb) - 'repair_queue', updated_at = now()
-        WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
-      [target.installSlug],
+        WHERE workspace_id = $1
+          AND install_slug = $2
+          AND target_role = 'system:green-checkpoint'`,
+      [target.workspaceId, target.installSlug],
     );
   }
 }
