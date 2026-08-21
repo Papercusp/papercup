@@ -332,6 +332,20 @@ const BYPASS_CALL = /\b(getCellUnchecked|listCellsUnchecked)\s*\(/;
  */
 const CALL_SITE_ALLOWLIST: Record<string, string> = {
   'packages/operator-core/lib/cell-registry.ts': 'defines them',
+  // `deriveCellReread` (P-001) must find a spec by its (tool, path) change-signal BEFORE
+  // it has anyone to check it against — the identity that matters is the WATCH ROW'S
+  // (ownerId/role/harness), not the caller's, because a hand-rolled watch:create on the
+  // same path must not learn a cell it cannot read exists. So it enumerates unchecked,
+  // then applies `canReadCell` against the row's identity and returns NO handle when that
+  // fails. Verified at the call site, not assumed: the `canReadCell` guard is the line
+  // immediately after the `.find(...)`, and LEG A covers the resulting behaviour.
+  //
+  // It is allowlisted rather than rewritten to `listCells(rowReader)` deliberately: the
+  // filtered form would let `.find` fall through to a DIFFERENT cell sharing the path if
+  // the first match were out of audience, turning a registry defect (two cells, one path)
+  // into a silently wrong handle. First-match-then-check is the deterministic order.
+  'packages/operator-core/lib/events/await/predicate-watch.ts':
+    'derives the P-001 reread handle: enumerates by (tool, path), then audience-checks against the WATCH ROW\'s identity',
 };
 
 function scanForBypassCallSites(rootDir: string, repoRoot: string): string[] {

@@ -540,6 +540,32 @@ export function validateCellSpec(spec: CellSpec): CellRejection[] {
 }
 
 /**
+ * The role a cross-harness operator/superuser session presents as `ctx.role`.
+ * Verified against the live ledger rather than assumed: every `harnessSlug:'*'`
+ * caller in a 24h window carried exactly this role (P-005, 2026-08-21).
+ */
+const OPERATOR_ROLE = 'operator';
+
+/**
+ * True for the canonical "all harnesses / operator scope" sentinel.
+ *
+ * ⚠ DELIBERATELY DUPLICATED, NOT IMPORTED. The canonical definition is
+ * `HARNESS_ALL` / `isAllHarnessSentinel()` in `agent-tools/_harness-scope.ts`, but
+ * this module is dependency-free ON PURPOSE (it has no imports at all), and that
+ * one reaches `@papercusp/agent-mcp` — an import edge from this primitive into the
+ * MCP layer invites a cycle at the seam the registry is loaded through.
+ *
+ * The duplication is pinned instead of trusted: `cell-registry-harness-sentinel.test.ts`
+ * imports BOTH and asserts they agree on every input, so a change to the canonical
+ * predicate fails there rather than silently splitting the access check away from
+ * the scope resolver.
+ */
+function isOperatorScopeSentinel(v: string | null | undefined): boolean {
+  const s = v?.trim().toLowerCase();
+  return s === '*' || s === 'all';
+}
+
+/**
  * P-019 — THE AUDIENCE CHECK. Pure (spec, reader) -> boolean.
  *
  * Gates EXISTENCE as well as value: callers below treat "not readable" as "absent",
@@ -559,7 +585,35 @@ export function canReadCell(spec: CellSpec, reader: CellReader): boolean {
     case 'role':
       return (reader.roles ?? []).includes(v.ref);
     case 'harness':
-      return reader.harnessSlug === v.ref;
+      // A reader scoped to a CONCRETE harness must match exactly. That is what keeps
+      // EI-20709429494940822 honest: an agent working on `sidestage` must not read
+      // Papercusp's pipeline cells and misread them as its own pipeline.
+      //
+      // But an OPERATOR-SCOPE reader presents the `'*'` sentinel rather than a slug,
+      // and a bare `===` compares that sentinel as if it were a literal harness name —
+      // so the scope meaning "every harness" matched NONE of them. Measured 2026-08-21
+      // (P-005): 418 distinct agents / 358,755 calls in 24h run as role `operator` with
+      // harnessSlug `'*'`, and for every one of them all six pipeline cells read as
+      // `absent` — while `dev:pipeline_position` served them the SAME values ungated,
+      // and `stampStatePlane`'s `collect()` (which shares this check) silently dropped
+      // its whole `plane` handle block. No secrecy was gained; only the re-read
+      // discipline the state plane exists to provide was lost, for the exact population
+      // CLAUDE.md points at these cells.
+      //
+      // BOTH conditions are required, and neither alone is safe:
+      //   • the sentinel alone would fail OPEN — `http-projection` assigns `'*'` via a
+      //     bare `if (!spawnCtx.harnessSlug)` fallback, so it means "unset", not
+      //     "operator" (three call-site comments claim otherwise; the code does not).
+      //     That is precisely the defaulted-audience failure D-016 names.
+      //   • the role alone would re-open EI-20709429494940822 — `operator` sessions
+      //     also run scoped to sidestage / scout-runtime / engineering, and those have
+      //     a competing pipeline of their own to confuse this one with.
+      // An operator-scope reader has declared no competing harness, so there is no
+      // "their own pipeline" for it to misread this as.
+      return (
+        reader.harnessSlug === v.ref ||
+        (isOperatorScopeSentinel(reader.harnessSlug) && (reader.roles ?? []).includes(OPERATOR_ROLE))
+      );
     case 'work_item':
       return (reader.workItems ?? []).includes(v.ref);
     default:

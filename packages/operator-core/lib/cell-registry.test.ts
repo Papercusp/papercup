@@ -548,3 +548,68 @@ describe('cell contract — pointers (P-006)', () => {
     expect(ruleOf(spec)).toEqual([]);
   });
 });
+
+/**
+ * P-005 — the operator-scope sentinel must not read as a literal harness name.
+ *
+ * THE BUG THIS PINS. `canReadCell`'s harness case was a bare
+ * `reader.harnessSlug === v.ref`. An operator-scope session does not present a slug;
+ * it presents `'*'`, assigned by `http-projection`'s `if (!spawnCtx.harnessSlug)`
+ * fallback. So the scope meaning "every harness" compared equal to none of them, and
+ * every harness-scoped cell read as `absent` for 418 distinct agents / 358,755 calls
+ * in a measured 24h window — while `dev:pipeline_position` served those same agents
+ * the identical values ungated and `stampStatePlane` silently dropped its whole
+ * `plane` handle block (it shares this oracle).
+ *
+ * Each case below is a SEPARATE failure mode, and the two negative ones are why the
+ * fix requires BOTH conditions rather than either alone.
+ */
+describe('P-005 — harness visibility and the operator-scope sentinel', () => {
+  const OPERATOR_SCOPE = { ownerId: 'su-p005', roles: ['operator'], harnessSlug: '*' };
+
+  it('admits an operator-scope reader ("*") to a harness-scoped cell', () => {
+    // The regression itself: this returned false, which is what made the gate cells
+    // unreadable and suppressed the plane block for essentially the whole fleet.
+    expect(canReadCell(portCell(), OPERATOR_SCOPE)).toBe(true);
+  });
+
+  it('accepts the friendly "all" alias the canonical sentinel also accepts', () => {
+    expect(canReadCell(portCell(), { ...OPERATOR_SCOPE, harnessSlug: 'all' })).toBe(true);
+  });
+
+  it('still admits a reader scoped to the cell\'s own concrete harness', () => {
+    expect(
+      canReadCell(portCell(), { ownerId: 'su-p005', roles: ['operator'], harnessSlug: 'papercusp' }),
+    ).toBe(true);
+  });
+
+  it('FAILS CLOSED for a non-operator reader presenting the sentinel', () => {
+    // The sentinel alone must never be sufficient: `'*'` is assigned by a bare
+    // "harness is unset" fallback, so treating it as authority would be the
+    // defaulted-audience failure D-016 names — an access default that fails OPEN.
+    expect(canReadCell(portCell(), { ownerId: 'su-p005', roles: [], harnessSlug: '*' })).toBe(false);
+    expect(
+      canReadCell(portCell(), { ownerId: 'su-p005', roles: ['collaborator'], harnessSlug: '*' }),
+    ).toBe(false);
+  });
+
+  it('FAILS CLOSED for an operator scoped to a DIFFERENT concrete harness', () => {
+    // The role alone must never be sufficient either: `operator` sessions also run
+    // scoped to sidestage / scout-runtime / engineering, and those have a pipeline of
+    // their own to misread this one as — the hazard EI-20709429494940822 records.
+    for (const harnessSlug of ['sidestage', 'scout-runtime', 'engineering']) {
+      expect(canReadCell(portCell(), { ownerId: 'su-p005', roles: ['operator'], harnessSlug })).toBe(
+        false,
+      );
+    }
+  });
+
+  it('does not widen any OTHER visibility kind', () => {
+    // The sentinel is a harness-axis concept. An operator-scope reader must still be
+    // refused an owner-scoped or work-item-scoped cell it has no claim to.
+    const ownerScoped = { ...portCell(), visibility: { kind: 'owner', ref: 'su-someone-else' } as const };
+    const itemScoped = { ...portCell(), visibility: { kind: 'work_item', ref: 'WI-999' } as const };
+    expect(canReadCell(ownerScoped, OPERATOR_SCOPE)).toBe(false);
+    expect(canReadCell(itemScoped, OPERATOR_SCOPE)).toBe(false);
+  });
+});
