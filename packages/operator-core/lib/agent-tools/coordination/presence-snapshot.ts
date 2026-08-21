@@ -37,6 +37,7 @@ import {
   type WakeabilitySignals,
 } from './presence-wakeability';
 import { deriveVerdict } from './liveness-oracle';
+import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { deriveContextPressure } from './context-pressure';
 import { writeWatermark } from './watermarks';
 import { getTxPool, readPathInterestsByOwner } from '../locks/su-lock-store';
@@ -569,11 +570,14 @@ export async function assemblePresenceSnapshot(
         host: r.host,
         pid: r.pid,
         source: r.source,
+        agentRole: r.agentRole,
         claimsHeld,
       },
       w,
       recordedLiveOwners,
       nowMs,
+      undefined,
+      { enabled: true, negative: false, positive: true, findHostFn: findLiveHost },
     );
     return {
       ...r,

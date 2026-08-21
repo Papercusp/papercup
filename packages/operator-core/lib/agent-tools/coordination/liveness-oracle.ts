@@ -135,6 +135,9 @@ export interface ResolveSessionStatesOpts {
   /** P-005: consult the box-local psu-pty host registry — `parked` + known
    *  non-cup role + no live host ⇒ `ended`. See the header for why opt-in. */
   psuHostAuthority?: boolean;
+  /** EI-21007686537905985: use a positive live psu-pty host witness as
+   * authoritative liveness, independently of the hostless-dead rule. */
+  psuHostPositiveAuthority?: boolean;
   /**
    * EI-19407725333778711: also resolve the FORWARD-LOOKING self-wake axis
    * (`loopArmed` / `selfWake`), one extra batched query per call.
@@ -173,12 +176,21 @@ export function deriveVerdict(
   recordedLive: ReadonlySet<string>,
   nowMs: number,
   probePidFn: ResolveSessionStatesOpts['probePidFn'] = probeProcessLiveness,
-  psuHost?: { enabled: boolean; findHostFn: (ownerId: string) => unknown | null },
+  psuHost?: {
+    enabled: boolean;
+    /** Defaults true for the legacy `psuHostAuthority` call shape. */
+    negative?: boolean;
+    positive?: boolean;
+    findHostFn: (ownerId: string) => unknown | null;
+  },
   /** EI-19407725333778711: the self-wake signals when the (opt-in) leg ran.
    *  Omitted ⇒ the verdict carries NO loopArmed/selfWake fields at all, which
    *  reads as UNKNOWN — deliberately NOT `none`. */
   selfWake?: SelfWakeSignals,
 ): LivenessVerdict {
+  const psuHostKnownRole = subject.agentRole != null && subject.agentRole !== 'cup';
+  const psuHostLive =
+    psuHost?.enabled === true && psuHostKnownRole && psuHost.findHostFn(subject.ownerId) != null;
   const hbMs = subject.heartbeatAt ? Date.parse(subject.heartbeatAt) : null;
   const stale =
     subject.stale ??
@@ -187,7 +199,10 @@ export function deriveVerdict(
   // is `recorded` — classified BEFORE the heartbeat/pid path so it is never
   // force-ended (presence-derive-from-session-log P-001; PRESENCE_DEAD_MS note).
   const recordedLiveOnly =
-    !w.wakeable && (subject.source === RECORDED_SESSION_SOURCE || recordedLive.has(subject.ownerId));
+    !w.wakeable &&
+    (subject.source === RECORDED_SESSION_SOURCE ||
+      recordedLive.has(subject.ownerId) ||
+      (psuHostLive && psuHost?.positive === true));
   let sessionState: SessionState;
   if (recordedLiveOnly) {
     sessionState = 'recorded';
@@ -206,11 +221,18 @@ export function deriveVerdict(
     if (
       psuHost?.enabled &&
       sessionState === 'parked' &&
-      subject.agentRole != null &&
-      subject.agentRole !== 'cup' &&
-      psuHost.findHostFn(subject.ownerId) == null
+      psuHostKnownRole &&
+      psuHost.negative !== false &&
+      !psuHostLive
     ) {
       sessionState = 'ended';
+    }
+    if (
+      psuHostLive &&
+      psuHost?.positive === true &&
+      (sessionState === 'ended' || sessionState === 'suspect')
+    ) {
+      sessionState = w.wakeable ? (stale ? 'draining' : 'parked') : 'recorded';
     }
   }
   return {
@@ -285,7 +307,12 @@ export async function resolveSessionStates(
       ? fetchSelf(ids).catch(() => new Map<string, SelfWakeSignals>())
       : Promise.resolve(new Map<string, SelfWakeSignals>()),
   ]);
-  const psuHost = { enabled: opts.psuHostAuthority === true, findHostFn };
+  const psuHost = {
+    enabled: opts.psuHostAuthority === true || opts.psuHostPositiveAuthority === true,
+    negative: opts.psuHostAuthority === true,
+    positive: opts.psuHostPositiveAuthority === true,
+    findHostFn,
+  };
   for (const s of hydrated) {
     const w = wakeability.get(s.ownerId);
     if (!w) continue; // no signal (degraded fetch / federated id) — state unknown

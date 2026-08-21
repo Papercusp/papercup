@@ -336,7 +336,7 @@ describe('per-item audit provenance (plan D-006/D-007)', () => {
     const original = {
       itemId: 'P-001',
       verdict: 'implemented' as const,
-      citations: [{ kind: 'code' as const, path: 'old.ts', blobSha: 'old-blob' }],
+      citations: [{ kind: 'code' as const, path: 'old.ts', blobSha: 'ce013625030ba8dba906f756967f9e9ca394464a' }],
       auditedSha: 'old-head',
       auditedAt: '2026-08-13T10:00:00.000Z',
       itemTextHash: planItemTextHash('old requirement'),
@@ -344,7 +344,7 @@ describe('per-item audit provenance (plan D-006/D-007)', () => {
     const fresh = {
       itemId: 'P-002',
       verdict: 'implemented' as const,
-      citations: [{ kind: 'test' as const, path: 'new.test.ts', blobSha: 'new-blob' }],
+      citations: [{ kind: 'test' as const, path: 'new.test.ts', blobSha: 'da39a3ee5e6b4b0d3255bfef95601890afd80709' }],
     };
     const result = prepareAuditPassEntries({
       planItems: [
