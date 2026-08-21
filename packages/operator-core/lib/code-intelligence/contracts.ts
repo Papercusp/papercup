@@ -24,6 +24,7 @@ export type CodeIntelBackend =
   | 'mcp-language-server'
   | 'omp-lsp'
   | 'ripgrep'
+  | 'ast-grep'
   | 'repomix'
   | 'code2prompt';
 
@@ -39,6 +40,12 @@ export type CodeIntelBackend =
  * lsp-*: zero-indexed by the Language Server Protocol specification
  * (`Position.line` is "line position in a document (zero-based)").
  * ripgrep/grep: one-indexed by POSIX convention.
+ * ast-grep: ZERO-indexed, measured 2026-08-21 at ast-grep 0.45.1 (P-014). Its
+ *   `--json=compact` match objects report `range.start.line` for a match on the
+ *   FIRST line of a file as `0`. Worth stating because ast-grep is a grep-shaped
+ *   tool by name and ergonomics, and every OTHER grep-shaped backend in this
+ *   table is one-indexed — so the convention a reader would assume from the
+ *   name is the opposite of the one it uses.
  */
 export const LINE_INDEX_BASE: Readonly<Record<CodeIntelBackend, 0 | 1>> = Object.freeze({
   gitnexus: 0,
@@ -46,6 +53,7 @@ export const LINE_INDEX_BASE: Readonly<Record<CodeIntelBackend, 0 | 1>> = Object
   'mcp-language-server': 0,
   'omp-lsp': 0,
   ripgrep: 1,
+  'ast-grep': 0,
   repomix: 1,
   code2prompt: 1,
 });

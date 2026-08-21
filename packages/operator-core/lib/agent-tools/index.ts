@@ -61,6 +61,7 @@ import '../goals/stop-fanout';
 // rather than seven — D-007 makes prompt weight an acceptance criterion.
 import './lsp/query';
 import './lsp/apply';
+import './lsp/astgrep';
 
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
