@@ -371,8 +371,21 @@ function main() {
     // ── initialise submodules: a plain checkout leaves them as EMPTY gitlink dirs ──
     // Must run BEFORE the node_modules symlink step below: a submodule that is itself
     // an npm workspace (e.g. libs/papercusp) needs its real directory populated before
-    // anything symlinks into it, and `git submodule update` refuses to clone into a
-    // non-empty target — a node_modules symlink already sitting there would break it.
+    // anything symlinks into it, and `git clone` refuses to clone into a non-empty
+    // target — a node_modules symlink already sitting there would break it.
+    //
+    // DELIBERATELY NOT `git submodule update`: that goes through git's submodule
+    // transport, which — since the CVE-2022-39253 hardening — refuses a `file`
+    // transport for a submodule URL by default (`fatal: transport 'file' not
+    // allowed`), even when the URL is one THIS SCRIPT constructed pointing at the
+    // caller's own local checkout, not anything the untrusted commit specifies. That
+    // restriction exists to stop a malicious commit's `.gitmodules` from making git
+    // silently clone an attacker-chosen local path; loosening it globally to route
+    // around that would reintroduce exactly the class of bug it fixes. So: skip the
+    // submodule subsystem entirely and repeat the SAME plain `git clone --local
+    // --shared --no-checkout` + `checkout --detach` recipe already used for the
+    // superproject above, once per submodule — an ordinary top-level clone of a local
+    // path, which git allows by default, and which needs no submodule config at all.
     const gitmodulesPath = join(workRoot, '.gitmodules');
     const submodules = existsSync(gitmodulesPath) ? parseGitmodules(readFileSync(gitmodulesPath, 'utf8')) : [];
     if (submodules.length > 0) {
@@ -396,38 +409,40 @@ function main() {
         process.exit(2);
       }
 
-      // Point every submodule's url at its LOCAL on-disk checkout so `submodule update`
-      // clones from THAT (git auto-hardlinks a local-path clone — no network, no copy,
-      // same spirit as the --local --shared clone above) instead of the recorded
-      // ssh:// remote. The exact committed pin is resolvable there: for `--ref=HEAD`
-      // (the default) it is literally the commit already checked out; for any other
-      // ref it is reachable through that checkout's own fetched history, since these
-      // are full, continuously-synced clones, not shallow ones.
-      const init = spawnSync('git', ['submodule', 'init', '--quiet'], { cwd: workRoot, encoding: 'utf8' });
-      if (init.status !== 0) {
-        console.error(`lint-as-committed: failed to init submodules at ${short}:\n${init.stderr || init.stdout}`);
-        process.exit(2);
-      }
       for (const sub of submodules) {
-        const cfg = spawnSync('git', ['config', `submodule.${sub.name}.url`, join(repoRoot, sub.path)], {
-          cwd: workRoot,
-          encoding: 'utf8',
-        });
-        if (cfg.status !== 0) {
-          console.error(`lint-as-committed: failed to point submodule ${sub.path} at its local checkout:\n${cfg.stderr || cfg.stdout}`);
+        // The exact committed pin: `rev-parse <sha>:<path>` resolves a gitlink tree
+        // entry to the pointed-at commit sha, the same way it resolves a blob entry
+        // to its content sha. For `--ref=HEAD` (the default) this is literally the
+        // commit the local checkout already has; for another ref it is reachable
+        // through that checkout's own fetched history, since these are full,
+        // continuously-synced local clones, not shallow ones.
+        let pin;
+        try {
+          pin = git(['rev-parse', `${sha}:${sub.path}`], repoRoot);
+        } catch (err) {
+          console.error(`lint-as-committed: cannot resolve the pinned commit for submodule ${sub.path} at ${short}: ${err.message}`);
           process.exit(2);
         }
-      }
-      const update = spawnSync('git', ['submodule', 'update', '--quiet'], {
-        cwd: workRoot,
-        encoding: 'utf8',
-        // Belt-and-braces: these urls are all local paths now, so no network call
-        // should happen, but refuse instantly instead of hanging if one somehow does.
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-      });
-      if (update.status !== 0) {
-        console.error(`lint-as-committed: failed to materialise submodule content at ${short}:\n${update.stderr || update.stdout}`);
-        process.exit(2);
+
+        const subLocal = join(repoRoot, sub.path);
+        const subWork = join(workRoot, sub.path);
+        const subClone = spawnSync('git', ['clone', '--local', '--shared', '--no-checkout', '--quiet', subLocal, subWork], {
+          encoding: 'utf8',
+        });
+        if (subClone.status !== 0) {
+          console.error(`lint-as-committed: failed to clone submodule ${sub.path} from its local checkout:\n${subClone.stderr || subClone.stdout}`);
+          process.exit(2);
+        }
+        const subCheckout = spawnSync('git', ['-c', 'advice.detachedHead=false', 'checkout', '--detach', '--quiet', pin], {
+          cwd: subWork,
+          encoding: 'utf8',
+        });
+        if (subCheckout.status !== 0) {
+          console.error(
+            `lint-as-committed: failed to check out submodule ${sub.path} at its pinned commit ${pin.slice(0, 10)}:\n${subCheckout.stderr || subCheckout.stdout}`,
+          );
+          process.exit(2);
+        }
       }
       console.log(
         `  initialised ${submodules.length} submodule(s) from local checkouts in ${((Date.now() - t1) / 1000).toFixed(1)}s (no network)`,
