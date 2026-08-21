@@ -50,7 +50,7 @@ const VERIFIER_RUN = "repair-verifier-run";
 // identity. Values are deliberately synthetic — only the key/value shape is under test.
 const CANONICAL_LAUNCH_ENV = {
   PATH: "/usr/local/bin:/usr/bin",
-  HOME: "/home/gate",
+  HOME: join(tmpdir(), "gate-home"),
   USER: "gate",
   LOGNAME: "gate",
   SHELL: "/bin/bash",
