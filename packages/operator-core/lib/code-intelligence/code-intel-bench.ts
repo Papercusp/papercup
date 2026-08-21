@@ -226,6 +226,118 @@ export function gradeSites(kase: CorpusCase, sites: readonly SymbolSite[]): Grad
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Accounted ground-truth divergences
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A corpus site a conforming LSP backend provably CANNOT return, together with
+ * the case's own falsifier restated as a machine check.
+ *
+ * This exists because the acceptance corpus is FROZEN (D-024) and one of its
+ * expected-site lists encodes GREP semantics — every line whose text mentions
+ * the symbol — where the backend implements REFERENCE semantics. Editing the
+ * corpus to match the backend would destroy the baseline; editing the test to
+ * expect three-of-four passes would silently absorb the NEXT regression too.
+ *
+ * So a divergence is ACCOUNTED instead: it must name exactly which sites are
+ * unreachable and why, and the case's OWN stated property must still hold. A
+ * failure that misses any OTHER site, or that breaks the property, is a real
+ * failure and stays one.
+ */
+export interface KnownDivergence {
+  readonly caseId: string;
+  /** Expected sites the backend cannot return, as `path:line1` keys. */
+  readonly unreachableSites: readonly string[];
+  readonly why: string;
+  /** The case's `falsifies` text, restated as a check over what came back. */
+  readonly property: string;
+  readonly propertyHolds: (m: BenchMeasurement) => boolean;
+}
+
+export const KNOWN_DIVERGENCES: readonly KnownDivergence[] = Object.freeze([
+  Object.freeze({
+    caseId: 'references-through-barrel-reexport',
+    unreachableSites: ['libs/generic/dock-workbench/src/index.ts:4'],
+    why:
+      "The barrel line is `export * from './panel-registry'` — a WILDCARD " +
+      're-export, which names no symbol. tsserver resolves it for import ' +
+      'purposes but never reports it as a reference TO `PanelRegistry`, ' +
+      'because textually it is not one. The corpus expects it because a ' +
+      'grep for the symbol would surface the file, not because a reference ' +
+      'query should. (The case\'s OTHER expected site — the declaration — IS ' +
+      'reachable and is now returned; it was missing only because the ' +
+      'adapter hardcoded context.includeDeclaration:false, which was a real ' +
+      'defect and is fixed.)',
+    property:
+      'the reference set REACHES CONSUMERS IMPORTING THROUGH THE BARREL — ' +
+      'the case exists to catch a backend that stops at the barrel and ' +
+      'returns a false-empty set read as proof nothing uses the symbol',
+    propertyHolds: (m) =>
+      // Non-empty, and reaching at least one file that is neither the
+      // declaring module nor the barrel itself — i.e. a real consumer found
+      // THROUGH the re-export.
+      m.returnedSites.length > 0 &&
+      m.returnedSites.some(
+        (s) =>
+          !s.startsWith('libs/generic/dock-workbench/src/panel-registry.ts:') &&
+          !s.startsWith('libs/generic/dock-workbench/src/index.ts:'),
+      ),
+  }),
+]);
+
+export interface DivergenceVerdict {
+  readonly accounted: boolean;
+  readonly reason: string;
+}
+
+/**
+ * Decide whether a failing measurement is an ACCOUNTED corpus divergence.
+ *
+ * Deliberately strict on both axes: the missing set must be a SUBSET of the
+ * documented unreachable sites (so a newly-missing site is never absorbed),
+ * and the case's own property must still hold (so a divergence label can
+ * never cover a real regression).
+ */
+export function classifyDivergence(m: BenchMeasurement): DivergenceVerdict {
+  if (m.correct) return { accounted: false, reason: 'measurement is correct' };
+
+  const known = KNOWN_DIVERGENCES.find((d) => d.caseId === m.caseId);
+  if (!known) {
+    return { accounted: false, reason: `no accounted divergence for '${m.caseId}'` };
+  }
+
+  const unexpected = m.grade.missing.filter((k) => !known.unreachableSites.includes(k));
+  if (unexpected.length > 0) {
+    return {
+      accounted: false,
+      reason:
+        `missing site(s) NOT covered by the accounted divergence: ${unexpected.join(', ')}` +
+        ` (accounted: ${known.unreachableSites.join(', ') || 'none'})`,
+    };
+  }
+  if (m.grade.extra.length > 0) {
+    return {
+      accounted: false,
+      reason: `returned unsanctioned extra site(s): ${m.grade.extra.join(', ')}`,
+    };
+  }
+  if (m.error !== null) {
+    return { accounted: false, reason: `backend errored: ${m.error}` };
+  }
+  if (!known.propertyHolds(m)) {
+    return {
+      accounted: false,
+      reason: `the case's own property NO LONGER HOLDS — ${known.property}`,
+    };
+  }
+
+  return {
+    accounted: true,
+    reason: `accounted divergence: ${known.why} Property still holds: ${known.property}.`,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Measurement
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -237,8 +349,25 @@ export interface BenchMeasurement {
   readonly serverWasCold: boolean;
   /** Wall time until the answer GRADED correct; null if it never did. */
   readonly timeToCorrectMs: number | null;
-  /** Latency of a second, warm query for the same cursor. */
+  /**
+   * MEDIAN latency of the warm re-queries — the steady-state number the
+   * routing policy budgets. Null if the probe never graded correct.
+   *
+   * This was a SINGLE sample, and a single sample is not a steady state: the
+   * same case measured 6ms on one run and 2183ms on the next, because the
+   * first re-query lands while the server is still doing post-answer indexing
+   * work. One unlucky sample then reads as the backend's warm latency and
+   * fails a budget the backend actually meets.
+   */
   readonly warmQueryMs: number | null;
+  /** Every warm sample, in order, so the median is auditable rather than asserted. */
+  readonly warmQuerySamplesMs: readonly number[];
+  /**
+   * The SLOWEST warm sample. Reported beside the median and never discarded:
+   * the tail is what an agent actually waits through, so a median that meets
+   * the budget while the tail does not is a finding, not a pass.
+   */
+  readonly warmQueryMaxMs: number | null;
   /** How many polls it took — >1 proves first-response was not yet correct. */
   readonly attempts: number;
   readonly correct: boolean;
@@ -274,9 +403,24 @@ export interface BenchMeasurement {
 /** What a backend costs while resident, against the shared budget. */
 export interface ResourceSample {
   readonly childProcCount: number;
+  /**
+   * Summed across every resident server. This is the FLEET-relevant number —
+   * what one agent session costs the box — but it is NOT what
+   * `DEFAULT_RESOURCE_BUDGET.rssMbMax` bounds, so never grade it against that.
+   */
   readonly totalRssMb: number;
+  /**
+   * The largest single resident server. THIS is the number the budget bounds:
+   * ResourceBudget is documented "per backend process", and childProcMax is
+   * one server per language per workspace — so two languages legitimately
+   * mean two processes, and summing them before comparing to a per-process
+   * ceiling grades the shared-server design as a budget breach.
+   */
+  readonly maxClientRssMb: number;
   readonly withinChildProcBudget: boolean;
   readonly withinRssBudget: boolean;
+  /** Servers whose own RSS exceeds the per-process ceiling, named. */
+  readonly overBudgetClients: ReadonlyArray<{ language: string; rssMb: number }>;
   readonly perClient: ReadonlyArray<{
     readonly language: string;
     readonly pid: number | null;
@@ -309,17 +453,44 @@ export function sampleLspResources(): ResourceSample {
 
   const totalRssMb =
     Math.round(perClient.reduce((sum, c) => sum + (c.rssMb ?? 0), 0) * 10) / 10;
+  const maxClientRssMb = perClient.reduce((max, c) => Math.max(max, c.rssMb ?? 0), 0);
+  const overBudgetClients = perClient
+    .filter((c) => (c.rssMb ?? 0) > DEFAULT_RESOURCE_BUDGET.rssMbMax)
+    .map((c) => ({ language: c.language, rssMb: c.rssMb as number }));
 
   return {
     childProcCount: perClient.length,
     totalRssMb,
+    maxClientRssMb,
     withinChildProcBudget: perClient.length <= DEFAULT_RESOURCE_BUDGET.childProcMax,
-    withinRssBudget: totalRssMb <= DEFAULT_RESOURCE_BUDGET.rssMbMax,
+    // Graded PER PROCESS, matching what ResourceBudget documents itself to
+    // bound. Summing first compared a two-language total against a
+    // one-process ceiling and reported the shared-server design as a breach.
+    withinRssBudget: overBudgetClients.length === 0,
+    overBudgetClients,
     perClient,
   };
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Median of a sample set, or null when there is nothing to reduce.
+ *
+ * Deliberately the median and not the mean: warm-query latency is
+ * right-skewed (an occasional re-index stall is many times the typical
+ * query), and a mean lets one such stall misreport the steady state. It is
+ * also deliberately not the MIN — that would flatter the backend by
+ * reporting its best case as its behaviour.
+ */
+export function median(samples: readonly number[]): number | null {
+  if (samples.length === 0) return null;
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 1
+    ? (sorted[mid] as number)
+    : Math.round((((sorted[mid - 1] as number) + (sorted[mid] as number)) / 2) * 10) / 10;
+}
 
 export interface LspLegOptions {
   readonly repoRoot: string;
@@ -339,6 +510,13 @@ export interface LspLegOptions {
    */
   readonly legBudgetMs?: number;
   readonly pollMs?: number;
+  /**
+   * How many warm re-queries to sample per probe before taking the median.
+   * Default 5 — enough that one post-answer indexing stall cannot BE the
+   * reported steady state, cheap enough that it costs milliseconds on a hot
+   * server.
+   */
+  readonly warmSamples?: number;
   /** Restrict to these corpus case ids (default: every probe). */
   readonly only?: readonly string[];
 }
@@ -366,6 +544,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
     deadlineMs = 120_000,
     legBudgetMs = 600_000,
     pollMs = 250,
+    warmSamples = 5,
     only,
   } = opts;
 
@@ -396,6 +575,8 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
         serverWasCold: false,
         timeToCorrectMs: null,
         warmQueryMs: null,
+        warmQuerySamplesMs: [],
+        warmQueryMaxMs: null,
         attempts: 0,
         correct: false,
         trustworthyEmpty: true, // never queried, so it made no empty claim at all
@@ -452,13 +633,22 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
       declinedIntents.push({ caseId: kase.id, intent: kase.intent, error: last.error });
     }
 
-    // Warm re-query for the steady-state number the policy actually budgets.
-    let warmQueryMs: number | null = null;
+    // Warm re-queries for the steady-state number the policy actually budgets.
+    // Sampled REPEATEDLY and reduced to a median: one sample lands while the
+    // server is still finishing post-answer indexing and is not steady state
+    // at all (measured 6ms vs 2183ms for the same case on consecutive runs).
+    const warmQuerySamplesMs: number[] = [];
     if (grade.correct) {
-      const t = Date.now();
-      await lspQuery(kase.intent, cursor);
-      warmQueryMs = Date.now() - t;
+      for (let i = 0; i < warmSamples; i += 1) {
+        const t = Date.now();
+        await lspQuery(kase.intent, cursor);
+        warmQuerySamplesMs.push(Date.now() - t);
+      }
     }
+    const warmQueryMs = median(warmQuerySamplesMs);
+    const warmQueryMaxMs = warmQuerySamplesMs.length
+      ? Math.max(...warmQuerySamplesMs)
+      : null;
 
     measurements.push({
       caseId: kase.id,
@@ -467,6 +657,8 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
       serverWasCold,
       timeToCorrectMs,
       warmQueryMs,
+      warmQuerySamplesMs,
+      warmQueryMaxMs,
       attempts,
       correct: grade.correct,
       trustworthyEmpty: last ? isTrustworthyEmpty(last) : false,
@@ -575,32 +767,55 @@ export const MCP_LANGUAGE_SERVER_SERVED_INTENTS: readonly CodeIntelIntent[] = Ob
 
 /** Render a leg report as a compact table for a Decision body. */
 export function formatLegReport(report: LspLegReport): string {
-  const rows = report.measurements.map((m) =>
-    [
-      m.notAttempted ? 'SKIP' : m.correct ? 'PASS' : 'FAIL',
+  const rows = report.measurements.map((m) => {
+    const divergence = m.correct ? null : classifyDivergence(m);
+    const verdict = m.notAttempted
+      ? 'SKIP'
+      : m.correct
+        ? 'PASS'
+        : divergence?.accounted
+          ? 'DIVERGE'
+          : 'FAIL';
+    return [
+      verdict,
       m.caseId,
       m.intent,
       m.serverWasCold ? 'cold-start' : 'warm-start',
       `toCorrect=${m.timeToCorrectMs === null ? 'NEVER' : `${m.timeToCorrectMs}ms`}`,
-      `warm=${m.warmQueryMs === null ? 'n/a' : `${m.warmQueryMs}ms`}`,
+      `warm=${m.warmQueryMs === null ? 'n/a' : `${m.warmQueryMs}ms`}` +
+        (m.warmQueryMaxMs !== null && m.warmQuerySamplesMs.length > 1
+          ? ` (median of ${m.warmQuerySamplesMs.length}, max=${m.warmQueryMaxMs}ms)`
+          : ''),
       `attempts=${m.attempts}`,
       m.emptyThenFilledMs !== null
         ? `⚠ FALSE-EMPTY: claimed healthy+empty, filled ${m.emptyThenFilledMs}ms later`
         : '',
       m.correct ? '' : `(${m.grade.reason})`,
+      divergence?.accounted ? `ACCOUNTED — ${divergence.reason}` : '',
       !m.correct && !m.notAttempted
         ? `returned=[${m.returnedSites.join(', ') || 'nothing'}]`
         : '',
       m.error && !m.notAttempted ? `err=${m.error}` : '',
     ]
       .filter(Boolean)
-      .join('  '),
-  );
+      .join('  ');
+  });
   const r = report.resources;
   rows.push(
-    `resources: ${r.childProcCount} server proc(s), ${r.totalRssMb}MB RSS ` +
-      `(budget ${DEFAULT_RESOURCE_BUDGET.childProcMax} proc / ${DEFAULT_RESOURCE_BUDGET.rssMbMax}MB) ` +
-      `procBudget=${r.withinChildProcBudget ? 'OK' : 'EXCEEDED'}`,
+    `resources: ${r.childProcCount} server proc(s), ` +
+      `largest=${r.maxClientRssMb}MB, total=${r.totalRssMb}MB ` +
+      `(budget ${DEFAULT_RESOURCE_BUDGET.childProcMax} proc / ` +
+      `${DEFAULT_RESOURCE_BUDGET.rssMbMax}MB PER PROCESS) ` +
+      `procBudget=${r.withinChildProcBudget ? 'OK' : 'EXCEEDED'} ` +
+      `rssBudget=${r.withinRssBudget ? 'OK' : 'EXCEEDED'}` +
+      (r.overBudgetClients.length
+        ? ` over=[${r.overBudgetClients.map((c) => `${c.language} ${c.rssMb}MB`).join(', ')}]`
+        : ''),
+  );
+  rows.push(
+    `  per-server: ${r.perClient
+      .map((c) => `${c.language} ${c.rssMb === null ? 'rss?' : `${c.rssMb}MB`} cold=${c.coldStartMs}ms`)
+      .join(' | ')}`,
   );
   for (const d of report.declinedIntents) {
     rows.push(`declined: ${d.caseId} (${d.intent}) — ${d.error}`);

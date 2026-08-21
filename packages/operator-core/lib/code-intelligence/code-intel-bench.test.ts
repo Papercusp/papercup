@@ -23,11 +23,15 @@ import { resolveProjectRoot } from './lsp-adapter.ts';
 import {
   BENCH_PROBES,
   CORPUS_GROUND_TRUTH_INTENTS,
+  KNOWN_DIVERGENCES,
   MCP_LANGUAGE_SERVER_SERVED_INTENTS,
   MCP_LANGUAGE_SERVER_TOOL_SURFACE,
   auditToolSurface,
+  classifyDivergence,
   gradeSites,
+  median,
   resolveProbeCursor,
+  type BenchMeasurement,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
 import { isMutatingToolName, type SymbolSite } from './contracts.ts';
