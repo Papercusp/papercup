@@ -21,7 +21,6 @@ vi.mock('../scheduler/plan-item-lane-guard', () => ({
 
 import {
   ACTIVE_TOOL_CALL_WINDOW_MS,
-  STALE_CLAIM_GRACE_MS,
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
@@ -40,6 +39,7 @@ import {
   type PlanItemLaneBlock,
 } from './assignments';
 import { classifyItemActivity, isReclaimable, type ItemActivity } from '../item-activity';
+import { STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
 
 const base: FleetAssignmentRow = {

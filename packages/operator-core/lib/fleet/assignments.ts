@@ -1068,7 +1068,9 @@ export function summarizeOrphan(
     const sessionState = holder?.sessionState;
     if (sessionState == null) {
       // No oracle signal at all — degrade to the pre-oracle heartbeat/recency behaviour.
-      return isRecentlyActive(holder, nowMs) || r.holderAlive === true;
+      // A claim can reach this surface before its holder's first heartbeat. The
+      // scheduler's claim-time grace is the only liveness signal in that gap.
+      return freshClaim || isRecentlyActive(holder, nowMs) || r.holderAlive === true;
     }
     if (sessionState === 'ended') return false; // confirmed, permanent — never overridable.
     if (ORACLE_CONFIRMED_GONE.has(sessionState)) {
