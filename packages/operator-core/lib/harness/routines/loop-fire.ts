@@ -449,7 +449,8 @@ export function renderLoopWallsBlock(walls: ReadonlyArray<WallEntry>, nowMs: num
 export function renderLoopChecksBlock(checks: ReadonlyArray<CheckEntry>): string | null {
   if (!checks.length) return null;
   return (
-    '🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ? PREDICTED: run the re-check before ' +
+    '🧪 CARRIED CHECKS — claims + probes (✓ verified w/ evidence · ⚠ CONTESTED: evidence contradicts verification; ' +
+    '? PREDICTED: run the re-check before ' +
     'relying on it; update/clear via loop:checkpoint { checks }):\n' +
     checks.map((c) => `  ${renderCheckLine(c).replace(/^-\s*/, '• ')}`).join('\n')
   );
