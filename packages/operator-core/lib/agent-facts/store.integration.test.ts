@@ -1733,6 +1733,108 @@ describe('volatile measurements (migration 795)', () => {
   });
 });
 
+/**
+ * P-006 / D-011 — the normalization repairs, pinned against the REAL DB.
+ *
+ * Why this block exists at all: `store.test.ts` is a validation-BOUNDARY suite (it runs on
+ * `failSql`, which throws if reached), so it can only prove that a call is no longer
+ * REFUSED. It cannot see what was written. A mutant that deleted the clamp — restoring
+ * `const ttl = ... input.ttlSec ...` in place of `effectiveTtlSec` — still passes every
+ * boundary test, because the call succeeds either way; it just persists a 7-day volatile
+ * snapshot. The written value is only observable here, so this is where it is pinned.
+ */
+describe('P-006 / D-011 normalization writes the repaired value, not just a receipt', () => {
+  const scopeRef = 'p006-normalization-writes';
+  const base = {
+    scope: 'harness' as const,
+    scopeRef,
+    body: 'load average is 38.08',
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+  const measuredAt = '2026-08-21T15:09:06.000Z';
+  const WEEK_SEC = 604_800;
+
+  const ttlSecondsOf = async (key: string): Promise<number> => {
+    const [row] = await db.sql<{ ttl_seconds: number }[]>`
+      SELECT EXTRACT(EPOCH FROM (expires_at - created_at))::float AS ttl_seconds
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope_ref = ${scopeRef} AND key = ${key}
+         AND superseded_at IS NULL`;
+    return row.ttl_seconds;
+  };
+
+  it('CLAMPS the stored expires_at to the 15-minute ceiling, not the requested week', async () => {
+    const result = await assertFact(
+      { ...base, key: 'clamped', subjectVolatile: true, measuredAt, ttlSec: WEEK_SEC },
+      db.sql,
+    );
+
+    // The written value. Under a no-clamp mutant this is 604800 and the test fails,
+    // which is the entire point of asserting here rather than at the boundary.
+    const ttlSeconds = await ttlSecondsOf('clamped');
+    expect(ttlSeconds).toBeGreaterThan(FACT_VOLATILE_MAX_TTL_SEC - 60);
+    expect(ttlSeconds).toBeLessThanOrEqual(FACT_VOLATILE_MAX_TTL_SEC + 1);
+
+    // The receipt, which is what makes the repair teaching rather than a silent surprise.
+    expect(result.normalized?.ttlClampedFrom).toBe(WEEK_SEC);
+    expect(result.normalized?.ttlClampedTo).toBe(FACT_VOLATILE_MAX_TTL_SEC);
+    expect(result.normalized?.note).toBeTruthy();
+  });
+
+  /**
+   * CALIBRATION — without this the block above stops measuring what it exists to measure.
+   * A mutant that clamped EVERY ttlSec to 900 (not just volatile ones) would satisfy the
+   * clamp test perfectly while silently truncating every ordinary long-lived fact in the
+   * system. This case is what distinguishes "the volatile ceiling binds" from "the TTL
+   * path is broken", and it must keep the full week.
+   */
+  it('CALIBRATION: an ordinary (non-volatile) fact with the same ttlSec keeps the full week', async () => {
+    const result = await assertFact({ ...base, key: 'unclamped-control', ttlSec: WEEK_SEC }, db.sql);
+
+    const ttlSeconds = await ttlSecondsOf('unclamped-control');
+    expect(ttlSeconds).toBeGreaterThan(WEEK_SEC - 60);
+
+    // No repair fired, so the receipt is ABSENT — never an empty object (the `evicted`
+    // convention), which is what keeps `if (result.normalized)` a correct read.
+    expect(result.normalized).toBeUndefined();
+  });
+
+  it('INFERS subjectVolatile from measuredAt and persists the marker as a real boolean', async () => {
+    // measuredAt supplied, subjectVolatile omitted: you do not stamp a sample time for a
+    // non-sample. Pre-P-006 this was a hard refusal that stored nothing.
+    const result = await assertFact({ ...base, key: 'inferred', measuredAt }, db.sql);
+
+    expect(result.normalized?.subjectVolatileInferred).toBe(true);
+
+    // The stored marker must be a JSONB BOOLEAN, not the string "true": the volatile
+    // fact-cap partition (EI-20365165629381535) keys off the boolean, so a string here
+    // would let the row escape its bounded cap while still reading as volatile.
+    const [row] = await db.sql<{ is_volatile: boolean }[]>`
+      SELECT (measurement->'subjectVolatile' = 'true'::jsonb) AS is_volatile
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope_ref = ${scopeRef} AND key = 'inferred'
+         AND superseded_at IS NULL`;
+    expect(row.is_volatile).toBe(true);
+
+    // Inference alone must also bound the lifetime — an inferred snapshot that kept an
+    // unbounded TTL would be the original bug wearing the repair's clothes.
+    const ttlSeconds = await ttlSecondsOf('inferred');
+    expect(ttlSeconds).toBeLessThanOrEqual(FACT_VOLATILE_MAX_TTL_SEC + 1);
+  });
+
+  it('applies BOTH repairs in one call and reports both on the same receipt', async () => {
+    const result = await assertFact(
+      { ...base, key: 'both', measuredAt, ttlSec: WEEK_SEC },
+      db.sql,
+    );
+
+    expect(result.normalized?.subjectVolatileInferred).toBe(true);
+    expect(result.normalized?.ttlClampedFrom).toBe(WEEK_SEC);
+    expect(await ttlSecondsOf('both')).toBeLessThanOrEqual(FACT_VOLATILE_MAX_TTL_SEC + 1);
+  });
+});
+
 // EI-20365165629381535: volatile snapshots get their own bounded cap. The
 // partition must be based on the JSONB BOOLEAN marker, not text extraction:
 // legacy/malformed rows are ordinary facts and must not be allowed to either
