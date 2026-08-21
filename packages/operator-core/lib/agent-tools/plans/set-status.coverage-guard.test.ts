@@ -88,6 +88,7 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
       slug: 'context-injection-retrieval-reach-and-visibility-2026-08-03',
       item: 'P-012',
       status: 'dropped',
+      note: 'Intentional drop for the coverage-guard scenario.',
       onlyIfNoOtherOpenCoverage: true,
     });
     expect(b.results[0].ok).toBe(true); // never a hard error
@@ -109,6 +110,7 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
       slug: 'demo-plan',
       item: 'P-012',
       status: 'dropped',
+      note: 'Intentional drop after all linked work reached terminal state.',
       onlyIfNoOtherOpenCoverage: true,
     });
     expect(b.results[0].ok).toBe(true);
@@ -121,7 +123,12 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
       { id: 'WI-37457', state: 'open' } as never,
     ]);
     lockReturnsMutatorValue(new Set(['P-012']));
-    const b = await body({ slug: 'demo-plan', item: 'P-012', status: 'dropped' });
+    const b = await body({
+      slug: 'demo-plan',
+      item: 'P-012',
+      status: 'dropped',
+      note: 'Intentional unguarded drop for this scenario.',
+    });
     expect(b.results[0].skipped).toBeUndefined();
     expect(b.results[0].newStatus).toBe('dropped');
     expect(reconcileMocks.findAllLinkedWorkItems).not.toHaveBeenCalled();
@@ -236,6 +243,7 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
       slug: 'demo-plan',
       item: 'P-012',
       status: 'dropped',
+      note: 'Intentional drop despite the best-effort coverage lookup failure.',
       onlyIfNoOtherOpenCoverage: true,
     });
     expect(b.results[0].ok).toBe(true);
@@ -283,6 +291,7 @@ describe('plans:set-status completed guard (EI-20129670928216719)', () => {
       slug: 'fix-0014-platform-defects-2026-08-10',
       item: 'P-005',
       status: 'dropped',
+      note: 'Intentional cascade used to verify the completed-item guard.',
       onlyIfNoOtherOpenCoverage: true,
       onlyIfNotCompleted: true,
     });
@@ -307,6 +316,7 @@ describe('plans:set-status completed guard (EI-20129670928216719)', () => {
       slug: 'fix-0014-platform-defects-2026-08-10',
       item: 'P-005',
       status: 'dropped',
+      note: 'Intentional drop used to reproduce the pre-guard downgrade.',
       onlyIfNoOtherOpenCoverage: true, // the guard that was ALREADY there
       // onlyIfNotCompleted deliberately omitted — this is the pre-fix behaviour
     });
@@ -324,6 +334,7 @@ describe('plans:set-status completed guard (EI-20129670928216719)', () => {
       slug: 'demo-plan',
       item: 'P-012',
       status: 'dropped',
+      note: 'Intentional drop of unfinished work.',
       onlyIfNotCompleted: true,
     });
     expect(b.results[0].ok).toBe(true);
