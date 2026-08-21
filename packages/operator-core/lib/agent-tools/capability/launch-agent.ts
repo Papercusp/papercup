@@ -57,8 +57,10 @@ import {
   memberSpecSchema,
   recordAgentLaunchResult,
   resolveResumeTarget,
+  restoreVisibleMayShutdown,
   verifyFreshLaunchStarted,
   verifyResumeStarted,
+  waitForPtyHostGone,
   type FleetMemberDefaults,
   type FreshLaunchVerdict,
   type LaunchMode,
@@ -69,6 +71,9 @@ import {
 import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { describeSessionEndTime } from '../../adv-sessions';
 import type { ColorScheme } from '../../console-color-schemes';
+import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { nodeCgroupFs } from '../../task-manager/cgroup-read';
+import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
 
 /** Launching more than this many agents in one call is almost certainly a mistake
  *  (and is heavy — each is a real CLI process). Mirrors capability:terminal's cap. */
@@ -163,6 +168,12 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Branch off the resumed session instead of continuing it in place: the fork gets a FRESH identity + its own transcript, and the original is untouched. Forced automatically when the source session is still LIVE (a second CLI on one transcript collides — WI-3882).'),
+    restoreVisible: z
+      .boolean()
+      .optional()
+      .describe(
+        'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. Refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. The old agent-launched, unattended host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
+      ),
     agent: z
       .enum(['claude', 'codex', 'omp'])
       .optional()
@@ -219,6 +230,15 @@ export default defineTool({
     const isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     if (!isResume && args.fork) {
       return err('`fork: true` needs a source session — pass `resume: { agentId }` (or `sessionId`) to fork from.');
+    }
+    if (args.restoreVisible && !isResume) {
+      return err('`restoreVisible:true` requires `resume: { sessionId }` — it restores one exact existing transcript.');
+    }
+    if (args.restoreVisible && !args.resume?.sessionId) {
+      return err('`restoreVisible:true` requires an exact `resume.sessionId`; an agentId/latest lookup is not a safe destructive target.');
+    }
+    if (args.restoreVisible && args.fork) {
+      return err('`restoreVisible:true` and `fork:true` conflict: restoration continues the exact transcript in place; fork leaves the source untouched.');
     }
     if (isResume && args.plan) {
       return err('`plan` is for a FRESH launch. A resumed session keeps its own context — put any new direction in `brief`, which becomes its next turn.');
@@ -309,7 +329,48 @@ export default defineTool({
       if (!target.ok) return err(`Cannot resume: ${target.detail}`);
       resumeSessionId = target.sessionId;
       resumeOwnerId = target.ownerId;
-      if (target.live && !fork) {
+      let sourceStillLive = target.live;
+      if (args.restoreVisible) {
+        if (!target.live || !target.ownerId) {
+          return err(
+            `Cannot restore ${target.sessionId}: no live managed host is attached to the resolved owner. ` +
+              'Use an ordinary exact resume; restoration is only for a host that survived its window.',
+          );
+        }
+        const host = findLiveHost(target.ownerId);
+        if (!host) {
+          return err(`Cannot restore ${target.sessionId}: its live-host record changed during verification. Nothing was terminated.`);
+        }
+        const windowVerdict = isPidInLiveWindowScope(host.pid, nodeCgroupFs);
+        if (!restoreVisibleMayShutdown(windowVerdict)) {
+          return err(
+            `Cannot restore ${target.sessionId}: desktop-window verdict for ${target.ownerId} is ${windowVerdict}. ` +
+              'Only a positive dead-window witness permits shutdown; alive, unknown, and not-a-window all refuse. Nothing was terminated.',
+          );
+        }
+        const shutdown = await shutdownViaPty(target.ownerId, {
+          force: true,
+          reason: `guarded visible restore of exact native session ${target.sessionId}`,
+        });
+        if (shutdown !== 'sent') {
+          return err(
+            `Cannot restore ${target.sessionId}: the proven-windowless host refused or missed graceful shutdown (${shutdown}). ` +
+              'Nothing was killed and no replacement was launched.',
+          );
+        }
+        if (!(await waitForPtyHostGone(target.ownerId))) {
+          return err(
+            `Cannot restore ${target.sessionId}: graceful shutdown was accepted but the old host did not disappear within 10s. ` +
+              'No replacement was launched, preventing two CLIs on one transcript.',
+          );
+        }
+        sourceStillLive = false;
+        notes.push(
+          `✓ Guarded restore: kernel cgroup evidence proved ${target.ownerId}'s desktop window dead; ` +
+            `its unattended agent-launched host shut down gracefully before exact UUID ${target.sessionId} was relaunched.`,
+        );
+      }
+      if (sourceStillLive && !fork) {
         fork = true;
         notes.push(
           `⚠ ${target.ownerId ?? 'that session'} is still LIVE — resuming it in place would open a second CLI against one transcript (WI-3882), so it was FORKED instead. The fork has a FRESH identity; the original keeps running untouched.`,
@@ -321,7 +382,7 @@ export default defineTool({
       const endedPhrase = describeSessionEndTime(target);
       notes.push(
         fork
-          ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${target.live ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
+          ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${sourceStillLive ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
           : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
       );
 
@@ -644,17 +705,57 @@ export default defineTool({
     // a fork mints a new identity we can't poll here, and a headless session hosts
     // no window whose silent close is the symptom.
     let resumeVerifyFailed = false;
+    let resumeVerification: {
+      expectedSessionId: string | null;
+      actualSessionId: string | null;
+      mismatch: boolean;
+      rollback: string | null;
+    } | null = null;
     if (isResume && !fork && !args.headless && resumeOwnerId && opened.length > 0) {
-      const verify = await verifyResumeStarted(resumeOwnerId, { timeoutMs: RESUME_VERIFY_TIMEOUT_MS });
+      const verify = await verifyResumeStarted(resumeOwnerId, {
+        expectedSessionId: resumeSessionId,
+        timeoutMs: RESUME_VERIFY_TIMEOUT_MS,
+      });
       if (!verify.started) {
         resumeVerifyFailed = true;
-        notes.push(
-          `✗ RESUME UNVERIFIED — a window opened but NO live agent registered for ${resumeOwnerId} within ` +
-            `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s, so the resume almost certainly NO-OP'd (its transcript may be ` +
-            `archived off-disk, or \`claude --resume\` found nothing and the terminal exited). Do NOT assume it is running: ` +
-            `check the terminal window; if it exited, rematerialize the archived transcript ` +
-            `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.`,
-        );
+        if (verify.mismatch) {
+          const rollback = await shutdownViaPty(resumeOwnerId, {
+            force: true,
+            reason: `resume UUID mismatch: requested ${verify.expectedSessionId ?? 'unknown'}, actual ${verify.actualSessionId ?? 'unknown'}`,
+          });
+          resumeVerification = {
+            expectedSessionId: verify.expectedSessionId,
+            actualSessionId: verify.actualSessionId,
+            mismatch: true,
+            rollback,
+          };
+          notes.push(
+            `✗ RESUME UUID MISMATCH — requested ${verify.expectedSessionId ?? '(unknown)'} but the live backend ` +
+              `actually resumed ${verify.actualSessionId ?? '(no attested UUID)'}. Success was REFUSED. ` +
+              `Rollback result for the newly launched wrong session: ${rollback}.`,
+          );
+        } else {
+          resumeVerification = {
+            expectedSessionId: verify.expectedSessionId,
+            actualSessionId: verify.actualSessionId,
+            mismatch: false,
+            rollback: null,
+          };
+          notes.push(
+            `✗ RESUME UNVERIFIED — a window opened but NO live agent registered for ${resumeOwnerId} within ` +
+              `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s, so the resume almost certainly NO-OP'd (its transcript may be ` +
+              `archived off-disk, or \`claude --resume\` found nothing and the terminal exited). Do NOT assume it is running: ` +
+              `check the terminal window; if it exited, rematerialize the archived transcript ` +
+              `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.`,
+          );
+        }
+      } else {
+        resumeVerification = {
+          expectedSessionId: verify.expectedSessionId,
+          actualSessionId: verify.actualSessionId,
+          mismatch: false,
+          rollback: null,
+        };
       }
     }
 
@@ -774,6 +875,7 @@ export default defineTool({
           : [],
       ),
       ...(resumeVerifyFailed ? { resumeVerified: false } : {}),
+      ...(resumeVerification ? { resumeVerification } : {}),
       ...(freshVerdict ? { agentStarted: freshVerdict.agentStarted } : {}),
     };
 

@@ -20,6 +20,22 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 
+const shutdownViaPtyMock = vi.hoisted(() =>
+  vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'),
+);
+const findLiveHostMock = vi.hoisted(() => vi.fn((_ownerId: string): unknown => null));
+vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  findLiveHost: (ownerId: string) => findLiveHostMock(ownerId),
+  shutdownViaPty: (ownerId: string, opts?: unknown) => shutdownViaPtyMock(ownerId, opts),
+}));
+
+const windowScopeVerdictMock = vi.hoisted(() => vi.fn((_pid: number, _fs: unknown) => 'dead'));
+vi.mock('../../task-manager/terminal-residue-census', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  isPidInLiveWindowScope: (pid: number, fs: unknown) => windowScopeVerdictMock(pid, fs),
+}));
+
 const getModesMock = vi.hoisted(() => vi.fn());
 vi.mock('../../modes/store', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -137,7 +153,13 @@ const verifyFreshLaunchStartedMock = vi.fn(async (_args: unknown) => ({
   sessions: [],
   note: 'test launch verification stub',
 }));
-const verifyResumeStartedMock = vi.fn(async (_ownerId: unknown) => ({ started: true }));
+const verifyResumeStartedMock = vi.fn(async (_ownerId: unknown, opts?: { expectedSessionId?: string | null }) => ({
+  started: true,
+  waitedMs: 0,
+  expectedSessionId: opts?.expectedSessionId ?? null,
+  actualSessionId: opts?.expectedSessionId ?? null,
+  mismatch: false,
+}));
 const claimAgentLaunchMock = vi.fn(
   async (
     _opts: unknown,
@@ -149,11 +171,13 @@ const claimAgentLaunchMock = vi.fn(
   }> => ({ won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null }),
 );
 const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
+const waitForPtyHostGoneMock = vi.fn(async (_ownerId: unknown) => true);
 vi.mock('../../agent-launch-core', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveResumeTarget: (ref: unknown) => resolveResumeTargetMock(ref as never),
   verifyFreshLaunchStarted: (args: unknown) => verifyFreshLaunchStartedMock(args as never),
-  verifyResumeStarted: (ownerId: unknown) => verifyResumeStartedMock(ownerId as never),
+  verifyResumeStarted: (ownerId: unknown, opts: unknown) => verifyResumeStartedMock(ownerId as never, opts as never),
+  waitForPtyHostGone: (ownerId: unknown) => waitForPtyHostGoneMock(ownerId),
   claimAgentLaunch: (o: unknown) => claimAgentLaunchMock(o),
   recordAgentLaunchResult: (o: unknown) => recordAgentLaunchResultMock(o),
 }));
@@ -188,6 +212,17 @@ beforeEach(() => {
     sessions: [],
     note: 'test launch verification stub',
   });
+  verifyResumeStartedMock.mockResolvedValue({
+    started: true,
+    waitedMs: 0,
+    expectedSessionId: 'sid-dead',
+    actualSessionId: 'sid-dead',
+    mismatch: false,
+  });
+  shutdownViaPtyMock.mockResolvedValue('sent');
+  findLiveHostMock.mockReturnValue({ ownerId: 'su-a1a71', pid: 42, sock: '/run/host.sock' });
+  windowScopeVerdictMock.mockReturnValue('dead');
+  waitForPtyHostGoneMock.mockResolvedValue(true);
   getModesMock.mockResolvedValue([]);
   listFactsMock.mockResolvedValue([]);
 });
@@ -413,6 +448,76 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--fork');
   });
 
+  it('refuses guarded restoration when the exact live session still has a desktop window', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    windowScopeVerdictMock.mockReturnValue('alive');
+
+    const res = await launchAgent.handler({
+      resume: { sessionId: 'sid-dead' },
+      restoreVisible: true,
+    }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('verdict for su-a1a71 is alive');
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['unknown', 'not-a-window'] as const)(
+    'fails closed on a %s desktop-window verdict',
+    async (verdict) => {
+      resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+      windowScopeVerdictMock.mockReturnValue(verdict);
+
+      const res = await launchAgent.handler({
+        resume: { sessionId: 'sid-dead' },
+        restoreVisible: true,
+      }, ctx);
+
+      expect(isError(res)).toBe(true);
+      expect(textOf(res)).toContain(`is ${verdict}`);
+      expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+      expect(spawnConsoleMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it('gracefully closes only a proven-windowless host, waits for it, then exact-resumes visibly', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+
+    const res = await launchAgent.handler({
+      resume: { sessionId: 'sid-dead' },
+      restoreVisible: true,
+    }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(shutdownViaPtyMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      expect.objectContaining({ force: true, reason: expect.stringContaining('sid-dead') }),
+    );
+    expect(waitForPtyHostGoneMock).toHaveBeenCalledWith('su-a1a71');
+    expect(spawnedCommand()).toContain('--resume=sid-dead');
+    expect(spawnedCommand()).not.toContain('--fork');
+    expect(textOf(res)).toContain('Guarded restore');
+    expect(verifyResumeStartedMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      expect.objectContaining({ expectedSessionId: 'sid-dead' }),
+    );
+  });
+
+  it('does not launch a replacement when the proven-windowless host refuses shutdown', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    shutdownViaPtyMock.mockResolvedValue('refused-human-attended');
+
+    const res = await launchAgent.handler({
+      resume: { sessionId: 'sid-dead' },
+      restoreVisible: true,
+    }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('refused-human-attended');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
   it('refuses a resume/fork whose source is at critical context pressure', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
     fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
@@ -464,7 +569,13 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('fails loudly and records the failure when a visible resume opens no live agent (EI-20264752821998735)', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
-    verifyResumeStartedMock.mockResolvedValue({ started: false });
+    verifyResumeStartedMock.mockResolvedValue({
+      started: false,
+      waitedMs: 30_000,
+      expectedSessionId: 'sid-dead',
+      actualSessionId: null,
+      mismatch: false,
+    });
 
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
 
@@ -476,6 +587,37 @@ describe('resume + fork (D-004/D-007)', () => {
         summary: expect.objectContaining({ mode: 'resume', resumeVerified: false }),
       }),
     );
+  });
+
+  it('rolls back a newly launched resume whose backend UUID differs from the exact request', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, sessionId: 'later-rollout-uuid' });
+    verifyResumeStartedMock.mockResolvedValue({
+      started: false,
+      waitedMs: 10,
+      expectedSessionId: 'later-rollout-uuid',
+      actualSessionId: 'older-root-uuid',
+      mismatch: true,
+    });
+
+    const res = await launchAgent.handler({ resume: { sessionId: 'later-rollout-uuid' } }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('RESUME UUID MISMATCH');
+    expect(textOf(res)).toContain('requested later-rollout-uuid');
+    expect(textOf(res)).toContain('actually resumed older-root-uuid');
+    expect(shutdownViaPtyMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      expect.objectContaining({ force: true }),
+    );
+    expect(dataOf(res)?.launch).toMatchObject({
+      resumeVerified: false,
+      resumeVerification: {
+        expectedSessionId: 'later-rollout-uuid',
+        actualSessionId: 'older-root-uuid',
+        mismatch: true,
+        rollback: 'sent',
+      },
+    });
   });
 
   it('refuses to resume one session N times (fork is the run-alongside path)', async () => {

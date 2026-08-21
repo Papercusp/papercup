@@ -48,6 +48,10 @@ export interface PsuPtyHost {
   ptyPid: number;
   sock: string;
   command: string;
+  /** Exact argv of the hosted backend process. The writer has always persisted
+   *  this field; declaring it makes post-launch native-session attestation
+   *  possible instead of treating ownerId liveness as transcript identity. */
+  args?: string[];
   startedAt: number;
   // ── Activity annotation (liveness-hardening P-006; ADDITIVE — absent on
   //    files written by older hosts). The pty stream is a true mid-turn

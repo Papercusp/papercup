@@ -7,8 +7,12 @@ import {
   injectAccountArg,
   injectKickoffAfterResume,
   memberLaunchCommand,
+  nativeSessionIdFromHost,
+  resolvedNativeSessionId,
+  restoreVisibleMayShutdown,
   resolveResumeTarget,
   verifyResumeStarted,
+  waitForPtyHostGone,
   type FleetMemberDefaults,
 } from './agent-launch-core';
 
@@ -382,11 +386,14 @@ describe('resolveResumeTarget', () => {
     expect(r).toMatchObject({ error: 'not_found' });
   });
 
-  it('falls back from an indexed native id to the session_turns owner when adv_sessions.session_id is null', () => {
+  it('uses session_turns only to recover the owner; an exact native UUID never rewinds to the owner row UUID', () => {
+    expect(resolvedNativeSessionId('later-rollout-uuid', 'older-root-uuid')).toBe('later-rollout-uuid');
+    expect(resolvedNativeSessionId('later-rollout-uuid', null)).toBe('later-rollout-uuid');
+    expect(resolvedNativeSessionId(null, 'owner-latest-uuid')).toBe('owner-latest-uuid');
+
     const source = readFileSync(new URL('./agent-launch-core.ts', import.meta.url), 'utf8');
     expect(source).toContain('FROM harness_shared.session_turns');
     expect(source).toContain('coord_owner_id = (SELECT owner FROM indexed_owner)');
-    expect(source).toContain('sessionId: row.sessionId ?? sessionId!');
   });
 });
 
@@ -460,6 +467,26 @@ describe('verifyResumeStarted (EI-11524: a resume that leaves no live agent must
     expect(sleep).toHaveBeenCalledTimes(1);
   });
 
+  it('refuses a live owner host whose backend resumed a different native UUID', async () => {
+    const r = await verifyResumeStarted(OWNER, {
+      expectedSessionId: 'later-rollout-uuid',
+      findHost: () => ({
+        ownerId: OWNER,
+        pid: 42,
+        sock: `/run/psu-pty/${OWNER}.sock`,
+        command: 'codex',
+        args: ['--model', 'gpt-5.6-sol', 'resume', 'older-root-uuid'],
+      }) as never,
+    });
+
+    expect(r).toMatchObject({
+      started: false,
+      mismatch: true,
+      expectedSessionId: 'later-rollout-uuid',
+      actualSessionId: 'older-root-uuid',
+    });
+  });
+
   // THE REGRESSION: an archived/no-op resume spawns a window but boots no agent, so
   // no live host EVER registers. Before EI-11524 this reported phantom success; now
   // it must be detectable as started:false so the tool can fail loudly.
@@ -474,5 +501,43 @@ describe('verifyResumeStarted (EI-11524: a resume that leaves no live agent must
 
     expect(r.started).toBe(false);
     expect(r.waitedMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('nativeSessionIdFromHost', () => {
+  it('reads Codex positional resume and Claude/OMP resume flags', () => {
+    expect(nativeSessionIdFromHost({ command: 'codex', args: ['-m', 'gpt-5.6-sol', 'resume', 'codex-uuid'] })).toBe('codex-uuid');
+    expect(nativeSessionIdFromHost({ command: 'claude', args: ['--resume', 'claude-uuid'] })).toBe('claude-uuid');
+    expect(nativeSessionIdFromHost({ command: 'omp', args: ['--resume-session=omp-uuid'] })).toBe('omp-uuid');
+  });
+
+  it('returns null when the host does not attest a native resume id', () => {
+    expect(nativeSessionIdFromHost({ command: 'codex', args: ['--model', 'gpt-5.6-sol'] })).toBeNull();
+    expect(nativeSessionIdFromHost({ command: 'codex' })).toBeNull();
+  });
+});
+
+describe('guarded visible restoration', () => {
+  it('permits shutdown only with a positive dead-window witness', () => {
+    expect(restoreVisibleMayShutdown('dead')).toBe(true);
+    expect(restoreVisibleMayShutdown('alive')).toBe(false);
+    expect(restoreVisibleMayShutdown('unknown')).toBe(false);
+    expect(restoreVisibleMayShutdown('not-a-window')).toBe(false);
+  });
+
+  it('waits for the exact old host to disappear before relaunching', async () => {
+    const findHost = vi.fn().mockReturnValueOnce({ pid: 1 }).mockReturnValueOnce({ pid: 1 }).mockReturnValue(null);
+    const sleep = vi.fn().mockResolvedValue(undefined);
+    await expect(waitForPtyHostGone(OWNER, { findHost: findHost as never, sleep, pollMs: 1, timeoutMs: 100 })).resolves.toBe(true);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails closed when the old host never disappears', async () => {
+    await expect(waitForPtyHostGone(OWNER, {
+      findHost: (() => ({ pid: 1 })) as never,
+      sleep: vi.fn().mockResolvedValue(undefined),
+      pollMs: 10,
+      timeoutMs: 25,
+    })).resolves.toBe(false);
   });
 });

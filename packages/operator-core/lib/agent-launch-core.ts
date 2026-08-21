@@ -215,6 +215,24 @@ export type ResolveResumeError =
 export type ResolveResumeResult = ({ ok: true } & ResumeTarget) | ResolveResumeError;
 
 /**
+ * Pick the native transcript id a resume command must receive.
+ *
+ * `requestedSessionId` is an EXACT native UUID contract. The resolver may use
+ * `session_turns` to recover that rollout's logical owner and then read the
+ * owner's `adv_sessions` row for cwd/agent/liveness metadata, but that owner row
+ * can legitimately carry an OLDER root UUID. Substituting the row UUID silently
+ * rewinds the conversation — the 2026-08-20 restoration incident did exactly
+ * that for two Codex sessions. The explicitly requested UUID therefore always
+ * wins; only an owner/agent-id lookup uses the row's recorded native UUID.
+ */
+export function resolvedNativeSessionId(
+  requestedSessionId: string | null | undefined,
+  recordedSessionId: string | null | undefined,
+): string | null {
+  return requestedSessionId?.trim() || recordedSessionId?.trim() || null;
+}
+
+/**
  * Resume/fork RESOLVER (P-004, D-004): given an AGENT id (`su-…`) or a native
  * CLI session uuid, resolve the most-recent matching `adv_sessions` row so a
  * caller never hunts a transcript uuid by hand — and detect a still-LIVE
@@ -269,7 +287,8 @@ export async function resolveResumeTarget(ref: {
     };
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
-  if (!row.sessionId && !sessionId) {
+  const nativeSessionId = resolvedNativeSessionId(sessionId, row.sessionId);
+  if (!nativeSessionId) {
     return {
       ok: false,
       error: 'no_native_session_id',
@@ -282,11 +301,9 @@ export async function resolveResumeTarget(ref: {
   const host: PsuPtyHost | null = row.coordOwnerId ? findLiveHost(row.coordOwnerId) : null;
   return {
     ok: true,
-    // Codex cannot be born with a caller-selected native id, so its adv row
-    // legitimately carries NULL. session_turns indexes the rollout uuid and
-    // its coord owner; when that exact-pin fallback found the row, preserve the
-    // requested native id instead of degrading to the interactive picker.
-    sessionId: row.sessionId ?? sessionId!,
+    // Exact native UUID pins are never replaced by the logical owner's older
+    // adv_sessions.session_id. session_turns supplies owner METADATA only.
+    sessionId: nativeSessionId,
     ownerId: row.coordOwnerId,
     agent: row.agent,
     cwd: row.cwd,
@@ -1406,23 +1423,106 @@ export async function probeFreshLaunchSessions({
 export async function verifyResumeStarted(
   ownerId: string,
   {
+    expectedSessionId,
     timeoutMs = 30_000,
     pollMs = 1_000,
     findHost = findLiveHost,
     sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  }: {
+    /** Exact native transcript UUID the new backend process must carry. */
+    expectedSessionId?: string | null;
+    timeoutMs?: number;
+    pollMs?: number;
+    findHost?: typeof findLiveHost;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<{
+  started: boolean;
+  waitedMs: number;
+  expectedSessionId: string | null;
+  actualSessionId: string | null;
+  mismatch: boolean;
+}> {
+  const begun = Date.now();
+  for (;;) {
+    const host = findHost(ownerId);
+    if (host) {
+      const expected = expectedSessionId?.trim() || null;
+      const actual = nativeSessionIdFromHost(host);
+      const mismatch = expected != null && actual !== expected;
+      return {
+        started: !mismatch,
+        waitedMs: Date.now() - begun,
+        expectedSessionId: expected,
+        actualSessionId: actual,
+        mismatch,
+      };
+    }
+    if (Date.now() - begun + pollMs > timeoutMs) {
+      return {
+        started: false,
+        waitedMs: Date.now() - begun,
+        expectedSessionId: expectedSessionId?.trim() || null,
+        actualSessionId: null,
+        mismatch: false,
+      };
+    }
+    await sleep(pollMs);
+  }
+}
+
+/**
+ * Extract the native transcript UUID from a live backend argv.
+ *
+ * Codex spells this `codex … resume <uuid>`; Claude/OMP use `--resume <uuid>`,
+ * `--resume=<uuid>`, or `--resume-session=<uuid>`. Unknown/missing argv is null,
+ * never treated as an implicit match.
+ */
+export function nativeSessionIdFromHost(
+  host: Pick<PsuPtyHost, 'command' | 'args'> | null | undefined,
+): string | null {
+  const args = Array.isArray(host?.args) ? host.args.filter((v): v is string => typeof v === 'string') : [];
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    for (const flag of ['--resume=', '--resume-session=']) {
+      if (arg.startsWith(flag) && arg.length > flag.length) return arg.slice(flag.length);
+    }
+    if ((arg === '--resume' || arg === '--resume-session') && args[i + 1]) return args[i + 1];
+    if (arg === 'resume' && args[i + 1]) return args[i + 1];
+  }
+  return null;
+}
+
+export type RestoreVisibleWindowVerdict = 'alive' | 'dead' | 'unknown' | 'not-a-window';
+
+/**
+ * The destructive half of visible restoration is permitted only on a positive
+ * DEAD-window witness. Unknown/not-a-window are not synonyms for dead, and an
+ * alive window is the exact owner-visible session this guard exists to protect.
+ */
+export function restoreVisibleMayShutdown(verdict: RestoreVisibleWindowVerdict): boolean {
+  return verdict === 'dead';
+}
+
+/** Wait until the old managed host has actually disappeared before exact-resume. */
+export async function waitForPtyHostGone(
+  ownerId: string,
+  {
+    timeoutMs = 10_000,
+    pollMs = 100,
+    findHost = findLiveHost,
+    sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
   }: {
     timeoutMs?: number;
     pollMs?: number;
     findHost?: typeof findLiveHost;
     sleep?: (ms: number) => Promise<void>;
   } = {},
-): Promise<{ started: boolean; waitedMs: number }> {
+): Promise<boolean> {
   const begun = Date.now();
   for (;;) {
-    if (findHost(ownerId)) return { started: true, waitedMs: Date.now() - begun };
-    if (Date.now() - begun + pollMs > timeoutMs) {
-      return { started: false, waitedMs: Date.now() - begun };
-    }
+    if (!findHost(ownerId)) return true;
+    if (Date.now() - begun + pollMs > timeoutMs) return false;
     await sleep(pollMs);
   }
 }
