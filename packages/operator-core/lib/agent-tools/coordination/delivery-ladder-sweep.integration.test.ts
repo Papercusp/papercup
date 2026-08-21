@@ -209,6 +209,28 @@ describe('findLadderCandidates — directedness filters still hold after the win
   });
 });
 
+describe('findLadderCandidates — recipient replies clear the original candidate', () => {
+  it('excludes a directed message answered by the recipient via related_msg_id', async () => {
+    await insertRow({
+      msgId: 'original-ask',
+      colTsMs: IN_WINDOW,
+      bodyTsMs: IN_WINDOW,
+      from: 'su-peer',
+      to: ['su-deaf'],
+    });
+    await insertRow({
+      msgId: 'recipient-answer',
+      colTsMs: IN_WINDOW + MIN,
+      bodyTsMs: IN_WINDOW + MIN,
+      from: 'su-deaf',
+      to: ['su-peer'],
+      extra: { related_msg_id: 'original-ask' },
+    });
+
+    expect(await findLadderCandidates(NOW, TTL)).toEqual([]);
+  });
+});
+
 describe('findStormCappedRecipients — same column swap', () => {
   it('finds a recipient the ladder woke inside the storm window', async () => {
     await insertRow({
