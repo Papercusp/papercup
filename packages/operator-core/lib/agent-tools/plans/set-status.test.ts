@@ -9,6 +9,7 @@ import {
   releaseTodoClaim,
   terminalFlipConflict,
   terminalGuardTrips,
+  blockedGuardTrips,
   completedGuardTrips,
   planSyncWorkItemState,
   type HolderInfo,
@@ -450,6 +451,39 @@ describe('terminalGuardTrips — never move a finished item off terminal', () =>
 
   it('is inert when the item does not exist yet (no current status to protect)', () => {
     expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus: null, nextStatus: 'todo' })).toBe(false);
+  });
+});
+
+// EI-20408645914630287 — an ownership reflection can reopen a plan item from `blocked`
+// or `needs-human` to `todo` even though the explicit plan gate still stands. This guard
+// is opt-in for automated reflections; a human deliberately clearing or completing the
+// gate omits it.
+describe('blockedGuardTrips — never weaken an explicit plan gate', () => {
+  it('SKIPS a blocked/needs-human → non-gated flip when the caller asked for the guard', () => {
+    for (const currentStatus of ['blocked', 'needs-human']) {
+      for (const nextStatus of ['todo', 'wip', 'done', 'dropped']) {
+        expect(
+          blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus, nextStatus }),
+          `${currentStatus} → ${nextStatus}`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('ALLOWS transitions that keep the item explicitly gated', () => {
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'blocked', nextStatus: 'blocked' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'blocked', nextStatus: 'needs-human' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'needs-human', nextStatus: 'blocked' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: 'needs-human', nextStatus: 'needs-human' })).toBe(false);
+  });
+
+  it('does not guard non-gated items, missing items, or deliberate human flips', () => {
+    for (const currentStatus of ['todo', 'wip', 'done', 'dropped']) {
+      expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus, nextStatus: 'todo' })).toBe(false);
+    }
+    expect(blockedGuardTrips({ onlyIfNotBlocked: true, currentStatus: null, nextStatus: 'todo' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: undefined, currentStatus: 'blocked', nextStatus: 'todo' })).toBe(false);
+    expect(blockedGuardTrips({ onlyIfNotBlocked: false, currentStatus: 'needs-human', nextStatus: 'done' })).toBe(false);
   });
 });
 

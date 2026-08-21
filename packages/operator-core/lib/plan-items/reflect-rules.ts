@@ -121,6 +121,11 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
     item: stamp.item_id,
     status,
     note: `← ${wi.id ?? 'work_item'} ${why}`,
+    // A work-item lifecycle event is an AUTOMATED reflection, not an owner's
+    // explicit decision to reopen or clear a plan gate. Preserve a plan item
+    // already blocked/needs-human unless a human calls plans:set-status without
+    // this opt-in guard.
+    onlyIfNotBlocked: true,
     // EI-19972048649686949 + WI-38908: an AUTOMATED cascade to EITHER terminal status
     // must not de-queue a plan item another non-terminal work-item still covers — the
     // original case was dropping a hand-filed duplicate of an already-claimed

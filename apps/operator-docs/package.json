@@ -8,7 +8,7 @@
     "start": "astro dev",
     "clean:preview": "rm -rf src/content/docs/preview dist-preview",
     "build": "bash scripts/docs-build-singleflight",
-    "build:inner": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh",
+    "build:inner": "npm run clean:preview && astro build && tsx scripts/emit-md-twins.ts && bash scripts/postbuild-copy.sh && node ../../scripts/check-docs-mirror.mjs",
     "build:from-pg": "npm --prefix ../.. run gen:authored-docs:materialize && npm run build:inner",
     "build:preview": "rm -rf src/content/docs/preview && DOCS_PREVIEW=1 astro build",
     "preview": "astro preview",

@@ -101,6 +101,7 @@ describe('plan-item-reflect:complete', () => {
       slug: 'demo-plan',
       item: 'P-007',
       status: 'done',
+      onlyIfNotBlocked: true,
     });
   });
 
@@ -136,7 +137,11 @@ describe('plan-item-reflect:complete', () => {
   it('EI-20129670928216719: a → dropped completion also renders onlyIfNotCompleted', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     const closed = evt('work_items:complete', { ...stamped('closed'), completion: { summary: 'closed out' } });
-    expect(renderArgs(rule, closed)).toMatchObject({ status: 'dropped', onlyIfNotCompleted: true });
+    expect(renderArgs(rule, closed)).toMatchObject({
+      status: 'dropped',
+      onlyIfNotBlocked: true,
+      onlyIfNotCompleted: true,
+    });
   });
 
   it('EI-19972048649686949: a → dropped completion renders onlyIfNoOtherOpenCoverage so it never cascades onto a plan item still covered by a sibling work-item', () => {
@@ -149,7 +154,11 @@ describe('plan-item-reflect:complete', () => {
     // marked the whole item finished. It does NOT carry onlyIfNotCompleted — that guard
     // exists solely to stop a done → dropped DOWNGRADE, which a → done flip cannot be.
     const done = evt('work_items:complete', stamped('resolved', { completion: { summary: 's' } }));
-    expect(renderArgs(rule, done)).toMatchObject({ status: 'done', onlyIfNoOtherOpenCoverage: true });
+    expect(renderArgs(rule, done)).toMatchObject({
+      status: 'done',
+      onlyIfNotBlocked: true,
+      onlyIfNoOtherOpenCoverage: true,
+    });
     expect(renderArgs(rule, done)).not.toHaveProperty('onlyIfNotCompleted');
   });
 
@@ -172,16 +181,17 @@ describe('plan-item-reflect:set-state', () => {
     const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
     const e = evt('work_items:set_state', stamped('resolved'));
     expect(fires(rule, e)).toBe(true);
-    expect(renderArgs(rule, e)).toMatchObject({ item: 'P-007', status: 'done' });
+    expect(renderArgs(rule, e)).toMatchObject({ item: 'P-007', status: 'done', onlyIfNotBlocked: true });
 
     const drop = evt('work_items:set_state', stamped('deprecated'));
     expect(renderArgs(rule, drop)).toMatchObject({
       status: 'dropped',
       note: expect.stringContaining('WI-9'),
+      onlyIfNotBlocked: true,
     });
 
     const reopen = evt('work_items:set_state', stamped('open'));
-    expect(renderArgs(rule, reopen)).toMatchObject({ status: 'todo' });
+    expect(renderArgs(rule, reopen)).toMatchObject({ status: 'todo', onlyIfNotBlocked: true });
   });
 
   // WI-38908 widened this from drop-only to EITHER TERMINAL status. The boundary that
@@ -243,16 +253,24 @@ describe('plan-item-reflect:set-state', () => {
 
     const blocked = evt('work_items:set_state', stamped('blocked'));
     expect(fires(rule, blocked)).toBe(true);
-    expect(renderArgs(rule, blocked)).toMatchObject({ item: 'P-007', status: 'blocked' });
+    expect(renderArgs(rule, blocked)).toMatchObject({ item: 'P-007', status: 'blocked', onlyIfNotBlocked: true });
 
     const needsHumanState = evt('work_items:set_state', stamped('needs-human'));
     expect(fires(rule, needsHumanState)).toBe(true);
-    expect(renderArgs(rule, needsHumanState)).toMatchObject({ item: 'P-007', status: 'needs-human' });
+    expect(renderArgs(rule, needsHumanState)).toMatchObject({
+      item: 'P-007',
+      status: 'needs-human',
+      onlyIfNotBlocked: true,
+    });
 
     // issue-family alias dialect: state:'blocked' + payload.needsHuman:true.
     const aliasedNeedsHuman = evt('work_items:set_state', stamped('blocked', {}, true));
     expect(fires(rule, aliasedNeedsHuman)).toBe(true);
-    expect(renderArgs(rule, aliasedNeedsHuman)).toMatchObject({ item: 'P-007', status: 'needs-human' });
+    expect(renderArgs(rule, aliasedNeedsHuman)).toMatchObject({
+      item: 'P-007',
+      status: 'needs-human',
+      onlyIfNotBlocked: true,
+    });
   });
 });
 
@@ -322,6 +340,7 @@ describe('plan-item-reflect:release', () => {
     const args = renderArgs(rule, evt('work_items:release', stamped('open')));
     expect(args.status).toBe('todo');
     expect(args.onlyIfNotTerminal).toBe(true);
+    expect(args.onlyIfNotBlocked).toBe(true);
   });
 
   // A release says "I am no longer holding this" — never "this is unfinished". Any future
@@ -332,6 +351,7 @@ describe('plan-item-reflect:release', () => {
       const e = evt('work_items:release', stamped(state));
       expect(fires(rule, e), `fires for ${state}`).toBe(true);
       expect(renderArgs(rule, e).onlyIfNotTerminal, `guard present for ${state}`).toBe(true);
+      expect(renderArgs(rule, e).onlyIfNotBlocked, `blocked guard present for ${state}`).toBe(true);
     }
   });
 });

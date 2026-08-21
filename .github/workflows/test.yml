@@ -748,6 +748,16 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:insight-normative
 
+      # Served-docs completeness guard (EI-20041752458165941): source .mdx/.md
+      # pages are committed separately from the generated operator mirror. A
+      # source page without both its mapped HTML and exact Markdown twin is a
+      # silent 404/stale-reader failure until an unrelated docs rebuild happens.
+      # GATING — the same detector also runs at the end of build:inner, after
+      # postbuild-copy publishes the mirror.
+      - name: Lint served docs mirror completeness
+        if: ${{ !cancelled() }}
+        run: npm run lint:docs-mirror
+
       # Rubric method_ref parity guard (EI-8795): rubrics/<id>/METHOD.md and its served
       # apps/operator-docs agent-insights/<id>.mdx twin are hand-synced with no
       # generation link — an author who edits only one leaves docs:search/docs:get (what
