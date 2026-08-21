@@ -29,6 +29,14 @@ function largeBrief() {
       population: { candidates: 63, counted: 53, withheld: 10, basis: 'x'.repeat(1000) },
       pool_capacity: { poolExhausted: false, degraded: false, factor: 1, queueDepth: 0 },
     },
+    monitoringBlindAdvisory: {
+      line: 'You are monitoring blind: 1/4 required fleet transition event key(s) have live_awaiters:0.',
+      missingEventKeys: ['fleet:drained:large-fleet'],
+      arm: {
+        tool: 'events:await',
+        args: { event: '@fleet:large-fleet', note: 'Restore a pushed transition wake; leader control repairs the durable watches.' },
+      },
+    },
     memberVerdicts: members,
     members,
     unownedCriticals: members,
@@ -68,6 +76,11 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.ok).toBe(true);
     expect(out.blockedAt).toMatchObject({ layer: 'members' });
     expect(out.summary).toMatchObject({ fleet: 'large-fleet', members: 53, claimable_now: 1432 });
+    expect(out.monitoringBlindAdvisory).toMatchObject({
+      line: expect.stringContaining('monitoring blind'),
+      missingEventKeys: ['fleet:drained:large-fleet'],
+      arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
+    });
     expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed' });
     expect(out.campaign).toMatchObject({
       boundary: { source: 'fleet-created-at' },
@@ -85,5 +98,29 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.unownedCriticalsTruncated).toMatchObject({ total: 53 });
     expect(out.customInvariantsTruncated).toMatchObject({ total: 53 });
     expect(out.specFilterOmitted).toMatchObject({ reason: 'bounded for monitor transport' });
+  });
+
+  it('preserves the monitoring-blind advisory in the emergency byte-pressure projection', () => {
+    const input = largeBrief();
+    input.campaign.axes = Object.fromEntries(
+      Array.from({ length: 200 }, (_, index) => [
+        `axis-${index}`,
+        {
+          available: true,
+          writer: `writer:${index}:${'x'.repeat(300)}`,
+          units: { total: 'x'.repeat(300) },
+          data: { total: index },
+        },
+      ]),
+    );
+
+    const out = shapeLeaderBrief(input, 'trimmed') as Record<string, unknown>;
+
+    expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed', emergency: true });
+    expect(out.monitoringBlindAdvisory).toMatchObject({
+      line: expect.stringContaining('monitoring blind'),
+      arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
+    });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
   });
 });
