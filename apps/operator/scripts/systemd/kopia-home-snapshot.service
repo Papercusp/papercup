@@ -12,4 +12,16 @@ Type=oneshot
 # also re-applies renice/ionice to itself so the settings reach kopia's children.
 Nice=19
 IOSchedulingClass=idle
+# EI-21051850743783294: the previous full-home walk reached a measured 36.8G
+# before systemd-oomd killed it. Keep the service below the operator's shared
+# memory pressure envelope; the script also pins Kopia to --parallel=1.
+MemoryAccounting=yes
+MemoryHigh=8G
+MemoryMax=12G
+MemorySwapMax=0
+TimeoutStopSec=30s
 ExecStart=%h/.config/kopia/home-snapshot.sh
+# systemd's user manager may fail to kill the root-owned sudo/Kopia child when
+# an OOM tears down the cgroup. The script validates and kills only its recorded
+# exact Kopia PID; it never scans or kills unrelated processes.
+ExecStopPost=%h/.config/kopia/home-snapshot.sh --cleanup
