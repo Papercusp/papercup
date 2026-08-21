@@ -50,9 +50,11 @@ import {
   renderContextUsageLine,
   contextUsagePct,
   renderBandedContextGauge,
+  CONTEXT_GAUGE_CRITICAL_PCT,
   CONTEXT_GAUGE_LOUD_PCT,
   CONTEXT_GAUGE_QUIET_PCT,
 } from "./inbox-context-usage";
+import { readFleetWindDownLoopEndAuthorization } from "./continuation-gate";
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
@@ -958,7 +960,26 @@ export default defineTool({
         pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT
           ? selfCompactionAvailability(identity.ownerId).available
           : null;
-      usageLine = renderContextUsageLine(tokens, pres?.compactionLimit, selfCompactionAvailable);
+      let fleetWindDownLoopEndAuthorized: boolean | null = null;
+      const authorizationWorkspaceId =
+        (ctx as { workspaceId?: string | null } | undefined)?.workspaceId ?? identity.workspaceId;
+      if (
+        pct != null &&
+        pct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+        selfCompactionAvailable === false &&
+        authorizationWorkspaceId
+      ) {
+        fleetWindDownLoopEndAuthorized = await readFleetWindDownLoopEndAuthorization({
+          ownerId: identity.ownerId,
+          workspaceId: authorizationWorkspaceId,
+        });
+      }
+      usageLine = renderContextUsageLine(
+        tokens,
+        pres?.compactionLimit,
+        selfCompactionAvailable,
+        fleetWindDownLoopEndAuthorized,
+      );
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
       // action (work_items:checkpoint) — the flush invariant enforced on the ONE surface in
@@ -966,7 +987,12 @@ export default defineTool({
       // gate pct, so normal low-% turns pay nothing extra. Best-effort: any failure omits the
       // line and never breaks the inbox read.
       if (pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT) {
-        contextGauge = renderBandedContextGauge(tokens, pres?.compactionLimit, selfCompactionAvailable);
+        contextGauge = renderBandedContextGauge(
+          tokens,
+          pres?.compactionLimit,
+          selfCompactionAvailable,
+          fleetWindDownLoopEndAuthorized,
+        );
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
         try {

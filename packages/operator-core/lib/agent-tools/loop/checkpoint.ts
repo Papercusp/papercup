@@ -52,7 +52,12 @@ import { modeImpliesAutonomy } from '../../modes/registry';
 import { getPresence } from '../coordination/presence';
 import { readInbox } from '../coordination/messages';
 import { readWatermark, pickUnreadCursor } from '../coordination/watermarks';
-import { continuationGateFromReads, countPendingInterrupts } from '../coordination/tools/continuation-gate';
+import {
+  continuationGateFromReads,
+  countPendingInterrupts,
+  readFleetWindDownLoopEndAuthorization,
+} from '../coordination/tools/continuation-gate';
+import { CONTEXT_GAUGE_CRITICAL_PCT, contextUsagePct } from '../coordination/tools/inbox-context-usage';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { detectAbsencePremises } from '../../premises-claim-port';
@@ -777,6 +782,20 @@ export default defineTool({
         } catch {
           selfCompactionAvailable = null;
         }
+        let fleetWindDownLoopEndAuthorized: boolean | null = null;
+        const contextPct = contextUsagePct(liveTokens ?? pres?.contextTokens, derivedLimit);
+        const authorizationWorkspaceId = workspaceId ?? identity.workspaceId;
+        if (
+          contextPct != null &&
+          contextPct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+          selfCompactionAvailable === false &&
+          authorizationWorkspaceId
+        ) {
+          fleetWindDownLoopEndAuthorized = await readFleetWindDownLoopEndAuthorization({
+            ownerId,
+            workspaceId: authorizationWorkspaceId,
+          });
+        }
         return continuationGateFromReads({
           contextTokens: liveTokens ?? pres?.contextTokens,
           compactionLimit: derivedLimit,
@@ -784,6 +803,7 @@ export default defineTool({
           rewakeGuaranteed,
           nextWakeFresh,
           selfCompactionAvailable,
+          fleetWindDownLoopEndAuthorized,
         });
       },
       {
