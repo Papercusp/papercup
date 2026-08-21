@@ -2,8 +2,8 @@
  * gen-tool-routing.ts — project the audited bash→tool substitution pairs into the
  * CLAUDE.md routing table (plan `bash-to-tool-substitution-2026-07-26`, P-019).
  *
- *   npm run gen:tool-routing          # rewrite the block in CLAUDE.md
- *   npm run gen:tool-routing:check    # fail (exit 1) if the block is stale
+ *   npm run gen:tool-routing          # update the canonical part and project client files
+ *   npm run gen:tool-routing:check    # fail (exit 1) if the canonical part is stale
  *
  * This file is only the I/O shell. All the rendering — and every decision about
  * what may appear in the table — lives in
@@ -19,48 +19,80 @@
  * table, and generating from them means the prose, the seeded rows, and the
  * enforcement all descend from the same artifact.
  *
- * Reading the pairs rather than the database also makes this a HARD build gate
- * instead of an advisory one: no Postgres, no network, deterministic in CI. (The
- * PG-sourced projectors like `gen-doc-plans-index` must degrade to advisory
- * precisely because they cannot run without a DB.)
+ * The pairs remain the deterministic build input, but the generated block is a
+ * part of the composed `claude-md` document. The write path therefore goes
+ * through `set-doc-part.ts` (which validates and records the part row) and then
+ * `project-doc-parts.mjs` (which is the only writer of `CLAUDE.md`/`AGENTS.md`).
  *
- * KNOWN LIMIT of reading the pairs: a row inserted DIRECTLY into the table with a
- * novel `intent_label` would be enforced by both hooks yet never appear here, and
- * this generator cannot see that drift direction. Nothing does that today (the
- * seeder is the only writer), so the trade for a DB-free hard gate is worth it —
- * an optional cross-check that skips when no PG is reachable would close it.
+ * `--check` compares the rendered block with the canonical part row, so a
+ * projected file cannot mask a database-side change. A row inserted DIRECTLY
+ * into the runtime substitution table with a novel `intent_label` remains the
+ * separate registry-drift concern documented by `registry-drift.ts`.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { ALL_PAIRS } from '../packages/operator-core/lib/bash-substitution/pairs';
-import {
-  renderRoutingBlock,
-  spliceRoutingBlock,
-} from '../packages/operator-core/lib/bash-substitution/routing-table';
+import { renderRoutingBlock } from '../packages/operator-core/lib/bash-substitution/routing-table';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const CLAUDE_MD = join(REPO_ROOT, 'CLAUDE.md');
+const DOC_ID = 'claude-md';
+const ROUTING_PART_KEY = 'reaching-for-bash-these-read-begin-generated-gen';
+const SET_DOC_PART = join(REPO_ROOT, 'scripts/set-doc-part.ts');
+const PROJECT_DOC_PARTS = join(REPO_ROOT, 'scripts/project-doc-parts.mjs');
 const CHECK = process.argv.includes('--check');
 
-function main(): void {
-  const current = readFileSync(CLAUDE_MD, 'utf8');
-  const next = spliceRoutingBlock(current, renderRoutingBlock(ALL_PAIRS));
+function nodeScript(script: string, args: string[], input?: string): string {
+  return execFileSync(process.execPath, ["--import", "tsx", script, ...args], {
+    cwd: REPO_ROOT,
+    encoding: 'utf8',
+    input,
+    stdio: input === undefined ? ['ignore', 'pipe', 'inherit'] : ['pipe', 'inherit', 'inherit'],
+  });
+}
 
-  if (current === next) {
-    process.stdout.write('✓ CLAUDE.md routing table is up to date\n');
+function readCanonicalRoutingPart(): string {
+  return nodeScript(SET_DOC_PART, [
+    '--doc-id',
+    DOC_ID,
+    '--part-key',
+    ROUTING_PART_KEY,
+    '--show',
+  ]);
+}
+
+function writeCanonicalRoutingPart(body: string): void {
+  nodeScript(
+    SET_DOC_PART,
+    ['--doc-id', DOC_ID, '--part-key', ROUTING_PART_KEY, '--body-stdin', '--write'],
+    body,
+  );
+}
+
+function projectCanonicalDocs(): void {
+  nodeScript(PROJECT_DOC_PARTS, ['--write']);
+}
+
+function main(): void {
+  const expected = renderRoutingBlock(ALL_PAIRS);
+  const current = readCanonicalRoutingPart();
+
+  if (current === expected) {
+    process.stdout.write('✓ canonical CLAUDE.md routing part is up to date\n');
+    if (!CHECK) projectCanonicalDocs();
     return;
   }
   if (CHECK) {
     process.stderr.write(
-      '✗ CLAUDE.md routing table is stale — run `npm run gen:tool-routing`\n' +
-        '  (the audited pairs changed; the table every agent reads must follow them)\n',
+      '✗ canonical CLAUDE.md routing part is stale — run `npm run gen:tool-routing`\n' +
+        '  (the audited pairs changed; the canonical part every projected client reads must follow them)\n',
     );
     process.exit(1);
   }
-  writeFileSync(CLAUDE_MD, next);
-  process.stdout.write('✓ wrote the CLAUDE.md routing table\n');
+  writeCanonicalRoutingPart(expected);
+  projectCanonicalDocs();
+  process.stdout.write('✓ updated and projected the canonical CLAUDE.md routing part\n');
 }
 
 main();
