@@ -235,6 +235,14 @@ describe('HEALTH_ENDPOINTS', () => {
     expect(HEALTH_ENDPOINTS.some((e) => e.url.includes(':4321'))).toBe(false);
   });
 
+  // WI-40135 / EI-21028583648509131: the standalone Restart Scout app was
+  // deleted. Papercusp's Blender/Scout cycle runs in bg-host, so :3350 can
+  // never become healthy and must not remain a permanent false root cause.
+  it('does not monitor the retired standalone Scout service (:3350)', () => {
+    expect(HEALTH_ENDPOINTS.some((e) => e.name === 'scout')).toBe(false);
+    expect(HEALTH_ENDPOINTS.some((e) => e.url.includes(':3350'))).toBe(false);
+  });
+
   // The live set we DO watch — a guard so a retired surface can't quietly creep
   // back in (any new entry here is a deliberate edit + a failing test to update).
   it('watches exactly the live dev services', () => {
@@ -243,7 +251,7 @@ describe('HEALTH_ENDPOINTS', () => {
     // + fixed port). The other three are recorded, with the measurement that
     // excluded each, in `NON_PROBED_UNITS`.
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
-      ['oddsmith-sidecar', 'operator', 'scout', 'staging-api', 'vite'].sort(),
+      ['oddsmith-sidecar', 'operator', 'staging-api', 'vite'].sort(),
     );
   });
 
@@ -273,13 +281,14 @@ describe('HEALTH_ENDPOINTS', () => {
   // EI-2339 recurrence guard: vite (:3055) is the Tauri desktop's on-demand dev
   // content layer — it has no systemd unit and is simply not listening whenever
   // no desktop dev shell is up, by design. It must be flagged `onDemand` so a
-  // down probe never escalates like a real persistent-service outage; the other
-  // systemd-managed endpoints (operator, scout) must NOT be onDemand.
+  // down probe never escalates like a real persistent-service outage; the
+  // persistent endpoints must NOT be onDemand.
   it('flags vite (and only vite) as onDemand — a down probe must never escalate like a real outage', () => {
     const byName = Object.fromEntries(HEALTH_ENDPOINTS.map((e) => [e.name, e]));
     expect(byName.vite?.onDemand).toBe(true);
     expect(byName.operator?.onDemand).toBeFalsy();
-    expect(byName.scout?.onDemand).toBeFalsy();
+    expect(byName['staging-api']?.onDemand).toBeFalsy();
+    expect(byName['oddsmith-sidecar']?.onDemand).toBeFalsy();
   });
 });
 
@@ -370,7 +379,7 @@ describe('supervisedProcesses (critical-process-supervisor-2026-07-04 P-001 — 
   // is the point: it took two separate, deliberate edits.)
   it('does not alter HEALTH_ENDPOINTS (additive-only, no behavior change)', () => {
     expect(HEALTH_ENDPOINTS.map((e) => e.name).sort()).toEqual(
-      ['oddsmith-sidecar', 'operator', 'scout', 'staging-api', 'vite'].sort(),
+      ['oddsmith-sidecar', 'operator', 'staging-api', 'vite'].sort(),
     );
   });
 
@@ -442,7 +451,7 @@ describe('probeEndpoint — onDemand endpoints report present:false when down (E
   });
 
   it('a down NON-onDemand endpoint still reports present unset (undefined) — normal alerting applies', async () => {
-    const result = await probeEndpoint({ name: 'scout', url: 'http://127.0.0.1:1/', timeoutMs: 50 });
+    const result = await probeEndpoint({ name: 'operator', url: 'http://127.0.0.1:1/', timeoutMs: 50 });
     expect(result.up).toBe(false);
     expect(result.present).not.toBe(false);
   });
@@ -957,10 +966,10 @@ describe('wedged-vs-down detection', () => {
 
   it('leaves a plain down service on the ORIGINAL key — the wedge branch must not relabel outages', () => {
     const [signal] = collectServiceDownSignals([
-      { name: 'scout', up: false, status: 503, latencyMs: 4 },
+      { name: 'operator', up: false, status: 503, latencyMs: 4 },
     ]);
-    expect(signal.key).toBe('scout');
-    expect(signal.title).toBe('Service scout is down');
+    expect(signal.key).toBe('operator');
+    expect(signal.title).toBe('Service operator is down');
   });
 
   it('probeEndpoint leaves an ordinary DOWN probe unlabelled — no wedge, no wedge note', async () => {

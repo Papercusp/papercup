@@ -1,7 +1,7 @@
 /**
  * Service health (P-005) — up/down + latency probe of the dev endpoints
- * (:3070 operator, :3055 vite, :4321 shop, :3350 scout, :3001 web, :8082
- * code-server, + the Tauri desktop). Reads the `dev.serviceHealth` sync query
+ * (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith-sidecar,
+ * portless/opt-in services, + the Tauri desktop). Reads the `dev.serviceHealth` sync query
  * (a snapshot wrapped in a 1-element array → data[0]); manual refresh re-probes.
  * The background DBOS monitor independently broadcasts drop/recover coord
  * messages; this is the on-demand snapshot.

@@ -13,7 +13,7 @@
  *   • `services[]` — one probe per entry in `HEALTH_ENDPOINTS` plus four
  *     portless/opt-in probes. Only these carry an `up` verdict:
  *       operator (http://127.0.0.1:3070/api/desktop/version)
- *       vite (:3055, onDemand) · scout (:3350) · embed-sidecar (:3384, opt-in)
+ *       vite (:3055, onDemand) · embed-sidecar (:3384, opt-in)
  *       desktop · bg-host-ticker · bg-host-code · substrate-sidecar (portless)
  *   • `supervision[]` — one row per `SUPERVISED_PROCESSES` entry, carrying
  *     `flapState` / `restartsLast10m` / `consecutiveProbeFailures` /
@@ -109,7 +109,6 @@ import type { CoverageResult, BashSubstitutionPair } from '../types';
 export const PROBED_PORTS: Record<string, string> = {
   '3070': 'operator',
   '3055': 'vite',
-  '3350': 'scout',
   '3384': 'embed-sidecar',
   // WI-6146 added this to HEALTH_ENDPOINTS; the model must follow or the audit
   // scores against a tool that no longer exists. `service-model-drift.test.ts`
@@ -374,7 +373,7 @@ export const systemctlIsActive: BashSubstitutionPair = {
   bashPattern: /^systemctl\s+(?:--\S+\s+)*(?:is-active|is-failed)\b/,
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health { units:[…], scope:\'user\'|\'system\'|\'all\' } answers is-active/is-failed for ANY unit — pass several at once, and pass scope:\'system\' for auditd/ufw/pgbouncer (a bare `systemctl` defaults to system, `--user` does not). READ unitsUnknown[] FIRST: systemd prints `inactive` for a unit it has never heard of, byte-identical to a stopped one, and three units agents queried in the last week do not exist on this host at all. For a REGISTERED unit the snapshot is richer than ActiveState: services[].up is a real HTTP probe (papercup-dev-api :3070, staging-api :3170, bg-host, embed-sidecar :3384, oddsmith-sidecar :46229, vite :3055, scout :3350), and supervision[].healthy is the reconciler\'s own verdict — an `episodic` timer-driven unit is idle, not down, while inactive.',
+    'dev:service_health { units:[…], scope:\'user\'|\'system\'|\'all\' } answers is-active/is-failed for ANY unit — pass several at once, and pass scope:\'system\' for auditd/ufw/pgbouncer (a bare `systemctl` defaults to system, `--user` does not). READ unitsUnknown[] FIRST: systemd prints `inactive` for a unit it has never heard of, byte-identical to a stopped one, and three units agents queried in the last week do not exist on this host at all. For a REGISTERED unit the snapshot is richer than ActiveState: services[].up is a real HTTP probe (papercup-dev-api :3070, staging-api :3170, bg-host, embed-sidecar :3384, oddsmith-sidecar :46229, vite :3055), and supervision[].healthy is the reconciler\'s own verdict — an `episodic` timer-driven unit is idle, not down, while inactive.',
   routing: {
     want: 'whether a systemd unit is active / failed',
     use: '`dev:service_health { units:["<unit>"], scope }` — unitStates[].{loadState,activeState,active,failed} for any unit, plus unitsUnknown[] for ones systemd does not know; services[].up / supervision[].healthy for registered units',
@@ -504,7 +503,7 @@ export const curlHealthProbe: BashSubstitutionPair = {
   bashPattern: buildProbedPortCurlPattern(),
   toolName: 'dev:service_health',
   advisoryText:
-    'dev:service_health probes a FIXED set (operator :3070, staging-api :3170, vite :3055, scout :3350, embed-sidecar :3384, oddsmith-sidecar :46229) and returns up/latency per service — no url/port argument, and never the probed service\'s own /api/health body. :3170 IS covered, so the CLAUDE.md verify-a-staging-edit workflow (dev:restart{target:"staging"} then check staging-api) needs no curl. Keep using curl for an UNPROBED port (:8788 gateway, an ad-hoc second instance) and whenever you actually READ the health payload — that payload is a different question and this tool does not carry it.',
+    'dev:service_health probes a FIXED set (operator :3070, staging-api :3170, vite :3055, embed-sidecar :3384, oddsmith-sidecar :46229) and returns up/latency per service — no url/port argument, and never the probed service\'s own /api/health body. :3170 IS covered, so the CLAUDE.md verify-a-staging-edit workflow (dev:restart{target:"staging"} then check staging-api) needs no curl. Keep using curl for an UNPROBED port (:8788 gateway, an ad-hoc second instance) and whenever you actually READ the health payload — that payload is a different question and this tool does not carry it.',
   routing: {
     want: 'whether a local dev service is answering',
     use: '`dev:service_health` — for the probed set (incl. :3170 staging), when you need only up/down',

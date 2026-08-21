@@ -34,10 +34,10 @@ export interface EndpointSpec {
 }
 
 /**
- * The dev services worth watching (operator/vite/scout/code-server; the Tauri
- * desktop is probed separately in `probeAll`).
+ * The dev services worth watching (operator/vite/staging/oddsmith; the Tauri
+ * desktop and other portless/opt-in services are probed separately in `probeAll`).
  *
- * NB: two RETIRED surfaces are deliberately NOT monitored. Neither runs in this
+ * NB: RETIRED surfaces are deliberately NOT monitored. None runs in this
  * deployment, so probing them produced a perpetual phantom "DOWN" signal that
  * the improvement watchdog re-captured every cycle AND re-broadcast on every
  * operator restart/deploy — a chronic false-alarm that trains agents/owner to
@@ -47,6 +47,10 @@ export interface EndpointSpec {
  *   - the Restart shop storefront on :4321 — not part of the running stack;
  *     removed per EI-276 (it fed the EI-187 CRITICAL "shop is down", re-announced
  *     on every boot). Verified down-because-absent, not a regression.
+ *   - the standalone Restart Scout service on :3350 — `apps/scout-service` was
+ *     deleted; Papercusp's Blender/Scout loop now runs in-process in bg-host.
+ *     Keeping this endpoint produced a permanent connection-refused root cause
+ *     for a service that cannot exist (WI-40135 / EI-21028583648509131).
  * Don't re-add a retired surface here.
  *
  * NB2 (EI-2339): `vite` (:3055) is kept in this list for VISIBILITY (a "not
@@ -54,8 +58,8 @@ export interface EndpointSpec {
  * `onDemand: true` — it is the Tauri desktop's on-demand dev content layer
  * (spawned ad hoc by `bin/dev`), has NO systemd unit, and is simply not
  * listening whenever no desktop dev shell is up, by design. Before EI-2339 a
- * down vite was treated exactly like a down persistent service (`operator`,
- * `scout`) and 24h-aged into a CRITICAL escalation even though the live
+ * down vite was treated exactly like a down persistent service and 24h-aged
+ * into a CRITICAL escalation even though the live
  * product (:3070) was healthy — see `onDemand` on `EndpointSpec` for the fix.
  */
 export const HEALTH_ENDPOINTS: EndpointSpec[] = [
@@ -70,7 +74,6 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // onDemand — vite has no systemd unit, so a genuinely-down probe (no dev shell
   // running at all) must never escalate either; see NB2 above.
   { name: 'vite', url: 'http://127.0.0.1:3055/', timeoutMs: 10_000, onDemand: true },
-  { name: 'scout', url: 'http://127.0.0.1:3350/' },
   // code-server probe removed (owner directive 2026-07-07): code-server is no
   // longer bundled or spawned, so :8082 was a permanent false-DOWN.
   //

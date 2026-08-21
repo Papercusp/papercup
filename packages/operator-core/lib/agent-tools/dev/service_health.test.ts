@@ -239,7 +239,7 @@ describe("buildServiceHealthDiagnostic", () => {
   it("promotes a WEDGE over an ordinary down probe, and counts it separately", () => {
     const out = buildServiceHealthDiagnostic(
       [
-        { name: "scout", up: false, status: null, latencyMs: 3, note: "connection refused" },
+        { name: "operator", up: false, status: null, latencyMs: 3, note: "connection refused" },
         {
           name: "staging-api",
           up: false,
@@ -252,7 +252,7 @@ describe("buildServiceHealthDiagnostic", () => {
       ],
       [],
     );
-    // Ordering: `scout` failed first, but the wedge is the finding that no other
+    // Ordering: `operator` failed first, but the wedge is the finding that no other
     // signal on the box will report, so it leads.
     expect(out.rootCause?.component).toBe("staging-api");
     // `down` stays the whole failure count so an existing reader keeps its
