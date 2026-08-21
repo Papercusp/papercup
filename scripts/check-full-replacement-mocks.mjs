@@ -338,17 +338,18 @@ function orgStaticShapeIndex(sourceFile) {
 
   function assignmentTarget(node) {
     node = orgUnwrap(node);
-    if (ts.isPropertyAccessExpression(node) && node.name.text === 'begin' && ts.isIdentifier(node.expression)) {
-      return node.expression.text;
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'begin') {
+      const target = orgUnwrap(node.expression);
+      if (ts.isIdentifier(target)) return target.text;
     }
     if (
       ts.isElementAccessExpression(node) &&
-      ts.isIdentifier(node.expression) &&
       node.argumentExpression &&
       ts.isStringLiteral(node.argumentExpression) &&
       node.argumentExpression.text === 'begin'
     ) {
-      return node.expression.text;
+      const target = orgUnwrap(node.expression);
+      if (ts.isIdentifier(target)) return target.text;
     }
     return null;
   }
@@ -861,11 +862,11 @@ export const ORG_PG_SQL_SELF_TESTS = [
     expect: 0,
   },
   {
-    name: 'silent when begin is assigned after constructing the tagged template',
+    name: 'silent when begin is assigned after constructing the tagged template (casted)',
     path: ORG_FIXTURE_PATH,
     text: [
       `const sql = async (strings: TemplateStringsArray, ...values: unknown[]) => [];`,
-      `sql.begin = vi.fn();`,
+      `(sql as unknown as { begin: (...args: unknown[]) => unknown }).begin = vi.fn();`,
       `vi.mock('${ORG_PG_MODULE}', async (orig) => ({`,
       `  ...(await orig<typeof import('${ORG_PG_MODULE}')>()),`,
       `  getOrgPg: () => ({ sql }),`,
