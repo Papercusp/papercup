@@ -168,6 +168,24 @@ export interface LspDiagnostic {
  */
 const PROJECT_READY_TIMEOUT_MS = 60_000;
 
+/**
+ * Servers that ALWAYS announce their indexing via `$/progress`, and so must be
+ * required to SETTLE rather than being assumed ready when no token is pending.
+ * For these, "no progress token" means "has not started yet", never "done".
+ */
+const REQUIRES_PROGRESS_SIGNAL: ReadonlySet<LspLanguage> = new Set<LspLanguage>(['rust']);
+
+/**
+ * How long a language may take to load its project before we call it degraded.
+ * Per-language because the honest numbers differ by an order of magnitude:
+ * MEASURED 2026-08-21 on this repo, tsserver was ready in ~5s while
+ * rust-analyzer needed ~89s (cargo metadata + proc-macro build for the Tauri
+ * crate). A single 60s ceiling would mark every cold Rust query degraded.
+ */
+function readyTimeoutFor(language: LspLanguage): number {
+  return language === 'rust' ? 300_000 : PROJECT_READY_TIMEOUT_MS;
+}
+
 interface AdapterState {
   /** Keyed by `${language}::${rootPath}`. */
   clients: Map<string, LspClient>;
@@ -427,7 +445,10 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
  * throwing) is deliberate: a timeout here is a FRESHNESS fact about the answer,
  * not an error that should erase the difference between "broken" and "empty".
  */
-async function awaitProjectReady(client: LspClient, timeoutMs = PROJECT_READY_TIMEOUT_MS): Promise<boolean> {
+async function awaitProjectReady(
+  client: LspClient,
+  timeoutMs = readyTimeoutFor(client.language),
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   // Give the server a beat to CREATE its progress token; without this grace a
   // query issued microseconds after didOpen sees an empty pending set and
@@ -437,10 +458,21 @@ async function awaitProjectReady(client: LspClient, timeoutMs = PROJECT_READY_TI
     if (client.health === 'unhealthy') return false;
     const idle = client.pendingProgress.size === 0;
     if (idle && client.everSettled) return true;
-    if (idle && Date.now() > graceUntil) {
+    if (idle && Date.now() > graceUntil && !REQUIRES_PROGRESS_SIGNAL.has(client.language)) {
       // No progress was ever reported. Either the server does not implement
       // workDoneProgress or it had nothing to load. Treat as ready, but only
-      // after the grace window has actually elapsed.
+      // after the grace window has actually elapsed — and only for a server
+      // that might legitimately never report progress at all (tsserver).
+      //
+      // ⚠ This branch is VACUOUS for a server that always reports progress:
+      // it fires precisely because the token has not been created YET, so it
+      // green-lights a query against a completely unloaded server. MEASURED
+      // 2026-08-21 (P-010): rust-analyzer answered `textDocument/implementation`
+      // healthy-and-EMPTY for 88.6 SECONDS before its index filled, and
+      // isTrustworthyEmpty() blesses every one of those empties — an agent
+      // asking "who implements this trait?" is told "nobody", authoritatively.
+      // Hence REQUIRES_PROGRESS_SIGNAL: such a server must SETTLE, never be
+      // assumed ready from the absence of a signal it has not sent yet.
       return true;
     }
     if (Date.now() > deadline) return false;
@@ -557,8 +589,8 @@ export async function lspQuery(
     if (!ready) {
       return fail(
         `language server did not finish loading the project within ` +
-          `${PROJECT_READY_TIMEOUT_MS}ms; refusing to answer from a half-loaded ` +
-          `program because it returns a plausible WRONG location rather than an error`,
+          `${readyTimeoutFor(client.language)}ms; refusing to answer from a half-loaded` +
+          ` program because it returns a plausible WRONG location rather than an error`,
         'degraded',
       );
     }
@@ -656,8 +688,8 @@ export async function lspDiagnostics(query: {
     if (!ready) {
       return fail(
         `language server did not finish loading the project within ` +
-          `${PROJECT_READY_TIMEOUT_MS}ms; diagnostics from a half-loaded program ` +
-          `are not evidence of a clean file`,
+          `${readyTimeoutFor(client.language)}ms; diagnostics from a half-loaded program` +
+          ` are not evidence of a clean file`,
         'degraded',
       );
     }
@@ -742,8 +774,8 @@ export async function lspWorkspaceSymbols(query: {
     if (!ready) {
       return fail(
         `language server did not finish loading the project within ` +
-          `${PROJECT_READY_TIMEOUT_MS}ms; a symbol index that is still building ` +
-          `returns a PARTIAL list that looks complete`,
+          `${readyTimeoutFor(client.language)}ms; a symbol index that is still building` +
+          ` returns a PARTIAL list that looks complete`,
         'degraded',
       );
     }
@@ -825,8 +857,8 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
     if (!ready) {
       return fail(
         `language server did not finish loading the project within ` +
-          `${PROJECT_READY_TIMEOUT_MS}ms; a rename plan computed from a half-loaded ` +
-          `program MISSES call sites, which is the most dangerous possible partial answer`,
+          `${readyTimeoutFor(client.language)}ms; a rename plan computed from a half-loaded` +
+          ` program MISSES call sites, which is the most dangerous possible partial answer`,
         'degraded',
       );
     }
