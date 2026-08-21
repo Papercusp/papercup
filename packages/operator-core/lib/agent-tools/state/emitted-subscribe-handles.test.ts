@@ -101,6 +101,18 @@ describe('emitted state:subscribe handles', () => {
     expect(rejected).toEqual([]);
   });
 
+  it('CONTROL — the same check REJECTS a handle the tool would refuse', () => {
+    // Calibration for the assertion above: it must be able to fail. A guard that has
+    // never failed is a guard nobody has tested, and "every selector parsed" is exactly
+    // the shape that reads identically whether the check is strict or broken. These are
+    // the two ways an emitter could realistically be wrong — a missing `cell`, and an
+    // events:await-shaped envelope (22 of the 50 measured failures carried one).
+    expect(subscribeTool.args.safeParse({ on: { op: 'changed' } }).success).toBe(false);
+    expect(
+      subscribeTool.args.safeParse({ cell: 'gate.greenCheckpoint.verdict', timeout_sec: 3600 }).success,
+    ).toBe(false);
+  });
+
   it('the specific handle 11 agents were refused now parses', () => {
     // The regression case, stated concretely so its intent survives a refactor of the
     // scan above.
