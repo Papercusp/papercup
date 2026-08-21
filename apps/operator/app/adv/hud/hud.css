@@ -20,6 +20,12 @@
   color: var(--fg);
 }
 
+/* Keep both tab panels mounted so switching away from Sessions does not
+   unmount every card (WI-6755). `contents` preserves the existing direct-child
+   flex layout; the selected panel's children remain the HUD's flex items. */
+.hud__panel { display: contents; }
+.hud__panel[hidden] { display: none; }
+
 /* ── tab strip (hud-session-launcher-and-board-tabs-2026-07-26 P-009) ─────── */
 /* Sessions | Plans | Work items — the same five-column kanban over three
    different entity types. flex:none for the same reason .hud__top declares it:

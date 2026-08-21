@@ -133,9 +133,10 @@ export interface HudBoardProps {
    * Which board is showing (hud-session-launcher-and-board-tabs-2026-07-26
    * P-009). `sessions` renders everything below — the su-only toggle, the
    * column counts, the fleet strip and the session columns. The other tabs
-   * render `entityView` instead: those controls are session CONCEPTS (a plan
+   * expose `entityView` instead: those controls are session CONCEPTS (a plan
    * has no fleet, a work item has no context window), so showing them on a
-   * plans board would be chrome that lies.
+   * plans board would be chrome that lies. Both panels stay mounted so a tab
+   * switch does not destroy and recreate every session card.
    */
   tab: HudTabId;
   onSelectTab: (tab: HudTabId) => void;
@@ -494,10 +495,11 @@ export default function HudBoard({
         </div>
       </div>
 
-      {!onSessions ? (
-        entityView ?? null
-      ) : (
-      <>
+      <div
+        className="hud__panel hud__panel--sessions"
+        hidden={!onSessions}
+        aria-hidden={!onSessions}
+      >
       <div className="hud__top">
         {/* Owner ask 2026-08-02: "move the search sessions input to the left
             side instead of the right and highlight it so that it's very hard to
@@ -771,8 +773,15 @@ export default function HudBoard({
           ? ` ${unattributedCount} unattributed ask${unattributedCount === 1 ? '' : 's'} with no owning session, on the Work items tab.`
           : ''}
       </p>
-      </>
-      )}
+      </div>
+
+      <div
+        className="hud__panel hud__panel--entities"
+        hidden={onSessions}
+        aria-hidden={onSessions}
+      >
+        {entityView ?? null}
+      </div>
     </div>
   );
 }

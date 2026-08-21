@@ -591,6 +591,28 @@ describe('HudBoard', () => {
     expect(screen.getByTestId('launcher')).toBeTruthy();
   });
 
+  it('keeps session cards mounted while an entity tab is visible', () => {
+    const { container, props, rerender } = renderBoard([entry()]);
+    const card = container.querySelector('.hud__card');
+    expect(card).toBeTruthy();
+
+    rerender(
+      <HudBoard
+        {...props}
+        tab="plans"
+        entityView={<div data-testid="entity-view" />}
+      />,
+    );
+
+    expect(screen.getByTestId('entity-view')).toBeTruthy();
+    expect(container.querySelector('.hud__panel--sessions')?.hasAttribute('hidden')).toBe(true);
+    expect(container.querySelector('.hud__card')).toBe(card);
+
+    rerender(<HudBoard {...props} tab="sessions" />);
+    expect(container.querySelector('.hud__panel--entities')?.hasAttribute('hidden')).toBe(true);
+    expect(container.querySelector('.hud__card')).toBe(card);
+  });
+
   // Regression guard for the P-009 move: hud-consolidation P-002 made
   // unattributed asks visible on this board as the gate for retiring the
   // sidebar Inbox. They now render on the Work items tab, so the sessions
