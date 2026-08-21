@@ -26,6 +26,14 @@
 # matching PostToolUse hook can release only paths newly acquired by this
 # edit. A same-owner already-held grant gets no release cache.
 #
+# Claude also sends transcript_path on PreToolUse. When the matching assistant
+# message contains two or more native file-edit tool_use blocks, all of those
+# edits are one client batch. The first hook atomically creates a batch state,
+# acquires the union once, and followers consume the terminal state. Per-tool
+# PostToolUse hooks see a .batch marker and defer release until the one
+# PostToolBatch cleanup hook runs. Codex has no transcript batch path and keeps
+# the original per-call lifecycle.
+#
 # Fail-open: if Papercusp isn't installed, or the operator is
 # unreachable / unparseable, we ALWAYS allow the edit (cooperative
 # discipline only works while the system is up) and drop a health
@@ -60,7 +68,7 @@ INPUT=$(cat)
 # its JSON then exits 0, so this guard only fires on an actual crash —
 # never on a legitimate refusal.
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
-import json, os, re, sys, time, urllib.request, urllib.parse
+import hashlib, json, os, re, sys, time, urllib.request, urllib.parse
 from datetime import datetime
 
 raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
