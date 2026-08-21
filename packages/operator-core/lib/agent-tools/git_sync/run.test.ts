@@ -186,6 +186,59 @@ describe('git-sync:run', () => {
     });
   });
 
+  it('returns a structured lock-retry continuation when the fire skips on a held resource', async () => {
+    const holders = [
+      {
+        owner: 'su-peer',
+        owner_label: 'peer agent',
+        mode: 'exclusive',
+        status: 'held',
+        lock_id: 'lock-1',
+        reason: 'manual git work',
+        acquired_ts: '2026-08-21T10:00:00.000Z',
+        expires_ts: '2026-08-21T10:10:00.000Z',
+        fence_seq: 42,
+      },
+    ];
+    const outcome = {
+      status: 'skipped' as const,
+      reason: 'held_exclusive',
+      blockedOn: 'git-sync:papercusp',
+      holders,
+    };
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => outcome) }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      fired: true,
+      status: 'skipped',
+      success: false,
+      committed: false,
+      outcome,
+      continuation: {
+        completion_event: {
+          key: 'git-sync:lock-retry',
+          payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
+        },
+        await_tool: 'events:await',
+        progress_ref: {
+          surface: 'agent_resource_locks',
+          workspace_id: 'default',
+          install_slug: 'papercusp',
+          resource: 'git-sync:papercusp',
+          fields: ['resource', 'reason', 'holders'],
+        },
+      },
+    });
+    expect(result.note).toMatch(/git-sync:lock-retry/);
+  });
+
   // WI-4940: the trailing `git rev-parse HEAD` (headSha, called unconditionally after
   // fireGitSyncNow resolves — the exact spot the reporter's 120s hang landed in, AFTER
   // the commit had already succeeded) must be bounded, not a bare unbounded execFile.

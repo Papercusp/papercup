@@ -36,7 +36,11 @@ import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
-import { tryAcquireResource, tryReleaseResource } from '../../agent-tools/locks/su-lock-store';
+import {
+  tryAcquireResource,
+  tryReleaseResource,
+  type ResourceAcquireResult,
+} from '../../agent-tools/locks/su-lock-store';
 import { liveLockedPaths } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
@@ -163,7 +167,13 @@ import {
   type ScopedContentError,
   type StrandedSubmodule,
 } from './run-git-sync';
-import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-events';
+import {
+  emitGitSyncCommittedEvent,
+  emitGitSyncEgressedEvent,
+  emitGitSyncLockRetryEvent,
+  snapshotGitSyncLockHolders,
+  type GitSyncLockHolderSnapshot,
+} from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
@@ -255,7 +265,12 @@ const CONFLICT_EVENT = 'git-sync:conflict';
  */
 export type GitSyncFireOutcome =
   | GitSyncOutcome
-  | { status: 'skipped'; reason: string; blockedOn?: string };
+  | {
+      status: 'skipped';
+      reason: string;
+      blockedOn?: string;
+      holders?: GitSyncLockHolderSnapshot[];
+    };
 
 /**
  * EI-438 content guard (git-sync-content-guard-2026-06-13 P-004/P-005). Broken
@@ -394,6 +409,8 @@ interface AcquireOutcome {
   /** The store's refusal reason (state 'held') — 'unknown_resource' means the
    *  name isn't registered, not that a peer holds it. */
   blockedReason?: string;
+  /** JSON-safe live holders returned by the resource-lock refusal. */
+  holders?: GitSyncLockHolderSnapshot[];
 }
 
 async function releaseAll(cd: string, owner: string, acquired: string[]): Promise<void> {
@@ -487,7 +504,7 @@ async function acquireLocks(
 ): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
   for (const resource of resources) {
-    let r: { ok: boolean; reason?: string };
+    let r: ResourceAcquireResult;
     try {
       // EI-1720: retry-with-backoff on a TRANSIENT pg 57014/55P03 so a load-driven
       // workspace-lock contention spike delays — but does not multi-minute-stall —
@@ -525,7 +542,12 @@ async function acquireLocks(
       // A peer holds it (or an extra name is unregistered) — skip this tick, retry next.
       await releaseAll(cd, owner, acquired);
       acquired.length = 0;
-      return { state: 'held', blockedOn: resource, blockedReason: r.reason };
+      return {
+        state: 'held',
+        blockedOn: resource,
+        blockedReason: r.reason,
+        holders: snapshotGitSyncLockHolders(r.holders ?? []),
+      };
     }
     acquired.push(resource);
   }
@@ -1697,6 +1719,7 @@ async function handleGitSync(
   const lockOwner = newGitSyncLockOwner();
   const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
   if (lock.state === 'held' || lock.state === 'contended') {
+    const reason = lock.blockedReason ?? (lock.state === 'contended' ? 'lock_contended' : 'lock_held');
     if (lock.state === 'contended') {
       console.log(`[git-sync] ${slug}: lock contention persisted on ${lock.blockedOn} — skipping this tick`);
     } else if (lock.blockedReason === 'unknown_resource') {
@@ -1706,10 +1729,16 @@ async function handleGitSync(
     } else {
       console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
     }
+    if (lock.blockedOn) {
+      emitGitSyncLockRetryEvent(lock.blockedOn, reason, lock.holders ?? [], {
+        scope: { installSlug: slug, workspaceId },
+      });
+    }
     return {
       status: 'skipped',
-      reason: lock.blockedReason ?? (lock.state === 'contended' ? 'lock_contended' : 'lock_held'),
+      reason,
       ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
+      ...(lock.holders ? { holders: lock.holders } : {}),
     };
   }
   const activityStartedAt = Date.now();

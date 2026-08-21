@@ -30,6 +30,46 @@
  */
 
 import { emitAwaitedEvent } from '../../events/await/engine';
+import type { ResourceHolder } from '@papercusp/locks';
+
+/**
+ * JSON-safe lock-holder detail carried by git-sync's retry signal and on-demand
+ * outcome. ResourceHolder uses Date objects for the lease timestamps, but these
+ * values cross the tool/event boundary and must remain serializable.
+ */
+export interface GitSyncLockHolderSnapshot {
+  owner: string;
+  owner_label: string | null;
+  mode: ResourceHolder['mode'];
+  status: ResourceHolder['status'];
+  lock_id: string;
+  reason: string;
+  acquired_ts: string;
+  expires_ts: string;
+  fence_seq: number;
+}
+
+function isoTimestamp(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+/** Convert the lock store's Date-bearing refusal detail into tool-safe JSON. */
+export function snapshotGitSyncLockHolders(holders: readonly ResourceHolder[]): GitSyncLockHolderSnapshot[] {
+  return holders.map((holder) => ({
+    owner: holder.owner,
+    owner_label: holder.owner_label,
+    mode: holder.mode,
+    status: holder.status,
+    lock_id: holder.lock_id,
+    reason: holder.reason,
+    acquired_ts: isoTimestamp(holder.acquired_ts),
+    expires_ts: isoTimestamp(holder.expires_ts),
+    fence_seq: holder.fence_seq,
+  }));
+}
+
+/** Global signal for a git-sync fire that must retry after a resource is freed. */
+export const GIT_SYNC_LOCK_RETRY_EVENT = 'git-sync:lock-retry';
 
 /**
  * Errors that are EXPECTED for a best-effort, fire-and-forget notification and so must
@@ -73,6 +113,35 @@ export interface GitSyncEventsDeps {
  */
 export interface GitSyncEgressEventOptions {
   includedShas?: readonly string[];
+}
+
+/**
+ * Fire-and-forget lock back-pressure detail. The event is global for
+ * discoverability; install/workspace/resource fields in the payload let a
+ * waiter narrow it to the tick it is judging.
+ */
+export function emitGitSyncLockRetryEvent(
+  resource: string,
+  reason: string,
+  holders: readonly GitSyncLockHolderSnapshot[],
+  deps: GitSyncEventsDeps,
+): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  void Promise.resolve()
+    .then(() =>
+      emit({
+        key: GIT_SYNC_LOCK_RETRY_EVENT,
+        summary: `git-sync retry pending on ${resource} (${reason})`,
+        payload: {
+          ...deps.scope,
+          resource,
+          reason,
+          holders,
+        },
+        source: 'git-sync',
+      }),
+    )
+    .catch((e: unknown) => failSoft(`lock-retry-event for ${resource}`, e));
 }
 
 function emitGitSyncEventPair(

@@ -48,7 +48,7 @@ import type { GitSyncOutcome } from './run-git-sync';
 import { resourceLockDomain, workspaceScopedLockDomain } from '../../agent-tools/locks/coordination-domain';
 
 // --- mocks (factories only close over these; nothing dereferenced at hoist time) --
-const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string }> => ({ ok: true }));
+const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }));
 const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean }> => ({ ok: true }));
 vi.mock('../../agent-tools/locks/su-lock-store', () => ({
   tryAcquireResource: (...a: unknown[]) => tryAcquireResourceMock(a[0], a[1] as Record<string, unknown>),
@@ -141,6 +141,12 @@ vi.mock('@papercusp/flags/server', () => ({
 const appendPipelineEventMock = vi.fn(async (_ev: Record<string, unknown>): Promise<void> => {});
 vi.mock('./pipeline-events', () => ({
   appendPipelineEvent: (...a: unknown[]) => appendPipelineEventMock(a[0] as Record<string, unknown>),
+}));
+
+const emitGitSyncLockRetryEventMock = vi.fn();
+vi.mock('./git-sync-events', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./git-sync-events')>()),
+  emitGitSyncLockRetryEvent: (...a: unknown[]) => emitGitSyncLockRetryEventMock(...a),
 }));
 
 const INVOKE_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=merge-resolver';
@@ -360,6 +366,7 @@ beforeEach(() => {
   liveLockedPathsMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
   appendPipelineEventMock.mockReset();
+  emitGitSyncLockRetryEventMock.mockReset();
   resolveLaunchTargetForEventMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
@@ -549,6 +556,37 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(releasedResources()).toEqual(['git-sync', 'git-sync:papercup']);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('a peer holds libs-papercusp-submodule'));
     log.mockRestore();
+  });
+
+  it('returns JSON-safe live holders and emits a scoped retry signal for a held lock', async () => {
+    const holder = {
+      owner: 'su-peer',
+      owner_label: 'peer agent',
+      mode: 'exclusive' as const,
+      status: 'held' as const,
+      lock_id: 'lock-1',
+      reason: 'manual git work',
+      acquired_ts: new Date('2026-08-21T10:00:00.000Z'),
+      expires_ts: new Date('2026-08-21T10:10:00.000Z'),
+      fence_seq: 42,
+    };
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+      (opts as { resource: string }).resource === 'libs-papercusp-submodule'
+        ? { ok: false, reason: 'held_exclusive', holders: [holder] }
+        : { ok: true });
+
+    await action(ctx);
+
+    expect(emitGitSyncLockRetryEventMock).toHaveBeenCalledWith(
+      'libs-papercusp-submodule',
+      'held_exclusive',
+      [{
+        ...holder,
+        acquired_ts: '2026-08-21T10:00:00.000Z',
+        expires_ts: '2026-08-21T10:10:00.000Z',
+      }],
+      { scope: { installSlug: 'papercup', workspaceId: 'ws-42' } },
+    );
   });
 
   it('SKIPS after workspace-lock contention exhausts retries — it never runs unlocked', async () => {

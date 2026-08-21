@@ -18,6 +18,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { projectDirForSlug } from '../../operator-notes';
 import { fireGitSyncNow, type GitSyncFireOutcome } from '../../harness/git-sync/git-sync-action';
+import { GIT_SYNC_LOCK_RETRY_EVENT } from '../../harness/git-sync/git-sync-events';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 const execFileP = promisify(execFile);
@@ -178,7 +179,26 @@ export default defineTool({
             fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha', 'git_sync_activity'],
           },
         }
-      : undefined;
+      : outcome?.status === 'skipped'
+        ? {
+            // A lock skip is terminal for THIS fire, but not for the requested
+            // synchronization. The action emits this signal after capturing the
+            // live holders, so callers can await a targeted retry instead of
+            // polling or treating the skip as a successful no-op.
+            completion_event: {
+              key: GIT_SYNC_LOCK_RETRY_EVENT,
+              payload_fields: ['installSlug', 'workspaceId', 'resource', 'reason', 'holders'],
+            },
+            await_tool: 'events:await',
+            progress_ref: {
+              surface: 'agent_resource_locks',
+              workspace_id: workspaceId,
+              install_slug: slug,
+              resource: outcome.blockedOn ?? null,
+              fields: ['resource', 'reason', 'holders'],
+            },
+          }
+        : undefined;
     const note = fired.degraded
       ? fired.reason === 'error'
         ? `git-sync fire failed before it returned an outcome: ${fired.errorMessage ?? 'unknown error'}.`
@@ -193,7 +213,8 @@ export default defineTool({
         : outcome?.status === 'nothing'
           ? 'git-sync completed with status nothing; no repo changes were committed.'
           : outcome?.status === 'skipped'
-            ? `git-sync completed with status skipped (${outcome.reason}).`
+            ? `git-sync completed with status skipped (${outcome.reason}); await ${GIT_SYNC_LOCK_RETRY_EVENT} ` +
+              'for the next lock-retry signal and inspect continuation.progress_ref for live holder state.'
             : outcome?.status === 'conflict' || outcome?.status === 'error'
               ? `git-sync completed with status ${outcome.status}; inspect outcome errors/conflicts.`
               : 'git-sync returned no structured outcome; treat the result as unknown and inspect the routine log.';

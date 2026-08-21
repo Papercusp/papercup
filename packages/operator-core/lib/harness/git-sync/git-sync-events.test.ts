@@ -3,7 +3,12 @@
  * (event-await-discoverability-and-coverage-2026-07-03 P-102).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { emitGitSyncCommittedEvent, emitGitSyncEgressedEvent } from './git-sync-events';
+import {
+  emitGitSyncCommittedEvent,
+  emitGitSyncEgressedEvent,
+  emitGitSyncLockRetryEvent,
+  snapshotGitSyncLockHolders,
+} from './git-sync-events';
 import { payloadMatchesFilter } from '../../events/await/pattern';
 
 type EmitOpts = { key: string; summary?: string; payload?: unknown; to?: string[]; source?: string };
@@ -13,6 +18,17 @@ const typedEmit = () =>
 const SHA = 'abcdef1234567890fedcba';
 const SCOPE_A = { installSlug: 'harness-a', workspaceId: 'workspace-a' };
 const SCOPE_B = { installSlug: 'harness-b', workspaceId: 'workspace-a' };
+const HOLDER = {
+  owner: 'su-peer',
+  owner_label: 'peer agent',
+  mode: 'exclusive' as const,
+  status: 'held' as const,
+  lock_id: 'lock-1',
+  reason: 'manual git work',
+  acquired_ts: new Date('2026-08-21T10:00:00.000Z'),
+  expires_ts: new Date('2026-08-21T10:10:00.000Z'),
+  fence_seq: 42,
+};
 
 describe('emitGitSyncCommittedEvent (P-102)', () => {
   it('fires BOTH the global git-sync:committed and the per-sha key, with payload.sha', async () => {
@@ -125,5 +141,50 @@ describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
       payload: { sha: ancestor, egressHead: SHA, ...SCOPE_A },
     });
     expect(ancestorCall?.summary).toContain(`includes ancestor ${ancestor.slice(0, 12)}`);
+  });
+});
+
+describe('emitGitSyncLockRetryEvent (EI-20271766491179856)', () => {
+  it('serializes Date-bearing holder state and emits a scoped retry signal', async () => {
+    const emit = typedEmit();
+    const holders = snapshotGitSyncLockHolders([HOLDER]);
+
+    emitGitSyncLockRetryEvent('git-sync:harness-a', 'held_exclusive', holders, { emit, scope: SCOPE_A });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(holders).toEqual([
+      expect.objectContaining({
+        owner: 'su-peer',
+        acquired_ts: '2026-08-21T10:00:00.000Z',
+        expires_ts: '2026-08-21T10:10:00.000Z',
+        fence_seq: 42,
+      }),
+    ]);
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0][0]).toMatchObject({
+      key: 'git-sync:lock-retry',
+      source: 'git-sync',
+      payload: {
+        ...SCOPE_A,
+        resource: 'git-sync:harness-a',
+        reason: 'held_exclusive',
+        holders,
+      },
+    });
+    expect(emit.mock.calls[0][0].summary).toContain('git-sync:harness-a');
+  });
+
+  it('never rejects on an emit failure (a lock skip must remain best-effort)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const emit = vi.fn(async () => {
+      throw new Error('engine down');
+    });
+
+    expect(() =>
+      emitGitSyncLockRetryEvent('git-sync:harness-a', 'held_exclusive', [], { emit: emit as never, scope: SCOPE_A }),
+    ).not.toThrow();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('lock-retry-event'));
+    warn.mockRestore();
   });
 });
