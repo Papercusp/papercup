@@ -307,3 +307,58 @@ describe('stampStatePlane — the REAL built-in cells stamp a REAL-shaped payloa
     }
   });
 });
+
+/**
+ * P-005 — the plane block must survive an OPERATOR-SCOPE reader.
+ *
+ * The audience filter in `collect()` is a second consumer of `canReadCell`, and that
+ * makes its failure mode much quieter than an unreadable cell. When the harness check
+ * refused `harnessSlug:'*'`, every pipeline cell was filtered out here, `stamps.length`
+ * hit zero, and `stampStatePlane` returned `null` — so `dev:pipeline_position` emitted
+ * NO `plane` key at all. Not an error, not an empty block: an absent field, on a door
+ * whose documented job is to hand you that very handle.
+ *
+ * That is why this is pinned separately from the reach probe. A reader who cannot read
+ * a cell at least gets an `absent` reply to a question they asked; a suppressed plane
+ * block answers a question they never got the chance to ask.
+ */
+describe('P-005 — an operator-scope reader still gets the plane block', () => {
+  const pipelineCells = BUILTIN_CELLS.filter(
+    (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === DOOR,
+  );
+
+  /** A payload carrying each candidate cell's declared path, so own-key existence holds. */
+  const payload = {
+    positions: { deployed: false },
+    gate: { consecutiveReds: 22 },
+    deployedSha: 'a2d69cef',
+    mainBehindStaging: true,
+  };
+
+  const stampFor = (harnessSlug: string) =>
+    stampStatePlane({
+      payload,
+      tool: DOOR,
+      args: { path: 'apps/operator/x.ts' },
+      cells: BUILTIN_CELLS,
+      reader: { ownerId: 'su-p005', roles: ['operator'], harnessSlug },
+    });
+
+  it('emits a plane block for harnessSlug "*" (the regression)', () => {
+    const out = stampFor('*');
+    expect(
+      out,
+      'stampStatePlane returned null for an operator-scope reader — the door emits no ' +
+        '`plane` key at all, which is silently indistinguishable from a door that never ' +
+        'stamped one.',
+    ).not.toBeNull();
+    expect(out!.cells.length).toBeGreaterThan(0);
+  });
+
+  it('still suppresses the block for a foreign-harness reader', () => {
+    // Calibration: proves the assertion above is measuring the audience filter and not
+    // simply that this door always stamps something.
+    expect(pipelineCells.length).toBeGreaterThan(0);
+    expect(stampFor('sidestage')).toBeNull();
+  });
+});
