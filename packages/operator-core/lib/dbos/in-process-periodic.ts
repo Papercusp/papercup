@@ -886,6 +886,7 @@ const releaseRequestSweepCheck: PeriodicCheck = {
     const sql = getOrgPg().sql;
     const { findDueReleaseRequests, resolveWorkItemReleaseRequest } = await import('../work-items-release-request');
     const { releaseWorkItem, commentWorkItem } = await import('../work-items');
+    const { releaseReclaimedWorkItemLocks } = await import('../work-item-lock-release');
     const { sendMessage } = await import('../agent-tools/coordination/messages');
     const { notifyAttention } = await import('../attention-notify');
 
@@ -913,6 +914,19 @@ const releaseRequestSweepCheck: PeriodicCheck = {
         // that guard exists to stop a SURPRISE force; this is the opposite, a force that
         // was announced in advance with an explicit deadline the holder had the chance to
         // contest (by releasing or declining) and did not.
+        // Release the former holder's declared touch-set BEFORE returning the
+        // work-item to the claim pool. This is deliberately targeted: all_mine
+        // would strand unrelated work owned by the same agent. A lock-plane
+        // failure is fail-open and the file-lock lease remains the backstop.
+        const lockRelease = await releaseReclaimedWorkItemLocks({
+          ownerId: row.holderNow ?? resolved.holder,
+          paths: row.paths,
+        });
+        if (lockRelease.failures > 0) {
+          console.warn(
+            `[release-request-sweep] ${row.id}: targeted lock release had ${lockRelease.failures} failure(s); reclaim continues with lease fallback`,
+          );
+        }
         const released = await releaseWorkItem(row.id, { harness: row.harness ?? undefined }).catch(() => null);
         await sendMessage(
           { ownerId: 'release-request-sweep', ownerLabel: 'system · release-request-sweep', source: 'signed-spawn', workspaceId: row.workspaceId, userId: null },

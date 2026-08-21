@@ -204,7 +204,25 @@ export interface DueReleaseRequestRow {
   harness: string | null;
   workspaceId: string;
   holderNow: string | null;
+  /** The durable work-item touch-set used to target consequence lock release. */
+  paths: string[];
   request: WorkItemReleaseRequest;
+}
+
+/** Read the explicit repository touch-set from a work-item payload. */
+export function readWorkItemPaths(payload: unknown): string[] {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return [];
+  const raw = (payload as Record<string, unknown>).paths;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const paths: string[] = [];
+  for (const value of raw) {
+    const path = typeof value === 'string' ? value.trim() : '';
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    paths.push(path);
+  }
+  return paths;
 }
 
 /**
@@ -237,6 +255,7 @@ export async function findDueReleaseRequests(
       harness: r.harness_slug,
       workspaceId: r.workspace_id,
       holderNow: r.taken_by,
+      paths: readWorkItemPaths(r.payload),
       request,
     });
   }

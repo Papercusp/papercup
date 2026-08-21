@@ -21,6 +21,11 @@ vi.mock('../work-items', () => ({
   commentWorkItem: (...a: unknown[]) => commentWorkItem(...a),
 }));
 
+const releaseReclaimedWorkItemLocks = vi.fn();
+vi.mock('../work-item-lock-release', () => ({
+  releaseReclaimedWorkItemLocks: (...a: unknown[]) => releaseReclaimedWorkItemLocks(...a),
+}));
+
 const sendMessage = vi.fn();
 vi.mock('../agent-tools/coordination/messages', () => ({
   sendMessage: (...a: unknown[]) => sendMessage(...a),
@@ -41,6 +46,7 @@ function dueRow(overrides: Partial<{ id: string; harness: string | null; workspa
     harness: overrides.harness ?? 'papercup',
     workspaceId: overrides.workspaceId ?? 'default',
     holderNow: overrides.holderNow ?? 'holder-1',
+    paths: ['packages/target.ts'],
     request: {
       by: 'requester-1',
       holder: 'holder-1',
@@ -65,6 +71,7 @@ beforeEach(() => {
   sendMessage.mockResolvedValue(undefined);
   notifyAttention.mockResolvedValue(undefined);
   releaseWorkItem.mockResolvedValue({ id: 'WI-1', assignee: null });
+  releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
 });
 
 describe('release-request-sweep check', () => {
@@ -89,6 +96,7 @@ describe('release-request-sweep check', () => {
     await check.tick();
 
     expect(resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-1', { harness: 'papercup', resolution: 'consequence-reclaim' });
+    expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({ ownerId: 'holder-1', paths: ['packages/target.ts'] });
     expect(releaseWorkItem).toHaveBeenCalledWith('WI-1', { harness: 'papercup' });
     expect(commentWorkItem).toHaveBeenCalledTimes(1);
     expect(commentWorkItem.mock.calls[0][1]).toContain('EXPIRED');
