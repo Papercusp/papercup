@@ -43,6 +43,25 @@ export function linuxPpidFromProcStat(stat: string): number | null {
   return Number.isInteger(n) && n >= 0 ? n : null;
 }
 
+/**
+ * Linux /proc stat field 3 (state — R/S/D/Z/T/...), robust to spaces and ')' in comm.
+ * Same `lastIndexOf(')')` discipline as starttime/ppid above.
+ *
+ * This is a DIAGNOSTIC read, never a liveness check: a null return means "could not
+ * determine", not "not a real state" and never "dead" — cgroup membership remains the
+ * liveness signal. Its purpose is to tell a caller stuck on an unkillable survivor
+ * WHY (a zombie can't be reached by any signal; an uninterruptible-sleep process has
+ * the signal queued but blocked in the kernel) instead of a bare unexplained count.
+ */
+export function linuxProcStateFromStat(stat: string): string | null {
+  const close = stat.lastIndexOf(')');
+  if (close < 0) return null;
+  // Text after comm starts at field 3 (state) — it's the FIRST token, unlike
+  // starttime/ppid above which index past it.
+  const state = stat.slice(close + 1).trim().split(/\s+/)[0];
+  return state && /^[A-Za-z]$/.test(state) ? state : null;
+}
+
 export function linuxProcessIdentityFromStat(bootId: string, stat: string): string | null {
   const boot = bootId.trim();
   const ticks = linuxStartTicksFromProcStat(stat);
