@@ -81,6 +81,7 @@ import {
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
   diagnoseFleetScopeRetiredPlans,
+  fleetLeaderUnavailableRefusal,
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
   hasLiveFleetRouteTarget,
@@ -90,6 +91,46 @@ import {
   reconcileFleetScopeClaims,
   type FleetScopeAdmission,
 } from './fleet-scope-admission';
+
+describe('fleetLeaderUnavailableRefusal (EI-21079515303301272)', () => {
+  it('is a recoverable pre-claim block, not a drained-lane verdict', () => {
+    const scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'leaderless-fleet',
+      fleetRole: 'member' as const,
+      workspaceId: 'papercusp-workspace',
+      record: {
+        source: 'fleet' as const,
+        spec: { specId: 'leaderless-rev4', revision: 4 },
+      },
+    };
+
+    const refusal = fleetLeaderUnavailableRefusal(scope);
+
+    expect(refusal).toMatchObject({
+      ok: false,
+      error: 'fleet_leader_unavailable',
+      reason: 'registered_leader_not_live',
+      retryable: true,
+      noClaim: true,
+      recoverable: true,
+      leaderLiveness: false,
+      windDown: false,
+      fleetScope: {
+        fleet: 'leaderless-fleet',
+        member: 'su-member',
+        specId: 'leaderless-rev4',
+        revision: 4,
+      },
+      recovery: {
+        tool: 'fleet:take-leadership',
+        args: { fleet: 'leaderless-fleet' },
+      },
+    });
+    expect(refusal.message).toMatch(/no live registered leader/);
+    expect(refusal.advice).toMatch(/Do not treat this as an empty queue/);
+  });
+});
 
 const base: ClaimSpecSubject = {
   id: 'WI-7',

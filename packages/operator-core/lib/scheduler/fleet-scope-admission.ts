@@ -813,6 +813,49 @@ export async function diagnoseFleetScopeLeaderLiveness(args: {
 }
 
 /**
+ * EI-21079515303301272: a member must not keep self-pulling an active fleet's
+ * leader-owned terminal lane when the registry has no live leader.  This is a
+ * recoverable control-plane block, not a drain verdict: the lane may still have
+ * claimable work, but no live session can receive the completion/acceptance
+ * transition or perform fleet wind-down.
+ */
+export function fleetLeaderUnavailableRefusal(scope: FleetScopeContext) {
+  const fleet = scope.fleetSlug;
+  return {
+    ok: false as const,
+    error: 'fleet_leader_unavailable' as const,
+    reason: 'registered_leader_not_live' as const,
+    retryable: true as const,
+    noClaim: true as const,
+    // Deliberately false: this is not evidence that the member lane is drained.
+    windDown: false as const,
+    recoverable: true as const,
+    leaderLiveness: false as const,
+    fleetScope: {
+      fleet,
+      member: scope.ownerId,
+      specId: scope.record.spec.specId,
+      revision: scope.record.spec.revision,
+      source: scope.record.source,
+    },
+    message:
+      `fleet '${fleet}' is active but has no live registered leader; member self-pull is blocked ` +
+      'before claim so leader-owned acceptance/terminal work cannot be stranded.',
+    recovery: {
+      tool: 'fleet:take-leadership',
+      args: { fleet },
+      note:
+        'Verify the former leader is gone, then take leadership through the audited handoff. ' +
+        'Retry scheduler:get_next only after a live leader is registered; do not treat this as an empty queue.',
+    },
+    advice:
+      `Recover '${fleet}' with fleet:take-leadership { fleet: "${fleet}" } (or another audited ` +
+      'live-driver handoff), then retry scheduler:get_next. Keep existing held work intact while the ' +
+      'leadership transition is made. Do not treat this as an empty queue or a successful drain.',
+  };
+}
+
+/**
  * The CLASS sentence prepended to the leader remedy, or '' when the reading does not
  * support one. Deliberately conservative — it reports the two measured counts and lets the
  * leader judge, rather than asserting the spec is wrong:

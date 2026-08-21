@@ -49,6 +49,7 @@ import {
   diagnoseFleetScopeTerminalExhaustion,
   diagnoseFleetScopePlanTerminality,
   diagnoseFleetScopeLeaderLiveness,
+  fleetLeaderUnavailableRefusal,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
@@ -795,6 +796,10 @@ export default defineTool({
           pause: Awaited<ReturnType<typeof readFleetPauseState>>;
         }
       | {
+          kind: 'leader-unavailable';
+          reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
+        }
+      | {
           kind: 'ready';
           reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
           specOn: boolean;
@@ -852,6 +857,13 @@ export default defineTool({
         if (reconciliation.scope) {
           const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
           if (pause.windingDown) return { kind: 'paused', reconciliation, pause };
+          // EI-21079515303301272: member self-pulls are leader-owned work. If the
+          // registry/roster read proves there is no live leader, refuse BEFORE the
+          // atomic claim instead of allowing members to continue into a lane whose
+          // terminal acceptance and wind-down have no live driver. A null reading is
+          // deliberately fail-open; only a successful negative blocks new work.
+          const leaderLiveness = await diagnoseFleetScopeLeaderLiveness({ scope: reconciliation.scope });
+          if (leaderLiveness === false) return { kind: 'leader-unavailable', reconciliation };
         }
         // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
         // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
@@ -922,6 +934,16 @@ export default defineTool({
                 harness: args.harness,
               }),
             ),
+          },
+        ],
+      };
+    }
+    if (preflightState.kind === 'leader-unavailable') {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(fleetLeaderUnavailableRefusal(preflightState.reconciliation.scope!)),
           },
         ],
       };

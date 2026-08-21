@@ -33,6 +33,7 @@ const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
 const getFlagM = vi.hoisted(() => vi.fn(async () => true));
 const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
 const readFleetPauseStateM = vi.hoisted(() => vi.fn());
+const diagnoseFleetScopeLeaderLivenessM = vi.hoisted(() => vi.fn(async () => null as boolean | null));
 const workItemClaimLeaseEnabledM = vi.hoisted(() => vi.fn(() => false));
 const leaseClaimedWorkItemM = vi.hoisted(() => vi.fn(async () => true));
 const releaseWorkItemM = vi.hoisted(() => vi.fn(async () => undefined));
@@ -102,7 +103,18 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   // EI-20260781488788952: the zero-match enrichment reads these diagnostics alongside the
   // existing family/exhaustion seams; keep this mock's module shape aligned with production.
   diagnoseFleetScopePlanTerminality: vi.fn(async () => null),
-  diagnoseFleetScopeLeaderLiveness: vi.fn(async () => null),
+  diagnoseFleetScopeLeaderLiveness: diagnoseFleetScopeLeaderLivenessM,
+  fleetLeaderUnavailableRefusal: (scope: any) => ({
+    ok: false,
+    error: 'fleet_leader_unavailable',
+    recoverable: true,
+    leaderLiveness: false,
+    noClaim: true,
+    windDown: false,
+    fleetScope: { fleet: scope.fleetSlug, member: scope.ownerId },
+    recovery: { tool: 'fleet:take-leadership', args: { fleet: scope.fleetSlug } },
+    advice: `Recover '${scope.fleetSlug}' and retry scheduler:get_next.`,
+  }),
   fleetScopedMiss: (
     scope: any,
     quarantinedIds: string[],
@@ -363,6 +375,50 @@ describe('scheduler:get_next hard fleet boundary (P-016)', () => {
     // work-item:claimable await(s) (self-scoped by ownerId) so a compliant peer
     // stand-down doesn't keep re-waking this member on a pull it's forbidden to make.
     expect(cancelClaimableAwaitsM).toHaveBeenCalledWith('su-member');
+  });
+
+  it('EI-21079515303301272: blocks an active member before claim when its registered leader is not live', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'leaderless-fleet',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'leaderless-rev4', revision: 4 } },
+    };
+    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(false);
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-must-not-claim' } });
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'fleet_leader_unavailable',
+      noClaim: true,
+      recoverable: true,
+      leaderLiveness: false,
+      windDown: false,
+      recovery: { tool: 'fleet:take-leadership', args: { fleet: 'leaderless-fleet' } },
+    });
+    expect(body.advice).toMatch(/retry scheduler:get_next/);
+    expect(diagnoseFleetScopeLeaderLivenessM).toHaveBeenCalledWith({ scope: scopeState.scope });
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('keeps the self-pull path fail-open when leader liveness is unreadable', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'leader-read-error-fleet',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'lane-rev4', revision: 4 } },
+    };
+    diagnoseFleetScopeLeaderLivenessM.mockResolvedValue(null);
+    getNextM.mockResolvedValue(null);
+
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+
+    expect(getNextM).toHaveBeenCalledOnce();
   });
 });
 
