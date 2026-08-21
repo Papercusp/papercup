@@ -35,11 +35,18 @@
 import { spawn } from 'node:child_process';
 import { resolve, dirname, relative, sep, join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { existsSync } from 'node:fs';
+import { existsSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
-import { classifyCargoRun, formatCargoResultLine } from './lib/cargo-result.mjs';
+import {
+  assessCargoDiskAdmission,
+  CARGO_DISK_REFUSAL_EXIT_CODE,
+  cargoDiskPolicyFromEnv,
+  classifyCargoRun,
+  formatCargoDiskRefusal,
+  formatCargoResultLine,
+} from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -117,19 +124,44 @@ function parseArgs(argv) {
 }
 
 function runCargoTest(manifestAbs, extraArgs) {
+  const startedAt = new Date();
+  let diskAdmission;
+  try {
+    const fsst = statfsSync(manifestAbs);
+    const totalBytes = Number(fsst.blocks) * Number(fsst.bsize);
+    const freeBytes = Number(fsst.bavail) * Number(fsst.bsize);
+    diskAdmission = assessCargoDiskAdmission(
+      { totalBytes, freeBytes },
+      cargoDiskPolicyFromEnv(),
+    );
+  } catch (err) {
+    diskAdmission = assessCargoDiskAdmission({ totalBytes: Number.NaN, freeBytes: Number.NaN });
+    console.warn(`[report-cargo-tests] disk admission probe unreadable; continuing fail-open: ${err.message}`);
+  }
+
+  if (!diskAdmission.allowed) {
+    return Promise.resolve({
+      code: CARGO_DISK_REFUSAL_EXIT_CODE,
+      stdout: '',
+      stderr: formatCargoDiskRefusal(diskAdmission),
+      startedAt,
+      finishedAt: new Date(),
+      diskAdmission,
+    });
+  }
+
   return new Promise((resolvePromise) => {
     const args = ['test', '--manifest-path', manifestAbs, '--no-fail-fast', '--', '--test-threads=4', ...extraArgs];
-    const startedAt = new Date();
     const child = spawn(resolveCargoBin(), args, { cwd: REPO_ROOT, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d.toString(); });
     child.stderr.on('data', (d) => { stderr += d.toString(); });
     child.on('close', (code) => {
-      resolvePromise({ code, stdout, stderr, startedAt, finishedAt: new Date() });
+      resolvePromise({ code, stdout, stderr, startedAt, finishedAt: new Date(), diskAdmission });
     });
     child.on('error', (err) => {
-      resolvePromise({ code: 1, stdout, stderr: `${stderr}\nspawn error: ${err.message}`, startedAt, finishedAt: new Date() });
+      resolvePromise({ code: 1, stdout, stderr: `${stderr}\nspawn error: ${err.message}`, startedAt, finishedAt: new Date(), diskAdmission });
     });
   });
 }
@@ -202,15 +234,22 @@ async function main() {
 
   ensureLoopLagMonitor();
   console.log(`[report-cargo-tests] running: cargo test --manifest-path ${manifestPath} --no-fail-fast`);
-  const { code, stdout, stderr, startedAt, finishedAt } = await runCargoTest(manifestAbs, cargoArgs);
+  const { code, stdout, stderr, startedAt, finishedAt, diskAdmission } = await runCargoTest(manifestAbs, cargoArgs);
   const combined = `${stdout}\n${stderr}`;
   process.stdout.write(stdout);
-  if (stderr) process.stderr.write(stderr);
+  if (stderr) process.stderr.write(stderr.endsWith('\n') ? stderr : `${stderr}\n`);
 
   const results = parseTestResultLines(combined);
   const failureDetails = parseFailureDetails(combined);
   const source = process.env.CI ? 'ci' : 'local';
-  const cargoResult = classifyCargoRun({ code, output: combined, resultCount: results.length });
+  const cargoResult = diskAdmission?.status === 'blocked'
+    ? {
+        status: 'error',
+        termination: null,
+        cause: 'low-disk-admission-refused',
+        disk: { usedPct: diskAdmission.usedPct, freeGiB: diskAdmission.freeGiB },
+      }
+    : classifyCargoRun({ code, output: combined, resultCount: results.length });
 
   const rows = results.map((r) => ({
     filePath: `${crateDir}::${r.name}`,
@@ -235,7 +274,7 @@ async function main() {
     source,
   });
 
-  if (results.length === 0) {
+  if (results.length === 0 && diskAdmission?.status !== 'blocked') {
     const suffix = cargoResult.termination
       ? ` — cargo process was killed by ${cargoResult.termination.signalName} (signal ${cargoResult.termination.signal})`
       : '';

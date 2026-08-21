@@ -3,6 +3,91 @@
 // scripts are gate entry points, so a helper import must not pull in a service
 // or database module and turn a diagnostic into a runner failure.
 
+const GIB = 1024 ** 3;
+
+/**
+ * Keep native-suite admission aligned with the standing disk alarm. WI-5080
+ * deliberately keeps Cargo targets warm during normal operation, so this is an
+ * admission guard, not an unconditional cache cleaner.
+ */
+export const DEFAULT_CARGO_DISK_POLICY = Object.freeze({
+  freePctMin: 0.1,
+  freeBytesMin: 5 * GIB,
+});
+
+/** EX_TEMPFAIL: the suite did not run and becomes valid after space is reclaimed. */
+export const CARGO_DISK_REFUSAL_EXIT_CODE = 75;
+
+function positiveEnvNumber(env, name, fallback) {
+  const value = Number(env?.[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** Reuse the disk alarm's existing tuning keys rather than minting a second
+ * configuration surface for the Cargo-test entry point. */
+export function cargoDiskPolicyFromEnv(env = process.env) {
+  return {
+    freePctMin:
+      positiveEnvNumber(env, 'PAPERCUSP_DISK_ALARM_FREE_PCT', DEFAULT_CARGO_DISK_POLICY.freePctMin * 100) / 100,
+    freeBytesMin:
+      positiveEnvNumber(env, 'PAPERCUSP_DISK_ALARM_FREE_GB', DEFAULT_CARGO_DISK_POLICY.freeBytesMin / GIB) * GIB,
+  };
+}
+
+/**
+ * Pure disk admission decision. `usedPct` and `freeGiB` intentionally use the
+ * same scale and rounding as system-health's readDiskPressure writer.
+ */
+export function assessCargoDiskAdmission(
+  { totalBytes, freeBytes },
+  policy = DEFAULT_CARGO_DISK_POLICY,
+) {
+  if (
+    !Number.isFinite(totalBytes) ||
+    totalBytes <= 0 ||
+    !Number.isFinite(freeBytes) ||
+    freeBytes < 0
+  ) {
+    return {
+      allowed: true,
+      status: 'unknown',
+      reasons: ['invalid-statfs'],
+      totalBytes,
+      freeBytes,
+      freePct: null,
+      usedPct: null,
+      freeGiB: null,
+      policy,
+    };
+  }
+
+  const freePct = Math.min(1, freeBytes / totalBytes);
+  const reasons = [];
+  if (freePct < policy.freePctMin) reasons.push('free-percent');
+  if (freeBytes < policy.freeBytesMin) reasons.push('free-bytes');
+  return {
+    allowed: reasons.length === 0,
+    status: reasons.length === 0 ? 'ok' : 'blocked',
+    reasons,
+    totalBytes,
+    freeBytes,
+    freePct,
+    usedPct: Math.round((1 - freePct) * 100),
+    freeGiB: Math.floor(freeBytes / GIB),
+    policy,
+  };
+}
+
+export function formatCargoDiskRefusal(admission) {
+  const minFreePct = Math.round(admission.policy.freePctMin * 1000) / 10;
+  const minFreeGiB = Math.round((admission.policy.freeBytesMin / GIB) * 10) / 10;
+  return (
+    `[report-cargo-tests] REFUSED before spawning Cargo: filesystem is ${admission.usedPct}% used ` +
+    `with ${admission.freeGiB} GiB available; admission requires at least ${minFreePct}% and ${minFreeGiB} GiB free. ` +
+    `Reclaim inactive build caches, then retry. Warm targets are preserved by default (WI-5080).`
+  );
+}
+
 /**
  * @typedef {{ signal: number, signalName: string }} CargoTermination
  */
@@ -45,10 +130,10 @@ export function classifyCargoRun({ code, output, resultCount }) {
  * on the same line as the status so a fixed-size tail cannot leave a reader
  * with only "could not compile" and no cause.
  *
- * @param {{ status: 'passed' | 'failed' | 'killed' | 'error', termination?: CargoTermination | null }} result
+ * @param {{ status: 'passed' | 'failed' | 'killed' | 'error', termination?: CargoTermination | null, cause?: string | null, disk?: { usedPct: number, freeGiB: number } | null }} result
  * @returns {string}
  */
-export function formatCargoResultLine({ status, termination = null }) {
+export function formatCargoResultLine({ status, termination = null, cause = null, disk = null }) {
   const fields = [`CARGO_RESULT status=${status}`];
   if (termination) {
     fields.push(
@@ -57,5 +142,7 @@ export function formatCargoResultLine({ status, termination = null }) {
       'cause=killed-by-signal',
     );
   }
+  if (cause) fields.push(`cause=${cause}`);
+  if (disk) fields.push(`diskUsedPct=${disk.usedPct}`, `diskFreeGiB=${disk.freeGiB}`);
   return fields.join(' ');
 }
