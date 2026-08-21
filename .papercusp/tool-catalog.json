@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 756,
+  "count": 757,
   "tools": [
     {
       "name": "ablation:report",
@@ -3427,6 +3427,80 @@
         "when": "You want a scoped-superuser session to be DENIED a crossWorkspace tool the baked allowlist permits (narrow its cross-workspace reach) — live, no deploy. Requires papercusp-auth-config-overrides ON. op:get to read the active remove-set.",
         "notWhen": "You cannot ADD tools to the allowlist with this dial (tighten-only by design). To grant capabilities use the capability tools.",
         "chaining": "config:list-overrides shows the active auth-config-overrides; config:reset-overrides reverts (restores the full baked allowlist)."
+      }
+    },
+    {
+      "name": "code:pack",
+      "http": {
+        "path": "/api/agent-tools/code/pack",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Package code as EVIDENCE for a reviewer or another model, using pinned engines (Repomix 1.18.0 / code2prompt 4.2.0 — never `npx latest`, so every pack names the exact engine that produced it). op:\"pack\" packs the files matching `include`; op:\"diff\" packs the git diff instead. `include` is REQUIRED and non-empty: an unscoped pack of this monorepo is gigabytes, and it reads exactly like a correctly-scoped one until someone opens it. Only op:\"pack\" is secret-scanned — code2prompt ships no scanner at all — so the two are NOT interchangeable on a tree that may hold credentials. Never writes to the workspace, cannot disable secret scanning, and puts the pack body in a scratch file outside the tree rather than into your context.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "You need a whole subsystem in one document for a human reviewer or another model to reason over — a review request, an audit, a refactor brief. op:\"diff\" when only what CHANGED matters.",
+        "notWhen": "You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ripgrep (text) first, and pack only once you know what a reader needs to see.",
+        "chaining": "gitnexus.query for the impact radius → code:pack include:<that radius>, so the pack is scoped by a measured answer rather than a guess. Quote provenance.commit + dirty whenever you cite a pack as evidence."
       }
     },
     {
