@@ -119,6 +119,11 @@ function hermeticEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
     PAPERCUSP_FLEET_BG: _bg,
     PAPERCUSP_FLEET_FG: _fg,
     PAPERCUSP_FLEET_CURSOR: _cursor,
+    // Backend-specific startup readiness (for example Codex's `% context left`
+    // marker) must be selected explicitly by a test.  In a fleet session the
+    // ambient Codex value would make generic echo-child tests wait for a marker
+    // they can never emit, masking the clean-boundary behavior under test.
+    PAPERCUSP_AGENT: _agent,
     ...rest
   } = process.env;
   return { ...rest, ...extra };
@@ -839,6 +844,10 @@ describe(
             TERM: 'xterm-256color',
             PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
             PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '5000', // generous — the child DOES go quiet
+            // This fake child emits BOOT but no backend-specific composer marker.
+            // Exercise the established bounded fallback rather than waiting the
+            // production 15s marker window (the sibling recycle tests do the same).
+            PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '300',
             PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
           },
           ownerId,
