@@ -215,15 +215,21 @@ describe('memory:list temporal flags (P-006 read path)', () => {
 
 describe('temporal memory tool guidance (P-009 agent discipline)', () => {
   it('teaches current-only defaults and the two historical read controls', () => {
-    expect(search.guidance.when).toContain('Default recall returns only facts CURRENT now');
-    expect(search.guidance.when).toContain('as_of:<ISO timestamp>');
-    expect(search.guidance.when).toContain('include_superseded:true');
-    expect(search.guidance.chaining).toContain('supersede:<old-id>');
+    const searchGuidance = search.guidance;
+    const listGuidance = list.guidance;
+    expect(searchGuidance).toBeDefined();
+    expect(listGuidance).toBeDefined();
+    if (!searchGuidance || !listGuidance) throw new Error('memory tool guidance is required');
 
-    expect(list.guidance.when).toContain('Default listing returns only facts CURRENT now');
-    expect(list.guidance.when).toContain('as_of:<ISO timestamp>');
-    expect(list.guidance.when).toContain('include_superseded:true');
-    expect(list.guidance.chaining).toContain('soft:true');
+    expect(searchGuidance.when).toContain('Default recall returns only facts CURRENT now');
+    expect(searchGuidance.when).toContain('as_of:<ISO timestamp>');
+    expect(searchGuidance.when).toContain('include_superseded:true');
+    expect(searchGuidance.chaining).toContain('supersede:<old-id>');
+
+    expect(listGuidance.when).toContain('Default listing returns only facts CURRENT now');
+    expect(listGuidance.when).toContain('as_of:<ISO timestamp>');
+    expect(listGuidance.when).toContain('include_superseded:true');
+    expect(listGuidance.chaining).toContain('soft:true');
   });
 });
 
