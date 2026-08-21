@@ -35,7 +35,8 @@ import { COORD_ROLES } from '../roles';
 import { hardText, LIMITS } from '../../limits';
 import { findUnknownFromItems } from '../promote';
 import { emitPlanEventForCaller } from '../plan-events';
-import { readPlanBySlug, resolvePlanScope } from '../../plans/source';
+import { readPlanBySlug } from '../../plans/source';
+import { ctxToPlanSourceOpts } from '../../plans/_ctx-opts';
 import { parsePromotePolicy, buildWaveFeatures, applyInterWaveEdges, type BuiltFeature, type SpawnChild } from '../../plans/promote-policy';
 import {
   executeSpawnChild,
@@ -464,12 +465,13 @@ async function backfillPromotedFromConsolidated(opts: {
   apply: boolean;
   planTitle: string;
   planRaw: string;
+  planScope: { workspaceId: string; harnessSlug: string };
   fail: (error: string, detail?: string) => {
     content: Array<{ type: 'text'; text: string }>;
     isError: true;
   };
 }) {
-  const { ctx, slug, apply, planTitle, planRaw, fail } = opts;
+  const { ctx, slug, apply, planTitle, planRaw, planScope, fail } = opts;
   type ConsolidatedRow = {
     feature_id: string;
     title: string | null;
@@ -480,7 +482,7 @@ async function backfillPromotedFromConsolidated(opts: {
   let existingRows: ConsolidatedRow[] = [];
   try {
     const { sql } = getOrgPg();
-    const workspaceId = ctx.workspaceId ?? '';
+    const workspaceId = planScope.workspaceId;
     existingRows = await sql<ConsolidatedRow[]>`
       SELECT feature_id, title, source_plan_item_ids, wave, feature_order
         FROM harness_shared.harness_features_consolidated
@@ -534,7 +536,11 @@ async function backfillPromotedFromConsolidated(opts: {
   let wrote = false;
   const writeResult = await withPlanLock<null>(
     ctx as never,
-    { slug, intent: 'plans:promote → WI-3972 backfill ## Promoted block (no policy, already-promoted features)' },
+    {
+      slug,
+      intent: 'plans:promote → WI-3972 backfill ## Promoted block (no policy, already-promoted features)',
+      ...planScope,
+    },
     async (current): Promise<{ newBody: string | null; value: null }> => {
       if (current === null) return { newBody: null, value: null };
       const newBody = upsertPromotedBlock(current, backfillRows);
@@ -662,8 +668,13 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
 
-    // Validate the plan exists.
-    const planFile = await readPlanBySlug(args.slug);
+    // Resolve the source plan from the caller's concrete harness scope. The
+    // target `harness_slug` is intentionally NOT reused here: a promote policy
+    // may import features into a different harness from the one that owns the
+    // plan. The bare read previously defaulted every call to operator-home,
+    // making a plan that `plans:get` could read in a scoped session fail here
+    // with `plan_not_found` (EI-21093090220973191 / recurring EI-103 class).
+    const planFile = await readPlanBySlug(args.slug, await ctxToPlanSourceOpts(ctx));
     if (!planFile) {
       return {
         content: [
@@ -679,6 +690,13 @@ export default defineTool({
         isError: true,
       };
     }
+    // Thread the SAME resolved key through every later source-plan write. A
+    // second resolution path can disagree on workspace or Hive-home collapse;
+    // the row that satisfied the read is the authority for the write-back.
+    const planScope = {
+      workspaceId: planFile.row.workspaceId,
+      harnessSlug: planFile.row.harnessSlug,
+    };
     const planTitle =
       (planFile.parsed.frontmatter as { title?: string } | null)?.title ?? args.slug;
 
@@ -730,6 +748,7 @@ export default defineTool({
             apply: args.apply === true,
             planTitle,
             planRaw: planFile.parsed.raw,
+            planScope,
             fail,
           });
           if (backfillResult) return backfillResult;
@@ -1024,7 +1043,7 @@ export default defineTool({
           if (await resolveProject(principalSlug, ctx.workspaceId)) sealedParent = principalSlug;
         } catch { /* not a harness principal — fall through */ }
       }
-      if (!sealedParent) sealedParent = (await resolvePlanScope({})).harnessSlug;
+      if (!sealedParent) sealedParent = planScope.harnessSlug;
       const spawnDeps = buildDefaultSpawnChildDeps({ importFeatures: postFeaturesImport });
       for (const [slug, feats] of childGroups) {
         const cfg = spawnChildConfigs.get(slug)!;
@@ -1210,6 +1229,7 @@ export default defineTool({
         {
           slug: args.slug,
           intent: `plans:promote → mark ${allFromItems.size} item(s) as done`,
+          ...planScope,
         },
         async (current) => {
           if (current === null) {
@@ -1319,7 +1339,11 @@ export default defineTool({
 
     await withPlanLock<null>(
       ctx as never,
-      { slug: args.slug, intent: 'plans:promote → write ## Promoted block + Now status + activate' },
+      {
+        slug: args.slug,
+        intent: 'plans:promote → write ## Promoted block + Now status + activate',
+        ...planScope,
+      },
       async (current): Promise<{ newBody: string | null; value: null }> => {
         if (current === null) return { newBody: null, value: null };
         // P-041: record the REALIZED wave/parallelism structure (wave/order/
