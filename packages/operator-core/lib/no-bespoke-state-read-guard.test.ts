@@ -426,7 +426,7 @@ describe('no-bespoke-state-read guard:the advisory volume signature', () => {
       { tool_name: 'dev:thing_status', calls: 100, callers: 20 },
     ];
 
-    expect(findVolumeCandidates(rows, definitions).map((candidate) => candidate.name)).toEqual([
+    expect(findVolumeCandidates(rows, definitions).map((candidate: { name: string }) => candidate.name)).toEqual([
       'facts:list',
       'blender:success-metrics',
       'dev:pg_active_queries',

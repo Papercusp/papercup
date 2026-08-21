@@ -95,6 +95,74 @@ export function isFleetWindDownLoopEndAuthorized(
 }
 
 /**
+ * Read the independent, durable inputs for the no-PTY fleet wind-down escape.
+ * Each leg is deliberately best-effort but keeps an unknown distinct from a
+ * known negative: a read failure returns null, while a successful read that
+ * proves the member is not in a fleet (or has no matching cue) returns false.
+ * The caller only invokes this at the critical/no-PTY boundary, so ordinary
+ * checkpoints and inbox reads do not pay the four coordination reads.
+ */
+export async function readFleetWindDownLoopEndAuthorization(args: {
+  ownerId: string;
+  workspaceId: string;
+}): Promise<boolean | null> {
+  try {
+    const [{ getActiveClaimForOwner }, { fetchPresenceFleet }, { readInboxWindow }] = await Promise.all([
+      import('../../../work-item-claims'),
+      import('../presence-fleet'),
+      import('../messages'),
+    ]);
+
+    const [claim, fleetMap] = await Promise.all([
+      getActiveClaimForOwner(args.workspaceId, args.ownerId).catch(() => undefined),
+      fetchPresenceFleet([args.ownerId]).catch(() => undefined),
+    ]);
+
+    if (claim === undefined || fleetMap === undefined) return null;
+    const currentFleet = fleetMap.get(args.ownerId)?.fleetSlug ?? null;
+    if (!currentFleet) return false;
+
+    const { getFleet } = await import('../../../agent-fleets-store');
+    const fleet = await getFleet(args.workspaceId, currentFleet).catch(() => undefined);
+    if (fleet === undefined) return null;
+
+    const inbox = await readInboxWindow(
+      args.ownerId,
+      {},
+      (entries) =>
+        entries.some((entry) => {
+          const stamp = readCueAuthority(entry as unknown as Record<string, unknown>);
+          if (
+            !stamp ||
+            stamp.authority !== 'fleet-leader' ||
+            stamp.scope !== 'fleet-members' ||
+            stamp.authorityRef !== currentFleet ||
+            stamp.scopeRef !== currentFleet
+          ) {
+            return false;
+          }
+          const text = [entry.summary, entry.body]
+            .filter((part): part is string => typeof part === 'string')
+            .join('\n');
+          return text.includes('WIND-DOWN') && text.includes('loop:end');
+        }),
+    )
+      .then((result) => result.entries)
+      .catch(() => undefined);
+    if (inbox === undefined) return null;
+
+    return isFleetWindDownLoopEndAuthorized({
+      activeClaimPresent: claim !== null,
+      currentFleet,
+      fleetControlState: fleet?.controlState ?? null,
+      cues: inbox,
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * WI-4179 (owner-reported 2026-07-11): is this unread envelope a REAL pending
  * interrupt — something a human or peer deliberately wrote — or system
  * machinery chatter? The gate's unread leg used to count the raw
