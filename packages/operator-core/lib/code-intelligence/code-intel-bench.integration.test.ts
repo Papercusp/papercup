@@ -55,10 +55,12 @@ describe.skipIf(missing.length > 0)(
           // repo, per lsp-adapter.integration.test.ts), with generous headroom
           // for rust-analyzer's larger crate graph. Still bounded: a probe that
           // has not answered in 90s is not going to.
-          deadlineMs: 90_000,
+          // rust-analyzer must run `cargo metadata` and build proc macros for
+          // the Tauri crate on a cold start, which is minutes, not seconds.
+          deadlineMs: 300_000,
           // The whole leg is bounded too, so one slow probe cannot starve the
           // rest and cost us the entire report.
-          legBudgetMs: 480_000,
+          legBudgetMs: 600_000,
           pollMs: 500,
         });
 

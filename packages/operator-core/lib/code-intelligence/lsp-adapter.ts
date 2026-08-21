@@ -31,7 +31,7 @@ import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import type { ChildProcess } from 'node:child_process';
 
@@ -201,6 +201,53 @@ const state = pinModuleState<AdapterState>(
 
 function clientKey(language: LspLanguage, rootPath: string): string {
   return `${language}::${rootPath}`;
+}
+
+/**
+ * The directory a language server must be ROOTED at to answer about `file`.
+ *
+ * This is NOT the same as the repo root, and getting it wrong is silent.
+ * rust-analyzer derives its entire crate graph from the `Cargo.toml` at its
+ * root; point it somewhere without one and it loads NOTHING, then answers
+ * every query with an empty result while reporting itself healthy. That empty
+ * passes `isTrustworthyEmpty` — so an agent asking "who implements this
+ * trait?" is told, authoritatively, "nobody".
+ *
+ * MEASURED 2026-08-21 (P-010): this repo has NO Cargo.toml at its root — the
+ * crates live at papercusp-desktop/src-tauri, apps/tui, apps/pui-companion-proto
+ * and apps/pui-zellij-plugin — so every Rust query returned a false-empty.
+ * Confirmed not a loading race: 179 polls over 90s never filled.
+ *
+ * Returning an `error` rather than a silent fallback is the durable half. A
+ * caller that cannot find a project root MUST refuse to answer, because a loud
+ * failure is honest (`isTrustworthyEmpty` treats `error !== null` as such) and
+ * a healthy-looking empty is not.
+ */
+export function resolveProjectRoot(
+  language: LspLanguage,
+  file: string,
+  fallbackRoot: string,
+): { root: string; error: string | null } {
+  // TypeScript: the monorepo root carries the tsconfig and the workspace
+  // symlinks, so it is genuinely the right project root.
+  if (language !== 'rust') return { root: fallbackRoot, error: null };
+
+  let dir = dirname(file);
+  while (dir.startsWith(fallbackRoot)) {
+    if (existsSync(join(dir, 'Cargo.toml'))) return { root: dir, error: null };
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  return {
+    root: fallbackRoot,
+    error:
+      `no Cargo.toml found between ${file} and ${fallbackRoot}, so rust-analyzer ` +
+      `would have no crate graph and would answer EMPTY for every query while ` +
+      `reporting itself healthy. Refusing to answer rather than returning a ` +
+      `false-empty that reads as "nothing implements this".`,
+  };
 }
 
 /** Language for a file, or null when we have no pinned server for it. */
@@ -494,8 +541,14 @@ export async function lspQuery(
   const language = languageForFile(query.file);
   if (!language) return fail(`no pinned language server for file ${query.file}`, 'unknown');
 
+  // Root the server at the project that actually owns this file. For Rust that
+  // is the nearest ancestor Cargo.toml, NOT the repo root — see
+  // resolveProjectRoot. Sites are still reported relative to query.rootPath.
+  const project = resolveProjectRoot(language, query.file, query.rootPath);
+  if (project.error) return fail(project.error, 'unhealthy');
+
   try {
-    const client = await getClient(language, query.rootPath);
+    const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
 
     // Never answer from a half-loaded project — that returns a plausible WRONG
@@ -593,8 +646,11 @@ export async function lspDiagnostics(query: {
   const language = languageForFile(query.file);
   if (!language) return fail(`no pinned language server for file ${query.file}`, 'unknown');
 
+  const project = resolveProjectRoot(language, query.file, query.rootPath);
+  if (project.error) return fail(project.error, 'unhealthy');
+
   try {
-    const client = await getClient(language, query.rootPath);
+    const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
     const ready = await awaitProjectReady(client);
     if (!ready) {
@@ -759,8 +815,11 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
   const language = languageForFile(query.file);
   if (!language) return fail(`no pinned language server for file ${query.file}`, 'unknown');
 
+  const project = resolveProjectRoot(language, query.file, query.rootPath);
+  if (project.error) return fail(project.error, 'unhealthy');
+
   try {
-    const client = await getClient(language, query.rootPath);
+    const client = await getClient(language, project.root);
     const uri = await ensureOpen(client, query.file);
     const ready = await awaitProjectReady(client);
     if (!ready) {

@@ -14,8 +14,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { dirname, resolve } from 'node:path';
+import { existsSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { resolveProjectRoot } from './lsp-adapter.ts';
 
 import {
   BENCH_PROBES,
@@ -119,6 +122,51 @@ describe('grading can fail (falsifiability controls)', () => {
     const g = gradeSites(property, []);
     expect(g.correct).toBe(false);
     expect(g.reason).toMatch(/property/);
+  });
+});
+
+describe('project rooting — the false-empty class (P-010 defect 1)', () => {
+  it('roots a Rust file at its own crate, NOT the repo root', () => {
+    // MEASURED: this repo has no Cargo.toml at its root, so rooting
+    // rust-analyzer there gave it no crate graph — it answered EMPTY for every
+    // query while reporting itself healthy, and isTrustworthyEmpty blessed it.
+    const rustFile = resolve(REPO_ROOT, 'papercusp-desktop/src-tauri/src/endpoint_ipc.rs');
+    const { root, error } = resolveProjectRoot('rust', rustFile, REPO_ROOT);
+    expect(error).toBeNull();
+    expect(root).toBe(resolve(REPO_ROOT, 'papercusp-desktop/src-tauri'));
+    expect(existsSync(join(root, 'Cargo.toml'))).toBe(true);
+    // The precise regression: the repo root must NOT be chosen, and the reason
+    // is checkable rather than asserted.
+    expect(root).not.toBe(REPO_ROOT);
+    expect(existsSync(join(REPO_ROOT, 'Cargo.toml'))).toBe(false);
+  });
+
+  it('REFUSES rather than returning a false-empty when no crate root exists', () => {
+    // A .rs file with no Cargo.toml above it: the honest answer is a loud
+    // error, because a healthy-looking empty reads as "nothing implements it".
+    const orphan = resolve(REPO_ROOT, 'libs/generic/search/src/not-a-real-crate.rs');
+    const { error } = resolveProjectRoot('rust', orphan, REPO_ROOT);
+    expect(error).toMatch(/no Cargo\.toml/);
+    expect(error).toMatch(/false-empty|EMPTY/);
+  });
+
+  it('leaves TypeScript rooted at the monorepo root, which is correct for it', () => {
+    const tsFile = resolve(REPO_ROOT, 'libs/generic/search/src/leg-health.ts');
+    const { root, error } = resolveProjectRoot('typescript', tsFile, REPO_ROOT);
+    expect(error).toBeNull();
+    expect(root).toBe(REPO_ROOT);
+  });
+
+  it('every Rust bench probe resolves to a real crate root', () => {
+    for (const probe of BENCH_PROBES.filter((p) => p.file.endsWith('.rs'))) {
+      const { root, error } = resolveProjectRoot(
+        'rust',
+        resolve(REPO_ROOT, probe.file),
+        REPO_ROOT,
+      );
+      expect(error, `${probe.caseId} has no crate root`).toBeNull();
+      expect(existsSync(join(root, 'Cargo.toml'))).toBe(true);
+    }
   });
 });
 
