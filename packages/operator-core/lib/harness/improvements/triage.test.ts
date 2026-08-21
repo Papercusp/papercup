@@ -137,6 +137,20 @@ describe('classifyIdeaType — D-005 taxonomy', () => {
     expect(classifyIdeaType({ scope: 'operator', watchdogKey: 'repeated-tool-error:memory:search:structural' }).type).toBe('code-bug');
   });
 
+  it('classifies shared-hive peer-federation-silence as infra-environment, but a sibling shared-hive kind stays code-bug (EI-20983096990125721)', () => {
+    const r = classifyIdeaType({
+      scope: 'operator',
+      watchdogKey: 'shared-hive:peer-federation-silence:papercusp',
+    });
+    expect(r.type).toBe('infra-environment');
+    expect(r.reason).toMatch(/peer federation silence/);
+    // The source segment ("shared-hive") is shared with genuinely code-fixable sibling
+    // incident kinds — only the peer-federation-silence middle segment reroutes.
+    expect(
+      classifyIdeaType({ scope: 'operator', watchdogKey: 'shared-hive:double-completion:papercusp' }).type,
+    ).toBe('code-bug');
+  });
+
   it('classifies environment paths as infra-environment', () => {
     expect(classifyIdeaType({ scope: 'operator', paths: ['docker-compose.yml'] }).type).toBe('infra-environment');
     expect(classifyIdeaType({ scope: 'operator', paths: ['ops/docker-compose.dev.yml'] }).type).toBe('infra-environment');

@@ -9,7 +9,8 @@
  *
  * `./harness-registry` is mocked (vi.mock) so no real PG is touched. Three
  * paths covered:
- *   1. found — a matching project with a `path` → join(path) + `/.papercusp`.
+ *   1. found — a matching project with a `path` → its canonical content path,
+ *      while state stays under the matched project's own `/.papercusp`.
  *   2. not-found — no matching slug (or matched-but-no-path) → placeholder.
  *   3. catch — loadHarnessRegistry throws → placeholder (no throw escapes).
  */
@@ -17,9 +18,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const loadHarnessRegistry = vi.fn();
 
-vi.mock('./harness-registry', () => ({
-  loadHarnessRegistry: (workspaceId?: string) => loadHarnessRegistry(workspaceId),
-}));
+vi.mock('./harness-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./harness-registry')>();
+  return {
+    ...actual,
+    loadHarnessRegistry: (workspaceId?: string) => loadHarnessRegistry(workspaceId),
+  };
+});
 
 import { resolveHarnessPaths } from './resolve-harness-paths';
 
@@ -54,6 +59,32 @@ describe('resolveHarnessPaths — registry hit', () => {
     const out = await resolveHarnessPaths('papercup-extra', 'ws-x');
     expect(out.projectDir).toBe('/b');
     expect(out.stateDir).toBe('/b/.papercusp');
+  });
+
+  it('routes a repo-less Hive home to its member checkout while keeping Hive state at home', async () => {
+    loadHarnessRegistry.mockResolvedValue({
+      projects: [
+        {
+          slug: 'sb-devboard-hive',
+          path: '/home/me/.papercusp/hives/sb-devboard-hive',
+          harness_kind: 'hive',
+        },
+        {
+          slug: 'papercusp',
+          path: '/home/me/workspace/papercusp',
+          harness_kind: 'coding',
+          hive_slug: 'sb-devboard-hive',
+        },
+      ],
+    });
+
+    const out = await resolveHarnessPaths('sb-devboard-hive', 'ws-1');
+    expect(out).toEqual({
+      // Regression: scorecards:emit used to resolve deterministic test files
+      // beneath the Hive home and falsely report repo-relative paths missing.
+      projectDir: '/home/me/workspace/papercusp',
+      stateDir: '/home/me/.papercusp/hives/sb-devboard-hive/.papercusp',
+    });
   });
 });
 
