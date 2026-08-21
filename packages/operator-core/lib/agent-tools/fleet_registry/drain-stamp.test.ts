@@ -34,6 +34,7 @@ function breakdown(
       taken: 0,
       claimHold: 0,
       needsHuman: 0,
+      agentReview: 0,
       observationLane: 0,
       externalBlocker: 0,
       planLaneReserved: 0,

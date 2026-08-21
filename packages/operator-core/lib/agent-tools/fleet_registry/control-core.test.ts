@@ -280,6 +280,7 @@ describe('applyFleetControl', () => {
           taken: 0,
           claimHold: 33,
           needsHuman: 80,
+          agentReview: 0,
           observationLane: 21,
           externalBlocker: 0,
           planLaneReserved: 0,
