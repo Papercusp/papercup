@@ -331,11 +331,12 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
   });
 
-  it("holds without a suite until the exact frozen patch is on staging, then promotes only the repaired head", async () => {
+  it("requeues a queue-authorized fixer when the frozen patch mismatches staging, then promotes only the aligned head", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
     const repaired = await commit("b", "3", "forward repair");
+    const aligned = await commit("b", "4", "staging-aligned repair");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
       schemaVersion: 1,
@@ -353,6 +354,8 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     let patchOnStaging = false;
     let cleanupCount = 0;
+    const finalizedHeads = [repaired, aligned];
+    const dispatchedHeads: string[] = [];
     let verificationExecution: Parameters<CheckpointDeps["runGreen"]>[2];
     const { deps, calls } = stubDeps(true);
     deps.runId = "verifier-run";
@@ -366,7 +369,13 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       queue = next;
     };
     deps.frozenRepairFixerAlive = async () => false;
-    deps.finalizeFrozenRepairWorktree = async () => repaired;
+    deps.finalizeFrozenRepairWorktree = async () =>
+      finalizedHeads.shift() ?? aligned;
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async (next) => {
+      dispatchedHeads.push(next.repairHead);
+      return { spawnId: "fixer-2", runId: "fixer-run-2" };
+    };
     deps.stagingContainsFrozenRepair = async () => patchOnStaging;
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
@@ -381,16 +390,34 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       repairQueue: {
         candidate: frozen,
         repairHead: repaired,
-        phase: "ready-to-verify",
+        phase: "awaiting-fixer",
+        fixerSpawnId: null,
+        failingTests: ["repair-staging-mismatch", "lib/broken.test.ts"],
       },
     });
     expect(queue).toMatchObject({
       candidate: frozen,
       repairHead: repaired,
-      phase: "ready-to-verify",
+      phase: "awaiting-fixer",
+      fixerSpawnId: null,
     });
     expect(calls).not.toContain("runGreen");
     expect(await revParse(repo, "ready")).toBe(ready);
+
+    const retry = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(retry).toMatchObject({
+      green: null,
+      reason: "repair-in-progress",
+      candidate: repaired,
+      repairQueue: {
+        phase: "awaiting-fixer",
+        repairHead: repaired,
+        attempts: 2,
+        fixerSpawnId: "fixer-2",
+      },
+    });
+    expect(dispatchedHeads).toEqual([repaired]);
+    expect(calls).not.toContain("runGreen");
 
     patchOnStaging = true;
     const promoted = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -399,15 +426,15 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: repaired,
+      candidate: aligned,
       from: ready,
     });
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
     expect(verificationExecution).toMatchObject({
-      candidate: repaired,
+      candidate: aligned,
       affectedTestProofGroup: "initial-proof-run",
     });
-    expect(await revParse(repo, "ready")).toBe(repaired);
+    expect(await revParse(repo, "ready")).toBe(aligned);
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
   });

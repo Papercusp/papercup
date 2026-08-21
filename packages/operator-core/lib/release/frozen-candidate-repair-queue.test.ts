@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS,
+  FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
+  markFrozenRepairStagingMismatch,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   parseFrozenCandidateRepairQueue,
@@ -248,6 +250,37 @@ describe('frozen-candidate repair queue', () => {
       originalCandidate: C,
       runSuite: false,
       recordVerdict: false,
+    });
+  });
+
+  it('requeues a staging mismatch through the bounded queue-authorized fixer path', () => {
+    let queue = markFrozenRepairFixerDispatched(fresh(), {
+      spawnId: 'spawn-1',
+      nowMs: T0 + 1,
+    });
+    queue = markFrozenRepairFixerFinished(queue, {
+      spawnId: 'spawn-1',
+      repairHead: C1,
+      nowMs: T0 + 2,
+    });
+
+    queue = markFrozenRepairStagingMismatch(queue, {
+      repairHead: C1,
+      nowMs: T0 + 3,
+    });
+
+    expect(queue).toMatchObject({
+      phase: 'awaiting-fixer',
+      candidate: C,
+      repairHead: C1,
+      attempts: 1,
+      fixerSpawnId: null,
+      failingTests: [FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE, 'lib/a.test.ts'],
+    });
+    expect(decideFrozenCandidateRepairQueue(queue, { nowMs: T0 + 4 })).toMatchObject({
+      kind: 'dispatch-fixer',
+      nextAttempt: 2,
+      repairHead: C1,
     });
   });
 

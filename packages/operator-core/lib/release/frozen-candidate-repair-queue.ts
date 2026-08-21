@@ -10,6 +10,7 @@
  */
 
 export const FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION = 2 as const;
+export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch';
 
 /** Three full repair attempts fit comfortably inside the four-hour wall-clock bound even
  * when each verification pays the current ~42-minute full checkpoint cost. Both bounds are
@@ -392,6 +393,31 @@ export function markFrozenRepairVerificationRed(
     updatedAtMs: input.nowMs,
     fixerSpawnId: null,
     failingTests: boundedFailures(input.failingTests ?? []),
+  };
+}
+
+/** The repair head passed its focused fixer work, but canonical staging contains a
+ * content-equivalent repair with different patch context. The exact reverse-apply guard
+ * must continue to fail closed, while the queue must also remain live: return it to the
+ * queue-authorized fixer path so the specialized release-fixer can align the isolated
+ * worktree. Attempts remain bounded by the existing policy, which abandons the frozen
+ * queue and admits a fresh current-tip candidate after the final failed alignment. */
+export function markFrozenRepairStagingMismatch(
+  queue: FrozenCandidateRepairQueue,
+  input: { repairHead: string; nowMs: number },
+): FrozenCandidateRepairQueue {
+  requirePhase(queue, 'ready-to-verify', 'staging-mismatch retry');
+  requireCurrentHead(queue, input.repairHead);
+  assertTimestamp(input.nowMs, 'nowMs');
+  return {
+    ...queue,
+    phase: 'awaiting-fixer',
+    updatedAtMs: input.nowMs,
+    fixerSpawnId: null,
+    failingTests: boundedFailures([
+      FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+      ...queue.failingTests.filter((failure) => failure !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE),
+    ]),
   };
 }
 

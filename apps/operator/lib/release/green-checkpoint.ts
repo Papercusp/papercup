@@ -69,6 +69,7 @@ import {
   decideFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
   markFrozenRepairFixerFinished,
+  markFrozenRepairStagingMismatch,
   markFrozenRepairVerificationGreen,
   markFrozenRepairVerificationRed,
   type FrozenCandidateRepairQueue,
@@ -6268,9 +6269,23 @@ export async function runGreenCheckpoint(
         .stagingContainsFrozenRepair?.(repairQueue)
         .catch(() => null);
       if (onStaging !== true) {
+        const canRequeue = Boolean(deps.writeFrozenRepairQueue);
+        const requeued = canRequeue
+          ? markFrozenRepairStagingMismatch(repairQueue, {
+              repairHead: candidate,
+              nowMs: Date.now(),
+            })
+          : repairQueue;
+        if (canRequeue) {
+          await deps.writeFrozenRepairQueue?.(requeued);
+          repairQueue = requeued;
+        }
         const summary =
           `frozen repair ${candidate.slice(0, 8)} is ready to verify, but its exact ` +
-          `${repairQueue.candidate.slice(0, 8)}..${candidate.slice(0, 8)} patch is not yet observable on staging; holding without spending a suite`;
+          `${repairQueue.candidate.slice(0, 8)}..${candidate.slice(0, 8)} patch is not yet observable on staging; ` +
+          (canRequeue
+            ? `re-queued the isolated head for a queue-authorized alignment fixer without spending a suite`
+            : `holding without spending a suite because no queue writer is available`);
         deps.log(summary);
         return {
           advanced: false,
