@@ -70,11 +70,6 @@ mode.
 - A `curl http://127.0.0.1:3070/...` for a quick **API** check (not a UI check)
   is fine while the desktop is running.
 
-The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
-webapp — what's retired is the *act of running/browsing it standalone*. Detail +
-the transport/persistence table:
-[repo-conventions § deployment model](/internal/docs/system/repo-conventions).
-
 ## Almost all state should be in nuqs
 
 **If a piece of state is reasonably user-meaningful, it goes in the URL via
@@ -473,11 +468,6 @@ restart does **NOT** pick up your edits:
 stale, restart the *right* host and re-probe. Detail:
 [repo-conventions § two-port model](/internal/docs/system/repo-conventions).
 
-## Before you design or test — read the docs first
-
-Two `/internal/docs` sections are **required reading before the corresponding
-work**, not optional references. Check them *first*, then act:
-
 ## Storage policy: Postgres by default
 
 **New durable state goes in Postgres unless there is a specific reason it must
@@ -498,6 +488,20 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   | prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
   | definition, references, type truth | `lsp:query` (compiler semantics) | `grep` for a declaration — cannot resolve shadowing or re-exports |
   | call chains, impact radius, topology | `gitnexus.context` / `gitnexus.impact` (dot, not colon) | `gitnexus.query` — UNRANKED NOISE, not empty: a wrong answer looks like a confident one (D-021) |
+
+## Code-describing metadata: derive, pin, or attest — never hand-maintain
+
+## Code-describing metadata: derive, pin, or attest — never hand-maintain
+
+**A value that DESCRIBES code — a path, a tool/event/flag/table name, an `exists`/`enabled`/`retired` boolean, a count, a list of emitters/call-sites — is a second copy of a truth the code owns, and it WILL drift** (EVENT_CATALOG's hand-authored `emitter`/`exists`: the system's most-fired key sat unregistered; 14 awaits parked on a key with no emitter anywhere). Take the FIRST rung that fits; hand-maintained prose is the last resort and needs a stated reason, exactly like file-over-Postgres:
+
+1. **DERIVE** — generate from the single source: `buildKey`, `gen:agent-env` + `doctor`, `gen:tool-routing`, allowlists re-seeded from a measuring `--list` run — never a hand-run grep.
+2. **PIN** — prose that must remain gets a build-time divergence check: doc-claims (`packages/operator-core/lib/doc-claims/`), drift-tracked docs.
+3. **ATTEST** — what static analysis can't see (dynamic keys, installed packs): reconcile against a runtime ledger (audited fires, `tool_invocations`) on a standing sweep that files findings.
+4. **CURATED** — only genuine judgment (meaning/guidance/rationale), stating why 1–3 don't apply.
+
+Review smell: a new registry/config field restating what code already knows. Long form + audit method: [derived-truth-ladder](/internal/docs/agent-insights/derived-truth-ladder); worked plan: `event-system-drift-to-derived-2026-08-21`.
+
 
 ## Reaching for bash? These reads already have a tool
 
@@ -703,32 +707,6 @@ on a VM whose instantaneous load was 200% — right here only by coincidence, an
 for anything whose load has changed), and any first-iteration sampler has no prior sample to
 difference against. CPU usage *is* a delta; ask for one:
 
-```bash
-# THE INSTRUMENT IS THE CGROUP, NOT A HAND-WALKED TREE. It accounts for EVERY descendant
-# at ANY depth (nothing can hide below a walk bound), and usage_usec is a MONOTONIC
-# counter -- so the delta is a true rate even as children spawn and exit between samples.
-CG=$(sed 's|^0::||' /proc/<pid>/cgroup); F=/sys/fs/cgroup${CG}/cpu.stat
-A=$(awk '/^usage_usec/{print $2}' $F); S=$(date +%s.%N); sleep 10
-B=$(awk '/^usage_usec/{print $2}' $F); E=$(date +%s.%N)
-echo "scale=2;($B-$A)/1000000/($E-$S)" | bc   # cores -- divide by MEASURED elapsed, never the sleep
-wc -l < /sys/fs/cgroup${CG}/cgroup.procs      # how many processes that covers
-# per-thread: two-sample fields 14-15 over /proc/<pid>/task/*/stat (tid == pid => MAIN thread)
-```
-
-Every `capability:bash` / `managedSpawn` job runs in its own systemd scope, so this is the
-normal case here — and it is the same no-escape property the task manager relies on.
-
-⚠ **A hand-rolled `/proc` walk reports a confident FALSE IDLE two independent ways, and
-both were measured on runs burning a full core.** (1) A **depth-bounded** walk: this repo's
-own test entrypoint is EIGHT levels deep (`bash → npm → sh -c → pc-heavy.sh →
-affected-tests.mjs → npm → sh -c → node vitest → esbuild`), so a 6-generation walk stops at
-a shell wrapper holding 0 ticks and the sum is dominated by processes that are legitimately
-idle. (2) **One pid's** `utime+stime+cutime+cstime`: the `c*` pair is credited only when a
-child is `wait()`ed on, and *vitest* reaps its own workers while the root reaps nothing
-until the run ends — so a live worker contributes exactly zero. Reach for the `/proc` tree
-sum ONLY for a process in no managed scope; if you must, print the members and confirm the
-deepest one is the real worker rather than a `sh -c` wrapper.
-
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
 work runs in a child, so measuring it alone reports "idle" about a process
@@ -913,13 +891,6 @@ locks:release_resource { lock_id: '<returned lock_id>' }
 
 Holding it, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept.
 
-## Use Context7 for current library docs
-
-Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
-Hono, Radix, Vercel AI SDK, Vditor, BlockNote, …), call the `context7` MCP tools
-(`resolve-library-id` → `get-library-docs`). Library APIs change faster than
-training cutoffs; don't guess from memory.
-
 ## Adding a tool — the per-role guidance discipline
 
 1. **Define** in `packages/operator-core/lib/agent-tools/<group>/<verb>.ts` (or
@@ -979,7 +950,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **4 part(s) (2,106 chars) did not fit this client's
+> ⚠ **8 part(s) (4,581 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -992,7 +963,11 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 > matters more than something still above, change its `project_rank` — do not re-add it
 > by hand, which the next projection would undo.
 
+- `running-testing-this-app-it-the-30553070-layer-i` — *▶ Running / testing this app — it is the **Tauri DESKTOP app**, not a browser webapp* — The `:3055`/`:3070` layer **is the desktop's content layer**, not a separable
 - `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
+- `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
+- `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
 - `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
+- `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
