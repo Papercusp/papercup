@@ -82,6 +82,7 @@ import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { OUTBOX_GC_AGE_MS, OUTBOX_GC_BATCH, OUTBOX_GC_MAX_BATCHES } from '../../sync/hyperbee/outbox-drain';
 import { captureImprovement } from '../improvements/capture-core';
 import { lockAuthorityForHive } from '../../authority/lock-authority';
+import { isWorkspaceGlobalLabel } from '../../pot-membership';
 import {
   runSharedHiveMonitorPass,
   type LeaseHolderRow,
@@ -1146,7 +1147,7 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
   // `scanOutboxHealth` measures, so including it makes it IMPOSSIBLE for a
   // harness with outbox rows to fall outside the scan's scope — the coverage
   // gap is closed by construction rather than by remembering to add sources.
-  const scopes = await sql<{ harness_slug: string; pot_slug: string | null }[]>`
+  const rawScopes = await sql<{ harness_slug: string; pot_slug: string | null }[]>`
     SELECT harness_slug, MIN(pot_slug) AS pot_slug FROM (
       SELECT harness_slug, pot_slug FROM harness_shared.work_item_claims
        WHERE workspace_id = ${ctx.workspaceId}
@@ -1158,6 +1159,29 @@ async function runSharedHiveLeg(ctx: SystemActionCtx): Promise<void> {
        WHERE workspace_id = ${ctx.workspaceId}
     ) s
      GROUP BY harness_slug`;
+
+  // EI-21051034011804969: `work_item_claims`/`plan_item_claims` legitimately key an
+  // OPERATOR-SCOPE issue claim's `harness_slug` as the workspace-global label
+  // `operator:<workspaceId>` (get-next.ts's `operatorScopeSlug`) — never a real,
+  // bootable Pot/harness identity. That label is NOT a scope any of the four
+  // per-harness shared-hive invariants below (double-completion, outbox health,
+  // presence ghosts, orphaned taken_by) can be meaningfully computed against:
+  // `capture_work_items_outbox()`'s own operator-scope branch (mig 454/829)
+  // NEVER writes that literal string into `substrate_outbox.harness_slug` — it
+  // always resolves to the workspace's single Pot home slug, or drops the write
+  // entirely (with a `substrate_outbox_gap` notify) when 0/>1 Pot homes exist.
+  // So a transient/mis-routed capture that DOES carry a workspace-global label
+  // (the same "workspace mis-route to a non-Pot scope" class
+  // substrate-outbox-backstop-gc.ts's NON_REGISTRY reap already exists for) is
+  // orphaned debris the backstop GC is already responsible for reaping — not a
+  // genuine per-harness drain-loop defect a worker can fix. Filing a
+  // "shared-hive invariant" bug against a phantom `operator:<ws>` pseudo-harness
+  // is the exact perpetual-false-positive shape outbox-drain-quarantine-runbook.md
+  // documents, just reached via scope DISCOVERY instead of the SLO query itself.
+  // `isWorkspaceGlobalLabel` (pot-membership.ts, P-005) is the existing,
+  // purpose-built classifier for exactly this distinction — reused here rather
+  // than re-deriving a second `operator:` prefix check.
+  const scopes = rawScopes.filter((s) => !isWorkspaceGlobalLabel(s.harness_slug, ctx.workspaceId));
 
   // THE CLASS FIX: a monitor that resolved nothing to monitor must never return
   // quietly. If we federate (outbox rows exist) yet resolved zero scopes, the
