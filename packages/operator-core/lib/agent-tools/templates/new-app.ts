@@ -455,6 +455,22 @@ export default defineTool({
   // routine seeding. Measured under load: the inner pot:create alone took 111s.
   // Match ptool's long-call budget so the compound can report its real outcome.
   timeoutSec: 300,
+  // EI-21107910194803524 / EI-18803497769946984: the INDIRECT half of the idle-tx
+  // class. This handler blocks for minutes inside `pot:create` (repo init, schema
+  // setup, routine seeding — measured 111s on its own) but never reads `ctx.tx`,
+  // so the dispatcher's ambient workspace transaction sits IDLE the whole time.
+  // Postgres kills it at idle_in_transaction_session_timeout (60s) and the caller
+  // gets a bare `write CONNECTION_CLOSED 127.0.0.1:6432` that names neither this
+  // tool nor the cause — which reads as a PgBouncer outage. Note the timeoutSec
+  // above CANNOT rescue this: no dispatch budget outruns a 60s server-side tx
+  // kill, which is why raising it to 300s did not stop the failures (2/2 repro
+  // 2026-08-21, each stranding a half-born pot).
+  //
+  // Safe because neither this handler nor any tool it reaches via inProcessCall
+  // (pot:create, pot:obliterate, agent_chats:create, agent_chats:send_message)
+  // reads `ctx.tx` — all verified 0 occurrences. `ctx.principal` is still
+  // synthesized in its own short-lived transaction, so gating is unaffected.
+  skipWorkspaceTx: true,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({

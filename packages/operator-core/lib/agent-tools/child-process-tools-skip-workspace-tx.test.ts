@@ -66,7 +66,22 @@ function walk(dir: string): string[] {
 }
 
 /** A file that defines a projected tool, i.e. carries a `name: 'group:verb'` literal. */
-const DEFINES_TOOL = /name:\s*'[a-z][a-z0-9_]*:[a-z0-9_]+'/;
+/*
+ * EI-21107910194803524: the verb half MUST allow `-`. It originally read
+ * `[a-z0-9_]+`, which silently excluded every hyphenated tool name in the tree —
+ * `templates:new-app`, `templates:get-guide`, `plans:set-plan-status`,
+ * `coord:declare-intent`, and 129 others (133 files measured on 2026-08-21).
+ * Because `violatesIdleTxInvariant` requires DEFINES_TOOL to match BEFORE it can
+ * flag anything, those files could import child_process, skip the opt-out, and
+ * still be reported clean. The guard's "0 offenders" was therefore partly a
+ * measurement artifact, not purely a safety property — the exact failure this
+ * suite exists to prevent, one level up.
+ *
+ * Widening it was verified non-breaking: of the 133 newly-visible files, zero
+ * import child_process without declaring skipWorkspaceTx, so this fixes the
+ * detector without failing the build.
+ */
+const DEFINES_TOOL = /name:\s*'[a-z][a-z0-9_]*:[a-z0-9_-]+'/;
 /** A file whose handler shells out — the proxy for "blocks on non-DB work". */
 const SPAWNS_CHILD = /from\s+['"]node:child_process['"]|require\(['"](?:node:)?child_process['"]\)/;
 const OPTS_OUT = /skipWorkspaceTx:\s*true/;
@@ -111,6 +126,23 @@ const INDIRECT_SHELL_OUT: ReadonlyMap<string, string> = new Map([
       'reads ctx.tx. Hung >55s in production 2026-08-12 (EI-20261626591106746), taking all ' +
       'five registered cells it resolves to status:unknown with it.',
   ],
+  [
+    'pot/create.ts',
+    'Provisioning shells out (repo init, registry/schema setup, routine seeding) behind ' +
+      'the harness-provision primitives rather than a local child_process import, so the ' +
+      'depth-0 predicate is blind to it. Measured at 111s under load — nearly 2x the 60s ' +
+      'idle_in_transaction_session_timeout. Never reads ctx.tx (EI-21107910194803524).',
+  ],
+  [
+    'templates/new-app.ts',
+    'Reaches pot:create via inProcessCall, inheriting its multi-minute subprocess work ' +
+      'with no local child_process import. Failed 2/2 on 2026-08-21 with the signature ' +
+      'bare `write CONNECTION_CLOSED 127.0.0.1:6432` of this class, each failure stranding a ' +
+      'half-born pot (listed in pot:list, schema present, checkout with zero commits). ' +
+      'Note its timeoutSec: 300 does NOT protect it — a dispatch budget cannot outrun a ' +
+      'server-side tx kill, which is why raising that budget did not stop the failures. ' +
+      'Never reads ctx.tx (EI-21107910194803524).',
+  ],
 ]);
 
 describe('idle-tx recurrence guard — the predicate has teeth', () => {
@@ -140,6 +172,27 @@ describe('idle-tx recurrence guard — the predicate has teeth', () => {
 
   it('ignores a non-tool helper that shells out', () => {
     expect(violatesIdleTxInvariant(`import { spawn } from 'node:child_process';`)).toBe(false);
+  });
+
+  // EI-21107910194803524 — the calibration that was missing. Every teeth-test above
+  // used an underscore-free, hyphen-free verb ('demo:slow'), so all of them passed
+  // against a DEFINES_TOOL that could not match a HYPHENATED name — and 133 real tool
+  // files went unguarded behind that gap. A detector is only as good as the names it
+  // can see, so pin the shape of the name itself, not just the opt-out logic.
+  it('flags a HYPHENATED-verb tool that shells out (the 133-file blind spot)', () => {
+    const hyphenated = `
+      import { execFile } from 'node:child_process';
+      export const tool = defineTool({ name: 'templates:new-app', agentRoles: [] });
+    `;
+    expect(violatesIdleTxInvariant(hyphenated)).toBe(true);
+  });
+
+  it('still recognises an underscore-group tool name', () => {
+    const underscored = `
+      import { execFile } from 'node:child_process';
+      export const tool = defineTool({ name: 'agent_chats:send_message', agentRoles: [] });
+    `;
+    expect(violatesIdleTxInvariant(underscored)).toBe(true);
   });
 });
 

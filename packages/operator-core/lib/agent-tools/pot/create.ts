@@ -22,6 +22,16 @@ const text = (payload: Record<string, unknown>) => ({
 
 export default defineTool({
   name: 'pot:create',
+  // EI-21107910194803524 / EI-18803497769946984: same INDIRECT idle-tx case as
+  // templates:new-app (which reaches this tool). Provisioning shells out for repo
+  // init, registry/schema setup and routine seeding — measured at 111s under load,
+  // comfortably past Postgres's idle_in_transaction_session_timeout (60s). This
+  // file imports no child_process directly, so the depth-0 guard in
+  // child-process-tools-skip-workspace-tx.test.ts cannot see it; it is pinned
+  // there explicitly instead. Handler reads no `ctx.tx` (verified 0 occurrences),
+  // so only the idle ambient transaction is skipped — `ctx.principal` is still
+  // synthesized in its own short transaction and gating is unaffected.
+  skipWorkspaceTx: true,
   profile: 'engineer',
   description:
     "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
