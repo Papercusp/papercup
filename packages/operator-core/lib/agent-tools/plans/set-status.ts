@@ -64,7 +64,7 @@ const STATUS = z.enum([...ITEM_STATUSES] as [string, ...string[]]);
 
 const NOTE = softText(8000)
   .describe(
-    'Optional SHORT comment appended inline to the item line — REPLACES any note this same tool previously injected on the item (a repeat call to fix a typo overwrites, never stacks; EI-384). Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
+    'Optional SHORT comment appended inline to the item line — REQUIRED when status is `dropped` unless a nonblank `rationale` is supplied. REPLACES any note this same tool previously injected on the item (a repeat call to fix a typo overwrites, never stacks; EI-384). Anything beyond ~1000 chars is TRUNCATED inline (with a `…` marker + a noteTruncated flag), never rejected. For a longer explanation of WHY the status changed, use `rationale` instead — it is stored on the plan revision, not spliced into the item line.',
   );
 
 const itemSpec = z.object({
@@ -73,7 +73,10 @@ const itemSpec = z.object({
   status: STATUS.optional().describe('per-item status (else the batch `status`)'),
   note: NOTE.optional(),
   harness: harnessArg.describe('per-item harness (else the batch `harness` default)'),
-  rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
+  rationale: z
+    .string()
+    .optional()
+    .describe('per-item revision rationale (else the batch `rationale`); satisfies the required reason for status `dropped`'),
   onlyIfNotTerminal: z.boolean().optional(),
   onlyIfNoOtherOpenCoverage: z.boolean().optional(),
   onlyIfNotCompleted: z.boolean().optional(),
@@ -102,7 +105,7 @@ const argsSchema = z
       .string()
       .optional()
       .describe(
-        'Optional — rarely needed: a status flip is already visible in the plan doc. Supply only when the *why* of the flip is non-obvious (e.g. an item moved to `blocked`). Stored on the plan revision (D-009).',
+        'Optional except when status is `dropped`, where either a nonblank `note` or `rationale` is REQUIRED. Supply rationale when the *why* is too long for the inline item note. Stored on the plan revision (D-009).',
       ),
     onlyIfNotTerminal: z
       .boolean()
@@ -280,6 +283,21 @@ export function truncateInlineNote(note: string | undefined): {
   if (note === undefined) return { note: undefined, truncated: false };
   if (note.length <= NOTE_INLINE_MAX) return { note, truncated: false };
   return { note: note.slice(0, NOTE_INLINE_MAX - 1) + '…', truncated: true };
+}
+
+/** D-002/P-007: departing from a plan is legitimate, but never silent. Keep this
+ * per-item (rather than a whole-args schema refinement) so one malformed drop in a
+ * heterogeneous bulk call fails only itself under the house bulk contract. */
+export function droppedReasonMissing(input: {
+  status: string;
+  note?: string;
+  rationale?: string;
+}): boolean {
+  return (
+    input.status === 'dropped' &&
+    !(typeof input.note === 'string' && input.note.trim().length > 0) &&
+    !(typeof input.rationale === 'string' && input.rationale.trim().length > 0)
+  );
 }
 
 /** A terminal status — the item is finished; it is held + assigned by no one. */
@@ -547,6 +565,17 @@ export function flipStatusInBody(
  * this item's { ok:false, … } result; one failure never fails the rest.
  */
 async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<BulkItemResult> {
+  if (droppedReasonMissing(it)) {
+    return {
+      ok: false,
+      slug: it.slug,
+      itemId: it.itemId,
+      error: 'dropped_reason_required',
+      hint:
+        "status:'dropped' records an intentional departure from the plan and requires a nonblank `note` (preferred; visible inline forever) or `rationale` (stored on the plan revision)",
+    };
+  }
+
   const sctx = harnessScopedCtx(it.harness, ctx);
   const harnessSlug = resolveCtxHarnessSlug(sctx);
 
@@ -1111,9 +1140,9 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
 export default defineTool({
   name: 'plans:set-status',
   description:
-    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both are rejected with a per-item claim_conflict if a LIVE peer holds the item (you cannot claim or close someone else's in-flight work — coordinate or let the holder close it). Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
+    "Flip one OR many items' stored status. Writes the exact bytes a human would type. Auto-bumps frontmatter updated:. A `dropped` flip REQUIRES a nonblank note or rationale so intentional departures stay recorded. Flipping to `wip` AUTO-CLAIMS the item for you; flipping to done/dropped releases your claim AND clears the item's assignment. Both are rejected with a per-item claim_conflict if a LIVE peer holds the item (you cannot claim or close someone else's in-flight work — coordinate or let the holder close it). Single: { slug, item, status }. Many of one plan: { slug, itemIds:[…], status }. Heterogeneous: items:[{ slug, item, status }]. Returns { ok, results:[{ ok, slug, itemId, oldStatus, newStatus, … | error }], counts } — correlate by { slug, itemId }, not position; a claim_conflict (or any failure) on one item never fails the rest.",
   guidance: {
-    when: "An item's status changes — picking up (todo→wip, which also claims the item as yours), completing (wip→done, which releases it), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
+    when: "An item's status changes — picking up (todo→wip, which also claims it), completing (wip→done), intentionally departing (→dropped with `note` preferred or `rationale` required), gating on a human (→needs-human), or recording external blockage (→blocked). Flip several at once via itemIds:[…] (one plan) or items:[…].",
     notWhen:
       'You want to add a brand-new item — use plans:add-item. Or to change scope of the work — edit the item text directly in the file.',
     chaining:

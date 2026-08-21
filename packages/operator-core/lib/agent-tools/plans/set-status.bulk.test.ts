@@ -115,6 +115,49 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     expect(b.counts).toEqual({ ok: 0, failed: 1 });
     expect(b.results[0]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-001', error: 'busy' });
   });
+
+  it('requires a nonblank reason for dropped before any write-side work', async () => {
+    lockReturnsMutatorValue(new Set(['P-001']));
+    const b = await body({
+      slug: 'plan-a',
+      item: 'P-001',
+      status: 'dropped',
+      note: '   ',
+      rationale: '\n',
+    });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      slug: 'plan-a',
+      itemId: 'P-001',
+      error: 'dropped_reason_required',
+    });
+    expect(b.results[0].hint).toMatch(/note.*rationale/);
+    expect(lockM).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['note', { note: 'Superseded by the recorded D-009 decision.' }],
+    ['rationale', { rationale: 'Scope deliberately moved to a follow-up plan.' }],
+  ])('accepts a dropped reason supplied via %s', async (_label, reason) => {
+    lockReturnsMutatorValue(new Set(['P-001']));
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'dropped', ...reason });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(b.results[0]).toMatchObject({ ok: true, itemId: 'P-001', newStatus: 'dropped' });
+  });
+
+  it('fails only the reasonless drop in a heterogeneous batch', async () => {
+    lockReturnsMutatorValue(new Set(['P-001', 'P-002']));
+    const b = await body({
+      items: [
+        { slug: 'plan-a', item: 'P-001', status: 'dropped' },
+        { slug: 'plan-a', item: 'P-002', status: 'done' },
+      ],
+    });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
+    expect(b.results[0]).toMatchObject({ ok: false, itemId: 'P-001', error: 'dropped_reason_required' });
+    expect(b.results[1]).toMatchObject({ ok: true, itemId: 'P-002', newStatus: 'done' });
+  });
 });
 
 // EI-8509: a →wip flip auto-claims the item under the CALLER's identity. When the
