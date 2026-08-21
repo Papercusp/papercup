@@ -104,6 +104,19 @@ export const ORIENT_OPTIONAL_PRIORITY = {
       recoverVia: "consult:get_feedback { question: '<your intent>' } (archive-first serves settled questions instantly)",
     },
     { name: 'pipeline', fields: ['pipeline'], recoverVia: 'dev:pipeline_position { path }' },
+    // P-011 (state-plane-interest-and-hardening-2026-08-21). ADDITIVE, and namespaced
+    // under its own leg so it composes with fleet-spec-scoped-metrics P-007's leader
+    // fold on this same file rather than altering it (D-005).
+    //
+    // Tier 4 is correct and not a demotion: the leg carries HANDLES ONLY (D-001), so
+    // everything it says is recoverable by the one call named here — which is exactly
+    // the tier-4 contract ("independently re-fetchable"). Losing it under budget
+    // pressure costs a pointer, never a reading.
+    {
+      name: 'interest',
+      fields: ['interest'],
+      recoverVia: 'state:read (no args) lists every cell you may read',
+    },
     { name: 'intentDeclared', fields: ['intentDeclared'], recoverVia: 'coord:declare-intent' },
     { name: 'fleetDelta', fields: ['fleetDelta'], recoverVia: 'fleet:assignments' },
     { name: 'ownerPresent', fields: ['ownerPresent'], recoverVia: 'next coord:orient (owner presence is re-measured)' },
