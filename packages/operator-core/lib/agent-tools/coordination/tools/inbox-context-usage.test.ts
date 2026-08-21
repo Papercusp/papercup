@@ -133,3 +133,26 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
     expect(renderBandedContextGauge(90, 100)).toMatch(/CRITICAL/); // critical
   });
 });
+
+describe('fleet wind-down renderer recurrence (EI-21012758172744411)', () => {
+  it('POSITVE: a critical no-PTY member with verified authorization is told to call loop:end', () => {
+    const line = renderContextUsageLine(95, 100, false, true);
+    const gauge = renderBandedContextGauge(95, 100, false, true);
+    expect(line).toContain('typed fleet wind-down authorizes loop:end');
+    expect(line).not.toContain('session:request-compaction');
+    expect(gauge).toContain('call loop:end under the typed fleet wind-down authorization');
+    expect(gauge).not.toContain('session:request-compaction');
+    expect(gauge).not.toContain('session:end');
+    expect(gauge).not.toContain('respawn');
+  });
+
+  it('NEGATIVE: an unverified or inapplicable authorization keeps the safe no-PTY guidance', () => {
+    const denied = renderContextUsageLine(95, 100, false, false);
+    const wrongAvailability = renderBandedContextGauge(95, 100, true, true);
+    const belowCritical = renderContextUsageLine(89, 100, false, true);
+    expect(denied).toContain('self-compaction is unavailable');
+    expect(denied).not.toContain('typed fleet wind-down authorizes loop:end');
+    expect(wrongAvailability).not.toContain('typed fleet wind-down authorization');
+    expect(belowCritical).not.toContain('typed fleet wind-down authorization');
+  });
+});
