@@ -17,6 +17,9 @@ import { isSpawnProcessAlive, launcherBootId } from '../fleet/spawn-reclaim';
 /** The durable escalation phase for a release-fixer that died before its first turn. */
 export const RELEASE_FIXER_NO_TURN_PHASE = 'green-checkpoint-release-fixer-no-turn';
 
+/** Keep the legacy task-to-spawn temporal join deliberately narrow. */
+const LEGACY_TASK_LINK_SKEW_SEC = 5;
+
 export interface ReleaseFixerNoTurnEscalationInput {
   installSlug: string;
   workspaceId: string;
@@ -119,6 +122,13 @@ export async function recordReleaseFixerNoTurnEscalation(
  * different process: once it settles terminal, THIS spawn's own tracked process
  * is confirmed gone, and no pid reading (which may now name someone else's
  * still-running process) may override that.
+ *
+ * EI-21078838719843567: older task-manager rows have neither spawnRecordId nor
+ * spawnId in detail. For those rows, use exactly one release-fixer
+ * agent-session task with a validated `pc-*.scope` and a started_at close to
+ * the spawn row. A fresh live row preserves coverage; a terminal/stale row
+ * proves the legacy task is gone, while multiple candidates are ambiguous and
+ * therefore fail closed to null.
  */
 export async function releaseFixerSpawnAlive(
   sql: postgres.Sql,
@@ -152,10 +162,31 @@ export async function releaseFixerSpawnAlive(
                    AND tl.state NOT IN ('pending','running')
                    AND tl.detail->>'spawnRecordId' = sa.spawn_id
               ) AS task_scope_ended
+              ,legacy_task.candidate_count AS legacy_task_candidate_count,
+              legacy_task.live AS legacy_task_live
          FROM harness_shared.spawned_agents sa
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS candidate_count,
+                  CASE
+                    WHEN COUNT(*) = 1 THEN bool_or(
+                      tl.state IN ('pending','running')
+                      AND tl.last_seen_at IS NOT NULL
+                      AND (now() - tl.last_seen_at) < make_interval(secs => $2)
+                    )
+                    ELSE NULL
+                  END AS live
+             FROM harness_shared.task_ledger tl
+            WHERE tl.workspace_id = sa.workspace_id
+              AND tl.class = 'agent-session'
+              AND tl.launched_by = 'orchestrator:release-fixer'
+              AND tl.detail->>'spawnRecordId' IS NULL
+              AND tl.detail->>'spawnId' IS NULL
+              AND tl.scope_unit ~ '^pc-[^.]+\\.scope$'
+              AND abs(EXTRACT(EPOCH FROM (tl.started_at - sa.started_at))) <= $3
+         ) AS legacy_task ON TRUE
         WHERE sa.spawn_id = $1
         LIMIT 1`,
-      [spawnId, graceSec],
+      [spawnId, graceSec, LEGACY_TASK_LINK_SKEW_SEC],
     )) as Array<{
       launcher_host?: string | null;
       launcher_boot_id?: string | null;
@@ -163,6 +194,8 @@ export async function releaseFixerSpawnAlive(
       spawn_lease_live?: boolean;
       live_task_scope?: boolean;
       task_scope_ended?: boolean;
+      legacy_task_candidate_count?: number | string;
+      legacy_task_live?: boolean | null;
     }>;
     const row = rows[0];
     if (!row) return false;
@@ -179,6 +212,14 @@ export async function releaseFixerSpawnAlive(
     // window below) — a pid-reuse false-alive can only mislead the checks that
     // follow, never this one, because it is keyed on the exact spawn id.
     if (row.task_scope_ended) return false;
+
+    // Legacy task-manager rows have no spawn id in detail. A single matching
+    // scope/time candidate is safe to use; no candidate means this fallback is
+    // inapplicable, while multiple candidates must not guess which fixer owns
+    // the spawn.
+    const legacyCandidateCount = Number(row.legacy_task_candidate_count ?? 0);
+    if (legacyCandidateCount > 1) return null;
+    if (legacyCandidateCount === 1) return row.legacy_task_live === true;
 
     if (!row.spawn_lease_live) return false;
 

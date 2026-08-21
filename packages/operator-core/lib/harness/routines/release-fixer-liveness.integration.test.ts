@@ -35,7 +35,9 @@ const TASK_LEDGER_DDL = `
     class text NOT NULL,
     launched_by text NOT NULL,
     state text NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT now(),
     last_seen_at timestamptz NOT NULL,
+    scope_unit text,
     detail jsonb NOT NULL DEFAULT '{}'::jsonb
   )`;
 
@@ -84,6 +86,24 @@ async function seedTaskScope(
             'orchestrator:release-fixer', ${state},
             now() - make_interval(mins => ${lastSeenAgoMin}),
             jsonb_build_object('spawnRecordId', ${spawnId}::text))`;
+}
+
+async function seedLegacyTaskScope(
+  spawnId: string,
+  state: string,
+  options: { taskId?: string; lastSeenAgoMin?: number; scopeUnit?: string } = {},
+): Promise<void> {
+  const taskId = options.taskId ?? `legacy-task-${spawnId}`;
+  await sql`
+    INSERT INTO harness_shared.task_ledger
+      (task_id, workspace_id, class, launched_by, state, started_at, last_seen_at, scope_unit, detail)
+    SELECT ${taskId}, 'papercusp-workspace', 'agent-session',
+           'orchestrator:release-fixer', ${state}, sa.started_at,
+           now() - make_interval(mins => ${options.lastSeenAgoMin ?? 0}),
+           ${options.scopeUnit ?? `pc-${taskId}.scope`},
+           jsonb_build_object('role', 'release-fixer', 'scopeRequested', true)
+      FROM harness_shared.spawned_agents sa
+     WHERE sa.spawn_id = ${spawnId}`;
 }
 
 describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)', () => {
@@ -143,6 +163,28 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     await seedTaskScope('s-fixer-scope-stale', 'running', 30);
 
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-scope-stale')).toBe(false);
+  });
+
+  it('a live legacy release-fixer task scope without spawnRecordId keeps a dead spawn covered', async () => {
+    await seedSpawn('s-fixer-legacy-live', 'failed', 30);
+    await seedLegacyTaskScope('s-fixer-legacy-live', 'running');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-legacy-live')).toBe(true);
+  });
+
+  it('a terminal legacy release-fixer task scope does not keep a dead spawn covered', async () => {
+    await seedSpawn('s-fixer-legacy-ended', 'failed', 30);
+    await seedLegacyTaskScope('s-fixer-legacy-ended', 'exited');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-legacy-ended')).toBe(false);
+  });
+
+  it('ambiguous legacy release-fixer task scopes return unknown instead of guessing', async () => {
+    await seedSpawn('s-fixer-legacy-ambiguous', 'failed', 30);
+    await seedLegacyTaskScope('s-fixer-legacy-ambiguous', 'running', { taskId: 'legacy-a' });
+    await seedLegacyTaskScope('s-fixer-legacy-ambiguous', 'running', { taskId: 'legacy-b' });
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-legacy-ambiguous')).toBeNull();
   });
 
   it('a RUNNING fixer with a STALE heartbeat (crashed mid-run, beats stopped) is gone → re-dispatch', async () => {

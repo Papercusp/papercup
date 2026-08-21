@@ -1041,6 +1041,58 @@ describe('EI-19344528739076339 — auto-scope a bare multi-pipeline gate key to 
   });
 });
 
+describe('EI-21102428145156397 — dynamic git-sync egress exact-key latch', () => {
+  const egressKey = `git-sync:egressed:${'a'.repeat(40)}`;
+
+  it('answers already_fired for an exact SHA whose egress fire is already latched', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+      prefix: 'git-sync:egressed',
+      exact: true,
+      distinctKeys: 1,
+      fires: 1,
+      lastFiredAt: '2026-08-21T22:13:00.000Z',
+    });
+
+    const out = await call({ event: egressKey });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_fired: true,
+      event: egressKey,
+      fired_at: '2026-08-21T22:13:00.000Z',
+    });
+    expect(out.advice).toMatch(/origin\/staging has already contained this commit/);
+    expect(registerAwait).not.toHaveBeenCalled();
+    expect(probeKeyFireEvidence).toHaveBeenCalledWith(egressKey);
+  });
+
+  it('does not treat a sibling SHA fire as satisfaction for this exact key', async () => {
+    vi.mocked(probeKeyFireEvidence).mockResolvedValueOnce({
+      prefix: 'git-sync:egressed',
+      exact: false,
+      distinctKeys: 2,
+      fires: 2,
+      lastFiredAt: '2026-08-21T22:13:00.000Z',
+    });
+
+    const out = await call({ event: egressKey });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(out.await_id).toBe(99);
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply the exact-key latch to the recurring global egress stream', async () => {
+    vi.mocked(probeKeyFireEvidence).mockClear();
+
+    const out = await call({ event: 'git-sync:egressed' });
+
+    expect(out.already_fired).toBeUndefined();
+    expect(registerAwait).toHaveBeenCalledTimes(1);
+    expect(probeKeyFireEvidence).not.toHaveBeenCalled();
+  });
+});
+
 /**
  * EI-19928976726540168 — the SAME auto-narrow as EI-19344528739076339 above, for the GLOB form
  * of a gate-verdict key. The exact-key auto-narrow requires `!patternAwait`, so it never ran

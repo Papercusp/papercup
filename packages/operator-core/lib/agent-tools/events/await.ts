@@ -348,6 +348,38 @@ export default defineTool({
       } catch { /* best-effort — never block a registration */ }
     }
 
+    // ── EI-21102428145156397: the dynamic git-sync egress LATCH. The bridge emits
+    // `git-sync:egressed:<sha>` for each commit covered by origin/staging, but these
+    // exact keys are not announced. A late registrant therefore used to miss the
+    // one-shot event and sleep until timeout even though the remote already contained
+    // the awaited commit. This key is monotonic per SHA, so an EXACT fire-latch hit is
+    // equivalent to already satisfied. Keep this deliberately narrower than a blanket
+    // event_key_fires check: global/recurring keys and sibling SHAs must still register.
+    const gitSyncEgressTarget = !patternAwait ? /^git-sync:egressed:([^:]+)$/.exec(eventKey) : null;
+    if (gitSyncEgressTarget) {
+      const probe = await withBoundedTimeout(probeKeyFireEvidence(eventKey), {
+        fallback: null,
+        timeoutMs: 1_000,
+        label: 'events-await:gitSyncEgressLatch',
+      });
+      if (probe.value?.exact && probe.value.fires > 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: true,
+                already_fired: true,
+                event: eventKey,
+                fired_at: probe.value.lastFiredAt,
+                advice: `The git-sync egress key "${eventKey}" ALREADY FIRED at ${probe.value.lastFiredAt ?? 'an earlier time'} — origin/staging has already contained this commit. Do not wait; proceed with the work this egress unblocks now.`,
+              }),
+            },
+          ],
+        };
+      }
+    }
+
     // ── EI-10870: the ORPHAN-AWAIT guard. `event` is a free-form string, so an
     // invented or mistyped key registers happily and can then only ever TIME OUT
     // — silently, in the safe-looking direction (the agent just waits, and reports
