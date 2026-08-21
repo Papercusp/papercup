@@ -24,7 +24,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getOrgPg: () => ({ sql: Object.assign(async () => [], { unsafe: vi.fn() }) }),
+  getOrgPg: () => {
+    const sql = Object.assign(async () => [], { unsafe: vi.fn() });
+    return {
+      sql: Object.assign(sql, {
+        // claimWorkItem emits a claim event. The event latch now uses a
+        // transaction; keep this pure unit test's DB seam transaction-capable
+        // without changing what the test observes.
+        begin: async (fn: (tx: typeof sql) => Promise<unknown>) => fn(sql),
+      }),
+    };
+  },
 }));
 
 const fakeIssue = {
