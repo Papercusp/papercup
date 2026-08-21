@@ -99,6 +99,7 @@
  * actively dangerous rather than merely noisy: acting on it kills in-flight routine work and
  * reaps headless children in that service's cgroup (EI-9748 class).
  */
+import { execFileSync } from 'node:child_process';
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { defaultIsUnitActive, readCutStatus } from '../release-cut-launch';
