@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 754,
+  "count": 755,
   "tools": [
     {
       "name": "ablation:report",
@@ -14760,6 +14760,80 @@
         "when": "A loop objective should continue under a deliberate successor session instead of being ended and recreated.",
         "notWhen": "The original objective is finished — use loop:end. Moving work-item ownership without its loop — use work_items tools.",
         "chaining": "Use loop:status for both owners after transfer; the destination receives subsequent wakes and resumes from the transferred cold carry-note."
+      }
+    },
+    {
+      "name": "lsp:apply",
+      "http": {
+        "path": "/api/agent-tools/lsp/apply",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "WRITES a compiler-computed rename across every file the pinned language server says it touches. Give it the SAME cursor you would give lsp:query op:\"refactor_preview\" (file, line1 one-indexed, character zero-indexed) plus newName. All-or-nothing: it locks the whole target set atomically, and returns { filesChanged, editsApplied, diagnostics:{before,after,delta,measured}, contentAfter } or refuses with a typed reason and writes NOTHING — stale_document (a peer edited a target since the plan; re-preview), file_locked (a named peer holds a target), lock_unavailable (the lock authority is down; retry), edit_out_of_bounds/overlapping_edits (the plan does not match the files). diagnostics.measured===false means the delta was NOT measured, never that it was clean.",
+      "capabilities": [
+        "intel:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "You want to actually perform a rename you have previewed, and want every call site updated by the compiler rather than by search-and-replace.",
+        "notWhen": "Editing one file, or any change that is not a symbol rename — use capability:edit. To see the blast radius WITHOUT writing, lsp:query op:\"refactor_preview\".",
+        "chaining": "lsp:query op:\"refactor_preview\" to review the sites → lsp:apply with the same cursor. Pass the preview's content hashes as `expect` to refuse if anything moved in between."
       }
     },
     {
