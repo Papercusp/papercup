@@ -601,7 +601,22 @@ export async function lspQuery(
       // the wire speaks zero-indexed, and this is the only place that converts.
       position: { line: query.line1 - 1, character: query.character },
     };
-    if (intent === 'references') params.context = { includeDeclaration: false };
+    if (intent === 'references') {
+      // INCLUDE the declaration. This was `false` with no comment justifying
+      // it, and that default is wrong for our caller: an agent asking "who
+      // references this symbol?" is orienting itself, and the declaration is
+      // the single most useful site in the answer — it is where the thing IS.
+      // Standard editor behaviour agrees (VS Code's Find All References lists
+      // the declaration), and the acceptance corpus's own ground truth for
+      // `references-through-barrel-reexport` expects it.
+      //
+      // Excluding it also made a whole class of answer indistinguishable from
+      // a false-empty: a symbol referenced ONLY at its declaration returned
+      // `[]` from a healthy server, which isTrustworthyEmpty then blessed as
+      // "nothing uses this" — the exact failure the corpus case exists to
+      // catch.
+      params.context = { includeDeclaration: true };
+    }
 
     const raw = await client.connection.sendRequest(method, params);
     const list = Array.isArray(raw) ? raw : raw ? [raw] : [];
