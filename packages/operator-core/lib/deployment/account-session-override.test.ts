@@ -124,6 +124,54 @@ describe('setAccountOverride (workspace-level)', () => {
     expect(writeOperatorState).toHaveBeenCalledWith('operator_account_override', DEFAULT_ACCOUNT_OVERRIDE, 'ws');
   });
 
+  it('rejects an override that names an account outside the persisted pool before writing', async () => {
+    readOperatorState
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ accounts: [{ id: 'acct-a' }, { id: 'acct-b' }] });
+
+    await expect(setAccountOverride('ws', { forcedAccounts: ['avistorewolf.com'] })).rejects.toThrow(
+      /not present in the account pool: avistorewolf\.com/,
+    );
+    expect(writeOperatorState).not.toHaveBeenCalled();
+  });
+
+  it('rejects an account listed in both forcedAccounts and excludeAccounts before writing', async () => {
+    readOperatorState
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ accounts: [{ id: 'acct-a' }, { id: 'acct-b' }] });
+
+    await expect(
+      setAccountOverride('ws', { forcedAccounts: ['acct-a'], excludeAccounts: ['acct-a'] }),
+    ).rejects.toThrow(/both forcedAccounts and excludeAccounts: acct-a/);
+    expect(writeOperatorState).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-empty-pool collapse unless confirmCollapse is explicit', async () => {
+    readOperatorState
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ accounts: [{ id: 'acct-a' }, { id: 'acct-b' }] });
+
+    await expect(
+      setAccountOverride('ws', { excludeAccounts: ['acct-a', 'acct-b'] }),
+    ).rejects.toThrow(/collapse the non-empty account pool/);
+    expect(writeOperatorState).not.toHaveBeenCalled();
+  });
+
+  it('allows an intentional non-empty-pool collapse only with confirmCollapse', async () => {
+    readOperatorState
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ accounts: [{ id: 'acct-a' }, { id: 'acct-b' }] });
+
+    await expect(
+      setAccountOverride('ws', { excludeAccounts: ['acct-a', 'acct-b'], confirmCollapse: true }),
+    ).resolves.toEqual({ forcedAccounts: [], excludeAccounts: ['acct-a', 'acct-b'] });
+    expect(writeOperatorState).toHaveBeenCalledWith(
+      'operator_account_override',
+      { forcedAccounts: [], excludeAccounts: ['acct-a', 'acct-b'] },
+      'ws',
+    );
+  });
+
   // ── defaultAccountId: set / clear / untouched are three distinct outcomes ───
   // `?: string | null` exists precisely so `null` (clear) is distinguishable from
   // omission (keep) — a `?: string` field could only ever express two of the three.

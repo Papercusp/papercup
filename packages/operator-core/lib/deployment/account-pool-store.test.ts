@@ -347,7 +347,9 @@ describe('setDefaultAccount (default-deploy-account-2026-08-08 P-002)', () => {
   });
 
   it('leaves the allow/exclude axes untouched (a default is a different axis)', async () => {
-    seedPool({ id: 'aviynw6' });
+    // The session-override write guard rejects stale/unknown ids, so seed the excluded
+    // account as part of the concrete pool this fixture claims to steer.
+    seedPool({ id: 'aviynw6' }, { id: 'other' });
     stateStore.set(`operator_account_override::${WS}`, { forcedAccounts: ['aviynw6'], excludeAccounts: ['other'] });
     const out = await setDefaultAccount('aviynw6', WS);
     expect(out).toEqual({ forcedAccounts: ['aviynw6'], excludeAccounts: ['other'], defaultAccountId: 'aviynw6' });

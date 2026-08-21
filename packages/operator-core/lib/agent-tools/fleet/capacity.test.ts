@@ -2,6 +2,7 @@
 import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import { buildCapacityReport } from './capacity';
+import { DEFAULT_CAPACITY_DISPATCH_CONFIG as CAPACITY_CONFIG } from '../../fleet/capacity-dispatch';
 import type { GatewayHeadroom } from '../../inference-gateway/observability';
 import type { AccountStatusRow } from '../../deployment/account-pool-store';
 import type { AccountSessionOverride } from '../../deployment/account-session-override';
@@ -144,6 +145,30 @@ test('no headroom arg ⇒ recommendedHeadroom null (report only)', () => {
   const r = buildCapacityReport(tieredHr(), { clampArmed: true });
   assert.equal(r.recommendedHeadroom, null);
   assert.equal(r.throttled, null);
+});
+
+test('EI-19919108197415103: an active override fencing every account is reported as session-override exhaustion', () => {
+  const activeSessionOverride = { forcedAccounts: [], excludeAccounts: ['acct-a', 'acct-b'] };
+  const r = buildCapacityReport(tieredHr(), {
+    clampArmed: true,
+    headroom: 20,
+    accountAvailability: {
+      provider: 'claude',
+      total: 2,
+      available: 0,
+      usable: 0,
+      overrideExcludedCount: 2,
+      sessionOverride: activeSessionOverride,
+    },
+  });
+
+  assert.equal(r.poolExhausted, true);
+  assert.equal(r.exhaustionReason, 'session-override');
+  assert.equal(r.factor, 0);
+  assert.equal(r.recommendedHeadroom, CAPACITY_CONFIG.minHeadroom);
+  assert.equal(r.overrideExcludedAccounts, 2);
+  assert.deepEqual(r.activeSessionOverride, activeSessionOverride);
+  assert.match(r.advice, /revise or clear the override before spawning/);
 });
 
 const acctRow = (id: string, over: Partial<AccountStatusRow> = {}): AccountStatusRow => ({

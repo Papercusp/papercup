@@ -132,7 +132,7 @@ export function validateAccountOverrideAgainstPool(
   const unknownAccountIds = configured.filter((id) => !poolSet.has(id));
   const excludedSet = new Set(excluded);
   const conflictingAccountIds = forced.filter((id) => excludedSet.has(id));
-  const effectiveAccountIds = applyAccountOverride(pool, { forced, excludeAccounts: excluded });
+  const effectiveAccountIds = applyAccountOverride(pool, { forcedAccounts: forced, excludeAccounts: excluded });
   const errors: string[] = [];
 
   if (unknownAccountIds.length > 0) {
