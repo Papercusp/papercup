@@ -108,6 +108,9 @@ export interface GuidanceCensus {
   total: number;
   /** Byte-identical pages dropped (a re-introduced copy root would land here). */
   duplicatesDropped: number;
+  registrySource: string | null;
+  registryRevision: string | null;
+  correctiveCallsChecked: number;
   /**
    * Non-fatal conditions that make the census an UNDER-count. Non-empty means a
    * downstream "no overlaps found" verdict is INCONCLUSIVE, not clean.
@@ -123,6 +126,9 @@ function emptyCensus(): GuidanceCensus {
     toolGuidance: 0,
     total: 0,
     duplicatesDropped: 0,
+    registrySource: null,
+    registryRevision: null,
+    correctiveCallsChecked: 0,
     warnings: [],
   };
 }
@@ -198,12 +204,17 @@ interface RegistryTool {
     notWhen?: string;
     chaining?: string;
     returns?: string;
+    argRedirects?: Record<string, string | { tool: string; args: Record<string, unknown>; note?: string }>;
     byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
   };
 }
 
 /** Render one tool's guidance as a markdown page the sectioner can split. */
-export function renderToolGuidancePage(name: string, tool: RegistryTool): string | null {
+export function renderToolGuidancePage(
+  name: string,
+  tool: RegistryTool,
+  correctiveCalls: Array<{ rejectedArg: string; rendered: string; note?: string }> = [],
+): string | null {
   const g = tool.guidance;
   if (!g) return null;
   const parts: string[] = [`# ${name}`, ''];
@@ -215,6 +226,12 @@ export function renderToolGuidancePage(name: string, tool: RegistryTool): string
   field('Not when', g.notWhen);
   field('Chaining', g.chaining);
   field('Returns', g.returns);
+  for (const correction of correctiveCalls) {
+    field(
+      `Correction for rejected arg: ${correction.rejectedArg}`,
+      `\`${correction.rendered}\`${correction.note ? ` — ${correction.note}` : ''}`,
+    );
+  }
   for (const [role, override] of Object.entries(g.byRole ?? {})) {
     field(`Role override: ${role} — when`, override.when);
     field(`Role override: ${role} — not when`, override.notWhen);
@@ -234,15 +251,35 @@ async function loadToolGuidancePages(
   census: GuidanceCensus,
 ): Promise<Array<{ slug: string; title: string; body: string }>> {
   let tools: readonly RegistryTool[];
+  let resolveCorrectiveCalls: (
+    name: string,
+  ) => Array<{ rejectedArg: string; rendered: string; note?: string }>;
   try {
     const mod = (await import('@papercusp/tooldef')) as {
       listAllProjectedTools?: () => readonly RegistryTool[];
+      projectedToolCorrectiveCalls?: (
+        name: string,
+      ) => Array<{ rejectedArg: string; rendered: string; note?: string }>;
+      assertProjectedToolGuidanceConformance?: () => {
+        source: string;
+        registryRevision: string;
+        correctiveCallsChecked: number;
+      };
     };
-    if (typeof mod.listAllProjectedTools !== 'function') {
-      census.warnings.push('tooldef registry accessor missing — tool guidance NOT indexed');
+    if (
+      typeof mod.listAllProjectedTools !== 'function' ||
+      typeof mod.projectedToolCorrectiveCalls !== 'function' ||
+      typeof mod.assertProjectedToolGuidanceConformance !== 'function'
+    ) {
+      census.warnings.push('tooldef registry/conformance accessor missing — tool guidance NOT indexed');
       return [];
     }
     tools = mod.listAllProjectedTools();
+    resolveCorrectiveCalls = mod.projectedToolCorrectiveCalls;
+    const conformance = mod.assertProjectedToolGuidanceConformance();
+    census.registrySource = conformance.source;
+    census.registryRevision = conformance.registryRevision;
+    census.correctiveCallsChecked = conformance.correctiveCallsChecked;
   } catch (err) {
     census.warnings.push(`tooldef registry unreadable (${(err as Error).message}) — tool guidance NOT indexed`);
     return [];
@@ -262,7 +299,7 @@ async function loadToolGuidancePages(
   for (const tool of tools) {
     const name = tool.expose?.mcp?.name;
     if (!name) continue;
-    const body = renderToolGuidancePage(name, tool);
+    const body = renderToolGuidancePage(name, tool, resolveCorrectiveCalls(name));
     if (body === null) continue;
     out.push({ slug: `tool-guidance/${toolSlug(name)}`, title: `Tool guidance: ${name}`, body });
   }

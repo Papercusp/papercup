@@ -134,6 +134,21 @@ describe('renderToolGuidancePage', () => {
     expect(renderToolGuidancePage('x:y', tool({ byRole: {} }))).toBeNull();
     expect(renderToolGuidancePage('x:y', tool({ when: '   ' }))).toBeNull();
   });
+
+  it('renders only registry-validated corrective calls as executable guidance', () => {
+    const md = renderToolGuidancePage(
+      'work_items:update',
+      tool({ argRedirects: { tags: { tool: 'work_items:tag', args: { id: 'x', topic: 'y' } } } }),
+      [{
+        rejectedArg: 'tags',
+        rendered: 'work_items:tag {"id":"<work-item-id>","topic":"<topic>"}',
+        note: 'canonical tag writer',
+      }],
+    );
+    expect(md).toContain('## Correction for rejected arg: tags');
+    expect(md).toContain('`work_items:tag {"id":"<work-item-id>","topic":"<topic>"}`');
+    expect(md).toContain('canonical tag writer');
+  });
 });
 
 describe('guidanceAdapter — tool registry leg', () => {

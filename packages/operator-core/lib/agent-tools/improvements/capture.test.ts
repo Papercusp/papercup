@@ -242,6 +242,29 @@ describe('improvements:capture tool envelope', () => {
     }));
   });
 
+  it('derives bounded title/body text for the canonical toolFailure-only shorthand', async () => {
+    await callTool({
+      toolFailure: {
+        toolName: 'coord:send',
+        errorCode: 'invalid_args',
+        status: 'error',
+        message: 'body must be an array',
+        schemaRevision: 'projected-tool-registry-v1:42',
+        fieldPath: 'body',
+        runtimeVersion: 'codex-1.2.3',
+      },
+    });
+
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'coord:send tool-call failure (invalid_args)',
+      body: expect.stringContaining('Message: body must be an array'),
+      kind: 'change',
+      lane: 'observation',
+    }));
+    const body = mockCapture.mock.calls[0]?.[0].body ?? '';
+    expect(body.length).toBeLessThanOrEqual(16_000);
+  });
+
   it('files a reproduced server failure directly as claimable bug work', async () => {
     await callTool({
       title: 'terminal writer rejects a valid state',
@@ -541,6 +564,18 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
         },
       });
     }
+  });
+
+  it('accepts toolFailure without duplicated title/body and rejects a truly empty call (P-002)', () => {
+    const shorthand = argsSchema.safeParse({
+      toolFailure: {
+        toolName: 'improvements:capture',
+        message: 'title was required even though the structured report was complete',
+      },
+    });
+    expect(shorthand.success).toBe(true);
+    expect(argsSchema.safeParse({}).success).toBe(false);
+    expect(argsSchema.safeParse({ kind: 'bug' }).success).toBe(false);
   });
 
   it('accepts a known observation (kind/scope/confidence/refs)', () => {

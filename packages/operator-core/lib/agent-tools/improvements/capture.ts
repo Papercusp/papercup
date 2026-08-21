@@ -248,6 +248,72 @@ export function describeGroundingGap(
   };
 }
 
+export interface ToolFailureCaptureTextInput {
+  title?: string;
+  body?: string;
+  toolFailure?: SuspectedToolFailure;
+}
+
+/**
+ * P-002 / EI-21085901530859364: make the documented `toolFailure` shorthand a
+ * real accepted call shape. The structured report already carries enough
+ * information to file a useful row, so requiring callers to duplicate it into
+ * title/body only creates another invalid-input loop. Explicit prose still wins;
+ * omitted prose is derived deterministically and bounded by the same storage
+ * limits as authored prose.
+ */
+export function deriveToolFailureCaptureText(
+  input: ToolFailureCaptureTextInput,
+): { title: string; body?: string } {
+  if (input.title) return { title: input.title, body: input.body };
+  const failure = input.toolFailure;
+  if (!failure) throw new Error('improvements:capture requires title unless toolFailure is supplied');
+
+  const qualifier = failure.errorCode?.trim() || failure.status?.trim();
+  const title = clampText(
+    `${failure.toolName} tool-call failure${qualifier ? ` (${qualifier})` : ''}`,
+    LIMITS.SHORT_TITLE,
+  );
+  if (input.body) return { title, body: input.body };
+
+  const fields: Array<[string, unknown]> = [
+    ['Tool', failure.toolName],
+    ['Error code', failure.errorCode],
+    ['Status', failure.status],
+    ['Message', failure.message],
+    ['Schema revision', failure.schemaRevision],
+    ['Field path', failure.fieldPath],
+    ['Runtime version', failure.runtimeVersion],
+    ['Reproduced', failure.reproduced],
+    ['Clear server mismatch', failure.clearServerMismatch],
+    ['Hard internal', failure.hardInternal],
+  ];
+  const body = clampText(
+    [
+      'Suspected tool-call failure reported through the canonical improvements:capture toolFailure shorthand.',
+      '',
+      ...fields.flatMap(([label, value]) => value === undefined ? [] : [`${label}: ${String(value)}`]),
+    ].join('\n'),
+    LIMITS.CONTENT,
+  );
+  return { title, body };
+}
+
+const suspectedToolFailureSchema = z
+  .object({
+    toolName: z.string().min(1).max(160),
+    errorCode: z.string().max(160).optional(),
+    status: z.string().max(80).optional(),
+    message: z.string().min(1).max(4000),
+    schemaRevision: z.string().max(160).optional(),
+    fieldPath: z.string().max(300).optional(),
+    runtimeVersion: z.string().max(160).optional(),
+    reproduced: z.boolean().optional(),
+    clearServerMismatch: z.boolean().optional(),
+    hardInternal: z.boolean().optional(),
+  })
+  .strict();
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
@@ -309,7 +375,7 @@ export default defineTool({
         // detectable at all — 99.3% of stored observation titles are singletons because
         // this field used to ask only for "a summary". The rule text is shared (never
         // re-worded per surface) so the guard test can assert every surface still names it.
-        title: hardText(LIMITS.SHORT_TITLE).describe(
+        title: hardText(LIMITS.SHORT_TITLE).optional().describe(
           `one-line summary. ${OBSERVATION_TITLE_RULE} Do NOT include a [kind] prefix — pass kind separately.`,
         ),
         kind: z
@@ -404,20 +470,7 @@ export default defineTool({
           .describe(
             `EI-15448, lane:'observation' ONLY. ${CONDITION_KEY_RULE} Concretely: a still-OPEN prior observation carrying the SAME conditionKey has its repeatCount bumped and its title/body refreshed to this call's latest reading, instead of a fresh row every call — this is what fixed the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Where a key is ALREADY published — an OverwatchBrief anomaly line's \`[conditionKey: overwatch:escalation-aging]\` — copy that one verbatim rather than minting a variant that cannot join it. Omit for a genuinely novel/one-off reading, which always re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to \`scorecard:<rubricRef>:<sourceHive>\` when you omit this (EI-19325151590626958) — pass it explicitly to override. Ignored outside lane:'observation'.`,
           ),
-        toolFailure: z
-          .object({
-            toolName: z.string().min(1).max(160),
-            errorCode: z.string().max(160).optional(),
-            status: z.string().max(80).optional(),
-            message: z.string().min(1).max(4000),
-            schemaRevision: z.string().max(160).optional(),
-            fieldPath: z.string().max(300).optional(),
-            runtimeVersion: z.string().max(160).optional(),
-            reproduced: z.boolean().optional(),
-            clearServerMismatch: z.boolean().optional(),
-            hardInternal: z.boolean().optional(),
-          })
-          .strict()
+        toolFailure: suspectedToolFailureSchema
           .optional()
           .describe(
             'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Set reproduced, clearServerMismatch, or hardInternal only with direct evidence to file claimable work immediately.',
@@ -619,7 +672,16 @@ export default defineTool({
             "IDEATE-pass provenance for an su session's kind:'feature' origination — stamps the routed-idea ledger row (origin='su-ideate') with your declared lens so grade→outcome→feedback learning attributes back to it. Never a gate: purely additive, ignored for lane:observation / non-feature kinds.",
           ),
       })
-      .strict(),
+      .strict()
+      .superRefine((args, ctx) => {
+        if (!args.title && !args.toolFailure) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['title'],
+            message: 'title is required unless toolFailure is supplied (the server derives bounded title/body text for that shorthand)',
+          });
+        }
+      }),
   ),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
@@ -732,6 +794,7 @@ export default defineTool({
     // was trimmed rather than losing the finding to a validation bounce.
     const foundDuring = clampText(args.foundDuring, LIMITS.LABEL);
     const foundDuringTruncated = typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
+    const captureText = deriveToolFailureCaptureText(args);
     const normalizedToolFailure = args.toolFailure
       ? normalizeSuspectedToolFailure(args.toolFailure as SuspectedToolFailure)
       : undefined;
@@ -772,9 +835,9 @@ export default defineTool({
       : undefined;
     try {
       const persist = () => captureImprovement({
-        title: args.title,
+        title: captureText.title,
         kind: effectiveKind,
-        body: args.body,
+        body: captureText.body,
         severity: args.severity as IssueSeverity | undefined,
         subTopic: args.subTopic,
         scope: captureScope,
@@ -903,7 +966,7 @@ export default defineTool({
             rail: 'improvement',
             routedRef: `wi:${featureId}`,
             harnessSlug: ledgerHarness,
-            title: captured.issue.title ?? args.title,
+            title: captured.issue.title ?? captureText.title,
             // EI-10607: the pattern refs this idea grounds on — the ONE field that lets an
             // su idea appear as `grounded` in observationsImpact. Omitted when the caller
             // declared none, so the row shape is unchanged for an ungrounded filing.

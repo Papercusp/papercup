@@ -34,6 +34,7 @@ const mockTools: Array<{
     when?: string;
     notWhen?: string;
     chaining?: string;
+    argRedirects?: Record<string, string | { tool: string; args: Record<string, unknown>; note?: string }>;
     byRole?: Record<string, { when?: string; notWhen?: string; chaining?: string }>;
   };
   // tool-call-batching-wrappers P-010 — composite marker; the back-pointer tests push it.
@@ -43,6 +44,20 @@ const mockTools: Array<{
 vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   listAllProjectedTools: () => mockTools,
+  projectedToolCorrectiveCalls: (name: string) => {
+    const tool = mockTools.find((candidate) => candidate.expose.mcp.name === name);
+    return Object.entries(tool?.guidance?.argRedirects ?? {}).flatMap(([rejectedArg, redirect]) =>
+      typeof redirect === 'string'
+        ? []
+        : [{
+            rejectedArg,
+            ...redirect,
+            rendered: `${redirect.tool} ${JSON.stringify(redirect.args)}`,
+            source: 'projected-tool-registry',
+            registryRevision: 'projected-tool-registry-v1:test',
+          }],
+    );
+  },
 }));
 
 // Force cache bypass throughout the tests so reloading mocks works.
@@ -59,6 +74,34 @@ describe('renderToolsCatalog', () => {
   it('returns empty string when no toolNames provided', async () => {
     const { renderToolsCatalog } = await import('./prompt-assembly');
     expect(renderToolsCatalog('operator', [])).toBe('');
+  });
+
+  it('fails closed when the caller advertises a tool absent from the live registry', async () => {
+    const { renderToolsCatalog } = await import('./prompt-assembly');
+    expect(() => renderToolsCatalog('operator', ['stale:missing']))
+      .toThrow(/absent from the projected registry: stale:missing/);
+  });
+
+  it('renders registry provenance and a validated structured corrective call', async () => {
+    mockTools.push({
+      expose: { mcp: { name: 'work_items:update' } },
+      description: 'Update a work item.',
+      capabilities: [],
+      guidance: {
+        argRedirects: {
+          tags: {
+            tool: 'work_items:tag',
+            args: { id: '<work-item-id>', topic: '<topic>' },
+            note: 'canonical tag writer',
+          },
+        },
+      },
+    });
+    const { renderToolsCatalog } = await import('./prompt-assembly');
+    const out = renderToolsCatalog('operator', ['work_items:update']);
+    expect(out).toContain('Executable contract: projected-tool-registry');
+    expect(out).toContain('Correction for rejected `tags`');
+    expect(out).toContain('`work_items:tag {"id":"<work-item-id>","topic":"<topic>"}`');
   });
 
   it('renders a "Bundled by" back-pointer on a primitive a rendered composite replaces (P-010)', async () => {

@@ -37,6 +37,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   listAllProjectedTools,
+  projectedToolCorrectiveCalls,
+  projectedToolRegistryRevision,
+  PROJECTED_TOOL_REGISTRY_SOURCE,
   type ProjectedTool,
 } from '@papercusp/agent-mcp';
 import {
@@ -367,7 +370,12 @@ export function renderToolsCatalog(
     if (t.expose.mcp) byMcpName.set(t.expose.mcp.name, t);
   }
 
-  const lines: string[] = ['## Available tools', ''];
+  const lines: string[] = [
+    '## Available tools',
+    '',
+    `Executable contract: ${PROJECTED_TOOL_REGISTRY_SOURCE} · ${projectedToolRegistryRevision()}`,
+    '',
+  ];
   const sorted = [...new Set(toolNames)].sort();
 
   // Bounded back-pointer (tool-call-batching-wrappers D-005c / P-010): build the inverse
@@ -392,7 +400,9 @@ export function renderToolsCatalog(
   let rendered = 0;
   for (const name of sorted) {
     const tool = byMcpName.get(name);
-    if (!tool) continue; // silently skip — caller's list may include legacy or transient names
+    if (!tool) {
+      throw new Error(`prompt-assembly: requested tool is absent from the projected registry: ${name}`);
+    }
     // Modality filter: a tool's `modality: readonly ('text'|'voice')[]`
     // declares which surfaces it makes sense from. Default
     // `['text', 'voice']` when absent — most tools are usable in
@@ -408,6 +418,19 @@ export function renderToolsCatalog(
     if (g?.when) lines.push(`  When: ${g.when}`);
     if (g?.notWhen) lines.push(`  Not when: ${g.notWhen}`);
     if (g?.chaining) lines.push(`  Chaining: ${g.chaining}`);
+    const correctiveCalls = Object.values(tool.guidance?.argRedirects ?? {}).some(
+      (redirect) => typeof redirect === 'object' && redirect !== null,
+    )
+      ? projectedToolCorrectiveCalls(name, { role, modality })
+      : [];
+    for (const correction of correctiveCalls) {
+      const correctiveName = displayTransform ? displayTransform(correction.tool) : correction.tool;
+      lines.push(
+        `  Correction for rejected \`${correction.rejectedArg}\`: ` +
+          `\`${correctiveName} ${JSON.stringify(correction.args)}\`` +
+          `${correction.note ? ` — ${correction.note}` : ''}`,
+      );
+    }
     const bundles = bundledBy.get(name);
     if (bundles && bundles.length > 0) {
       const shown = bundles

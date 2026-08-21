@@ -290,7 +290,11 @@ export default defineTool({
     // what it accepts and never named the writer. Costs zero prompt weight (not
     // rendered into the description) and is paid only on that failure path.
     argRedirects: {
-      tags: 'work_items:tag { id, topic } — the ONLY writer for the claim-spec-visible `tags` field (it mirrors the topic into exactly what a scheduler:set_claim_spec filter on `tags` reads)',
+      tags: {
+        tool: 'work_items:tag',
+        args: { id: '<work-item-id>', topic: '<topic>' },
+        note: 'the ONLY writer for the claim-spec-visible `tags` field; it mirrors the topic into exactly what a scheduler:set_claim_spec filter on `tags` reads',
+      },
     },
   },
   capability: 'work_items:write',

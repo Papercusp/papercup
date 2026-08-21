@@ -49,12 +49,21 @@ describe('guidance corpus — live tree', () => {
 
     expect(c.toolGuidance).toBeGreaterThan(100);
     expect(c.warnings.join(' ')).not.toMatch(/registry is EMPTY|accessor missing|unreadable/);
+    expect(c.registrySource).toBe('projected-tool-registry');
+    expect(c.registryRevision).toMatch(/^projected-tool-registry-v1:/);
+    expect(c.correctiveCallsChecked).toBeGreaterThan(0);
 
     const one = pages.find((p) => p.slug.startsWith('tool-guidance/'));
     expect(one).toBeDefined();
     const body = await a.getContent(one!);
     expect(body).toMatch(/^# /);
     expect(body).toMatch(/## (When|Not when|Chaining|Returns)/);
+
+    const updatePage = pages.find((p) => p.slug === 'tool-guidance/work_items-update');
+    expect(updatePage).toBeDefined();
+    const updateBody = await a.getContent(updatePage!);
+    expect(updateBody).toContain('## Correction for rejected arg: tags');
+    expect(updateBody).toContain('work_items:tag {"id":"<work-item-id>","topic":"<topic>"}');
   });
 
   it('CROSS-CHECK: the tool-guidance page count matches an independently-derived count', async () => {
