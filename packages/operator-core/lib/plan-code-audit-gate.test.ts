@@ -195,6 +195,22 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
 });
 
 describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
+  it('treats partial and missing audit verdicts as record-only when terminality and evidence are current', async () => {
+    const partial = effective({ itemId: 'P-001', itemText: 'first requirement', status: 'partial' });
+    const missing = effective({ itemId: 'P-002', itemText: 'second requirement', status: 'missing' });
+    mockLatestAudit.mockResolvedValue(audit({ items: [partial.entry, missing.entry] }));
+    mockEffectiveAudits.mockResolvedValue([partial, missing]);
+    mockPlanItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'done', itemText: 'first requirement' },
+      { itemId: 'P-002', status: 'done', itemText: 'second requirement' },
+    ]);
+
+    const verdict = await evaluatePlanAcceptanceGate(PLAN);
+
+    expect(verdict).toMatchObject({ satisfied: true, skipped: 'flag-off' });
+    expect(mockRubric).not.toHaveBeenCalled();
+  });
+
   it('folds effective entries across partial passes instead of treating the latest pass as a snapshot', async () => {
     const p1 = effective({ itemId: 'P-001', itemText: 'first requirement', auditSeq: 1 });
     const p2 = effective({ itemId: 'P-002', itemText: 'second requirement', auditSeq: 2 });

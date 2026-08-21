@@ -666,6 +666,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(FLAG_DEFAULTS[FLAGS.PSU_END_USER]).toBe(false);
   });
 
+  it('plan completion audit guards ship default-ON and are never dark', () => {
+    for (const key of [FLAGS.PLAN_CODE_AUDIT_GATE, FLAGS.PLAN_ITEM_COMPLETION_GATE]) {
+      expect(FLAG_DEFAULTS[key], `${key} must enforce plan completion by default`).toBe(true);
+      expect(DARK_FLAGS.has(key), `${key} must not be registered as a dark flag`).toBe(false);
+    }
+  });
+
   it('P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark', () => {
     // p2p-work-distribution-2026-07-02 P-005 / FS-D5 (plan decision D-019): the P2P
     // work-sharing surface follows the landed GITHUB_BRIDGE pattern — the flag is the
