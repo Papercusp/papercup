@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   classifyDowngrade,
   readInstallStamp,
@@ -17,6 +19,7 @@ import { unwritablePath } from '../testing/unwritable-path';
 const iso = (msFromEpoch: number) => new Date(msFromEpoch).toISOString();
 const DAY = 86_400_000;
 const T0 = Date.parse('2026-08-09T00:00:00.000Z');
+const run = promisify(execFile);
 
 function stamp(over: Partial<InstallStamp> = {}): InstallStamp {
   return {
@@ -198,6 +201,47 @@ describe('resolveSourceGitProvenance', () => {
       expect(Number.isFinite(Date.parse(p.sourceCommittedAt as string))).toBe(true);
     } else {
       expect(p).toEqual({});
+    }
+  });
+
+  it('dates the requested source paths instead of an unrelated repository HEAD', async () => {
+    const repo = await fs.mkdtemp(path.join(os.tmpdir(), 'pc-path-prov-'));
+    const sourceDir = path.join(repo, 'apps', 'operator', 'scripts', 'hooks', 'cc');
+    try {
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.writeFile(path.join(sourceDir, 'userpromptsubmit-provenance.sh'), '# hook v1\n');
+      await fs.writeFile(path.join(repo, 'unrelated.ts'), 'export const v = 1;\n');
+      await run('git', ['init', '-q'], { cwd: repo });
+      await run('git', ['config', 'user.name', 'Papercusp Test'], { cwd: repo });
+      await run('git', ['config', 'user.email', 'test@papercusp.local'], { cwd: repo });
+      await run('git', ['add', '.'], { cwd: repo });
+      await run('git', ['commit', '-qm', 'hook'], {
+        cwd: repo,
+        env: { ...process.env, GIT_AUTHOR_DATE: iso(T0), GIT_COMMITTER_DATE: iso(T0) },
+      });
+
+      await fs.writeFile(path.join(repo, 'unrelated.ts'), 'export const v = 2;\n');
+      await run('git', ['add', 'unrelated.ts'], { cwd: repo });
+      await run('git', ['commit', '-qm', 'unrelated'], {
+        cwd: repo,
+        env: {
+          ...process.env,
+          GIT_AUTHOR_DATE: iso(T0 + 5 * DAY),
+          GIT_COMMITTER_DATE: iso(T0 + 5 * DAY),
+        },
+      });
+
+      const pathSpecific = await resolveSourceGitProvenance(sourceDir, [
+        'userpromptsubmit-provenance.sh',
+      ]);
+      expect(pathSpecific.sourceCommittedAt).toBe(iso(T0));
+      expect(pathSpecific.sourceSha).toMatch(/^[0-9a-f]{40}$/);
+
+      const repositoryHead = await resolveSourceGitProvenance(sourceDir);
+      expect(repositoryHead.sourceCommittedAt).toBe(iso(T0 + 5 * DAY));
+      expect(repositoryHead.sourceSha).not.toBe(pathSpecific.sourceSha);
+    } finally {
+      await fs.rm(repo, { recursive: true, force: true });
     }
   });
 });

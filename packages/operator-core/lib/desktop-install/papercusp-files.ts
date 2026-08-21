@@ -1028,6 +1028,15 @@ export const CC_HOOK_FILES = [
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
 const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py']);
 
+/** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
+function desktopInstallUnit(): string {
+  const configured = process.env.PAPERCUSP_VINTAGE_UNIT?.trim();
+  if (configured) return configured;
+  if (process.env.PAPERCUSP_DESKTOP === '1') return 'desktop-sidecar';
+  const port = process.env.PAPERCUSP_HONO_PORT?.trim() || process.env.PORT?.trim() || '3070';
+  return `hono-host:${port}`;
+}
+
 /**
  * Candidate DIRS for the CC hook sources — the bundled sidecar layout first
  * (`<operatorAppRoot>/scripts/hooks/cc`), then the dev-repo fallback. Mirrors
@@ -2633,16 +2642,19 @@ async function installClaudeHooks(
 
   // WI-37405 #2 — never silently downgrade. The scratch guard stops sandbox trees; this
   // stops one CANONICAL tree quietly reverting another's newer hooks (a release checkout
-  // booting after staging installed a fix). Best-effort and fail-open: no git, no stamp,
-  // or unknown dates all fall through to a normal install.
-  const incomingProvenance = await resolveSourceGitProvenance(srcDir);
+  // booting after staging installed a fix). Date the actual CC hook files, not repository
+  // HEAD: an unrelated commit must not make an unchanged hook appear newer. Unlike the
+  // generic provenance paths, CC has no grace period — even a minutes-old source can
+  // change the next agent's turn-gating behavior. Best-effort and fail-open: no git, no
+  // stamp, or unknown dates all fall through to a normal install.
+  const incomingProvenance = await resolveSourceGitProvenance(srcDir, CC_HOOK_FILES);
   const existingStamp = await readInstallStamp(destDir);
-  const verdict = classifyDowngrade(existingStamp, incomingProvenance);
+  const verdict = classifyDowngrade(existingStamp, incomingProvenance, 0);
   if (verdict.downgrade) {
-    const days = Math.floor(verdict.olderByMs / 86_400_000);
     console.error(
-      `[desktop-install] cc hooks: REFUSING downgrade — source ${srcDir} is ${days}d older ` +
-        `(${verdict.incomingAt}) than what is installed (${verdict.installedAt}, from ` +
+      `[desktop-install] cc hooks: REFUSING downgrade — source ${srcDir} ` +
+        `(${verdict.incomingAt}) is ${verdict.olderByMs}ms older than what is installed ` +
+        `(${verdict.installedAt}, from ` +
         `${existingStamp?.sourceDir}). Leaving the newer hooks in place.`,
     );
     return { installed: [], settingsMerged: false };
@@ -2691,9 +2703,14 @@ async function installClaudeHooks(
       ...incomingProvenance,
       installedAt: new Date().toISOString(),
       pid: process.pid,
+      unit: desktopInstallUnit(),
       installedBy: process.argv[1] ? path.basename(process.argv[1]) : undefined,
       files: installed,
     });
+    console.log(
+      `[desktop-install] hooks/cc <- ${srcDir} ` +
+        `(unit=${desktopInstallUnit()}, sha=${incomingProvenance.sourceSha ?? 'unknown'})`,
+    );
   }
 
   // Gate the settings merge on the primary lock hook landing (parity with the bash `[ -x $CC_PRE_HOOK ]`).

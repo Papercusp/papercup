@@ -51,6 +51,8 @@ export type InstallStamp = {
   installedAt: string;
   /** Writing process, for attributing a surprising install. */
   pid: number;
+  /** Runtime unit/host label that performed the install. */
+  unit?: string;
   /** argv[1] basename — names the unit/script that performed the install. */
   installedBy?: string;
   /** Basenames written in that pass. */
@@ -71,17 +73,26 @@ export async function readInstallStamp(destDir: string): Promise<InstallStamp | 
 }
 
 /**
- * Resolve the git sha + committer date of a source tree. Best-effort: returns `{}` when
- * git is unavailable (packaged app), the dir is not a repo, or the call fails.
+ * Resolve the git sha + committer date of a source tree. When `paths` is provided,
+ * the result is the latest commit touching those source-relative paths rather than
+ * the repository HEAD. That distinction is load-bearing for shared hook installs:
+ * an unrelated commit can move a checkout's HEAD without changing the hooks that
+ * are about to overwrite the machine-wide copy.
+ *
+ * Best-effort: returns `{}` when git is unavailable (packaged app), the dir is not a
+ * repo, no requested path has history, or the call fails.
  */
 export async function resolveSourceGitProvenance(
   sourceDir: string,
+  paths?: readonly string[],
 ): Promise<{ sourceSha?: string; sourceCommittedAt?: string }> {
   try {
     const { execFile } = await import('node:child_process');
     const { promisify } = await import('node:util');
     const run = promisify(execFile);
-    const { stdout } = await run('git', ['-C', sourceDir, 'log', '-1', '--format=%H%n%cI'], {
+    const args = ['-C', sourceDir, 'log', '-1', '--format=%H%n%cI'];
+    if (paths && paths.length > 0) args.push('--', ...paths);
+    const { stdout } = await run('git', args, {
       timeout: 5_000,
     });
     const [sha, committedAt] = String(stdout).trim().split('\n');

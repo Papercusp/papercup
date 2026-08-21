@@ -23,7 +23,12 @@ import * as path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { installInjectionHooks, installOmpHookBundle, installPapercuspFiles } from './papercusp-files';
+import {
+  CC_HOOK_FILES,
+  installInjectionHooks,
+  installOmpHookBundle,
+  installPapercuspFiles,
+} from './papercusp-files';
 import { INSTALLED_FROM_BASENAME, readInstallStamp } from './install-provenance';
 
 const run = promisify(execFile);
@@ -82,6 +87,32 @@ async function makeGitHookSource(
     },
   });
   return { injectDir, coordHook: path.join(ompDir, 'coord-hook.ts') };
+}
+
+async function makeGitCcHookSource(
+  repo: string,
+  marker: string,
+  committedAt: string,
+): Promise<{ ccDir: string }> {
+  const ccDir = path.join(repo, 'scripts', 'hooks', 'cc');
+  await fs.mkdir(ccDir, { recursive: true });
+  for (const name of CC_HOOK_FILES) {
+    await fs.writeFile(path.join(ccDir, name), `#!/bin/bash\n# ${marker}: ${name}\n`);
+  }
+
+  await run('git', ['init', '-q'], { cwd: repo });
+  await run('git', ['config', 'user.name', 'Papercusp Test'], { cwd: repo });
+  await run('git', ['config', 'user.email', 'test@papercusp.local'], { cwd: repo });
+  await run('git', ['add', '.'], { cwd: repo });
+  await run('git', ['commit', '-qm', marker], {
+    cwd: repo,
+    env: {
+      ...process.env,
+      GIT_AUTHOR_DATE: committedAt,
+      GIT_COMMITTER_DATE: committedAt,
+    },
+  });
+  return { ccDir };
 }
 
 const injectDest = () => path.join(home, '.papercusp', 'hooks', 'inject');
@@ -279,5 +310,62 @@ describe('installInjectionHooks — install provenance', () => {
     expect(await fs.readFile(path.join(injectDest(), INSTALLED_FROM_BASENAME), 'utf8')).toBe(before.injectStamp);
     expect(await fs.readFile(path.join(ompDest(), INSTALLED_FROM_BASENAME), 'utf8')).toBe(before.ompStamp);
     expect(error.mock.calls.map(c => String(c[0])).join('\n')).toMatch(/REFUSING downgrade/);
+  });
+
+  it('logs and stamps the CC source unit + path-specific sha on a successful install', async () => {
+    const repo = path.join(root, 'cc-checkout');
+    await fs.mkdir(repo, { recursive: true });
+    const source = await makeGitCcHookSource(repo, 'cc-success', '2026-08-13T12:05:00Z');
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    const result = await installPapercuspFiles({
+      home,
+      operatorAppRoot: repo,
+      playbookSource: path.join(repo, 'missing-playbook.md'),
+      extensionSource: path.join(repo, 'missing-extension.ts'),
+    });
+
+    expect(result.claudeHooksInstalled).toContain('pretooluse-locks-acquire.sh');
+    const stamp = await readInstallStamp(path.join(home, '.papercusp', 'hooks', 'cc'));
+    expect(stamp?.sourceDir).toBe(source.ccDir);
+    expect(stamp?.sourceCommittedAt).toBe('2026-08-13T12:05:00Z');
+    expect(stamp?.sourceSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(stamp?.unit).toMatch(/^hono-host:/);
+    expect(log.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(
+      new RegExp(`hooks/cc <- ${source.ccDir.replace(/[.*+?^${}()|[\\]\\]/g, '\\\\$&')} \\(unit=[^,]+, sha=[0-9a-f]{40}\\)`),
+    );
+  });
+
+  it('refuses a newer-installed CC hook bundle even when the stale source is only minutes older', async () => {
+    const newerRepo = path.join(root, 'cc-newer-checkout');
+    const staleRepo = path.join(root, 'cc-stale-checkout');
+    await fs.mkdir(newerRepo, { recursive: true });
+    await fs.mkdir(staleRepo, { recursive: true });
+    const newer = await makeGitCcHookSource(newerRepo, 'cc-newer', '2026-08-13T12:05:00Z');
+    const stale = await makeGitCcHookSource(staleRepo, 'cc-stale', '2026-08-13T12:00:00Z');
+
+    await installPapercuspFiles({
+      home,
+      operatorAppRoot: newerRepo,
+      playbookSource: path.join(newerRepo, 'missing-playbook.md'),
+      extensionSource: path.join(newerRepo, 'missing-extension.ts'),
+    });
+    const installedPath = path.join(home, '.papercusp', 'hooks', 'cc', 'userpromptsubmit-provenance.sh');
+    const before = await fs.readFile(installedPath, 'utf8');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const staleResult = await installPapercuspFiles({
+      home,
+      operatorAppRoot: staleRepo,
+      playbookSource: path.join(staleRepo, 'missing-playbook.md'),
+      extensionSource: path.join(staleRepo, 'missing-extension.ts'),
+    });
+
+    expect(staleResult.claudeHooksInstalled).toEqual([]);
+    expect(await fs.readFile(installedPath, 'utf8')).toBe(before);
+    expect((await readInstallStamp(path.join(home, '.papercusp', 'hooks', 'cc')))?.sourceDir).toBe(newer.ccDir);
+    expect(error.mock.calls.map((call) => String(call[0])).join('\n')).toMatch(
+      /cc hooks: REFUSING downgrade.*500000ms older/,
+    );
   });
 });
