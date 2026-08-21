@@ -73274,7 +73274,7 @@ For each spec’d feature in §11, this is the planned implementation route. Ite
 
 **Plan:**
 
-1. Add GitHub OAuth app at `github.com/papercupai` (or repurpose existing). Redirect URI: `https://api.papercuspai.com/v1/auth/github/callback`.
+1. Add GitHub OAuth app at `github.com/Papercusp` (or repurpose existing). Redirect URI: `https://api.papercuspai.com/v1/auth/github/callback`.
 
 2. Add session middleware to marketplace-api (signed cookies; HMAC key from env).
 
