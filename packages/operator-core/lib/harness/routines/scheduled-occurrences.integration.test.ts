@@ -16,7 +16,10 @@ import { gatherScheduledOccurrences, listPlanSchedules } from './scheduled-occur
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-occ';
-const HARNESS = 'papercup';
+// Migration 656 canonicalizes the retired `papercup` slug to `papercusp` on
+// insert, so cleanup and reads must use the canonical stored value or rows
+// survive beforeEach and contaminate later cases.
+const HARNESS = 'papercusp';
 
 // A June window: 2026-06-10 .. 2026-06-16 inclusive.
 const RANGE_START = Date.parse('2026-06-10T00:00:00.000Z');
