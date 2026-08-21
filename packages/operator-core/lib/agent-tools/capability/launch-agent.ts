@@ -44,6 +44,9 @@ import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
+import { listFacts } from '../../agent-facts/store';
+import { getModes } from '../../modes/store';
+import { modeInstructionsFactKey } from '../mode/set';
 import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
@@ -57,7 +60,9 @@ import {
   verifyResumeStarted,
   type FleetMemberDefaults,
   type FreshLaunchVerdict,
+  type LaunchMode,
   type MemberSpec,
+  resolveLaunchMode,
 } from '../../agent-launch-core';
 // WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
 import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
@@ -81,6 +86,24 @@ function err(text: string) {
 // WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
 // PAPERCUSP_OPERATOR_URL — see resolveSpawnHostOperatorBaseUrl's doc for why.
 const resolveOperatorBaseUrl = resolveSpawnHostOperatorBaseUrl;
+
+/** Read the launching session's durable DRAIN overlay once per call. A mode or
+ * fact read outage must not strand an otherwise valid ad-hoc launch. */
+async function readCallerLaunchMode(workspaceId: string, ownerId: string | null): Promise<LaunchMode | null> {
+  if (!ownerId) return null;
+  try {
+    const modeRows = await getModes(workspaceId, ownerId);
+    if (!modeRows.some((row) => row.mode === 'drain')) return null;
+    const facts = await listFacts(
+      { scope: 'owner', scopeRef: ownerId },
+      { workspaceId, limit: 50 },
+    );
+    const instructions = facts.find((fact) => fact.key === modeInstructionsFactKey('drain'));
+    return resolveLaunchMode({ modeRows, instructionsFact: instructions?.body });
+  } catch {
+    return null;
+  }
+}
 
 export default defineTool({
   name: 'capability:launch-agent',
@@ -234,6 +257,10 @@ export default defineTool({
     } catch {
       callerOwnerId = null;
     }
+    // DRAIN is a durable caller overlay. Resolve it before composing either a
+    // fresh command or a resume/fork command so every capability launch path
+    // carries the same mode into bootstrap-su.
+    const launchMode = await readCallerLaunchMode(workspaceId, callerOwnerId);
 
     // P-014: claim the launch BEFORE spawning anything — a replay must not open a
     // second set of windows. (No key ⇒ unguarded, exactly like cup:spawn.)
@@ -474,6 +501,7 @@ export default defineTool({
               account: args.account ?? null,
               model: args.model ?? null,
               headless: !!args.headless,
+              launchMode,
               extraArgs: args.extraArgs ?? null,
             })
           : buildAgentLaunchCommand({
@@ -499,6 +527,7 @@ export default defineTool({
               allowSubagents: folded.allowSubagents,
               addDir: folded.addDir ?? null,
               launchContext: folded.launchContext ?? null,
+              launchMode,
               extraArgs: folded.extraArgs ?? null,
             });
       } catch (e) {

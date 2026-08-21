@@ -71,10 +71,17 @@ function makeCleanRepo(): string {
   return tmp;
 }
 
-function run(tmp: string, guard: string, extraArgs: string[] = []) {
-  const r = spawnSync('node', [join('scripts', guard), '--base', 'HEAD', ...extraArgs], {
+function run(
+  tmp: string,
+  guard: string,
+  extraArgs: string[] = [],
+  options: { base?: string | null; env?: NodeJS.ProcessEnv } = {},
+) {
+  const baseArgs = options.base === null ? [] : ['--base', options.base ?? 'HEAD'];
+  const r = spawnSync('node', [join('scripts', guard), ...baseArgs, ...extraArgs], {
     cwd: tmp,
     encoding: 'utf8',
+    env: { ...process.env, ...options.env },
   });
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
   // A guard that failed to LOAD tells us nothing about the contract, and its non-zero exit
@@ -107,6 +114,33 @@ describe('strand-guard family — "examined nothing" must never exit 0', () => {
       expect(headline).toContain('NOT CHECKED');
       expect(headline).not.toContain('✓');
       expect(status).toBe(EXIT_NOT_CHECKED);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  /**
+   * Green-checkpoint's candidate checkout is clean, so a guard that silently falls back to
+   * HEAD examines nothing. The gate already exports AFFECTED_BASE; each family member must
+   * consume it when no explicit --base is present, while still allowing a committed candidate
+   * to be checked against its last-green base.
+   */
+  it.each(GUARDS)('%s honors AFFECTED_BASE in a clean candidate checkout', (guard) => {
+    const tmp = makeCleanRepo();
+    try {
+      const base = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: tmp, encoding: 'utf8' }).trim();
+      writeFileSync(join(tmp, FILE_B), 'export interface B { id: string }\n// candidate change\n');
+      execFileSync('git', ['add', FILE_B], { cwd: tmp });
+      execFileSync('git', ['commit', '-qm', 'candidate'], { cwd: tmp });
+
+      // No --base argument: this is the exact green-checkpoint child-process shape.
+      const { status, out, headline } = run(tmp, guard, [], {
+        base: null,
+        env: { AFFECTED_BASE: base },
+      });
+      expect(out).not.toContain('NOT CHECKED');
+      expect(headline).toContain('✓');
+      expect(status).toBe(0);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

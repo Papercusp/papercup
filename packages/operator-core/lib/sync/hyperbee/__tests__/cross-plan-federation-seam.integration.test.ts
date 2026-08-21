@@ -65,9 +65,9 @@ import { configureCoordLog, resetCoordLog } from '../../../agent-tools/coordinat
 // getOrgPg → peer B's DB: buildHarnessProjectionApply's projections write through
 // it, so applying an op lands on peer B. Peer A is driven by its own raw client.
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
 const { buildHarnessProjectionApply } = await import('../projections/register-all');

@@ -39,9 +39,9 @@ vi.mock('./materialize-triggers', () => ({
   singletonRoutinePayloadDefaults: (blueprintId: string) => (blueprintId === 'scout' ? { cycleTimeoutMs: 600_000 } : {}),
   SINGLETON_TRIGGER_HOST_SLUG: '@singleton',
 }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('@papercusp/flags', () => ({ FLAGS: { PLATFORM_IMPROVEMENT_LOOPS: 'platform_improvement_loops' } }));
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => HOME }));

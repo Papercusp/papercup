@@ -18,9 +18,9 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({ db: undefined as unknown }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ db: h.db }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ db: h.db }) };
 });
 
 const { mintPairToken, consumePairToken, newDeviceId } = await import('./device-pair-store');

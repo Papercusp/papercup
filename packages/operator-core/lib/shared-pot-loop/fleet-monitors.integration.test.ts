@@ -28,10 +28,11 @@ import {
   type MonitorIncident,
 } from './fleet-monitors';
 
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   const { currentCellSql } = await import('./cell-scope');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     getOrgPg: () => {
       const sql = currentCellSql();

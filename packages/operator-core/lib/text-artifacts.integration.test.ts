@@ -23,9 +23,9 @@ import { getTestPg } from '@papercusp/test-config/pg';
 
 const WS = 'ws-art';
 const h = vi.hoisted(() => ({ db: undefined as unknown }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ db: h.db }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ db: h.db }) };
 });
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>();

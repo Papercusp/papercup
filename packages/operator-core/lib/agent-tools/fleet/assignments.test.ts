@@ -222,6 +222,33 @@ describe('deriveMemberVerdict (EI-8995)', () => {
     ).toBe('waiting');
   });
 
+  it('EI-20980974612370508: a healthy cold loop outranks a stale/absent heartbeat', () => {
+    expect(
+      deriveMemberVerdict(
+        verdictInput({
+          alive: false,
+          sessionState: null,
+          monitorState: 'parked-awaiting-capability',
+          load: 1,
+        }),
+        NOW,
+      ),
+    ).toBe('parked-awaiting-capability');
+  });
+
+  it('EI-20980974612370508: an event-await park outranks a stale/absent heartbeat', () => {
+    expect(
+      deriveMemberVerdict(
+        verdictInput({
+          alive: false,
+          sessionState: null,
+          parkedOn: ['work-item:claimable'],
+        }),
+        NOW,
+      ),
+    ).toBe('parked-awaiting-capability');
+  });
+
   it('speaking OUTRANKS a stalled claim: a live member with one stuck ITEM is a re-steer, not a relaunch', () => {
     const last = NOW - 60_000;
     expect(deriveMemberVerdict(verdictInput({ stalled: true, load: 2, lastToolCallAtMs: last }), NOW)).toBe(

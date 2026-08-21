@@ -12,9 +12,9 @@ import fc from 'fast-check';
 
 // The pure functions don't touch PG, but importing the module pulls work-items.ts +
 // gym/primitives (their stores are lazy). Stub getOrgPg so import never needs a real pool.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: (() => {}) as never }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: (() => {}) as never }) };
 });
 
 const { compareReplicaVerdicts, pickRedundancyWinner, workItemRedundancyEnabled, MIN_REDUNDANCY } =

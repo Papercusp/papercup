@@ -20,9 +20,9 @@ import { getTestPg } from '@papercusp/test-config/pg';
 import { FED_ORDER_KEY_DDL } from '../../../../test/_pg-helpers';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
 const { buildFeatureClaimsProjection, _testing } = await import('./feature-claims');

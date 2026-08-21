@@ -28,9 +28,10 @@ const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 // The re-pointed writes go through withPlanLock → withWorkspace; the reads through
 // getOrgPg. Mock BOTH onto the migrated throwaway DB's admin (RLS-bypass) client — the
 // withPlanLock advisory xact-lock needs a real transaction, which `.begin` provides.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     getOrgPg: () => ({ sql: h.sql }),
     withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>

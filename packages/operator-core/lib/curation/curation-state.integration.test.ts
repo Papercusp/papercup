@@ -17,9 +17,10 @@ const WS = 'ws-curtest';
 const BASE = 900; // stand-in for BASE_INTERVAL_SECONDS (curation-loop mocked to avoid its heavy deps)
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql),
     getOrgPg: () => ({ sql: h.sql }),

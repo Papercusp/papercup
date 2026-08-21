@@ -21,9 +21,9 @@ import { getTestPg } from '@papercusp/test-config/pg';
 
 const WS = 'ws-pe';
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, tmp: '' }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
 });
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');

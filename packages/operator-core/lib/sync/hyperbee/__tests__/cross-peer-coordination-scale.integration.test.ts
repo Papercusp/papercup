@@ -31,10 +31,10 @@ import { __resetAuthorityOpsForTests } from '../../../authority/authority-op-reg
 import { registerWorkItemClaimAuthorityOps } from '../../../work-item-claim-authority-ops';
 
 // getOrgPg → the CURRENT epoch's authority store, via the rig's holder.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   const { orgSqlHolder } = await import('./_org-sql-holder');
-  return { ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
 });
 
 afterEach(rigAfterEach);

@@ -20,9 +20,9 @@ const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   topics: [] as string[],
 }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 // parsePlan's decision-parsing is the parser's own suite — here it's a seam (no frontmatter
 // title, so planTitle falls back to the ROW title, letting us prove WHICH row was fetched).

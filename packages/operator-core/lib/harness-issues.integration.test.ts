@@ -40,9 +40,9 @@ const PROJECT = { slug: SLUG, path: '/tmp/__nonexistent_harness__' } as unknown 
 // Holder so the hoisted vi.mock factory can reach the per-test connection
 // assigned in beforeAll without a TDZ error.
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getHarnessPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getHarnessPg: () => ({ sql: h.sql }) };
 });
 
 // Imported AFTER the mock is registered (vi.mock is hoisted).

@@ -43,9 +43,9 @@ const h = vi.hoisted(() => ({
   perm: {} as Record<string, GithubRepoPermission | 'THROW'>,
 }));
 
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../../identity/octokit-client', () => ({

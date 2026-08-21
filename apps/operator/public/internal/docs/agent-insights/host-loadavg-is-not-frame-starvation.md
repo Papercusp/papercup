@@ -1,15 +1,15 @@
 # Host loadavg is not frame starvation — never conclude \"the box was too loaded\"
 URL: /internal/docs/agent-insights/host-loadavg-is-not-frame-starvation
 
-A high /proc/loadavg on a shared box is NOT evidence that your containerized frames were starved — loadavg is not cgroup-scoped. Use cgroup-v2 cpu.pressure or the frame's own event-loop-lag instead, and make every failure line say which one it is reporting.
+A high /proc/loadavg on a shared box is NOT evidence that your containerized frames were starved — loadavg is not cgroup-scoped. Use cgroup-v2 cpu.pressure or the frame's own event-loop-lag instead, and make every failure line say which one it is reporting. Ordinary agents get a host-wide version of the same discrimination for free via coord:orient.
 
 ## The trap
 
 A gate/rig scenario fails. The failure line says `load 129.64`. You conclude the box was
 too loaded, mark it environmental, and stop.
 
-That conclusion is **not supported by that number**, and it has now cost at least four
-investigations (WI-5481, WI-5634, WI-5639, EI-18716933933700596).
+That conclusion is **not supported by that number**, and it has now cost at least five
+investigations (WI-5481, WI-5634, WI-5639, EI-18716933933700596, EI-20495650388693372).
 
 ## Why the number cannot mean what you think
 
@@ -47,11 +47,44 @@ A comparison from the same box makes the scale difference obvious: a container's
 `cpu.pressure` read `avg60=0.00 total=161593` against the host's `avg60=0.19
 total=49703324973` — three orders of magnitude apart, measuring different things.
 
+## An ordinary agent gets the same discrimination for free — no manual /proc reading needed
+
+The traps above were written for gate/rig scripts that read `/proc` themselves. An agent
+just reading `coord:orient`'s ambient `host` block used to have the identical problem one
+level up: it carried `load` + `cores` and nothing else, so "`load` exceeds `cores`" was
+**unfalsifiable from the payload alone** — it is equally consistent with a genuine CPU
+generator (worth hunting) and with a pile of D-state tasks doing no CPU work at all (a
+wedge, or slow storage). That gap is exactly what filed EI-20495650388693372: a raw
+"128 cores, load \[217.72, 137.62, 122.82]" reading that had to concede in its own body it
+was "a raw sensor observation, not a causal diagnosis".
+
+`HostSnapshot` (`packages/operator-core/lib/host-snapshot.ts`, folded into every
+`coord:orient`) now carries the mechanism alongside the raw number:
+
+* **`procsRunning` / `procsBlocked`** — the `/proc/stat` run-queue decomposition. A
+  CPU-bound burst shows high `procsRunning` and near-zero `procsBlocked`; an I/O-wedged
+  host shows the reverse. This is what actually answers "transient parallel build/test
+  work, or a wedged workload" — `load` alone cannot.
+* **`psiCpuSome60`** — the CPU-PSI stall-time falsifier, the CPU-side twin of the
+  pre-existing `psiMemSome60`. It answers "is anything actually STARVED by this load, or
+  just queued". Measured live on this host with `load 90.56` against `cores 128`:
+  `psiCpuSome60` (some avg60) `1.08`, with `full avg60=0.00` — i.e. **load and real CPU
+  saturation were decoupled**, the same disconnect the rig-frame case above measures at
+  container scope.
+
+Same durable rule as below, now enforced at the data-model level for the common ambient
+case: a reader of `coord:orient` can no longer see `load`/`cores` without also seeing
+whether anything is actually running vs. blocked vs. starved on that CPU dimension. (The
+memory-pressure companion, `psiMemSome60`, already existed and is the pointer to a
+*different*, already-tracked class of incident — chronic memory overcommit / swap
+thrashing, e.g. WI-9155 — which a CPU-only detector cannot diagnose and does not claim to.)
+
 ## The durable rule for anything that PRINTS a load number
 
 A failure line that names host loadavg **and nothing else** does not merely omit context —
 it actively proposes a wrong cause to every future reader. If you emit a load number,
-emit the frame-scoped verdict on the same line, and say which is which.
+emit the frame-scoped (or, for an ordinary agent, the run-queue/PSI) verdict on the same
+line, and say which is which.
 
 `live-federation-gate.sh`'s `frame_pressure_note()` is the worked example. It reports three
 states, and the distinction between the last two is the whole point:
@@ -85,4 +118,6 @@ quietly weakening coverage.
 ## In one line
 
 High load is a *finding* — something is generating it, go find out what — but it is never,
-on its own, an *explanation* for your failure.
+on its own, an *explanation* for your failure. As of `HostSnapshot`'s run-queue + CPU-PSI
+legs, an ordinary agent reading `coord:orient` has the mechanism to say WHAT KIND of
+finding it is, rather than reporting the raw number as weather.

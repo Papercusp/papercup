@@ -55,9 +55,9 @@ const COORD_EVENT_LOG_DDL = `
   )`;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 // promote: resolve a fake harness + mint a fake F-FIX (the feature machinery has
 // its own coverage; here we exercise promoteIssue's mapping + link + error paths).

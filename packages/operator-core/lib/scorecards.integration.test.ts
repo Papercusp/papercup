@@ -29,9 +29,10 @@ const h = vi.hoisted(() => ({ sql: null as unknown }));
 // Those extra exports are pure (drizzle schema defs / a config-seam setter), so
 // importing them for real has no I/O side effect — only getOrgPg/withWorkspace need
 // faking to re-point reads/writes at the migrated throwaway test DB.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     getOrgPg: () => ({ sql: h.sql }),
     withWorkspace: async <T>(ws: string, cb: (tx: postgres.Sql) => Promise<T> | T): Promise<T> =>

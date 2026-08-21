@@ -64,6 +64,7 @@ import {
   kickoffGuardProfileForAgent,
   type RemoteSeatSummary,
 } from '../../../agent-tools/plans/launch-prompt';
+import { normalizeLaunchMode, type LaunchMode } from '../../../agent-launch-core';
 import { resolveRemoteSeatInventory } from '../../../agent-tools/plans/remote-seat-inventory';
 import { rekeyCodexHome, writeSuCodexHome } from '../../../role-codex-home';
 // EI-11366: the real liveness check wired into writeSuCodexHome's identity-
@@ -799,6 +800,10 @@ export async function syncLaunchModeToRegistry(opts: {
   autoMode: boolean;
   drainMode: boolean;
   reason: string;
+  /** Bounded DRAIN overlay fields forwarded by psu/capability launchers. */
+  subject?: string | null;
+  instructions?: string | null;
+  ownerDirected?: boolean;
 }): Promise<string | null> {
   if (!opts.autoMode) return null;
   try {
@@ -806,7 +811,22 @@ export async function syncLaunchModeToRegistry(opts: {
     const { refreshControlAnchorAfterMutation } = await import(
       '../../../agent-tools/coordination/control-anchor'
     );
+    const launchMode: LaunchMode | null = opts.drainMode
+      ? normalizeLaunchMode({
+          mode: 'drain',
+          subject: opts.subject,
+          instructions: opts.instructions,
+          ownerDirected: opts.ownerDirected,
+        })
+      : null;
     for (const modeId of opts.drainMode ? ['auto', 'drain'] : ['auto']) {
+      const drainFields =
+        modeId === 'drain' && (opts.subject !== undefined || opts.ownerDirected !== undefined)
+          ? {
+              ...(opts.subject !== undefined ? { subject: launchMode?.subject ?? null } : {}),
+              ...(opts.ownerDirected !== undefined ? { ownerDirected: launchMode?.ownerDirected === true } : {}),
+            }
+          : {};
       const res = await setMode({
         workspaceId: opts.workspaceId,
         ownerId: opts.ownerId,
@@ -814,11 +834,42 @@ export async function syncLaunchModeToRegistry(opts: {
         enabled: true,
         reason: opts.reason,
         setBy: opts.ownerId,
+        ...drainFields,
       });
       if (!res.ok && !res.stickyConflict) {
         // A genuine write failure (not the benign already-owner-directed case,
         // which just means a peer/earlier launch already armed it more strongly)
         return res.error ?? `setMode('${modeId}') failed`;
+      }
+    }
+    // D-002: when a launch carries the parent's bounded standing instruction,
+    // assert that exact body under the canonical mode key. Do not render it a
+    // second time: callers read the already-rendered fact from the parent, and
+    // duplicating the prefix would alter the operative instruction on every
+    // resumption. A supplied empty value deliberately retracts stale scope.
+    if (opts.drainMode && opts.instructions !== undefined) {
+      const { assertFact, retractFact } = await import('../../../agent-facts/store');
+      const { modeInstructionsFactKey } = await import('../../../agent-tools/mode/set');
+      const key = modeInstructionsFactKey('drain');
+      if (launchMode?.instructions) {
+        await assertFact({
+          scope: 'owner',
+          scopeRef: opts.ownerId,
+          key,
+          body: launchMode.instructions,
+          sourceRef: `bootstrap-su:launch-mode 'drain' by ${opts.ownerId}`,
+          createdBy: opts.ownerId,
+          workspaceId: opts.workspaceId,
+        });
+      } else {
+        await retractFact({
+          scope: 'owner',
+          scopeRef: opts.ownerId,
+          key,
+          retractedBy: opts.ownerId,
+          reason: "bootstrap-su: launch-mode 'drain' instructions cleared",
+          workspaceId: opts.workspaceId,
+        });
       }
     }
     await refreshControlAnchorAfterMutation({
@@ -1382,6 +1433,10 @@ const post = defineTool({
        *  DRAIN directive (instead of the plain AUTO one) into system prompt + kickoff.
        *  Unknown values are refused loudly (400) — never silently ignored. */
       mode?: string | null;
+      /** Bounded DRAIN scope payload propagated from the launching session. */
+      mode_subject?: string | null;
+      mode_instructions?: string | null;
+      mode_owner_directed?: boolean | null;
       /** Cross-backend port handshake. Both fields are mandatory together;
        * unknown versions fail before any adv/session artifact is created. */
       session_port_protocol?: number;
@@ -1914,6 +1969,18 @@ const post = defineTool({
     const drainMode = modeRaw === 'drain';
     const autoMode = body.auto === true || drainMode;
 
+    // Normalize before either registry/fact writes or prompt assembly. The
+    // shared core is the single bound for subject/instructions, so a direct
+    // loopback POST cannot smuggle an unbounded scope into a child session.
+    const launchMode = drainMode
+      ? normalizeLaunchMode({
+          mode: modeRaw,
+          subject: body.mode_subject,
+          instructions: body.mode_instructions,
+          ownerDirected: body.mode_owner_directed === true,
+        })
+      : null;
+
     // EI-11110 / WI-5976: keep the mode REGISTRY in sync with the AUTO/DRAIN prose
     // this launch is about to bake into the prompt (see syncLaunchModeToRegistry's
     // doc comment for the full contradiction this closes). Best-effort — logged,
@@ -1923,6 +1990,15 @@ const post = defineTool({
       ownerId: sid,
       autoMode,
       drainMode,
+      ...(launchMode?.subject !== null && launchMode?.subject !== undefined
+        ? { subject: launchMode.subject }
+        : body.mode_subject !== undefined
+          ? { subject: null }
+          : {}),
+      ...(body.mode_instructions !== undefined ? { instructions: body.mode_instructions } : {}),
+      ...(body.mode_owner_directed !== undefined
+        ? { ownerDirected: launchMode?.ownerDirected === true }
+        : {}),
       reason: drainMode
         ? 'fleet launch: --mode=drain (DRAIN implies AUTO)'
         : fleetPin.fleetSlug

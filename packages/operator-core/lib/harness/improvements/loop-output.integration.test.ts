@@ -26,9 +26,9 @@ import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { OrgTestDb } from '../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 // Both capture-core and routed-ledger fire-and-forget a lazy sync-sse import
 // (resolved from this test file at '../../sync-sse' — same target either module

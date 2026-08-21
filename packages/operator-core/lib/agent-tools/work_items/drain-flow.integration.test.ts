@@ -4,9 +4,9 @@ import { createFreshPgDb, type FreshPgDb } from '../../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../../../test/_work-items-schema';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
 const { readDrainFlow, withDrainBugAdmission } = await import('./drain-flow');

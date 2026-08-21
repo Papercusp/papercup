@@ -364,7 +364,10 @@ export function deriveMemberVerdict(
   // read, matching this function's own "speaking outranks stalled" precedent.
   const speakingNow = a.lastToolCallAtMs != null && nowMs - a.lastToolCallAtMs <= VERDICT_SPEAKING_FRESH_MS;
   if (a.sessionState === 'ended' || a.sessionState === 'suspect' || a.sessionState === 'draining') return 'dead';
-  if (!a.alive && !speakingNow) return 'dead';
+  // EI-20980974612370508: a cold loop can be between wakes long enough for its
+  // coord_presence heartbeat to disappear. The loop engine (and, below, a
+  // registered event-await) is the stronger intentional-parking signal in that
+  // gap; only a confirmed terminal session state above may override it.
   if (a.monitorState) return a.monitorState;
   // EI-15655 (fleet:leader-brief false-positive stalls): a member holding NO
   // claims that is deliberately parked on an events:await key is healthily
@@ -373,6 +376,7 @@ export function deriveMemberVerdict(
   // misread as dead-ended. Gated on `load === 0` so a member that ALSO holds a
   // genuinely stalled claim is never masked by an unrelated park.
   if (a.load === 0 && (a.parkedOn?.length ?? 0) > 0) return 'parked-awaiting-capability';
+  if (!a.alive && !speakingNow) return 'dead';
   const last = a.lastToolCallAtMs;
   if (speakingNow) return 'speaking';
   // Member-level stall: not speaking AND (an item isn't advancing, or it holds work

@@ -25,10 +25,10 @@ const g = vi.hoisted(() => ({ rows: [] as Array<{ dst_ref: string; src_ref: stri
 
 // A minimal fake `sql` tagged-template that returns the canned graph rows for the one SELECT
 // getFeatureBlockers issues. The helpers under test issue no other query.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   const sql = (() => Promise.resolve(g.rows)) as unknown;
-  return { ...actual, getOrgPg: () => ({ sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql }) };
 });
 
 const {

@@ -24,9 +24,9 @@ import { InMemoryWorkItemClaimStore } from './work-item-claim-mem-store';
 import type { AcquireResult, HeartbeatResult } from './work-item-claims';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
 const sqlStore = await import('./work-item-claims');

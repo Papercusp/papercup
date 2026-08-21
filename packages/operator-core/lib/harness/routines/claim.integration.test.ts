@@ -19,9 +19,9 @@ import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual };
 });
 // The claim integration fixture predates migration 745. Loop-transition logging is
 // fail-soft instrumentation, not part of the claim behavior under test; keep its

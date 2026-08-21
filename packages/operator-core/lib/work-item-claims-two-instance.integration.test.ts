@@ -45,9 +45,9 @@ import type { AcquireResult, AcquireOpts } from './work-item-claims';
 const NOW = 1_700_000_000_000;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
 const { registerWorkItemClaimAuthorityOps } = await import('./work-item-claim-authority-ops');

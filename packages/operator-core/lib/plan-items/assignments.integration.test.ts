@@ -30,9 +30,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../libs/papercusp/libs/db/sql');
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, planItems: [{ id: 'P-001' }, { id: 'P-002' }] as { id: string }[] }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('../agent-tools/plans/source', () => ({
   // a plan whose Stage-3 items are h.planItems (parsed empty → forces the row.items path)

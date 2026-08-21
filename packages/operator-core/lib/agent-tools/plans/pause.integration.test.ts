@@ -14,9 +14,9 @@ import { randomBytes } from 'node:crypto';
 import { getTestPg } from '@papercusp/test-config/pg';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, withWorkspace: async (_ws: string, fn: (tx: postgres.Sql) => unknown) => fn(h.sql) };
 });
 // WI-5825: the handler keys its UPDATE off resolvePlanScope — the SAME authority the
 // plan readers use — so pin THAT, not the ambient activeWorkspaceId(). Deliberately NOT

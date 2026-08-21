@@ -74,9 +74,9 @@ vi.mock('../../memory/session-epoch-ledger', () => ({
 }));
 // Only getOrgPg is stubbed (spread keeps the rest of db-org real) — the tool now
 // resolves a sql tag to hand the bump, and this test has no live PG.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<Record<string, unknown>>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: {} }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: {} }) };
 });
 
 const findLiveHost = vi.fn();

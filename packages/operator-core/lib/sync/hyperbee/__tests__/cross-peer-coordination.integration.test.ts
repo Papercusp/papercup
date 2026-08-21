@@ -121,10 +121,10 @@ import { wakeRecipients } from '../../../agent-tools/coordination/inbox-wake';
 
 // getOrgPg → the AUTHORITY's PG (the claim store's single serialization point),
 // routed through the rig's holder so it can be rebound per test ("per machine").
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   const { orgSqlHolder } = await import('./_org-sql-holder');
-  return { ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: orgSqlHolder.sql }) };
 });
 
 // papercusp-hive-rekey defaults ON (P-011 inversion), so buildHiveRekeyBootDeps

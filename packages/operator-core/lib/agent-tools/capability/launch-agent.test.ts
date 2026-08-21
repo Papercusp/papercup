@@ -20,6 +20,18 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 
+const getModesMock = vi.hoisted(() => vi.fn());
+vi.mock('../../modes/store', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getModes: (...args: unknown[]) => getModesMock(...args),
+}));
+
+const listFactsMock = vi.hoisted(() => vi.fn());
+vi.mock('../../agent-facts/store', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  listFacts: (...args: unknown[]) => listFactsMock(...args),
+}));
+
 vi.mock('../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({
     cwd: '/repo',
@@ -162,6 +174,8 @@ beforeEach(() => {
     priorLaunchedBy: null,
   });
   fetchPresenceFleetMock.mockResolvedValue(new Map());
+  getModesMock.mockResolvedValue([]);
+  listFactsMock.mockResolvedValue([]);
 });
 
 describe('launch-tool routing guidance', () => {
@@ -216,6 +230,22 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   it('binds a plan (and its harness) when asked', async () => {
     await launchAgent.handler({ plan: 'my-plan' }, ctx);
     expect(spawnedCommand()).toContain('--harness=papercusp --plan=my-plan');
+  });
+
+  it('propagates the caller DRAIN overlay to a fresh launch', async () => {
+    getModesMock.mockResolvedValue([
+      { mode: 'drain', subject: 'bug-drain', ownerDirected: true },
+    ]);
+    listFactsMock.mockResolvedValue([
+      { key: 'mode-instructions:drain', body: 'Do not file incidental defects.' },
+    ]);
+
+    await launchAgent.handler({ brief: 'drain the admitted bugs' }, ctx);
+
+    expect(spawnedCommand()).toContain('--mode=drain');
+    expect(spawnedCommand()).toContain('--mode-subject=bug-drain');
+    expect(spawnedCommand()).toContain("--mode-instructions='Do not file incidental defects.'");
+    expect(spawnedCommand()).toContain('--mode-owner-directed');
   });
 
   it('allows an operator-scope caller to bind an explicit harness (WI-3329)', async () => {
@@ -328,6 +358,23 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead');
     expect(spawnedCommand()).not.toContain('--fork');
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
+  });
+
+  it('propagates the caller DRAIN overlay to a resume/fork command', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    getModesMock.mockResolvedValue([
+      { mode: 'drain', subject: 'bug-drain', ownerDirected: true },
+    ]);
+    listFactsMock.mockResolvedValue([
+      { key: 'mode-instructions:drain', body: 'Checkpoint incidental defects.' },
+    ]);
+
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, fork: true }, ctx);
+
+    expect(spawnedCommand()).toContain('--mode=drain');
+    expect(spawnedCommand()).toContain('--mode-subject=bug-drain');
+    expect(spawnedCommand()).toContain("--mode-instructions='Checkpoint incidental defects.'");
+    expect(spawnedCommand()).toContain('--mode-owner-directed');
   });
 
   it('delivers a brief with a resume as the session\'s NEXT turn (via the pty inject)', async () => {

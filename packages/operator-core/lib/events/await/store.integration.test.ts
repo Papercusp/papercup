@@ -21,9 +21,9 @@ import { getTestPg } from '@papercusp/test-config/pg';
 import type { GitPipelineSnapshot } from '../../git-pipeline-stats';
 
 const hb = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
 const {

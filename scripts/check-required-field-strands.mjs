@@ -372,7 +372,10 @@ function main() {
   const json = argv.includes('--json');
   const runTypecheck = argv.includes('--typecheck');
   const baseIdx = argv.indexOf('--base');
-  const base = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
+  // Green-checkpoint runs in a clean candidate checkout and supplies AFFECTED_BASE so this
+  // diff-driven guard compares the candidate against the last green commit. Keep HEAD as the
+  // local default, and let an explicit --base win over the gate environment.
+  const base = baseIdx >= 0 ? argv[baseIdx + 1] : process.env.AFFECTED_BASE || 'HEAD';
 
   // `--files=a,b,c` DECLARES the set instead of inferring it. Mirrors lint:tsc, which
   // learned the same lesson: on a tree the whole fleet edits, an inferred "changed set"

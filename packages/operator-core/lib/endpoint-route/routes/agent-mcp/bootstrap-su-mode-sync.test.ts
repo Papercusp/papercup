@@ -27,12 +27,19 @@ import type { SetModeResult } from '../../../modes/store';
 // fields) failed as excess properties (TS2353).
 const setModeMock = vi.fn(async (_opts: unknown): Promise<SetModeResult> => ({ ok: true, noop: false }));
 const refreshControlAnchorMock = vi.fn(async (_opts: unknown) => ({}));
+const assertFactMock = vi.fn(async (_opts: unknown) => ({}));
+const retractFactMock = vi.fn(async (_opts: unknown) => true);
 
 vi.mock('../../../modes/store', () => ({
   setMode: (opts: unknown) => setModeMock(opts),
 }));
 vi.mock('../../../agent-tools/coordination/control-anchor', () => ({
   refreshControlAnchorAfterMutation: (opts: unknown) => refreshControlAnchorMock(opts),
+}));
+vi.mock('../../../agent-facts/store', async (orig) => ({
+  ...(await orig<typeof import('../../../agent-facts/store')>()),
+  assertFact: (opts: unknown) => assertFactMock(opts),
+  retractFact: (opts: unknown) => retractFactMock(opts),
 }));
 vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()),
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
@@ -50,6 +57,8 @@ import { syncLaunchModeToRegistry } from './bootstrap-su';
 beforeEach(() => {
   setModeMock.mockClear();
   refreshControlAnchorMock.mockClear();
+  assertFactMock.mockClear();
+  retractFactMock.mockClear();
   setModeMock.mockResolvedValue({ ok: true, noop: false });
   refreshControlAnchorMock.mockResolvedValue({});
 });
@@ -111,6 +120,33 @@ describe('syncLaunchModeToRegistry (EI-11110 / WI-5976)', () => {
       'drain',
     ]);
     expect(refreshControlAnchorMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates the bounded DRAIN subject and exact standing instruction fact', async () => {
+    const err = await syncLaunchModeToRegistry({
+      workspaceId: 'ws',
+      ownerId: 'su-child',
+      autoMode: true,
+      drainMode: true,
+      subject: 'bug-drain',
+      instructions: 'DRAIN SCOPE — while \'drain\' is on, obey this verbatim: checkpoint incidental defects',
+      ownerDirected: true,
+      reason: 'fleet launch: --mode=drain (DRAIN implies AUTO)',
+    });
+    expect(err).toBeNull();
+    expect(setModeMock.mock.calls[1][0]).toMatchObject({
+      modeId: 'drain',
+      subject: 'bug-drain',
+      ownerDirected: true,
+    });
+    expect(assertFactMock).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'owner',
+      scopeRef: 'su-child',
+      key: 'mode-instructions:drain',
+      body: 'DRAIN SCOPE — while \'drain\' is on, obey this verbatim: checkpoint incidental defects',
+      workspaceId: 'ws',
+    }));
+    expect(retractFactMock).not.toHaveBeenCalled();
   });
 
   it('does not treat an owner-sticky refusal (stickyConflict) as a hard failure', async () => {
