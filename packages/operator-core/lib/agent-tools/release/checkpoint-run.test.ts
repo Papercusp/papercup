@@ -70,6 +70,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock('../../release-checkpoint-launch');
   vi.doUnmock('../../release/in-flight-retriage');
+  vi.doUnmock('../../release/in-flight-candidate');
   vi.doUnmock('../../db-boot-migrate');
   vi.doUnmock('../../coord/gate-ownership');
   vi.doUnmock('../coordination/inbox-wake');
@@ -884,6 +885,90 @@ describe('release:checkpoint-run', () => {
     // Checked against the IN-FLIGHT candidate, never the hypothetical fresh one.
     expect(containmentSpy).toHaveBeenCalledWith({ candidateSha: 'inflight1', tipSha: 'tip1', paths: ['mine.ts'] });
     expect(b.containment_warning).toMatch(/cannot see mine\.ts/);
+  });
+
+  /**
+   * EI-21044758600216699 — regression guard. Before the fix, an ORDINARY (non-refiring,
+   * cron-held) run's `already_running` reply had no way to read `gate_health.inFlightCandidate`
+   * (published on EVERY invocation, including a run's first candidate — unlike
+   * `inFlightRetriage`, which exists only after a refire) and fell straight to the checkout-HEAD
+   * inference (`a.candidate`). `mapCheckpointRunInFlight` (dev:pipeline_position's
+   * `checkpointRunInFlight` leg) already preferred that marker, so the two tools reported
+   * DIFFERENT candidates for the SAME live run — measured live as a receipt naming one sha
+   * `active` while a `dev:pipeline_position` call seconds later named a different one.
+   */
+  it('EI-21044758600216699: an ordinary cron-held run reports its OWN published candidate marker, not the checkout-HEAD inference', async () => {
+    const MARKER_CANDIDATE = 'markercandidate11111111111111111111111111';
+    const launchSpy = vi.fn(async () => ({
+      launched: false,
+      unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+      argv: [],
+      logPath: '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: 'papercup-green-checkpoint-manual-1fxzuva (idle — a DIFFERENT process holds the shared run-lock, likely the hourly cron)',
+        // The checkout-HEAD inference — deliberately DIFFERENT from the marker's candidate below,
+        // so a pre-fix run of this test asserts the WRONG sha and fails.
+        candidate: 'staleinferredcheckouthead00000000000000000',
+        current_head: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        current_candidate: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+        candidate_stale: false,
+        started_at: new Date(Date.now() - 5 * 60_000).toISOString(),
+        elapsed_sec: 300,
+        eta_sec: 10500,
+        held_externally: true,
+      },
+    }));
+    const containmentSpy = vi.fn(async () => ({
+      candidateSha: MARKER_CANDIDATE,
+      tipSha: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+      source: 'caller-supplied' as const,
+      included: ['mine.ts'],
+      missing: [],
+      unknown: [],
+      paths: [],
+      excludedCommitsTouchingYourFiles: [],
+      testImplSplitRisk: { detected: false, includedTests: [], missingImpl: [] },
+      warning: null,
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      launchDetachedCheckpoint: launchSpy,
+      checkpointCandidateContainment: containmentSpy,
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
+    }));
+    vi.doMock('../../release/in-flight-candidate', async (orig) => ({
+      ...(await orig()),
+      readInFlightCandidate: vi.fn(async () => ({
+        candidate: MARKER_CANDIDATE,
+        base: null,
+        selectedAtMs: Date.now() - 1000,
+        quietCutApplied: false,
+        tipAtSelection: null,
+        refireDepth: 0,
+        pid: 12345,
+        observedAtMs: Date.now() - 500,
+      })),
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ paths: ['mine.ts'] }, MAKE_CTX())) as never);
+
+    // The reply's own `candidate` field names the run's PUBLISHED marker, not the inference —
+    // the exact field that used to disagree with dev:pipeline_position.
+    expect(b.candidate).toBe(MARKER_CANDIDATE);
+    // No longer an inference, so containment must be COMPUTED (never refused) against the
+    // marker's candidate.
+    expect(containmentSpy).toHaveBeenCalledWith({
+      candidateSha: MARKER_CANDIDATE,
+      tipSha: 'aaaaaa77fd79af9dfee00076a1c6e90445d268af',
+      paths: ['mine.ts'],
+    });
+    expect(b.callerEditsInCandidate).toMatchObject({ included: ['mine.ts'] });
+    // A candidate resolved from the run's own marker is an OBSERVATION, not an inference — no
+    // reliability caveat should ride along.
+    expect(b._fieldReliability).toBeUndefined();
   });
 });
 
