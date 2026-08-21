@@ -3,7 +3,7 @@ id: ch1-03-su-agents
 chapter: 1
 order: 3
 title: SU agents — what I am
-docSlugs: agent-policies
+docSlugs: endpoint-system/superuser-mode
 ---
 
 ## Brief

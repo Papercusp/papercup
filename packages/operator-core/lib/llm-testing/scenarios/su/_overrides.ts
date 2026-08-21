@@ -170,7 +170,6 @@ export const ZOMBIE_LOCK_INSIGHT_CONTEXT: ToolDispatchOverride = {
                 { section: 'agent-insights', pages: 42 },
                 { section: 'system', pages: 31 },
                 { section: 'testing', pages: 12 },
-                { section: 'agent-policies', pages: 1 },
               ],
             }),
           },

@@ -35,7 +35,7 @@ test.describe('docs routes', () => {
   });
 
   test('GET /internal/docs/<slug> serves a rendered page', async ({ request }) => {
-    const res = await request.get(`${baseURL}/internal/docs/agent-policies`);
+    const res = await request.get(`${baseURL}/internal/docs/performance`);
     expect(res.status()).toBe(200);
     expect(res.headers()['content-type'] ?? '').toMatch(/html/);
     const body = await res.text();
@@ -43,7 +43,7 @@ test.describe('docs routes', () => {
   });
 
   test('GET /internal/docs/<slug>.html (explicit extension) serves the page', async ({ request }) => {
-    const res = await request.get(`${baseURL}/internal/docs/agent-policies.html`);
+    const res = await request.get(`${baseURL}/internal/docs/performance.html`);
     expect(res.status()).toBe(200);
     expect(res.headers()['content-type'] ?? '').toMatch(/html/);
   });
@@ -84,19 +84,19 @@ test.describe('docs routes', () => {
   });
 
   test('GET /internal/docs/<slug> with Accept: text/markdown returns the .md twin', async ({ request }) => {
-    const res = await request.get(`${baseURL}/internal/docs/agent-policies`, {
+    const res = await request.get(`${baseURL}/internal/docs/performance`, {
       headers: { Accept: 'text/markdown' },
     });
     expect(res.status()).toBe(200);
     expect(res.headers()['content-type'] ?? '').toMatch(/text\/markdown/);
     const body = await res.text();
     expect(body).toMatch(/^# /m); // markdown title
-    expect(body).toContain('URL: /internal/docs/agent-policies'); // withPreamble header
+    expect(body).toContain('URL: /internal/docs/performance'); // withPreamble header
     expect(body).not.toContain('<!DOCTYPE html>'); // definitely not HTML
   });
 
   test('GET /internal/docs/<slug> with Accept: text/html still returns HTML', async ({ request }) => {
-    const res = await request.get(`${baseURL}/internal/docs/agent-policies`, {
+    const res = await request.get(`${baseURL}/internal/docs/performance`, {
       headers: { Accept: 'text/html' },
     });
     expect(res.status()).toBe(200);

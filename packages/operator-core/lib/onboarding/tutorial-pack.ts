@@ -13,7 +13,7 @@
  *   chapter: 1
  *   order: 1
  *   title: Server, GUI & Tutorial — the three icons
- *   docSlugs: system/repo-conventions, agent-policies
+ *   docSlugs: system/repo-conventions, testing
  *   ---
  *
  *   ## Brief

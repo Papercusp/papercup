@@ -31,7 +31,7 @@ describe('starlightContentAdapter — synthetic fixture', () => {
       `---\ntitle: Root\ndescription: Top-level index\n---\n\n## Hello\n\nbody\n`,
     );
     await fs.writeFile(
-      path.join(tmp, 'agent-policies.mdx'),
+      path.join(tmp, 'sample-root-doc.mdx'),
       `---\ntitle: Agent Policies\n---\n\n## Rules\n\n## More rules\n`,
     );
     await fs.writeFile(
@@ -53,13 +53,13 @@ describe('starlightContentAdapter — synthetic fixture', () => {
     const pages = await src.listPages();
     const bySlug = new Map(pages.map((p) => [p.slug, p]));
     expect(bySlug.has('')).toBe(true);
-    expect(bySlug.has('agent-policies')).toBe(true);
+    expect(bySlug.has('sample-root-doc')).toBe(true);
     expect(bySlug.has('agents')).toBe(true);
     expect(bySlug.has('agents/operator')).toBe(true);
     expect(bySlug.size).toBe(4);
 
     expect(bySlug.get('')!.url).toBe('/internal/docs/');
-    expect(bySlug.get('agent-policies')!.url).toBe('/internal/docs/agent-policies');
+    expect(bySlug.get('sample-root-doc')!.url).toBe('/internal/docs/sample-root-doc');
     expect(bySlug.get('agents')!.url).toBe('/internal/docs/agents');
     expect(bySlug.get('agents/operator')!.url).toBe('/internal/docs/agents/operator');
   });
@@ -70,7 +70,7 @@ describe('starlightContentAdapter — synthetic fixture', () => {
     expect(root!.title).toBe('Root');
     expect(root!.description).toBe('Top-level index');
 
-    const policies = await src.getPage('agent-policies');
+    const policies = await src.getPage('sample-root-doc');
     expect(policies!.title).toBe('Agent Policies');
     expect(policies!.description).toBeUndefined();
   });
@@ -145,14 +145,14 @@ describe('starlightContentAdapter — real operator-docs tree', () => {
     expect(pages.length).toBeGreaterThanOrEqual(100);
 
     const slugs = new Set(pages.map((p) => p.slug));
-    expect(slugs.has('agent-policies')).toBe(true);
+    expect(slugs.has('sample-root-doc')).toBe(true);
     expect(slugs.has('agents')).toBe(true); // agents/index.mdx
     expect(slugs.has('endpoint-system/overview')).toBe(true);
 
-    const policies = await src.getPage('agent-policies');
+    const policies = await src.getPage('sample-root-doc');
     expect(policies).not.toBeNull();
     expect(policies!.title.length).toBeGreaterThan(0);
-    expect(policies!.url).toBe('/internal/docs/agent-policies');
+    expect(policies!.url).toBe('/internal/docs/sample-root-doc');
   });
 
   it('buildOutline runs against real tree without error', async () => {

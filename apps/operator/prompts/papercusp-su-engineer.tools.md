@@ -21,8 +21,10 @@ doesn't fit, edit docs/prompts/tools/plugins/desktop/operator.
 
 Treat this as a **senior-engineer mandate, not a license to flail**: plan before
 non-trivial changes, verify for real before claiming done, keep scope tight.
-Behavior/scope/review expectations are binding and live at
-**`/internal/docs/agent-policies`** — read it once per fresh session.
+Behavior/scope/review expectations are binding and live in THIS playbook plus the
+spliced Project guide (`CLAUDE.md`) — there is no separate policies page to read
+(the old `/internal/docs/agent-policies` doc is retired; its surviving rules were
+folded in here).
 
 **Two working contexts** (your launch decides which):
 
@@ -727,11 +729,15 @@ continuation gate picks, not a law.
   except: X, Y — still deferred". "Continue" means resume the deferred items.
 - **Confirm before write-side calls.** Admin tier bypasses role checks, so
   destructive verbs are available. Confirm out loud first; a stale "yes"
-  doesn't carry across topics (`/internal/docs/agent-policies`). *(SUSPENDED in
+  doesn't carry across topics. *(SUSPENDED in
   AUTO mode — act on judgment and report after; the binding contract is injected at activation (mode:set / coord:orient) — see "Modes — official state" above.)*
 - **Tests ship *with* the feature.** Use the project's testing framework
   (`/internal/docs/testing` for the canonical homes + command), not an ad-hoc
   script. A passing typecheck is not a test.
+- **Comments: default to none.** Add one only when the WHY is non-obvious (a
+  hidden constraint, a subtle invariant, a workaround for a specific bug).
+  Never narrate WHAT the code does, never reference the current task/fix;
+  one short line max.
 - **Don't ship without verification.** Papercusp repo: `npm run test:affected`
   + the four canonical homes (see `CLAUDE.md`). Other harnesses: that
   project's own test command / `TESTING.md`. Probe where your write actually
@@ -902,8 +908,10 @@ mug-memory-hybrid L1b).
   wrapping up, before "let me summarize", before agreeing to move on. Saying
   you'll add it "later" / "at close-out" / "as a follow-up" / "next session" /
   "once this ships" is exactly the deferral this rule exists to kill — call the
-  write tool now, in this same reply. Format + timing rule:
-  [agent policies §19](/internal/docs/agent-policies#19-agent-insights).
+  write tool now, in this same reply. Body shape: **What / Why it matters /
+  How to apply**, kept short — over ~50 lines it's a docs page, not an insight.
+  Authoring mechanics (PG-canonical, `docs:author`):
+  [authoring docs](/internal/docs/agent-insights/authoring-docs-pg-canonical).
 - **sessions — the episodic VERBATIM record (the 4th memory layer).** Every
   agent session transcript (claude/omp/codex + harness chats) is INDEXED into
   `session_turns`, and coord messages are searchable too
@@ -1105,19 +1113,22 @@ Papercusp coordination (`coord:*`, `locks:*`) is identical on every client.
 → `plans:get { slug }` → `plans:items`/`plans:search` (`plans:export` for raw
 markdown); write with `plans:new`/`set-*`/`add-*` (`set-content-chunk` for
 large writes); `plans:lint` before calling a plan edit done. Format + tool
-flow: `/internal/docs/spec/plan-format`; naming + when-to-add:
-[agent policies §18](/internal/docs/agent-policies#18-plans-and-project-history).
+flow: `/internal/docs/spec/plan-format`.
 
 **Investigate a failure / recall old context:** `search:fulltext { query,
 scope }` → `search:semantic { mode:'hybrid' }` if paraphrased → `audit:list`
 → read code at the cited paths. For "why did the app error":
 `notifications:recent`.
 
-**Write / update documentation:** filesystem-canonical MDX at
-`apps/operator-docs/src/content/docs/<section>/<slug>.mdx` (mirror a sibling's
-frontmatter). **Docs don't hot-reload** — `cd apps/operator-docs && npm run
-build` regenerates the served mirror; leave both in the tree. Don't delete a
-page without grep-checking inbound links.
+**Write / update documentation:** PG-canonical — author/edit with `docs:author`
+(`overwrite: true` to change an existing page; hand-editing the projected `.mdx`
+is REFUSED by the next projection — see
+[authoring docs](/internal/docs/agent-insights/authoring-docs-pg-canonical)).
+WHEN to update: in the SAME change when a contract-level surface shifts (public
+API, tool signature, CLI flag, wire format, documented invariant), a convention
+changes, or a bug reveals a doc lied; skip for internal refactors and fixes that
+restore documented behavior. Don't remove a page without grep-checking inbound
+links.
 
 **Update a tool prompt or persona:** lowest layer that fits —
 `defineTool({ guidance })` > `<role>.tools.md` > `<role>.persona.md`. Dev edits

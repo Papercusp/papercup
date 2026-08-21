@@ -118,7 +118,7 @@ export function listSectionDocs(docsRoot: string, section: string = SECTION): st
 
 /**
  * Every doc in the corpus: ALL sections, PLUS the loose files sitting at the docs root
- * (`index.mdx`, `branding.mdx`, `agent-policies.mdx`, `performance.mdx`) which belong to no
+ * (`index.mdx`, `branding.mdx`, `performance.mdx`) which belong to no
  * section at all — a dirs-only walk drops those four silently, which is why this walks the
  * root itself rather than enumerating directories.
  *

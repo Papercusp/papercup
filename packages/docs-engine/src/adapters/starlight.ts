@@ -8,7 +8,7 @@
  *
  * Slug rules (Starlight conventions):
  *   - <root>/index.mdx                → slug = ''        (root index)
- *   - <root>/agent-policies.mdx       → slug = 'agent-policies'
+ *   - <root>/performance.mdx          → slug = 'performance'
  *   - <root>/agents/index.mdx         → slug = 'agents'   (section index)
  *   - <root>/agents/operator.mdx      → slug = 'agents/operator'
  *

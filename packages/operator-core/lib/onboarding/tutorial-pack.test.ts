@@ -16,7 +16,7 @@ id: ch9-01-sample
 chapter: 9
 order: 1
 title: A sample, with — punctuation
-docSlugs: system/repo-conventions, agent-policies
+docSlugs: system/repo-conventions, testing
 ---
 
 ## Brief
@@ -38,7 +38,7 @@ describe('parseTutorialSection', () => {
       chapter: 9,
       order: 1,
       title: 'A sample, with — punctuation',
-      docSlugs: ['system/repo-conventions', 'agent-policies'],
+      docSlugs: ['system/repo-conventions', 'testing'],
       file: '/tmp/s.md',
     });
     expect(s.brief).toBe('Two short sentences. That is all.');
