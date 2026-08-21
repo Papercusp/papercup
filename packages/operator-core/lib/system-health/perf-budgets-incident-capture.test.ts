@@ -48,7 +48,7 @@ describe('preserveIncidentCapture', () => {
     const out = await preserveIncidentCapture('infra-crit', dir);
     expect(out.preserved).toBe(true);
     expect(out.path).toBeTruthy();
-    expect(out.path).toContain('-incident-infra-crit-');
+    expect(out.path).toContain('-incident-infra-crit.json');
 
     const files = await readdir(dir);
     // both originals still present (copy, not move) + exactly one new incident file
@@ -63,19 +63,26 @@ describe('preserveIncidentCapture', () => {
     expect(out.path).not.toMatch(/\.\.|\/reason| /);
   });
 
-  it('is exempt from the routine *-scheduled.json rotation glob (never itself picked up as a "newest" source on a re-run)', async () => {
+  it('is idempotent for a repeated edge on the same source capture', async () => {
     await writeFile(join(dir, 'a-scheduled.json'), CAPTURE);
     const first = await preserveIncidentCapture('infra-crit', dir);
     expect(first.preserved).toBe(true);
-    // A second preserve call must still source from the scheduled file, not
-    // re-copy the incident file it just wrote (which would compound reasons/
-    // names over repeated crit ticks instead of always reflecting the latest
-    // real capture).
     const second = await preserveIncidentCapture('infra-crit', dir);
-    expect(second.preserved).toBe(true);
-    expect(second.path).not.toBe(first.path);
-    const content = await import('node:fs/promises').then((m) => m.readFile(second.path!, 'utf8'));
-    expect(JSON.parse(content).hostState).toBe('wedge-active'); // sourced from the real capture, not an incident file
+    expect(second).toEqual({ preserved: false });
+    expect(first.path).toBe(join(dir, 'a-scheduled-incident-infra-crit.json'));
+    const files = await readdir(dir);
+    expect(files.filter((f) => f.includes('-incident-'))).toHaveLength(1);
+  });
+
+  it('de-duplicates concurrent workers preserving the same source capture', async () => {
+    await writeFile(join(dir, 'a-scheduled.json'), CAPTURE);
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => preserveIncidentCapture('infra-crit', dir)),
+    );
+    expect(results.filter((result) => result.preserved)).toHaveLength(1);
+    expect(results.filter((result) => !result.preserved)).toHaveLength(7);
+    const files = await readdir(dir);
+    expect(files.filter((f) => f.includes('-incident-'))).toHaveLength(1);
   });
 
   it('bounds the incident set to the newest 100, pruning older ones', async () => {

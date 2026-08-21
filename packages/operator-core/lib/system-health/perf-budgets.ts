@@ -12,10 +12,10 @@
  * absolute budget. Budgeting on loadavg would lie on a many-core box.
  */
 import type { PanelStatus } from './types';
+import { constants as fsConstants } from 'node:fs';
 import { readdir, readFile, stat, copyFile, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
-import { randomBytes } from 'node:crypto';
 
 /** The subset of Lane E's perf-signals-v1 record the budgets read. The MCP-merged
  *  signals (eventLoopLag, tool p95, pgConns) are null until an agent run keyed to
@@ -795,6 +795,9 @@ const INCIDENT_CAPTURE_KEEP = 100;
  * moving — the scheduled rotation must stay untouched) the current capture to
  * an `*-incident-<reason>-*.json` file exempts it from that rotation glob, so
  * the NEXT such flap leaves something to root-cause instead of nothing.
+ * The destination is keyed by the source capture name and reason, so clustered
+ * health workers racing on the same edge preserve one file rather than creating
+ * a random-suffix storm. The exclusive copy makes that de-duplication atomic.
  * Fail-soft: never throws (callers run this from a tick's best-effort side
  * effects, same pattern as the ack-sweep / history recording next to it).
  */
@@ -816,13 +819,19 @@ export async function preserveIncidentCapture(
     }
     if (!newest) return { preserved: false };
     const safeReason = reason.replace(/[^a-zA-Z0-9_-]/g, '') || 'unlabeled';
-    // A short random suffix guards against a filename collision when this fires
-    // twice within the same millisecond (a fast box, or two edge-triggers in
-    // quick succession) — a collision would silently overwrite instead of
-    // preserving BOTH incidents.
-    const suffix = randomBytes(3).toString('hex');
-    const dest = join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-incident-${safeReason}-${suffix}.json`);
-    await copyFile(newest.path, dest);
+    // The source basename is the capture identity. A clustered health tick can
+    // run in many workers, all observing the same edge and the same newest
+    // capture; COPYFILE_EXCL makes the first writer win and all other workers
+    // become harmless no-ops instead of creating duplicate forensic files.
+    const sourceId = basename(newest.path, '.json').replace(/[^a-zA-Z0-9_-]/g, '-') || 'capture';
+    const dest = join(dir, `${sourceId}-incident-${safeReason}.json`);
+    try {
+      await copyFile(newest.path, dest, fsConstants.COPYFILE_EXCL);
+    } catch {
+      // EEXIST is the expected result of a peer worker preserving this same
+      // source/reason pair. Other filesystem failures are also fail-soft.
+      return { preserved: false };
+    }
 
     // Bound the incident set the same way capture-perf-signals.sh bounds the
     // scheduled set — keep only the newest INCIDENT_CAPTURE_KEEP.
