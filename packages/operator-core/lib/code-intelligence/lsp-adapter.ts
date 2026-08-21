@@ -131,7 +131,23 @@ interface LspClient {
   lastError: string | null;
   startedAt: number;
   coldStartMs: number;
+  /**
+   * Outstanding `window/workDoneProgress` tokens. While ANY is open the server
+   * is still loading the project and its answers are not yet trustworthy —
+   * see `awaitProjectReady`.
+   */
+  pendingProgress: Set<string | number>;
+  /** True once at least one progress cycle has completed. */
+  everSettled: boolean;
 }
+
+/**
+ * How long to wait for the project to finish loading before answering.
+ * Measured 2026-08-21 on this repo: the TypeScript server needed ~4.7s after
+ * didOpen before `textDocument/definition` stopped returning the WRONG answer.
+ * 60s is a generous ceiling for a cold monorepo load, not an expected wait.
+ */
+const PROJECT_READY_TIMEOUT_MS = 60_000;
 
 interface AdapterState {
   /** Keyed by `${language}::${rootPath}`. */
@@ -211,7 +227,31 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     lastError: null,
     startedAt: Date.now(),
     coldStartMs: 0,
+    pendingProgress: new Set(),
+    everSettled: false,
   };
+
+  // ── Project-load readiness ────────────────────────────────────────────────
+  // MEASURED, and the reason this machinery exists: for ~4.7s after didOpen the
+  // TypeScript server answers `textDocument/definition` with the IMPORT SITE
+  // rather than the real cross-package declaration. That is a false POSITIVE —
+  // a well-formed, plausible, wrong location — which is strictly more dangerous
+  // than an empty result, because nothing about it looks like a failure. The
+  // server tells us when it is done via workDoneProgress; we wait for that
+  // instead of sleeping a magic number.
+  connection.onRequest('window/workDoneProgress/create', (params: { token: string | number }) => {
+    client.pendingProgress.add(params.token);
+    return null;
+  });
+  connection.onNotification(
+    '$/progress',
+    (params: { token: string | number; value?: { kind?: string } }) => {
+      if (params?.value?.kind === 'end') {
+        client.pendingProgress.delete(params.token);
+        if (client.pendingProgress.size === 0) client.everSettled = true;
+      }
+    },
+  );
 
   // A dead server must never answer emptily and confidently again.
   child.on('exit', (code, signal) => {
@@ -238,6 +278,10 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
         implementation: { linkSupport: false },
       },
       workspace: { workspaceFolders: true },
+      // REQUIRED for the readiness protocol above. Without declaring this the
+      // server never sends workDoneProgress, we can never tell "still loading"
+      // from "done", and every early query silently returns the wrong answer.
+      window: { workDoneProgress: true },
     },
   });
   client.coldStartMs = Date.now() - t0;
@@ -252,6 +296,37 @@ async function getClient(language: LspLanguage, rootPath: string): Promise<LspCl
   const existing = state.clients.get(clientKey(language, rootPath));
   if (existing && existing.health !== 'unhealthy') return existing;
   return startClient(language, rootPath);
+}
+
+/**
+ * Block until the server has finished loading the project, so we never answer
+ * from a half-loaded program.
+ *
+ * Returns true when the project is genuinely ready, false when we gave up
+ * waiting — and the caller MUST degrade health on false rather than answering
+ * as if the result were trustworthy. Returning a bare boolean (instead of
+ * throwing) is deliberate: a timeout here is a FRESHNESS fact about the answer,
+ * not an error that should erase the difference between "broken" and "empty".
+ */
+async function awaitProjectReady(client: LspClient, timeoutMs = PROJECT_READY_TIMEOUT_MS): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  // Give the server a beat to CREATE its progress token; without this grace a
+  // query issued microseconds after didOpen sees an empty pending set and
+  // concludes — wrongly — that loading already finished.
+  const graceUntil = Date.now() + 1_000;
+  for (;;) {
+    if (client.health === 'unhealthy') return false;
+    const idle = client.pendingProgress.size === 0;
+    if (idle && client.everSettled) return true;
+    if (idle && Date.now() > graceUntil) {
+      // No progress was ever reported. Either the server does not implement
+      // workDoneProgress or it had nothing to load. Treat as ready, but only
+      // after the grace window has actually elapsed.
+      return true;
+    }
+    if (Date.now() > deadline) return false;
+    await new Promise((r) => setTimeout(r, 50));
+  }
 }
 
 /** Open a document if the server has not seen it yet (LSP requires didOpen). */
@@ -350,6 +425,18 @@ export async function lspQuery(
   try {
     const client = await getClient(language, query.rootPath);
     const uri = await ensureOpen(client, query.file);
+
+    // Never answer from a half-loaded project — that returns a plausible WRONG
+    // location, not an error (measured: ~4.7s window on this repo).
+    const ready = await awaitProjectReady(client);
+    if (!ready) {
+      return fail(
+        `language server did not finish loading the project within ` +
+          `${PROJECT_READY_TIMEOUT_MS}ms; refusing to answer from a half-loaded ` +
+          `program because it returns a plausible WRONG location rather than an error`,
+        'degraded',
+      );
+    }
 
     const params: Record<string, unknown> = {
       textDocument: { uri },
