@@ -39,6 +39,7 @@ import {
   type IdeaLifecyclePayload,
 } from './lifecycle';
 import { trackDetached } from '../../detached-imports';
+import { enterAgentReview } from './agent-review';
 
 export interface ApplyTriageInput {
   id: string;
@@ -84,6 +85,7 @@ export interface TriageCoreDeps {
   ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
+  enterAgentReview: typeof enterAgentReview;
 }
 
 const defaultDeps: TriageCoreDeps = {
@@ -91,6 +93,7 @@ const defaultDeps: TriageCoreDeps = {
   setIssueState,
   commentIssue,
   mergeIssuePayload,
+  enterAgentReview,
 };
 
 const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
@@ -276,24 +279,14 @@ export async function applyTriageDecision(
   // Reject = a DECIDED idea: record the durable reason for the recall matcher
   // ("already decided: <reason>") and close it so it leaves the open queue.
   if (decision === 'reject') patch.decidedReason = reason;
-  // Gate = a HUMAN-REVIEW verdict, so it must ALSO be written to the field the claim
-  // floor actually reads (EI-18812833212023413). The verdict used to live ONLY in
-  // payload.ideaLifecycle.triageDecision, while issue-family admission keys on
-  // payload.needsHuman — so a gated item stayed fully claimable and scheduler:get_next
-  // served it like any other work. Measured when found: 917 items ever gated, 125 open,
-  // 51 of them claimable RIGHT NOW with no needsHuman and no _claimHold, including
-  // protected-path items ("touches apps/operator/lib/release/** → human") and
-  // "process/prompt change needs human gate" items — precisely what the gate exists to
-  // stop. The gate was computing a correct verdict and writing it somewhere nothing
-  // enforced.
-  //
-  // Mirrored HERE, at the write side, in the SAME merge as the lifecycle patch, for the
-  // same reason work-item-topic-tags.ts mirrors topics into the claim-visible tag field
-  // (EI-18654138087054247): two slots that must agree cannot be kept in sync by
-  // remembering to write both. Nothing on the read/claim path changes — the floor keeps
-  // reading exactly the field it reads today, and now that field is populated.
-  if (decision === 'gate') patch.needsHuman = true;
   await deps.mergeIssuePayload(input.id, patch);
+
+  // A triage gate is review work, not an owner-capability escalation. Enrollment is
+  // idempotent: an already-pending item stays in the same review round, while strict
+  // typed owner actions and remote-owned rows remain on their existing lanes.
+  if (decision === 'gate') {
+    await deps.enterAgentReview({ id: input.id, submittedBy: by });
+  }
 
   if (input.comment !== false) {
     await deps.commentIssue(input.id, `Triage (${by}): ${decision} — ${reason}`, by);

@@ -96,7 +96,11 @@ import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
-import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
+import {
+  agentReviewNormalExclusionSql,
+  hasStrictOwnerAction,
+  readAgentReviewState,
+} from './harness/improvements/agent-review-policy';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,
@@ -3412,8 +3416,34 @@ export async function setWorkItemStateWithAliasInfo(
   requestedState: string,
   opts: Parameters<typeof setWorkItemState>[2] = {},
 ): Promise<{ workItem: WorkItem | null } & LifecycleAliasInfo> {
+  const requestedLower = requestedState.trim().toLowerCase().replaceAll('_', '-');
+  let stateToApply = requestedState;
+  let needsHumanRoute: 'strict-owner-action' | 'leader-triage' | null = null;
+  if (requestedLower === 'needs-human') {
+    const current = await getWorkItem(id, opts.harness);
+    if (current?.family === 'issue') {
+      const review = readAgentReviewState(current.payload);
+      if (current.origin === 'remote' || review?.status === 'pending' || review?.status === 'revision-requested') {
+        return {
+          workItem: current,
+          aliased: current.state !== requestedState,
+          requestedState,
+          appliedState: current.state,
+          aliasNote: current.origin === 'remote'
+            ? "requested state 'needs-human' was ignored because this item is remote-owned and must reconcile on its authoring peer."
+            : "requested state 'needs-human' was ignored because this item is already in agent review.",
+        };
+      }
+      if (hasStrictOwnerAction(current.payload)) {
+        needsHumanRoute = 'strict-owner-action';
+      } else {
+        stateToApply = 'blocked';
+        needsHumanRoute = 'leader-triage';
+      }
+    }
+  }
   let onAliasInfo: { requested: string; resolved: string } | undefined;
-  let workItem = await setWorkItemState(id, requestedState, {
+  let workItem = await setWorkItemState(id, stateToApply, {
     ...opts,
     onAlias: (info) => {
       onAliasInfo = info;
@@ -3432,9 +3462,9 @@ export async function setWorkItemStateWithAliasInfo(
   if (workItem && workItem.family === 'issue') {
     try {
       if (appliedLower === 'needs-human') {
-        await mergeIssuePayload(id, { needsHuman: true });
+        await mergeIssuePayload(id, { needsOwnerAction: true }, { unset: ['needsHuman'] });
         autoGateNote =
-          " Its stored status='needs-human' parks it outside claim_next/scheduler:get_next; payload.needsHuman is retained only as a compatibility mirror and is not an admission floor.";
+          " Its stored status='needs-human' is reserved for a strict typed owner capability; payload.needsOwnerAction is the admission floor and legacy payload.needsHuman was removed.";
         // WI-5689: mergeIssuePayload durably persists payload.needsHuman, but the
         // `workItem` snapshot above was captured BEFORE this write — echoing it back
         // as-is silently reports the STALE pre-merge payload (needsHuman still false)
@@ -3473,14 +3503,17 @@ export async function setWorkItemStateWithAliasInfo(
   }
   // Surface a note when the state was aliased OR an auto-gate flag was applied (the gate can
   // now fire WITHOUT aliasing, since blocked/needs-human store verbatim post-flip).
-  const note = aliased
+  const effectiveAliased = aliased || stateToApply !== requestedState;
+  const note = needsHumanRoute === 'leader-triage'
+    ? "requested state 'needs-human' lacked a strict typed owner capability — recorded as 'blocked' for fleet-leader triage instead."
+    : effectiveAliased
     ? onAliasInfo
       ? `requested state '${onAliasInfo.requested}' has no distinct representation for this item's family — recorded as '${onAliasInfo.resolved}' instead.${autoGateNote ?? ''}`
       : `requested state '${requestedState}' was not applied verbatim — recorded as '${appliedState}' instead.`
     : (autoGateNote ?? undefined);
   return {
     workItem,
-    aliased,
+    aliased: effectiveAliased,
     requestedState,
     appliedState,
     ...(note ? { aliasNote: note } : {}),

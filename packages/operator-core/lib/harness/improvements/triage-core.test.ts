@@ -29,15 +29,18 @@ function depsOf(
   merged: Record<string, unknown>[];
   states: string[];
   comments: string[];
+  reviews: string[];
 } {
   const merged: Record<string, unknown>[] = [];
   const states: string[] = [];
   const comments: string[] = [];
+  const reviews: string[] = [];
   const byId: Record<string, EngineerIssue | null> = { ...registry, ...(issue ? { [issue.id]: issue } : {}) };
   return {
     merged,
     states,
     comments,
+    reviews,
     getIssue: vi.fn(async (id: string) => (id in byId ? byId[id] : id === issue?.id ? issue : null)),
     setIssueState: vi.fn(async (_id, state) => {
       states.push(state);
@@ -50,6 +53,10 @@ function depsOf(
     mergeIssuePayload: vi.fn(async (_id, patch) => {
       merged.push(patch);
       return issue;
+    }),
+    enterAgentReview: vi.fn(async ({ id }) => {
+      reviews.push(id);
+      return { entered: true };
     }),
   };
 }
@@ -73,7 +80,7 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
   // admission keys on payload.needsHuman, so a human-gated item stayed fully claimable
   // and scheduler:get_next served it (51 open items were unfenced when found, including
   // protected-path ones). Asserting the MIRROR, not just the record.
-  it('gate sets payload.needsHuman so the claim floor actually fences it', async () => {
+  it('gate enters agent review without recreating legacy payload.needsHuman', async () => {
     const deps = depsOf(issueOf({ id: 'i-gate', scope: 'operator' }));
     const res = await applyTriageDecision(
       { id: 'i-gate', decision: 'gate', reason: 'touches apps/operator/lib/release/** → human' },
@@ -81,7 +88,8 @@ describe('applyTriageDecision — the decision PERSISTS (the G1 fix)', () => {
     );
     expect(res.ok).toBe(true);
     expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageDecision).toBe('gate');
-    expect(deps.merged[0].needsHuman).toBe(true);
+    expect(deps.merged[0].needsHuman).toBeUndefined();
+    expect(deps.reviews).toEqual(['i-gate']);
   });
 
   it('a NON-gate decision does not set needsHuman (the mirror is gate-only)', async () => {
@@ -195,7 +203,8 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     expect(res.decision).toBe('gate');
     expect(res.evidenceDowngrade?.unresolvedIds).toEqual(['EI-999999']);
     expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain('EVIDENCE-INTEGRITY GUARD');
-    expect(deps.merged[0].needsHuman).toBe(true);
+    expect(deps.merged[0].needsHuman).toBeUndefined();
+    expect(deps.reviews).toEqual(['i12']);
   });
 
   it('downgrades same-role Scout citations because ideas are not incident evidence', async () => {

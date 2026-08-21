@@ -35,6 +35,17 @@ const STRICT_OWNER_CAPABILITIES = new Set<ExternalBlockerCapability>([
   'external-service-action',
 ]);
 
+export function isStrictOwnerActionCapability(value: unknown): value is ExternalBlockerCapability {
+  return typeof value === 'string' && STRICT_OWNER_CAPABILITIES.has(value as ExternalBlockerCapability);
+}
+
+export function hasStrictOwnerAction(payloadValue: unknown): boolean {
+  const payload = record(payloadValue);
+  if (payload.needsOwnerAction === true) return true;
+  if (isStrictOwnerActionCapability(payload.humanCapability)) return true;
+  return activeExternalBlockers(payload).some((blocker) => isStrictOwnerActionCapability(blocker.capability));
+}
+
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -78,13 +89,7 @@ export function agentReviewEligibility(candidate: AgentReviewCandidate):
   }
   if (candidate.origin === 'remote') return { eligible: false, reason: 'remote-owned' };
   if (payload.lane === 'observation') return { eligible: false, reason: 'observation' };
-  if (payload.needsOwnerAction === true) return { eligible: false, reason: 'owner-capability' };
-
-  const directCapability = payload.humanCapability as ExternalBlockerCapability | undefined;
-  if (directCapability && STRICT_OWNER_CAPABILITIES.has(directCapability)) {
-    return { eligible: false, reason: 'owner-capability' };
-  }
-  if (activeExternalBlockers(payload).some((blocker) => STRICT_OWNER_CAPABILITIES.has(blocker.capability))) {
+  if (hasStrictOwnerAction(payload)) {
     return { eligible: false, reason: 'owner-capability' };
   }
   return { eligible: true };

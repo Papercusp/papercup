@@ -3,9 +3,9 @@
  * compatibility behavior for the historical `payload.needsHuman` key.
  *
  * Migration 864 replaced the ambiguous payload flag with typed owner-action and agent-review
- * destinations. The legacy key remains readable and may still mirror stored status, but an OPEN
- * row carrying it is ordinary claimable work. Stored status='needs-human' remains the lifecycle
- * park and payload.needsOwnerAction remains the typed owner-capability admission floor.
+ * destinations. The legacy key remains readable for pre-migration rows, but no lifecycle writer
+ * may recreate it. Stored status='needs-human' is reserved for a strict typed owner capability;
+ * untyped requests become blocked leader-triage work instead.
  *
  * Run:
  *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
@@ -124,39 +124,42 @@ describe('diagnoseClaimNextMiss counts a legacy needsHuman OPEN row as ordinary 
   });
 });
 
-// WI-5689: setWorkItemStateWithAliasInfo's needs-human auto-gate genuinely persists
-// payload.needsHuman (mergeIssuePayload does a real `COALESCE(payload,'{}') || patch` UPDATE
-// ... RETURNING), but the `workItem` snapshot echoed back to the caller was captured BEFORE
-// that write and never refreshed — so a caller reading the response saw the STALE pre-merge
-// payload (needsHuman still false) even though the DB row was already correct. Reported
-// live as a second "silent no-op" repro on the SAME work-item as the update.ts sibling bug
-// (which — unlike this one — genuinely never wrote at all). Proves both halves: the DB
-// write really lands, AND the echoed response now reflects it (not stale).
-describe('setWorkItemStateWithAliasInfo needs-human auto-gate echoes the FRESH payload, not a stale pre-merge snapshot (WI-5689)', () => {
-  it('the returned workItem.payload.needsHuman is true in the SAME call that set the state', async () => {
+describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)', () => {
+  it('aliases an untyped needs-human request to blocked leader triage', async () => {
     await seedIssue('EI-echo-1', { kind: 'change', status: 'open', createdTs: 100, payload: {} });
 
     const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-1', 'needs-human', { harness: H, by: 'tester' });
 
-    expect(res.appliedState).toBe('needs-human');
-    // The bug: this used to be `false`/`undefined` (the pre-merge snapshot) despite the
-    // DB write already having landed underneath it.
-    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBe(true);
-    expect(res.aliasNote).toMatch(/stored status='needs-human'.*compatibility mirror/);
+    expect(res).toMatchObject({ requestedState: 'needs-human', appliedState: 'blocked', aliased: true });
+    expect(res.aliasNote).toMatch(/lacked a strict typed owner capability.*leader triage/);
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBeUndefined();
   });
 
-  it('matches what is actually persisted in Postgres (not just a locally-patched echo)', async () => {
-    await seedIssue('EI-echo-2', { kind: 'change', status: 'open', createdTs: 100, payload: {} });
-    await wi.setWorkItemStateWithAliasInfo('EI-echo-2', 'needs-human', { harness: H, by: 'tester' });
+  it('keeps a strict typed owner capability parked and replaces the legacy key atomically', async () => {
+    await seedIssue('EI-echo-2', {
+      kind: 'change',
+      status: 'open',
+      createdTs: 100,
+      payload: { humanCapability: 'credential', needsHuman: true },
+    });
+    const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-2', 'needs-human', { harness: H, by: 'tester' });
 
     const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
       SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = 'EI-echo-2'`;
-    expect(rows[0]?.payload?.needsHuman).toBe(true);
+    expect(res.appliedState).toBe('needs-human');
+    expect(rows[0]?.payload?.needsOwnerAction).toBe(true);
+    expect(rows[0]?.payload).not.toHaveProperty('needsHuman');
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsOwnerAction).toBe(true);
+  });
 
-    // A follow-up read via getWorkItem (what work_items:get / work_items:set_state's
-    // response ultimately re-derives from) agrees with the echoed value above.
-    const fetched = await wi.getWorkItem('EI-echo-2', H);
-    expect((fetched?.payload as Record<string, unknown> | undefined)?.needsHuman).toBe(true);
+  it('does not disturb an item already pending agent review', async () => {
+    const agentReview = { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-ledger', round: 1 };
+    await seedIssue('EI-echo-review', { kind: 'change', status: 'open', payload: { agentReview } });
+    const res = await wi.setWorkItemStateWithAliasInfo('EI-echo-review', 'needs-human', { harness: H, by: 'tester' });
+    expect(res.appliedState).toBe('open');
+    expect(res.aliasNote).toMatch(/already in agent review/);
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.agentReview).toEqual(agentReview);
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBeUndefined();
   });
 
   it('a non-issue-family transition (e.g. plain wip) never calls the auto-gate / re-fetch at all', async () => {
