@@ -1561,7 +1561,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
-  it('does not open the cohort when the canary never reaches a successful tool invocation', async () => {
+  it('keeps opening the pre-pinned cohort when the canary remains unconfirmed', async () => {
     // EI-20437060078324174: an UNCONFIRMED first probe now earns ONE bounded
     // re-probe before the gate decision (a slow boot verifies there instead of
     // being stamped a false 502) — so the mock must stay unconfirmed TWICE for
@@ -1574,21 +1574,26 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
-    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
-    expect(payload.ok).toBe(false);
+    // An unconfirmed canary is not a positive failure. The remainder still opens so a
+    // slow backend (notably codex xhigh) cannot turn one late first turn into a four-member
+    // deficit; the canary remains in the recovery set for later liveness reconciliation.
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(5);
+    expect(payload.ok).toBe(true);
     expect(payload.launchTransaction.state).toBe('partial');
-    expect(payload.launchTransaction.verifiedMemberIds).toEqual([]);
-    // Both probes targeted the canary alone.
-    expect(launchTransaction.verify).toHaveBeenCalledTimes(2);
-    for (const call of launchTransaction.verify.mock.calls) {
-      expect((call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds).toHaveLength(1);
-    }
+    expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(4);
+    // Both initial probes target only the canary; then the remaining pre-pinned waves open.
+    expect(launchTransaction.verify).toHaveBeenCalledTimes(4);
+    expect(launchTransaction.verify.mock.calls.map(
+      (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
+    )).toEqual([1, 1, 3, 1]);
     // The unconfirmed canary is the THIRD state — reported as unverified, never
     // absorbed into failed[] as a 502 (that false refusal is the measured bug).
     expect(payload.launchTransaction.failed).toEqual([]);
     expect(payload.unverifiedMembers).toHaveLength(1);
     expect(payload.unverifiedMembers[0].ownerId).toBe(payload.launchTransaction.openedMemberIds[0]);
-    expect(payload.launchTransaction.unconfirmedMemberIds).toEqual(payload.launchTransaction.openedMemberIds);
+    expect(payload.launchTransaction.unconfirmedMemberIds).toEqual([payload.launchTransaction.openedMemberIds[0]]);
+    expect(payload.launchTransaction.openedMemberIds).toHaveLength(5);
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toEqual([payload.launchTransaction.openedMemberIds[0]]);
   });
 
   it('a SLOW canary that verifies on the bounded re-probe opens the cohort (the measured EI-20437060078324174 shape)', async () => {
@@ -1987,6 +1992,36 @@ describe('fleet:launch-on-plan handler — P-005 idempotency guard (a re-fire in
     // Every LEADER_STANDING_JOB point + MEMBER_BASELINE_RULES headline is enumerated, not just referenced.
     for (const point of LEADER_STANDING_JOB) expect(payload.message).toContain(point);
     for (const rule of MEMBER_BASELINE_RULES) expect(payload.message).toContain(rule.head);
+  });
+
+  it('reports persisted openedMemberIds, not the requested slot count, for a partial prior wave', async () => {
+    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    (claimFleetLaunchSlot as ReturnType<typeof vi.fn>).mockResolvedValue({
+      won: false,
+      priorAt: Date.now() - 12_000,
+      priorCount: 5,
+    });
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        leaderOwnerId: 'owner-1',
+        colorScheme: { name: 'Ocean' },
+        lastLaunchTransaction: {
+          state: 'partial',
+          openedMemberIds: ['su-opened-only'],
+          recovery: { retryOwnerIds: ['su-opened-only'], nextAction: 'reconcile late member' },
+        },
+      },
+      created: false,
+    });
+    const res = await tool.handler(
+      { name: 'Partial Notice Fleet', plan: 'drain-me', harness: 'papercusp', count: 5 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.message).toMatch(
+      /Fleet `partial-notice-fleet` was already launched — 1 member opened \d+s ago \(possibly by this very session\)\./,
+    );
+    expect(payload.message).not.toMatch(/5 members opened/);
   });
 
   it('singularizes "member" (not "members") when exactly one prior member was opened', async () => {

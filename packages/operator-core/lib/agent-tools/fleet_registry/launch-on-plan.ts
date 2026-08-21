@@ -2339,8 +2339,12 @@ export default defineTool({
     }
     if (!slot.won) {
       const agoS = Math.max(1, Math.round((Date.now() - slot.priorAt) / 1000));
+      // EI-20438033749915749: the launch-slot count is the requested target, while the
+      // persisted transaction records how many terminals actually opened. A partial wave
+      // must not tell the leader that its unopened identities already have terminals.
+      const priorOpenedCount = priorLaunchTransaction?.openedMemberIds.length ?? slot.priorCount;
       const lines = [
-        `Fleet \`${fleetSlug}\` was already launched — ${slot.priorCount} member${slot.priorCount === 1 ? '' : 's'} opened ${agoS}s ago (possibly by this very session).`,
+        `Fleet \`${fleetSlug}\` was already launched — ${priorOpenedCount} member${priorOpenedCount === 1 ? '' : 's'} opened ${agoS}s ago (possibly by this very session).`,
         'You ARE the leader; do NOT call fleet:launch-on-plan again or fleet:take-leadership for this fleet — re-call only to add another wave once the current members have drained.',
         planSlug
           ? `Until the plan \`${planSlug}\` is drained, your standing job each cycle:`
@@ -3090,19 +3094,19 @@ export default defineTool({
         await persistLaunchTransaction();
         continue;
       }
-      // A canary that did not fully verify stops the transaction: do not multiply
-      // a launch nobody has confirmed. Once the canary has positively verified,
-      // an otherwise-clean later wave may be only UNCONFIRMED because its members
-      // are slow to take their first turn under load. Keep opening the pre-pinned
-      // cohort in that case; otherwise one slow member aborts the whole remainder
-      // and every retry wave under-delivers (EI-20583314472856369). Positive
-      // failures still stop immediately, and the unresolved members remain in
+      // A wave with a positive spawn/verification failure stops the transaction: do not
+      // multiply a launch whose members are known-bad. An opened wave that is merely
+      // UNCONFIRMED is different — keep opening the pre-pinned cohort so one backend's
+      // slow first turn cannot serialise or abort the rest of the requested launch.
+      // Positive failures still stop immediately, and unresolved members remain in
       // `unconfirmed`/`recovery.retryOwnerIds` for later liveness reconciliation.
       wave.state = 'partial';
       const waveFullyOpened = openedThisWave.length === ownerIds.length;
       const wavePositivelyFailed = spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
+      const waveUnconfirmed =
+        !waveVerified && openedThisWave.some((id) => unconfirmed.some((member) => member.ownerId === id));
       const canContinueAfterUnconfirmedWave =
-        waveIndex > 0 && launchTransaction.verifiedMemberIds.length > 0 && waveFullyOpened && !wavePositivelyFailed;
+        waveUnconfirmed && waveFullyOpened && !wavePositivelyFailed;
       if (canContinueAfterUnconfirmedWave) {
         await persistLaunchTransaction();
         continue;
