@@ -50,7 +50,7 @@ export const BANNED_ROUTES: readonly BannedRoute[] = Object.freeze([
 export interface RoutingViolation {
   readonly line: number;
   readonly tool: string;
-  readonly position: 'authority-cell' | 'recommendation-bullet';
+  readonly position: 'authority-cell' | 'recommendation-bullet' | 'prose-recommendation';
   readonly instead: string;
   readonly reason: string;
   readonly text: string;
@@ -83,6 +83,26 @@ function splitRow(line: string): string[] {
 }
 
 const SEPARATOR_ROW = /^\|?\s*:?-{2,}/;
+
+/**
+ * A verdict marker that turns a banned name into CORRECT guidance.
+ *
+ * Scoped to the PARAGRAPH, never the line — that distinction is the whole
+ * design, and it was measured rather than assumed (P-019). The su playbooks
+ * warn across several lines: the ban ("deliberately NOT the route") sits on
+ * the first line, and the second banned tool is named six lines later, inside
+ * the same block. A line-scoped rule flags that continuation line and so
+ * rewards DELETING the warning — the exact inversion the fixture controls in
+ * the sibling test exist to prevent.
+ */
+const NEGATION_MARKER =
+  /\bNOT\b|\bnot\b|\bnever\b|\bNever\b|\bno longer\b|UNRANKED|⚠|\binstead\b|\brather than\b|\bbanned\b|\bdeliberately\b|\bskips\b|\bavoid\b|\bfails\b|\bdo not\b|\bdon't\b/;
+
+/** A markdown line that is structural rather than prose. */
+function isStructural(line: string): boolean {
+  const t = line.trim();
+  return t.startsWith('|') || t.startsWith('#') || t.startsWith('```');
+}
 
 /** A bolded tool-name bullet — `- **\`repomix.pack\`** — pack a repo…` — reads as an endorsement. */
 const BOLD_TOOL_BULLET = /^\s*[-*]\s+\*\*`?([A-Za-z_][\w.]*(?:\.[\w]+|:[\w]+))`?\*\*/;
@@ -153,6 +173,57 @@ export function judgeCodeIntelRouting(source: string): RoutingVerdict {
           text: trimmed,
         });
       }
+    }
+  }
+
+  // ── Third position: a PROSE paragraph that offers a banned backend as the route.
+  //
+  // P-019. The two positions above judge shape (a table cell, a bolded bullet),
+  // and both reported `positionsChecked: 0` on the guidance that was actually
+  // stale: `debugger.tools.md` and `scoper.tools.md` recommended
+  // `gitnexus.query` in an ordinary sentence, so a shape-only detector inspected
+  // nothing and returned a vacuous green for months.
+  //
+  // A paragraph is a maximal run of non-blank, non-structural lines. Naming a
+  // banned tool inside one is a violation ONLY when the whole paragraph carries
+  // no negation marker — that is what separates "use this" from "never use this".
+  const paragraphs: { start: number; text: string }[] = [];
+  let current: { start: number; parts: string[] } | null = null;
+  let inFence = false;
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i]!;
+    if (line.trim().startsWith('```')) {
+      inFence = !inFence;
+      current = null;
+      continue;
+    }
+    // A bolded tool bullet is ALREADY a judged position above. Leaving it in the
+    // prose pass double-reports the same line under two position names, which
+    // inflates the violation count and makes the fixture controls ambiguous
+    // about which rule actually fired.
+    if (inFence || line.trim() === '' || isStructural(line) || BOLD_TOOL_BULLET.test(line)) {
+      if (current) paragraphs.push({ start: current.start, text: current.parts.join(' ') });
+      current = null;
+      continue;
+    }
+    if (!current) current = { start: i + 1, parts: [] };
+    current.parts.push(line);
+  }
+  if (current) paragraphs.push({ start: current.start, text: current.parts.join(' ') });
+
+  for (const para of paragraphs) {
+    for (const banned of BANNED_ROUTES) {
+      if (!para.text.includes(banned.tool)) continue;
+      positionsChecked += 1;
+      if (NEGATION_MARKER.test(para.text)) continue;
+      violations.push({
+        line: para.start,
+        tool: banned.tool,
+        position: 'prose-recommendation',
+        instead: banned.instead,
+        reason: banned.reason,
+        text: para.text.trim().slice(0, 240),
+      });
     }
   }
 

@@ -12,7 +12,7 @@
  * presence-based detector would flag the fix and reward deleting the warning.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -24,13 +24,42 @@ import {
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 
-/** The surfaces a choosing agent actually reads before picking a code-intel tool. */
+/**
+ * The DENSE authority surfaces — every one carries routing tables, so a verdict
+ * that inspected almost nothing is a parser regression rather than a clean file.
+ * These get the non-vacuity floor below.
+ */
 const GUIDANCE_FILES = [
   'CLAUDE.md',
   'AGENTS.md',
   'apps/operator/prompts/papercusp-su-engineer.tools.md',
   'apps/operator/prompts/papercusp-su-power.tools.md',
 ] as const;
+
+const PROMPTS_DIR = 'apps/operator/prompts';
+
+/**
+ * EVERY role prompt, enumerated rather than hand-listed (P-019).
+ *
+ * The hand-list above was the whole coverage until P-019, and the gap it left
+ * was not hypothetical: `debugger.tools.md` and `scoper.tools.md` both routed
+ * call-site questions to `gitnexus.query` — the exact D-021 route P-017
+ * removed from CLAUDE.md — and survived P-017 untouched purely because no
+ * assertion ever opened them. A hand-list cannot cover a file that does not
+ * exist yet, so a NEW role prompt would inherit the same free pass.
+ *
+ * These are judged for violations only, with NO per-file position floor: most
+ * role prompts carry one or two routing positions, and imposing the dense-file
+ * floor here would fail them for being short rather than for being wrong. The
+ * non-vacuity guarantee moves to the SET (below) — if the enumeration breaks,
+ * it reports zero files instead of silently judging nothing.
+ */
+function roleToolPrompts(): string[] {
+  return readdirSync(join(ROOT, PROMPTS_DIR))
+    .filter((f) => f.endsWith('.tools.md'))
+    .map((f) => `${PROMPTS_DIR}/${f}`)
+    .sort();
+}
 
 describe('D-001 code-intelligence routing authority', () => {
   describe('fixture controls (the detector must be able to FAIL)', () => {
@@ -114,6 +143,59 @@ describe('D-001 code-intelligence routing authority', () => {
     });
   });
 
+  describe('prose recommendations (P-019 — the position a shape-only detector could not see)', () => {
+    // The two shapes above judge a table cell and a bolded bullet. Both returned
+    // positionsChecked:0 on the guidance that was genuinely stale, so their green
+    // was vacuous rather than clean. These fixtures are the real defect, verbatim.
+    const ORIGINAL_DEBUGGER_LINE =
+      '- Then code: when the gitnexus-bridge plugin is installed, its code-graph tools (`gitnexus.query`, `gitnexus.impact`) are the fastest way to find call sites + downstream impact.';
+    const ORIGINAL_SCOPER_LINE =
+      '- The gitnexus-bridge plugin (when installed) exposes code-graph queries (`gitnexus.query`, `gitnexus.context`); call `agent_tools:list` to see what is loaded in the current workspace.';
+
+    it('catches the exact debugger.tools.md sentence that survived P-017', () => {
+      const verdict = judgeCodeIntelRouting(ORIGINAL_DEBUGGER_LINE);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations[0]!.tool).toBe('gitnexus.query');
+      expect(verdict.violations[0]!.position).toBe('prose-recommendation');
+    });
+
+    it('catches the exact scoper.tools.md sentence that survived P-017', () => {
+      const verdict = judgeCodeIntelRouting(ORIGINAL_SCOPER_LINE);
+      expect(verdict.ok).toBe(false);
+      expect(verdict.violations[0]!.position).toBe('prose-recommendation');
+    });
+
+    // ── The controls that must grade the OTHER way. A presence-based rule would
+    // pass the two catches above and then flag every correct warning, which
+    // rewards deleting the warning. These pin that it does not.
+    it('does NOT flag a multi-line warning whose negation is lines above the tool name', () => {
+      // Reproduces the su-playbook block shape exactly: the ban is stated first,
+      // and `repomix.pack` is named six lines later in the SAME paragraph. A
+      // line-scoped rule flags that continuation line; a paragraph-scoped one
+      // must not. This was measured against the live playbooks, not assumed.
+      const verdict = judgeCodeIntelRouting(
+        [
+          '⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`',
+          'returns UNRANKED NOISE rather than an empty set — a nonsense symbol yields',
+          '~20 confident-looking rows (measured, D-021). Raw `repomix.pack` skips',
+          'the pinned version and the secret-scanning rails `code:pack` enforces.',
+        ].join('\n'),
+      );
+      expect(
+        verdict.ok,
+        verdict.ok ? '' : `\n${formatRoutingViolations('<warning fixture>', verdict.violations)}\n`,
+      ).toBe(true);
+      expect(verdict.positionsChecked).toBeGreaterThan(0);
+    });
+
+    it('does NOT flag a banned name inside a fenced code block', () => {
+      const verdict = judgeCodeIntelRouting(
+        ['```bash', 'gitnexus.query --symbol foo', '```'].join('\n'),
+      );
+      expect(verdict.ok).toBe(true);
+    });
+  });
+
   describe('the live guidance surfaces', () => {
     for (const rel of GUIDANCE_FILES) {
       it(`${rel} routes no question class to a raw backend`, () => {
@@ -128,6 +210,32 @@ describe('D-001 code-intelligence routing authority', () => {
           `${rel}: judged ZERO recommendation positions — the detector is not reading this file, so its green is vacuous`,
         ).toBeGreaterThan(5);
 
+        expect(
+          verdict.ok,
+          verdict.ok ? '' : `\n${formatRoutingViolations(rel, verdict.violations)}\n`,
+        ).toBe(true);
+      });
+    }
+
+    it('the role-prompt enumeration finds a realistic file set, not zero', () => {
+      // This is the non-vacuity floor for the enumerated tier. Without it a
+      // renamed prompts dir or a changed suffix would yield an EMPTY list, and
+      // a for-loop over nothing registers no tests at all — which reads as a
+      // green suite rather than as absent coverage.
+      const prompts = roleToolPrompts();
+      expect(
+        prompts.length,
+        `${PROMPTS_DIR}: enumerated ${prompts.length} *.tools.md files — the glob is broken, so every role prompt is UNJUDGED`,
+      ).toBeGreaterThan(10);
+      // The two files P-019 found stale must be in the judged set by name: they
+      // are the concrete regression this tier exists to prevent.
+      expect(prompts).toContain(`${PROMPTS_DIR}/debugger.tools.md`);
+      expect(prompts).toContain(`${PROMPTS_DIR}/scoper.tools.md`);
+    });
+
+    for (const rel of roleToolPrompts()) {
+      it(`${rel} routes no question class to a raw backend`, () => {
+        const verdict = judgeCodeIntelRouting(readFileSync(join(ROOT, rel), 'utf8'));
         expect(
           verdict.ok,
           verdict.ok ? '' : `\n${formatRoutingViolations(rel, verdict.violations)}\n`,

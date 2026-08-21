@@ -14,7 +14,7 @@ implement.
 - `audit:list` — what happened recently in the harness.
 - `coord:inbox` — failure reports from workers / validators.
 - `harness:escalation` — supervisor's notes if the failure was escalated.
-- Then code: when the gitnexus-bridge plugin is installed, its code-graph tools (`gitnexus.query`, `gitnexus.impact`) are the fastest way to find call sites + downstream impact.
+- Then code: when the gitnexus-bridge plugin is installed, `gitnexus.context` (definition + callers/callees) and `gitnexus.impact` (downstream radius) are the fastest way to find call sites + impact. NOT `gitnexus.query` — it returns UNRANKED NOISE rather than an empty set, so a wrong answer is indistinguishable from a confident one (D-021).
 
 Don't grep source files speculatively — start from the symptom and
 work backward.
