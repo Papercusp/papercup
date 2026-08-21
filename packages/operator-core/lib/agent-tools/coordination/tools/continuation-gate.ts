@@ -29,7 +29,11 @@
  * a judgment gate gets rationalized under momentum ("just one more unit…") and the
  * backstops bound that failure mode.
  */
-import { contextUsagePct } from './inbox-context-usage';
+import {
+  CONTEXT_GAUGE_CRITICAL_PCT,
+  contextUsagePct,
+} from './inbox-context-usage';
+import { readCueAuthority } from '../cue-authority';
 
 /** The envelope fields the interrupt classifier reads — structural, so the gate
  *  keeps no import edge to the coordination core types (CoordEnvelope satisfies it). */
@@ -37,6 +41,57 @@ export interface InterruptEnvelopeLike {
   category?: unknown;
   auto?: unknown;
   lifecycle?: unknown;
+}
+
+/** The small envelope slice needed to authenticate a fleet wind-down cue. */
+export interface FleetWindDownCueLike extends InterruptEnvelopeLike {
+  summary?: unknown;
+  body?: unknown;
+  [key: string]: unknown;
+}
+
+export interface FleetWindDownLoopEndAuthorizationInputs {
+  /** `false` is the only affirmative claimless read; null/undefined is unknown. */
+  activeClaimPresent: boolean | null | undefined;
+  /** The member's current presence-fleet label; null means known non-member. */
+  currentFleet: string | null | undefined;
+  /** The durable registry control state for currentFleet. */
+  fleetControlState: string | null | undefined;
+  /** Cues read from the member's current inbox window. */
+  cues: readonly FleetWindDownCueLike[] | null | undefined;
+}
+
+/**
+ * Fail-closed authorization for the one no-PTY shutdown exception. A free-text
+ * request, a stale/forged stamp, a held claim, a missing fleet/control read, or
+ * a missing cue must never make a member stop its only wake source. The durable
+ * registry state and the server-stamped cue are intentionally checked together:
+ * either one alone can be stale or replayed.
+ */
+export function isFleetWindDownLoopEndAuthorized(
+  inputs: FleetWindDownLoopEndAuthorizationInputs,
+): boolean {
+  if (inputs.activeClaimPresent !== false) return false;
+  const fleet = typeof inputs.currentFleet === 'string' ? inputs.currentFleet.trim() : '';
+  if (!fleet || inputs.fleetControlState !== 'winding-down') return false;
+  if (!inputs.cues?.length) return false;
+
+  return inputs.cues.some((cue) => {
+    const stamp = readCueAuthority(cue);
+    if (
+      !stamp ||
+      stamp.authority !== 'fleet-leader' ||
+      stamp.scope !== 'fleet-members' ||
+      stamp.authorityRef !== fleet ||
+      stamp.scopeRef !== fleet
+    ) {
+      return false;
+    }
+    const text = [cue.summary, cue.body]
+      .filter((part): part is string => typeof part === 'string')
+      .join('\n');
+    return text.includes('WIND-DOWN') && text.includes('loop:end');
+  });
 }
 
 /**
@@ -114,6 +169,13 @@ export interface ContinuationGateInputs {
    *  false ⇒ never prescribe self-compaction — it would spend the session's LAST turn on
    *  a call that cannot succeed. null/undefined ⇒ unknown (non-breaking). */
   selfCompactionAvailable?: boolean | null;
+  /**
+   * True only after the caller has independently verified the claimless,
+   * current-fleet, durable-control, and typed-cue pair. This is deliberately
+   * an affirmative override input: absent/false remains the ordinary no-PTY
+   * guidance.
+   */
+  fleetWindDownLoopEndAuthorized?: boolean | null;
 }
 
 export interface ContinuationVerdict {
@@ -130,6 +192,8 @@ export interface ContinuationVerdict {
   nextWakeFresh: boolean | null;
   /** The self-compaction availability input echoed back (null ⇒ unknown/not supplied). */
   selfCompactionAvailable: boolean | null;
+  /** Whether the fail-closed no-PTY fleet wind-down loop:end override was authorized. */
+  fleetWindDownLoopEndAuthorized: boolean | null;
   /** Why the gate is CLOSED, one phrase per blocking leg (empty ⇒ open). */
   reasons: string[];
   /** One-line agent-facing guidance derived from the verdict. */
@@ -171,9 +235,30 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
+  const fleetWindDownLoopEndAuthorized = inputs.fleetWindDownLoopEndAuthorized ?? null;
   let guidance = shouldContinue
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
     : `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. Checkpoint what you hold and end the turn; the next wake re-opens the gate.`;
+
+  // A fleet wind-down is the one deliberate exception to the no-PTY rule. At
+  // critical context, the member has already flushed/released its claim and the
+  // fleet's durable control + typed cue authorize stopping the engine loop. It
+  // must be checked before the ordinary re-wake/cold-carry remedies, because
+  // neither a warm nor a missing wake should resurrect a fleet that is standing
+  // down. This branch never authorizes session:end or process respawn.
+  if (
+    !shouldContinue &&
+    selfCompactionAvailable === false &&
+    contextPct != null &&
+    contextPct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+    fleetWindDownLoopEndAuthorized === true
+  ) {
+    guidance =
+      `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+      `⚠ AUTHORIZED FLEET WIND-DOWN: write loop:checkpoint { did, left, insight, next }, ` +
+      `release any remaining locks, then call loop:end. This stops only the engine ` +
+      `loop; preserve the session and do not call session:end or respawn.`;
+  }
 
   // Re-wake guarantee: "settle" is only SAFE when a re-wake actually exists. For
   // an autonomous session with no armed loop / real await / present owner,
@@ -190,7 +275,16 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   // autonomous member it fails (`no_live_pty_host`), and on a stale host it fails
   // too (`host_predates_carry_respawn`). Prescribing it first sent exactly the
   // sessions that could not use it to spend their LAST turn discovering that.
-  if (!shouldContinue && rewakeGuaranteed === false) {
+  if (
+    !shouldContinue &&
+    !(
+      selfCompactionAvailable === false &&
+      contextPct != null &&
+      contextPct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+      fleetWindDownLoopEndAuthorized === true
+    ) &&
+    rewakeGuaranteed === false
+  ) {
     const opening =
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
       `⚠ NO guaranteed re-wake (autonomous mode; no armed loop, no registered await, no owner present): ` +
@@ -207,7 +301,17 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
             `for the missing re-wake. Self-compaction (session:request-compaction) also continues the work, but it ` +
             `requires a live psu-pty host and refuses with no_live_pty_host on a session that has none.`;
     guidance = opening + remedy;
-  } else if (!shouldContinue && rewakeGuaranteed === true && nextWakeFresh === false) {
+  } else if (
+    !shouldContinue &&
+    !(
+      selfCompactionAvailable === false &&
+      contextPct != null &&
+      contextPct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+      fleetWindDownLoopEndAuthorized === true
+    ) &&
+    rewakeGuaranteed === true &&
+    nextWakeFresh === false
+  ) {
     // EI-20223970530333577: a WARM loop guarantees another wake but does not
     // shed context. Treating those two properties as equivalent told a 91%-full
     // loop to end for a "fresh" wake that could never arrive; Codex then tried
@@ -234,6 +338,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     rewakeGuaranteed,
     nextWakeFresh,
     selfCompactionAvailable,
+    fleetWindDownLoopEndAuthorized,
     reasons,
     guidance,
   };
@@ -250,6 +355,7 @@ export function continuationGateFromReads(args: {
   rewakeGuaranteed?: boolean | null;
   nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
+  fleetWindDownLoopEndAuthorized?: boolean | null;
 }): ContinuationVerdict {
   return evaluateContinuationGate({
     contextPct: contextUsagePct(args.contextTokens, args.compactionLimit),
@@ -258,5 +364,6 @@ export function continuationGateFromReads(args: {
     rewakeGuaranteed: args.rewakeGuaranteed,
     nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,
+    fleetWindDownLoopEndAuthorized: args.fleetWindDownLoopEndAuthorized,
   });
 }
