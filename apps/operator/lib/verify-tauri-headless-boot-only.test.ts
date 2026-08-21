@@ -16,12 +16,23 @@ describe('WI-4975 — verify-tauri-headless --boot-only keeps the isolated app a
     expect(src).toMatch(/start_verify_process "\$\{VERIFY_SCOPE_BASE\}-openbox"/);
   });
 
-  it('escapes every long-lived verifier process into a sibling user scope when available', () => {
+  it('inherits an existing managed task scope instead of creating an unaccounted sibling', () => {
+    expect(src).toContain('caller_has_managed_task_scope()');
+    expect(src).toContain('VERIFY_SCOPE_MODE="inherit"');
+    expect(src).toContain('VERIFY_SCOPE_INHERITED=1');
+    expect(src).toMatch(/if caller_has_managed_task_scope; then[\s\S]*?VERIFY_SCOPE_MODE="inherit"[\s\S]*?elif \[ "\$\(uname -s/);
+    expect(src).toMatch(/if \[ "\$VERIFY_SCOPE_MODE" = "sibling" \]; then[\s\S]*?systemd-run --user --scope/);
+    expect(src).toContain('children stay in caller\'s managed task scope');
+  });
+
+  it('keeps the sibling user-scope fallback for untracked callers', () => {
     expect(src).toContain('systemd-run --user --scope --quiet --collect');
     expect(src).toContain('--slice="$VERIFY_SCOPE_SLICE"');
     expect(src).toContain('VERIFY_SCOPE_SLICE="papercusp-agent-session.slice"');
     expect(src).toMatch(/TAURI_SCOPE_UNIT="\$\{VERIFY_SCOPE_BASE\}-tauri-\$\{BOOT_ATTEMPTS\}"/);
     expect(src).toContain('systemd-run --user --scope --quiet --collect --unit="${VERIFY_SCOPE_BASE}-probe"');
+    expect(src).toContain('VERIFY_TAURI_SCOPE_MODE');
+    expect(src).toContain('VERIFY_TAURI_SCOPE_INHERITED');
   });
 
   it('leaves a provenance-aware liveness check for boot-only callers', () => {
