@@ -11,9 +11,8 @@
  *     scoutDraftReviewSweep  (DBOS routine, bg-host)
  *       -> listBlenderMaintenanceScopes() reads registered Hive scopes
  *       -> fireReviewWake()
- *       -> wakeMug()                    (pot/placement-watchdog)
- *            -> wakeRecipients(...)     per-agent wake-MODE gate only
- *            -> sendMessage(@role:mug)  durable park, always lands
+ *       -> deliverScoutNudge()           (scout/nudge-recipient)
+ *            -> live su / owner escalation through the shared nudge ladder
  *
  * so no leg of it consults owner steering. That is CORRECT and deliberate:
  * disposing drafts that were ALREADY routed is not "new work", and
@@ -36,7 +35,7 @@ const HOUR = 3_600_000;
 const {
   listBlenderMaintenanceScopes,
   listBlenderMaintenanceWorkspaceIds,
-  wakeMug,
+  deliverScoutNudge,
   resolveMugOwner,
   claimWatchdogFire,
   routineStorageSlug,
@@ -45,7 +44,7 @@ const {
   vi.hoisted(() => ({
     listBlenderMaintenanceScopes: vi.fn(),
     listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
-    wakeMug: vi.fn().mockResolvedValue(undefined),
+    deliverScoutNudge: vi.fn().mockResolvedValue(undefined),
     resolveMugOwner: vi.fn(),
     claimWatchdogFire: vi.fn(),
     routineStorageSlug: vi.fn(),
@@ -57,9 +56,10 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   getOrgPg: () => ({ sql: () => Promise.resolve(draftRows.current) }),
 }));
 vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds }));
-vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner, wakeMug }));
+vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner }));
 vi.mock('../pot/watchdog', () => ({ claimWatchdogFire }));
 vi.mock('../pot-membership', () => ({ routineStorageSlug }));
+vi.mock('./nudge-recipient', () => ({ deliverScoutNudge }));
 
 // The steering store answers PAUSED for every read. If any leg of the sweep
 // ever starts consulting it, it gets the pause — and the assertions below flip.
@@ -99,8 +99,8 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
   it('FIRES the review wake for a started pot even while pauseNewWork is true', async () => {
     const results = await scoutDraftReviewSweep();
 
-    expect(wakeMug).toHaveBeenCalledTimes(1);
-    expect(wakeMug).toHaveBeenCalledWith(
+    expect(deliverScoutNudge).toHaveBeenCalledTimes(1);
+    expect(deliverScoutNudge).toHaveBeenCalledWith(
       expect.objectContaining({ workspaceId: 'ws-1', source: 'scout-draft-review' }),
     );
     expect(results).toEqual([
@@ -122,7 +122,7 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
       { workspaceId: 'ws-1', installSlug: 'pot-2' },
     ]);
     const results = await scoutDraftReviewSweep();
-    expect(wakeMug).toHaveBeenCalledTimes(2);
+    expect(deliverScoutNudge).toHaveBeenCalledTimes(2);
     expect(results.map((r) => r.outcome)).toEqual(['nudged', 'nudged']);
   });
 });
@@ -137,7 +137,7 @@ describe('scout-draft-review suppressors that DO apply (controls)', () => {
     listBlenderMaintenanceScopes.mockResolvedValue([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const results = await scoutDraftReviewSweep();
-    expect(wakeMug).not.toHaveBeenCalled();
+    expect(deliverScoutNudge).not.toHaveBeenCalled();
     expect(results).toEqual([]);
     expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
@@ -146,21 +146,21 @@ describe('scout-draft-review suppressors that DO apply (controls)', () => {
   it('does not wake when the per-hive debounce declines the fire', async () => {
     claimWatchdogFire.mockResolvedValue(false);
     const results = await scoutDraftReviewSweep();
-    expect(wakeMug).not.toHaveBeenCalled();
+    expect(deliverScoutNudge).not.toHaveBeenCalled();
     expect(results).toEqual([expect.objectContaining({ outcome: 'skipped', reason: 'debounced' })]);
   });
 
   it('does not wake when no draft is stale (default-safe)', async () => {
     draftRows.current = [staleDraftRow('fresh-draft', 1)];
     const results = await scoutDraftReviewSweep();
-    expect(wakeMug).not.toHaveBeenCalled();
+    expect(deliverScoutNudge).not.toHaveBeenCalled();
     expect(results).toEqual([]);
   });
 
   it('does not wake when the kill switch is set', async () => {
     process.env.PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC = '0';
     const results = await scoutDraftReviewSweep();
-    expect(wakeMug).not.toHaveBeenCalled();
+    expect(deliverScoutNudge).not.toHaveBeenCalled();
     expect(listBlenderMaintenanceScopes).not.toHaveBeenCalled();
     expect(results).toEqual([]);
   });

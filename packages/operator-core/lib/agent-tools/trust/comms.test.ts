@@ -37,7 +37,8 @@ beforeEach(() => {
   listCoordQuarantine = vi.fn(async () => []);
   clearCoordQuarantineForAuthor = vi.fn(async () => ({ cleared: 0 }));
   vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId }));
-  vi.doMock('../../trust/comms-trust', () => ({
+  vi.doMock('../../trust/comms-trust', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
     listCommsTrust,
     setCommsTrust,
     removeCommsTrust,

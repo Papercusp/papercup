@@ -80,7 +80,8 @@ beforeEach(() => {
   // federation is proven by lifecycle-membership-teardown.integration.test.ts.
   // hive-membership-store.ts is OUT OF SCOPE for the cup-lexicon rename — mock
   // the REAL module path + export name.
-  vi.doMock('../../hive-membership-store', () => ({
+  vi.doMock('../../hive-membership-store', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
     removeAllHiveMembers: async (_ws: string, slug: string) => {
       membershipDropCalls.push(slug);
       return 2;
