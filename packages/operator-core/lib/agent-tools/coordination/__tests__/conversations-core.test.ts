@@ -63,6 +63,7 @@ import {
   postReplyCore,
   promoteConversationCore,
   resolveConversationCore,
+  settleConsultConversationCore,
   supersedeConversationCore,
   type CaptureFn,
   type ConversationDeps,
@@ -559,6 +560,43 @@ describe('resolveConversationCore', () => {
     if ('error' in res) throw new Error(res.error);
     expect(captureCalls[0].target).toBe('mem0');
     expect(res.conversation.capture_target).toBe('mem0:workspace:default');
+  });
+});
+
+describe('settleConsultConversationCore', () => {
+  it('answered close makes conversations:get read a resolved row with the terminal answer/post', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+
+    await settleConsultConversationCore(deps, {
+      conversation_id: opened.conversation.id,
+      outcome: 'answered',
+      answer: '  the grounded answer  ',
+      post_id: 42,
+      now_ts: '2030-01-01T01:00:00.000Z',
+    });
+
+    const detail = await getConversationCore(deps, opened.conversation.id);
+    expect(detail?.conversation).toMatchObject({
+      state: 'resolved',
+      accepted_answer: 'the grounded answer',
+      accepted_post_id: 42,
+    });
+    expect(detail?.conversation.resolved_ts).toBe('2030-01-01T01:00:00.000Z');
+  });
+
+  it.each(['cant_help', 'graduate'] as const)('%s close makes conversations:get read a closed row', async (outcome) => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+
+    await settleConsultConversationCore(deps, {
+      conversation_id: opened.conversation.id,
+      outcome,
+      post_id: 42,
+      now_ts: '2030-01-01T01:00:00.000Z',
+    });
+
+    const detail = await getConversationCore(deps, opened.conversation.id);
+    expect(detail?.conversation.state).toBe('closed');
+    expect(detail?.conversation.resolved_ts).toBeNull();
   });
 });
 

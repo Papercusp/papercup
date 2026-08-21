@@ -491,6 +491,37 @@ export function answerQuestionCore(
   });
 }
 
+/**
+ * Settle the coarse conversation projection for a terminal consult close.
+ * consult_state carries the consult-specific lifecycle; coord_conversations is
+ * what conversations:get/list reads, so a consult close must update both.
+ * The terminal post is written by consultCloseCore before this callback and is
+ * deliberately not duplicated here.
+ */
+export async function settleConsultConversationCore(
+  deps: ConversationDeps,
+  input: {
+    conversation_id: string;
+    outcome: 'answered' | 'cant_help' | 'graduate';
+    answer?: string;
+    post_id: number;
+    now_ts: string;
+  },
+): Promise<void> {
+  if (input.outcome === 'answered') {
+    const answer = input.answer?.trim();
+    if (!answer) throw new Error(`consult ${input.conversation_id} answered close has no answer`);
+    await deps.conversations.setAcceptedAnswer(input.conversation_id, {
+      answer,
+      post_id: input.post_id,
+      now_ts: input.now_ts,
+    });
+    await deps.conversations.setState(input.conversation_id, 'resolved', { now_ts: input.now_ts });
+    return;
+  }
+  await deps.conversations.setState(input.conversation_id, 'closed', { now_ts: input.now_ts });
+}
+
 // ── Resolve ──────────────────────────────────────────────────────────────────
 
 export interface ResolveInput {
