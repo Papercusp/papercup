@@ -340,6 +340,40 @@ describe(`facade against the pinned server ${skipReason}`, () => {
   );
 });
 
+describe(`concurrent-start budget ${skipReason}`, () => {
+  it.skipIf(!TS_SERVER_PRESENT)(
+    'concurrent first-calls share ONE server, not one each',
+    { timeout: 120_000 },
+    async () => {
+      // RECURRENCE GUARD for a measured defect: the task ledger recorded two
+      // `lsp:typescript` sidecars 18ms apart from a single run, because nothing
+      // is written to the client cache until `initialize` returns (~3.5s) and
+      // both callers had already missed it. Every individual answer still
+      // looked correct, so only the ledger showed it — which is why this
+      // asserts the INVENTORY, not the answers.
+      await shutdownAllLspClients();
+      expect(lspClientInventory()).toHaveLength(0);
+
+      const shared = { file: IMPORT_SITE, line1: 41, character: 11, rootPath: REPO_ROOT };
+      const answers = await Promise.all([
+        lspFacade('symbol', shared),
+        lspFacade('references', shared),
+        lspFacade('implementations', shared),
+      ]);
+
+      const typescriptServers = lspClientInventory().filter((c) => c.language === 'typescript');
+      expect(
+        typescriptServers,
+        `three concurrent calls spawned ${typescriptServers.length} servers; ` +
+          `DEFAULT_RESOURCE_BUDGET.childProcMax is 1`,
+      ).toHaveLength(1);
+
+      // And the sharing must not have cost correctness.
+      for (const a of answers) expect(isTrustworthyEmpty(a)).toBe(true);
+    },
+  );
+});
+
 describe('health aggregation control', () => {
   it('reports the WORST server health, never the best', async () => {
     // A permanent control for the aggregation rule, independent of any live

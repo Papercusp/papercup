@@ -171,6 +171,19 @@ const PROJECT_READY_TIMEOUT_MS = 60_000;
 interface AdapterState {
   /** Keyed by `${language}::${rootPath}`. */
   clients: Map<string, LspClient>;
+  /**
+   * In-flight `startClient` promises, same key.
+   *
+   * MEASURED DEFECT, not a theoretical one: without this, two concurrent
+   * first-calls both miss the `clients` cache (nothing is written to it until
+   * `initialize` returns, ~3.5s later) and each spawns its own language
+   * server. The task ledger recorded exactly that — two `lsp:typescript`
+   * sidecars 18ms apart from one test run — doubling RSS and breaking the
+   * `childProcMax: 1` budget while every individual answer still looked
+   * perfectly correct. Caching the PROMISE, not just the result, is what makes
+   * the cache cover the window it was meant to cover.
+   */
+  starting: Map<string, Promise<LspClient>>;
 }
 
 /**
@@ -180,7 +193,10 @@ interface AdapterState {
  */
 const state = pinModuleState<AdapterState>(
   '@papercusp/operator-core.code-intelligence.lsp-adapter',
-  () => ({ clients: new Map<string, LspClient>() }),
+  () => ({
+    clients: new Map<string, LspClient>(),
+    starting: new Map<string, Promise<LspClient>>(),
+  }),
 );
 
 function clientKey(language: LspLanguage, rootPath: string): string {
@@ -334,9 +350,24 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
 }
 
 async function getClient(language: LspLanguage, rootPath: string): Promise<LspClient> {
-  const existing = state.clients.get(clientKey(language, rootPath));
+  const key = clientKey(language, rootPath);
+  const existing = state.clients.get(key);
   if (existing && existing.health !== 'unhealthy') return existing;
-  return startClient(language, rootPath);
+
+  // Defensive: a process that pinned an OLDER shape of this state (before
+  // `starting` existed) keeps that object until it restarts.
+  if (!state.starting) state.starting = new Map();
+
+  // The whole point — see AdapterState.starting. A concurrent caller joins the
+  // start already in flight instead of racing a second server into existence.
+  const inFlight = state.starting.get(key);
+  if (inFlight) return inFlight;
+
+  const pending = startClient(language, rootPath).finally(() => {
+    state.starting.delete(key);
+  });
+  state.starting.set(key, pending);
+  return pending;
 }
 
 /**
