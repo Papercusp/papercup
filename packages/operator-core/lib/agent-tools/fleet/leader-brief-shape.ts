@@ -46,19 +46,19 @@ function pick(value: unknown, keys: readonly string[], maxString = 180): Dict | 
   return out;
 }
 
-function compactFalsifier(value: unknown): unknown {
-  return pick(value, ['tool', 'check', 'measurement', 'kills'], 220) ?? value;
+function compactFalsifier(value: unknown, maxString = 220): unknown {
+  return pick(value, ['tool', 'check', 'measurement', 'kills'], maxString) ?? value;
 }
 
-function compactBlockedAt(value: unknown): unknown {
+function compactBlockedAt(value: unknown, maxString = 220, includeSubordinate = true): unknown {
   const source = asDict(value);
   if (!source) return value;
-  const out = pick(source, ['layer', 'reason', 'remedy'], 220) ?? {};
-  if (Array.isArray(source.subordinate)) {
+  const out = pick(source, ['layer', 'reason', 'remedy'], maxString) ?? {};
+  if (includeSubordinate && Array.isArray(source.subordinate)) {
     out.subordinate = source.subordinate.slice(0, 3).map((entry) => compactFalsifier(entry));
     if (source.subordinate.length > 3) out.subordinateTruncated = source.subordinate.length;
   }
-  if ('falsifier' in source) out.falsifier = compactFalsifier(source.falsifier);
+  if ('falsifier' in source) out.falsifier = compactFalsifier(source.falsifier, maxString);
   return out;
 }
 
@@ -66,13 +66,13 @@ function compactMonitoringBlindAdvisory(value: unknown): unknown {
   const source = asDict(value);
   if (!source) return value;
   const out = pick(source, ['line'], 220) ?? {};
-  if (Array.isArray(source.missingEventKeys)) {
-    out.missingEventKeys = source.missingEventKeys.slice(0, 16).map((entry) => clip(entry, 160) ?? entry);
-  }
   const arm = asDict(source.arm);
   if (arm) {
     const compactArm = pick(arm, ['tool'], 120) ?? {};
-    const args = pick(arm.args, ['event', 'note'], 220);
+    // The default transport needs the executable handle, not its explanatory
+    // annotation or the per-key detail already summarized by `line`. Full-tier
+    // callers retain both `missingEventKeys` and `note` from the source object.
+    const args = pick(arm.args, ['event'], 160);
     if (args) compactArm.args = args;
     out.arm = compactArm;
   }
@@ -289,7 +289,7 @@ function addCappedArray(out: Dict, source: Dict, key: string, cap: number, proje
   if (rows.length > cap) out[`${key}Truncated`] = { total: rows.length, shown: cap, more: 'fleet:leader-brief { payloadTier:"full" } or a narrow follow-up' };
 }
 
-function addAlertFields(out: Dict, source: Dict): void {
+function addAlertFields(out: Dict, source: Dict, maxString = 220): void {
   for (const [key, value] of Object.entries(source)) {
     // EI-18680302159738037: `*Action` joins the carried set. An advisory's RESOLVING
     // ACTION was being computed and then dropped by this projection, so the default
@@ -298,7 +298,7 @@ function addAlertFields(out: Dict, source: Dict): void {
     // abandonedUnclaimed; a nudge cannot clear an admission block). Clipped like a
     // reason, so a long note cannot crowd out the decision core.
     if (!/(?:AlertReason|AlertFalsifier|Action)$/.test(key) && key !== 'customInvariantAlertReason' && key !== 'fleetPausedReason') continue;
-    out[key] = key.endsWith('Falsifier') ? compactFalsifier(value) : clip(value, 220) ?? value;
+    out[key] = key.endsWith('Falsifier') ? compactFalsifier(value, maxString) : clip(value, maxString) ?? value;
   }
 }
 
@@ -396,7 +396,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   // A pathological invariant/reason string must not defeat the safety rail.
   const emergency: Dict = {
     ok: source.ok === true,
-    ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt) } : {}),
+    ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt, 140, false) } : {}),
     ...(source.monitoringBlindAdvisory !== undefined
       ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
       : {}),

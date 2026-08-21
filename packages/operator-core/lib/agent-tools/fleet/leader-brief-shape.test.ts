@@ -78,7 +78,6 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     expect(out.summary).toMatchObject({ fleet: 'large-fleet', members: 53, claimable_now: 1432 });
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),
-      missingEventKeys: ['fleet:drained:large-fleet'],
       arm: { tool: 'events:await', args: { event: '@fleet:large-fleet' } },
     });
     expect(out.leaderBriefProjection).toMatchObject({ tier: 'trimmed' });
@@ -109,7 +108,11 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
           available: true,
           writer: `writer:${index}:${'x'.repeat(300)}`,
           units: { total: 'x'.repeat(300) },
-          data: { total: index },
+          cap: { aggregates: 'none', recentRows: 0 },
+          data: {
+            total: index,
+            recent: { total: 0, shown: 0, truncated: false, rows: [] },
+          },
         },
       ]),
     );
