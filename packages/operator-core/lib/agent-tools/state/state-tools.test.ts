@@ -119,10 +119,14 @@ describe('state:subscribe — gate 1, the audience check (D-042 / P-028)', () =>
     const hidden = body(await subscribeTool.handler({ cell: 'narrow.cell', on: { op: 'exists' } } as never, CTX as never));
     const missing = body(await subscribeTool.handler({ cell: 'no.such.cell', on: { op: 'exists' } } as never, CTX as never));
 
-    // Same status AND same message modulo the name — if these ever diverge, a stranger
-    // can enumerate the narrow cells by probing, which is the hazard D-042 closes.
+    // Same status, same machine CODE, AND same prose modulo the name — if any of these
+    // diverge, a stranger can enumerate the narrow cells by probing, which is the hazard
+    // D-042 closes. The prose is compared via `reason`: `error` now carries a fixed code
+    // (P-004), so asserting on it alone would pass for two refusals whose MESSAGES differ,
+    // which is precisely the leak this test exists to catch.
     expect(hidden.status).toBe(missing.status);
-    expect(String(hidden.error).replace('narrow.cell', 'X')).toBe(String(missing.error).replace('no.such.cell', 'X'));
+    expect(hidden.error).toBe(missing.error);
+    expect(String(hidden.reason).replace('narrow.cell', 'X')).toBe(String(missing.reason).replace('no.such.cell', 'X'));
   });
 });
 
@@ -332,7 +336,10 @@ describe('P-021 — state:subscribe never applies materiality silently', () => {
     );
 
     expect(b.ok).toBe(false);
-    expect(String(b.error)).toContain('no materiality');
+    // The EXPLANATION lives in `reason`; `error` is the machine code the telemetry
+    // groups by (P-004). Both are asserted so neither can quietly go missing.
+    expect(b.error).toBe('no_materiality');
+    expect(String(b.reason)).toContain('no materiality');
     expect(b.watchedPath).toBe('positions.deployed');
     expect(watchHandler).not.toHaveBeenCalled();
   });
@@ -360,5 +367,122 @@ describe('state plane reach — release-fixer (P-003)', () => {
   /** The allowlists must not drift apart — that is what produced the half-open door. */
   it('keeps the two allowlists identical', () => {
     expect(new Set(readTool.agentRoles ?? [])).toEqual(new Set(subscribeTool.agentRoles ?? []));
+  });
+});
+
+/**
+ * P-004 — `on` is optional and defaults to `changed`.
+ *
+ * Measured over all 300 state:subscribe calls in this workspace: 50 failed, and 23 of
+ * those 50 were this one intent. 12 passed no `on` at all; 11 invented a spelling for
+ * it ('change' / 'changes' / 'changed'). The cells involved were almost entirely
+ * `gate.greenCheckpoint.verdict` and `deploy.3070.sha` — the pipeline waits the repo
+ * guide itself sends agents here for.
+ */
+describe('state:subscribe — omitting `on` means "wake me when it moves" (P-004)', () => {
+  it('registers op `changed` with NO operand when `on` is omitted', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate.op).toBe('changed');
+    // The absence of `value` is the whole point: nothing was transcribed, so there is
+    // no stale-operand window between the caller's read and this registration.
+    expect('value' in sent.predicate).toBe(false);
+  });
+
+  it('still takes the resolver triple from the CELL, not from the caller', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell' } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate).toEqual({
+      tool: 'dev:pipeline_position',
+      args: {},
+      path: 'positions.deployed',
+      op: 'changed',
+    });
+  });
+
+  it('does NOT override an explicit `on` — a real threshold still wins', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'gt', value: 3 } } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as { predicate: Record<string, unknown> };
+    expect(sent.predicate.op).toBe('gt');
+    expect(sent.predicate.value).toBe(3);
+  });
+
+  it('accepts `changed` passed explicitly, and its auto-note names the op', async () => {
+    registerCell(spec());
+
+    await subscribeTool.handler({ cell: 'test.cell', on: { op: 'changed' } } as never, CTX as never);
+
+    const sent = watchHandler.mock.calls[0][0] as Record<string, unknown>;
+    expect((sent.predicate as Record<string, unknown>).op).toBe('changed');
+    // No trailing operand in the human-readable note either — "changed null" would
+    // read as "compared against null", which is not what happened.
+    expect(sent.note).toBe('cell test.cell changed');
+  });
+
+  it('the tool schema accepts a call with no `on` at all', () => {
+    // The guarantee is at the SCHEMA, not just the handler: a required `on` would
+    // reject these 12 calls before the handler ever ran.
+    expect(subscribeTool.args.safeParse({ cell: 'test.cell' }).success).toBe(true);
+    expect(subscribeTool.args.safeParse({ cell: 'test.cell', on: { op: 'changed' } }).success).toBe(true);
+  });
+});
+
+/**
+ * P-004 — every refusal carries a MACHINE code, not a prose sentence.
+ *
+ * The dispatcher lifts a refusal's `error` field verbatim into
+ * `tool_invocations.error_code` (extractRefusalCode, truncated at 80 chars). This tool
+ * used to put full sentences there, so every refusal produced a unique unqueryable
+ * "code" and the failure taxonomy above had to be reconstructed by hand from
+ * error_message prose plus args_json. A distinct short code per class makes it one query.
+ */
+describe('state:subscribe — refusal codes are queryable (P-004)', () => {
+  const codeFor = async (args: Record<string, unknown>, cellSpec: Parameters<typeof registerCell>[0]) => {
+    registerCell(cellSpec);
+    return body(await subscribeTool.handler(args as never, CTX as never));
+  };
+
+  it('cell_absent — out of audience or unregistered', async () => {
+    const b = await codeFor({ cell: 'test.cell' }, spec({ visibility: { kind: 'owner', ref: 'su-someone-else' } }));
+    expect(b.error).toBe('cell_absent');
+    expect(b.reason).toMatch(/subscribable by you/);
+  });
+
+  it('cell_event_signalled — the cell pushes, so it has a key', async () => {
+    const b = await codeFor({ cell: 'test.cell' }, spec({ changeSignal: { kind: 'event', key: 'deploy:landed' } }));
+    expect(b.error).toBe('cell_event_signalled');
+    expect(b.eventKey).toBe('deploy:landed');
+  });
+
+  it('subject_required — a caller-relative cell with no `as`', async () => {
+    const b = await codeFor({ cell: 'test.cell' }, spec({ callerRelativity: { kind: 'parameter', param: 'path' } }));
+    expect(b.error).toBe('subject_required');
+    expect(b.missingParam).toBe('path');
+  });
+
+  it('no_materiality — of:"material" on a cell that declares none', async () => {
+    const b = await codeFor({ cell: 'test.cell', of: 'material' }, spec());
+    expect(b.error).toBe('no_materiality');
+    expect(b.reason).toMatch(/declares no materiality path/);
+  });
+
+  it('every code is short, snake_case and stable — i.e. actually groupable in SQL', async () => {
+    const codes = ['cell_absent', 'cell_event_signalled', 'subject_required', 'no_materiality'];
+    for (const c of codes) {
+      // 80 is REFUSAL_CODE_MAX in dispatch-stack.ts; a longer code arrives truncated,
+      // which silently splits one class into several rows in the taxonomy query.
+      expect(c.length).toBeLessThanOrEqual(80);
+      expect(c).toMatch(/^[a-z][a-z0-9_]*$/);
+    }
+    expect(new Set(codes).size).toBe(codes.length);
   });
 });
