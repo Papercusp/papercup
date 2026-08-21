@@ -63,6 +63,7 @@ import {
   LEADER_MONITOR_INTERVAL_SEC,
   LEADER_PROFILE_AUTO_ARM_CAP,
   resolveFleetLeaderAutoArmTargets,
+  resolveFleetLeaderTransitionEventKeys,
   retireFleetLeaderWatches,
 } from './leader-control';
 
@@ -89,13 +90,7 @@ function activeWatches() {
 }
 
 function standardEventKeys(): string[] {
-  return resolveFleetLeaderAutoArmTargets({
-    fleetSlug: 'alpha',
-    reader: { ownerId: input.ownerId, roles: ['su'], harnessSlug: 'papercusp' },
-  }).targets.map((target) => {
-    if (target.kind !== 'event') throw new Error(`unexpected standard cell target ${target.label}`);
-    return target.eventKey;
-  });
+  return resolveFleetLeaderTransitionEventKeys({ fleetSlug: 'alpha' });
 }
 
 beforeEach(() => {

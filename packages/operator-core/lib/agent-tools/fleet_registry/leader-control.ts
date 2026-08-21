@@ -68,6 +68,40 @@ function profileSubject(field: string, fleetSlug: string): string {
   throw new Error(`fleet-leader auto-arm cannot resolve profile subject '${field}'`);
 }
 
+function resolveFleetLeaderEventTarget(
+  row: InterestProfileRow,
+  fleetSlug: string,
+): Extract<LeaderAutoArmTarget, { kind: 'event' }> {
+  if (row.watch.kind !== 'event') {
+    throw new Error(`fleet-leader transition resolver received non-event watch '${row.watch.kind}'`);
+  }
+  const entry = catalogEntry(row.watch.family);
+  if (!entry) throw new Error(`fleet-leader auto-arm references unknown event family '${row.watch.family}'`);
+  const fields = row.of ?? [];
+  const params: Record<string, string | undefined> = {};
+  entry.params.forEach((param, index) => {
+    const field = fields[index];
+    params[param.name] = field == null ? undefined : profileSubject(field, fleetSlug);
+  });
+  const eventKey = buildKey(row.watch.family, params);
+  return { kind: 'event', label: eventKey, eventKey, row };
+}
+
+/**
+ * The concrete transition-event set a fleet leader is expected to monitor.
+ * Kept separate from the full resolver so read-only diagnostics can inspect the
+ * event set without resolving (or accidentally depending on) future poll-cell rows.
+ */
+export function resolveFleetLeaderTransitionEventKeys(input: {
+  fleetSlug: string;
+  rows?: readonly InterestProfileRow[];
+}): string[] {
+  const rows = (input.rows ?? interestProfilesFor('fleet-leader')).filter(
+    (row) => row.context === 'fleet-leader' && row.tier === 'auto-arm' && row.watch.kind === 'event',
+  );
+  return [...new Set(rows.map((row) => resolveFleetLeaderEventTarget(row, input.fleetSlug).eventKey))];
+}
+
 /**
  * Resolve the fleet-leader profile into concrete event keys / predicate polls.
  * The profile is the source of truth: no event family is repeated in this module.
@@ -83,16 +117,7 @@ export function resolveFleetLeaderAutoArmTargets(input: {
   );
   const candidates: LeaderAutoArmTarget[] = rows.map((row) => {
     if (row.watch.kind === 'event') {
-      const entry = catalogEntry(row.watch.family);
-      if (!entry) throw new Error(`fleet-leader auto-arm references unknown event family '${row.watch.family}'`);
-      const fields = row.of ?? [];
-      const params: Record<string, string | undefined> = {};
-      entry.params.forEach((param, index) => {
-        const field = fields[index];
-        params[param.name] = field == null ? undefined : profileSubject(field, input.fleetSlug);
-      });
-      const eventKey = buildKey(row.watch.family, params);
-      return { kind: 'event', label: eventKey, eventKey, row };
+      return resolveFleetLeaderEventTarget(row, input.fleetSlug);
     }
 
     const spec = getCell(row.watch.cell, input.reader);

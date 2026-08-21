@@ -46,6 +46,7 @@ import { getFleet } from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
 import {
   ensureFleetLeaderControl,
+  resolveFleetLeaderTransitionEventKeys,
   type LeaderControlOutcome,
 } from '../fleet_registry/leader-control';
 import {
@@ -98,6 +99,7 @@ import {
 import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import {
+  listActiveAwaitsForKey,
   listVerifiedWaitTakeoversForSubscribers,
   type VerifiedWaitTakeoverAlert,
 } from '../../events/await/store';
@@ -122,6 +124,62 @@ import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-bri
 // trimming.
 const LEADER_BRIEF_MEMBER_DETAIL_BUDGET = 8_000;
 const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
+
+export interface LeaderMonitoringBlindAdvisory {
+  line: string;
+  missingEventKeys: string[];
+  arm: {
+    tool: 'events:await';
+    args: { event: string; note: string };
+  };
+}
+
+/** Pure verdict over the same live-awaiter meaning written by events:catalog. */
+export function computeLeaderMonitoringBlindAdvisory(input: {
+  fleetSlug: string;
+  eventKeys: readonly string[];
+  liveAwaiters: ReadonlyMap<string, number>;
+}): LeaderMonitoringBlindAdvisory | undefined {
+  const missingEventKeys = input.eventKeys.filter((eventKey) => (input.liveAwaiters.get(eventKey) ?? 0) === 0);
+  if (missingEventKeys.length === 0) return undefined;
+  return {
+    line:
+      `You are monitoring blind: ${missingEventKeys.length}/${input.eventKeys.length} required fleet transition ` +
+      `event key(s) have live_awaiters:0.`,
+    missingEventKeys,
+    arm: {
+      tool: 'events:await',
+      args: {
+        event: `@fleet:${input.fleetSlug}`,
+        note: `Restore a pushed transition wake for fleet ${input.fleetSlug}; leader control reconciles the durable profile watches.`,
+      },
+    },
+  };
+}
+
+/**
+ * Read the fleet's exact profile-derived transition keys from the existing
+ * event-await store. Discovery is advisory, so any read/resolution failure omits
+ * the block instead of degrading the rest of the leader brief.
+ */
+export async function readLeaderMonitoringBlindAdvisory(
+  fleetSlug: string,
+  readActiveAwaits: (eventKey: string) => Promise<readonly unknown[]> = listActiveAwaitsForKey,
+): Promise<LeaderMonitoringBlindAdvisory | undefined> {
+  try {
+    const eventKeys = resolveFleetLeaderTransitionEventKeys({ fleetSlug });
+    const counts = await Promise.all(
+      eventKeys.map(async (eventKey) => [eventKey, (await readActiveAwaits(eventKey)).length] as const),
+    );
+    return computeLeaderMonitoringBlindAdvisory({
+      fleetSlug,
+      eventKeys,
+      liveAwaiters: new Map(counts),
+    });
+  } catch {
+    return undefined;
+  }
+}
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -2136,6 +2194,10 @@ export async function buildLeaderBrief(
     } catch {
       /* best-effort: leadership bookkeeping must NEVER fail the health brief */
     }
+    // P-015 / D-005: one profile-derived discovery advisory, read from the
+    // existing event-await store after leader-control has had a chance to repair
+    // the standing watches. No fleet metrics or populations are copied here.
+    const monitoringBlindAdvisory = await readLeaderMonitoringBlindAdvisory(fleet);
     // Reconcile liveness BEFORE selecting the population. A stale directed
     // wake can make a dead owner look `live` through recent agent_activity;
     // selecting first would bake that ghost into the census even after the
@@ -2697,6 +2759,7 @@ export async function buildLeaderBrief(
         ...(notLeader ? { notLeader } : {}),
         ...(leadershipClaimed ? { leadershipClaimed } : {}),
         ...(leaderControl ? { leaderControl } : {}),
+        ...(monitoringBlindAdvisory ? { monitoringBlindAdvisory } : {}),
         // P-019/P-012: the arbitrated "which layer is blocking my fleet" verdict, placed
         // ABOVE the summary on purpose — the alert booleans below are flat and co-fire, and
         // reading them in field order is what produced the inverted remedy this fixes.

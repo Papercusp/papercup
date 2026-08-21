@@ -62,6 +62,23 @@ function compactBlockedAt(value: unknown): unknown {
   return out;
 }
 
+function compactMonitoringBlindAdvisory(value: unknown): unknown {
+  const source = asDict(value);
+  if (!source) return value;
+  const out = pick(source, ['line'], 220) ?? {};
+  if (Array.isArray(source.missingEventKeys)) {
+    out.missingEventKeys = source.missingEventKeys.slice(0, 16).map((entry) => clip(entry, 160) ?? entry);
+  }
+  const arm = asDict(source.arm);
+  if (arm) {
+    const compactArm = pick(arm, ['tool'], 120) ?? {};
+    const args = pick(arm.args, ['event', 'note'], 220);
+    if (args) compactArm.args = args;
+    out.arm = compactArm;
+  }
+  return out;
+}
+
 function compactSummary(value: unknown, ultra = false): unknown {
   const source = asDict(value);
   if (!source) return value;
@@ -296,6 +313,9 @@ function buildProjection(
     if (key in data) out[key] = pick(data[key], ['ownerId', 'ownerLabel', 'registeredLeader', 'leaderState', 'reason', 'note', 'claimWith', 'previousLeader', 'notified'], 180) ?? data[key];
   }
   if ('blockedAt' in data) out.blockedAt = compactBlockedAt(data.blockedAt);
+  if ('monitoringBlindAdvisory' in data) {
+    out.monitoringBlindAdvisory = compactMonitoringBlindAdvisory(data.monitoringBlindAdvisory);
+  }
   if ('summary' in data) out.summary = compactSummary(data.summary);
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
@@ -377,6 +397,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
   const emergency: Dict = {
     ok: source.ok === true,
     ...(source.blockedAt !== undefined ? { blockedAt: compactBlockedAt(source.blockedAt) } : {}),
+    ...(source.monitoringBlindAdvisory !== undefined
+      ? { monitoringBlindAdvisory: compactMonitoringBlindAdvisory(source.monitoringBlindAdvisory) }
+      : {}),
     ...(source.summary !== undefined ? { summary: compactSummary(source.summary, true) } : {}),
     leaderBriefProjection: { tier, emergency: true, note: 'Further optional detail was omitted to keep the monitor response valid JSON.' },
   };
