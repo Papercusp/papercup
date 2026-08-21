@@ -13,9 +13,12 @@
  * Part of code-recipes-2026-06-21 Phase 2 (P-004, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { runHybridSearch } from '@papercusp/search';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { upsertRecipe } from './code-recipes-store';
-import { searchSimilarRecipes } from './code-recipes-search';
+import { codeRecipesSource, searchSimilarRecipes } from './code-recipes-search';
+import { stampEmbedderMode } from './search/embedder-mode-registry';
+import { EMBEDDING_FLOOR_GEMMA } from './search/prose-min-score';
 
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -25,6 +28,8 @@ const { createOrgTestDb } = await import('../test/_org-test-db');
  * orders by `embedding <=> qVec`; identical vectors ⇒ distance 0.)
  */
 const seededEmbedding = (seed: number): number[] => Array.from({ length: 768 }, (_, i) => Math.sin(seed + i * 0.01));
+const basisEmbedding = (index: number): number[] =>
+  Array.from({ length: 768 }, (_, i) => (i === index ? 1 : 0));
 
 describe('code_recipes hybrid search (real PG)', () => {
   let db: OrgTestDb;
@@ -86,6 +91,37 @@ describe('code_recipes hybrid search (real PG)', () => {
     const decoyRank = results.findIndex((r) => r.id === 'announce-deploy');
     const targetRank = results.findIndex((r) => r.id === 'triage-stale-work-items');
     if (decoyRank !== -1) expect(targetRank).toBeLessThan(decoyRank);
+  });
+
+  it('applies the calibrated Gemma floor to the recipe embedding leg', async () => {
+    await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'gemma-floor-regression-zircon',
+      title: 'Calibrated recipe anchor',
+      description: 'A reusable script with a deliberately orthogonal vector',
+      script: 's',
+      toolsUsed: [],
+      embedding: basisEmbedding(0),
+    });
+
+    const embedder = async () => basisEmbedding(1);
+    stampEmbedderMode(embedder, 'gemma');
+    const result = await runHybridSearch([codeRecipesSource], {
+      sql: db.adminSql,
+      query: 'quasar zyxw',
+      workspaceId: '',
+      scopeFilter: null,
+      limit: 20,
+      mode: 'hybrid',
+      embedder,
+    });
+
+    expect(result.applied).toMatchObject({
+      minScore: { embeddings: EMBEDDING_FLOOR_GEMMA },
+      policyRegistered: true,
+    });
+    expect(result.legs.semantic.floored).toBeGreaterThan(0);
+    expect(result.results.some((row) => row.source_id === 'gemma-floor-regression-zircon')).toBe(false);
   });
 
   it('keeps a recipe name discoverable when the intent query contains extra terms', async () => {

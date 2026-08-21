@@ -149,21 +149,8 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
       'the case a boolean `engine` field got wrong on the first conformance run.',
   },
 
-  // ─── Engine-backed, floor MISSING (tracked defect, shrink-only) ──────────
-  {
-    id: 'recipes:search',
-    entry: 'agent-tools/recipes/search.ts',
-    engine: 'hybrid',
-    floorGap: {
-      reason:
-        'code-recipes-search.ts calls runHybridSearch with a live embedder and no minScore, and never ' +
-        'imports the policy seam. The fix is NOT a bare side-effect import: 0.45 was calibrated on ' +
-        'doc_sections, and both prior migrations in this plan had to re-measure per corpus before ' +
-        'inheriting it (plans cleared by 0.0034). Inheriting an unmeasured floor can silently ZERO the ' +
-        'leg, which is worse than the unfloored noise. Needs a code_recipes calibration first.',
-      trackedBy: 'EI-19899975562178082',
-    },
-  },
+  // ─── Engine-backed, floor inherited ──────────────────────────────────────
+  { id: 'recipes:search', entry: 'agent-tools/recipes/search.ts', engine: 'hybrid' },
 
   // ─── Deliberately NOT on the engine ──────────────────────────────────────
   {

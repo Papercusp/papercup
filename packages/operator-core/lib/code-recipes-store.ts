@@ -16,7 +16,7 @@
  * testcontainer handle.
  *
  * Pure PG: no embedding-provider / search dependency here — the caller computes the
- * embedding (a `number[] | null`, 384-dim) and passes it in (Phase-2 dedup rides
+ * embedding (a `number[] | null`, 768-dim) and passes it in (Phase-2 dedup rides
  * @papercusp/search over the columns this store writes, D-009).
  *
  * Server-only.
@@ -66,7 +66,7 @@ export interface UpsertCodeRecipeInput {
   script: string;
   authorRole?: string | null;
   toolsUsed?: string[];
-  /** title+description embedding (384-dim). null when the embedder was unavailable. */
+  /** title+description embedding (768-dim). null when the embedder was unavailable. */
   embedding?: number[] | null;
   tags?: string[];
   /** The coord ownerId that authored the recipe (first-write attribution). */

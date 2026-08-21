@@ -6,7 +6,7 @@
  *   - lexical leg  — `title_tsv` (the migration-349 GENERATED tsvector over
  *     title+description), `ts_rank_cd` over a disjunctive query so a free-form
  *     intent query can still recall a recipe that shares only part of it.
- *   - embedding leg — cosine over the `embedding vector(384)` column
+ *   - embedding leg — cosine over the `embedding vector(768)` column
  *     (`embedding <=> qVec::vector`), 1 - distance as the similarity.
  * Both legs are GLOBAL — recipes are a fleet-wide capability (P-001, reversing the
  * D-005 hive-scoping); the SearchSource still receives workspaceId/scopeFilter from
@@ -27,6 +27,7 @@
  * Server-only.
  */
 import type postgres from 'postgres';
+import './search/configure-search-defaults';
 import { runHybridSearch, type SearchSource, type SearchSourceParams, type Listing } from '@papercusp/search';
 import {
   buildRecipeAuthorityRecommendation,
@@ -136,7 +137,7 @@ export interface SearchSimilarRecipesInput {
   description: string;
   /** The new script's canonical tool-set (the structural-overlap signal). */
   toolsUsed: string[];
-  /** Pre-computed title+description embedding (384-dim), or null when unavailable. */
+  /** Pre-computed title+description embedding (768-dim), or null when unavailable. */
   embedding: number[] | null;
   /** Exclude this recipe id (the just-upserted recipe must not match itself). */
   excludeId?: string;
