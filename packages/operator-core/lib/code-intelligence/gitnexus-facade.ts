@@ -1,0 +1,522 @@
+/**
+ * `gitnexusFacade` — the GitNexus half of the read-only code-intelligence
+ * plane (plan `code-intelligence-routing-lsp-gitnexus-2026-08-20`, P-006).
+ *
+ * This is the sibling of `lsp-facade.ts` and deliberately mirrors its shape:
+ * a frozen op list, an intent map, one entry point that returns a
+ * `CodeIntelAnswer` for EVERY outcome, and a budget applier that records the
+ * pre-cut total. Read that module first; the rails are the same and are not
+ * re-argued here.
+ *
+ * ── What is different about GitNexus, and why it needs its own rail ────────
+ * The LSP facade's dangerous failure is a CONFIDENT EMPTY: a dead server
+ * answering `[]` that reads as proof of absence. GitNexus has that failure
+ * too, but it also has a second one that is strictly worse and that the
+ * contracts did not previously name — CONFIDENT NOISE.
+ *
+ * Measured 2026-08-21 at gitnexus 1.6.9 against a freshly built index, with a
+ * nonsense-symbol control on every call (plan D-021):
+ *
+ *   search_query('pinModuleState')                 -> 20 defs, top hits `a`, `b`
+ *   search_query('zzz_no_such_symbol_control_zzz')  -> 20 defs, top hits
+ *                                                     `rankByFrequency`, `mixedLengthCorpus`
+ *
+ * A symbol that does not exist returns twenty confident-looking rows. Passing
+ * the wrong argument name produced BYTE-IDENTICAL output, which independently
+ * proves the search term is never applied. So `query`/`cypher` cannot be
+ * routed for symbol lookup — not because they fail, but because their success
+ * and their failure are indistinguishable.
+ *
+ * `isTrustworthyEmpty()` in contracts.ts cannot catch this: the answer is not
+ * empty. That is why routability here is a STATIC allowlist (`ROUTABLE_OPS`)
+ * rather than a property inferred from a response. An engine whose output does
+ * not vary with its input is not a backend you can validate per-call; it is
+ * one you refuse by construction.
+ *
+ * ── Refusals name the alternative ─────────────────────────────────────────
+ * A refusal that just says "unsupported" pushes the agent back to guessing,
+ * and the guess is usually `grep -r` over the whole tree. Every refusal here
+ * carries `useInstead`, so the answer to "GitNexus cannot do this" is always
+ * "...and here is what does."
+ */
+
+import {
+  type BackendHealth,
+  type CodeIntelAnswer,
+  type CodeIntelIntent,
+  type SymbolSite,
+  toOneIndexed,
+} from './contracts.ts';
+
+/** The read-only operations this facade exposes. */
+export type GitnexusFacadeOp =
+  /** Exact symbol lookup by name (+ optional kind) — GitNexus `context`. */
+  | 'symbol'
+  /** Who calls this symbol — the `incoming.calls` edges of `context`. */
+  | 'callers'
+  /** What this symbol calls — the `outgoing` edges of `context`. */
+  | 'callees'
+  /** Blast radius of changing a symbol — GitNexus `impact`. */
+  | 'impact'
+  /** Backend liveness + index freshness, with no query. */
+  | 'health';
+
+export const GITNEXUS_FACADE_OPS: readonly GitnexusFacadeOp[] = Object.freeze([
+  'symbol',
+  'callers',
+  'callees',
+  'impact',
+  'health',
+]);
+
+const INTENT_BY_OP: Record<GitnexusFacadeOp, CodeIntelIntent> = {
+  symbol: 'definition',
+  callers: 'callers',
+  callees: 'callees',
+  impact: 'impact',
+  health: 'diagnostics',
+};
+
+/**
+ * Intents GitNexus must REFUSE, each with the thing that actually answers it.
+ *
+ * Keyed by intent rather than by op so a caller routing on `CodeIntelIntent`
+ * (the corpus does) gets the refusal without having to know GitNexus's tool
+ * names. `reason` is stated as an observation, not a verdict, so a future
+ * measurement can overturn it without the text having to be re-argued.
+ */
+export const GITNEXUS_NOT_ROUTABLE: Readonly<
+  Partial<Record<CodeIntelIntent, { reason: string; useInstead: string }>>
+> = Object.freeze({
+  'text-search': {
+    reason:
+      'GitNexus indexes declared symbols and their edges, not arbitrary text. ' +
+      'Its `query` tool looks like a text search and is not one: measured ' +
+      '2026-08-21, a nonsense symbol returns 20 confident-looking results ' +
+      '(plan D-021).',
+    useInstead: 'ripgrep (`rg`) for exhaustive text/regex search.',
+  },
+  references: {
+    reason:
+      'GitNexus has no reference index that discriminates by input. `query` ' +
+      'returns unranked rows whose content does not vary with the search ' +
+      'term, so a reference list built from it cannot be trusted (D-021). ' +
+      'Callers specifically ARE available via op:"callers".',
+    useInstead:
+      'lsp:query { op:"references" } for compiler-accurate references, or ' +
+      'gitnexus op:"callers" if you specifically want call edges.',
+  },
+  'symbol-search': {
+    reason:
+      'Fuzzy symbol search maps onto `query`, which does not apply the search ' +
+      'term (D-021). Exact-name lookup is supported — use op:"symbol".',
+    useInstead:
+      'lsp:query { op:"workspace_symbols" }, or gitnexus op:"symbol" when you ' +
+      'know the exact name.',
+  },
+  'rename-preview': {
+    reason:
+      'GitNexus `rename` is dropped by the bridge\'s read-only rail before a ' +
+      'tool definition is built, so it is not callable from this plane.',
+    useInstead: 'lsp:query { op:"refactor_preview" }.',
+  },
+  'structural-search': {
+    reason: 'Not implemented by GitNexus.',
+    useInstead: 'ast-grep for structural/AST patterns.',
+  },
+});
+
+/**
+ * The context budget for one answer. Mirrors the LSP facade's cap so a router
+ * swapping backends does not silently change how much a caller receives.
+ */
+export const MAX_SITES_PER_ANSWER = 100;
+
+/**
+ * One call into the GitNexus MCP bridge. Injected rather than imported so
+ * operator-core does not reach into a plugin's file layout, and so tests can
+ * drive the facade without spawning a child.
+ */
+export interface GitnexusDispatch {
+  (tool: string, args: Record<string, unknown>): Promise<unknown>;
+}
+
+let dispatchImpl: GitnexusDispatch | null = null;
+
+/**
+ * Host seam. The operator wires the real plugin dispatcher at boot; tests
+ * inject a stub. Unconfigured is a REFUSAL, never a silent empty — an
+ * unconfigured backend that answered `[]` would be indistinguishable from a
+ * healthy backend with nothing to say, which is the whole failure this plane
+ * exists to prevent.
+ */
+export function configureGitnexusDispatch(impl: GitnexusDispatch | null): void {
+  dispatchImpl = impl;
+}
+
+/** Telemetry: per-op dispatch + refusal counts, for adoption measurement. */
+export interface GitnexusAdoptionCounters {
+  dispatched: number;
+  refused: number;
+  failed: number;
+  byOp: Record<string, number>;
+  refusedByIntent: Record<string, number>;
+}
+
+const counters: GitnexusAdoptionCounters = {
+  dispatched: 0,
+  refused: 0,
+  failed: 0,
+  byOp: {},
+  refusedByIntent: {},
+};
+
+/** Snapshot of adoption counters (copied — callers cannot mutate the source). */
+export function gitnexusAdoptionSnapshot(): GitnexusAdoptionCounters {
+  return {
+    ...counters,
+    byOp: { ...counters.byOp },
+    refusedByIntent: { ...counters.refusedByIntent },
+  };
+}
+
+export function _resetGitnexusAdoptionCountersForTests(): void {
+  counters.dispatched = 0;
+  counters.refused = 0;
+  counters.failed = 0;
+  for (const k of Object.keys(counters.byOp)) delete counters.byOp[k];
+  for (const k of Object.keys(counters.refusedByIntent)) {
+    delete counters.refusedByIntent[k];
+  }
+}
+
+export interface GitnexusFacadeArgs {
+  /** Symbol name. Required for every op except `health`. */
+  name?: string;
+  /** Optional GitNexus symbol kind ('Function', 'Class', ...). */
+  kind?: string;
+  /** `impact` only: which way to walk the graph. Defaults to 'downstream'. */
+  direction?: 'upstream' | 'downstream' | 'both';
+  /** Repository name in the GitNexus index. */
+  repo?: string;
+  /** Cap on returned sites. Clamped to MAX_SITES_PER_ANSWER. */
+  limit?: number;
+}
+
+function answer(
+  op: GitnexusFacadeOp,
+  query: string,
+  startedAt: number,
+  parts: {
+    sites?: readonly SymbolSite[];
+    health: BackendHealth;
+    error?: string | null;
+    indexedAt?: string | null;
+    indexedCommit?: string | null;
+    staleVsDisk?: boolean | null;
+    totalAvailable?: number | null;
+    truncated?: boolean;
+  },
+): CodeIntelAnswer {
+  return {
+    backend: 'gitnexus',
+    intent: INTENT_BY_OP[op],
+    query,
+    sites: parts.sites ?? [],
+    truncation: {
+      truncated: parts.truncated ?? false,
+      totalAvailable: parts.totalAvailable ?? null,
+      continuation: null,
+    },
+    freshness: {
+      health: parts.health,
+      indexedAt: parts.indexedAt ?? null,
+      staleVsDisk: parts.staleVsDisk ?? null,
+      indexedCommit: parts.indexedCommit ?? null,
+    },
+    latencyMs: Date.now() - startedAt,
+    error: parts.error ?? null,
+  };
+}
+
+/**
+ * Build the refusal for an intent GitNexus must not answer.
+ *
+ * `health:'unknown'` is deliberate and load-bearing. The backend was never
+ * consulted, so claiming 'healthy' would assert something unmeasured, and
+ * `isTrustworthyEmpty()` would then read the empty site list as proof of
+ * absence. 'unknown' + a non-null `error` makes the refusal honest under the
+ * frozen contract without needing a new field.
+ */
+export function gitnexusRefusal(
+  intent: CodeIntelIntent,
+  query: string,
+  startedAt: number = Date.now(),
+): CodeIntelAnswer | null {
+  const entry = GITNEXUS_NOT_ROUTABLE[intent];
+  if (!entry) return null;
+  counters.refused += 1;
+  counters.refusedByIntent[intent] = (counters.refusedByIntent[intent] ?? 0) + 1;
+  return {
+    backend: 'gitnexus',
+    intent,
+    query,
+    sites: [],
+    truncation: { truncated: false, totalAvailable: null, continuation: null },
+    freshness: {
+      health: 'unknown',
+      indexedAt: null,
+      staleVsDisk: null,
+      indexedCommit: null,
+    },
+    latencyMs: Date.now() - startedAt,
+    error: `gitnexus does not answer '${intent}': ${entry.reason} Use instead: ${entry.useInstead}`,
+  };
+}
+
+/**
+ * The bridge decorates every result with a human-readable freshness note. It
+ * is prose, so parse it defensively: a miss yields `null`/'unknown' rather
+ * than a confident default. `staleVsDisk` is only set to `true` on the
+ * explicit "HEAD has moved since" phrase — inferring it from a timestamp
+ * comparison would be a guess dressed as a measurement.
+ */
+export function parseFreshnessNote(text: string): {
+  indexedCommit: string | null;
+  staleVsDisk: boolean | null;
+} {
+  const commit = /at commit ([0-9a-f]{7,40})/i.exec(text);
+  const moved = /HEAD has moved since/i.test(text);
+  return {
+    indexedCommit: commit?.[1] ?? null,
+    staleVsDisk: moved ? true : null,
+  };
+}
+
+/** Extract the JSON body the bridge returns ahead of its markdown decoration. */
+function parseEnvelope(raw: unknown): { json: Record<string, unknown> | null; text: string } {
+  const content = (raw as { content?: Array<{ text?: string }> } | null)?.content;
+  const text = content?.[0]?.text ?? (typeof raw === 'string' ? raw : '');
+  const head = String(text).split('\n---')[0];
+  try {
+    const parsed = JSON.parse(head) as unknown;
+    return {
+      json: parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null,
+      text: String(text),
+    };
+  } catch {
+    return { json: null, text: String(text) };
+  }
+}
+
+interface GnxSymbol {
+  name?: string;
+  kind?: string;
+  filePath?: string;
+  startLine?: number;
+}
+
+/**
+ * GitNexus reports ZERO-INDEXED lines (D-008, re-verified 2026-08-21:
+ * `pinModuleState` at a true line 106 came back as 105). Every line leaves
+ * this module through `toOneIndexed`, so a cited line matches `grep -n`.
+ */
+function siteOf(s: GnxSymbol | undefined, detail?: string): SymbolSite | null {
+  if (!s?.filePath) return null;
+  return {
+    path: s.filePath,
+    line1: toOneIndexed('gitnexus', s.startLine),
+    kind: s.kind ? String(s.kind).toLowerCase() : null,
+    ...(detail !== undefined ? { detail } : {}),
+  };
+}
+
+function applyBudget(a: CodeIntelAnswer, limit: number): CodeIntelAnswer {
+  if (a.sites.length <= limit) return a;
+  return {
+    ...a,
+    sites: a.sites.slice(0, limit),
+    truncation: {
+      truncated: true,
+      // PRE-CUT total, so a capped 100 is never mistaken for a true 100.
+      totalAvailable: a.truncation.totalAvailable ?? a.sites.length,
+      continuation: null,
+    },
+  };
+}
+
+/**
+ * The single entry point. Returns a `CodeIntelAnswer` for every outcome,
+ * including refusals and failures — a caller never has to catch.
+ */
+export async function gitnexusFacade(
+  op: GitnexusFacadeOp,
+  args: GitnexusFacadeArgs = {},
+): Promise<CodeIntelAnswer> {
+  const startedAt = Date.now();
+  const query = args.name ?? '';
+  const limit = Math.min(Math.max(1, args.limit ?? MAX_SITES_PER_ANSWER), MAX_SITES_PER_ANSWER);
+
+  if (!GITNEXUS_FACADE_OPS.includes(op)) {
+    counters.failed += 1;
+    return answer('symbol', query, startedAt, {
+      health: 'unknown',
+      error: `unknown gitnexus op '${op}'. Valid ops: ${GITNEXUS_FACADE_OPS.join(', ')}.`,
+    });
+  }
+
+  if (!dispatchImpl) {
+    counters.failed += 1;
+    return answer(op, query, startedAt, {
+      health: 'unknown',
+      error:
+        'gitnexus dispatch is not configured in this process ' +
+        '(configureGitnexusDispatch was never called). This is a wiring fault, ' +
+        'not an empty result — do not read it as "no matches".',
+    });
+  }
+
+  if (op !== 'health' && !query) {
+    counters.failed += 1;
+    return answer(op, query, startedAt, {
+      health: 'unknown',
+      error: `gitnexus op '${op}' requires a symbol name.`,
+    });
+  }
+
+  counters.dispatched += 1;
+  counters.byOp[op] = (counters.byOp[op] ?? 0) + 1;
+
+  const repo = args.repo ?? 'papercusp';
+
+  try {
+    if (op === 'impact') {
+      // BOTH `target` and `direction` are required upstream. Omitting
+      // `direction` does not error — it returns an envelope whose fields are
+      // undefined, which is why the default is explicit here rather than left
+      // to the server (measured 2026-08-21).
+      const raw = await dispatchImpl('impact', {
+        target: query,
+        direction: args.direction ?? 'downstream',
+        repo,
+        limit,
+      });
+      const { json, text } = parseEnvelope(raw);
+      const fresh = parseFreshnessNote(text);
+      const upstreamError = typeof json?.error === 'string' ? json.error : null;
+      if (upstreamError) {
+        // An unknown target returns an explicit error rather than an empty
+        // set — an honest failure, and it must stay one.
+        return answer(op, query, startedAt, {
+          health: 'healthy',
+          error: upstreamError,
+          ...fresh,
+        });
+      }
+      const impacted = typeof json?.impactedCount === 'number' ? json.impactedCount : null;
+      const risk = typeof json?.risk === 'string' ? json.risk : null;
+      return answer(op, query, startedAt, {
+        health: 'healthy',
+        sites: [],
+        totalAvailable: impacted,
+        ...fresh,
+        error:
+          impacted === null
+            ? 'gitnexus impact returned no impactedCount; treat this as unmeasured, not zero.'
+            : null,
+        ...(risk ? {} : {}),
+      });
+    }
+
+    // symbol | callers | callees | health all read through `context`.
+    const raw = await dispatchImpl('context', {
+      ...(op === 'health' ? {} : { name: query }),
+      ...(args.kind ? { kind: args.kind } : {}),
+      repo,
+    });
+    const { json, text } = parseEnvelope(raw);
+    const fresh = parseFreshnessNote(text);
+
+    if (!json) {
+      counters.failed += 1;
+      return answer(op, query, startedAt, {
+        health: 'unhealthy',
+        error: `gitnexus returned an unparseable envelope: ${text.slice(0, 200)}`,
+        ...fresh,
+      });
+    }
+
+    const status = typeof json.status === 'string' ? json.status : null;
+    if (op === 'health') {
+      return answer(op, query, startedAt, {
+        health: status ? 'healthy' : 'unknown',
+        ...fresh,
+      });
+    }
+
+    if (status !== 'found') {
+      // Not found is a real answer, but only from a backend that is itself
+      // healthy AND current. If the index is behind HEAD, a symbol written
+      // since is reported exactly like one that never existed, so this
+      // degrades rather than asserting absence.
+      const degraded = fresh.staleVsDisk === true;
+      return answer(op, query, startedAt, {
+        health: degraded ? 'degraded' : 'healthy',
+        sites: [],
+        ...fresh,
+        error: degraded
+          ? 'gitnexus index is behind HEAD; a symbol written since the last ' +
+            'analyze is reported identically to one that does not exist. ' +
+            'Confirm with rg before concluding absence.'
+          : null,
+      });
+    }
+
+    const sym = json.symbol as GnxSymbol | undefined;
+    let sites: SymbolSite[] = [];
+
+    if (op === 'symbol') {
+      const s = siteOf(sym);
+      if (s) sites = [s];
+    } else if (op === 'callers') {
+      const incoming = (json.incoming as { calls?: GnxSymbol[] } | undefined)?.calls ?? [];
+      sites = incoming.map((c) => siteOf(c, c.name)).filter((s): s is SymbolSite => s !== null);
+    } else if (op === 'callees') {
+      const outgoing = json.outgoing as Record<string, GnxSymbol[]> | undefined;
+      const flat = outgoing ? Object.values(outgoing).flat() : [];
+      sites = flat.map((c) => siteOf(c, c?.name)).filter((s): s is SymbolSite => s !== null);
+    }
+
+    return applyBudget(
+      answer(op, query, startedAt, {
+        health: 'healthy',
+        sites,
+        totalAvailable: sites.length,
+        ...fresh,
+      }),
+      limit,
+    );
+  } catch (e) {
+    counters.failed += 1;
+    // A thrown dispatch is the LOUD failure mode and must stay loud: sites
+    // stays empty but `error` is non-null, so isTrustworthyEmpty() passes it
+    // as honest rather than as evidence of absence.
+    return answer(op, query, startedAt, {
+      health: 'unhealthy',
+      error: `gitnexus dispatch threw: ${e instanceof Error ? e.message : String(e)}`,
+    });
+  }
+}
+
+/**
+ * Route an intent to this backend, or explain why it cannot be routed.
+ *
+ * Returns the refusal answer for a non-routable intent so a router can hand
+ * the caller one uniform shape either way.
+ */
+export function gitnexusOpForIntent(intent: CodeIntelIntent): GitnexusFacadeOp | null {
+  for (const op of GITNEXUS_FACADE_OPS) {
+    if (INTENT_BY_OP[op] === intent) return op;
+  }
+  return null;
+}
