@@ -3388,10 +3388,9 @@ export interface LifecycleAliasInfo {
  * writer-flip fixes the ROOT cause: the issue now STORES `blocked`/`needs-human` directly, and
  * the claim floor (status = ANY(['open'])) excludes it by status. These payload flags
  * are now the belt-and-suspenders + the surface the EXISTING consumers still read:
- *   - needs-human → legacy `payload.needsHuman:true` ({@link legacyNeedsHumanExclusionSql},
- *     EI-7776) or strict `payload.needsOwnerAction:true` ({@link needsOwnerActionExclusionSql}). Reports
- *     as fully DRAINED in {@link diagnoseClaimNextMiss} — an owner-authority-only item is not
- *     queue material at all.
+ *   - needs-human → the stored status itself excludes the row; strict owner capabilities also
+ *     carry `payload.needsOwnerAction:true` ({@link needsOwnerActionExclusionSql}) and report as
+ *     fully DRAINED in {@link diagnoseClaimNextMiss}.
  *   - blocked → the WI-2797 self-select claim hold ({@link claimHoldExclusionSql} /
  *     {@link setWorkItemClaimHold}), which also carries the `release{claimHold:false}` un-park
  *     affordance. Reports as pending-BUT-gated (drained:false).
@@ -4701,36 +4700,10 @@ export function observationLaneExclusionSql(sql: OrgSql) {
 }
 
 /**
- * The LEGACY NEEDS-HUMAN self-select EXCLUSION floor for issue-family claims (EI-7776). When the
- * implement worker resolves an item with outcome `needs-human`, `improvements:resolve` posts a
- * diagnosis comment, sets `payload.needsHuman:true`, and RELEASES the claim
- * (resolve-core.ts) — but the issue-family status dialect has no real terminal "needs human"
- * state (`normalizeIssueLikeState` collapses `needs-human`/`blocked`/`wip` all to `open`,
- * EI-450), so the row stays fully self-selectable. `classifyImprovement` (policy.ts) already
- * keeps a needsHuman-flagged item out of the AUTOMATED improvement-dispatch tier, but that
- * policy check lives ONLY in the improvement-dispatch path — `scheduler:get_next` /
- * `work_items:claim_next` (the generic backlog-drain self-select every fleet member pulls
- * through) never looked at `needsHuman` at all. The result: a drain-loop bee re-claims the
- * SAME already-routed-to-a-human item, re-investigates from scratch, and re-posts the
- * identical diagnosis comment — confirmed live as EI-7592 being independently "resolved" as
- * the same false positive three times in one afternoon (2026-07-05) before this floor existed.
- * Mirrors {@link observationLaneExclusionSql}'s shape/placement exactly (same NULL-safe
- * COALESCE, same POOL+READY+claim call sites) so an all-needs-human backlog also reads
- * `drained:true` instead of "pending but gated" — still directly claimable BY ID so an
- * operator (or the human it was routed to) can still act on it.
- */
-export function legacyNeedsHumanExclusionSql(sql: OrgSql) {
-  // COALESCE so a NULL-payload row reads NULL ->> 'needsHuman' = NULL, and
-  // `NULL IS DISTINCT FROM 'true'` = TRUE ⇒ the row is INCLUDED (never excluded).
-  return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'`;
-}
-
-/**
- * The strict OWNER-ACTION self-select exclusion floor. Unlike the legacy
- * `payload.needsHuman` cohort above, this key is written only for a typed capability an
- * agent cannot supply: credential, physical-device, or external-service-action. Keeping
- * the predicates separate is load-bearing during the P-006 transition: legacy rows stay
- * excluded until they are re-triaged, while every new owner escalation is unambiguous.
+ * The strict OWNER-ACTION self-select exclusion floor. This key is written only for a typed
+ * capability an agent cannot supply: credential, physical-device, or external-service-action.
+ * Migration 864 retired the ambiguous payload.needsHuman admission floor; owner action and
+ * peer review now have independent, typed destinations.
  */
 export function needsOwnerActionExclusionSql(sql: OrgSql) {
   return sql`COALESCE(wi.payload, '{}'::jsonb) ->> 'needsOwnerAction' IS DISTINCT FROM 'true'`;
@@ -5701,10 +5674,6 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- "work here a bee shouldn't idle on" POOL — excluding them here (not just from READY,
          -- as the rig/claimHold floors are) lets a scorecard-only backlog read drained:true.
          AND ${observationLaneExclusionSql(sql)}
-         -- EI-7776: a needsHuman-routed row is likewise not work-queue material AT ALL — same
-         -- pool-level exclusion as observation-lane, so an all-needs-human backlog also reads
-         -- drained:true rather than idling a drainer on unpickable rows.
-         AND ${legacyNeedsHumanExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
          -- D-003/P-004: pending/revision-requested rows are owned by the reviewer/revision
          -- lifecycle, not the normal implementation pool. Approval re-admits them.
@@ -5761,9 +5730,6 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          AND ${claimHoldExclusionSql(sql)}
          -- D-005: an observation-lane row is not work-queue material — same floor the claim applies.
          AND ${observationLaneExclusionSql(sql)}
-         -- EI-7776: a needsHuman-routed row is not work-queue material either — same floor the
-         -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
-         AND ${legacyNeedsHumanExclusionSql(sql)}
          AND ${needsOwnerActionExclusionSql(sql)}
          AND ${agentReviewNormalExclusionSql(sql)}
          AND ${externalBlockersExclusionSql(sql)}
@@ -5824,8 +5790,6 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'not-claimable-status': 'status is terminal or otherwise not in the claimable set',
   'already-taken': 'already claimed by another agent',
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
-  'legacy-needs-human':
-    'legacy payload.needsHuman = true — compatibility floor pending P-006 re-triage; not proof that owner action is required',
   'needs-owner-action':
     'payload.needsOwnerAction = true — a typed credential, physical-device, or external-service-action capability requires the owner',
   'agent-review':
@@ -5892,7 +5856,6 @@ export async function explainIssueClaimFloors(
       ok_untaken: boolean;
       ok_origin: boolean;
       ok_observation: boolean;
-      ok_legacy_needs_human: boolean;
       ok_needs_owner_action: boolean;
       ok_agent_review: boolean;
       ok_external_blocker: boolean;
@@ -5913,7 +5876,6 @@ export async function explainIssueClaimFloors(
            (wi.taken_by IS NULL OR wi.taken_by = '')                              AS ok_untaken,
            (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
-           (${legacyNeedsHumanExclusionSql(sql)})                                 AS ok_legacy_needs_human,
            (${needsOwnerActionExclusionSql(sql)})                                 AS ok_needs_owner_action,
            (${agentReviewNormalExclusionSql(sql)})                                 AS ok_agent_review,
            (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
@@ -5946,10 +5908,8 @@ export async function explainIssueClaimFloors(
             ? 'origin'
             : !r.ok_observation
               ? 'observation-lane'
-              : !r.ok_legacy_needs_human
-                ? 'legacy-needs-human'
-                : !r.ok_needs_owner_action
-                  ? 'needs-owner-action'
+              : !r.ok_needs_owner_action
+                ? 'needs-owner-action'
                 : !r.ok_agent_review
                   ? 'agent-review'
                   : !r.ok_external_blocker
@@ -6223,13 +6183,6 @@ export async function claimNextIssueWorkItem(
           -- D-005: never self-select a lane:'observation' scorecard/reflection — by design it
           -- "never enters the work queue" (only the Observations pane + Scout digest read it).
           AND ${observationLaneExclusionSql(tx)}
-          -- EI-7776: never self-select an item improvements:resolve already routed to a human
-          -- (payload.needsHuman) — the issue-family status dialect has no real terminal
-          -- "needs-human" state (it collapses to 'open'), so without this floor a drain-loop
-          -- bee re-claims the SAME already-diagnosed item and re-posts the identical
-          -- "routed to a human" comment forever (confirmed live: EI-7592 "resolved" 3x in one
-          -- afternoon). Still directly claimable BY ID.
-          AND ${legacyNeedsHumanExclusionSql(tx)}
           AND ${needsOwnerActionExclusionSql(tx)}
           -- D-003/P-004: normal self-selection cannot take pending review work or the
           -- submitter-owned revision interval. The dedicated reviewer tool is the only
