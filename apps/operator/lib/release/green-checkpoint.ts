@@ -379,6 +379,13 @@ export interface CheckpointDeps {
    * uses, so the two can never diverge in what they consider "recordable".
    */
   recordVerdict?(r: CheckpointResult): Promise<boolean>;
+  /**
+   * EI-20810521712303819: persist the suite's known result at the early
+   * `decision-pending` trailer, before optional promotion legs. Optional and best-effort so
+   * older callers / un-stamped manual runs keep their existing behavior; the terminal recorder
+   * later clears the pending marker for the same run.
+   */
+  recordPendingVerdict?(r: CheckpointResult): Promise<boolean>;
   /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
    *  Optional: absent ⇒ alarm never fires. */
   deployStaleness?(): Promise<{
@@ -655,6 +662,10 @@ export interface CheckpointResult {
    *  exactly as before WI-4494 — which is what keeps an old-CLI/new-routine skew safe.
    *  Set by the CLI entrypoint, never by runGreenCheckpoint itself. */
   recorded?: boolean;
+  /** EI-20810521712303819: the suite result is known, but promotion is still pending optional
+   *  post-suite legs. The CLI records this before those legs so a kill cannot leave the log ahead
+   *  of gate_health; the terminal result for the same run clears it without double-counting. */
+  promotionPending?: boolean;
   /** P-016 (D-010): on a PARTIAL advance (reason 'advanced-prefix'), the sha `main`
    *  was FF'd to — the longest GREEN prefix — while `candidate` stays the red TIP (so
    *  failingTests + the release-fixer still target the real failure). Absent otherwise. */
@@ -6668,10 +6679,28 @@ export async function runGreenCheckpoint(
   //
   // Safe to stamp early precisely BECAUSE it is a trailer read with `tail -1`: every disposition
   // site below re-stamps the real outcome, which supersedes this line. Note this is a LOG write
-  // only — it deliberately does NOT record a verdict to `gate_health`, because `trackGateStall`
-  // increments `consecutiveReds` unconditionally per call, so an early ledger write plus the
-  // terminal one would count ONE red TWICE and inflate the very streak this is meant to explain.
+  // plus a best-effort pending state write. The pending write carries this run's identity so the
+  // terminal recorder can replace it without counting ONE red twice; if the process dies here,
+  // gate_health still reflects the known suite result instead of the previous run.
   stampPromotion(false, "decision-pending");
+  await deps
+    .recordPendingVerdict?.({
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green,
+      reason: green ? "up-to-date" : "not-green",
+      promotionPending: true,
+      summary,
+      ...(failingTests?.length ? { failingTests } : {}),
+      ...(deps.runId ? { runId: deps.runId } : {}),
+      ...(logPath ? { logPath } : {}),
+    })
+    .catch((e) =>
+      deps.log(
+        `${orchestratorStdoutTag()} pending verdict record failed (promotion continues): ${e instanceof Error ? e.message : e}`,
+      ),
+    );
   const logPartialGreenGate = (line: string) =>
     appendPartialGreenGateLine(logPath, line, (s) => deps.log(s));
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
@@ -10209,23 +10238,39 @@ export function realCheckpointDeps(
         env.NODE_OPTIONS,
         GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
       );
-      const result = await exec(
-        "npm",
-        ["run", "lint:tsc", "--", `--files=${files.join(",")}`],
-        {
-          cwd: cfg.checkpointRoot,
-          env,
-          allowNonZero: true,
-          heavy: true,
-        },
+      // A candidate can carry enough changed paths to exceed Linux's exec argv limit. Keep the
+      // exact file set in a short-lived response file instead of interpolating it into argv; the
+      // lint gate reads it as `--files-from` and preserves the same explicit attribution.
+      const responseFile = path.join(
+        os.tmpdir(),
+        `green-checkpoint-typecheck-files-${randomUUID()}.json`,
       );
-      const output = result.stdout + result.stderr;
-      const summary =
-        summarizeSuiteOutput(output).trim() ||
-        `npm run lint:tsc exited ${result.code}`;
-      return result.code === 0
-        ? { status: "passed", summary, failingSignatures: [] }
-        : { status: "failed", summary, failingSignatures: ["lint:tsc"] };
+      try {
+        writeFileSync(responseFile, JSON.stringify(files), { mode: 0o600 });
+        const result = await exec(
+          "npm",
+          ["run", "lint:tsc", "--", `--files-from=${responseFile}`],
+          {
+            cwd: cfg.checkpointRoot,
+            env,
+            allowNonZero: true,
+            heavy: true,
+          },
+        );
+        const output = result.stdout + result.stderr;
+        const summary =
+          summarizeSuiteOutput(output).trim() ||
+          `npm run lint:tsc exited ${result.code}`;
+        return result.code === 0
+          ? { status: "passed", summary, failingSignatures: [] }
+          : { status: "failed", summary, failingSignatures: ["lint:tsc"] };
+      } finally {
+        try {
+          unlinkSync(responseFile);
+        } catch {
+          /* response-file cleanup is best-effort; it never changes the gate verdict */
+        }
+      }
     },
     // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
     // fire-and-forget `void import(...).then(emit)` inlined at each call site — the green
@@ -10376,6 +10421,25 @@ export function realCheckpointDeps(
       } catch (e) {
         console.error(
           `${orchestratorStdoutTag()} superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
+        return false;
+      }
+    },
+    // EI-20810521712303819: persist the suite result at the early decision-pending trailer.
+    // This uses the same env-resolved target as the terminal recorder, but a separate helper so
+    // the pending event is explicit and the terminal path can clear it by runId.
+    async recordPendingVerdict(r) {
+      try {
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
+        const target = gateVerdictTargetFromEnv();
+        if (!target) return false;
+        const { recordPendingCheckpointVerdict } =
+          await import("@papercusp/operator-core/lib/harness/routines/release-actions");
+        return await recordPendingCheckpointVerdict(target, r);
+      } catch (e) {
+        console.error(
+          `${orchestratorStdoutTag()} pending verdict self-record failed (the promotion decision continues): ${e instanceof Error ? e.message : e}`,
         );
         return false;
       }

@@ -9465,6 +9465,35 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     expect(trailer(logPath)).not.toContain("decision-pending");
   });
 
+  it("⭐ records the known suite result before GREEN-path legs can kill the process", async () => {
+    const c1 = await commit("a", "1", "c1");
+    await git(repo, ["branch", "ready", c1]);
+    await commit("a", "2", "c2");
+    const { deps } = stubDeps(true);
+    deps.runId = "pending-run-1";
+    const pending: unknown[] = [];
+    deps.recordPendingVerdict = async (result) => {
+      pending.push(result);
+      return true;
+    };
+    deps.perfGate = async () => {
+      // The optional leg is the kill window. The durable pending write must already
+      // have observed the suite result and the run identity before this callback runs.
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        green: true,
+        reason: "up-to-date",
+        promotionPending: true,
+        runId: "pending-run-1",
+      });
+      return { action: "pass", summary: "perf ok" };
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(pending).toHaveLength(1);
+  });
+
   it("⭐ stamps the suite verdict before the optional RED-path legs (papercusp's window)", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
