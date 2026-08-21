@@ -22,6 +22,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
+const dbosWorkItemsContractSrc = readFileSync(
+  join(__dirname, '../../../packages/operator-core/lib/dbos/work-items-contract.ts'),
+  'utf8',
+);
 const honoHostSrc = readFileSync(join(__dirname, 'hono-host.ts'), 'utf8');
 const agentToolsCatchallSrc = readFileSync(
   join(__dirname, '../../../packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts'),
@@ -153,6 +157,24 @@ describe('host-bootstrap emits a machine-readable source-pass verdict', () => {
     expect(bootSrc).toMatch(/status:\s*'ran'/);
     expect(bootSrc).toMatch(/status:\s*'skipped'/);
     expect(bootSrc).toMatch(/status:\s*'failed'/);
+  });
+});
+
+describe('host-bootstrap validates the bundled DBOS work-items import contract', () => {
+  it('uses the sidecar build marker and checks both current exclusion exports before startDbos()', () => {
+    expect(bootSrc).toContain('__PAPERCUSP_BUNDLED_SIDECAR__');
+    expect(bootSrc).toContain('assertDbosWorkItemsImportContract');
+    expect(bootSrc).toContain('import(\'@papercusp/operator-core/lib/work-items\')');
+    // The boot site delegates the export list to the dependency-free contract helper;
+    // assert the names where that list is authored instead of coupling this wiring test
+    // to implementation details inside host-bootstrap.
+    expect(dbosWorkItemsContractSrc).toContain('legacyNeedsHumanExclusionSql');
+    expect(dbosWorkItemsContractSrc).toContain('needsOwnerActionExclusionSql');
+
+    const contractCheck = bootSrc.indexOf('assertDbosWorkItemsImportContract(workItems)');
+    const dbosImport = bootSrc.indexOf("const { startDbos } = await import('@papercusp/operator-core/lib/dbos/bootstrap')");
+    expect(contractCheck).toBeGreaterThan(-1);
+    expect(dbosImport).toBeGreaterThan(contractCheck);
   });
 });
 

@@ -51,6 +51,7 @@ import { validateHomeHarnessResolution, homeHarnessValidationFatal, isLikelyFres
 import { applyToProcessEnv, readAgentConfig, agentCmdBootWarning } from '@papercusp/operator-core/lib/agent-config';
 import { reportRuntimeVintageOnBoot } from '@papercusp/operator-core/lib/runtime-vintage';
 import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
+import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/dbos/work-items-contract';
 // The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
 // must not give up while the proxy is still retrying on its behalf. Static (unlike the lazy
 // proxy import below, which defers a heavy module used only in a fallback branch): this one
@@ -58,6 +59,14 @@ import { isSidecarEnabledFromEnv } from '@papercusp/operator-core/lib/process-su
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
+
+// Injected by the esbuild host/desktop-sidecar recipes. It is absent under tsx/dev/test;
+// read through typeof so source boot and unit tests never evaluate an undeclared global.
+declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;
+
+function isBundledSidecar(): boolean {
+  return typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__;
+}
 
 type GuardedGlobal = typeof globalThis & { [GUARD_KEY]?: boolean };
 
@@ -1670,6 +1679,15 @@ export function runBootstrap(): void {
   if (backgroundWorkers && process.env.PAPERCUSP_DBOS_ENABLE === '1') {
     void (async () => {
       try {
+        // A stale/partially refreshed bundle can otherwise fail only while DBOS imports
+        // its routines graph, leaving the process alive with every scheduled routine dark.
+        // Check the bundled module namespace before startDbos() so the existing boot-failure
+        // attention + severe-event path reports the precise contract and rebuild action.
+        if (isBundledSidecar()) {
+          const workItems = await import('@papercusp/operator-core/lib/work-items');
+          assertDbosWorkItemsImportContract(workItems);
+          console.log('[dbos] bundled work-items import contract passed');
+        }
         const { startDbos } = await import('@papercusp/operator-core/lib/dbos/bootstrap');
         await startDbos();
       } catch (err) {
