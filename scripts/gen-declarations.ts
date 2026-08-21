@@ -24,12 +24,48 @@ import {
 } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { exportParityProblems, formatProblems } from './lib/declaration-export-parity.js';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const CONFIG = 'tsconfig.declarations.json';
-const TSC = join(REPO_ROOT, 'node_modules/.bin/tsc');
+
+/**
+ * The compiler, resolved through the `typescript` PACKAGE — never through
+ * `node_modules/.bin/tsc` (WI-40183).
+ *
+ * A declaration file is a function of (source, COMPILER), so the compiler is an
+ * INPUT to this generator and has to be pinned like one. `.bin/tsc` cannot pin
+ * it: that slot is first-come-first-served across every installed package that
+ * ships a `tsc` bin, so its identity changes when the dependency tree changes,
+ * with no edit to this repo. Adding `@typescript/native` (TypeScript 7)
+ * repointed it, and all 52 committed declarations — byte-identical to their
+ * sources under the pinned TypeScript 6 — went "stale" in one step and red-pinned
+ * the green gate. Note the failure is SYMMETRIC and the other direction is worse:
+ * the same ambient slot can silently false-GREEN a genuinely drifted declaration.
+ *
+ * `typescript/lib/tsc.js` is precisely what `bin/tsc` runs (that shim is one
+ * line: `require('../lib/tsc.js')`), so this changes which compiler is selected,
+ * never how it is invoked. Resolving BY SPECIFIER also tracks whatever the repo
+ * designates as `typescript` — including the aliased
+ * `npm:@typescript/typescript6` install, whose bin is deliberately named `tsc6`
+ * so that it does not claim the shared slot. Should the repo ever promote TS7 to
+ * the `typescript` name, this follows it with no edit here.
+ */
+const TSC_JS = createRequire(import.meta.url).resolve('typescript/lib/tsc.js');
+
+/**
+ * Which compiler produced this run, named in the output of BOTH modes.
+ *
+ * A wrong-compiler run does not look like a wrong-compiler run: every
+ * declaration differs at once, so it reads as "the whole repo went stale" and
+ * sends you looking for 52 source edits that never happened. Printing the
+ * compiler — including on the FAILURE path, before the comparison — is what makes
+ * that one glance instead of an archaeology session, and it is the assertion
+ * surface `generated-declarations.test.ts` uses to pin the compiler identity.
+ */
+const COMPILER_LABEL = relative(REPO_ROOT, TSC_JS) || TSC_JS;
 
 /** The `.mjs` inputs, read from the config so the two can never disagree. */
 function inputs(): string[] {
@@ -49,7 +85,11 @@ function declarationFor(mjs: string): string {
 function runTsc(outDir?: string): void {
   const args = ['-p', CONFIG, ...(outDir ? ['--outDir', outDir] : [])];
   try {
-    execFileSync(TSC, args, { cwd: REPO_ROOT, encoding: 'utf8', stdio: 'pipe' });
+    execFileSync(process.execPath, [TSC_JS, ...args], {
+      cwd: REPO_ROOT,
+      encoding: 'utf8',
+      stdio: 'pipe',
+    });
   } catch (err) {
     const e = err as { stdout?: string; stderr?: string; message?: string };
     // Surface tsc's own diagnostics — a bare "Command failed" hides what broke.
@@ -128,10 +168,14 @@ function generate(): void {
   }
   runTsc();
   stamp(REPO_ROOT);
-  console.log(`✓ gen:declarations: emitted ${inputs().length} declaration file(s)`);
+  console.log(
+    `✓ gen:declarations: emitted ${inputs().length} declaration file(s) — compiler: ${COMPILER_LABEL}`,
+  );
 }
 
 function check(): void {
+  // BEFORE the comparison, so a red names the compiler that produced the emit.
+  console.log(`gen:declarations:check — compiler: ${COMPILER_LABEL}`);
   const out = mkdtempSync(join(tmpdir(), 'papercusp-decl-check-'));
   try {
     runTsc(out);
