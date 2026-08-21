@@ -1,0 +1,214 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+import type { PlanIndexRow } from './agent-tools/plans/source';
+import {
+  UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION,
+  blockerEvidenceForPlan,
+  buildUnshippedPlansAuditManifest,
+  classifyUnshippedPlan,
+  hasExplicitPlanLevelSupersession,
+  renderUnshippedPlansAuditHtml,
+  type AuditOwnerEvidence,
+  type ClassifierInput,
+} from './unshipped-plans-audit';
+
+function plan(overrides: Partial<PlanIndexRow> = {}): PlanIndexRow {
+  return {
+    workspaceId: 'ws-test',
+    harnessSlug: 'papercusp',
+    planSlug: 'plan-a',
+    contentHash: 'hash-a',
+    version: 1,
+    title: 'Plan A',
+    status: 'active',
+    created: '2026-08-20',
+    updated: '2026-08-20',
+    owner: null,
+    initiative: null,
+    template: null,
+    templateData: null,
+    inputSchema: null,
+    supersedes: [],
+    supersededBy: null,
+    opStatus: null,
+    opStartedAt: null,
+    opUpdatedAt: null,
+    currentWave: null,
+    opPriority: null,
+    archived: false,
+    isLegacy: false,
+    updatedAt: '2026-08-20T12:00:00.000Z',
+    items: [
+      {
+        id: 'P-001',
+        status: 'todo',
+        text: 'Do the work',
+        importance: 'normal',
+        blockedBy: [],
+        decisionRefs: [],
+        phase: null,
+      },
+    ],
+    decisions: [],
+    nowState: 'Active',
+    nowNext: 'Do the work.',
+    promotePolicy: null,
+    forcedPast: null,
+    schedule: null,
+    scheduleActive: false,
+    scheduledAt: null,
+    expiresAt: null,
+    tzid: null,
+    templateSlug: null,
+    runSeq: null,
+    ...overrides,
+  } as PlanIndexRow;
+}
+
+function input(overrides: Partial<ClassifierInput> = {}): ClassifierInput {
+  return {
+    plan: plan(),
+    registeredHarness: true,
+    owners: [],
+    workItems: [],
+    blocker: { typedBlocked: false, typedHuman: false, refs: [], staleHints: [] },
+    itemCounts: { todo: 1 },
+    audit: null,
+    acceptanceRubric: null,
+    gateVerdict: null,
+    ...overrides,
+  };
+}
+
+describe('classifier revision 2', () => {
+  it('requires an explicit plan-subject supersession assertion', () => {
+    expect(hasExplicitPlanLevelSupersession('This plan is superseded by plan-b.')).toBe(true);
+    expect(hasExplicitPlanLevelSupersession('Superseded: replaced by plan-b.')).toBe(true);
+    expect(hasExplicitPlanLevelSupersession('D-004 superseded the old approach.')).toBe(false);
+    expect(hasExplicitPlanLevelSupersession('The superseded decision is retained for history.')).toBe(false);
+
+    const explicit = classifyUnshippedPlan(input({
+      plan: plan({ nowState: 'This plan is superseded by plan-b.' }),
+    }));
+    expect(explicit.category).toBe('supersede-documented');
+
+    const decisionOnly = classifyUnshippedPlan(input({
+      plan: plan({ nowState: 'D-004 superseded the old approach.' }),
+    }));
+    expect(decisionOnly.category).not.toBe('supersede-documented');
+  });
+
+  it('protects live-owned plans before every cleanup-oriented classification', () => {
+    const owners: AuditOwnerEvidence[] = [
+      {
+        ownerId: 'su-live',
+        ownerLabel: 'live agent',
+        fleet: null,
+        intent: 'finish P-005',
+        source: 'work-item-hold',
+      },
+    ];
+    const row = classifyUnshippedPlan(input({
+      plan: plan({ nowState: 'This plan is superseded by plan-b.' }),
+      registeredHarness: false,
+      owners,
+    }));
+
+    expect(row.category).toBe('ongoing-protected');
+    expect(row.owners).toEqual(owners);
+  });
+
+  it('separates stale typed blockers, current human blockers, and ledger contradictions', () => {
+    expect(classifyUnshippedPlan(input({
+      blocker: { typedBlocked: true, typedHuman: true, refs: ['P-000'], staleHints: ['P-000 is done'] },
+    })).category).toBe('typed-blocker-stale-hint');
+
+    expect(classifyUnshippedPlan(input({
+      blocker: { typedBlocked: true, typedHuman: true, refs: ['human:owner'], staleHints: [] },
+    })).category).toBe('typed-human-blocker');
+
+    expect(classifyUnshippedPlan(input({
+      itemCounts: { done: 1 },
+      workItems: [{ sourcePlanSlug: 'plan-a', status: 'open', holder: null }],
+    })).category).toBe('ledger-contradiction');
+  });
+
+  it('derives typed issue blockers from the canonical plan-item overlay', () => {
+    const evidence = blockerEvidenceForPlan(
+      plan(),
+      new Map([['plan-a#P-001', ['EI-123']]]),
+    );
+
+    expect(evidence.itemCounts).toMatchObject({ blocked: 1 });
+    expect(evidence.blocker).toMatchObject({
+      typedBlocked: true,
+      typedHuman: false,
+      refs: ['EI-123'],
+    });
+  });
+});
+
+describe('manifest and evidence rendering', () => {
+  const liveOwner: AuditOwnerEvidence = {
+    ownerId: 'su-live',
+    ownerLabel: null,
+    fleet: null,
+    intent: 'implement audit',
+    source: 'declared-plan',
+  };
+
+  function manifest() {
+    return buildUnshippedPlansAuditManifest({
+      workspaceId: 'ws-test',
+      snapshotStartedAt: '2026-08-20T12:00:00.000Z',
+      snapshotFinishedAt: '2026-08-20T12:00:01.000Z',
+      liveOwnershipMeasuredAt: '2026-08-20T12:00:00.500Z',
+      allPlans: [
+        plan({ title: '<script>alert("x")</script>' }),
+        plan({ planSlug: 'shipped', status: 'shipped' }),
+        plan({ planSlug: 'archived', archived: true }),
+        plan({ planSlug: 'instance', templateSlug: 'template-a' }),
+      ],
+      registeredHarnesses: new Set(['papercusp']),
+      ownersByPlan: new Map([['plan-a', [liveOwner]]]),
+      workItemsByPlan: new Map(),
+      blockedItems: new Map(),
+      auditsByPlan: new Map(),
+      rubricsByPlan: new Map(),
+      gateVerdictsByPlan: new Map(),
+    });
+  }
+
+  it('filters terminal/archive/instance rows and reports a self-consistent protected band', () => {
+    const result = manifest();
+
+    expect(result.schemaVersion).toBe('unshipped-plans-audit-manifest-v2');
+    expect(result.scope.classifierRevision).toBe(UNSHIPPED_PLANS_AUDIT_CLASSIFIER_REVISION);
+    expect(result.scope.nonterminalListedAtSnapshot).toBe(1);
+    expect(result.scope.classifiedRows).toBe(result.rows.length);
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ slug: 'plan-a', category: 'ongoing-protected' });
+    expect(result.bands).toMatchObject({ protected: 1 });
+    expect(Object.values(result.bands).reduce((sum, count) => sum + count, 0)).toBe(result.rows.length);
+  });
+
+  it('neutralizes closing-script input while preserving the embedded manifest round trip', () => {
+    const html = renderUnshippedPlansAuditHtml(manifest());
+    const embedded = html.match(/<script type="application\/json" id="manifest">([^<]*)<\/script>/)?.[1];
+
+    expect(html).not.toContain('<script>alert("x")</script>');
+    expect(embedded).toContain('\\u003cscript>alert(\\"x\\")\\u003c/script>');
+    expect(JSON.parse(embedded!)).toMatchObject({
+      rows: [{ title: '<script>alert("x")</script>' }],
+    });
+    expect(html).toContain('No plan, item, blocker, claim, assignment, fleet, or agent state was changed.');
+  });
+
+  it('keeps the implementation manual-only and free of direct lifecycle SQL/writer seams', () => {
+    const source = readFileSync(new URL('./unshipped-plans-audit.ts', import.meta.url), 'utf8');
+
+    expect(source).not.toMatch(/\b(?:INSERT\s+INTO|UPDATE\s+harness_shared|DELETE\s+FROM|MERGE\s+INTO)\b/i);
+    expect(source).not.toMatch(/registerRoutine|setPlanStatus|setPlanItemStatus|setWorkItemState|armSchedule|setSchedule/);
+    expect(source.match(/saveTextArtifact\(/g)).toHaveLength(2);
+  });
+});
