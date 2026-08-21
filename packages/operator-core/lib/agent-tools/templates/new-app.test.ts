@@ -7,7 +7,14 @@
  * source-resolution passthrough, kickoffBuilder:false, and best-effort builder failure.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { promises as fs, mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  promises as fs,
+  mkdtempSync,
+  mkdirSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { composeNewApp, type NewAppArgs, type NewAppDeps } from './new-app';
@@ -113,7 +120,9 @@ describe('composeNewApp', () => {
 
     expect(payload.ok).toBe(true);
     expect(payload.harnessSlug).toBe('my-app');
-    expect(payload.filesCopied).toEqual(expect.arrayContaining(['GUIDE.md', 'package.json']));
+    expect(payload.filesCopied).toEqual(
+      expect.arrayContaining(['GUIDE.md', 'package.json', 'PROTOCOL.md']),
+    );
     expect(payload.template).toMatchObject({ ref: REF, id: LISTING.id });
     expect(payload.guideBranch).toBe('main');
     expect(payload.builder).toMatchObject({ spawned: true, chatId: 'chat-abc', role: 'architect' });
@@ -122,6 +131,8 @@ describe('composeNewApp', () => {
     expect(existsSync(join(scratch, 'apps', 'my-app', 'package.json'))).toBe(true);
     // pot:create's blueprint.yaml survived the overlay.
     expect(existsSync(join(scratch, 'apps', 'my-app', '.papercusp', 'blueprint.yaml'))).toBe(true);
+    const protocolPath = join(scratch, 'apps', 'my-app', 'PROTOCOL.md');
+    expect(readFileSync(protocolPath, 'utf8')).toContain('papercusp-webapp');
 
     // dispatch order: create pot → create chat → send GUIDE.
     expect(calls.map((c) => c.name)).toEqual([
@@ -130,6 +141,7 @@ describe('composeNewApp', () => {
       'agent_chats:send_message',
     ]);
     const sent = calls.find((c) => c.name === 'agent_chats:send_message')!;
+    expect(sent.args.content).toContain('read PROTOCOL.md first, then GUIDE.md');
     expect(sent.args.content).toContain('MUST: ship a homepage.');
     expect(calls[0].args).toMatchObject({ slug: 'my-app', repoRemote: 'local-only' });
   });
@@ -157,6 +169,7 @@ describe('composeNewApp', () => {
     const payload = parse(result);
     expect(payload.ok).toBe(true);
     expect(payload.builder).toEqual({ spawned: false });
+    expect(existsSync(join(scratch, 'apps', 'my-app', 'PROTOCOL.md'))).toBe(true);
     expect(calls.map((c) => c.name)).toEqual(['pot:create']);
   });
 
