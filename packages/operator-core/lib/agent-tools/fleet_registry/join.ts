@@ -15,6 +15,7 @@ import { getFleet } from '../../agent-fleets-store';
 import { heartbeatPresence, setPresenceFleet } from '../coordination/presence';
 import { fleetRoleFor, json, recolorCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 import { takeFleetLeadership } from './take-leadership-core';
+import { suggestedWatchesForContext } from '../../interest-profiles';
 
 export default defineTool({
   name: 'fleet:join',
@@ -77,7 +78,19 @@ export default defineTool({
         out.reseed?.reason === 'member-cap-lifted'
           ? `Compaction cap lifted ${out.reseed.from} → ${out.reseed.applied} tokens (leaders get the full window).`
           : undefined;
-      return json({ ok: true, role: 'leader', scheme: fleet.colorScheme, ...out, ...(reseedNote ? { reseedNote } : {}) });
+      const suggestedWatches = suggestedWatchesForContext({
+        context: 'fleet-leader',
+        subjects: { 'fleet.slug': args.fleet },
+        reason: `Suggested after joining fleet ${args.fleet} as leader`,
+      });
+      return json({
+        ok: true,
+        role: 'leader',
+        scheme: fleet.colorScheme,
+        ...out,
+        suggestedWatches,
+        ...(reseedNote ? { reseedNote } : {}),
+      });
     }
 
     // as:'member' (default). Don't demote a leader who re-joins their own fleet (D-002).
@@ -87,6 +100,11 @@ export default defineTool({
     // Recolor the caller's live window to the fleet's bound scheme — no second
     // call (fleet-color-schemes). Best-effort: a no-op for non-psu-hosted callers.
     await recolorCallerTerminal(ownerId, fleet);
-    return json({ ok: true, slug: args.fleet, role, scheme: fleet.colorScheme });
+    const suggestedWatches = suggestedWatchesForContext({
+      context: role === 'leader' ? 'fleet-leader' : 'fleet-member',
+      subjects: { 'fleet.slug': args.fleet },
+      reason: `Suggested after joining fleet ${args.fleet} as ${role}`,
+    });
+    return json({ ok: true, slug: args.fleet, role, scheme: fleet.colorScheme, suggestedWatches });
   },
 });

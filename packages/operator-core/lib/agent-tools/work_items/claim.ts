@@ -65,6 +65,7 @@ import {
 // the same way fleet:leader-brief reaches this store).
 import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
 import { assessClaimHoldGuard, recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
+import { suggestedWatchesForItemBlockers } from '../../interest-profiles';
 
 interface ClaimItem {
   id: string;
@@ -612,6 +613,10 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
+    const suggestedWatches = suggestedWatchesForItemBlockers({
+      itemId: it.id,
+      blockers: workItem.externalBlockers,
+    });
     // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
     // (the .catch above), so it cannot decide `hasCheckpoint` alone — collapsing the failure into
     // `false` makes priorWorkWarning assert "NO checkpoint was ever written" during an outage.
@@ -641,6 +646,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
+          ...(suggestedWatches.length > 0 ? { suggestedWatches } : {}),
           ...(concurrencyWarning
             ? {
                 concurrencyWarning,
@@ -673,6 +679,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
+          ...(suggestedWatches.length > 0 ? { suggestedWatches } : {}),
           ...(concurrencyWarning
             ? {
                 concurrencyWarning,

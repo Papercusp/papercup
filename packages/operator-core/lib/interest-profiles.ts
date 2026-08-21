@@ -47,8 +47,15 @@ import {
   GIT_PIPELINE_POSITION_CELL,
   HOST_MEMORY_PRESSURE_CELL,
 } from './cell-registrations';
-import { catalogEntry } from './events/await/catalog';
+import {
+  buildKey,
+  catalogEntry,
+  findRequiredParamPrefixMatch,
+  findZeroParamSuffixMismatch,
+  keyMatchesCatalog,
+} from './events/await/catalog';
 import type { PredicateOp } from './events/await/predicate-watch';
+import type { ExternalBlockerRecord } from './external-blockers';
 
 /**
  * The role an agent is occupying when the interest applies. An agent can occupy
@@ -113,6 +120,166 @@ export interface InterestProfileRow {
   readonly of?: readonly string[];
   /** Why this context should care. Traces to an existing instruction — see header. */
   readonly why: string;
+}
+
+/**
+ * One opt-in watch recommendation.  The object is deliberately the exact next
+ * tool call plus its rationale: accepting it is one call, while merely receiving
+ * it has no side effect.
+ */
+export type SuggestedWatch =
+  | {
+      readonly tool: 'state:subscribe';
+      readonly args: {
+        readonly cell: string;
+        readonly on?: InterestCondition;
+        readonly as?: string;
+        readonly note: string;
+      };
+      readonly why: string;
+    }
+  | {
+      readonly tool: 'events:await';
+      readonly args: {
+        readonly event: string;
+        readonly note: string;
+      };
+      readonly why: string;
+    };
+
+function suggestionNote(reason: string, why: string): string {
+  return `${reason}: ${why}`;
+}
+
+function dedupeSuggestedWatches(rows: readonly SuggestedWatch[]): SuggestedWatch[] {
+  return [...new Map(rows.map((row) => [`${row.tool}:${JSON.stringify(row.args)}`, row])).values()];
+}
+
+/**
+ * Resolve the `suggest` rows for one live context into calls that can be invoked
+ * verbatim. Missing runtime subjects omit the affected row rather than returning
+ * a malformed key/cell call: a suggestion that cannot be accepted is not a
+ * suggestion.
+ */
+export function suggestedWatchesForContext(input: {
+  context: InterestContext;
+  subjects?: Readonly<Record<string, string | undefined>>;
+  reason: string;
+  rows?: readonly InterestProfileRow[];
+}): SuggestedWatch[] {
+  const subjects = input.subjects ?? {};
+  const rows = (input.rows ?? INTEREST_PROFILES).filter(
+    (row) => row.context === input.context && row.tier === 'suggest',
+  );
+  const suggestions: SuggestedWatch[] = [];
+
+  for (const row of rows) {
+    const note = suggestionNote(input.reason, row.why);
+    if (row.watch.kind === 'cell') {
+      const subjectField = row.of?.[0];
+      const subject = subjectField ? subjects[subjectField] : undefined;
+      if (subjectField && !subject) continue;
+      suggestions.push({
+        tool: 'state:subscribe',
+        args: {
+          cell: row.watch.cell,
+          ...(row.on ? { on: row.on } : {}),
+          ...(subject ? { as: subject } : {}),
+          note,
+        },
+        why: row.why,
+      });
+      continue;
+    }
+
+    const entry = catalogEntry(row.watch.family);
+    if (!entry) continue; // validateInterestProfiles catches registry drift; never emit a dead call here.
+    const params: Record<string, string | undefined> = {};
+    let complete = true;
+    entry.params.forEach((param, index) => {
+      const field = row.of?.[index];
+      const value = field ? subjects[field] : undefined;
+      if (param.required && !value) complete = false;
+      params[param.name] = value;
+    });
+    if (!complete) continue;
+    suggestions.push({
+      tool: 'events:await',
+      args: { event: buildKey(row.watch.family, params), note },
+      why: row.why,
+    });
+  }
+
+  return dedupeSuggestedWatches(suggestions);
+}
+
+function isConcreteCatalogEvent(key: string): boolean {
+  return (
+    keyMatchesCatalog(key) &&
+    !findRequiredParamPrefixMatch(key) &&
+    !findZeroParamSuffixMismatch(key)
+  );
+}
+
+/**
+ * P-016's claim-time mapping. A typed event blocker already names the exact
+ * event to await. A gate blocker borrows the item-holder gate profile's rationale:
+ * when its ref is a real catalog key (the canonical case is
+ * `release:green:<pipeline>`) the exact event await wins; legacy/free-form gate
+ * refs fall back to the profile's gate cell subscription instead of inventing a
+ * key that nothing emits.
+ */
+export function suggestedWatchesForItemBlockers(input: {
+  itemId: string;
+  blockers: readonly ExternalBlockerRecord[] | null | undefined;
+  rows?: readonly InterestProfileRow[];
+}): SuggestedWatch[] {
+  const active = (input.blockers ?? []).filter((blocker) => blocker.status === 'active');
+  if (active.length === 0) return [];
+
+  const rows = input.rows ?? INTEREST_PROFILES;
+  const gateProfile = rows.find(
+    (row) =>
+      row.context === 'item-holder' &&
+      row.tier === 'suggest' &&
+      row.watch.kind === 'cell' &&
+      row.watch.cell === GATE_VERDICT_CELL.cell,
+  );
+  const suggestions: SuggestedWatch[] = [];
+
+  for (const blocker of active) {
+    if (blocker.kind === 'event' && isConcreteCatalogEvent(blocker.ref)) {
+      const why = blocker.summary || `Work-item ${input.itemId} is blocked on ${blocker.ref}`;
+      suggestions.push({
+        tool: 'events:await',
+        args: { event: blocker.ref, note: suggestionNote(`Because ${input.itemId} is blocked`, why) },
+        why,
+      });
+      continue;
+    }
+    if (blocker.kind !== 'gate' || !gateProfile) continue;
+
+    if (isConcreteCatalogEvent(blocker.ref)) {
+      suggestions.push({
+        tool: 'events:await',
+        args: {
+          event: blocker.ref,
+          note: suggestionNote(`Because ${input.itemId} is gate-blocked`, gateProfile.why),
+        },
+        why: gateProfile.why,
+      });
+    } else {
+      suggestions.push(
+        ...suggestedWatchesForContext({
+          context: 'item-holder',
+          reason: `Because ${input.itemId} is gate-blocked (${blocker.ref})`,
+          rows: [gateProfile],
+        }),
+      );
+    }
+  }
+
+  return dedupeSuggestedWatches(suggestions);
 }
 
 /**

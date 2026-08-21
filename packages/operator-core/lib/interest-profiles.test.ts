@@ -9,6 +9,8 @@ import {
   interestProfilesFor,
   referencedCellIds,
   referencedEventFamilies,
+  suggestedWatchesForContext,
+  suggestedWatchesForItemBlockers,
   validateInterestProfiles,
 } from './interest-profiles';
 
@@ -156,5 +158,139 @@ describe('interest profiles — the guard can FAIL (controls)', () => {
     ]);
     expect(violations).toHaveLength(1);
     expect(violations[0].detail.length).toBeGreaterThan(40);
+  });
+});
+
+describe('P-016 suggest tier', () => {
+  it('resolves a profile event into a one-call events:await with the profile why', () => {
+    const row: InterestProfileRow = {
+      context: 'fleet-leader',
+      watch: { kind: 'event', family: 'fleet-member-stalled' },
+      tier: 'suggest',
+      of: ['fleet.slug'],
+      why: 'A stalled member needs leader inspection before the lane is abandoned.',
+    };
+
+    expect(
+      suggestedWatchesForContext({
+        context: 'fleet-leader',
+        subjects: { 'fleet.slug': 'alpha' },
+        reason: 'joined alpha',
+        rows: [row],
+      }),
+    ).toEqual([
+      {
+        tool: 'events:await',
+        args: {
+          event: 'fleet:member-stalled:alpha',
+          note: 'joined alpha: A stalled member needs leader inspection before the lane is abandoned.',
+        },
+        why: row.why,
+      },
+    ]);
+  });
+
+  it('omits an event suggestion when its runtime subject is absent', () => {
+    expect(
+      suggestedWatchesForContext({
+        context: 'fleet-leader',
+        reason: 'joined an unresolved fleet',
+        rows: [
+          {
+            context: 'fleet-leader',
+            watch: { kind: 'event', family: 'fleet-member-stalled' },
+            tier: 'suggest',
+            of: ['fleet.slug'],
+            why: 'A stalled member needs leader inspection before the lane is abandoned.',
+          },
+        ],
+      }),
+    ).toEqual([]);
+  });
+
+  it('maps a gate blocker carrying the real green key to an exact events:await', () => {
+    const now = '2026-08-21T00:00:00.000Z';
+    const suggestions = suggestedWatchesForItemBlockers({
+      itemId: 'WI-1',
+      blockers: [
+        {
+          kind: 'gate',
+          capability: 'live-dependency',
+          capabilitySource: 'explicit',
+          ref: 'release:green:papercusp',
+          summary: 'green checkpoint must pass',
+          status: 'active',
+          createdAt: now,
+          createdBy: 'su-a',
+          updatedAt: now,
+        },
+      ],
+    });
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      tool: 'events:await',
+      args: { event: 'release:green:papercusp' },
+    });
+    expect(suggestions[0]?.why).toContain('red gate');
+  });
+
+  it('falls back to the registered gate cell for a legacy free-form gate ref', () => {
+    const now = '2026-08-21T00:00:00.000Z';
+    const suggestions = suggestedWatchesForItemBlockers({
+      itemId: 'WI-2',
+      blockers: [
+        {
+          kind: 'gate',
+          capability: 'live-dependency',
+          capabilitySource: 'legacy-inferred',
+          ref: 'green gate',
+          summary: 'legacy gate blocker',
+          status: 'active',
+          createdAt: now,
+          createdBy: 'su-a',
+          updatedAt: now,
+        },
+      ],
+    });
+
+    expect(suggestions).toHaveLength(1);
+    expect(suggestions[0]).toMatchObject({
+      tool: 'state:subscribe',
+      args: { cell: 'gate.greenCheckpoint.verdict', on: { op: 'changed' } },
+    });
+  });
+
+  it('never suggests cleared blockers or malformed/dead event keys', () => {
+    const now = '2026-08-21T00:00:00.000Z';
+    expect(
+      suggestedWatchesForItemBlockers({
+        itemId: 'WI-3',
+        blockers: [
+          {
+            kind: 'event',
+            capability: 'live-dependency',
+            capabilitySource: 'explicit',
+            ref: 'work-item:done',
+            summary: 'missing required id',
+            status: 'active',
+            createdAt: now,
+            createdBy: 'su-a',
+            updatedAt: now,
+          },
+          {
+            kind: 'gate',
+            capability: 'live-dependency',
+            capabilitySource: 'explicit',
+            ref: 'release:green:papercusp',
+            summary: 'already cleared',
+            status: 'cleared',
+            createdAt: now,
+            createdBy: 'su-a',
+            updatedAt: now,
+          },
+        ],
+      }),
+    ).toEqual([]);
   });
 });
