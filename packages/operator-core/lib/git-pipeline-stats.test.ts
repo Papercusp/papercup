@@ -314,7 +314,16 @@ describe('selectActiveCheckpointRoot', () => {
     ).toBe('/srv/sidestage');
   });
 
-  it('uses the deploy root only for the default pipeline and rejects unknown or ambiguous mappings', () => {
+  it('uses the explicit deploy root for the default pipeline even when registry paths are ambiguous', () => {
+    const base = {
+      projectPaths: ['/srv/a/papercusp', '/srv/b/papercusp'],
+      defaultPipeline: 'papercusp',
+      defaultRoot: '/srv/papercusp',
+    };
+    expect(selectActiveCheckpointRoot({ ...base, pipeline: 'papercusp' })).toBe('/srv/papercusp');
+  });
+
+  it('uses the deploy root when the default pipeline is absent and rejects unknown or ambiguous mappings', () => {
     const base = { projectPaths: ['/srv/a/sidestage', '/srv/b/sidestage'], defaultPipeline: 'papercusp', defaultRoot: '/srv/papercusp' };
     expect(selectActiveCheckpointRoot({ ...base, pipeline: 'papercusp', projectPaths: [] })).toBe('/srv/papercusp');
     expect(selectActiveCheckpointRoot({ ...base, pipeline: 'unknown' })).toBeNull();

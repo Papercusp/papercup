@@ -689,9 +689,13 @@ export function selectActiveCheckpointRoot(input: {
   defaultPipeline: string;
   defaultRoot: string;
 }): string | null {
+  // The operator-home pipeline already carries its authoritative integration root.  Do not
+  // make that root contingent on the registry's project-path list: the registry can contain
+  // several worktrees with the same basename (or be temporarily unreadable), while the release
+  // status surface must still inspect the one root that owns its routines and run-lock.
+  if (input.pipeline === input.defaultPipeline) return input.defaultRoot;
   const matchingRoots = [...new Set(input.projectPaths.filter((root) => pipelineName(root) === input.pipeline))];
   if (matchingRoots.length === 1) return matchingRoots[0] ?? null;
-  if (matchingRoots.length === 0 && input.pipeline === input.defaultPipeline) return input.defaultRoot;
   return null;
 }
 
@@ -938,17 +942,26 @@ export async function gitPipelineSnapshot(
   let activeRun: GitPipelineSnapshot['activeRun'] = null;
   if (opts.includeActiveRun) {
     try {
-      const registry = await loadHarnessRegistry();
-      const activeRunRoot = selectActiveCheckpointRoot({
-        pipeline: slug,
-        projectPaths: registry.projects.map((project) => project.path),
-        defaultPipeline: DEFAULT_SLUG,
-        defaultRoot: deploy.integrationRoot,
-      });
-      if (activeRunRoot) {
+      // release:deploy and the operator-home derived read always target the default pipeline.
+      // Use its explicit integration root directly so registry ambiguity/availability cannot
+      // turn a live run-lock into a false null. Non-default pipelines still require the
+      // registry mapping to avoid attaching one harness's checkpoint process to another.
+      let resolvedActiveRunRoot: string | null;
+      if (slug === DEFAULT_SLUG) {
+        resolvedActiveRunRoot = deploy.integrationRoot;
+      } else {
+        const registry = await loadHarnessRegistry();
+        resolvedActiveRunRoot = selectActiveCheckpointRoot({
+          pipeline: slug,
+          projectPaths: registry.projects.map((project) => project.path),
+          defaultPipeline: DEFAULT_SLUG,
+          defaultRoot: deploy.integrationRoot,
+        });
+      }
+      if (resolvedActiveRunRoot) {
         const probe =
           opts.probeActiveRun ?? (await import('./release-checkpoint-launch')).checkActiveCheckpointRun;
-        activeRun = mapActiveRun(probe(activeRunRoot));
+        activeRun = mapActiveRun(probe(resolvedActiveRunRoot));
       }
     } catch {
       activeRun = null;
