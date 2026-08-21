@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Run pre-snapshot DB hook ONCE per cycle, then snapshot every registered source.
 set -uo pipefail
-LOG_DIR="${KOPIA_SNAPSHOT_LOG_DIR:-/home/marsh-office/.cache/kopia}"
+LOG_DIR="${KOPIA_SNAPSHOT_LOG_DIR:-$HOME/.cache/kopia}"
 PID_FILE="$LOG_DIR/snapshot-all.kopia.pid"
 PROC_ROOT="${KOPIA_SNAPSHOT_PROC_ROOT:-/proc}"
 SUDO_BIN="${KOPIA_SNAPSHOT_SUDO:-/usr/bin/sudo}"
@@ -81,7 +81,7 @@ trap cleanup_kopia_pid EXIT
 
 {
   echo "=== $(date -Iseconds) run start ==="
-  /home/marsh-office/.config/kopia/hooks/pre-snapshot.sh
+  "$HOME/.config/kopia/hooks/pre-snapshot.sh"
   # ── BATCHED INVOCATION (2026-08-07, fan/thermal investigation) ──────────────
   # Was: one `kopia snapshot create` per source inside a while-read loop — 13
   # separate kopia processes every cycle. Measured on this host, a kopia
@@ -97,24 +97,24 @@ trap cleanup_kopia_pid EXIT
   # (469 CPU-s) is walking .papercusp-workspaces / papercupai-workspace / .papercusp.
   # ── COLD SOURCES: discovered, but NOT snapshotted on this 30-minute timer ────
   # Source discovery below is DYNAMIC (`kopia snapshot list --all`), so any source
-  # that has ever been snapshotted gets swept every 30 minutes. /home/marsh-office
+  # that has ever been snapshotted gets swept every 30 minutes. $HOME
   # is a deliberately DAILY source (plan kopia-curated-home-coverage-2026-08-16):
   # it walks the whole home tree, and doing that every 30 min would undo the
   # 2026-08-07 thermal fix that first cut this timer from 5 min to 15. It has its own
   # unit — kopia-home-snapshot.timer — and must be filtered out HERE, or it would
   # silently rejoin the hot sweep the moment its first snapshot exists.
   #
-  # Exact-match (`grep -vxF`) on purpose: this must remove /home/marsh-office
-  # itself WITHOUT removing its children (/home/marsh-office/.papercusp etc.),
+  # Exact-match (`grep -vxF`) on purpose: this must remove $HOME
+  # itself WITHOUT removing its children ($HOME/.papercusp etc.),
   # which ARE hot sources and must keep their 30-minute cadence. The two
   # owner-protected VM sources are also daily: their images are hundreds of GB,
   # so registering them must never make the 30-minute sweep walk them.
   # windows-vm is a symlink today; keep both spellings cold so a source created
   # from its resolved target cannot accidentally re-enter the hot sweep.
   COLD_SOURCES=(
-    /home/marsh-office
-    /home/marsh-office/windows-vm
-    /home/marsh-office/macos-vm
+    "$HOME"
+    "$HOME/windows-vm"
+    "$HOME/macos-vm"
     /mnt/data/offload/windows-vm
   )
   mapfile -t SRCS < <("$SUDO_BIN" -n "$KOPIA_BIN" snapshot list --all 2>/dev/null \

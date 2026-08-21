@@ -5,7 +5,7 @@
 #
 # WHY THIS IS A SEPARATE SCRIPT AND TIMER, NOT ANOTHER SOURCE IN snapshot-all.sh:
 # snapshot-all.sh runs every 30 MINUTES and discovers its sources dynamically, so a
-# /home/marsh-office source would be swept every 30 minutes automatically. That walks
+# $HOME source would be swept every 30 minutes automatically. That walks
 # the entire home tree and would undo the 2026-08-07 thermal fix that cut that timer
 # from 5 min to 15 (this box idles at 90-92 C against a ~94 C limit). snapshot-all.sh
 # filters this path out via its COLD_SOURCES array; this unit owns it instead, daily.
@@ -16,9 +16,9 @@
 
 set -uo pipefail
 
-HOME_SRC=/home/marsh-office
+HOME_SRC="$HOME"
 VM_REQUESTED=( "$HOME_SRC/windows-vm" "$HOME_SRC/macos-vm" )
-LOG_DIR="${KOPIA_HOME_SNAPSHOT_LOG_DIR:-/home/marsh-office/.cache/kopia}"
+LOG_DIR="${KOPIA_HOME_SNAPSHOT_LOG_DIR:-$HOME/.cache/kopia}"
 PID_FILE="$LOG_DIR/home-snapshot.kopia.pid"
 PROC_ROOT="${KOPIA_HOME_SNAPSHOT_PROC_ROOT:-/proc}"
 SUDO_BIN="${KOPIA_HOME_SNAPSHOT_SUDO:-/usr/bin/sudo}"

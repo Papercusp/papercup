@@ -44,12 +44,12 @@
 # BOTH directions. Run it after touching fail().
 set -uo pipefail
 
-LOG=/home/marsh-office/.cache/kopia/healthcheck.log
+LOG="$HOME/.cache/kopia/healthcheck.log"
 DUMP=/mnt/data/Backup/db-dumps
 STATUS="$DUMP/STATUS.json"
 # Injectable so a caller can capture the alert instead of firing it. This is now a
 # convenience for tests, NOT the safety mechanism — see ALARM SAFETY below.
-ALERT="${BACKUP_ALERT_CMD:-/home/marsh-office/.config/kopia/backup-alert.sh}"
+ALERT="${BACKUP_ALERT_CMD:-$HOME/.config/kopia/backup-alert.sh}"
 
 # ── ALARM SAFETY (EI-10746) — decide BEFORE the defaults are applied ─────────
 # `${VAR:-default}` erases the difference between "unset" and "set to the default value",
@@ -73,7 +73,7 @@ fi
 MAX_DUMP_AGE_S="${MAX_DUMP_AGE_S:-28800}"   # 8h backstop (primary alarm = repo script @ 6h)
 MAX_SNAP_AGE_S="${MAX_SNAP_AGE_S:-3600}"     # 30m cadence: tolerate one missed cycle plus runtime/jitter
 
-# 48h — /home/marsh-office is a DAILY source (kopia-home-snapshot.timer), so its bar is
+# 48h — $HOME is a DAILY source (kopia-home-snapshot.timer), so its bar is
 # "two consecutive missed runs", by the same reasoning MAX_ODDSMITH_DUMP_AGE_S uses for its
 # own cadence: one miss is a blip (a reboot, or a run the flock skipped because the previous
 # one overran), two is a fault. It must NOT reuse MAX_SNAP_AGE_S's 3600s — that bar measures
@@ -143,7 +143,7 @@ dur() {
 
 # Extract ONE exact source's block from `kopia snapshot list <path>` output.
 # Kopia may print an ancestor-source <ERROR> block first, then the valid exact
-# source block (observed for /home/marsh-office/macos-vm). A global `<ERROR>`
+# source block (observed for $HOME/macos-vm). A global `<ERROR>`
 # grep therefore turns a healthy exact snapshot red. Headers are unindented;
 # detail rows are indented, so keep only the block whose header ends in :$src.
 exact_source_block() {
@@ -228,13 +228,17 @@ if [ "${1:-}" = "--self-test" ]; then
   check "tightened threshold + BACKUP_ALERT_FORCE=1 DOES page"    1 yes MAX_DUMP_AGE_S=1 BACKUP_ALERT_FORCE=1
   # 3. THE EXACT BUG FROM EI-20969873312915338: an ancestor lookup error is
   #    irrelevant when the later exact-source block is healthy.
-  mixed_listing="marsh@host:/home/marsh-office
+  # The user/host here are the canonical John-Doe stand-ins, NOT this box's identity:
+  # a fixture that spelled the real ones would leak them into the release bundle
+  # (WI-4776 class, caught by lint:no-box-identity / lint:no-identity-literals). The
+  # parser under test is pure string work, so the exact names are irrelevant to it.
+  mixed_listing="jdoe@host:/home/jdoe
   2026-08-20 12:00:00 EDT <ERROR> error reading directory: entry not found
 
-marsh@host:/home/marsh-office/macos-vm
+jdoe@host:/home/jdoe/macos-vm
   2026-08-20 13:00:00 EDT abc123 10 GB drwxr-xr-x files:1 dirs:1"
-  exact_block=$(printf '%s\n' "$mixed_listing" | exact_source_block /home/marsh-office/macos-vm)
-  if printf '%s\n' "$exact_block" | grep -qF ':/home/marsh-office/macos-vm' \
+  exact_block=$(printf '%s\n' "$mixed_listing" | exact_source_block /home/jdoe/macos-vm)
+  if printf '%s\n' "$exact_block" | grep -qF ':/home/jdoe/macos-vm' \
      && ! printf '%s\n' "$exact_block" | grep -q '<ERROR>'; then
     printf '  ok    %s\n' "exact-source parser ignores an ancestor error block"; pass=$((pass+1))
   else
@@ -331,7 +335,7 @@ done
 # Gate on the DISCOVERY FILE, not on the dump: if ~/.oddsmith/embedded-pg.json is
 # absent, oddsmith has never run here and there is nothing to be stale about. If it
 # is present, this box HAS an oddsmith database and it must be getting dumped.
-ODDSMITH_DISCOVERY="${ODDSMITH_DISCOVERY:-/home/marsh-office/.oddsmith/embedded-pg.json}"
+ODDSMITH_DISCOVERY="${ODDSMITH_DISCOVERY:-$HOME/.oddsmith/embedded-pg.json}"
 if [ -f "$ODDSMITH_DISCOVERY" ] && [ -f "$STATUS" ]; then
   odds_last=$(sed -n 's/.*"oddsmithLastSuccessEpoch": *\([0-9]*\).*/\1/p' "$STATUS" | head -1)
   odds_note=$(sed -n 's/.*"oddsmithNote": *"\([^"]*\)".*/\1/p' "$STATUS" | head -1)
@@ -365,26 +369,26 @@ snap_age=$(( now - $(date -d "$LATEST" +%s) ))
 # Check 2 above takes the newest snapshot across ALL sources (`--all -n 1 | sort -r |
 # head -1`), so the 30-minute hot sweep keeps it green no matter what happens to any
 # INDIVIDUAL source. That is the right shape for "are dumps leaving this box", but it is
-# structurally BLIND to one source dying: /home/marsh-office is snapshotted DAILY by
+# structurally BLIND to one source dying: $HOME is snapshotted DAILY by
 # kopia-home-snapshot.timer, and if that unit broke, check 2 would stay green forever
 # while $HOME silently stopped being backed up. That is this file's signature failure
 # (EI-10733) — a check that cannot observe the thing it is trusted to cover — so the
 # daily source gets its own bar rather than riding on the aggregate.
 #
 # This depends on `kopia snapshot list <path>` matching the source EXACTLY, not as a
-# prefix. VERIFIED 2026-08-16: it returned NOTHING for /home/marsh-office while that path
+# prefix. VERIFIED 2026-08-16: it returned NOTHING for $HOME while that path
 # had no snapshot of its own, even though ELEVEN of its children were sources. Without
 # that property this check would be permanently green off the hot sweep — i.e. exactly
 # the blindness it exists to remove.
-HOME_SNAP_SRC="${HOME_SNAP_SRC:-/home/marsh-office}"
+HOME_SNAP_SRC="${HOME_SNAP_SRC:-$HOME}"
 home_listing=$(sudo -n /usr/bin/kopia snapshot list "$HOME_SNAP_SRC" -n 1 2>/dev/null)
 home_exact_listing=$(printf '%s\n' "$home_listing" | exact_source_block "$HOME_SNAP_SRC")
 # Require the EXACT source header before trusting any timestamp in that listing.
 # `kopia snapshot list <path>` resolves to the nearest ANCESTOR source and then browses
 # <path> INSIDE it — so a path that is NOT itself a source still prints the ancestor's
 # header and the ancestor's timestamp. Measured 2026-08-16:
-#   $ kopia snapshot list /home/marsh-office/definitely-not-a-source -n 1
-#   marsh-office@host:/home/marsh-office
+#   $ kopia snapshot list "$HOME/definitely-not-a-source" -n 1
+#   $USER@host:$HOME
 #     2026-08-16 17:28:32 EDT <ERROR> error reading directory: entry not found
 # A bare timestamp grep over that output returns 17:28:32 and reports GREEN for a source
 # that does not exist. Anchoring on the header makes this a test of "is THIS path a source
@@ -413,7 +417,7 @@ fi
 # Owner-protected VM paths are deliberately excluded from the curated HOME
 # source's .kopiaignore. Assert both their existence and their own exact Kopia
 # source header so a missing VM cannot hide behind the healthy HOME ancestor.
-PROTECTED_VM_REQUESTS=( /home/marsh-office/windows-vm /home/marsh-office/macos-vm )
+PROTECTED_VM_REQUESTS=( "$HOME/windows-vm" "$HOME/macos-vm" )
 for requested in "${PROTECTED_VM_REQUESTS[@]}"; do
   if [ ! -d "$requested" ]; then
     fail "owner-protected VM path is MISSING: $requested — its loss is not protected or detectable elsewhere"
