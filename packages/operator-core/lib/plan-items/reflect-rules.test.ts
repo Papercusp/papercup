@@ -120,7 +120,11 @@ describe('plan-item-reflect:complete', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
     expect(fires(rule, closed)).toBe(true);
-    expect(renderArgs(rule, closed)).toMatchObject({ item: 'P-007', status: 'dropped' });
+    expect(renderArgs(rule, closed)).toMatchObject({
+      item: 'P-007',
+      status: 'dropped',
+      note: expect.stringContaining('WI-9'),
+    });
 
     const deprecated = evt('work_items:complete', stamped('deprecated', { completion: { summary: 's' } }));
     expect(fires(rule, deprecated)).toBe(true);
@@ -171,7 +175,10 @@ describe('plan-item-reflect:set-state', () => {
     expect(renderArgs(rule, e)).toMatchObject({ item: 'P-007', status: 'done' });
 
     const drop = evt('work_items:set_state', stamped('deprecated'));
-    expect(renderArgs(rule, drop)).toMatchObject({ status: 'dropped' });
+    expect(renderArgs(rule, drop)).toMatchObject({
+      status: 'dropped',
+      note: expect.stringContaining('WI-9'),
+    });
 
     const reopen = evt('work_items:set_state', stamped('open'));
     expect(renderArgs(rule, reopen)).toMatchObject({ status: 'todo' });
