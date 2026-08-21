@@ -268,7 +268,16 @@ const fireBreadcrumbs = (): Array<Record<string, unknown>> =>
  *  the WI-1416 fire_started_at breadcrumb and the stash-check's per-tick
  *  known_stash_shas baseline excluded so outcome assertions stay focused. */
 const routinePatches = (): Array<Record<string, unknown>> =>
-  allRoutinePatches().filter((p) => !('fire_started_at' in p) && !('known_stash_shas' in p));
+  allRoutinePatches().filter(
+    (p) => !('fire_started_at' in p) && !('known_stash_shas' in p) && !('git_sync_activity' in p),
+  );
+
+/** EI-21049559233457671: the whole-fire marker is intentionally asserted separately
+ * from the local-stage outcome patch. */
+const gitSyncActivityPatches = (): Array<Record<string, unknown>> =>
+  allRoutinePatches()
+    .filter((p) => 'git_sync_activity' in p)
+    .map((p) => p.git_sync_activity as Record<string, unknown>);
 
 /** Escalation upserts (conflict + error kinds), with the parsed body. */
 const escalationUpserts = (): Array<{ text: string; params: unknown[]; body: Record<string, unknown> }> =>
@@ -918,6 +927,12 @@ describe('clean sync outcome', () => {
       prevSha: 'prev-sha-000',
       headSha: 'abc123def456',
     });
+
+    expect(gitSyncActivityPatches()).toEqual([
+      expect.objectContaining({ active: true, phase: 'local-sync', outcome_status: null }),
+      expect.objectContaining({ active: true, phase: 'post-legs', outcome_status: 'synced' }),
+      expect.objectContaining({ active: false, phase: 'complete', outcome_status: 'synced' }),
+    ]);
   });
 
   it("a 'nothing' pass also clears escalations but records no head_sha and runs no doc sweep", async () => {
