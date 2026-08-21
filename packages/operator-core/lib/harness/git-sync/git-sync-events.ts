@@ -66,6 +66,15 @@ export interface GitSyncEventsDeps {
   scope: GitSyncEventScope;
 }
 
+/**
+ * Additional commits that became covered by the remote staging head in this
+ * bridge tick. The head itself is always emitted; these entries add precise
+ * keys for commits carried by that head (normally the newly egressed range).
+ */
+export interface GitSyncEgressEventOptions {
+  includedShas?: readonly string[];
+}
+
 function emitGitSyncEventPair(
   kind: 'committed' | 'egressed',
   sha: string,
@@ -93,13 +102,52 @@ export function emitGitSyncCommittedEvent(sha: string, deps: GitSyncEventsDeps):
   emitGitSyncEventPair('committed', sha, `git-sync committed ${shortSha} in the local harness checkout`, deps);
 }
 
+function emitGitSyncEgressEventPair(
+  headSha: string,
+  deps: GitSyncEventsDeps,
+  options?: GitSyncEgressEventOptions,
+): void {
+  const emit = deps.emit ?? emitAwaitedEvent;
+  const shortHeadSha = headSha.slice(0, 12);
+  const exactShas = [...new Set([headSha, ...(options?.includedShas ?? [])].filter((sha) => sha.length > 0))];
+  void Promise.resolve()
+    .then(async () => {
+      // The global key retains the actual remote staging head. Exact keys use
+      // the SHA they name so a payload_filter on an ancestor also matches;
+      // egressHead preserves the proof's actual remote tip for diagnostics.
+      await emit({
+        key: 'git-sync:egressed',
+        summary: `git-sync egressed ${shortHeadSha} to origin/staging`,
+        payload: { sha: headSha, egressHead: headSha, ...deps.scope },
+        source: 'git-sync',
+      });
+      for (const sha of exactShas) {
+        const shortSha = sha.slice(0, 12);
+        await emit({
+          key: `git-sync:egressed:${sha}`,
+          summary:
+            sha === headSha
+              ? `git-sync egressed ${shortSha} to origin/staging`
+              : `git-sync egressed ${shortHeadSha} to origin/staging (includes ancestor ${shortSha})`,
+          payload: { sha, egressHead: headSha, ...deps.scope },
+          source: 'git-sync',
+        });
+      }
+    })
+    .catch((e: unknown) => failSoft(`egressed-event for ${shortHeadSha}`, e));
+}
+
 /**
  * Fire only after the GitHub bridge proves `sha` is the remote staging head by a
- * successful push or an up-to-date comparison. Emits BOTH the global
- * `git-sync:egressed` key and the precise `git-sync:egressed:<sha>` key.
- * Fire-and-forget; never throws.
+ * successful push or an up-to-date comparison. Emits the global
+ * `git-sync:egressed` key, the precise head key, and (when supplied) precise
+ * keys for commits included as ancestors by that remote head. Fire-and-forget;
+ * never throws.
  */
-export function emitGitSyncEgressedEvent(sha: string, deps: GitSyncEventsDeps): void {
-  const shortSha = sha.slice(0, 12);
-  emitGitSyncEventPair('egressed', sha, `git-sync egressed ${shortSha} to origin/staging`, deps);
+export function emitGitSyncEgressedEvent(
+  sha: string,
+  deps: GitSyncEventsDeps,
+  options?: GitSyncEgressEventOptions,
+): void {
+  emitGitSyncEgressEventPair(sha, deps, options);
 }

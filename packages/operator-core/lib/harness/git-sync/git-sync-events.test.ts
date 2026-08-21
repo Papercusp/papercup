@@ -107,4 +107,23 @@ describe('emitGitSyncEgressedEvent (EI-20331175777179195)', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('egressed-event'));
     warn.mockRestore();
   });
+
+  it('emits precise keys for commits included by a later egress head', async () => {
+    const emit = typedEmit();
+    const ancestor = '1234567890abcdef1234567890abcdef12345678';
+    emitGitSyncEgressedEvent(SHA, { emit, scope: SCOPE_A }, { includedShas: [SHA, ancestor, ancestor] });
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(emit.mock.calls.map((c) => c[0].key)).toEqual([
+      'git-sync:egressed',
+      `git-sync:egressed:${SHA}`,
+      `git-sync:egressed:${ancestor}`,
+    ]);
+    const ancestorCall = emit.mock.calls.find((call) => call[0].key === `git-sync:egressed:${ancestor}`)?.[0];
+    expect(ancestorCall).toMatchObject({
+      source: 'git-sync',
+      payload: { sha: ancestor, egressHead: SHA, ...SCOPE_A },
+    });
+    expect(ancestorCall?.summary).toContain(`includes ancestor ${ancestor.slice(0, 12)}`);
+  });
 });

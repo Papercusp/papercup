@@ -247,6 +247,8 @@ describe('runGithubBridgeLeg — owner-actionable egress failures', () => {
 
 describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', () => {
   const EGRESS_HEAD = 'e'.repeat(40);
+  const PREVIOUS_EGRESS_HEAD = 'b'.repeat(40);
+  const INCLUDED_ANCESTOR = 'c'.repeat(40);
 
   const healthyOutcome = (egressHead: string | null) => ({
     ran: true,
@@ -277,6 +279,29 @@ describe('runGithubBridgeLeg — EI-20331175777179195 truthful egress event', ()
     expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(EGRESS_HEAD, {
       scope: { installSlug: SLUG, workspaceId: WS },
     });
+  });
+
+  it('includes newly egressed ancestors in precise event signaling', async () => {
+    pathExistsMock.mockResolvedValue(false);
+    sqlMock.mockResolvedValue([{ la: null, wb_sha: 'a'.repeat(40), prev_egress_head: PREVIOUS_EGRESS_HEAD }]);
+    runGithubBridgeTickMock.mockResolvedValue(healthyOutcome(EGRESS_HEAD));
+    defaultRunGitMock.mockImplementation(async (args: string[]) =>
+      args[0] === 'rev-list'
+        ? { code: 0, stdout: `${EGRESS_HEAD}\n${INCLUDED_ANCESTOR}\n`, stderr: '' }
+        : { code: 0, stdout: '', stderr: '' },
+    );
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    expect(defaultRunGitMock).toHaveBeenCalledWith(
+      ['rev-list', '--topo-order', `${PREVIOUS_EGRESS_HEAD}..${EGRESS_HEAD}`],
+      BARE,
+    );
+    expect(emitGitSyncEgressedEventMock).toHaveBeenCalledWith(
+      EGRESS_HEAD,
+      { scope: { installSlug: SLUG, workspaceId: WS } },
+      { includedShas: [EGRESS_HEAD, INCLUDED_ANCESTOR] },
+    );
   });
 
   it('emits only after the writer-backed metadata watermark is persisted', async () => {

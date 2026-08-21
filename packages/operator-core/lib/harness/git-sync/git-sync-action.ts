@@ -165,6 +165,7 @@ import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttribution
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
+const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/i;
 // Keep the lease refresh comfortably inside its expiry window. Long, progressing
 // fetches can legitimately run well past LOCK_TTL_SEC; without a refresh the
 // resource row expires mid-run and the next scheduled fire enters the same
@@ -180,6 +181,42 @@ const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
  * different-owner conflict path provides real single-flight protection.
  */
 const newGitSyncLockOwner = (): string => `${GIT_SYNC_OWNER}:${randomUUID()}`;
+
+/**
+ * Return commits newly covered by a proven remote staging head. The bridge
+ * emits the head on every up-to-date tick, but an exact-SHA waiter may target
+ * an older commit carried by a later head. Restrict the ancestry walk to the
+ * previous egress range when possible so a quiet tick does not re-emit an
+ * entire repository's history; the event emitter always adds the head itself.
+ * Best-effort: a failed local walk leaves the head signal intact.
+ */
+async function newlyEgressedCommitShas(
+  headSha: string,
+  repoPath: string,
+  previousHeadSha: string | null,
+): Promise<string[]> {
+  if (previousHeadSha === headSha) return [];
+  const range = previousHeadSha && FULL_COMMIT_SHA.test(previousHeadSha) ? `${previousHeadSha}..${headSha}` : headSha;
+  const result = await defaultRunGit(['rev-list', '--topo-order', range], repoPath);
+  if (result.code === 0) {
+    return result.stdout
+      .split(/\s+/)
+      .map((sha) => sha.trim())
+      .filter((sha) => FULL_COMMIT_SHA.test(sha));
+  }
+  // A stale/missing previous watermark must not suppress the ancestry proof;
+  // retry against the head alone before falling back to the head-only event.
+  if (range !== headSha) {
+    const fallback = await defaultRunGit(['rev-list', '--topo-order', headSha], repoPath);
+    if (fallback.code === 0) {
+      return fallback.stdout
+        .split(/\s+/)
+        .map((sha) => sha.trim())
+        .filter((sha) => FULL_COMMIT_SHA.test(sha));
+    }
+  }
+  return [];
+}
 /**
  * The `harness_escalations` row key for ALL git-sync escalations is
  * `(harness_slug, 'git-sync')` — a CONSTANT phase, deliberately NOT the lifecycle
@@ -1863,6 +1900,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     // see repo-identity.ts's module header for why keying on `slug` broke G-8
     // for any two devices whose install slugs differ (nearly always).
     const repoKey = canonicalRepoKey(entry);
+    const bareRepoPath = hiveGitRepoPath(potHomeSlug, repoKey);
 
     // The admission watermark (P-005): the last ADMITTED github-origin head.
     const { sql } = getOrgPg();
@@ -1886,7 +1924,6 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     // pruned mirror can't produce a dangling canonical ref).
     const wbSha = rows[0]?.wb_sha ?? null;
     if (wbSha) {
-      const bareRepoPath = hiveGitRepoPath(potHomeSlug, repoKey);
       // WI-6282: a COLD device has no store yet — `hiveGitRepoPath` only COMPUTES
       // a path (it never creates, unlike `ensurePotGitRepo`), and this leg runs
       // BEFORE the bootstrap leg that does. Spawning git with a nonexistent cwd
@@ -2031,7 +2068,16 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
     // Emit after the metadata write so a woken waiter can immediately verify the
     // same writer-backed watermark. A skipped/failed/no-egress tick emits nothing.
     if (outcome.egressHead) {
-      emitGitSyncEgressedEvent(outcome.egressHead, { scope: { installSlug: slug, workspaceId } });
+      const includedShas = await newlyEgressedCommitShas(outcome.egressHead, bareRepoPath, prevEgressHead);
+      if (includedShas.length > 0) {
+        emitGitSyncEgressedEvent(
+          outcome.egressHead,
+          { scope: { installSlug: slug, workspaceId } },
+          { includedShas },
+        );
+      } else {
+        emitGitSyncEgressedEvent(outcome.egressHead, { scope: { installSlug: slug, workspaceId } });
+      }
     }
   } catch (e) {
     console.warn(`[git-sync] ${slug}: github-bridge pass failed: ${e instanceof Error ? e.message : e}`);
