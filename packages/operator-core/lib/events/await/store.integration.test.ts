@@ -102,12 +102,14 @@ beforeAll(async () => {
     CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent
       ON harness_shared.event_awaits (workspace_id, subscriber_id, event_key)
       WHERE policy = 'wake' AND once = false AND cancelled_at IS NULL AND event_key LIKE 'coord:inbox-wake:%'`);
-  // FAITHFUL to mig 163 — event_wake_deliveries — needed by inspectEventKey (EI-13705 tests below).
+  // FAITHFUL to mig 163 + 175 (urgent/min_sleep_sec) + 387 (source) —
+  // event_wake_deliveries is needed by inspectEventKey and insertDeliveries.
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.event_wake_deliveries (
       id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
       workspace_id text NOT NULL DEFAULT 'default', await_id bigint NOT NULL,
       subscriber_id text NOT NULL, event_key text NOT NULL, payload jsonb, summary text,
+      urgent boolean NOT NULL DEFAULT false, min_sleep_sec integer, source text,
       status text NOT NULL DEFAULT 'pending', channel text, attempts integer NOT NULL DEFAULT 0,
       last_error text, next_attempt_at timestamptz NOT NULL DEFAULT now(),
       created_at timestamptz NOT NULL DEFAULT now(), delivered_at timestamptz
@@ -674,12 +676,12 @@ describe('verified-wait fallback campaign (PG)', () => {
     expect(claimed?.id).toBe(row.id);
 
     const observation = await observeCheckpointProducer(claimed!.producerHealthCertificate!, {
-      // `activeRun: null` means the probe produced no reading (`unknown`), not
-      // that a previously observed producer disappeared. Use an explicit
-      // inactive run to model the confirmed absence this case asserts.
+      // `candidate: null` means the named run has not been observed yet
+      // (`unknown`), not that it disappeared. Name the certificate's own run
+      // in an explicit inactive probe to model the confirmed absence asserted.
       snapshot: async () =>
         checkpointSnapshot({
-          activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+          activeRun: { active: false, candidate: 'run-campaign', startedAtMs: null, elapsedSec: null },
         }),
     });
     const result = classifyVerifiedWaitTimeout(claimed!.producerHealthCertificate!, observation);
