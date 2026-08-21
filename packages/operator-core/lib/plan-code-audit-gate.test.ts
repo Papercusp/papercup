@@ -128,9 +128,7 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
     "refuses an unfinished item in status '%s' before reading the audit or rubric families",
     async (status) => {
       mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE);
-      mockPlanItems.mockResolvedValue([
-        { itemId: 'P-001', status, itemText: 'unfinished requirement' },
-      ]);
+      mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status, itemText: 'unfinished requirement' }]);
 
       const verdict = await evaluatePlanAcceptanceGate(PLAN);
 
@@ -155,9 +153,7 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
 
   it('keeps the item family independently killable without reading plan-item state', async () => {
     mockFlag.mockResolvedValue(false);
-    mockPlanItems.mockResolvedValue([
-      { itemId: 'P-001', status: 'todo', itemText: 'unfinished requirement' },
-    ]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'todo', itemText: 'unfinished requirement' }]);
 
     const verdict = await evaluatePlanAcceptanceGate(PLAN);
 
@@ -167,9 +163,7 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
 
   it('records a reasoned force past unfinished items when later gate families are off', async () => {
     mockFlag.mockImplementation(async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE);
-    mockPlanItems.mockResolvedValue([
-      { itemId: 'P-001', status: 'blocked', itemText: 'blocked requirement' },
-    ]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'blocked', itemText: 'blocked requirement' }]);
 
     const verdict = await evaluatePlanAcceptanceGate(PLAN, {
       force: { reason: 'documented release exception' },
@@ -187,12 +181,9 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
 
   it('does not let an item-family force waive the independent rubric family', async () => {
     mockFlag.mockImplementation(
-      async (flag) =>
-        flag === FLAGS.PLAN_ITEM_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE,
+      async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE,
     );
-    mockPlanItems.mockResolvedValue([
-      { itemId: 'P-001', status: 'needs-human', itemText: 'unfinished requirement' },
-    ]);
+    mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'needs-human', itemText: 'unfinished requirement' }]);
     mockRubric.mockResolvedValue(null);
 
     const verdict = await evaluatePlanAcceptanceGate(PLAN, {
@@ -239,9 +230,7 @@ describe('evaluatePlanAcceptanceGate — per-item code audit freshness', () => {
   });
 
   it('marks only an item whose requirement text changed', async () => {
-    mockEffectiveAudits.mockResolvedValue([
-      effective({ itemId: 'P-001', itemText: 'old requirement', auditSeq: 1 }),
-    ]);
+    mockEffectiveAudits.mockResolvedValue([effective({ itemId: 'P-001', itemText: 'old requirement', auditSeq: 1 })]);
     mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'new requirement' }]);
 
     const verdict = await evaluatePlanAcceptanceGate(PLAN);
