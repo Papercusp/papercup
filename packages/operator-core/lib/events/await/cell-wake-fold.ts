@@ -170,9 +170,14 @@ export async function prepareCellWakeFold(input: CellWakeFoldInput): Promise<str
         );
       }
     } else {
-      // `unknown` — in-band and branchable. Saying so beats omitting the block, which
-      // would read as "the value is fine".
-      lines.push(`[cell] ${read.cell} — UNKNOWN at delivery ${stamp}: ${read.headline}`);
+      // `unknown` — in-band and BRANCHABLE, so the code is what the agent needs
+      // (`not-measured` ⇒ asking again is pointless, `resolver-failed` ⇒ retry,
+      // `insufficient-data` ⇒ supply more input). Saying so beats omitting the block,
+      // which would read as "the value is fine".
+      lines.push(
+        `[cell] ${read.cell} — UNKNOWN at delivery ${stamp}: ${read.unknown.code}` +
+          `${read.unknown.detail ? ` — ${read.unknown.detail}` : ''}`,
+      );
     }
 
     // The handle rides along on the healthy path too: this reading is itself a snapshot,

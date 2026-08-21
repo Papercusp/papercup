@@ -1,0 +1,240 @@
+/**
+ * The delivery-time cell fold (state-plane-interest-and-hardening-2026-08-21 P-022 / D-007).
+ *
+ * Two contracts are worth a test here, and they pull against each other:
+ *
+ *   1. FRESHNESS — the reading must be taken at DELIVERY, not at fire time. That is the
+ *      entire point of D-007: `payload.observed` is a fire-time snapshot, and the agent
+ *      is woken because of it at exactly the moment it is most likely to be stale.
+ *   2. NEVER DELAY THE WAKE — a wake is an interrupt. The resolvers involved were
+ *      measured at p50 324ms / p95 2037ms / max 45511ms (the P-004 census), so a budget
+ *      breach is the ORDINARY case, not the edge case.
+ *
+ * (2) is why most of this file is about degrades. Each one must still produce a block
+ * that TELLS the agent the value was not re-read — never silence, because a wake with no
+ * fold reads as "nothing to say about the value", and an agent reading absence as
+ * reassurance is the false-all-clear this subsystem exists to refuse.
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const getPredicateWatchMock = vi.fn();
+const deriveCellRereadMock = vi.fn();
+const readCellMock = vi.fn();
+
+vi.mock('./predicate-watch', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./predicate-watch')>();
+  return {
+    ...actual,
+    getPredicateWatch: (...a: unknown[]) => getPredicateWatchMock(...a),
+    deriveCellReread: (...a: unknown[]) => deriveCellRereadMock(...a),
+  };
+});
+
+vi.mock('../../cell-read', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../cell-read')>();
+  return { ...actual, readCell: (...a: unknown[]) => readCellMock(...a) };
+});
+
+const { prepareCellWakeFold, CELL_WAKE_FOLD_BUDGET_MS } = await import('./cell-wake-fold');
+
+const ROW = {
+  id: 'w1',
+  ownerId: 'su-me',
+  role: 'su',
+  harnessSlug: 'papercusp',
+  tool: 'dev:pipeline_position',
+  path: 'positions.deployed',
+  args: {},
+};
+const HANDLE = { tool: 'state:read' as const, args: { cell: 'gate.greenCheckpoint.verdict' } };
+const INPUT = { eventKey: 'predicate:w1', workspaceId: 'papercusp-workspace' };
+
+const valueRead = (over: Record<string, unknown> = {}) => ({
+  status: 'value' as const,
+  cell: 'gate.greenCheckpoint.verdict',
+  value: 'green',
+  headline: 'green',
+  resolver: 'gitPipelinePosition',
+  ...over,
+});
+
+beforeEach(() => {
+  getPredicateWatchMock.mockReset().mockResolvedValue(ROW);
+  deriveCellRereadMock.mockReset().mockReturnValue(HANDLE);
+  readCellMock.mockReset().mockResolvedValue(valueRead());
+});
+
+describe('the healthy fold', () => {
+  it('renders the delivery-time headline, a dated stamp, and the re-read handle', async () => {
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('gate.greenCheckpoint.verdict = green');
+    expect(block).toContain('re-read at delivery');
+    // The handle rides along even on the healthy path: this reading is itself a
+    // snapshot, just a dated one, and the agent may act minutes from now.
+    expect(block).toContain("state:read { cell: 'gate.greenCheckpoint.verdict' }");
+  });
+
+  it('carries the SUBJECT into the handle for a caller-relative cell', async () => {
+    deriveCellRereadMock.mockReturnValue({
+      tool: 'state:read',
+      args: { cell: 'git.pipelinePosition', as: 'apps/operator/x.ts' },
+    });
+    readCellMock.mockResolvedValue(valueRead({ cell: 'git.pipelinePosition' }));
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    // A handle without the subject re-answers a DIFFERENT question.
+    expect(block).toContain("state:read { cell: 'git.pipelinePosition', as: 'apps/operator/x.ts' }");
+  });
+
+  it('reads with the WATCH ROW\'s identity — the delivery carries no role or harness', async () => {
+    await prepareCellWakeFold(INPUT);
+
+    const [, reader, env] = readCellMock.mock.calls[0];
+    expect(reader).toEqual({ ownerId: 'su-me', roles: ['su'], harnessSlug: 'papercusp' });
+    expect(env).toEqual({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', role: 'su' });
+  });
+
+  it('re-derives the cell from the REGISTRY at delivery time, not from the fire payload', async () => {
+    await prepareCellWakeFold(INPUT);
+
+    // Trusting a stored cell id cannot notice a rename, a re-scope, or the reader
+    // leaving the audience between fire and delivery. Re-deriving can.
+    expect(deriveCellRereadMock).toHaveBeenCalledWith(ROW);
+  });
+
+  it('surfaces the MATERIAL path when the cell declares one (P-021)', async () => {
+    readCellMock.mockResolvedValue(valueRead({ material: { path: 'gate.red', value: 3 } }));
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('material · gate.red = 3');
+  });
+
+  it('hoists a NON-AUTHORITATIVE reading where it cannot be skipped', async () => {
+    readCellMock.mockResolvedValue(
+      valueRead({ source: { value: 'run-probe', authoritative: false, why: 'inferred from the checkout HEAD' } }),
+    );
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('INFERRED, not observed');
+    expect(block).toContain('inferred from the checkout HEAD');
+  });
+
+  it('reports UNKNOWN by its branchable code rather than omitting the block', async () => {
+    readCellMock.mockResolvedValue({
+      status: 'unknown',
+      cell: 'gate.greenCheckpoint.verdict',
+      unknown: { code: 'resolver-failed', detail: 'git rev-parse died' },
+    });
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    // The code is what the agent branches on: retry vs pointless vs supply-more-input.
+    expect(block).toContain('UNKNOWN');
+    expect(block).toContain('resolver-failed');
+    expect(block).toContain('git rev-parse died');
+  });
+});
+
+describe('degrades — the wake is never delayed and never silently unqualified', () => {
+  it('BUDGET BREACH: returns promptly and says the value was NOT re-read', async () => {
+    // The measured common case. Resolver never settles.
+    readCellMock.mockReturnValue(new Promise(() => {}));
+
+    const started = Date.now();
+    const block = await prepareCellWakeFold({ ...INPUT, budgetMs: 40 });
+    const elapsed = Date.now() - started;
+
+    expect(elapsed).toBeLessThan(1000);
+    expect(block).toContain('NOT re-read at delivery');
+    expect(block).toContain('did not resolve within 40ms');
+    // It must still hand over the handle — the agent's recourse.
+    expect(block).toContain("state:read { cell: 'gate.greenCheckpoint.verdict' }");
+    // And it must warn that what was quoted above is stale.
+    expect(block).toContain('may be stale');
+  });
+
+  it('RESOLVER THROWS: same qualified block, not a crash and not silence', async () => {
+    readCellMock.mockRejectedValue(new Error('boom'));
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('NOT re-read at delivery');
+    expect(block).toContain('could not be resolved');
+    expect(block).toContain("state:read { cell: 'gate.greenCheckpoint.verdict' }");
+  });
+
+  it('the two degrade reasons are DISTINGUISHABLE in the transcript', async () => {
+    readCellMock.mockReturnValue(new Promise(() => {}));
+    const slow = await prepareCellWakeFold({ ...INPUT, budgetMs: 20 });
+    readCellMock.mockRejectedValue(new Error('boom'));
+    const broken = await prepareCellWakeFold(INPUT);
+
+    // A chronically slow resolver and a broken one need different fixes.
+    expect(slow).not.toBe(broken);
+    expect(slow).toContain('did not resolve within');
+    expect(broken).toContain('could not be resolved');
+  });
+});
+
+describe('no fold at all — the cases with genuinely nothing to say', () => {
+  it('a NON-predicate wake (inbox, loop, plain await) is untouched', async () => {
+    expect(await prepareCellWakeFold({ ...INPUT, eventKey: 'coord:inbox-wake:su-me' })).toBeNull();
+    expect(await prepareCellWakeFold({ ...INPUT, eventKey: 'fleet:drained:x' })).toBeNull();
+    // ...and it does not even look the row up.
+    expect(getPredicateWatchMock).not.toHaveBeenCalled();
+  });
+
+  it('a GC\'d or reaped watch row', async () => {
+    getPredicateWatchMock.mockResolvedValue(null);
+    expect(await prepareCellWakeFold(INPUT)).toBeNull();
+  });
+
+  it('a watch that maps to no registered cell, or a reader outside its audience', async () => {
+    // deriveCellReread returns undefined for BOTH, deliberately — a hand-rolled
+    // watch:create on the same (tool, path) must not learn the cell exists.
+    deriveCellRereadMock.mockReturnValue(undefined);
+    expect(await prepareCellWakeFold(INPUT)).toBeNull();
+    expect(readCellMock).not.toHaveBeenCalled();
+  });
+
+  it('an ABSENT read stays deliberately uninformative', async () => {
+    readCellMock.mockResolvedValue({ status: 'absent', cell: 'x' });
+    // Never distinguish "unregistered" from "not yours", even here (P-019).
+    expect(await prepareCellWakeFold(INPUT)).toBeNull();
+  });
+
+  it('a malformed predicate key', async () => {
+    expect(await prepareCellWakeFold({ ...INPUT, eventKey: 'predicate:' })).toBeNull();
+  });
+
+  it('TOTAL — a throwing lookup still yields null rather than breaking the wake', async () => {
+    getPredicateWatchMock.mockRejectedValue(new Error('db down'));
+    await expect(prepareCellWakeFold(INPUT)).resolves.toBeNull();
+  });
+});
+
+describe('the budget itself', () => {
+  it('defaults well below readCell\'s own ~10s hung-resolver ceiling', async () => {
+    // Those are different jobs: that ceiling stops a hung resolver wedging a caller;
+    // this one stops a merely SLOW resolver delaying an interrupt.
+    expect(CELL_WAKE_FOLD_BUDGET_MS).toBeLessThanOrEqual(2000);
+    expect(CELL_WAKE_FOLD_BUDGET_MS).toBeGreaterThan(0);
+  });
+
+  it('CONTROL — a resolver inside the budget is NOT degraded', async () => {
+    // Calibration: without this, every degrade assertion above would pass just as
+    // happily against an implementation that degrades unconditionally.
+    readCellMock.mockImplementation(
+      () => new Promise((r) => setTimeout(() => r(valueRead()), 5)),
+    );
+
+    const block = await prepareCellWakeFold({ ...INPUT, budgetMs: 500 });
+
+    expect(block).not.toContain('NOT re-read at delivery');
+    expect(block).toContain('gate.greenCheckpoint.verdict = green');
+  });
+});

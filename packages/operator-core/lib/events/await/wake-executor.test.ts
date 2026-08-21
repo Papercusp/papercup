@@ -295,6 +295,26 @@ describe('wakeTurnText', () => {
     expect(t).toContain('⟦owner-chat⟧');
   });
 
+  /**
+   * P-022 / D-007 — the prepared cell fold is RENDERED. The block is built in the async
+   * delivery path (cell-wake-fold.ts, covered in its own suite); this pins the other
+   * half of the seam, which is the half that silently does nothing if it regresses.
+   */
+  it('renders the P-022 cell fold, and puts it BEFORE the ambient block', () => {
+    const t = wakeTurnText(
+      work({ cellWakeFoldBlock: '[cell] gate.x = green', ambientPushBlock: '[ambient] …' }),
+    );
+    expect(t).toContain('[cell] gate.x = green');
+    // Next to the `payload` value it corrects, not below unrelated ambient material.
+    expect(t.indexOf('[cell]')).toBeLessThan(t.indexOf('[ambient]'));
+    expect(t).toContain('[await-event]');
+  });
+
+  it('is byte-identical when no cell fold was prepared — the default path', () => {
+    const base = work({ payload: { x: 1 } });
+    expect(wakeTurnText(base)).toBe(wakeTurnText({ ...base, cellWakeFoldBlock: undefined }));
+  });
+
   it('carries a LONG owner message in full — the wake summary is truncated, the payload is not', () => {
     const long = 'please '.repeat(40).trim();
     const t = wakeTurnText(
