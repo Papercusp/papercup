@@ -1,9 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
+import { tmpdir } from 'node:os';
 import {
   detectLowSpace,
   formatDiskAlarmToast,
   runDiskSpaceAlarmOnce,
   diskPolicyFromEnv,
+  watchedPaths,
   DEFAULT_DISK_POLICY,
   type DiskSnapshot,
   type DiskAlarmPolicy,
@@ -250,5 +252,20 @@ describe('runDiskSpaceAlarmOnce', () => {
 describe('diskPolicyFromEnv', () => {
   it('falls back to defaults when env is unset', () => {
     expect(diskPolicyFromEnv()).toEqual(DEFAULT_DISK_POLICY);
+  });
+});
+
+describe('watchedPaths', () => {
+  it('watches the process temp filesystem by default and deduplicates an explicit repeat', () => {
+    const previous = process.env.PAPERCUSP_DISK_ALARM_PATHS;
+    process.env.PAPERCUSP_DISK_ALARM_PATHS = `${tmpdir()},${tmpdir()}`;
+    try {
+      const paths = watchedPaths();
+      expect(paths).toContain(tmpdir());
+      expect(paths.filter((path) => path === tmpdir())).toHaveLength(1);
+    } finally {
+      if (previous == null) delete process.env.PAPERCUSP_DISK_ALARM_PATHS;
+      else process.env.PAPERCUSP_DISK_ALARM_PATHS = previous;
+    }
   });
 });

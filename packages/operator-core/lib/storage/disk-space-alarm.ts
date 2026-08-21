@@ -18,6 +18,7 @@
  */
 import { promisify } from 'node:util';
 import { statfs as statfsCb } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
 import { escalateAlarm } from '../alarm-attention';
@@ -72,15 +73,16 @@ export function diskPolicyFromEnv(): DiskAlarmPolicy {
   };
 }
 
-/** The watched filesystems (one statfs per path). Defaults to the workspaces root
- *  — repo, PG, scratch and backups all live under it on this host. Extra paths via
+/** The watched filesystems (one statfs per path). Defaults to the workspaces root plus the
+ *  process temp root: test module caches can live on a separate filesystem and fill it while the
+ *  repo filesystem remains healthy (EI-21047688909295463). Extra paths via
  *  PAPERCUSP_DISK_ALARM_PATHS (comma-separated). */
 export function watchedPaths(): string[] {
   const extra = (process.env.PAPERCUSP_DISK_ALARM_PATHS ?? '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  const all = [workspacesRoot(), ...extra];
+  const all = [workspacesRoot(), tmpdir(), ...extra];
   return [...new Set(all)]; // dedup identical paths
 }
 
