@@ -365,6 +365,9 @@ describe('evaluatePerfSignals (per-thread SLO budgets)', () => {
     expect(v.memoryPressure.cgroupAttribution).toEqual({
       accounting: 'cgroup-v2-inclusive-descendants',
       partial: false,
+      // This synthetic capture predates the reclaim-event producer. Null keeps
+      // "unmeasured" distinct from the false all-clear of an empty array.
+      throttled: null,
       top: [
         { path: '/user.slice', memoryBytes: 100_000, swapBytes: 20_000, directPids: 0 },
         {

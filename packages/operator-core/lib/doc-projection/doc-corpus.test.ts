@@ -174,6 +174,16 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the mixed-family citation-verification part post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-21',
+      plan: 'event-system-drift-to-derived-2026-08-21',
+      // Commit 38340aa8bd projected the new "Code-describing metadata: derive, pin,
+      // or attest" part after the manifest snapshot. The generated corpus writer is
+      // authoritative for the post-load row set: corpus-parts moved 287 -> 288 and
+      // corpus-blocks moved 252 -> 253 while the frozen manifest remained at 253.
+      why: 'added the derived-truth ladder part post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {

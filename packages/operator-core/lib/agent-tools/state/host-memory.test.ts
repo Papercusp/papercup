@@ -88,6 +88,9 @@ describe('host.memoryPressure resolver lens', () => {
     expect(out.memory.cgroupAttribution).toEqual({
       accounting: 'cgroup-v2-inclusive-descendants',
       partial: false,
+      // The fixture has no reclaim-event measurement; preserve that unknown as
+      // null instead of asserting that the producer measured zero throttles.
+      throttled: null,
       top: [
         {
           path: '/user.slice/user@1000.service/app.slice/papercup-dev-api.service',
