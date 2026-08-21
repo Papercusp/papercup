@@ -48,8 +48,26 @@ const POLL_BATCH_LIMIT = 20;
  *  predicateError payload on its key, so the waiter wakes instead of dangling. */
 export const PREDICATE_MAX_CONSECUTIVE_ERRORS = 5;
 
-export const PREDICATE_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'exists', 'contains'] as const;
+export const PREDICATE_OPS = ['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'exists', 'contains', 'changed'] as const;
 export type PredicateOp = (typeof PREDICATE_OPS)[number];
+
+/**
+ * The prior observation a BASELINE-RELATIVE op (`changed`) compares against.
+ *
+ * `established` is NOT `value !== null`: the `last_value` column is null both when
+ * a row has never been polled AND when it was polled and legitimately observed
+ * null. Only `last_eval` distinguishes them (it is null exclusively before the
+ * first evaluation), so that is what the caller must derive this from. Collapsing
+ * the two would make a never-polled row indistinguishable from one whose baseline
+ * really is null — and `changed` would then fire on its very first observation,
+ * which is the false all-clear this whole module is built to refuse.
+ */
+export interface PredicateBaseline {
+  /** Has ANY evaluation been recorded for this row yet? (`row.lastEval !== null`) */
+  established: boolean;
+  /** The value recorded by that evaluation (`row.lastValue`); meaningless unless established. */
+  value: unknown;
+}
 
 export interface PredicateWatchRow {
   id: string;
@@ -183,12 +201,46 @@ function deepEq(a: unknown, b: unknown): boolean {
  *  not tell that wake from a real one. A typo'd path was a guaranteed instant
  *  false wake. This is the same defect class as `systemctl is-active` printing
  *  `inactive` for a unit that does not exist — see systemd-service-probe.ts.
- *  To wait for "definitely not X", the observation must BE something. */
-export function comparePredicate(observed: unknown, op: PredicateOp, value: unknown): boolean {
+ *  To wait for "definitely not X", the observation must BE something.
+ *
+ *  ── `changed` IS BASELINE-RELATIVE, AND THAT IS WHY IT EXISTS ───────────────
+ *
+ *  Every other op compares the observation to an OPERAND the caller supplied.
+ *  `changed` compares it to the PREVIOUS OBSERVATION (`baseline`), so the caller
+ *  supplies no operand at all. That difference is the point (P-004): expressing
+ *  "wake me when this moves" with `ne` requires transcribing the value's current
+ *  reading into the subscription, which (a) is the transcription anti-pattern the
+ *  state plane exists to remove and (b) races — if the value moves between the
+ *  read and the subscribe, the watch is armed against a stale operand and never
+ *  fires. A measurement of 300 state:subscribe calls found 23 of the 50 failures
+ *  were agents reaching for this operator; it was the largest single class.
+ *
+ *  It obeys the absent-evidence rule twice over, and both guards are load-bearing:
+ *    - NO BASELINE ⇒ false. Before the first evaluation there is nothing to have
+ *      changed FROM. Without this, `changed` fires on its own registration eval —
+ *      an instant false wake, the precise defect `ne` was fixed for above.
+ *    - ABSENT OBSERVATION ⇒ false. A value that became unreadable is a loss of
+ *      evidence, not an observed change. (A baseline that WAS null and is now a
+ *      real value does fire: the observation is present, and "it appeared" is a
+ *      genuine change.)
+ *
+ *  Because it is evaluated per poll against the immediately preceding poll, a
+ *  `once:false` watch fires on EVERY change rather than latching after the first.
+ *  A value that departs and returns between two polls (A→B→A) is not observed as
+ *  changed — inherent to polling, not to this op. */
+export function comparePredicate(
+  observed: unknown,
+  op: PredicateOp,
+  value: unknown,
+  baseline?: PredicateBaseline,
+): boolean {
   const absent = observed === undefined || observed === null;
   switch (op) {
     case 'exists':
       return !absent;
+    case 'changed':
+      if (!baseline?.established) return false;
+      return !absent && !deepEq(observed, baseline.value);
     case 'eq':
       return deepEq(observed, value);
     case 'ne':
@@ -639,23 +691,45 @@ export async function evalPredicateWatch(row: PredicateWatchRow): Promise<Predic
   try {
     const payload = await dispatch(row);
     const observed = valueAtPath(payload, row.path);
-    const matched = comparePredicate(observed, row.op, row.value);
+    // `lastEval !== null` is the ONLY honest "has this row ever been evaluated"
+    // signal — `lastValue` is null for both a never-polled row and one that
+    // observed null. See PredicateBaseline.
+    const matched = comparePredicate(observed, row.op, row.value, {
+      established: row.lastEval !== null,
+      value: row.lastValue,
+    });
     const edge = matched && row.lastEval !== true;
     const deactivate = edge && row.once;
     if (edge) {
       const reread = deriveCellReread(row);
+      // A `changed` fire has no operand to report — what the reader needs is the
+      // value it changed FROM, which is exactly the baseline it was compared to.
+      // Reporting `value: null` there (the column's resting state for this op)
+      // would read as "compared against null", which is not what happened.
+      const isChanged = row.op === 'changed';
       await emitAwaitedEvent({
         key: row.eventKey,
         payload: {
           observed,
-          predicate: { tool: row.tool, path: row.path, op: row.op, value: row.value },
+          predicate: {
+            tool: row.tool,
+            path: row.path,
+            op: row.op,
+            ...(isChanged ? { changedFrom: row.lastValue } : { value: row.value }),
+          },
           // P-001: `observed` is FIRE-TIME and goes stale across the fire→delivery
           // lag (a parked session boots, a respawn queues). The handle re-answers it
           // from the same resolver at the moment of acting. Omitted when no
           // registered cell matches or the reader is out of its audience.
           ...(reread ? { reread } : {}),
         },
-        summary: `predicate matched: ${row.tool} ${row.path} ${row.op}${row.value === undefined ? '' : ` ${JSON.stringify(row.value)}`} (observed ${String(JSON.stringify(observed)).slice(0, 200)})`,
+        summary: `predicate matched: ${row.tool} ${row.path} ${row.op}${
+          isChanged
+            ? ` from ${String(JSON.stringify(row.lastValue)).slice(0, 200)}`
+            : row.value === undefined
+              ? ''
+              : ` ${JSON.stringify(row.value)}`
+        } (observed ${String(JSON.stringify(observed)).slice(0, 200)})`,
         source: `predicate-watch:${row.ownerId}`,
       });
     }
