@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { healthForAnswer } from './lsp-adapter.ts';
+import { healthForAnswer, specForLanguage, resolveServerBin } from './lsp-adapter.ts';
 import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
 
 type Client = { health: BackendHealth; language: 'typescript' | 'rust'; quiescent: boolean | null };
@@ -92,5 +92,49 @@ describe('healthForAnswer composes with isTrustworthyEmpty (the contract that co
   it('a quiescent server still produces a trustworthy empty', () => {
     const health = healthForAnswer(rust({ quiescent: true }), 0);
     expect(isTrustworthyEmpty(answerWith(health) as never)).toBe(true);
+  });
+});
+
+/**
+ * WI-40250 — the recurrence guard for the `else-is-rust` fallthrough.
+ *
+ * The original bug was not that rust was wrong; it was that rust was the ELSE
+ * ARM. `resolveServerBin` and both `languageId` sites read
+ * `if (language === 'typescript') … else <rust>`, so ANY language that was not
+ * typescript resolved to the rust-analyzer binary and was labelled `rust`.
+ * Widening `LspLanguage` compiled clean and failed only at runtime, as a
+ * confident wrong answer rather than an error.
+ *
+ * These tests fail if that shape ever returns. The important one is the LAST:
+ * an unknown language must REFUSE, never silently resolve to some other
+ * language's server.
+ */
+describe('WI-40250 — an unknown language refuses instead of falling through to rust', () => {
+  it('gives each known language its OWN languageId, not a binary typescript/rust split', () => {
+    expect(specForLanguage('typescript').languageId).toBe('typescript');
+    expect(specForLanguage('rust').languageId).toBe('rust');
+  });
+
+  it('declares the progress-signal requirement per language rather than hardcoding rust', () => {
+    // rust-analyzer indexes before it can answer (WI-40224); tsserver does not.
+    expect(specForLanguage('rust').requiresProgressSignal).toBe(true);
+    expect(specForLanguage('typescript').requiresProgressSignal).toBe(false);
+  });
+
+  it('REFUSES an unknown language loudly, and never hands back another server', () => {
+    // Cast is the whole point: this simulates a plain-JS caller, a persisted
+    // value, or a request payload carrying a language the union does not know.
+    const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
+
+    expect(() => specForLanguage(unknown)).toThrow(/Unknown LSP language/);
+    // The regression signature: before the fix this returned the rust-analyzer
+    // path instead of throwing.
+    expect(() => resolveServerBin(unknown)).toThrow(/Unknown LSP language/);
+  });
+
+  it('names the known languages in the refusal, so the fix is obvious at the call site', () => {
+    const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
+    expect(() => specForLanguage(unknown)).toThrow(/typescript/);
+    expect(() => specForLanguage(unknown)).toThrow(/rust/);
   });
 });

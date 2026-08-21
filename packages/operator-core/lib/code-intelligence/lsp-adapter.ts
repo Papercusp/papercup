@@ -267,7 +267,15 @@ const PROJECT_READY_TIMEOUT_MS = 60_000;
  * required to SETTLE rather than being assumed ready when no token is pending.
  * For these, "no progress token" means "has not started yet", never "done".
  */
-const REQUIRES_PROGRESS_SIGNAL: ReadonlySet<LspLanguage> = new Set<LspLanguage>(['rust']);
+/**
+ * DERIVED from LANGUAGE_SPECS — never hand-maintained. A second hand-written
+ * list of languages is a second place to forget one (WI-40250).
+ */
+const REQUIRES_PROGRESS_SIGNAL: ReadonlySet<LspLanguage> = new Set<LspLanguage>(
+  (Object.keys(LANGUAGE_SPECS) as LspLanguage[]).filter(
+    (language) => LANGUAGE_SPECS[language].requiresProgressSignal,
+  ),
+);
 
 /**
  * How long the progress set must stay CONTINUOUSLY empty before a
@@ -686,7 +694,7 @@ async function ensureOpen(client: LspClient, absPath: string): Promise<string> {
   client.connection.sendNotification('textDocument/didOpen', {
     textDocument: {
       uri,
-      languageId: client.language === 'typescript' ? 'typescript' : 'rust',
+      languageId: specForLanguage(client.language).languageId,
       version: 1,
       text,
     },
@@ -1213,7 +1221,7 @@ export function lspResyncDocument(absPath: string, rootPath: string, newText: st
     client.connection.sendNotification('textDocument/didOpen', {
       textDocument: {
         uri,
-        languageId: client.language === 'typescript' ? 'typescript' : 'rust',
+        languageId: specForLanguage(client.language).languageId,
         version: 1,
         text: newText,
       },
