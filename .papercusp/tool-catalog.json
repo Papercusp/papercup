@@ -14757,8 +14757,9 @@
         "memory:read"
       ],
       "guidance": {
-        "when": "When the user asks to inspect their memory (\"what have you stored about me?\") or you need a filter-only query.",
-        "notWhen": "For semantic lookup (\"what did I say about X?\"), use memory:search instead."
+        "when": "When the user asks to inspect their memory (\"what have you stored about me?\") or you need a filter-only query. Default listing returns only facts CURRENT now. Pass `as_of:<ISO timestamp>` for the rows valid at a historical instant, or `include_superseded:true` for the full lifecycle; temporal rows carry `metadata.validity`.",
+        "notWhen": "For semantic lookup (\"what did I say about X?\"), use memory:search instead.",
+        "chaining": "Use the returned ids with memory:remember { supersede:<old-id> } when a NEW fact replaces an old one, memory:update for an in-place correction, or memory:forget { soft:true } when a fact stopped being true but should remain in history."
       }
     },
     {
@@ -14810,9 +14811,9 @@
         "memory:read"
       ],
       "guidance": {
-        "when": "When the user references specific context from past sessions (\"what did I tell you about pricing?\"). Pre-turn auto-injection covers most cases; only call this for targeted lookups.",
+        "when": "When the user references specific context from past sessions (\"what did I tell you about pricing?\"). Default recall returns only facts CURRENT now. For \"what did we believe then?\", pass `as_of:<ISO timestamp>`; for a lifecycle audit, pass `include_superseded:true` to include closed rows and inspect `metadata.validity` / `superseded_by`. Pre-turn auto-injection covers most current-fact lookups; call this for targeted or historical recall.",
         "notWhen": "For lookups by exact metadata (kind), use memory:list — it's faster than vector search for filter-only queries.",
-        "chaining": "Pair with memory:update / memory:forget when the user corrects something you recall. A hit carrying `staleness` has referents that no longer resolve (last nightly anchor sweep) — treat it as evidence to reconcile, never as binding guidance; absence of the field means no dead anchors."
+        "chaining": "Pair with memory:remember { supersede:<old-id> } when a NEW fact replaces a recalled one; use memory:update for the SAME fact in place, or memory:forget for removal (soft when history should remain, hard for privacy). A hit carrying `staleness` has referents that no longer resolve (last nightly anchor sweep) — treat it as evidence to reconcile, never as binding guidance; absence of the field means no dead anchors."
       }
     },
     {
