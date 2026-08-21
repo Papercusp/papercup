@@ -81,6 +81,16 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
     }
   });
 
+  it('getAdvSession restores the persisted harness scope for cold-wake resumes', async () => {
+    const sql = installSql([{ id: 42, workspace_id: 'ws-test', harness_slug: 'papercusp' }]);
+    const mod = await import('./adv-sessions');
+
+    const row = await mod.getAdvSession(42);
+
+    expect(row?.harnessSlug).toBe('papercusp');
+    expect(textOf(sql)).toContain("to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug");
+  });
+
   it('resumable filtering treats a missing pre-611 key as delivered but still excludes pending ports post-611', async () => {
     const sql = installSql([]);
     const mod = await import('./adv-sessions');

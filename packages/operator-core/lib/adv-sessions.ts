@@ -1389,6 +1389,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       Array<{
         id: number;
         workspace_id: string;
+        harness_slug?: string | null;
         plan_slug: string | null;
         agent: string | null;
         role: string | null;
@@ -1411,7 +1412,12 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
         port_metadata?: Record<string, unknown> | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id,
+             -- launch_spec was added after the base adv-session columns. Read it
+             -- through to_jsonb so old schemas remain parse-safe while resumed
+             -- sessions recover the harness scope persisted at launch time.
+             to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+             plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
