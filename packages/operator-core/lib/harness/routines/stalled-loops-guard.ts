@@ -228,6 +228,16 @@ export const REVIVE_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const MAX_REVIVALS = 2;
 
 /**
+ * Keep database read failures fail-soft, but never turn a programmer/driver-surface error into
+ * an empty activity map. A TypeError or ReferenceError means the reader itself is broken (for
+ * example, a malformed SQL double or a missing driver method), and swallowing it disables the
+ * liveness veto while making the sweep look healthy.
+ */
+function rethrowProgrammingError(error: unknown): void {
+  if (error instanceof TypeError || error instanceof ReferenceError) throw error;
+}
+
+/**
  * WI-37546 — one owner's recent tool-call activity, as the liveness veto and the revival pass
  * both read it.
  *
@@ -702,6 +712,7 @@ export async function sweepStalledLoops(
       reviveCandidates.map((c) => ({ ownerId: c.ownerId, sinceIso: new Date(c.pausedAtMs).toISOString() })),
       { sql },
     ).catch((e) => {
+      rethrowProgrammingError(e);
       console.warn(
         `[stalled-loops-guard] revival activity read failed (${e instanceof Error ? e.message : e}) — ` +
           `reviving nobody this sweep.`,
@@ -833,6 +844,7 @@ export async function sweepStalledLoops(
     }),
     { sql },
   ).catch((e) => {
+    rethrowProgrammingError(e);
     // Fails toward the PRE-EXISTING behaviour (no veto), never toward a blanket exemption. A read
     // fault must not silently disable the reaper for the whole workspace — that would be the
     // WI-36792 lesson (blunting a reaper is invisible; it still reports `checked: N`) with a

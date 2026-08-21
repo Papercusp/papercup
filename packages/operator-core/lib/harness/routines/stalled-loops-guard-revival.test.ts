@@ -457,6 +457,23 @@ describe('sweepStalledLoops — liveness veto (WI-37546: 18 of 19 disarms on 202
     expect(res.vetoedByToolActivity).toEqual([]);
     expect(res.paused).toBe(1);
   });
+
+  it('rethrows programmer errors from the activity reader instead of disabling the veto', async () => {
+    const sql = fakeSql([{ id: 'rt1', target_owner_id: 'su-x' }]);
+    const getStatuses = vi.fn(async () => new Map([['su-x', status({ turnsStalled: true })]]));
+    const autoPause = vi.fn<AutoPauseFn>(async () => {});
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => {
+      throw new TypeError('sql.unsafe is not a function');
+    });
+
+    await expect(
+      sweepStalledLoops(
+        { sql, workspaceId: 'ws' },
+        deps({ getStatuses, autoPause, readOwnerToolActivity }),
+      ),
+    ).rejects.toThrow(TypeError);
+    expect(autoPause).not.toHaveBeenCalled();
+  });
 });
 
 describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () => {
@@ -609,6 +626,22 @@ describe('sweepStalledLoops — recoverable disarm (WI-37546 sub-case B)', () =>
     );
 
     expect(res.revivedAfterDisarm).toEqual([]);
+    expect(revive).not.toHaveBeenCalled();
+  });
+
+  it('rethrows programmer errors from the revival activity reader', async () => {
+    const revive = vi.fn<ReviveFn>(async () => {});
+    const readRevivableLoops = vi.fn<ReadRevivableFn>(async () => [candidate()]);
+    const readOwnerToolActivity = vi.fn<ReadActivityFn>(async () => {
+      throw new ReferenceError('readOwnerToolActivity is undefined');
+    });
+
+    await expect(
+      sweepStalledLoops(
+        { sql: fakeSql([]), workspaceId: 'ws' },
+        deps({ revive, readRevivableLoops, readOwnerToolActivity }),
+      ),
+    ).rejects.toThrow(ReferenceError);
     expect(revive).not.toHaveBeenCalled();
   });
 
