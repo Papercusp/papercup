@@ -7,9 +7,10 @@ import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../../..
 import type { SpecClauseWrite } from './spec-clauses-store';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     ...actual,
     withWorkspace: async <T>(_workspaceId: string, fn: (tx: postgres.Sql) => Promise<T>) =>
       h.sql.begin(async (tx) => fn(tx as unknown as postgres.Sql)),
