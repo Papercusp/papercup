@@ -2025,7 +2025,11 @@ export function classifyLiveHostActivity(meta: any, { now, idleThresholdMs }?: {
  * MUST run in that same cwd). agent is claude here because tracked forks need a
  * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
  */
-export function forkBootstrapBody(session: any, account?: null): {
+export function forkBootstrapBody(session: any, account?: null, launchMode?: null): {
+    mode_owner_directed?: boolean | undefined;
+    mode_instructions?: any;
+    mode_subject?: any;
+    mode?: string | undefined;
     account?: undefined;
     agent: string;
     workspace: any;
@@ -2042,6 +2046,18 @@ export function forkBootstrapBody(session: any, account?: null): {
  * it has a human present. Pure — exported for tests.
  */
 export function effectiveAutoMode(args: any): any;
+/**
+ * Normalize the launch-mode fields parsed by psu before they cross either the
+ * bootstrap JSON boundary or the resume-mode admin write. This mirrors the
+ * shared TypeScript LaunchMode bounds, while keeping this plain .mjs launcher
+ * independent of the operator-core module graph.
+ */
+export function launchModeFromArgs(args?: {}): {
+    mode: string;
+    subject: string | null;
+    instructions: string | null;
+    ownerDirected: boolean;
+} | null;
 /**
  * WI-1408 (fleet-join-startup-assertion): hard client-side guard mirroring the
  * server's own invariant — when this launch explicitly requested a fleet (an
@@ -2098,7 +2114,10 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain }?: {
     context_size?: any;
     su_role?: any;
     profile?: any;
-    mode?: any;
+    mode_owner_directed?: boolean | undefined;
+    mode_instructions?: string | undefined;
+    mode_subject?: string | undefined;
+    mode?: string | undefined;
     auto?: boolean | undefined;
     agent: any;
     workspace: any;

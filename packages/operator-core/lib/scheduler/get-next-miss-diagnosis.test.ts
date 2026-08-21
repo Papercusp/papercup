@@ -83,7 +83,8 @@ describe('WI-4413 — floor-attribution DRIFT GUARD', () => {
     // Every exported issue-family floor predicate the claim path applies.
     const CLAIM_PATH_FLOORS = [
       'observationLaneExclusionSql',
-      'needsHumanExclusionSql',
+      'legacyNeedsHumanExclusionSql',
+      'needsOwnerActionExclusionSql',
       'externalBlockersExclusionSql',
       'claimHoldExclusionSql',
       'reservedPlanLaneExclusionSql',
@@ -109,7 +110,8 @@ describe('WI-4413 — floor-attribution DRIFT GUARD', () => {
     const attribution = src.slice(src.indexOf('const ISSUE_FLOOR_EXPLANATIONS'));
     for (const reason of [
       'observation-lane',
-      'needs-human',
+      'legacy-needs-human',
+      'needs-owner-action',
       'external-blocker',
       'claim-hold',
       'plan-lane-reserved',

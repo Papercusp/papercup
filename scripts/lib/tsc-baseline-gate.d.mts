@@ -41,7 +41,9 @@ export function gitChangedFiles(root?: string): Set<string>;
 /**
  * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
  * files the caller changed THIS session, as an alternative to `--mine`'s implicit
- * git-status-derived scoping.
+ * git-status-derived scoping. Large callers may use `--files-from=/path/to/json`, where the
+ * response file contains a JSON array of paths; keeping the list out of argv avoids Linux's
+ * exec E2BIG limit without changing the scoped-verdict semantics.
  *
  * WHY: `gitChangedFiles` (above) attributes "mine" from working-tree dirt (`git status`), which
  * on this concurrently-edited shared checkout includes every PEER's uncommitted edits too — not
