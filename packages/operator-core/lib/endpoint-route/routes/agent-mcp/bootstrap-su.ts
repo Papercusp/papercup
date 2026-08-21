@@ -2397,6 +2397,35 @@ const post = defineTool({
       /* flag miss ⇒ replace-base stays off (Claude base + --append stands) */
     }
 
+    // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may this
+    // omp session KEEP its native `lsp` builtin? Resolved HERE, not in the
+    // launcher — psu-launcher.mjs is bare node and cannot import the TS flags
+    // lib, so this follows the REPLACE_CLAUDE_BASE shape directly above:
+    // resolve server-side, thread the answer through envelopeEnv, and the
+    // launcher stays free of any launch-time flag read (and so of any network
+    // dependency at spawn).
+    //
+    // The decision itself — including the local-model TIER GATE that is what
+    // makes OMP_NATIVE_LSP_BUILTIN safe to ship default-ON — lives in ONE place,
+    // mayKeepOmpNativeLsp, shared with bootstrap-role. Read its header before
+    // changing anything here. Fail-soft: a flag-lookup throw ⇒ off ⇒ the
+    // launcher strips the builtin, byte-identical to the pre-P-021 `--no-lsp`.
+    let ompNativeLsp = false;
+    try {
+      if (agent === 'omp') {
+        const { getFlag } = await import('@papercusp/flags/server');
+        const { FLAGS } = await import('@papercusp/flags');
+        const { mayKeepOmpNativeLsp } = await import('../../../omp-native-lsp-gate');
+        ompNativeLsp = mayKeepOmpNativeLsp({
+          agent,
+          model,
+          flagEnabled: await getFlag(FLAGS.OMP_NATIVE_LSP_BUILTIN, workspace),
+        });
+      }
+    } catch {
+      /* flag miss ⇒ builtin stays stripped (pre-P-021 behaviour stands) */
+    }
+
     // Revalidate the fully assembled launch prompt before minting a pending
     // target identity. The imported history remains a separate user turn.
     const { buildContextBudget } = await import('../../../model-context-budget.mjs');
@@ -2557,6 +2586,10 @@ const post = defineTool({
     const envelopeEnv: Record<string, string> = {
       ...envelope.env,
       ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
+      // P-021/D-013 — see the ompNativeLsp resolution above. Set-when-true, so
+      // ABSENT is the safe reading: the launcher strips omp's native `lsp`
+      // builtin unless this explicitly says it may keep it.
+      ...(ompNativeLsp ? { PAPERCUSP_OMP_NATIVE_LSP: '1' } : {}),
       PAPERCUSP_AGENT: agent,
       PAPERCUSP_SID: sid,
       // Per-launch dispatch profile. claude's user-level MCP url expands

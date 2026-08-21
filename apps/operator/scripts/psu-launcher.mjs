@@ -48,6 +48,11 @@ import {
 // su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
 // operator import the SAME definition — a second copy here would drift silently.
 import { SU_TIER_ROLES } from '../../../packages/operator-core/lib/su-tier-roles.mjs';
+// P-021/D-013: the ONE local-model predicate, shared with the server-side
+// OMP_NATIVE_LSP_BUILTIN tier gate in bootstrap-{su,role}.ts. This file used to
+// carry two byte-identical copies of its regex pair (cloudModelBackendHint,
+// validateModelSpec); both now call it, so the gate cannot drift from them.
+import { isLocalModelSpec } from '../../../packages/operator-core/lib/local-model-spec.mjs';
 // WI-37920: ONE definition of where a backend CLI can live + how to reach it,
 // shared with the operator's spawn-env injection (console-launcher). See that
 // file's header for why detection and execution are two separate layers.
@@ -899,7 +904,46 @@ export const BRAIN_TOMBSTONE_MESSAGE =
  * until the MCP-under-sandbox path has a fresh live smoke on the current CLI
  * (mirrors the codex-su wrapper).
  */
-export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model } = {}) {
+/**
+ * The omp `lsp`-builtin argv fragment — `['--no-lsp']` to STRIP the builtin, or
+ * `[]` to leave it in place. P-021 (D-013) replaced two hard-coded `'--no-lsp'`
+ * literals (the role and su omp branches) with this one helper.
+ *
+ * WHAT `--no-lsp` ACTUALLY DOES — read this before changing the default. It
+ * strips OMP's OWN `lsp` BUILTIN as weak-model tool-attractor suppression. A
+ * weak ornith model reaches for lsp/read to try to INVOKE MCP tools (session
+ * 9885 abused `lsp` as a tools:call wrapper before recovering). The other
+ * attractor, `eval`, is a REAL omp shell builtin and the WORST offender —
+ * ornith DOOM-LOOPED on it 56-80× (sessions 10234/10239) despite the coord-hook
+ * block + an escalating steer; message-based fixes can't break the reflex, so
+ * it is disabled at the omp-config layer instead (eval.py/eval.js=false,
+ * ensureOmpAgentToolTierConfig in ensure-omp-su.ts / WI-2382) and never reaches
+ * the surface. The kickoff tools:invoke escape hatch remains the positive
+ * redirect.
+ *
+ * ⚠ THIS IS NOT ABOUT PAPERCUSP'S `lsp.*` FACADE. That is a separate surface
+ * behind a separate flag (FLAGS.CODE_INTEL_LSP). Conflating the two would mean
+ * enabling our facade silently re-arms the attractor above on every omp launch
+ * — the hazard D-013 exists to record.
+ *
+ * `allowNativeLsp` is NOT read here. It is resolved server-side in
+ * bootstrap-{su,role}.ts as `FLAGS.OMP_NATIVE_LSP_BUILTIN && !isLocalModelSpec(model)`
+ * and threaded in via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP` — the same
+ * resolve-server-side-thread-through-envelopeEnv shape P-014 uses for
+ * REPLACE_CLAUDE_BASE, and the reason this bare-node script needs no flag read
+ * (and so no launch-time network dependency) of its own. Absent/false ⇒ strip,
+ * byte-identical to the pre-P-021 hard-coded behaviour.
+ *
+ * Pure — exported for tests.
+ *
+ * @param {boolean} [allowNativeLsp]
+ * @returns {string[]}
+ */
+export function ompLspArgs(allowNativeLsp) {
+  return allowNativeLsp === true ? [] : ['--no-lsp'];
+}
+
+export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model, allowNativeLsp } = {}) {
   if (backend === 'claude') {
     // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
     // mirror suLaunchArgs — when armed, the role prompt REPLACES the Claude coding base
@@ -952,17 +996,11 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
     // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
     const args = [
       '--approval-mode', 'yolo',
-      // weak-model-tool-tier: strip the `lsp` builtin. A weak ornith model reaches for
-      // lsp/read to try to INVOKE MCP tools (session 9885 abused `lsp` as a tools:call
-      // wrapper before recovering); lsp is pure code-intelligence a coordination worker
-      // never needs, so dropping it deletes one tool-call attractor. The other attractor,
-      // `eval`, is a REAL omp shell builtin (NOT hallucinated as this comment long claimed)
-      // and the WORST offender — ornith DOOM-LOOPED on it 56-80× (sessions 10234/10239)
-      // despite the coord-hook block + an escalating steer; message-based fixes can't break
-      // the reflex, so it is disabled at the omp-config layer instead (eval.py/eval.js=false,
-      // ensureOmpAgentToolTierConfig in ensure-omp-su.ts / WI-2382) and never reaches the
-      // surface. The kickoff tools:invoke escape hatch remains the positive redirect.
-      '--no-lsp',
+      // weak-model-tool-tier: strip omp's own `lsp` builtin unless the
+      // server-resolved OMP_NATIVE_LSP_BUILTIN gate says this session may keep
+      // it. See ompLspArgs — it carries the full attractor rationale and the
+      // reason this is NOT the same switch as our `lsp.*` facade.
+      ...ompLspArgs(allowNativeLsp),
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
       ...modelArgsFor('omp', model),
     ];
@@ -1023,7 +1061,7 @@ export function roleLaunchArgs(backend, { promptFile, mcpJsonPath, coordExtPath,
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents } = {}) {
+export function suLaunchArgs(backend, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, allowNativeLsp } = {}) {
   if (backend === 'claude') {
     // domain-generic-agent-personas-2026-06-17 P-014 (REPLACE_CLAUDE_BASE, default-off):
     // when armed, the playbook REPLACES the Claude coding base (--system-prompt-file +
@@ -1061,17 +1099,11 @@ export function suLaunchArgs(backend, { promptFile, coordExtPath, injectHookPath
     // P-014: --system-prompt (replace) when REPLACE_CLAUDE_BASE armed, else --append.
     const args = [
       '--approval-mode', 'yolo',
-      // weak-model-tool-tier: strip the `lsp` builtin. A weak ornith model reaches for
-      // lsp/read to try to INVOKE MCP tools (session 9885 abused `lsp` as a tools:call
-      // wrapper before recovering); lsp is pure code-intelligence a coordination worker
-      // never needs, so dropping it deletes one tool-call attractor. The other attractor,
-      // `eval`, is a REAL omp shell builtin (NOT hallucinated as this comment long claimed)
-      // and the WORST offender — ornith DOOM-LOOPED on it 56-80× (sessions 10234/10239)
-      // despite the coord-hook block + an escalating steer; message-based fixes can't break
-      // the reflex, so it is disabled at the omp-config layer instead (eval.py/eval.js=false,
-      // ensureOmpAgentToolTierConfig in ensure-omp-su.ts / WI-2382) and never reaches the
-      // surface. The kickoff tools:invoke escape hatch remains the positive redirect.
-      '--no-lsp',
+      // weak-model-tool-tier: strip omp's own `lsp` builtin unless the
+      // server-resolved OMP_NATIVE_LSP_BUILTIN gate says this session may keep
+      // it. See ompLspArgs — it carries the full attractor rationale and the
+      // reason this is NOT the same switch as our `lsp.*` facade.
+      ...ompLspArgs(allowNativeLsp),
       replaceClaudeBase ? '--system-prompt' : '--append-system-prompt', promptFile,
     ];
     if (coordExtPath) args.push('-e', coordExtPath);
@@ -4404,7 +4436,7 @@ export function cloudModelBackendHint(model) {
   if (!model) return null;
   const withoutEffort = String(model).trim().replace(/:(low|medium|high|xhigh|max)$/i, '');
   const base = withoutEffort.replace(/\[[^\]]+\]$/, '');
-  if (/^ollama(-cc)?\//i.test(base) || /\bornith\b/i.test(base)) return null;
+  if (isLocalModelSpec(base)) return null;
   if (
     /^(luna|terra|sol)$/i.test(base) ||
     /^gpt(?:[-_.]|\d)/i.test(base) ||
@@ -4491,7 +4523,7 @@ export function validateModelSpec(spec) {
   if (!spec) return { ok: true };
   const s = String(spec).trim();
   if (!s) return { ok: true };
-  if (/^ollama(-cc)?\//i.test(s) || /\bornith\b/i.test(s)) return { ok: true }; // local — not ours to check
+  if (isLocalModelSpec(s)) return { ok: true }; // local — not ours to check
   // Peel a recognized :effort tail so we inspect the model BASE (an unrecognized ':x' — bedrock's
   // '…-v2:0' — stays on the base, which then contains ':' → not alias-shaped → passes below).
   const c = s.lastIndexOf(':');
@@ -8318,6 +8350,11 @@ async function roleFlow(args, role, rolesMeta) {
     replaceClaudeBase: res.envelopeEnv?.PAPERCUSP_REPLACE_CLAUDE_BASE === '1',
     // Subagent-launch deny is DEFAULT-ON; `--allow-subagents` (or the picker) opts in.
     allowSubagents: args.allowSubagents,
+    // P-021/D-013: may this omp session KEEP its native `lsp` builtin? bootstrap-role
+    // resolves FLAGS.OMP_NATIVE_LSP_BUILTIN *and* the local-model tier gate
+    // server-side and threads the answer here (same shape as REPLACE_CLAUDE_BASE
+    // above). Absent ⇒ strip, byte-identical to today. See ompLspArgs.
+    allowNativeLsp: res.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === '1',
     // P-019/D-007: thread --model into the role launch argv (claude branch splits
     // effort via modelArgsFor). Without this the spec was env-only (PAPERCUSP_MODEL,
     // title hooks) and the session ran the saved default model.
@@ -8818,6 +8855,11 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // Subagent-launch deny is DEFAULT-ON (claude-only); `--allow-subagents` (or the
     // picker) opts THIS su launch back in. See suLaunchArgs / NO_SUBAGENTS_DENY_FLAG.
     allowSubagents: args.allowSubagents,
+    // P-021/D-013: may this omp session KEEP its native `lsp` builtin? bootstrap-su
+    // resolves FLAGS.OMP_NATIVE_LSP_BUILTIN *and* the local-model tier gate
+    // server-side and threads the answer here (same shape as REPLACE_CLAUDE_BASE
+    // above). Absent ⇒ strip, byte-identical to today. See ompLspArgs.
+    allowNativeLsp: res.envelopeEnv?.PAPERCUSP_OMP_NATIVE_LSP === '1',
   });
   const requestedLaunchModel = res.agent === 'omp'
     ? (res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model)

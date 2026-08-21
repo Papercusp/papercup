@@ -1620,3 +1620,44 @@ describe('buildLaunchProvenanceFactBody — fleet-safe reporting fallback', () =
     expect(body).not.toContain('@fleet-leader:');
   });
 });
+
+/**
+ * P-021 (D-013) — the PRODUCER half, exercised through the real route handler.
+ *
+ * The pure gate is unit-tested in omp-native-lsp-gate.test.ts and the argv half
+ * in psu-launcher.test.ts, but neither proves the route actually EMITS the env
+ * — and "the server resolves it and threads it via envelopeEnv" is the whole
+ * mechanism. Without this, the feature could be inert end-to-end while every
+ * other test in the change stayed green.
+ */
+describe('bootstrap-su: PAPERCUSP_OMP_NATIVE_LSP (P-021)', () => {
+  const ENV = 'PAPERCUSP_OMP_NATIVE_LSP';
+  const envOf = async (body: Record<string, unknown>) =>
+    (await (await callPost({ harness_slug: 'papercup', plan_slug: null, ...body })).json())
+      .envelopeEnv?.[ENV];
+
+  it('SETS the env for an omp launch on a cloud model', async () => {
+    getFlagMock.mockResolvedValue(true);
+    expect(await envOf({ agent: 'omp', model: 'claude-bridge/claude-opus-4-8:high' })).toBe('1');
+  });
+
+  it('does NOT set it for a LOCAL model — the tier gate holds even with the flag ON', async () => {
+    getFlagMock.mockResolvedValue(true);
+    expect(await envOf({ agent: 'omp', model: 'ollama-cc/ornith:fast' })).toBeUndefined();
+  });
+
+  it('does NOT set it when no model is given — omp falls back to its own local default', async () => {
+    getFlagMock.mockResolvedValue(true);
+    expect(await envOf({ agent: 'omp' })).toBeUndefined();
+  });
+
+  it('does NOT set it on a non-omp backend — the builtin is an omp concept', async () => {
+    getFlagMock.mockResolvedValue(true);
+    expect(await envOf({ agent: 'claude' })).toBeUndefined();
+  });
+
+  it('the flag is a real kill-switch at the route: OFF withholds the env', async () => {
+    getFlagMock.mockResolvedValue(false);
+    expect(await envOf({ agent: 'omp', model: 'claude-bridge/claude-opus-4-8:high' })).toBeUndefined();
+  });
+});
