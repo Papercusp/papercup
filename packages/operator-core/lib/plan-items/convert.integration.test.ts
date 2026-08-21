@@ -47,6 +47,7 @@ vi.mock('../work-items', () => ({
   ISSUE_FAMILY_KINDS: ['bug', 'change', 'task'],
   createWorkItem: vi.fn(), claimWorkItem: vi.fn(), releaseWorkItem: vi.fn(), linkWorkItem: vi.fn(),
   isWorkItemKind: () => true,
+  isClaimHoldParked: () => false,
 }));
 vi.mock('../agent-tools/plans/source', () => ({ readPlanBySlug: vi.fn() }));
 // The dynamic half of the split implements-link plane. Controlled here so the union
