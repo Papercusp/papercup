@@ -31,8 +31,27 @@ import type { Env } from './env.ts';
  *  separate downloadable product — "install" DOWNLOADS its platform installer
  *  from the app's own GitHub release (the Cupboard never re-hosts the binary); a
  *  BUNDLE app is a papercusp-native composition installed into the workspace
- *  (Phase 2). The `delivery_type` column discriminates the two. */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template', 'app'] as const;
+ *  (Phase 2). The `delivery_type` column discriminates the two.
+ *
+ *  `rubric` / `plan` / `recipe` (migration 015 / cupboard-plan-rubric-recipe-sharing
+ *  -2026-08-21 P-002, D-001 [owner 2026-08-21]): the three reusable JUDGMENT/PROCEDURE
+ *  units. A `rubric` is a self-describing rubric dir (rubric.json + listing.json +
+ *  optional METHOD.md) installed into the layered rubric store's user layer. A `plan`
+ *  is a plan TEMPLATE — goal + item DAG + decisions + schedule with live state stripped
+ *  at publish — and may declare `requires_rubrics`. A `recipe` is a captured multi-step
+ *  tool orchestration. All three install. */
+export const LISTING_KINDS = [
+  'harness',
+  'blueprint',
+  'plugin',
+  'pack',
+  'knowledge-pack',
+  'template',
+  'app',
+  'rubric',
+  'plan',
+  'recipe',
+] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
 
 export function isListingKind(v: unknown): v is ListingKind {
@@ -70,8 +89,27 @@ export function normalizeListingKind(v: unknown): ListingKind | null {
  * exists, so the eventual publish path (P-003) can never make an app public
  * without review. The moderation *flow* + who reviews is P-006 / the open P-012
  * owner wall on cupboard-public-release-2026-07-12 (which this kind escalates).
+ *
+ * `rubric` / `plan` / `recipe` (migration 015 / cupboard-plan-rubric-recipe-sharing
+ * D-002): all three are fail-closed for the SAME reason knowledge-pack and blueprint
+ * are — each is instruction-carrying content that lands in an agent's context or
+ * execution path, not inert data:
+ *   - a `rubric` supplies the criteria + METHOD.md runbook by which work is GRADED,
+ *     so a hostile one silently corrupts every acceptance verdict it touches;
+ *   - a `plan` is a goal + item DAG agents EXECUTE — the most directly actuating
+ *     content the Cupboard carries short of an app;
+ *   - a `recipe` is a runnable multi-step tool orchestration.
+ * Being in this list from the moment the kinds exist means no publish path built
+ * later can make one of them public without review.
  */
-export const REVIEW_POLICY_KINDS: readonly ListingKind[] = ['knowledge-pack', 'blueprint', 'app'];
+export const REVIEW_POLICY_KINDS: readonly ListingKind[] = [
+  'knowledge-pack',
+  'blueprint',
+  'app',
+  'rubric',
+  'plan',
+  'recipe',
+];
 
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
@@ -118,6 +156,16 @@ export interface HarnessRow {
   // required family nothing provides, so the detail page must be able to show it
   // before the user clicks Install rather than after.
   requires_events: string | null;
+  // Rubric axis, consumer half (migration 015 / cupboard-plan-rubric-recipe-sharing
+  // D-001): JSON-encoded array of the rubrics this unit REQUIRES, each
+  // { rubricRef, optional? }. Primarily `plan` rows; kind-agnostic by design so a
+  // future kind can declare rubric deps without another table rebuild. NULL for a
+  // unit declaring none and for every pre-015 listing. Published for the same reason
+  // requires_events is: the requirement must travel WITH the listing so the detail
+  // page can show it BEFORE the user clicks Install. There is deliberately no
+  // provides_rubrics counterpart — a kind='rubric' row provides exactly the one
+  // rubric named by its own listing_ref (D-002).
+  requires_rubrics: string | null;
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // the owning Hive's raw-32-byte-base64 Ed25519 pubkey (same encoding as the
   // hive directory announce) + a denormalized display title. One row per
@@ -205,6 +253,9 @@ export interface NewHarnessInput {
   provides_events?: string | null;
   /** Event axis (migration 013 / D-003): JSON array of REQUIRED event families; plugin|pack only. */
   requires_events?: string | null;
+  /** Rubric axis (migration 015 / D-001): JSON array of REQUIRED rubrics
+   *  ({ rubricRef, optional? }); primarily `plan`, kind-agnostic. Omit ⇒ none. */
+  requires_rubrics?: string | null;
   /** Repo→Hive binding (migration 007): owning Hive's raw-32-byte-base64 Ed25519 pubkey. */
   hive_pubkey?: string | null;
   /** Denormalized Hive display title (directory announce stays authoritative). */
@@ -238,13 +289,13 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
           title, description, topic_hex,
           publisher_github_user_id, publisher_github_login, publisher_permission,
           publisher_device_pubkey, publisher_attestation_gist_id,
-          provides_tools, provides_events, requires_events,
+          provides_tools, provides_events, requires_events, requires_rubrics,
           hive_pubkey, hive_title, blueprint_kind,
           review_status,
           delivery_type, latest_json_url, release_repo, icon_url, platforms,
           claim_status,
           created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'unclaimed', ?, ?)`,
     )
     .bind(
       h.id,
@@ -266,6 +317,7 @@ export async function insertHarness(db: D1Database, h: NewHarnessInput): Promise
       h.provides_tools ?? null,
       h.provides_events ?? null,
       h.requires_events ?? null,
+      h.requires_rubrics ?? null,
       h.hive_pubkey ?? null,
       h.hive_title ?? null,
       h.blueprint_kind ?? null,

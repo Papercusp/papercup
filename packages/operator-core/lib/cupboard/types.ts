@@ -69,6 +69,22 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  *                              GUIDE.md; installing drops the dir into the user
  *                              template store the materializer reads, cf.
  *                              cupboard-full-dogfood-2026-07-10 P-003)
+ *   rubric        → install   (a graded acceptance/quality rubric — a self-describing
+ *                              dir of rubric.json + listing.json + optional METHOD.md.
+ *                              Installing drops it into the writable user layer of the
+ *                              layered rubric store (cupboard/rubric-store.ts), whose
+ *                              existing idempotent no-clobber seed carries it into the
+ *                              workspace rubric store. cf. cupboard-plan-rubric-recipe
+ *                              -sharing-2026-08-21 P-002; the v1 local store was
+ *                              explicitly built for this install target.)
+ *   plan          → install   (a PLAN TEMPLATE — goal + item DAG + decisions +
+ *                              schedule, with live state stripped at publish. Installs
+ *                              as a template row, never a live plan; instantiate it
+ *                              through the ordinary plans machinery. May declare
+ *                              `requires_rubrics`.)
+ *   recipe        → install   (a captured multi-step tool orchestration — the
+ *                              code_recipes unit — installed into the workspace
+ *                              recipe store.)
  *   app           → download  (STANDALONE) | install (BUNDLE) — a whole
  *                              distributable application (cupboard-app-distribution
  *                              -2026-07-14 [owner 2026-07-14]). The
@@ -90,8 +106,61 @@ export type CupboardClaimStatus = (typeof CUPBOARD_CLAIM_STATUSES)[number];
  * publish PENDING and surface publicly only after operator approval — see
  * `review_status` on the row + `isPendingReview()`.
  */
-export const LISTING_KINDS = ['harness', 'blueprint', 'plugin', 'pack', 'knowledge-pack', 'template', 'app'] as const;
+export const LISTING_KINDS = [
+  'harness',
+  'blueprint',
+  'plugin',
+  'pack',
+  'knowledge-pack',
+  'template',
+  'app',
+  'rubric',
+  'plan',
+  'recipe',
+] as const;
 export type ListingKind = (typeof LISTING_KINDS)[number];
+
+/**
+ * One entry of a listing's `requires_rubrics` (Cupboard worker migration 015 / D-001):
+ * a rubric the unit REQUIRES to be present after install. Deliberately field-for-field
+ * the consumer half of the event axis (`requires_events`, migration 013): a missing
+ * `optional` means REQUIRED, and a required rubric nothing can provide is a HARD
+ * install failure — which is exactly why the listing carries it, so the detail page can
+ * show the requirement BEFORE the user clicks Install.
+ *
+ * Resolution order (see resolveRubricRequirements): the installing workspace's own
+ * rubric store — INCLUDING the bundled first-party set — counts as PROVIDED; otherwise
+ * a `kind='rubric'` Cupboard listing is offered as a co-install; otherwise refuse.
+ */
+export interface RubricRequirement {
+  /** The required rubric's id/ref (matches a rubric listing's `listing_ref`). */
+  rubricRef: string;
+  /** Absent/false ⇒ REQUIRED (hard-gates the install). True ⇒ nice-to-have. */
+  optional?: boolean;
+}
+
+/** Tolerant parse of the JSON-encoded `requires_rubrics` column. Never throws: a
+ *  malformed/absent value yields [] so a bad row degrades to "declares no rubric
+ *  deps" rather than breaking the storefront. Entries lacking a string `rubricRef`
+ *  are dropped individually. */
+export function parseRequiredRubrics(raw: string | null | undefined): RubricRequirement[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    const out: RubricRequirement[] = [];
+    for (const e of parsed) {
+      if (typeof e !== 'object' || e === null) continue;
+      const o = e as Record<string, unknown>;
+      const rubricRef = typeof o.rubricRef === 'string' && o.rubricRef !== '' ? o.rubricRef : null;
+      if (!rubricRef) continue;
+      out.push({ rubricRef, ...(o.optional === true ? { optional: true } : {}) });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
 
 /**
  * The delivery model for a `listing_kind: 'app'` row (cupboard-app-distribution
@@ -136,6 +205,9 @@ export function listingActionFor(l: HarnessListing): ListingAction | null {
     case 'pack':
     case 'knowledge-pack':
     case 'template':
+    case 'rubric':
+    case 'plan':
+    case 'recipe':
       return 'install';
     case 'app':
       return l.delivery_type === 'bundle' ? 'install' : 'download';
@@ -460,6 +532,20 @@ export interface HarnessListing {
    * Absent/null ⇒ declares no event deps.
    */
   requires_events?: string | null;
+  /**
+   * Rubric axis, consumer half (worker migration 015 / cupboard-plan-rubric-recipe
+   * -sharing D-001): JSON-encoded `RubricRequirement[]` naming the rubrics this unit
+   * REQUIRES. Primarily carried by `plan` rows (a plan template's acceptance-rubric
+   * class plus any rubricRefs it names), but kind-agnostic by design so a future kind
+   * can declare rubric deps without another table rebuild. Parse with
+   * `parseRequiredRubrics`. Absent/null ⇒ declares no rubric deps.
+   *
+   * There is deliberately NO `provides_rubrics` counterpart: a `kind='rubric'` row
+   * provides exactly the one rubric named by its own `listing_ref`, so the provider
+   * half is already keyed and needs no separate column (unlike the event axis, where
+   * one plugin can register many families).
+   */
+  requires_rubrics?: string | null;
 
   // ── Pre-publication review (worker migration 008 / knowledge-packs D-007).
   // Policy kinds (knowledge-pack, blueprint) publish 'pending'; the server
