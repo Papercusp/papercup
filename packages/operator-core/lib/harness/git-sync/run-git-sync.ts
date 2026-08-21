@@ -794,7 +794,7 @@ async function isModuleResolvableAtHead(
     } catch (e) {
       // A HEAD probe is a safety refinement, not a reason to wedge git-sync. If
       // it cannot be measured, retain the guard's conservative quarantine.
-      log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: ${errMsg(e)}`);
+      log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: ${String(e)}`);
       return false;
     }
   }
