@@ -52,7 +52,13 @@ import type {
 } from '@papercusp/seed-bundle';
 import { hostname, tmpdir, userInfo } from 'node:os';
 import { openNamedLog, type PeerLogOp } from './peer-log';
-import { DROP_SNAPSHOT_ROW, isSnapshotOp, produceFilteredSnapshotIntoLog } from './log-snapshot';
+import {
+  DROP_SNAPSHOT_ROW,
+  isSnapshotOp,
+  produceFilteredSnapshotIntoLog,
+  type SnapshotFoldProgressCallback,
+  type SnapshotFoldStall,
+} from './log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import {
   findLatestCompleteSnapshotDetailed,
@@ -248,6 +254,12 @@ export async function mintFilteredSeedContentCore(inp: {
   readonly now?: number;
   /** Release audit literals; omitted direct callers use the current box's runtime set. */
   readonly redactValues?: readonly string[];
+  /** Forward bounded source-scan progress to the release runner, when supplied. */
+  readonly onProgress?: SnapshotFoldProgressCallback;
+  /** Forward a cursor-stall diagnostic to the release runner, when supplied. */
+  readonly onStall?: (stall: SnapshotFoldStall) => void;
+  /** Override the cursor-stall diagnostic threshold. The scan is never timed out. */
+  readonly filteredScanStallMs?: number;
 }): Promise<MintedSeedCore> {
   const sourceCore = inp.sourceStore.get({
     key: Buffer.from(inp.ownerKeyHex, 'hex'),
@@ -263,10 +275,24 @@ export async function mintFilteredSeedContentCore(inp: {
     await mintStore.ready();
     try {
       const synthetic = await openNamedLog(mintStore, 'seed-content');
+      const reportStall = (stall: SnapshotFoldStall): void => {
+        if (inp.onStall) {
+          inp.onStall(stall);
+          return;
+        }
+        console.error(
+          `[seed:corestore] filtered source scan stalled for owner=${inp.ownerKeyHex.slice(0, 12)}…: ` +
+            `cursor=${stall.processed}/${stall.total} unchanged for ${stall.stalledForMs}ms; ` +
+            `the scan remains live and is not being aborted`,
+        );
+      };
       const produced = await produceFilteredSnapshotIntoLog(sourceLog, synthetic, {
         now: inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
+        onProgress: inp.onProgress,
+        onStall: reportStall,
+        stallMs: inp.filteredScanStallMs,
         transformValue: (value, { hbKey }) =>
           seedKeyCarriesBuildIdentity(hbKey, inp.redactValues)
             ? DROP_SNAPSHOT_ROW
@@ -361,6 +387,12 @@ export interface CorestoreCutContext {
   readonly filtered?: boolean;
   /** Identity literals supplied by the release audit for the projection scrub. */
   readonly redactValues?: readonly string[];
+  /** Optional bounded source-scan progress sink for filtered release cuts. */
+  readonly onProgress?: SnapshotFoldProgressCallback;
+  /** Optional cursor-stall sink for filtered release cuts. */
+  readonly onStall?: (stall: SnapshotFoldStall) => void;
+  /** Optional test/release override for the filtered-scan stall diagnostic. */
+  readonly filteredScanStallMs?: number;
 }
 
 /** Context for {@link createCorestoreSeedProvider}.restore (first-boot time). */
@@ -672,7 +704,17 @@ export function createCorestoreSeedProvider(): SeedProvider {
     kind: CORESTORE_SEED_KIND,
 
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
-      const { sourceStore, coreKeys, stagingDir, sparse, filtered, redactValues } =
+      const {
+        sourceStore,
+        coreKeys,
+        stagingDir,
+        sparse,
+        filtered,
+        redactValues,
+        onProgress,
+        onStall,
+        filteredScanStallMs,
+      } =
         ctx as unknown as CorestoreCutContext;
       await mkdir(stagingDir, { recursive: true });
 
@@ -688,6 +730,9 @@ export function createCorestoreSeedProvider(): SeedProvider {
               ownerKeyHex,
               stagingStore: replica,
               redactValues,
+              onProgress,
+              onStall,
+              filteredScanStallMs,
             });
             filteredCoreKeys.push(minted.keyHex);
             coreLengths[minted.keyHex] = minted.length;

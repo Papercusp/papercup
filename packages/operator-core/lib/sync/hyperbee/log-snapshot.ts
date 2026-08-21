@@ -516,6 +516,94 @@ export const SNAPSHOT_COMPACT_EVERY_OPS = 1000;
 export const SNAPSHOT_READ_CONCURRENCY = 256;
 
 /**
+ * A bounded progress marker for the filtered seed scan. `processed` is the
+ * source-log cursor, not a percentage or an estimate: a reader is making real
+ * progress only after a whole bounded window has been read and folded.
+ */
+export interface SnapshotFoldProgress {
+  /** Named phase so a future multi-phase seed cut cannot conflate counters. */
+  phase: string;
+  /** Number of source-log blocks folded so far. Monotonic within one scan. */
+  processed: number;
+  /** Source-log length captured for this scan. */
+  total: number;
+}
+
+/** Diagnostic emitted when the source cursor has not advanced for `stallMs`. */
+export interface SnapshotFoldStall extends SnapshotFoldProgress {
+  /** Wall-clock time for which the cursor remained unchanged. */
+  stalledForMs: number;
+}
+
+export type SnapshotFoldProgressCallback = (progress: SnapshotFoldProgress) => void;
+export type SnapshotFoldStallCallback = (stall: SnapshotFoldStall) => void;
+
+/**
+ * A single read window may legitimately be slow, so this is only an
+ * observability threshold. It is never a total scan timeout and the watchdog
+ * never rejects or cancels the underlying read.
+ */
+export const FILTERED_SNAPSHOT_SCAN_STALL_MS = 30_000;
+
+const FILTERED_SNAPSHOT_SCAN_PHASE = 'filtered-source-scan';
+
+interface FoldLogRangeOptions {
+  phase?: string;
+  onProgress?: SnapshotFoldProgressCallback;
+  onStall?: SnapshotFoldStallCallback;
+  stallMs?: number;
+}
+
+/**
+ * Watch one monotonically advancing source cursor. The alarm is edge-triggered
+ * for each cursor value: a scan that keeps advancing can run for hours without
+ * a wall-clock false positive, while a read that never completes produces one
+ * useful diagnostic and does not create a repeating timer storm.
+ */
+function watchFoldCursor(from: number, to: number, opts: Required<Pick<FoldLogRangeOptions, 'phase' | 'onStall'>> & { stallMs: number }): {
+  advance: (processed: number) => void;
+  stop: () => void;
+} {
+  let processed = from;
+  let lastProgressAt = Date.now();
+  let alarmedAt: number | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const arm = (): void => {
+    if (timer !== undefined || processed >= to || alarmedAt === processed) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (processed >= to || alarmedAt === processed) return;
+      const stalledForMs = Date.now() - lastProgressAt;
+      if (stalledForMs < opts.stallMs) {
+        arm();
+        return;
+      }
+      alarmedAt = processed;
+      opts.onStall({ phase: opts.phase, processed, total: to, stalledForMs });
+    }, opts.stallMs);
+    timer.unref?.();
+  };
+
+  arm();
+  return {
+    advance(next: number): void {
+      // The fold loop is sequential by construction. Keep the guard defensive
+      // so a future caller cannot make an alarm appear to recover backwards.
+      if (next < processed) return;
+      processed = next;
+      lastProgressAt = Date.now();
+      alarmedAt = undefined;
+      arm();
+    },
+    stop(): void {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
+
+/**
  * Should the own log be compacted now? True when it has grown at least
  * `threshold` ops since the last snapshot it produced (`lastCoversUpTo`, 0 if it
  * never snapshotted). Pure — the caller supplies the lengths so this is trivially
@@ -594,13 +682,32 @@ async function foldLogRangeInto(
   folder: SnapshotRowFolder,
   from: number,
   to: number,
+  opts: FoldLogRangeOptions = {},
 ): Promise<void> {
-  for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
-    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
-    const window = await Promise.all(Array.from({ length: end - start }, (_, k) => log.get(start + k)));
-    for (const op of window) if (op) folder.add(op);
-    // `window` falls out of scope here — the decoded blocks it held are collectable.
-    await new Promise<void>((resolve) => setImmediate(resolve));
+  const watchdog =
+    opts.onStall && opts.stallMs !== undefined && opts.stallMs > 0
+      ? watchFoldCursor(from, to, {
+          phase: opts.phase ?? 'source-scan',
+          onStall: opts.onStall,
+          stallMs: opts.stallMs,
+        })
+      : undefined;
+  try {
+    for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
+      const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
+      const window = await Promise.all(Array.from({ length: end - start }, (_, k) => log.get(start + k)));
+      for (const op of window) if (op) folder.add(op);
+      watchdog?.advance(end);
+      opts.onProgress?.({
+        phase: opts.phase ?? 'source-scan',
+        processed: end,
+        total: to,
+      });
+      // `window` falls out of scope here — the decoded blocks it held are collectable.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  } finally {
+    watchdog?.stop();
   }
 }
 
@@ -772,6 +879,12 @@ export async function produceFilteredSnapshotIntoLog(
     /** Optional seed-only value projection; never used by the live-log producer. */
     transformValue?: SnapshotValueTransform;
     maxChunkBytes?: number;
+    /** Bounded progress after each source-log read/fold window. */
+    onProgress?: SnapshotFoldProgressCallback;
+    /** Cursor-stall diagnostic; the scan itself is never timed out. */
+    onStall?: SnapshotFoldStallCallback;
+    /** Override the diagnostic threshold in tests or a release runner. */
+    stallMs?: number;
   },
 ): Promise<ProduceSnapshotResult> {
   // An EMPTY SOURCE means there is nothing to seed — mirror `produceLogSnapshot`'s
@@ -792,7 +905,21 @@ export async function produceFilteredSnapshotIntoLog(
     excludeTables: opts.excludeTables,
     transformValue: opts.transformValue,
   });
-  await foldLogRangeInto(sourceLog, folder, 0, sourceLog.length);
+  const reportStall =
+    opts.onStall ??
+    ((stall: SnapshotFoldStall) => {
+      console.error(
+        `[snapshot] filtered source scan stalled in phase=${stall.phase}: ` +
+          `cursor=${stall.processed}/${stall.total} unchanged for ${stall.stalledForMs}ms; ` +
+          `the scan remains live and will not be aborted by this diagnostic`,
+      );
+    });
+  await foldLogRangeInto(sourceLog, folder, 0, sourceLog.length, {
+    phase: FILTERED_SNAPSHOT_SCAN_PHASE,
+    onProgress: opts.onProgress,
+    onStall: reportStall,
+    stallMs: opts.stallMs ?? FILTERED_SNAPSHOT_SCAN_STALL_MS,
+  });
 
   const rows = folder.finish({ now: opts.now });
   // The TARGET's append position — see the dual-purpose note above.

@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   produceLogSnapshot,
   produceFilteredSnapshotIntoLog,
   SnapshotRowFolder,
   isSnapshotOp,
+  SNAPSHOT_READ_CONCURRENCY,
   type SnapshotPayload,
 } from '../log-snapshot';
 import type { OwnLog, PeerLogOp } from '../peer-log';
@@ -36,7 +37,7 @@ function del(table: string, hbKey: string, ts: number): PeerLogOp {
   return { type: 'del', table, hbKey, ts, schema_version: 1, author_pubkey: 'me' };
 }
 
-function memLog(keyHex: string): OwnLog {
+function memLog(keyHex: string, opts: { readDelayMs?: number; neverAt?: number } = {}): OwnLog {
   const ops: PeerLogOp[] = [];
   return {
     get keyHex() {
@@ -52,6 +53,10 @@ function memLog(keyHex: string): OwnLog {
       ops.push(...batch);
     },
     async get(i: number) {
+      if (opts.neverAt === i) return new Promise<null>(() => {});
+      if (opts.readDelayMs) {
+        await new Promise<void>((resolve) => setTimeout(resolve, opts.readDelayMs));
+      }
       return ops[i] ?? null;
     },
   } as unknown as OwnLog;
@@ -312,5 +317,81 @@ describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-2010816
     expect(target.length).toBe(res.chunkCount);
     const bytes = JSON.stringify(await target.get(res.coversUpTo));
     expect(bytes).not.toContain(SYNTHETIC_MACHINE_LABEL);
+  });
+
+  it('emits phase + source cursor progress once per completed read window', async () => {
+    const src = memLog('source-own-log');
+    for (let i = 0; i < SNAPSHOT_READ_CONCURRENCY + 1; i++) {
+      await src.append(put('plans', `p-${i}`, { i }, i));
+    }
+    const target = memLog('synthetic-seed-core');
+    const progress: Array<{ phase: string; processed: number; total: number }> = [];
+
+    await produceFilteredSnapshotIntoLog(src, target, {
+      now: 2000,
+      schemaVersion: 1,
+      onProgress: (event) => progress.push(event),
+    });
+
+    expect(progress).toEqual([
+      {
+        phase: 'filtered-source-scan',
+        processed: SNAPSHOT_READ_CONCURRENCY,
+        total: SNAPSHOT_READ_CONCURRENCY + 1,
+      },
+      {
+        phase: 'filtered-source-scan',
+        processed: SNAPSHOT_READ_CONCURRENCY + 1,
+        total: SNAPSHOT_READ_CONCURRENCY + 1,
+      },
+    ]);
+  });
+
+  it('does not call the stall sink for a slow scan whose source cursor keeps advancing', async () => {
+    // Seven individually bounded windows take longer than the 150ms diagnostic
+    // threshold in total. Only a cursor that stops advancing is a stall: a total
+    // wall-clock timeout would falsely alarm this healthy scan.
+    const src = memLog('source-own-log', { readDelayMs: 25 });
+    const total = SNAPSHOT_READ_CONCURRENCY * 7 + 1;
+    for (let i = 0; i < total; i++) await src.append(put('plans', `p-${i}`, { i }, i));
+    const stalls: Array<{ processed: number; total: number }> = [];
+
+    await produceFilteredSnapshotIntoLog(src, memLog('synthetic-seed-core'), {
+      now: 2000,
+      schemaVersion: 1,
+      stallMs: 150,
+      onStall: (event) => stalls.push({ processed: event.processed, total: event.total }),
+    });
+
+    expect(stalls).toEqual([]);
+  });
+
+  it('reports one edge-triggered stall when a source read never advances the cursor', async () => {
+    vi.useFakeTimers();
+    try {
+      const src = memLog('source-own-log', { neverAt: 0 });
+      await src.append(put('plans', 'p-0', { title: 'stuck' }, 1));
+      const stalls: Array<{ phase: string; processed: number; total: number; stalledForMs: number }> = [];
+      const pending = produceFilteredSnapshotIntoLog(src, memLog('synthetic-seed-core'), {
+        now: 2000,
+        schemaVersion: 1,
+        stallMs: 25,
+        onStall: (event) => stalls.push(event),
+      });
+
+      await vi.advanceTimersByTimeAsync(25);
+      expect(stalls).toHaveLength(1);
+      expect(stalls[0]).toMatchObject({
+        phase: 'filtered-source-scan',
+        processed: 0,
+        total: 1,
+      });
+      // A stuck cursor is edge-triggered, not a repeating timer storm.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(stalls).toHaveLength(1);
+      void pending;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
