@@ -235,6 +235,7 @@
     "lint:no-raw-harness-sentinel": "node scripts/check-no-raw-harness-sentinel.mjs",
     "lint:no-raw-goal-holder-read": "node scripts/check-no-raw-goal-holder-read.mjs",
     "lint:no-bespoke-state-read": "node scripts/check-no-bespoke-state-read.mjs",
+    "lint:no-bespoke-state-read:volume-report": "node scripts/check-no-bespoke-state-read.mjs --volume-report",
     "lint:plane-producers": "node scripts/check-plane-producers.mjs",
     "lint:declared-consumed": "node scripts/check-declared-consumed.mjs",
     "lint:plane-adoption": "node scripts/check-plane-adoption.mjs",

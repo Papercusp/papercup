@@ -27,7 +27,7 @@ const REPO_ROOT = new URL('../../../', import.meta.url).pathname;
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicates only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES } from '../../../scripts/check-no-bespoke-state-read.mjs';
+import { isStateReadCandidate, isMutatingVerb, parseToolDefs, judgeToolDef, BASELINE, MIN_EXEMPTION_REASON, STATE_NOUNS, BASELINE_REVIEW_BY, baselineExpired, VERDICTS, VERDICT_KINDS, verdictGaps, verdictRollup, capabilityEffect, SCAN_DIRS, WRITE_CAPABILITIES as GUARD_WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES as GUARD_WRITE_CAPABILITY_SUFFIXES, VOLUME_WINDOW_DAYS, VOLUME_MIN_CALLS, VOLUME_MIN_DISTINCT_CALLERS, meetsVolumeFloor, findVolumeCandidates, volumeReportStatus, formatVolumeReport } from '../../../scripts/check-no-bespoke-state-read.mjs';
 import { inferCapabilityEffect, WRITE_CAPABILITIES, WRITE_CAPABILITY_SUFFIXES } from '@papercusp/tooldef';
 import { TOOL_SOURCE_DIRS } from './static-tool-catalog';
 
@@ -390,6 +390,60 @@ describe('no-bespoke-state-read guard:EI-18791777695307535 — the fleet:assignm
     expect(isStateReadCandidate({ name: 'locks:acquire', capability: 'locks:write' })).toBe(false);
     expect(isStateReadCandidate({ name: 'locks:acquire_resource', capability: 'locks:write' })).toBe(false);
     expect(isStateReadCandidate({ name: 'locks:release', capability: 'locks:write' })).toBe(false);
+  });
+});
+
+describe('no-bespoke-state-read guard:the advisory volume signature', () => {
+  it('exports the calibrated review window and floors', () => {
+    expect(VOLUME_WINDOW_DAYS).toBe(30);
+    expect(VOLUME_MIN_CALLS).toBe(5);
+    expect(VOLUME_MIN_DISTINCT_CALLERS).toBe(3);
+    expect(meetsVolumeFloor({ calls: 5, callers: 3 })).toBe(true);
+    expect(meetsVolumeFloor({ calls: 4, callers: 3 })).toBe(false);
+    expect(meetsVolumeFloor({ calls: 5, callers: 2 })).toBe(false);
+    expect(meetsVolumeFloor({ calls: '5', callers: '3' })).toBe(true);
+  });
+
+  it('finds unremarkably-named volume candidates and excludes writes or already-dispositioned tools', () => {
+    const definitions = [
+      { name: 'blender:success-metrics', capability: 'harness:read', file: 'blender.ts', lens: null, exemption: null },
+      { name: 'facts:list', capability: 'harness:read', file: 'facts.ts', lens: null, exemption: null },
+      { name: 'pot:get', capability: 'harness:read', file: 'pot.ts', lens: null, exemption: null },
+      { name: 'dev:pg_active_queries', capability: 'intel:read', file: 'pg.ts', lens: null, exemption: null },
+      { name: 'processes:limit', capability: 'processes:control', file: 'processes.ts', lens: null, exemption: null },
+      { name: 'fleet:status', capability: 'fleet:status', file: 'fleet.ts', lens: 'fleet.live', exemption: null },
+      { name: 'state:read', capability: 'harness:read', file: 'state.ts', lens: null, exemption: 'single shared cell door' },
+      { name: 'dev:thing_status', capability: 'harness:write', file: 'write.ts', lens: null, exemption: null },
+    ];
+    const rows = [
+      { tool_name: 'blender:success-metrics', calls: 13, callers: 6 },
+      { tool_name: 'facts:list', calls: 404, callers: 147 },
+      { tool_name: 'pot:get', calls: 6, callers: 5 },
+      { tool_name: 'dev:pg_active_queries', calls: 11, callers: 7 },
+      { tool_name: 'processes:limit', calls: 100, callers: 20 },
+      { tool_name: 'fleet:status', calls: 100, callers: 20 },
+      { tool_name: 'state:read', calls: 100, callers: 20 },
+      { tool_name: 'dev:thing_status', calls: 100, callers: 20 },
+    ];
+
+    expect(findVolumeCandidates(rows, definitions).map((candidate) => candidate.name)).toEqual([
+      'facts:list',
+      'blender:success-metrics',
+      'dev:pg_active_queries',
+      'pot:get',
+    ]);
+  });
+
+  it('reports an empty telemetry corpus as UNKNOWN/no-data with a failing status', () => {
+    expect(volumeReportStatus({ totalCalls: 0 })).toMatchObject({
+      status: 'no-data',
+      label: 'UNKNOWN',
+      known: false,
+      exitCode: 1,
+    });
+    expect(formatVolumeReport({ workspaceId: 'ws', harnessSlug: 'h', totalCalls: 0 })).toContain(
+      'UNKNOWN (no-data)',
+    );
   });
 });
 

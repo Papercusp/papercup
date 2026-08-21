@@ -331,7 +331,7 @@ export function findVolumeCandidates(rows, definitions, options = {}) {
       if (!definition) return null;
       const verb = definition.name.slice(definition.name.indexOf(':') + 1);
       if (definition.capability && capabilityEffect(definition.capability) === 'write') return null;
-      if (isMutatingVerb(verb) || definition.lens !== null || definition.exemption !== null) return null;
+      if (isMutatingVerb(verb) || definition.lens != null || definition.exemption != null) return null;
       if (!meetsVolumeFloor(row, options)) return null;
       const calls = Number(row.calls);
       const callers = Number(row.callers ?? row.distinctCallers);
@@ -346,6 +346,104 @@ export function findVolumeCandidates(rows, definitions, options = {}) {
     })
     .filter(Boolean)
     .sort((a, b) => b.calls - a.calls || b.callers - a.callers || a.name.localeCompare(b.name));
+}
+
+/**
+ * Keep the volume leg explicitly non-vacuous. A fresh or unavailable telemetry
+ * table is UNKNOWN, not "no candidates" and never a passing report.
+ */
+export function volumeReportStatus({ totalCalls } = {}) {
+  const total = Number(totalCalls);
+  if (!Number.isFinite(total) || total <= 0) {
+    return {
+      status: 'no-data',
+      label: 'UNKNOWN',
+      known: false,
+      totalCalls: 0,
+      exitCode: 1,
+    };
+  }
+  return {
+    status: 'observed',
+    label: 'OBSERVED',
+    known: true,
+    totalCalls: total,
+    exitCode: 0,
+  };
+}
+
+/** Format the advisory volume report without turning it into a static-gate failure. */
+export function formatVolumeReport({
+  workspaceId = 'unknown',
+  harnessSlug = 'unknown',
+  windowDays = VOLUME_WINDOW_DAYS,
+  totalCalls,
+  candidates = [],
+} = {}) {
+  const status = volumeReportStatus({ totalCalls });
+  const lines = [
+    `NO-BESPOKE STATE-READ VOLUME REPORT — ${windowDays}d`,
+    `scope: workspace=${workspaceId} harness=${harnessSlug}`,
+  ];
+
+  if (!status.known) {
+    lines.push(
+      `  ${status.label} (no-data): the scoped agent tool_invocations corpus is empty or unavailable; ` +
+        'volume evidence is not a passing result.',
+    );
+    lines.push('  exit status: 1');
+    return lines.join('\n');
+  }
+
+  lines.push(`  ${status.label}: ${status.totalCalls} agent invocation(s) observed.`);
+  if (candidates.length === 0) {
+    lines.push('  no volume candidates crossed the review floor.');
+  } else {
+    lines.push(`  ${candidates.length} read-shaped volume candidate(s):`);
+    for (const candidate of candidates) {
+      const callers = `${candidate.callers} caller(s)`;
+      const rate = candidate.callsPerCaller == null ? 'n/a' : `${candidate.callsPerCaller} calls/caller`;
+      const marker = candidate.syntacticCandidate ? ' · name-signature match' : '';
+      lines.push(`    ${candidate.name} — ${candidate.calls} call(s) · ${callers} · ${rate}${marker}`);
+      if (candidate.file) lines.push(`      ${candidate.file}`);
+    }
+  }
+  lines.push('  exit status: 0 (advisory; the static gate remains authoritative)');
+  return lines.join('\n');
+}
+
+/** Query the agent-only volume corpus used by the optional advisory report. */
+export async function fetchVolumeReport({
+  sql,
+  workspaceId,
+  harnessSlug,
+  windowDays = VOLUME_WINDOW_DAYS,
+}) {
+  if (!sql) throw new TypeError('fetchVolumeReport requires a postgres client');
+  const [totalRow] = await sql`
+    SELECT count(*)::int AS total_calls
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
+       AND invoked_at >= now() - make_interval(days => ${windowDays})
+  `;
+  const rows = await sql`
+    SELECT tool_name,
+           count(*)::int AS calls,
+           count(DISTINCT coord_owner_id)::int AS callers
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${workspaceId}
+       AND harness_slug = ${harnessSlug}
+       AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
+       AND invoked_at >= now() - make_interval(days => ${windowDays})
+     GROUP BY tool_name
+     ORDER BY count(*) DESC, tool_name ASC
+  `;
+  return {
+    totalCalls: totalRow?.total_calls ?? totalRow?.totalCalls ?? 0,
+    rows,
+  };
 }
 
 /** `@cell-lens <dotted.cell.id>` — the intended path. */
@@ -735,6 +833,7 @@ export function findOffenders() {
   const offenders = [];
   const exemptions = [];
   const lenses = [];
+  const definitions = [];
   const seen = new Set();
 
   for (const f of tracked) {
@@ -746,6 +845,7 @@ export function findOffenders() {
       continue;
     }
     for (const row of parseToolDefs(text, f)) {
+      definitions.push({ file: f, ...row });
       if (!isStateReadCandidate(row)) continue;
       seen.add(row.name);
       if (row.lens) lenses.push({ file: f, name: row.name, cell: row.lens });
@@ -767,7 +867,7 @@ export function findOffenders() {
   const stale = [...BASELINE].filter((n) => !seen.has(n));
   const redundant = lenses.concat(exemptions).filter((r) => BASELINE.has(r.name)).map((r) => r.name);
 
-  return { offenders, exemptions, lenses, stale, redundant, scanned: seen.size };
+  return { offenders, exemptions, lenses, stale, redundant, scanned: seen.size, definitions };
 }
 
 function main() {
@@ -847,6 +947,43 @@ function main() {
   process.exit(0);
 }
 
+async function mainVolumeReport() {
+  const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID || 'papercusp-workspace';
+  const harnessSlug = process.env.PAPERCUSP_HARNESS_SLUG || 'papercusp';
+  const { resolveScriptPgUrl } = await import('./lib/pg-url.mjs');
+  const postgres = (await import('postgres')).default;
+  const sql = postgres(resolveScriptPgUrl().url, {
+    max: 1,
+    connect_timeout: 5,
+    idle_timeout: 1,
+    onnotice: () => {},
+  });
+
+  let volume;
+  try {
+    volume = await fetchVolumeReport({
+      sql,
+      workspaceId,
+      harnessSlug,
+      windowDays: VOLUME_WINDOW_DAYS,
+    });
+  } finally {
+    await sql.end({ timeout: 2 }).catch(() => {});
+  }
+
+  const { definitions } = findOffenders();
+  const candidates = findVolumeCandidates(volume.rows, definitions);
+  const status = volumeReportStatus(volume);
+  console.log(formatVolumeReport({
+    workspaceId,
+    harnessSlug,
+    windowDays: VOLUME_WINDOW_DAYS,
+    totalCalls: volume.totalCalls,
+    candidates,
+  }));
+  process.exitCode = status.exitCode;
+}
+
 // CLI-only: importing the module (for the unit test) must not exec git or exit.
 // Symlink-robust (WI-1443), same guard as check-no-raw-setinterval.mjs.
 const isMain = (() => {
@@ -860,5 +997,12 @@ const isMain = (() => {
   }
 })();
 if (isMain) {
-  main();
+  if (process.argv.includes('--volume-report')) {
+    mainVolumeReport().catch((error) => {
+      console.error(`✗ no-bespoke-state-read volume report unavailable: ${error?.message ?? error}`);
+      process.exitCode = 1;
+    });
+  } else {
+    main();
+  }
 }

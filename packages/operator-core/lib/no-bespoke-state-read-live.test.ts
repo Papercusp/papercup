@@ -52,6 +52,7 @@ interface Scan {
   offenders: { file: string; name: string; rule: string; detail: string }[];
   exemptions: { file: string; name: string; reason: string }[];
   lenses: { file: string; name: string; cell: string }[];
+  definitions: { file: string; name: string; capability: string | null; lens: string | null; exemption: string | null }[];
   stale: string[];
   redundant: string[];
   scanned: number;
@@ -76,6 +77,7 @@ function capabilityFailures(s: Scan): string[] {
   if (!s.lenses.some((l) => l.name === 'dev:pipeline_position')) out.push('the @cell-lens marker parser found nothing');
   if (s.exemptions.length < 2) out.push(`only ${s.exemptions.length} @not-a-cell exemptions parsed`);
   if (BASELINE.size === 0) out.push('the grandfather set is empty');
+  if (s.definitions.length === 0) out.push('findOffenders() did not expose parsed definitions');
   return out;
 }
 
@@ -149,6 +151,7 @@ describe('the live gate is actually scanning', () => {
   it('still parses the declarations real tools carry', () => {
     expect(scan.exemptions.map((e) => e.name).sort()).toEqual(['processes:list', 'state:read']);
     expect(scan.lenses.map((l) => l.cell)).toContain('git.pipelinePosition');
+    expect(scan.definitions.map((definition) => definition.name)).toContain('blender:success-metrics');
   });
 });
 
@@ -238,6 +241,11 @@ describe('MUTATION — the capability leg rejects a gate that stopped scanning',
       { file: 'b.ts', name: 'state:read', reason: 'y'.repeat(40) },
     ],
     lenses: [{ file: 'c.ts', name: 'dev:pipeline_position', cell: 'git.pipelinePosition' }],
+    definitions: [
+      { file: 'a.ts', name: 'processes:list', capability: 'intel:read', lens: null, exemption: 'x'.repeat(40) },
+      { file: 'b.ts', name: 'state:read', capability: 'intel:read', lens: null, exemption: 'y'.repeat(40) },
+      { file: 'c.ts', name: 'dev:pipeline_position', capability: 'intel:read', lens: 'git.pipelinePosition', exemption: null },
+    ],
     stale: [],
     redundant: [],
     scanned: 48,
