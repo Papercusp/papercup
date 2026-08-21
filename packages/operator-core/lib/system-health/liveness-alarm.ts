@@ -79,6 +79,11 @@ import {
   readRoutineEngineLiveness as readSharedRoutineEngineLiveness,
   type RoutineEngineLiveness,
 } from '../release/routine-engine-liveness';
+import {
+  d026QuiescenceIsActive,
+  readD026QuiescenceEvidence,
+  type D026QuiescenceEvidence,
+} from './single-primary-check';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -412,6 +417,34 @@ export async function readBeesLivenessContext(health: SystemHealth): Promise<Bee
 }
 
 /**
+ * Render the D-026-specific dead-routine advisory. Keep this wording distinct from
+ * `formatDeadRoutinesSummary`: the legacy `dead routine(s)` marker is the fallback
+ * classifier for old blocker rows, so a quiesced advisory must never derive that
+ * blocker signature by accident.
+ */
+export function formatD026QuiescedSummary(wf: {
+  deadRoutines: number;
+  deadRoutineNames?: string[];
+  deadRoutinesInScope?: number;
+  deadRoutinesDistinct?: number;
+}): string {
+  const count = wf.deadRoutines;
+  const total = wf.deadRoutinesInScope;
+  const hasDenominator = typeof total === 'number' && total > 0 && count <= total;
+  const population = hasDenominator ? `${count} of ${total}` : `${count}`;
+  const names = wf.deadRoutineNames?.length ? `: ${wf.deadRoutineNames.join(', ')}` : '';
+  const distinctNote =
+    typeof wf.deadRoutinesDistinct === 'number' && wf.deadRoutinesDistinct !== count
+      ? ` (${wf.deadRoutinesDistinct} distinct)`
+      : '';
+  return (
+    `expected D-026 quiescence — ${population} overdue routine(s)${distinctNote}${names}; ` +
+    `the authorized cut + restore units are active and hold the Corestore lock. ` +
+    `Do NOT start or restart bg-host until the restore leg completes.`
+  );
+}
+
+/**
  * PURE: derive the critical supervision signals from a SystemHealth snapshot.
  * `snapshotAgeMs` is the age of `lastSystemHealth` at evaluation (null = the
  * snapshot was computed fresh this tick, so staleness is not a signal).
@@ -434,6 +467,10 @@ export function evaluateLivenessAlarm(
      *  when the raw survey frontier is 0) — kept so an old/pure caller never
      *  regresses; the live source + reconciler always thread this. */
     beesLiveness?: BeesLivenessContext;
+    /** D-026: complete cut + restore evidence intentionally downgrades overdue
+     *  routines to a distinct advisory. Omitted/partial evidence preserves the
+     *  ordinary dead-routines blocker (fail-closed). */
+    d026Quiescence?: D026QuiescenceEvidence;
   } = {},
 ): AlarmSignal[] {
   const staleMs = opts.snapshotStaleMs ?? DEFAULT_SNAPSHOT_STALE_MS;
@@ -462,14 +499,25 @@ export function evaluateLivenessAlarm(
   }
 
   // 2. Dead routines — active cron routines long overdue (the routine engine is
-  //    starved/frozen). Sharper than the stale-snapshot signal when the tick lives.
+  //    starved/frozen). During the complete D-026 cut + restore contract the same
+  //    reading is expected maintenance noise, not a restart-worthy outage. The
+  //    advisory gets its own signature so old blocker rows can be reclassified
+  //    explicitly rather than treated as recovered.
   const wf = health.panels.workFeed?.data;
   if (wf && wf.deadRoutines > 0) {
-    signals.push({
-      key: 'dead-routines',
-      severity: 'blocker',
-      summary: formatDeadRoutinesSummary(wf),
-    });
+    if (d026QuiescenceIsActive(opts.d026Quiescence)) {
+      signals.push({
+        key: 'dead-routines-quiesced',
+        severity: 'advisory',
+        summary: formatD026QuiescedSummary(wf),
+      });
+    } else {
+      signals.push({
+        key: 'dead-routines',
+        severity: 'blocker',
+        summary: formatDeadRoutinesSummary(wf),
+      });
+    }
   }
 
   // 2b. Stale-paused routines (WI-5839 / EI-18654017982759582 items 2+3) — the
@@ -738,6 +786,7 @@ export function unobservableLivenessSignatures(health: SystemHealth): Set<string
   if (workFeed && (workFeed.status === 'unknown' || workFeed.error != null)) {
     out.add('stale-paused-routines');
     out.add('dead-routines');
+    out.add('dead-routines-quiesced');
   } else if (workFeed?.data?.stalePausedRoutinesUnreadable) {
     // Panel succeeded, but this one sub-read's fail-soft catch fired.
     out.add('stale-paused-routines');
@@ -799,9 +848,20 @@ function beesSignalSuppressed(health: SystemHealth, beesLiveness?: BeesLivenessC
 export function policySuppressedLivenessSignatures(
   health: SystemHealth,
   beesLiveness?: BeesLivenessContext,
+  d026Quiescence?: D026QuiescenceEvidence,
 ): Set<string> {
   const out = new Set<string>();
   if (beesSignalSuppressed(health, beesLiveness)) out.add('panel:bees');
+  // A complete D-026 contract with overdue rows means the old blocker signature
+  // is still TRUE but has been deliberately reclassified as the advisory
+  // `dead-routines-quiesced`. Mark the old key so auto-resolve writes a
+  // reclassification note instead of claiming recovery.
+  if (
+    d026QuiescenceIsActive(d026Quiescence) &&
+    (health.panels.workFeed?.data?.deadRoutines ?? 0) > 0
+  ) {
+    out.add('dead-routines');
+  }
   return out;
 }
 
@@ -829,6 +889,7 @@ export function resolveEvidenceFor(
   sig: string,
   health: SystemHealth,
   beesLiveness?: BeesLivenessContext,
+  d026Quiescence?: D026QuiescenceEvidence,
 ): string {
   // `panel:<key>` — the catch-all family (evaluateLivenessAlarm §6) fires while a panel
   // self-reports `crit`, so that panel's OWN status at resolve time IS the observation.
@@ -869,11 +930,19 @@ export function resolveEvidenceFor(
   let field: string;
   let n: number | undefined;
   if (sig === 'stale-paused-routines') { field = 'stalePausedRoutines'; n = d?.stalePausedRoutines; }
-  else if (sig === 'dead-routines') { field = 'deadRoutines'; n = d?.deadRoutines; }
+  else if (sig === 'dead-routines' || sig === 'dead-routines-quiesced') { field = 'deadRoutines'; n = d?.deadRoutines; }
   else return 'no per-signature evidence recorded';
   const status = wf?.status ?? 'panel-absent';
   const unreadable = sig === 'stale-paused-routines' && d?.stalePausedRoutinesUnreadable === true;
-  return `observed workFeed status=${status} ${field}=${typeof n === 'number' ? n : 'unreadable'}${unreadable ? ' (sub-read FAILED)' : ''}`;
+  const d026 = sig === 'dead-routines' || sig === 'dead-routines-quiesced'
+    ? `; ${describeD026Quiescence(d026Quiescence)}`
+    : '';
+  return `observed workFeed status=${status} ${field}=${typeof n === 'number' ? n : 'unreadable'}${unreadable ? ' (sub-read FAILED)' : ''}${d026}`;
+}
+
+function describeD026Quiescence(evidence?: D026QuiescenceEvidence): string {
+  if (!evidence) return 'D-026 evidence=unreadable or not supplied (suppression not authorized)';
+  return `D-026 evidence cutActive=${evidence.cutActive} restoreActive=${evidence.restoreActive} complete=${d026QuiescenceIsActive(evidence)}`;
 }
 
 // ── durable per-signal signature (dedup + auto-resolve key) ────────────────────
@@ -977,6 +1046,7 @@ export function deriveSignatureFromSummary(summary: string): string | null {
   if (s.startsWith(SUMMARY_PREFIX)) s = s.slice(SUMMARY_PREFIX.length);
   s = s.trim();
   if (s.startsWith('system-health tick stale')) return 'health-tick-stale';
+  if (s.startsWith('expected D-026 quiescence')) return 'dead-routines-quiesced';
   if (/dead routine\(s\)/.test(s)) return 'dead-routines';
   if (/on a stale\/unexplained pause/.test(s)) return 'stale-paused-routines';
   // Dual-recognition: legacy records carry 'Queen'/'Overwatch'; post-rename
@@ -1188,6 +1258,9 @@ export interface AlarmDeps {
    * seam unless they explicitly inject this reader too.
    */
   readRoutineEngineLiveness?: (nowMs: number) => Promise<RoutineEngineLiveness>;
+  /** D-026: active cut + restore evidence. Omitted from hermetic callers; the
+   *  production tick wires readD026QuiescenceEvidence explicitly. */
+  d026Quiescence?: () => D026QuiescenceEvidence | Promise<D026QuiescenceEvidence>;
   escalate?: (input: {
     severity: EscalationSeverity;
     summary: string;
@@ -1539,6 +1612,20 @@ export async function runLivenessAlarmTick(
   const localSnapshotStale = localSnapshotAgeMs === null || localSnapshotAgeMs > staleMs;
   const health = localSnapshotStale ? await compute(ws) : (cached as SystemHealth);
 
+  // D-026 evidence is intentionally read only for production/default ticks unless a
+  // caller explicitly injects it. A hermetic `readLast` seam must never shell out to
+  // systemd, while reader failures remain fail-closed (undefined => blocker path).
+  const readD026Quiescence =
+    deps.d026Quiescence ?? (deps.readLast === undefined ? readD026QuiescenceEvidence : null);
+  let d026Quiescence: D026QuiescenceEvidence | undefined;
+  if (readD026Quiescence) {
+    try {
+      d026Quiescence = await readD026Quiescence();
+    } catch {
+      d026Quiescence = undefined;
+    }
+  }
+
   // WI-4773: `lastSystemHealth` is an in-memory Map. In production the periodic
   // writer runs in papercup-bg-host while this alarm runs in a :3070 request
   // worker, so the local cache can age forever while the real engine is healthy.
@@ -1603,6 +1690,7 @@ export async function runLivenessAlarmTick(
     prevPostmasterStartMs,
     autoloopFireRows,
     beesLiveness: beesLivenessForSignals,
+    d026Quiescence,
     ...(snapshotAgeMs !== null && snapshotAgeMs > staleMs
       ? { stallDiagnosis: diagnoseHealthTickStall(health, snapshotAgeMs, now, lastSuccessfulTickMs) }
       : {}),
@@ -1662,6 +1750,7 @@ export async function runLivenessAlarmTick(
         prevPostmasterStartMs,
         autoloopFireRows,
         beesLiveness: beesLivenessForSignals,
+        d026Quiescence,
       });
       currentSigs = new Set(signals.map((s) => s.key));
     }
@@ -1685,7 +1774,11 @@ export async function runLivenessAlarmTick(
   // ticks either side of it. Resolving it drops the open row the next fire would have
   // coalesced onto, so an unstable GATE — not a changing condition — drives
   // fire → false-resolve → fire at the tick rate.
-  const suppressedSigs = policySuppressedLivenessSignatures(healthForSignals, beesLivenessForSignals);
+  const suppressedSigs = policySuppressedLivenessSignatures(
+    healthForSignals,
+    beesLivenessForSignals,
+    d026Quiescence,
+  );
   const resolved: string[] = [];
   const transitionedBlockerSigs: string[] = [];
   for (const [sig, recs] of openBySig) {
@@ -1719,13 +1812,16 @@ export async function runLivenessAlarmTick(
         // every panel:bees auto-resolve carried it while the panel read crit in the ticks
         // either side. A reader cannot tell a recovery from a reclassification if both
         // write the same sentence, and that is why six passes could not diagnose this.
-        const reason = policySuppressed
-          ? 'withheld by a policy gate — the condition is STILL TRUE, reclassified as benign (NOT recovered)'
+        const d026Reclassified = sig === 'dead-routines' && d026QuiescenceIsActive(d026Quiescence);
+        const reason = d026Reclassified
+          ? 'reclassified as expected D-026 quiescence — the condition is STILL TRUE (NOT recovered)'
+          : policySuppressed
+            ? 'withheld by a policy gate — the condition is STILL TRUE, reclassified as benign (NOT recovered)'
           : 'condition recovered';
         const outcome = await resolve(
           rec.msg_id,
           'auto-resolved',
-          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals)}`,
+          `infra-liveness signal '${sig}' cleared (${reason}) — ${resolveEvidenceFor(sig, healthForSignals, beesLivenessForSignals, d026Quiescence)}`,
         );
         if (outcome === 'not_found' || outcome === 'already_resolved' || outcome === 'requires_spawn_approve') continue;
         resolved.push(rec.msg_id);
@@ -1734,7 +1830,7 @@ export async function runLivenessAlarmTick(
         /* a resolve failure must never crash the request worker */
       }
     }
-    if (transitioned && recs.some((r) => r.severity === 'blocker')) {
+    if (transitioned && recs.some((r) => r.severity === 'blocker') && !policySuppressed) {
       transitionedBlockerSigs.push(sig);
     }
     // Drop the in-memory cooldown so a genuine re-occurrence after recovery
@@ -1939,7 +2035,11 @@ export function startInfraLivenessAlarm(opts: { intervalMs?: number } = {}): { s
     'liveness-alarm',
     intervalMs,
     () =>
-      runLivenessAlarmTick(undefined, { page: defaultPage, pageResolved: defaultPageResolved }).then(
+      runLivenessAlarmTick(undefined, {
+        page: defaultPage,
+        pageResolved: defaultPageResolved,
+        d026Quiescence: readD026QuiescenceEvidence,
+      }).then(
         () => undefined,
         () => undefined,
       ),
