@@ -71,6 +71,35 @@ export interface FileLockSpec {
    *  `PreToolUse:<tool>`). Keep it short + greppable. */
   intent: string;
   ttlSec?: number;
+  /**
+   * Invert the fail-OPEN default documented at the top of this file: on a
+   * lock-infra fault, REFUSE instead of running the body unlocked.
+   *
+   * Fail-open is right for the single-file capability tools it was written for
+   * — parity with the PreToolUse hook, whose rule is "cooperative discipline
+   * only works while the system is up", and whose blast radius on a blip is one
+   * file one agent was already editing.
+   *
+   * It is wrong for a WIDE, OFFSET-BASED write (P-013's `lsp.apply`: a rename
+   * across tens of files). There the unlocked window is precisely the event the
+   * lock exists to prevent, the damage is silent — offsets land in a file a peer
+   * moved out from under them — and the caller loses nothing by retrying, since
+   * the whole operation is recomputable from the same cursor. So a caller whose
+   * write cannot tolerate an unarbitrated window opts in here and gets a
+   * `lock_unavailable` outcome to surface.
+   */
+  failClosed?: boolean;
+}
+
+/** Fail-CLOSED outcome: the acquire faulted and `failClosed` forbade proceeding. */
+export interface FileLockUnavailable {
+  acquired: false;
+  busy: AcquireBusy[];
+  reader?: CellReader;
+  /** Set only on the fail-closed path, so a caller can tell a genuine holder
+   *  (busy, someone else is editing) from infrastructure that could not answer. */
+  lockUnavailable: true;
+  error: string;
 }
 
 /**
@@ -124,7 +153,9 @@ export async function guardFileLock<T>(
   spec: FileLockSpec,
   run: () => Promise<T>,
 ): Promise<
-  { acquired: true; result: T } | { acquired: false; busy: AcquireBusy[]; reader?: CellReader }
+  | { acquired: true; result: T; coordinated: boolean }
+  | { acquired: false; busy: AcquireBusy[]; reader?: CellReader }
+  | FileLockUnavailable
 > {
   // EI-20881501070735530: this was `ctx.projectDir ?? process.cwd()`, which broke the
   // hook-parity contract documented at the top of this file for exactly the callers it
@@ -155,7 +186,14 @@ export async function guardFileLock<T>(
 
   if (paths.length === 0) {
     // Nothing to coordinate — run the body directly.
-    return { acquired: true, result: await run() };
+    //
+    // This is NOT a fail-open, which is why `failClosed` does not intercept it:
+    // the lock store is repo-keyed, so for a path outside any repo there is no
+    // key a peer could hold either. Arbitration here is vacuous, not defeated.
+    // It IS reported (`coordinated: false`) rather than assumed, so a caller
+    // that cares — anything claiming "this write was arbitrated" — can tell the
+    // two apart instead of inferring safety from a bare success.
+    return { acquired: true, result: await run(), coordinated: false };
   }
 
   const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
@@ -181,12 +219,19 @@ export async function guardFileLock<T>(
         { paths },
       ));
   } catch (err) {
+    const contended = isWorkspaceContended(err);
+    const detail = err instanceof Error ? err.message : String(err);
+    if (spec.failClosed) {
+      // The opt-in inversion. A wide offset-based write would rather not happen
+      // at all than happen unarbitrated — see FileLockSpec.failClosed.
+      ctx.log?.(`[file-lock] acquire ${contended ? 'contended after retries' : 'faulted'}, REFUSING edit (fail-closed): ${detail}`);
+      return { acquired: false, busy: [], reader: { ownerId }, lockUnavailable: true, error: detail };
+    }
     // FAIL-OPEN: a lock-infra fault must never wedge a fleet agent's edit
     // (parity with the hook). Reaching here on contention means the load window
     // outlasted the retries. Log + run the body.
-    const contended = isWorkspaceContended(err);
-    ctx.log?.(`[file-lock] acquire ${contended ? 'contended after retries' : 'faulted'}, allowing edit (fail-open): ${err instanceof Error ? err.message : String(err)}`);
-    return { acquired: true, result: await run() };
+    ctx.log?.(`[file-lock] acquire ${contended ? 'contended after retries' : 'faulted'}, allowing edit (fail-open): ${detail}`);
+    return { acquired: true, result: await run(), coordinated: false };
   }
 
   if (!acquired.ok) {
@@ -210,7 +255,7 @@ export async function guardFileLock<T>(
   notifyPlanLockChange(paths);
   try {
     const result = await run();
-    return { acquired: true, result };
+    return { acquired: true, result, coordinated: true };
   } finally {
     if (releasePaths.length > 0) {
       // Release like the PostToolUse hook does — by lock_id, owner-checked.
