@@ -72,6 +72,15 @@ export interface RespawnLaunchSpec {
    * net is exactly `firstPrompt` above — the message is carried, not lost).
    */
   openOwnerQuestion: OpenOwnerQuestionGate;
+  /**
+   * Number of still-open questions asked by this session. This is deliberately
+   * separate from `openOwnerQuestion.crossesOpenOwnerMessage`: the P-010 gate
+   * is about an unanswered human turn in the transcript, while an open
+   * `coord:ask-owner` conversation lives in the conversation ledger and is
+   * otherwise invisible to the transcript-tail predicate. The compaction tool
+   * reports both kinds of open owner work to its caller.
+   */
+  openOwnerAskCount?: number;
 }
 
 export interface BuildRespawnLaunchSpecInput {
@@ -119,10 +128,11 @@ export function buildRespawnLaunchSpec(input: BuildRespawnLaunchSpecInput): Resp
   const budgetChars = carryDocBudgetChars(effectiveWindowTokens);
   const systemPromptAddendum = renderCarryDoc(doc, now, { budgetChars });
   const openOwnerQuestion = gateOpenOwnerQuestion(doc.continuation);
+  const openOwnerAskCount = doc.asks.length;
 
   const firstPrompt = deriveRespawnFirstPrompt(doc, autoMode, plan);
 
-  return { systemPromptAddendum, firstPrompt, budgetChars, openOwnerQuestion };
+  return { systemPromptAddendum, firstPrompt, budgetChars, openOwnerQuestion, openOwnerAskCount };
 }
 
 /**

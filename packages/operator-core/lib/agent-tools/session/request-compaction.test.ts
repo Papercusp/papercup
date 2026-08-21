@@ -946,6 +946,22 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     expect(b.note).not.toContain('open-owner-question');
     expect(injected().data).toMatch(ENVELOPE_LINE);
   });
+
+  it('an open coord:ask-owner ledger row → report true immediately after the ask opens', async () => {
+    buildOwnerRespawnLaunchSpec.mockResolvedValue({
+      ...closedSpec,
+      // The live builder derives this from buildCarryDoc. Keeping the fixture
+      // at the spec boundary proves request-compaction does not fall back to
+      // the transcript-only P-010 predicate.
+      openOwnerAskCount: 1,
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.openOwnerQuestion).toBe(true);
+    expect(b.note).toContain('open-owner-question');
+    expect(b.note).toContain('1 owner ask(s) remain OPEN');
+    expect(b.ok).toBe(true);
+    expect(b.requested).toBe(true);
+  });
 });
 
 /**

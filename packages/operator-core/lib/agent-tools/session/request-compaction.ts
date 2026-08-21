@@ -393,7 +393,15 @@ export default defineTool({
     // successor opens on the continue+re-orient note, envelope-tagged
     // `self-compaction` so the turn-provenance hook classifies it machine-origin
     // (turn-provenance-owner-vs-agent P-002).
-    const openOwnerQuestion = spec.openOwnerQuestion.crossesOpenOwnerMessage;
+    // P-010's transcript-tail gate covers an unanswered human turn. An
+    // immediately-created coord:ask-owner question has no such turn: it lives
+    // in the conversation ledger and is carried in the spec's asks slot. Keep
+    // the two predicates separate in the respawn spec, but report the union so
+    // callers do not receive a false "no open owner question" immediately after
+    // opening a ledger-backed owner ask.
+    const openOwnerMessageQuestion = spec.openOwnerQuestion.crossesOpenOwnerMessage;
+    const openOwnerAskCount = spec.openOwnerAskCount ?? 0;
+    const openOwnerQuestion = openOwnerMessageQuestion || openOwnerAskCount > 0;
     const firstPrompt =
       spec.firstPrompt ??
       (() => {
@@ -519,11 +527,13 @@ export default defineTool({
     // P-010 informative note: when the owner's final message is open, the cut
     // does NOT lose it — it IS the successor's first prompt.
     const openQuestionNote =
-      ok && openOwnerQuestion
+      ok && openOwnerMessageQuestion
         ? " ⚠ open-owner-question: your owner's final message looks UNANSWERED at this DELIBERATE" +
           ' boundary. It is NOT lost — it becomes your successor’s first prompt — but if you' +
           ' have room, answer it before you stop.'
-        : '';
+        : ok && openOwnerAskCount > 0
+          ? ` ⚠ open-owner-question: ${openOwnerAskCount} owner ask(s) remain OPEN in the conversation ledger at this DELIBERATE boundary. They are carried in the deterministic document; do not self-answer them after the respawn.`
+          : '';
     // WI-3801 lint + P-014 turn-ref verification/origin stamp over the two
     // free-text carry hints this call writes (focus always; continueNote only
     // when the caller passed one explicitly — the synthesized

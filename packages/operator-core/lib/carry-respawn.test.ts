@@ -163,6 +163,21 @@ describe('buildRespawnLaunchSpec — open-owner-question gate (P-010)', () => {
         .crossesOpenOwnerMessage,
     ).toBe(false);
   });
+
+  it('carries an open coord:ask-owner ledger row alongside the transcript gate', () => {
+    const spec = buildRespawnLaunchSpec({
+      doc: doc(NO_OWNER, {
+        asks: [{ id: 'conv-open', question: 'Which release route?', askedAtMs: NOW }],
+      }),
+      effectiveWindowTokens: 400_000,
+      now: NOW,
+    });
+    // The conversation is open even though the transcript has no unanswered
+    // human turn. request-compaction reports the union; P-010 consumers keep
+    // using crossesOpenOwnerMessage for the transcript-only refuse-once gate.
+    expect(spec.openOwnerAskCount).toBe(1);
+    expect(spec.openOwnerQuestion.crossesOpenOwnerMessage).toBe(false);
+  });
 });
 
 describe('deriveRespawnFirstPrompt (pure branch)', () => {
