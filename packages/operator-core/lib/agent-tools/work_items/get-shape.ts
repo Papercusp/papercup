@@ -61,6 +61,7 @@
 
 import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
 import { RESULT_DOOR_TOKENS } from "../../result-door";
+import { ANY_FAMILY_TERMINAL_STATES } from "../../work-item-dispatch-states";
 
 /**
  * The shaper has no caller identity, so it cannot resolve a per-session door
@@ -219,6 +220,10 @@ function projectWorkItem(
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
   const detailOmitted = noteDroppedDetail(w, dropped);
+  const state = typeof w.state === "string" ? w.state.toLowerCase() : "";
+  const completionAuthority = w.completionAuthority;
+  const shouldExposeCompletionAuthority =
+    ANY_FAMILY_TERMINAL_STATES.includes(state) || completionAuthority != null;
   return {
     id: w.id ?? null,
     kind: w.kind ?? null,
@@ -230,7 +235,9 @@ function projectWorkItem(
     // P-004 / EI-21045022565500932: lifecycle terminality and completion authority are
     // orthogonal. Keep the authority verdict in the reduced identity projection so a
     // trimmed read cannot turn a verified terminal close into an apparent evidence gap.
-    completionAuthority: w.completionAuthority ?? null,
+    // Open rows owe no judgement yet, so omit their null to preserve the bulk budget;
+    // terminal rows always carry the field, including legacy null-authority closes.
+    ...(shouldExposeCompletionAuthority ? { completionAuthority: completionAuthority ?? null } : {}),
     assignee: w.assignee ?? null,
     takenAt: w.takenAt ?? null,
     lastProgressAt: w.lastProgressAt ?? null,

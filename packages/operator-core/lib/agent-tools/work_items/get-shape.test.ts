@@ -137,6 +137,25 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect((out.results[0].workItem as Record<string, unknown>).completionAuthority).toBe("committed");
   });
 
+  it("exposes a null authority on terminal legacy rows without taxing open-row reads", () => {
+    const terminal = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: { id: "WI-1", kind: "bug", state: "done", title: "legacy close" },
+          checkpoint: null,
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    const open = shapeWorkItemsGet(
+      envelope([row({ workItem: { id: "WI-2", kind: "bug", state: "open", title: "open item" } })]),
+      "trimmed",
+    ) as Envelope;
+
+    expect((terminal.results[0].workItem as Record<string, unknown>).completionAuthority).toBeNull();
+    expect((open.results[0].workItem as Record<string, unknown>).completionAuthority).toBeUndefined();
+  });
+
   it("caps lifecycle events but NEVER drops the coverage/flags that qualify them", () => {
     const events = Array.from({ length: 30 }, (_, i) => ({ at: `t${i}`, kind: "blocked" }));
     const out = shapeWorkItemsGet(
