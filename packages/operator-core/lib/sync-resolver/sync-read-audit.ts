@@ -123,7 +123,18 @@ export const SYNC_QUERY_FIXTURES: Record<string, QueryFixture> = {
     path: 'apps/operator/docs/plans/semantic-search-fingerprint-coverage-2026-08-03.md',
   },
   'plans.runHistory': { planSlug: 'precompute-sync-reads-phase2-compute-latency-2026-07-19' },
-  'plans.scheduledOccurrences': { rangeStartMs: 0, rangeEndMs: 9_999_999_999_999 },
+  // scheduledOccurrencesArgsSchema constrains this fixture TWICE, and the
+  // obvious "measure everything" values violate both: `rangeStartMs: 0` fails
+  // `.positive()`, and an open-ended end fails the superRefine capping a window
+  // at MAX_SCHEDULED_OCCURRENCES_WINDOW_MS (three years). This pair is the
+  // WIDEST LEGAL window — exactly three 365-day years from a fixed epoch — so
+  // the audit still measures the worst realistic calendar payload rather than a
+  // token one. Keep the values LITERAL and the span at most three years; do not
+  // "fix" a future parse failure here by widening the window, because the cap is
+  // the product decision (a calendar view has no use for more) and this fixture
+  // only exists to be representative of what the wire actually carries.
+  //   1_767_225_600_000 = 2026-01-01T00:00:00Z · +94_608_000_000ms = 3×365d
+  'plans.scheduledOccurrences': { rangeStartMs: 1_767_225_600_000, rangeEndMs: 1_861_833_600_000 },
   'p2p.grants': { potSlug: 'papercusp' },
   // learning.retainPlanChildren requires a planSlug — '' short-circuits to []
   // with no DB round-trip, a shape that would under-measure. Same stable plan
