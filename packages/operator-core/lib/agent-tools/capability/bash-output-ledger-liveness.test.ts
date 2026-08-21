@@ -17,8 +17,19 @@
  * TaskRow + an injected probe function, no PG, no subprocess.
  */
 import { describe, it, expect } from 'vitest';
-import { confirmedAliveStopAdvice, diagnoseFromLedger, terminalStatusFromLedger } from './bash_output';
+import {
+  appendJobDiedMarker,
+  confirmedAliveStopAdvice,
+  diagnoseFromLedger,
+  isLedgerConfirmedUnobservedDeath,
+  parseJobLogDiedMarker,
+  terminalStatusFromLedger,
+} from './bash_output';
+import { formatJobLogDiedMarker, formatJobLogEndMarker } from './bash-jobs';
 import type { TaskRow } from '../../task-manager/types';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 function fakeRow(overrides: Partial<TaskRow> = {}): TaskRow {
   return {
@@ -211,5 +222,57 @@ describe('terminalStatusFromLedger (EI-20232536598731015)', () => {
 
   it('returns null while the durable row is still live', () => {
     expect(terminalStatusFromLedger(fakeRow({ state: 'running' }))).toBeNull();
+  });
+});
+
+describe('JOB DIED recovery marker (EI-20011476155595470)', () => {
+  it('formats an unobserved terminal state without presenting it as a clean JOB END', () => {
+    const marker = formatJobLogDiedMarker(
+      'ended_unobserved',
+      null,
+      'scope pc-tsk0000001.scope was released before the child exit was observed',
+      Date.UTC(2026, 7, 21, 9, 0, 0),
+    );
+    expect(marker).toContain('[capability:bash] JOB DIED');
+    expect(marker).toContain('state=ended_unobserved');
+    expect(marker).toContain('exit=null');
+    expect(marker).toContain('2026-08-21');
+    expect(marker).not.toContain('[capability:bash] JOB END');
+    expect(parseJobLogDiedMarker(`output\n${marker}`)).toEqual({
+      status: 'failed',
+      state: 'ended_unobserved',
+      exitCode: null,
+    });
+  });
+
+  it('appends exactly one marker and preserves an already-observed JOB END', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-died-marker-'));
+    try {
+      const logPath = join(dir, 'job.log');
+      writeFileSync(logPath, 'partial output\n');
+      expect(
+        appendJobDiedMarker(logPath, 'stranded', null, 'process identity vanished', Date.UTC(2026, 7, 21)),
+      ).toBe(true);
+      expect(appendJobDiedMarker(logPath, 'stranded', null, 'process identity vanished', Date.UTC(2026, 7, 22))).toBe(
+        false,
+      );
+      const withDied = readFileSync(logPath, 'utf8');
+      expect(withDied.match(/^\[capability:bash\] JOB DIED:/gm)).toHaveLength(1);
+      expect(parseJobLogDiedMarker(withDied)?.state).toBe('stranded');
+
+      writeFileSync(logPath, `${withDied}${formatJobLogEndMarker('failed', 1, Date.UTC(2026, 7, 23))}`);
+      expect(appendJobDiedMarker(logPath, 'stranded', null, 'late retry', Date.UTC(2026, 7, 24))).toBe(false);
+      expect(readFileSync(logPath, 'utf8').match(/^\[capability:bash\] JOB DIED:/gm)).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes only the reconciler states that prove an unobserved death', () => {
+    expect(isLedgerConfirmedUnobservedDeath('stranded')).toBe(true);
+    expect(isLedgerConfirmedUnobservedDeath('ended_unobserved')).toBe(true);
+    expect(isLedgerConfirmedUnobservedDeath('exited')).toBe(false);
+    expect(isLedgerConfirmedUnobservedDeath('killed')).toBe(false);
+    expect(isLedgerConfirmedUnobservedDeath('timed_out')).toBe(false);
   });
 });

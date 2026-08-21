@@ -8,12 +8,14 @@
 
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { statSync, readFileSync } from 'node:fs';
+import { appendFileSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   JOB_LOG_END_MARKER_PREFIX,
+  JOB_LOG_DIED_MARKER_PREFIX,
   detectBufferingLastStage,
+  formatJobLogDiedMarker,
   formatBufferingPipelineAdvice,
   getJob,
   readJobOutput,
@@ -345,6 +347,8 @@ export function terminalStatusFromLedger(
 
 export interface StrandedJobLogInspection {
   terminal: { status: RecoveredJobStatus; exitCode: number | null } | null;
+  /** A ledger-confirmed unobserved terminal marker appended by recovery. */
+  died?: { status: 'failed'; state: string; exitCode: number | null };
   output: string;
   filterError?: string;
 }
@@ -371,6 +375,54 @@ export function parseJobLogEndMarker(log: string): { status: RecoveredJobStatus;
   };
 }
 
+const JOB_LOG_DIED_MARKER_RE = new RegExp(
+  '^' +
+    JOB_LOG_DIED_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+    ': state=([^\\s]+) exit=(null|-?\\d+) at [^\\n]*(?:\\n|$)',
+  'm',
+);
+
+/** Parse the recovery marker that records a ledger-confirmed unobserved death. */
+export function parseJobLogDiedMarker(log: string): { status: 'failed'; state: string; exitCode: number | null } | null {
+  const match = JOB_LOG_DIED_MARKER_RE.exec(log);
+  if (!match) return null;
+  return {
+    status: 'failed',
+    state: match[1]!,
+    exitCode: match[2] === 'null' ? null : Number(match[2]),
+  };
+}
+
+/**
+ * Append the unobserved-death marker exactly once. The read-before-append makes
+ * repeated `bash_output` recovery polls idempotent, while checking both marker
+ * kinds preserves JOB END precedence if the child close handler wins a race with
+ * the recovery read. A missing/unwritable log is deliberately best-effort: the
+ * ledger verdict returned by the caller remains authoritative even when the
+ * marker cannot be persisted.
+ */
+export function appendJobDiedMarker(
+  logPath: string,
+  state: string,
+  exitCode: number | null,
+  exitReason: string | null,
+  endedAtMs = Date.now(),
+): boolean {
+  try {
+    const existing = readFileSync(logPath, 'utf8');
+    if (parseJobLogEndMarker(existing) || parseJobLogDiedMarker(existing)) return false;
+    appendFileSync(logPath, formatJobLogDiedMarker(state, exitCode, exitReason, endedAtMs), 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Ledger states where the process ended but no child close/exit was observed. */
+export function isLedgerConfirmedUnobservedDeath(state: string): boolean {
+  return state === 'stranded' || state === 'ended_unobserved';
+}
+
 /**
  * Inspect a stranded log once for both durable completion and filtered output.
  * Keeping these decisions together prevents the tracking-loss branches from
@@ -378,8 +430,11 @@ export function parseJobLogEndMarker(log: string): { status: RecoveredJobStatus;
  */
 export function inspectStrandedJobLog(log: string, filter: string | undefined): StrandedJobLogInspection {
   const filtered = filterOutputLines(log, filter);
+  const terminal = parseJobLogEndMarker(log);
+  const died = terminal ? null : parseJobLogDiedMarker(log);
   return {
-    terminal: parseJobLogEndMarker(log),
+    terminal,
+    ...(died ? { died } : {}),
     output: filtered.output,
     ...(filtered.error ? { filterError: filtered.error } : {}),
   };
@@ -620,6 +675,27 @@ export default defineTool({
         };
         const recoveredLogPath = stranded?.logPath ?? ledgerRow?.logPath ?? undefined;
 
+        // EI-20011476155595470: a child killed outside the normal close path
+        // can leave a durable terminal ledger row but no JOB END line in the
+        // spill log. Make that state self-describing for raw log readers. Do
+        // this only for the ledger's explicitly unobserved-death states; a
+        // normal observed exit/kill/timeout keeps JOB END semantics, and the
+        // JOB END marker still wins if it is already present in the log.
+        const diedMarkerWritten =
+          ledgerVerdict.kind === 'confirmed_dead' &&
+          isLedgerConfirmedUnobservedDeath(ledgerVerdict.state) &&
+          recoveredLogPath
+            ? appendJobDiedMarker(
+                recoveredLogPath,
+                ledgerVerdict.state,
+                ledgerVerdict.exitCode,
+                ledgerVerdict.exitReason,
+                ledgerRow?.endedAt && Number.isFinite(Date.parse(ledgerRow.endedAt))
+                  ? Date.parse(ledgerRow.endedAt)
+                  : Date.now(),
+              )
+            : false;
+
         // EI-20230176152308336: the durable JOB END marker is stronger than a
         // stale/non-terminal task-ledger row. The marker is appended from the
         // child close handler, so once it is present the job has a recoverable
@@ -645,6 +721,32 @@ export default defineTool({
                 }),
               },
             ],
+          };
+        }
+
+        // A previous recovery read may already have appended JOB DIED. It is a
+        // durable failed terminal verdict just like JOB END is a durable normal
+        // terminal verdict, but never a success signal.
+        if (strandedLog.died) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  ...jobIdentity,
+                  status: strandedLog.died.status,
+                  exit_code: strandedLog.died.exitCode,
+                  running: false,
+                  ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
+                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                  recovered_from_died_marker: true,
+                  ...strandedOutput,
+                  output: strandedLog.output,
+                }),
+              },
+            ],
+            isError: true,
           };
         }
 
@@ -682,6 +784,7 @@ export default defineTool({
                   scope_unit: ledgerVerdict.scopeUnit,
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
+                  ...(diedMarkerWritten ? { job_died_marker_written: true } : {}),
                   ...strandedOutput,
                 }),
               },
