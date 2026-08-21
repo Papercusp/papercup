@@ -531,18 +531,33 @@ function rowToAudit(row: PlanAuditRow): PlanAudit {
  * — a refusal. That is the safe direction: a database blip must not let an unaudited
  * plan through, and the refusal is recoverable by re-running the audit.
  */
-export async function getLatestPlanAudit(planSlug: string): Promise<PlanAudit | null> {
+export interface PlanAuditReadScope {
+  /** Concrete workspace carrying the plan. Falls back to the ambient request scope. */
+  workspaceId?: string;
+  /** Concrete harness/home Hive carrying the plan. Omitted for legacy ambient reads. */
+  harnessSlug?: string;
+}
+
+export async function getLatestPlanAudit(
+  planSlug: string,
+  scope: PlanAuditReadScope = {},
+): Promise<PlanAudit | null> {
   try {
     const { sql } = getOrgPg();
+    const workspaceId = scope.workspaceId ?? activeWorkspaceId();
+    const harnessSlug = scope.harnessSlug?.trim() || null;
     const rows = await sql<PlanAuditRow[]>`
       SELECT plan_slug, harness_slug, audit_seq, created_by, created_at, audited_sha,
              items, findings, summary
         FROM harness_shared.plan_audits
-       WHERE workspace_id = ${activeWorkspaceId()}
+       WHERE workspace_id = ${workspaceId}
          AND plan_slug = ${planSlug}
+         AND (${harnessSlug}::text IS NULL OR harness_slug = ${harnessSlug})
        ORDER BY audit_seq DESC
        LIMIT 1`;
-    const row = rows.find((r) => r.plan_slug === planSlug);
+    const row = rows.find(
+      (r) => r.plan_slug === planSlug && (!harnessSlug || r.harness_slug === harnessSlug),
+    );
     return row ? rowToAudit(row) : null;
   } catch {
     return null;

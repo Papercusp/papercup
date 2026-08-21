@@ -612,7 +612,10 @@ export default defineTool({
               // make the recorded code-truth audit discoverable from the same plan
               // read as its definition-of-done rubric. The stored item entries carry
               // their own auditedSha/auditedAt/blobSha provenance (D-006/D-007).
-              getLatestPlanAudit(row.planSlug),
+              getLatestPlanAudit(row.planSlug, {
+                workspaceId: row.workspaceId,
+                harnessSlug: row.harnessSlug,
+              }),
             ]);
             const structured = {
               ...base,

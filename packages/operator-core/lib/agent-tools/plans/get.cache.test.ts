@@ -26,6 +26,7 @@ const M = vi.hoisted(() => ({
     },
     archived: false,
     row: {
+      workspaceId: "ws-get",
       planSlug: slug,
       harnessSlug: "papercup",
       version: 1,
@@ -210,6 +211,10 @@ describe("plans:get — cache wiring", () => {
           },
         ],
       },
+    });
+    expect(M.getLatestPlanAudit).toHaveBeenCalledWith("alpha", {
+      workspaceId: "ws-get",
+      harnessSlug: "papercup",
     });
   });
 
