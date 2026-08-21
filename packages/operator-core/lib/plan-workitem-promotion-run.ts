@@ -45,6 +45,7 @@ import {
 import { getFeatureBlockers, syncFeatureBlockEdges } from './dbos/feature-blockers-edges';
 import { syncLinkedWorkItemsToPlanLane, type PlanLaneSyncStatus } from './plan-items/reconcile-linked-work-items';
 import { computePromotions, type OpenPlanItem } from './plan-workitem-promotion';
+import { phaseRequiresTwoMachineRig } from './plan-phase-rig';
 import {
   evaluatePlanSpecQualityGate,
   type PlanSpecQualityGateVerdict,
@@ -138,6 +139,7 @@ interface RawPlanItem {
   status: string | null;
   text: string;
   blockedBy: string[];
+  phase: string | null;
 }
 
 type PlanRead = NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>;
@@ -160,12 +162,14 @@ function readRawPlanItems(read: PlanRead): RawPlanItem[] {
         blockedBy: Array.isArray((i as { blockedBy?: unknown }).blockedBy)
           ? ((i as { blockedBy: string[] }).blockedBy ?? [])
           : [],
+        phase: i.phase ?? null,
       }))
     : read.parsed.items.map((i) => ({
         id: i.id,
         status: i.storedStatus as string | null,
         text: i.text ?? '',
         blockedBy: i.blockedBy ?? [],
+        phase: i.phase ?? null,
       }));
 }
 
@@ -305,7 +309,7 @@ export async function promotePlanItems(opts: {
     importance: 'normal',
     blockedBy: i.blockedBy,
     decisionRefs: [],
-    phase: null,
+    phase: i.phase,
     lineNumber: 0,
     rawLine: '',
   }));
@@ -359,6 +363,7 @@ export async function promotePlanItems(opts: {
    * so translation is order-independent.
    */
   const mintedByPlanItem = new Map<string, string>();
+  const rawByPlanItem = new Map(rawItems.map((item) => [item.id, item]));
   for (const spec of specs) {
     const itemId = spec.sourcePlanItemIds[0];
     const stamp: PlanItemStamp = {
@@ -372,7 +377,10 @@ export async function promotePlanItems(opts: {
       summary: textById.get(itemId) ?? undefined,
       harness: spec.harness,
       sourcePlanSlug: spec.sourcePlanSlug,
-      payload: { plan_item: stamp },
+      payload: {
+        plan_item: stamp,
+        needs_2_machine_rig: phaseRequiresTwoMachineRig(rawByPlanItem.get(itemId)?.phase),
+      },
       createdBy: opts.createdBy,
       // NO assignee — placeable, UNCLAIMED; the Queen places it.
     });
@@ -755,7 +763,7 @@ export async function backfillPromotedDependencyEdges(opts: {
       importance: 'normal',
       blockedBy: i.blockedBy,
       decisionRefs: [],
-      phase: null,
+      phase: i.phase,
       lineNumber: 0,
       rawLine: '',
     }));

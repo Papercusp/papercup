@@ -59,6 +59,8 @@ export interface ProvenanceFeature {
   source_plan_item_ids: string[];
   /** Promote wave this feature belongs to (promote-policy-and-waves; null = un-waved). */
   wave?: string | null;
+  /** Phase-derived admission floor; undefined means leave the existing payload value unchanged. */
+  needs_2_machine_rig?: boolean;
 }
 export interface ProvenanceWriteResult {
   written: number;
@@ -124,11 +126,17 @@ export async function updateFeatureProvenance(
   f: ProvenanceFeature,
   slug: string,
 ): Promise<number> {
+  const writesRigFlag = f.needs_2_machine_rig !== undefined;
   const r = await sql`
     UPDATE harness_shared.harness_features_consolidated
        SET source_plan_slug     = ${f.source_plan_slug}
          , source_plan_item_ids = ${f.source_plan_item_ids}
          , wave                  = ${f.wave ?? null}
+         , payload               = CASE
+             WHEN ${!writesRigFlag} THEN payload
+             ELSE COALESCE(payload, '{}'::jsonb) ||
+               jsonb_build_object('needs_2_machine_rig', ${Boolean(f.needs_2_machine_rig)})
+           END
      WHERE harness_slug = ${slug}
        AND feature_id   = ${f.id}
     RETURNING feature_id
@@ -449,6 +457,7 @@ const importFeatures = defineTool({
         source_plan_slug?: string | null;
         source_plan_item_ids?: string[] | null;
         wave?: string | null;
+        needs_2_machine_rig?: boolean | null;
         /** First-class deps (P-046): refs (feature ids OR titles) that must
          *  finish before this feature; resolved → canonical ids at import. */
         blocked_by?: string[] | null;
@@ -617,6 +626,7 @@ const importFeatures = defineTool({
         source_plan_slug: f.source_plan_slug!,
         source_plan_item_ids: f.source_plan_item_ids ?? [],
         wave: f.wave ?? null,
+        ...(f.needs_2_machine_rig != null && { needs_2_machine_rig: f.needs_2_machine_rig }),
       })),
       project.slug,
       updater,

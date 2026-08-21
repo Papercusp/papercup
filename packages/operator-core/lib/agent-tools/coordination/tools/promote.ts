@@ -62,6 +62,7 @@ import { matchRoutingGateHint } from '../../../routing-gate-hints';
 import { loopbackFetch, readJsonBody } from '../../../loopback-fetch';
 import { resolveProject } from '../../../harness-core';
 import { getOrgPg, getLegacyClient } from '@papercusp/db-org';
+import { phaseRequiresTwoMachineRig } from '../../../plan-phase-rig';
 
 const PROMOTED_FENCE = '<!-- plan-pipeline: do not edit this block manually -->';
 
@@ -313,6 +314,7 @@ async function postFeaturesImport(
     source_plan_slug?: string;
     source_plan_item_ids?: string[];
     wave?: string;
+    needs_2_machine_rig?: boolean;
     blocked_by?: string[];
     order?: number;
   }>,
@@ -1062,6 +1064,9 @@ export default defineTool({
       arr.push(a.valId);
       assertionsByItem.set(a.itemId, arr);
     }
+    const phaseByItemId = new Map(
+      planFile.parsed.items.map((item) => [item.id, item.phase ?? null]),
+    );
 
     // POST features to /features/import. Server allocates F-AUTO-* ids.
     // metadata.source_plan + metadata.covers carry provenance forward.
@@ -1099,6 +1104,7 @@ export default defineTool({
         source_plan_slug: string;
         source_plan_item_ids: string[];
         wave?: string;
+        needs_2_machine_rig?: boolean;
         blocked_by?: string[];
         order?: number;
       } = {
@@ -1106,6 +1112,11 @@ export default defineTool({
         metadata,
         source_plan_slug: args.slug,
         source_plan_item_ids: f.from_items ?? [],
+        ...(f.from_items && f.from_items.length > 0 && {
+          needs_2_machine_rig: f.from_items.some((itemId) =>
+            phaseRequiresTwoMachineRig(phaseByItemId.get(itemId)),
+          ),
+        }),
         ...(featureClaims.length > 0 && { claims: featureClaims }),
         ...((f.wave ?? waveId) && { wave: f.wave ?? waveId }),
         ...(f.blocked_by && f.blocked_by.length > 0 && { blocked_by: f.blocked_by }),
