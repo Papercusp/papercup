@@ -196,4 +196,38 @@ describe('checkAndFireErrorStreakAlarm — fail-soft shell', () => {
       warn.mockRestore();
     }
   });
+
+  it('a REAL per-hive installSlug is threaded through as the coord harnessSlug', async () => {
+    h.rows = [
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+    ];
+
+    await checkAndFireErrorStreakAlarm({ workspaceId: 'w', installSlug: 'papercusp' });
+
+    expect(h.deliverScoutNudge).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: 'papercusp' }),
+    );
+  });
+
+  it('REGRESSION EI-20949117919419640: the WORKSPACE_COORDINATION sentinel ' +
+    '(installSlug === workspaceId) must NOT be stamped as the coord harnessSlug ' +
+    '— it names no federating harness/hive-home, so a captured substrate_outbox ' +
+    'row under it can never drain (the permanent outbox-health SLO breach)', async () => {
+    h.rows = [
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+    ];
+
+    // workspaceBrainScopeKey(workspaceId, perHiveSlug, on) === workspaceId
+    // when FLAGS.WORKSPACE_COORDINATION is ON — recordScoutTick then writes
+    // ticks (and this alarm is invoked) with installSlug === workspaceId.
+    await checkAndFireErrorStreakAlarm({ workspaceId: 'papercusp-workspace', installSlug: 'papercusp-workspace' });
+
+    expect(h.deliverScoutNudge).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: null }),
+    );
+  });
 });
