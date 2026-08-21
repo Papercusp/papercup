@@ -39,6 +39,7 @@ import {
   SEARCH_SURFACES,
   FLOOR_GAP_CEILING,
   RESULTS_DISCARDED_CEILING,
+  UNRELATED_ENGINE_MODULE_CEILING,
   CENSUS_EXCLUSIONS,
   type SearchSurface,
 } from './surface-registry';
@@ -101,15 +102,24 @@ function discoverSearchTools(): Array<{ id: string; file: string }> {
 }
 
 /** What a surface's code actually does, derived from its import graph. */
-function derive(entry: string): { callsEngine: boolean; callsFulltext: boolean; hasFloor: boolean } {
+function derive(
+  entry: string,
+  unrelatedEngineModules: readonly string[] = [],
+): { callsEngine: boolean; callsFulltext: boolean; hasFloor: boolean } {
   const g = importGraph(entry);
   // The graph walker already ignores comments when it derives edges; feature
   // detection must do the same. Otherwise a rationale that merely names
   // `runHybridSearch(` manufactures an engine call in an unrelated surface.
-  const all = [entry, ...g.modules].map((m) => stripComments(readFileSync(m, 'utf8')));
+  const ignored = new Set(unrelatedEngineModules);
+  const all = [entry, ...g.modules].map((file) => ({
+    file,
+    source: stripComments(readFileSync(file, 'utf8')),
+  }));
   return {
-    callsEngine: all.some((src) => /runHybridSearch\s*\(/.test(src)),
-    callsFulltext: all.some((src) => /runFullTextSearch\s*\(/.test(src)),
+    callsEngine: all.some(
+      ({ file, source }) => !ignored.has(rel(file)) && /runHybridSearch\s*\(/.test(source),
+    ),
+    callsFulltext: all.some(({ source }) => /runFullTextSearch\s*\(/.test(source)),
     hasFloor: g.modules.has(POLICY_SEAM),
   };
 }
@@ -150,8 +160,11 @@ function consumesEngineResultIn(raw: string): boolean {
 }
 
 /** The engine entrypoint a surface's code actually reaches. */
-function deriveEngine(entry: string): 'hybrid' | 'fulltext' | 'none' {
-  const d = derive(entry);
+function deriveEngine(
+  entry: string,
+  unrelatedEngineModules: readonly string[] = [],
+): 'hybrid' | 'fulltext' | 'none' {
+  const d = derive(entry, unrelatedEngineModules);
   // hybrid wins when both are present: a surface that can run a vector leg is
   // floor-bearing regardless of also offering a lexical path.
   return d.callsEngine ? 'hybrid' : d.callsFulltext ? 'fulltext' : 'none';
@@ -193,7 +206,9 @@ describe('search surface conformance (P-021)', () => {
     it.each(SEARCH_SURFACES.map((s) => [s.id, s] as const))(
       '%s: declared `engine` matches the entrypoint the graph actually reaches',
       (_id, surface) => {
-        expect(deriveEngine(abs(surface))).toBe(surface.engine);
+        expect(
+          deriveEngine(abs(surface), surface.unrelatedEngineModules?.modules ?? []),
+        ).toBe(surface.engine);
       },
     );
 
@@ -211,6 +226,42 @@ describe('search surface conformance (P-021)', () => {
         // after measuring the floor on THIS surface's corpus (see D-023/D-025;
         // plans cleared its margin by 0.0034).
         expect(derive(abs(surface)).hasFloor).toBe(true);
+      },
+    );
+  });
+
+  describe('runtime-import false positives are exact, earned, and capped', () => {
+    const exempt = SEARCH_SURFACES.filter((s) => s.unrelatedEngineModules);
+
+    it(`holds at most ${UNRELATED_ENGINE_MODULE_CEILING} entries`, () => {
+      expect(exempt.length).toBeLessThanOrEqual(UNRELATED_ENGINE_MODULE_CEILING);
+    });
+
+    it.each(exempt.map((s) => [s.id, s] as const))(
+      '%s: every ignored module is a live unrelated engine edge, and nothing else remains',
+      (_id, surface) => {
+        const exemption = surface.unrelatedEngineModules!;
+        expect(surface.engine).toBe('none');
+        expect(exemption.reason.trim().length).toBeGreaterThan(80);
+        expect(exemption.modules.length).toBeGreaterThan(0);
+        expect(exemption.modules).not.toContain(surface.entry);
+
+        const graph = importGraph(abs(surface));
+        const reached = new Set([...graph.modules].map(rel));
+        for (const module of exemption.modules) {
+          expect(reached, `${surface.id}: ignored module is no longer reached: ${module}`).toContain(
+            module,
+          );
+          expect(
+            stripComments(readFileSync(join(LIB, module), 'utf8')),
+            `${surface.id}: ignored module no longer contains an engine call: ${module}`,
+          ).toMatch(/runHybridSearch\s*\(/);
+        }
+
+        // Prove the exemption is necessary NOW, then prove it removes only the
+        // declared noise. A second/new engine caller remains visible and reds.
+        expect(derive(abs(surface)).callsEngine).toBe(true);
+        expect(derive(abs(surface), exemption.modules).callsEngine).toBe(false);
       },
     );
   });

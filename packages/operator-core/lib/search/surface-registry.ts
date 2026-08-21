@@ -51,6 +51,15 @@
  *     rather than measured. `transcript-search-warmup` is exactly that shape,
  *     which is why its exemption is declared and reasoned rather than
  *     inferred from a derivation that cannot see its imports.
+ *  3. **A runtime import graph is not a call graph.** Cross-cutting modules can
+ *     load a module that contains an engine call in an unrelated exported
+ *     function. The three current non-engine surfaces all reach
+ *     `work-items.ts` through event/fleet infrastructure without calling its
+ *     search function. Those exact false-positive modules are declared per
+ *     surface below; the conformance test proves each edge is still present,
+ *     contains the call being ignored, and that no other engine caller remains.
+ *     This is deliberately exact and capped rather than a global ignore for
+ *     `work-items.ts`, because `/harness/search` legitimately delegates there.
  */
 
 export interface SearchSurface {
@@ -77,6 +86,17 @@ export interface SearchSurface {
    * once is what stops it being re-litigated every audit.
    */
   whyNotEngine?: string;
+  /**
+   * Exact modules whose `runHybridSearch` calls are runtime-reachable but not
+   * on THIS surface's call path. A static import graph sees loaded functions,
+   * not which exported function the handler invokes, so these are explicit,
+   * falsifiable false-positive edges rather than a global module exclusion.
+   *
+   * The conformance test requires every named module to be reached and to
+   * contain the ignored call, then re-derives the surface after removing only
+   * those modules. Any additional engine caller still fails the declaration.
+   */
+  unrelatedEngineModules?: { modules: readonly string[]; reason: string };
   /**
    * An engine-backed surface that does NOT inherit the P-017 floor. This is a
    * TRACKED DEFECT, never an option — the conformance test caps the set and
@@ -150,6 +170,13 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
     id: 'memory:search',
     entry: 'agent-tools/memory/search.ts',
     engine: 'none',
+    unrelatedEngineModules: {
+      modules: ['work-items.ts'],
+      reason:
+        'memory:search imports the improvements watchdog for benchmark scoping; that path reaches ' +
+        'events/await → fleet reconciliation → work-items.ts. The loaded work-items module contains ' +
+        'searchWorkItems, but this handler calls its independent MemoryBackend and never that export.',
+    },
     whyNotEngine:
       'AUDITED 2026-08-08 (P-030). The previous note here — "mem0 owns its own store and ranking" — ' +
       'was right in its conclusion and wrong about the mechanism, which matters because it implied an ' +
@@ -173,6 +200,13 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
     id: 'rubrics:search',
     entry: 'agent-tools/rubrics/search.ts',
     engine: 'none',
+    unrelatedEngineModules: {
+      modules: ['work-items.ts'],
+      reason:
+        'rubrics:search delegates to searchRubrics in rubrics.ts; plan-lock and fleet-drained event ' +
+        'infrastructure below that module loads work-items.ts. Its searchWorkItems engine call is an ' +
+        'unrelated export and is never invoked by the rubric search handler.',
+    },
     whyNotEngine:
       'Delegates to searchRubrics() over a small, bounded rubric set where lexical matching is ' +
       'adequate and a vector leg would add an embedder dependency to a read that must work when the ' +
@@ -228,6 +262,13 @@ export const SEARCH_SURFACES: readonly SearchSurface[] = [
     id: 'coord:feed (q= filter)',
     entry: 'agent-tools/coordination/feed.ts',
     engine: 'none',
+    unrelatedEngineModules: {
+      modules: ['work-items.ts'],
+      reason:
+        'coord:feed reaches event wake infrastructure through messages.ts, which reaches fleet ' +
+        'reconciliation and loads work-items.ts. The q= path remains the local matchesText filter; ' +
+        'it never calls the unrelated searchWorkItems export in that loaded module.',
+    },
     whyNotEngine:
       'Not a search surface at all — a FILTER, and registered here so nobody mistakes it for one. `q=` ' +
       'resolves to `matchesText` (feed.ts:188): a raw case-folded `String.includes` over ' +
@@ -288,6 +329,13 @@ export const FLOOR_GAP_CEILING = 1;
  * results away.
  */
 export const RESULTS_DISCARDED_CEILING = 1;
+
+/**
+ * Runtime-import/call-graph false positives are explicit and pressure-capped.
+ * A fourth entry means the static derivation is losing discrimination and must
+ * be improved rather than accumulating a generic allow-list.
+ */
+export const UNRELATED_ENGINE_MODULE_CEILING = 3;
 
 /**
  * Modules the CENSUS finds and the registry deliberately does not carry.

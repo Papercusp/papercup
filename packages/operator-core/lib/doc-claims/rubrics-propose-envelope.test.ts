@@ -12,12 +12,20 @@ import { describe, expect, it } from 'vitest';
 import { rubricsProposeArgs } from '../agent-tools/rubrics/propose';
 import { readCorpus } from './corpus-subject';
 
-const ACCEPTANCE_EXAMPLE = /1\.\s+`rubrics:propose\s*\{([^`]+)\}`/;
+const RUBRICS_PROPOSE_EXAMPLE = /`rubrics:propose\s*\{([^`]+)\}`/g;
 
 function documentedFields(source: string): Set<string> {
-  const match = source.match(ACCEPTANCE_EXAMPLE);
-  if (!match) throw new Error('acceptance-rubric rubrics:propose example is missing from the doc corpus');
-  return new Set([...match[1]!.matchAll(/\b([A-Za-z][A-Za-z0-9]*)\s*:/g)].map((m) => m[1]!));
+  const candidates = [...source.matchAll(RUBRICS_PROPOSE_EXAMPLE)].map(
+    (match) =>
+      new Set([...match[1]!.matchAll(/\b([A-Za-z][A-Za-z0-9]*)\s*:/g)].map((m) => m[1]!)),
+  );
+  const acceptance = candidates
+    .filter((fields) => fields.has('kind') && fields.has('subjectPlan') && fields.has('classRef'))
+    .sort((a, b) => b.size - a.size)[0];
+  if (!acceptance) {
+    throw new Error('acceptance-rubric rubrics:propose example is missing from the doc corpus');
+  }
+  return acceptance;
 }
 
 describe('acceptance-rubric documentation envelope', () => {

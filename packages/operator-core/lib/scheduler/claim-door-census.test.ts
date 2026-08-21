@@ -221,6 +221,36 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
         'scan matches it on the claim* name shape alone.',
     },
   ],
+  [
+    'events/await/store.ts#claimSpecificOnceAwaits',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims selected event_awaits rows for exactly-once wake delivery. The file also reads ' +
+        'work_items for verified-wait ownership, which enrolls the module in this census, but this ' +
+        'function updates only event_awaits and never selects or assigns a work item.',
+    },
+  ],
+  [
+    'events/await/store.ts#claimDueDeliveries',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims due event_wake_deliveries rows for the wake pump with SKIP LOCKED. It leases delivery ' +
+        'attempts, not work items; the module-level work_items read belongs to a separate verified-wait ' +
+        'ownership query and is why the mechanical scan sees this function.',
+    },
+  ],
+  [
+    'events/await/store.ts#claimDueVerifiedAwaits',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims expired verified event_awaits rows for producer-health reconciliation. It changes the ' +
+        'verifier lease on an await and serves no work item; an unrelated work_items query elsewhere in ' +
+        'store.ts is the only reason this name-shaped function enters the census.',
+    },
+  ],
 ]);
 
 const SCAN_SKIP_DIRS = new Set(['__tests__', 'node_modules', 'dist']);

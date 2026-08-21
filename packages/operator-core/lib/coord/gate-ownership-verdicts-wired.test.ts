@@ -97,7 +97,7 @@ function directProductionCallSites(symbol: string): string[] {
  */
 function productionCallSites(symbol: string, visited: ReadonlySet<string> = new Set()): string[] {
   const direct = directProductionCallSites(symbol);
-  if (direct.length > 0 || visited.has(symbol)) return direct;
+  if (visited.has(symbol)) return direct;
 
   const source = readFileSync(MODULE_PATH, 'utf8');
   const nextVisited = new Set(visited).add(symbol);
@@ -113,9 +113,14 @@ function productionCallSites(symbol: string, visited: ReadonlySet<string> = new 
     }
   }
 
-  return [...callers].flatMap((caller) =>
+  const indirect = [...callers].flatMap((caller) =>
     productionCallSites(caller, nextVisited).map((site) => `${MODULE} -> ${caller} -> ${site}`),
   );
+  // A helper can be BOTH called directly and wrapped by another wired helper.
+  // Returning early on the first direct site hid the wrapper path and made the
+  // specific live-holder control fail as soon as release-trace added a direct
+  // ownershipHeldByLiveHolder call.
+  return [...new Set([...direct, ...indirect])];
 }
 
 describe('gate-ownership verdict helpers are WIRED, not merely correct', () => {

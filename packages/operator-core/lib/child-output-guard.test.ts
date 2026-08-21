@@ -96,7 +96,7 @@ const BASELINE: Record<string, number> = {
   'packages/operator-core/lib/admin-test-suites.ts': 2,
   'packages/operator-core/lib/cupboard/install-io.ts': 1,
   'packages/operator-core/lib/cupboard/resolve-repo-coords.ts': 1,
-  'packages/operator-core/lib/dbos/orchestrator-runner.ts': 2,
+  'packages/operator-core/lib/dbos/orchestrator-runner.ts': 1,
   'packages/operator-core/lib/deployment/cross-hive-cross-machine.integration.test.ts': 2,
   'packages/operator-core/lib/deployment/remote-exec.ts': 2,
   'packages/operator-core/lib/endpoint-route/routes/harness/git.ts': 1,
