@@ -65,6 +65,7 @@ import {
   reindexBloatedIndexes,
   type ReindexTarget,
 } from './telemetry-retention-action';
+import { buildTelemetryRetentionTriggerConfig } from './seed-telemetry-retention-routine';
 
 const okResult = (over: Record<string, unknown> = {}) => ({
   ok: true,
@@ -117,6 +118,16 @@ describe('resolveTargets', () => {
     expect(DEFAULT_RETENTION_TARGETS).toContainEqual({
       category: 'agent-activity',
       retention_days: 7,
+    });
+  });
+
+  it('keeps the persisted seed targets in both-directions parity with runtime defaults', () => {
+    const seeded = buildTelemetryRetentionTriggerConfig();
+    expect(seeded.targets).toEqual([...DEFAULT_RETENTION_TARGETS]);
+    expect(resolveTargets(seeded)).toEqual([...DEFAULT_RETENTION_TARGETS]);
+    expect(seeded.targets).toContainEqual({
+      category: 'memory-recall-query-text',
+      retention_days: 3,
     });
   });
 

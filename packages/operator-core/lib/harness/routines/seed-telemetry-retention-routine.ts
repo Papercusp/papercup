@@ -4,10 +4,9 @@
  * 2026-06-18 infra audit found growing without bound (R2; handler in
  * `telemetry-retention-action.ts`, prune logic in `storage/prune.ts`).
  *
- *   - `telemetry-retention` (daily 04:00): prune route-invocations >7d +
- *     tool-invocations >14d + harness-run-output >14d + agent-activity >7d
- *     via the shared storage prune (chunked + VACUUM). Pure DB maintenance —
- *     spawns no agent, makes no network call.
+ *   - `telemetry-retention` (daily 04:00): prune the canonical five retention
+ *     targets via the shared storage prune (chunked + VACUUM). Pure DB
+ *     maintenance — spawns no agent, makes no network call.
  *
  * SEEDED INACTIVE by default (mirrors seed-session-dir-gc-routine). Bring-up is
  * human-confirmed; idempotent (upsert). After deploy:
@@ -20,21 +19,33 @@
  *                 `DEFAULT_RETENTION_TARGETS` (telemetry-retention-action.ts) —
  *                 `resolveTargets()` prefers this STORED array whenever it's
  *                 non-empty, so a code-only default change has ZERO effect on
- *                 any existing install until this seed is re-run (EI-7499:
- *                 found harness-run-output/EI-7491's code default had drifted
- *                 from the live stored config for exactly this reason — fixed
- *                 here by re-adding it alongside agent-activity, not just the
- *                 new target).
+ *                 any existing install until this seed is re-run. The array is
+ *                 generated from the same canonical defaults used by the action
+ *                 so the two directions cannot drift silently.
  *   - dry_run   — plan + log, delete nothing.
  */
 
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
+import { DEFAULT_RETENTION_TARGETS } from './telemetry-retention-targets';
 
 const SLUG = process.env.TELEMETRY_RETENTION_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 /** Daily at 04:00 — off the busy hours; off-set from session-dir-gc (04:30). */
 const CRON = '0 0 4 * * *';
+
+/** Build the persisted config from the same defaults the runtime action uses. */
+export function buildTelemetryRetentionTriggerConfig(): {
+  cron: string;
+  targets: Array<{ category: string; retention_days: number }>;
+} {
+  return {
+    cron: CRON,
+    targets: DEFAULT_RETENTION_TARGETS.map((target) => ({ ...target })),
+  };
+}
 
 async function main(): Promise<void> {
   const active = process.argv.includes('--active');
@@ -42,18 +53,7 @@ async function main(): Promise<void> {
   const { sql } = getOrgPg();
   const name = 'telemetry-retention';
   const id = `rt_${SLUG}_${name}`.replace(/[^a-z0-9_]/gi, '_').toLowerCase();
-  const triggerConfig = {
-    cron: CRON,
-    // Keep in lockstep with DEFAULT_RETENTION_TARGETS (telemetry-retention-action.ts) —
-    // see the file-top note: the STORED array here always wins over the code
-    // default once seeded, so drift between the two silently un-prunes a table.
-    targets: [
-      { category: 'route-invocations', retention_days: 7 },
-      { category: 'tool-invocations', retention_days: 14 },
-      { category: 'harness-run-output', retention_days: 14 },
-      { category: 'agent-activity', retention_days: 7 },
-    ],
-  };
+  const triggerConfig = buildTelemetryRetentionTriggerConfig();
   await sql`
     INSERT INTO harness_shared.routines
       (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
@@ -70,14 +70,17 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-telemetry-retention-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `daily prune of route-invocations >7d + tool-invocations >14d. ` +
+      `daily prune of ${triggerConfig.targets.length} canonical retention targets. ` +
       (active ? 'Cadence LIVE.' : 'Inactive — enable with --active or the routines admin.'),
   );
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((e) => {
-    console.error('[seed-telemetry-retention-routine] FAILED:', e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
+const isMain = process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main()
+    .then(() => process.exit(0))
+    .catch((e) => {
+      console.error('[seed-telemetry-retention-routine] FAILED:', e instanceof Error ? e.message : e);
+      process.exit(1);
+    });
+}

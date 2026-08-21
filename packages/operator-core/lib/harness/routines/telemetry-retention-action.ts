@@ -20,8 +20,7 @@
  * Config (routine `trigger_config`, all optional):
  *   - `targets` — `Array<{ category: string; retention_days: number }>`; default
  *     `route-invocations`@7d + `tool-invocations`@14d + `harness-run-output`@14d
- *     (the largest diagnostic tables: request-, tool-call, and per-agent-run
- *     transcript telemetry).
+ *     + `agent-activity`@7d + `memory-recall-query-text`@3d.
  *   - `dry_run` — plan + log but delete nothing (preview a first run).
  *   - `reindex_indexes` — `Array<{ schema: string; index: string }>`; default the
  *     two heavily-bloated telemetry indexes from EI-7482 plus all five
@@ -45,6 +44,9 @@
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { pruneStorageCategory } from '../../storage/prune';
 import { cleanupExpiredSessionPorts } from '../../session-port/cleanup';
+import { DEFAULT_RETENTION_TARGETS, type RetentionTarget } from './telemetry-retention-targets';
+
+export { DEFAULT_RETENTION_TARGETS } from './telemetry-retention-targets';
 
 /** Minimal shape of the postgres.js tagged-template client this module needs —
  *  mirrors `storage/prune.ts`'s local `Sql` type (not exported there either). */
@@ -162,41 +164,6 @@ export async function reindexBloatedIndexes(
     }
   }
 }
-
-interface RetentionTarget {
-  category: string;
-  retention_days: number;
-}
-
-/** The largest unbounded diagnostic tables (infra audit R2 + EI-7491).
- *  route_invocations is request-level noise dominated by polling → 7d;
- *  tool_invocations is the more analysis-useful MCP telemetry → 14d;
- *  harness_run_output (EI-7491) stores four uncompressed full-transcript TEXT
- *  blobs per agent run (~228 KB/row, the largest per-row table in the DB) and
- *  was a fully-registered storage category never wired into this default
- *  target list, so it grew unbounded (56d+ of history, ~334 rows/day) — 14d
- *  matches tool-invocations and keeps ~2 weeks of run transcripts for debugging. */
-export const DEFAULT_RETENTION_TARGETS: readonly RetentionTarget[] = [
-  { category: 'route-invocations', retention_days: 7 },
-  { category: 'tool-invocations', retention_days: 14 },
-  { category: 'harness-run-output', retention_days: 14 },
-  // agent-activity (EI-7499): the last unpruned local-diagnostic table in this
-  // class — 270MB / ~48K rows-a-day, unbounded. 7d matches its longest real
-  // reader lookback (fleet-ekg/scan.ts's readSessionEvents, embedDays default
-  // 3d; every other reader — reconcile-loop-routines.ts, loop.ts,
-  // watchdog.ts's collectLoopStalledSignals — bounds by routines.last_fired_at,
-  // always recent) — verified by grepping every `harness_shared.agent_activity`
-  // reader before picking the window, not by copying the sibling default.
-  { category: 'agent-activity', retention_days: 7 },
-  // memory-recall-query-text (WI-37403 / migration 771): the ONLY recall-telemetry
-  // table holding agent-authored text, so it is the one entry here whose window is
-  // chosen for EXPOSURE rather than for size — it is small, and shrinking it saves
-  // nothing worth having. 3d covers a multi-day relevance audit (the purpose the
-  // capture was built for) and nothing beyond it; every durable question — hit
-  // rates, score distributions, query SHAPE, duplicate rate — is answered by
-  // columns on `memory_recall_stats`, which this prune never touches.
-  { category: 'memory-recall-query-text', retention_days: 3 },
-];
 
 /** Bound the per-tick prune loop so a backlog can never run a tick away; the
  *  chunked prune deletes up to 20M rows/call, so 50 calls is a hard ceiling far
