@@ -19,6 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   runGitSync,
+  addFailureIgnoredPaths,
   addFailureStrayPaths,
   discoverSubmodulesRecursive,
   isIndexLockFailure,
@@ -1870,6 +1871,59 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     });
     expect(out.status).toBe('synced'); // NOT stranded on the transient race
     expect(addAttempts).toBe(3); // the original attempt + 2 retries before it resolved
+  });
+
+  it('WI-40170: an ignored protected path drops only its redundant exclusion pathspec and retries', async () => {
+    const ignoredPath = 'tools/perf-test/wdio/package-lock.json';
+    const stageableProtectedPath = 'tracked-protected.txt';
+    const addCalls: string[][] = [];
+    const logs: string[] = [];
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('add')) {
+        addCalls.push(args);
+        if (addCalls.length === 1) {
+          return {
+            code: 1,
+            stderr:
+              'The following paths are ignored by one of your .gitignore files:\n' +
+              `${ignoredPath}\n` +
+              'hint: Use -f if you really want to add them.\n',
+          };
+        }
+        return { code: 0 };
+      }
+      if (j.startsWith('commit')) return { code: 0 };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count')) return { code: 0, stdout: '0' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      excludePaths: [ignoredPath, stageableProtectedPath],
+      config: { pushSubmodules: false },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(addCalls).toHaveLength(2);
+    expect(addCalls[0]).toContain(`:(exclude,literal)${ignoredPath}`);
+    expect(addCalls[0]).toContain(`:(exclude,literal)${stageableProtectedPath}`);
+    expect(addCalls[1]).not.toContain(`:(exclude,literal)${ignoredPath}`);
+    expect(addCalls[1]).toContain(`:(exclude,literal)${stageableProtectedPath}`);
+    expect(logs.join('\n')).toContain('retrying without force-adding ignored files');
+    expect(
+      addFailureIgnoredPaths(
+        `The following paths are ignored by one of your .gitignore files:\n${ignoredPath}\nhint: Use -f`,
+      ),
+    ).toEqual([ignoredPath]);
   });
 
   it('EI-20201578457434474: live index.lock contention retries with bounded backoff before surfacing an error', async () => {

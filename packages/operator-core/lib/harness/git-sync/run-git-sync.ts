@@ -967,6 +967,30 @@ export function addFailureStrayPaths(output: string): string[] {
   return [...new Set(out)];
 }
 
+/** Protected paths that made `git add` fatal because they are already ignored.
+ *
+ * `git add -A -- . :(exclude,literal)<path>` normally lets a live editor keep a
+ * dirty path out of git-sync's catch-all commit. Git still treats that negative
+ * pathspec as an explicit mention, though, and refuses the whole add when the path
+ * is ignored (for example a transient nested `package-lock.json`). The ignore rule
+ * already protects the file, so the safe retry is to omit ONLY that redundant
+ * exclusion pathspec — never `-f` the ignored artifact into the commit.
+ */
+export function addFailureIgnoredPaths(output: string): string[] {
+  const match = output.match(
+    /The following paths are ignored by one of your \.gitignore files:\s*\n([\s\S]*?)(?:\nhint:|$)/i,
+  );
+  if (!match) return [];
+  return [
+    ...new Set(
+      match[1]
+        .split(/\r?\n/)
+        .map((line) => line.trim().replace(/^"(.*)"$/, '$1'))
+        .filter(Boolean),
+    ),
+  ];
+}
+
 /** The `git add`/`git commit` fatal for a held index lock ("Unable to create
  *  '….git/index.lock': File exists"). Exported for unit testing (a git wording
  *  change must fail a test, not silently disable the self-heal below). */
@@ -1963,8 +1987,9 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // Catch-all = today's single whole-tree commit: sweeps the unattributed remainder (or
     // EVERYTHING when no attribution), including anything a path-specific add missed (rename
     // origin-sides, etc.). Byte-identical to the pre-P-004 commit path.
-    const buildAddArgs = (extraExcludes: string[]): string[] => {
-      const ex = [...new Set([...excludePaths, ...extraExcludes])];
+    const buildAddArgs = (extraExcludes: string[], omittedExcludes: readonly string[] = []): string[] => {
+      const omitted = new Set(omittedExcludes);
+      const ex = [...new Set([...excludePaths, ...extraExcludes])].filter((path) => !omitted.has(path));
       return ex.length === 0 ? ['add', '-A'] : ['add', '-A', '--', '.', ...ex.map((p) => `:(exclude,literal)${p}`)];
     };
     // STRANDING GUARD (2026-06-30 ROOT CAUSE): a stray EMBEDDED git repo with no commit
@@ -1976,14 +2001,30 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // EXCLUDE them, and retry ONCE so one stray repo can't strand everyone's work; if it STILL
     // fails, return a LOUD 'error' (caught by the git-sync-stall watchdog + escalation) instead
     // of silently reporting 'nothing'.
+    let omittedIgnoredExcludes: string[] = [];
     let addRes = await runGit(buildAddArgs([]), repoPath);
     if (addRes.code !== 0) {
+      // WI-40170: a protected path may ALSO be ignored. Git treats even a
+      // negative pathspec as an explicit ignored-path mention and aborts the
+      // entire add. The ignore rule already excludes it, so remove only those
+      // redundant pathspecs and retry; never force-add the ignored file.
+      const ignored = addFailureIgnoredPaths(`${addRes.stdout}\n${addRes.stderr}`).filter((path) =>
+        excludePaths.includes(path),
+      );
+      if (ignored.length > 0) {
+        omittedIgnoredExcludes = ignored;
+        o.log(
+          `[git-sync] ${repoPath}: 'git add -A' rejected ignored protected path(s) [${ignored.join(', ')}] — ` +
+            'omitting those redundant exclusion pathspecs and retrying without force-adding ignored files',
+        );
+        addRes = await runGit(buildAddArgs([], omittedIgnoredExcludes), repoPath);
+      }
       const stray = addFailureStrayPaths(`${addRes.stdout}\n${addRes.stderr}`);
       if (stray.length > 0) {
         o.log(
           `[git-sync] ${repoPath}: 'git add -A' FAILED on embedded/uncommitted repo(s) [${stray.join(', ')}] — excluding + retrying so the rest of the tree still commits (previously: silent strand)`,
         );
-        addRes = await runGit(buildAddArgs(stray), repoPath);
+        addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
       }
       // TRANSIENT-ENOENT SELF-HEAL (EI-18094449017685490): git's tree-walk
       // enumerated a path an instant before some other process's atomic
@@ -2003,14 +2044,14 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
           `[git-sync] ${repoPath}: 'git add -A' hit a transient ENOENT (a concurrent atomic-write race enumerated a path that vanished before stat) — retrying (attempt ${attempt}/${TRANSIENT_STAT_FAILURE_MAX_RETRIES})`,
         );
         await new Promise((resolve) => setTimeout(resolve, TRANSIENT_STAT_FAILURE_RETRY_DELAY_MS));
-        addRes = await runGit(buildAddArgs(stray), repoPath);
+        addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
       }
       // STALE-LOCK SELF-HEAL (2026-07-04): a dead git process's orphaned index.lock
       // otherwise fails EVERY tick until a human clears it. Provably-stale only —
       // see clearStaleIndexLock.
       if (addRes.code !== 0 && isIndexLockFailure(`${addRes.stdout}\n${addRes.stderr}`)) {
         const cleared = await clearStaleIndexLock(runGit, repoPath, o.log);
-        if (cleared) addRes = await runGit(buildAddArgs(stray), repoPath);
+        if (cleared) addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
 
         // LIVE-LOCK CONTENTION SELF-HEAL: another git process may be rebuilding the
         // index right now. The stale-lock helper deliberately refuses to touch a fresh
@@ -2030,7 +2071,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
             `[git-sync] ${repoPath}: 'git add -A' hit live index.lock contention — retrying after ${delayMs}ms (attempt ${attempt}/${INDEX_LOCK_CONTENTION_MAX_RETRIES})`,
           );
           await new Promise((resolve) => setTimeout(resolve, delayMs));
-          addRes = await runGit(buildAddArgs(stray), repoPath);
+          addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
         }
 
         // A lock that was live at the first check may have become orphaned while the
@@ -2038,7 +2079,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         // helper rather than ever deleting a still-fresh writer's lock.
         if (addRes.code !== 0 && isIndexLockFailure(`${addRes.stdout}\n${addRes.stderr}`)) {
           const clearedAfterRetry = await clearStaleIndexLock(runGit, repoPath, o.log);
-          if (clearedAfterRetry) addRes = await runGit(buildAddArgs(stray), repoPath);
+          if (clearedAfterRetry) addRes = await runGit(buildAddArgs(stray, omittedIgnoredExcludes), repoPath);
         }
       }
       if (addRes.code !== 0) {
