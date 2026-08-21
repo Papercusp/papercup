@@ -721,10 +721,12 @@ export async function openSourceStoreForCut(inp: {
 
   if (wantRefresh && sourceWritable) {
     // Quiesced box: we own the store, so refresh in-process exactly as before.
+    const pg = inp.pg ?? getOrgPg().sql;
     await (inp.refreshImpl ?? refreshCorestoreStateForSeed)({
       workspaceId: inp.workspaceId!,
       hive: inp.hive,
       store: store!,
+      pg,
       sparse: inp.sparse,
       forceBackfill: inp.forceBackfill,
     });
@@ -1005,7 +1007,10 @@ export async function waitForOperatorDrain(inp: {
     `;
     if (undrained === 0) return { undrained: 0, waitedMs: now() - started };
 
-    if (undrained < lastUndrained) {
+    // A refill from another writer is just as meaningful as a decrease: the prior
+    // low-water mark no longer describes the work still draining, so it must reset
+    // the stall clock instead of letting an external refill look permanently stuck.
+    if (undrained !== lastUndrained) {
       lastProgressAt = now();
       lastUndrained = undrained;
     }
@@ -1280,14 +1285,29 @@ async function main(): Promise<void> {
     // running the operator cut a properly-seeded release with no quiesce and no outage
     // — previously every such cut either took an outage or fell back to
     // PAPERCUSP_SEED_CORESTORE=0 and shipped an installer that cold-clones on first boot.
-    const opened = await openSourceStoreForCut({
-      storeDir,
-      workspaceId,
-      hive,
-      sparse,
-      wantRefresh: args['skip-corestore-refresh'] !== true,
-      forceBackfill: args['no-force-backfill'] !== true,
-    });
+    const openForCut = (pg?: postgres.Sql) =>
+      openSourceStoreForCut({
+        storeDir,
+        workspaceId,
+        hive,
+        sparse,
+        wantRefresh: args['skip-corestore-refresh'] !== true,
+        forceBackfill: args['no-force-backfill'] !== true,
+        ...(pg ? { pg } : {}),
+      });
+    // The advisory lock must be acquired before the first Corestore open: a writable
+    // open can succeed on a quiesced box while a second process is already force-
+    // backfilling the same hive through PG. Keep the transaction alive through the
+    // refresh/drain and final read-only or writable open, then release it before the
+    // immutable seed snapshot is copied.
+    const opened = workspaceId
+      ? await withCutSeedSingleton({
+          pg: getOrgPg().sql,
+          workspaceId,
+          hive,
+          run: (pg) => openForCut(pg),
+        })
+      : await openForCut();
     store = opened.store;
 
     const own = await enumerateOwnStoreCoreKeys(store);
