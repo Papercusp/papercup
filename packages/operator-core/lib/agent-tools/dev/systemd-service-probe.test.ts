@@ -17,6 +17,7 @@ import {
   type ServiceStartInfo,
   parseMultiUnitShowOutput,
   parseSystemctlShowOutput,
+  probeServiceStart,
   probeUnitStates,
   resolveServiceStartMs,
   resolveUnitName,
@@ -82,6 +83,34 @@ describe('parseSystemctlShowOutput (EI-18700974567040702)', () => {
 
   it('empty input parses to an empty map', () => {
     expect(parseSystemctlShowOutput('').size).toBe(0);
+  });
+});
+
+describe('probeServiceStart LoadState guard (EI-210532)', () => {
+  it('requests LoadState and preserves not-found as known:false', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const info = await probeServiceStart('papercup-oddsmith-sidecar', async (command, args) => {
+      calls.push({ command, args });
+      return {
+        stdout:
+          'Id=papercup-oddsmith-sidecar.service\n' +
+          'LoadState=not-found\n' +
+          'ActiveState=inactive\n' +
+          'MainPID=0\n' +
+          'NRestarts=0\n',
+      };
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe('systemctl');
+    expect(calls[0]?.args).toEqual(expect.arrayContaining(['-p', 'LoadState']));
+    expect(info).toMatchObject({
+      ok: true,
+      activeState: 'inactive',
+      loadState: 'not-found',
+      known: false,
+      mainPid: 0,
+    });
   });
 });
 

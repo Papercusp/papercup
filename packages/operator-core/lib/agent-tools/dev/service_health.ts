@@ -167,6 +167,10 @@ export async function overlaySystemdRestartRecency(
       if (!unit) return entry;
       const info = await probeFn(unit).catch(() => ({ ok: false }) as ServiceStartInfo);
       if (!info.ok) return entry; // probe genuinely couldn't determine an answer — honest "unknown", untouched
+      // EI-210532: systemd reports a missing unit as ActiveState=inactive. That
+      // default is not a liveness measurement, so preserve the untouched row
+      // rather than turning an absent service into a confirmed outage.
+      if (info.known === false || info.loadState === "not-found") return entry;
       // EI-18700974567040702: `ActiveState` is a DETERMINATE liveness answer from systemd
       // itself, not a probe failure — it must not be dropped alongside the `!info.ok` case
       // above (that was the bug: a stopped unit and a failed probe were byte-identical).

@@ -79,7 +79,16 @@ export default defineTool({
     /** Scope to one kind. */
     kind: z.enum(['tool', 'lifecycle', 'todos']).optional(),
     /** Only rows with id > since_id (stream catch-up; returns oldest-first then). */
-    since_id: z.union([z.number(), z.string()]).optional(),
+    // A string cursor is accepted so callers can preserve BIGINT precision, but
+    // it must still be an unsigned decimal. Passing "NaN" through to Number()
+    // makes Postgres reject the bigint comparison instead of returning a typed
+    // argument-validation error.
+    since_id: z
+      .union([
+        z.number().finite().int().nonnegative(),
+        z.string().regex(/^\d+$/),
+      ])
+      .optional(),
     /** Max rows (default 50, max 500). */
     limit: z.number().int().positive().max(MAX_LIMIT).optional(),
   }),
@@ -109,7 +118,14 @@ export default defineTool({
   },
   async handler(args) {
     const limit = args.limit ?? DEFAULT_LIMIT;
-    const sinceId = args.since_id != null ? Number(args.since_id) : null;
+    // Keep string cursors as strings so callers can preserve BIGINT precision;
+    // the schema above has already ruled out non-numeric values.
+    const sinceId =
+      args.since_id == null
+        ? null
+        : typeof args.since_id === 'string'
+          ? args.since_id
+          : String(args.since_id);
     const { sql } = getOrgPg();
     // F-B5 (workspace-data-isolation-leaks): agent_activity has workspace_id but
     // RLS is off + getOrgPg() bypasses it, so scope the feed to the active

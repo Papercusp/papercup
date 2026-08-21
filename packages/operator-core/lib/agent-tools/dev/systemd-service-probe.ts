@@ -13,8 +13,8 @@
  * live (it re-bundles the working tree ONLY on restart). We now cross-check the
  * marker against this ground truth before coalescing.
  *
- * Implementation: MainPID via `systemctl --user show`, elapsed seconds via
- * `ps -o etimes=`. That is robust across locales/TZ — unlike parsing systemd's
+ * Implementation: MainPID/LoadState/ActiveState via `systemctl --user show`,
+ * elapsed seconds via `ps -o etimes=`. That is robust across locales/TZ — unlike parsing systemd's
  * locale-formatted ExecMainStartTimestamp string — and is the same primitive
  * probeBgHostCodeDrift (service-health.ts) already relies on. Fail-soft: any
  * error, or a non-linux host, returns { ok:false } so the caller falls back to
@@ -88,6 +88,20 @@ export interface ServiceStartInfo {
    * not printed as `0`). Undefined only when `ok` is false.
    */
   activeState?: string;
+  /**
+   * EI-210532: raw systemd `LoadState` (`loaded`, `not-found`, `masked`, …).
+   * `ActiveState=inactive` is also emitted for a unit with `LoadState=not-found`,
+   * so callers must read this before treating `activeState` as a real service
+   * liveness measurement.
+   */
+  loadState?: string;
+  /**
+   * EI-210532: whether systemd knows this unit (`loadState === 'loaded'`).
+   * False means the unit is absent or otherwise not loaded; it is deliberately
+   * separate from `activeState`, whose default `inactive` is not evidence that
+   * an absent unit is down.
+   */
+  known?: boolean;
 }
 
 /** systemd unit-type suffixes this probe recognizes as already-complete — anything
@@ -123,6 +137,22 @@ export function parseSystemctlShowOutput(stdout: string): Map<string, string> {
     props.set(line.slice(0, eq), line.slice(eq + 1));
   }
   return props;
+}
+
+/**
+ * PURE — the systemd state fields shared by every `probeServiceStart` return
+ * path. Keeping LoadState beside ActiveState prevents the `not-found` /
+ * `inactive` pair from being silently reduced to a false outage verdict.
+ */
+export function serviceStartStateFromProps(
+  props: Map<string, string>,
+): Pick<ServiceStartInfo, 'activeState' | 'loadState' | 'known'> {
+  const activeState = props.get('ActiveState');
+  const loadState = props.get('LoadState');
+  return {
+    ...(activeState === undefined ? {} : { activeState }),
+    ...(loadState === undefined ? {} : { loadState, known: loadState === 'loaded' }),
+  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -390,22 +420,37 @@ async function readProcStartMs(pid: number): Promise<number | null> {
   }
 }
 
-export async function probeServiceStart(unit: string): Promise<ServiceStartInfo> {
+/** The exec seam used by `probeServiceStart`; tests can avoid a real systemd. */
+export type ServiceStartExec = (
+  command: string,
+  args: string[],
+  options: { timeout: number },
+) => Promise<{ stdout: string }>;
+
+const defaultServiceStartExec: ServiceStartExec = async (command, args, options) => {
+  const { stdout } = await run(command, args, options);
+  return { stdout };
+};
+
+export async function probeServiceStart(
+  unit: string,
+  exec: ServiceStartExec = defaultServiceStartExec,
+): Promise<ServiceStartInfo> {
   // Linux/systemd-only (a Windows desktop runs this sidecar under WSL, still
   // process.platform === 'linux', so it is NOT short-circuited — the try/catch
   // is the backstop for WSL-without-systemd).
   if (process.platform !== 'linux') return { ok: false };
   try {
     const svc = resolveUnitName(unit);
-    const { stdout } = await run(
+    const { stdout } = await exec(
       'systemctl',
       // EI-20093902925801178: `NRestarts` rides along on the EXISTING show call —
       // one more `-p` on a query already being made, no extra subprocess.
-      ['--user', 'show', '-p', 'MainPID', '-p', 'ActiveState', '-p', 'NRestarts', svc],
+      ['--user', 'show', '-p', 'MainPID', '-p', 'ActiveState', '-p', 'LoadState', '-p', 'NRestarts', svc],
       { timeout: 3000 },
     );
     const props = parseSystemctlShowOutput(stdout);
-    const activeState = props.get('ActiveState');
+    const startState = serviceStartStateFromProps(props);
     const mainPidRaw = props.get('MainPID');
     // Parsed once and spread into EVERY return path below — a `.timer` and a
     // down unit have restart histories too, and dropping the counter on those
@@ -421,13 +466,13 @@ export async function probeServiceStart(unit: string): Promise<ServiceStartInfo>
       // No MainPID property for this unit type at all (e.g. a `.timer`) —
       // ActiveState is the only signal available, and on its own it is a
       // complete, determinate answer (a timer never has a "recent restart").
-      return { ok: true, activeState, ...restarts };
+      return { ok: true, ...startState, ...restarts };
     }
     const mainPid = Number(mainPidRaw);
     // MainPID 0 ⇒ systemd has no live main process (down / never started). That
     // is a determinate answer: there is NO recent restart to coalesce against.
-    if (!Number.isFinite(mainPid) || mainPid <= 0) return { ok: true, mainPid: 0, activeState, ...restarts };
-    const { stdout: etimesOut } = await run(
+    if (!Number.isFinite(mainPid) || mainPid <= 0) return { ok: true, mainPid: 0, ...startState, ...restarts };
+    const { stdout: etimesOut } = await exec(
       'ps',
       ['-o', 'etimes=', '-p', String(mainPid)],
       { timeout: 3000 },
@@ -440,8 +485,8 @@ export async function probeServiceStart(unit: string): Promise<ServiceStartInfo>
     // caller's existing etimes fallback still applies.
     const startedAtMs = await readProcStartMs(mainPid);
     const exact = startedAtMs === null ? {} : { startedAtMs };
-    if (!Number.isFinite(etimes) || etimes < 0) return { ok: true, mainPid, activeState, ...exact, ...restarts };
-    return { ok: true, mainPid, secondsSinceStart: etimes, activeState, ...exact, ...restarts };
+    if (!Number.isFinite(etimes) || etimes < 0) return { ok: true, mainPid, ...startState, ...exact, ...restarts };
+    return { ok: true, mainPid, secondsSinceStart: etimes, ...startState, ...exact, ...restarts };
   } catch {
     return { ok: false };
   }

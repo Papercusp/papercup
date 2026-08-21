@@ -558,6 +558,20 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     expect(out[0]?.active).toBeUndefined();
   });
 
+  it("leaves a not-found unit untouched — ActiveState=inactive is systemd's absent-unit default, not a down verdict", async () => {
+    const probeFn = vi.fn(async () => ({
+      ok: true,
+      loadState: "not-found",
+      known: false,
+      activeState: "inactive",
+      mainPid: 0,
+    }));
+    const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
+    expect(out[0]).toEqual(stagingEntry);
+    expect(out[0]?.active).toBeUndefined();
+    expect(out[0]?.healthy).toBeUndefined();
+  });
+
   it("leaves the entry untouched when the probe throws", async () => {
     const probeFn = vi.fn(async () => {
       throw new Error("systemctl not found");

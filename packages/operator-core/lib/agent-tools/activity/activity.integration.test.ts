@@ -251,6 +251,14 @@ describe('activity:recent — read + filters', () => {
     expect(r.count).toBe(1);
     expect(r.activity[0]!.session_id).toBe('sess-2');
   });
+
+  it('rejects non-numeric since_id values before the bigint query', () => {
+    expect(recentTool.args.safeParse({ since_id: 'NaN' }).success).toBe(false);
+    expect(recentTool.args.safeParse({ since_id: 'not-a-number' }).success).toBe(false);
+    expect(recentTool.args.safeParse({ since_id: -1 }).success).toBe(false);
+    expect(recentTool.args.safeParse({ since_id: '123' }).success).toBe(true);
+    expect(recentTool.args.safeParse({ since_id: 123 }).success).toBe(true);
+  });
 });
 
 describe('activity:recent — numeric id ordering across digit boundaries (regression)', () => {
@@ -283,7 +291,7 @@ describe('activity:recent — numeric id ordering across digit boundaries (regre
   it('since_id branch pages forward in numeric (not lexical) ascending order', async () => {
     // Lexical asc of "8","9","10","998","999","1000","1500" would lead with "10"/"1000";
     // numeric asc must lead with 9 (first id > 8) and end at 1500.
-    const r = await recent({ since_id: 8 });
+    const r = await recent({ since_id: '8' });
     const ids = r.activity.map((x) => Number(x.id));
     expect(ids).toEqual([9, 10, 998, 999, 1000, 1500]);
   });

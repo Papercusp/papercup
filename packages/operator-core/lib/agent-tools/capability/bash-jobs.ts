@@ -819,7 +819,9 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // Keep stdout/stderr flowing from the instant spawn returns, then replay the
   // tiny early prefix through the normal redaction/output path below.
   const earlyOutput: Buffer[] = [];
-  const captureEarly = (b: Buffer): void => earlyOutput.push(Buffer.from(b));
+  const captureEarly = (b: Buffer): void => {
+    earlyOutput.push(Buffer.from(b));
+  };
   child.stdout?.on('data', captureEarly);
   child.stderr?.on('data', captureEarly);
   const job: BashJob = {
