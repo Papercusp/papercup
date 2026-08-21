@@ -437,6 +437,26 @@ function collectButtonClassNames(): ReadonlySet<string> {
 }
 
 /**
+ * Return whether a selector's terminal compound targets the button element
+ * itself. A descendant or pseudo-element can have small dimensions without
+ * inheriting the button baseline's `min-height`, so treating any `button`
+ * token anywhere in the selector as a button rule creates false positives.
+ */
+function selectorTargetsButtonElement(sel: string, buttonClasses: ReadonlySet<string>): boolean {
+  const lastCompound = sel.split(/[\s>+~]+/).pop()?.trim() ?? '';
+  if (!lastCompound) return false;
+
+  // Support both modern `::before` and legacy `:before` pseudo-element forms.
+  if (/(::|:(?:before|after|first-letter|first-line|selection|backdrop|placeholder|marker|file-selector-button|cue|part|slotted|grammar-error|spelling-error)\b)/i.test(lastCompound)) {
+    return false;
+  }
+
+  const hasBareButton = /^button(?=[.:#[>+~,]|$)/.test(lastCompound);
+  const lastClasses = (lastCompound.match(/\.[A-Za-z0-9_-]+/g) ?? []).map((c) => c.slice(1));
+  return hasBareButton || lastClasses.some((c) => buttonClasses.has(c));
+}
+
+/**
  * WebKitGTK (the Tauri desktop webview's engine) renders a `<button>`'s
  * contents through an internal anonymous box (RenderButton) that IGNORES
  * `display: flex`/`grid` set on the button element itself — Chromium honors
@@ -458,7 +478,6 @@ function unexpectedFlexOrGridOnButtonSelectors(): string[] {
   const buttonClasses = collectButtonClassNames();
   const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
   const displayRe = /display\s*:\s*(?:inline-)?(?:flex|grid)\b/;
-  const bareButtonRe = /(^|[\s>+~,])button(?=[\s.:#\[>+~,]|$)/;
 
   for (const file of collectFiles()) {
     const content = readCode(file);
@@ -476,11 +495,7 @@ function unexpectedFlexOrGridOnButtonSelectors(): string[] {
       }
       const selectors = selectorList.split(',').map((s) => s.trim()).filter(Boolean);
       for (const sel of selectors) {
-        const hasBareButton = bareButtonRe.test(sel);
-        const lastCompound = sel.split(/[\s>+~]+/).pop() ?? '';
-        const lastClasses = (lastCompound.match(/\.[A-Za-z0-9_-]+/g) ?? []).map((c) => c.slice(1));
-        const hasButtonClass = lastClasses.some((c) => buttonClasses.has(c));
-        if (!hasBareButton && !hasButtonClass) continue;
+        if (!selectorTargetsButtonElement(sel, buttonClasses)) continue;
         const before = content.slice(0, match.index! + whole.indexOf(selectorList));
         const line = before.split('\n').length;
         offenders.push(`${rel(file)}:${line}: ${sel}`);
@@ -516,7 +531,6 @@ function unexpectedSmallButtonWithoutMinHeight(): string[] {
   const offenders: string[] = [];
   const buttonClasses = collectButtonClassNames();
   const ruleRe = /([^{}]+)\{([^{}]*)\}/g;
-  const bareButtonRe = /(^|[\s>+~,])button(?=[\s.:#\[>+~,]|$)/;
   // Negative lookbehind excludes `min-width`/`max-width` (etc.) from matching
   // as a bare `width` declaration — Node's regex engine supports this fine.
   const dimRe = (prop: 'width' | 'height') =>
@@ -548,11 +562,7 @@ function unexpectedSmallButtonWithoutMinHeight(): string[] {
 
       const selectors = selectorList.split(',').map((s) => s.trim()).filter(Boolean);
       for (const sel of selectors) {
-        const hasBareButton = bareButtonRe.test(sel);
-        const lastCompound = sel.split(/[\s>+~]+/).pop() ?? '';
-        const lastClasses = (lastCompound.match(/\.[A-Za-z0-9_-]+/g) ?? []).map((c) => c.slice(1));
-        const hasButtonClass = lastClasses.some((c) => buttonClasses.has(c));
-        if (!hasBareButton && !hasButtonClass) continue;
+        if (!selectorTargetsButtonElement(sel, buttonClasses)) continue;
         const before = content.slice(0, match.index! + whole.indexOf(selectorList));
         const line = before.split('\n').length;
         offenders.push(`${rel(file)}:${line}: ${sel} (width:${width[1]}px height:${height[1]}px, no min-height)`);
@@ -782,27 +792,20 @@ describe('design primitive lint', () => {
     );
   });
 
-  // NEW rule (EI-18690913356156250, 2026-07-26): globals.css's zero-specificity
-  // `:where(button, .pc-btn) { min-height: 26px; ... }` baseline silently wins
-  // over a declared height<26px, turning an intended NxN icon button into an
-  // off-by-a-few-px "egg". Nothing else catches this — typecheck, unit tests,
-  // and every other design-primitive lint stay green, because the defect
-  // exists only in computed layout (caught only by measuring a real WebKitGTK
-  // webview in WI-5989). WARN-ONLY per this file's own warn-first rollout
-  // convention: this brand-new selector-shape check found ~18 PRE-EXISTING
-  // sites already shipping the exact "egg" pattern (most are small enough —
-  // 6-16px icon glyphs inside a larger clickable button — that the visible
-  // distortion is minor, but at least one, left-sidebar.styles.ts's
-  // `.pclsb__collapse-btn` at 26x22, is a real ~4px egg), so flipping straight
-  // to enforce:true would red the whole fleet's gate over unaudited debt.
-  // Surfaces every offender loudly; migrate/allowlist each, then flip
-  // enforce:true so a NEW instance can never ship silently again.
-  it('flags a small button/.pc-btn rule that declares height<26px without also declaring min-height', () => {
+  // ENFORCED rule (EI-18690913356156250, 2026-07-26): globals.css's
+  // zero-specificity `:where(button, .pc-btn) { min-height: 26px; ... }`
+  // baseline silently wins over a declared height<26px, turning an intended
+  // NxN icon button into an off-by-a-few-px "egg". Direct button controls have
+  // been migrated to state their intended min-height; descendant and
+  // pseudo-element selectors are deliberately excluded because the button
+  // baseline does not apply to those targets. Keep this enforced so a new
+  // instance can never ship silently again.
+  it('blocks a small button/.pc-btn rule that declares height<26px without also declaring min-height', () => {
     warnOrFail(
       'Small button rule missing min-height (globals.css baseline egg hazard)',
       unexpectedSmallButtonWithoutMinHeight(),
       {
-        enforce: false,
+        enforce: true,
         hint:
           'globals.css\'s `:where(button, .pc-btn) { min-height: 26px }` baseline silently ' +
           'wins over a declared height<26px (EI-18690913356156250) — either state ' +
@@ -810,6 +813,17 @@ describe('design primitive lint', () => {
           'fix), or raise the declared height to >=26px.',
       },
     );
+  });
+});
+
+describe('button selector target matching', () => {
+  it('ignores descendant and pseudo-element geometry rules', () => {
+    const classes = new Set(['known-button']);
+    expect(selectorTargetsButtonElement('.parent button', classes)).toBe(true);
+    expect(selectorTargetsButtonElement('.parent button > i', classes)).toBe(false);
+    expect(selectorTargetsButtonElement('button::before', classes)).toBe(false);
+    expect(selectorTargetsButtonElement('.known-button:hover', classes)).toBe(true);
+    expect(selectorTargetsButtonElement('.known-button:after', classes)).toBe(false);
   });
 });
 

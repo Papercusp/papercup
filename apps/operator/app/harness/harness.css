@@ -2240,6 +2240,7 @@
   transform: translateY(-50%);
   width: 22px;
   height: 22px;
+  min-height: 22px;
   border-radius: 50%;
   background: #4a90e2;
 }
@@ -2250,6 +2251,7 @@
   top: -8px;
   width: 18px;
   height: 18px;
+  min-height: 18px;
   border-radius: 50%;
   background: #5a3030;
 }
@@ -13674,4 +13676,3 @@ body > .h-top-collapse-btn.h-top-collapse-inline .h-top-collapse-state {
 
 /* Drawer specificity guards: lazy drawer polish rules above use structural
    selectors, so repeat the flat treatment with equal-or-higher specificity. */
-
