@@ -50,6 +50,12 @@ import {
   readInFlightRetriage,
   readRunnerCodeCommittedAtMs,
 } from '../../release/in-flight-retriage';
+import { readInFlightCandidate } from '../../release/in-flight-candidate';
+import {
+  decideFrozenCandidateRepairQueue,
+  type FrozenCandidateRepairQueue,
+  type FrozenRepairQueueDecision,
+} from '../../release/frozen-candidate-repair-queue';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 import {
@@ -64,16 +70,13 @@ import { clampText, LIMITS, softText } from '../limits';
 
 type RequiredAncestorPreflight = {
   ok: boolean;
-  reason: 'contained' | 'not-ancestor' | 'unverifiable' | 'queue-unreadable';
+  reason: 'contained' | 'not-ancestor' | 'unverifiable' | 'queue-unreadable' | 'queue-not-runnable';
   requiredAncestor: string | null;
   candidate: string | null;
   candidateSource: 'frozen-repair-queue' | 'current-quiet-cut' | 'unresolved';
-  repairQueue: {
-    phase: string;
-    candidate: string;
-    repairHead: string;
-    fixerSpawnId: string | null;
-  } | null;
+  repairQueue: FrozenCandidateRepairQueue | null;
+  queueDecision: FrozenRepairQueueDecision['kind'] | null;
+  fixerAlive: boolean | null;
   detail?: string;
 };
 
@@ -81,39 +84,47 @@ type RequiredAncestorPreflight = {
  * EI-21047439235631660 — resolve the candidate the detached runner's policy will
  * consult BEFORE a D-005-style required-ancestor launch.
  *
- * A persisted frozen-repair queue outranks the moving integration tip inside
- * green-checkpoint.ts. The old tool preflight knew only current/quiet-cut staging, so it
- * promised b836 while the writer bound 7490 from the queue. Read that existing queue (no
- * parallel state surface), use its repairHead when present, then apply the exact ancestry
- * check. Any queue-read/object-resolution failure is UNKNOWN and fails closed because the
- * caller explicitly requested a lineage guarantee; ordinary calls without the arg keep the
- * historical fail-open launch behavior.
+ * A persisted frozen-repair queue does not unconditionally outrank the moving integration
+ * tip: the writer first applies decideFrozenCandidateRepairQueue. A ready repair is verified
+ * at repairHead, but an attempts-exhausted queue whose fixer is confirmed gone is abandoned
+ * and the same invocation continues with a fresh candidate. Predict that shared policy here
+ * rather than treating stale cleanup state as a runnable repair forever. Live/unknown fixer
+ * state and every other non-suite decision fail closed because no exact judged candidate can
+ * be promised yet. Ordinary calls without requiredAncestorSha keep the historical behavior.
  */
 async function assessRequiredAncestorPreflight(
   requiredAncestor: string,
   predictedCandidate: string | null,
 ): Promise<RequiredAncestorPreflight> {
   const root = integrationRoot();
-  let repairQueue: RequiredAncestorPreflight['repairQueue'] = null;
+  let repairQueue: FrozenCandidateRepairQueue | null = null;
+  let fixerAlive: boolean | null = null;
+  let queueDecision: FrozenRepairQueueDecision;
   try {
-    const [{ activeWorkspaceId }, { operatorHomeHarnessSlug }, { readFrozenCandidateRepairQueue }] =
-      await Promise.all([
-        import('../../workspace-registry'),
-        import('../../harness/operator-home-harness'),
-        import('../../harness/routines/release-actions'),
-      ]);
-    const queue = await readFrozenCandidateRepairQueue({
+    const [
+      { activeWorkspaceId },
+      { operatorHomeHarnessSlug },
+      { readFrozenCandidateRepairQueue, releaseFixerSpawnAlive },
+    ] = await Promise.all([
+      import('../../workspace-registry'),
+      import('../../harness/operator-home-harness'),
+      import('../../harness/routines/release-actions'),
+    ]);
+    repairQueue = await readFrozenCandidateRepairQueue({
       workspaceId: activeWorkspaceId(),
       installSlug: operatorHomeHarnessSlug(),
     });
-    if (queue) {
-      repairQueue = {
-        phase: queue.phase,
-        candidate: queue.candidate,
-        repairHead: queue.repairHead,
-        fixerSpawnId: queue.fixerSpawnId ?? null,
-      };
+
+    if (repairQueue?.phase === 'awaiting-fixer' && repairQueue.fixerSpawnId) {
+      try {
+        const { getOrgPg } = await import('@papercusp/db-org');
+        fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, repairQueue.fixerSpawnId);
+      } catch {
+        // Liveness UNKNOWN must preserve the queue and refuse this exact-lineage launch.
+        fixerAlive = null;
+      }
     }
+    queueDecision = decideFrozenCandidateRepairQueue(repairQueue, { nowMs: Date.now(), fixerAlive });
   } catch (error) {
     return {
       ok: false,
@@ -121,7 +132,9 @@ async function assessRequiredAncestorPreflight(
       requiredAncestor: null,
       candidate: null,
       candidateSource: 'unresolved',
-      repairQueue: null,
+      repairQueue,
+      queueDecision: null,
+      fixerAlive,
       detail: clampText(error instanceof Error ? error.message : String(error), LIMITS.SHORT_TITLE),
     };
   }
@@ -135,12 +148,26 @@ async function assessRequiredAncestorPreflight(
     };
   };
   const current = predictedCandidate ?? currentCheckpointCandidate(root, execFn).current_candidate;
-  const candidate = repairQueue?.repairHead ?? current;
-  const candidateSource = repairQueue
-    ? 'frozen-repair-queue' as const
-    : candidate
-      ? 'current-quiet-cut' as const
-      : 'unresolved' as const;
+  const runnableCandidate =
+    queueDecision.kind === 'verify-repair'
+      ? { candidate: queueDecision.candidate, source: 'frozen-repair-queue' as const }
+      : queueDecision.kind === 'run-normal-gate' || queueDecision.kind === 'abandon-repair'
+        ? { candidate: current, source: current ? 'current-quiet-cut' as const : 'unresolved' as const }
+        : null;
+  if (!runnableCandidate) {
+    return {
+      ok: false,
+      reason: 'queue-not-runnable',
+      requiredAncestor: null,
+      candidate: null,
+      candidateSource: 'unresolved',
+      repairQueue,
+      queueDecision: queueDecision.kind,
+      fixerAlive,
+      detail: `frozen repair policy chose ${queueDecision.kind}`,
+    };
+  }
+  const { candidate, source: candidateSource } = runnableCandidate;
   if (!candidate) {
     return {
       ok: false,
@@ -149,6 +176,8 @@ async function assessRequiredAncestorPreflight(
       candidate: null,
       candidateSource,
       repairQueue,
+      queueDecision: queueDecision.kind,
+      fixerAlive,
     };
   }
 
@@ -157,6 +186,8 @@ async function assessRequiredAncestorPreflight(
     ...check,
     candidateSource,
     repairQueue,
+    queueDecision: queueDecision.kind,
+    fixerAlive,
   };
 }
 
@@ -329,7 +360,7 @@ export default defineTool({
       .regex(/^[0-9a-fA-F]{4,64}$/)
       .optional()
       .describe(
-        'Optional fail-CLOSED lineage guard for a release-critical repair SHA. Before spawning, checkpoint-run reads the existing frozen-repair queue (which outranks staging inside the detached writer), chooses queue.repairHead when present or the current quiet-cut candidate otherwise, and requires `git merge-base --is-ancestor <requiredAncestorSha> <candidate>` exit 0. A miss or unreadable queue/object refuses without spending the singleton run. force:true does NOT bypass this explicit guarantee. Post-launch release:trace must still confirm the writer bound the same lineage.',
+        'Optional fail-CLOSED lineage guard for a release-critical repair SHA. Before spawning, checkpoint-run reads the existing frozen-repair queue and applies the detached writer\'s shared queue policy: ready-to-verify checks queue.repairHead; an attempts-exhausted queue whose fixer is confirmed gone checks the fresh current quiet-cut candidate the writer will select after cleanup; live/unknown fixers and other non-suite queue decisions refuse until the judged candidate is knowable. The selected candidate must satisfy `git merge-base --is-ancestor <requiredAncestorSha> <candidate>` exit 0. A miss or unreadable queue/object refuses without spending the singleton run. force:true does NOT bypass this explicit guarantee. Post-launch release:trace must still confirm the writer bound the same lineage.',
       ),
     // EI-20031402866608444: ACCEPTED, not ignored. This arg used to be undeclared, and the schema
     // is additionalProperties:false, so passing it was an `invalid_input` that launched NOTHING —
@@ -644,6 +675,8 @@ export default defineTool({
             requiredAncestorCandidate: requiredAncestorPreflight.candidate,
             requiredAncestorCandidateSource: requiredAncestorPreflight.candidateSource,
             requiredAncestorReason: requiredAncestorPreflight.reason,
+            requiredAncestorQueueDecision: requiredAncestorPreflight.queueDecision,
+            requiredAncestorFixerAlive: requiredAncestorPreflight.fixerAlive,
           }
         : {}),
       ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
@@ -750,10 +783,14 @@ export default defineTool({
               candidate: requiredAncestorPreflight.candidate,
               candidate_source: requiredAncestorPreflight.candidateSource,
               repair_queue: requiredAncestorPreflight.repairQueue,
+              queue_decision: requiredAncestorPreflight.queueDecision,
+              fixer_alive: requiredAncestorPreflight.fixerAlive,
               detail: requiredAncestorPreflight.detail ?? null,
               note:
                 requiredAncestorPreflight.reason === 'not-ancestor'
-                  ? `NOT launched: the ${requiredAncestorPreflight.candidateSource} candidate ${requiredAncestorPreflight.candidate?.slice(0, 12) ?? 'unknown'} does not contain required repair ${args.requiredAncestorSha}. The frozen-repair queue outranks moving staging, so launching anyway would repeat EI-210474: a receipt about current tip followed by a writer on an unrelated lineage. Let the existing queue fixer finish/reconcile or clear the queue through its owner, then retry; do not force past this explicit lineage guarantee.`
+                  ? requiredAncestorPreflight.candidateSource === 'frozen-repair-queue'
+                    ? `NOT launched: the frozen-repair-queue candidate ${requiredAncestorPreflight.candidate?.slice(0, 12) ?? 'unknown'} does not contain required repair ${args.requiredAncestorSha}. The active repair policy chose ${requiredAncestorPreflight.queueDecision}; its repair head outranks moving staging, so launching anyway would repeat EI-210474: a receipt about current tip followed by a writer on an unrelated lineage. Let the existing queue fixer finish/reconcile, then retry; do not force past this explicit lineage guarantee.`
+                    : `NOT launched: the fresh current-quiet-cut candidate ${requiredAncestorPreflight.candidate?.slice(0, 12) ?? 'unknown'} does not contain required repair ${args.requiredAncestorSha}. The exhausted confirmed-dead repair queue will be abandoned before the writer selects this fresh candidate, so its stale repairHead cannot authorize the run. Wait for a candidate containing the repair, then retry; do not force past this explicit lineage guarantee.`
                   : `NOT launched: required repair ancestry could not be verified (${requiredAncestorPreflight.reason}${requiredAncestorPreflight.detail ? `: ${requiredAncestorPreflight.detail}` : ''}). Because requiredAncestorSha asks for an exact safety guarantee, UNKNOWN refuses rather than spending the singleton run. Repair the queue/git read and retry.`,
             }),
           },
@@ -823,8 +860,24 @@ export default defineTool({
       const runnerFreshness = liveRetriage
         ? describeRunnerCodeFreshness(liveRetriage.marker, await readRunnerCodeCommittedAtMs(integrationRoot()))
         : null;
+      // EI-21044758600216699: the SIBLING marker (EI-19931692050586322, `gate_health.inFlightCandidate`)
+      // — published on EVERY invocation, including a run's FIRST (non-refiring) candidate, unlike
+      // `inFlightRetriage` above which exists only once a refire has happened. `mapCheckpointRunInFlight`
+      // (dev:pipeline_position's `checkpointRunInFlight` leg) ALREADY reads it with exactly this
+      // precedence — retriage marker, then this candidate marker, then the checkout-HEAD inference — but
+      // this reply never did, so two tools reading the SAME live run reported two DIFFERENT candidates
+      // for the ordinary (no-refire, cron-held) case: this reply fell straight to `a.candidate` (the
+      // inference below), while dev:pipeline_position reported the run's own published marker. Measured
+      // live: a receipt named one sha `active` while a `dev:pipeline_position` call seconds later named
+      // a different one, with `judgingContainsPath:false` for the fix that WAS in the marker's candidate.
+      // Only consulted when there is no retriage marker: a refire supersedes the candidate a run started
+      // on, so `liveRetriage` legitimately wins where both exist (same rule `mapCheckpointRunInFlight`
+      // applies to its own `marker`/`candMarker`).
+      const liveCandidateMarker = liveRetriage
+        ? null
+        : await readInFlightCandidate((await import('../../harness/operator-home-harness')).operatorHomeHarnessSlug());
       // P-001 (plan agent-epistemics-2026-08-02): preferring the marker was necessary but not
-      // sufficient. When the marker is ABSENT and the run is `held_externally`, the only candidate
+      // sufficient. When BOTH markers are ABSENT and the run is `held_externally`, the only candidate
       // left is `a.candidate` — the checkpoint checkout's live HEAD, re-read after the fact
       // (release-checkpoint-launch.ts:686). That is an INFERENCE about a process this tool cannot
       // see, and it silently changes between two reads. Computing containment from it returns a
@@ -836,7 +889,7 @@ export default defineTool({
       // four contradictory answers in ninety minutes, each reasoning correctly from a field that
       // could not bear the weight. REFUSE rather than return a plausible number — a refusal that
       // names the authoritative source costs one query; a plausible wrong verdict costs a morning.
-      const candidateIsInferred = !liveRetriage && (a.held_externally ?? false);
+      const candidateIsInferred = !liveRetriage && !liveCandidateMarker && (a.held_externally ?? false);
       // `candidate` is still RETURNED when inferred — annotating is not censoring, and it remains
       // the only hint available. What changes is that it can no longer be read as an observation.
       const candidateCaveats =
@@ -846,7 +899,8 @@ export default defineTool({
                 field: 'candidate',
                 reliability: 'inferred',
                 cannotAnswer: 'Which sha is this run judging?',
-                insteadRead: "in_flight_retriage.refiring_candidate, or gate_health->'inFlightRetriage' in harness_shared.routines",
+                insteadRead:
+                  "in_flight_retriage.refiring_candidate, or gate_health->'inFlightRetriage'/'inFlightCandidate' in harness_shared.routines",
                 because:
                   "read from the checkpoint checkout's live HEAD at release-checkpoint-launch.ts:686, not from the running process",
               }),
@@ -856,20 +910,22 @@ export default defineTool({
         ? refuseAnswer({
             question: 'Does the in-flight run judge a candidate that contains your change?',
             because:
-              'This run is held by a DIFFERENT process (the cron tick) and has published no in-flight-retriage marker, ' +
-              "so the only candidate available is the checkpoint checkout's live HEAD re-read after the fact — an inference " +
-              'about a process this tool cannot observe, which changes silently between reads.',
+              'This run is held by a DIFFERENT process (the cron tick) and has published no in-flight-retriage or ' +
+              'in-flight-candidate marker, so the only candidate available is the checkpoint checkout\'s live HEAD ' +
+              're-read after the fact — an inference about a process this tool cannot observe, which changes ' +
+              'silently between reads.',
             insteadRead:
-              "the run's OWN published state: SELECT metadata->'gate_health'->'inFlightRetriage' FROM harness_shared.routines " +
-              "WHERE target_role='system:green-checkpoint' AND install_slug=<harness> AND workspace_id=<workspace> " +
-              '(scope BOTH — the table is multi-tenant); or wait for the verdict via checkpoint:await, which names its own candidate',
+              "the run's OWN published state: SELECT metadata->'gate_health'->'inFlightRetriage','inFlightCandidate' " +
+              "FROM harness_shared.routines WHERE target_role='system:green-checkpoint' AND install_slug=<harness> " +
+              'AND workspace_id=<workspace> (scope BOTH — the table is multi-tenant); or wait for the verdict via ' +
+              'checkpoint:await, which names its own candidate',
           })
         : await checkpointCandidateContainment({
-            // The marker is what the running process published about ITSELF; `a.candidate` is at best
+            // The markers are what the running process published about ITSELF; `a.candidate` is at best
             // a log read and, on the cron path this branch usually describes, an INFERENCE from the
             // checkpoint checkout's live HEAD. Prefer the observation — same precedence
             // `mapCheckpointRunInFlight` already applies for dev:pipeline_position.
-            candidateSha: liveRetriage?.marker.refiringCandidate ?? a.candidate ?? null,
+            candidateSha: liveRetriage?.marker.refiringCandidate ?? liveCandidateMarker?.candidate ?? a.candidate ?? null,
             tipSha: a.current_head ?? null,
             paths: args.paths,
           });
@@ -892,7 +948,11 @@ export default defineTool({
               ok: false,
               already_running: true,
               unit: a.unit,
-              candidate: a.candidate ?? null,
+              // EI-21044758600216699: prefer the run's OWN published candidate marker over the
+              // checkout-HEAD inference — same precedence as the containment check above, so this
+              // top-level field can no longer disagree with what containment (or dev:pipeline_position)
+              // was computed against.
+              candidate: liveCandidateMarker?.candidate ?? a.candidate ?? null,
               // Spreads to NOTHING when the candidate is observed, so a healthy reply gains no
               // noise; adds `_fieldReliability` + `_fieldReliabilityWarning` only when it matters.
               ...withFieldReliability({}, candidateCaveats),
@@ -1147,6 +1207,8 @@ export default defineTool({
                     candidateSource: requiredAncestorPreflight.candidateSource,
                     containedAtPreflight: requiredAncestorPreflight.ok,
                     repairQueue: requiredAncestorPreflight.repairQueue,
+                    queueDecision: requiredAncestorPreflight.queueDecision,
+                    fixerAlive: requiredAncestorPreflight.fixerAlive,
                   },
                 }
               : {}),
