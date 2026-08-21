@@ -21,6 +21,7 @@ import {
   deriveEdgeThrottleEvidence,
   egressIdentityOf,
   type AccountPoolAvailability,
+  type AccountBindingTerms,
   type EdgeThrottleSnapshotEntry,
 } from '../../fleet/capacity-dispatch';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -192,6 +193,9 @@ export async function readProviderAvailability(
     const override = await getAccountOverride(ws);
     const allowedIds = new Set(applyAccountOverride(rows.map((r) => r.id), override));
     const overrideExcludedCount = rows.length - allowedIds.size;
+    const now = Date.now();
+    const futureTerm = (value: number | undefined): number | undefined =>
+      value != null && Number.isFinite(value) && value > now ? value : undefined;
 
     // EI-18683773458136367: derive the shared-egress / re-arm evidence that gates whether the
     // "down egress proxy, escalate to the owner" claim is actually supportable (see capacity-dispatch.ts).
@@ -247,6 +251,22 @@ export async function readProviderAvailability(
       // one vague "walled/rate-paused/edge-throttled" phrase that reads as generic quota exhaustion.
       edgeThrottledCount: rows.filter((r) => r.edgeThrottled).length,
       usageWalledCount: rows.filter((r) => r.usageWalled).length,
+      // EI-19995356951235246: counts are only marginal evidence. Project the active reset terms for
+      // routable accounts so capacity-dispatch can identify the constraint that actually gates the
+      // earliest recovery. Expired terms and override-excluded rows must not steer that diagnosis.
+      accountBindingTerms: rows
+        .filter((r) => allowedIds.has(r.id))
+        .map((r): AccountBindingTerms => ({
+          id: r.id,
+          ...(r.usageWalled && futureTerm(r.usageResetAt) != null
+            ? { usageResetAt: futureTerm(r.usageResetAt) }
+            : {}),
+          ...(r.edgeThrottled && futureTerm(r.edgeThrottleResetAt) != null
+            ? { edgeThrottleResetAt: futureTerm(r.edgeThrottleResetAt) }
+            : {}),
+          ...(futureTerm(r.rate.pausedUntil) != null ? { ratePausedUntil: futureTerm(r.rate.pausedUntil) } : {}),
+        }))
+        .filter((terms) => terms.usageResetAt != null || terms.edgeThrottleResetAt != null || terms.ratePausedUntil != null),
       // EI-18791793869559327: a sustainedlyLimited account is still `available`/not-edge-throttled (it
       // counts toward `usable` above), so without this the DEGRADED tier in buildCapacityReport can never
       // fire from a live read — the capacity advisor stayed blind to the pool's own scale-out signal.

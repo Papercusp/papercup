@@ -302,6 +302,46 @@ test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcl
   headroomSpy.mockRestore();
 });
 
+test('EI-19995356951235246: availability projects only allowed active reset terms', async () => {
+  const { readBeeProviderAvailability } = await import('./capacity');
+  const now = Date.now();
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('allowed', {
+      usageWalled: true,
+      usageResetAt: now + 90_000,
+      edgeThrottled: true,
+      edgeThrottleResetAt: now + 60_000,
+      rate: { pausedUntil: now + 30_000, penaltyCount: 2, lastPenaltyAt: now, windowStartedAt: now - 1_000 },
+    }),
+    acctRow('expired', {
+      usageWalled: true,
+      usageResetAt: now - 1,
+      edgeThrottled: true,
+      edgeThrottleResetAt: now - 1,
+      rate: { pausedUntil: now - 1, penaltyCount: 2, lastPenaltyAt: now - 2, windowStartedAt: now - 1_000 },
+    }),
+    acctRow('excluded', {
+      usageWalled: true,
+      usageResetAt: now + 120_000,
+      edgeThrottled: true,
+      edgeThrottleResetAt: now + 120_000,
+      rate: { pausedUntil: now + 120_000, penaltyCount: 2, lastPenaltyAt: now, windowStartedAt: now - 1_000 },
+    }),
+  ]);
+  mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: [], excludeAccounts: ['excluded'] });
+
+  const acct = await readBeeProviderAvailability();
+  assert.ok(acct);
+  assert.deepEqual(acct!.accountBindingTerms, [
+    {
+      id: 'allowed',
+      usageResetAt: now + 90_000,
+      edgeThrottleResetAt: now + 60_000,
+      ratePausedUntil: now + 30_000,
+    },
+  ]);
+});
+
 test('EI-20613616736215896: the CALLER threads egressPool into the shared-egress evidence, so ' +
   'distinct proxies disprove a down-proxy fault instead of manufacturing an owner escalation', async () => {
   const { readBeeProviderAvailability } = await import('./capacity');
