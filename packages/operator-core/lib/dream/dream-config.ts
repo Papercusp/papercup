@@ -15,6 +15,13 @@ export interface DreamSamplerConfig {
   maxSimilarity: number;
 }
 
+export interface DreamPassConfig {
+  model: string;
+  maxInsightChars: number;
+  maxOutputTokens: number;
+  timeoutMs: number;
+}
+
 export const DEFAULT_DREAM_SAMPLER_CONFIG: Readonly<DreamSamplerConfig> = Object.freeze({
   recentWindowMs: 48 * HOUR_MS,
   remoteMinAgeMs: 7 * DAY_MS,
@@ -23,6 +30,13 @@ export const DEFAULT_DREAM_SAMPLER_CONFIG: Readonly<DreamSamplerConfig> = Object
   randomPartnerRate: 0.15,
   minSimilarity: 0.35,
   maxSimilarity: 0.8,
+});
+
+export const DEFAULT_DREAM_PASS_CONFIG: Readonly<DreamPassConfig> = Object.freeze({
+  model: 'claude-haiku-4-5',
+  maxInsightChars: 600,
+  maxOutputTokens: 1_024,
+  timeoutMs: 60_000,
 });
 
 function requirePositiveInteger(name: string, value: number): void {
@@ -34,6 +48,12 @@ function requirePositiveInteger(name: string, value: number): void {
 function requireProbability(name: string, value: number): void {
   if (!Number.isFinite(value) || value < 0 || value > 1) {
     throw new RangeError(`${name} must be between 0 and 1`);
+  }
+}
+
+function requireNonEmptyString(name: string, value: string): void {
+  if (value.trim().length === 0) {
+    throw new RangeError(`${name} must be a non-empty string`);
   }
 }
 
@@ -56,4 +76,15 @@ export function resolveDreamSamplerConfig(override: Partial<DreamSamplerConfig> 
   }
 
   return config;
+}
+
+export function resolveDreamPassConfig(override: Partial<DreamPassConfig> = {}): DreamPassConfig {
+  const config = { ...DEFAULT_DREAM_PASS_CONFIG, ...override };
+
+  requireNonEmptyString('model', config.model);
+  requirePositiveInteger('maxInsightChars', config.maxInsightChars);
+  requirePositiveInteger('maxOutputTokens', config.maxOutputTokens);
+  requirePositiveInteger('timeoutMs', config.timeoutMs);
+
+  return { ...config, model: config.model.trim() };
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_DREAM_SAMPLER_CONFIG, DREAM_FRAGMENT_KINDS, resolveDreamSamplerConfig } from './dream-config';
+import {
+  DEFAULT_DREAM_PASS_CONFIG,
+  DEFAULT_DREAM_SAMPLER_CONFIG,
+  DREAM_FRAGMENT_KINDS,
+  resolveDreamPassConfig,
+  resolveDreamSamplerConfig,
+} from './dream-config';
 
 describe('resolveDreamSamplerConfig', () => {
   it('ships the manual-cycle sampler defaults from the REM design', () => {
@@ -27,5 +33,30 @@ describe('resolveDreamSamplerConfig', () => {
     [{ minSimilarity: 0.9, maxSimilarity: 0.8 }, 'minSimilarity'],
   ] as const)('rejects invalid config %o', (override, message) => {
     expect(() => resolveDreamSamplerConfig(override)).toThrow(message);
+  });
+});
+
+describe('resolveDreamPassConfig', () => {
+  it('uses the bounded cheap-model defaults from the REM design', () => {
+    expect(DEFAULT_DREAM_PASS_CONFIG).toEqual({
+      model: 'claude-haiku-4-5',
+      maxInsightChars: 600,
+      maxOutputTokens: 1_024,
+      timeoutMs: 60_000,
+    });
+  });
+
+  it('trims a model override without mutating the defaults', () => {
+    expect(resolveDreamPassConfig({ model: ' custom-model ' }).model).toBe('custom-model');
+    expect(DEFAULT_DREAM_PASS_CONFIG.model).toBe('claude-haiku-4-5');
+  });
+
+  it.each([
+    [{ model: '   ' }, 'model'],
+    [{ maxInsightChars: 0 }, 'maxInsightChars'],
+    [{ maxOutputTokens: 1.5 }, 'maxOutputTokens'],
+    [{ timeoutMs: Number.POSITIVE_INFINITY }, 'timeoutMs'],
+  ] as const)('rejects invalid pass config %o', (override, message) => {
+    expect(() => resolveDreamPassConfig(override)).toThrow(message);
   });
 });
