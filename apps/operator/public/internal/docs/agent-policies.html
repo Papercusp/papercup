@@ -175,10 +175,12 @@ clicked.</li>
 <li><strong>For schema / migration changes</strong>: apply the migration locally
 and verify the queries that touch it.</li>
 <li><strong>For docs changes</strong>: hit the docs route and confirm it renders.</li>
-<li><strong>Always</strong>: run the project’s lint + typecheck before yielding.
-For Papercup that’s <code dir="auto">npm run typecheck &#x26;&#x26; npm run lint</code> from the
-repo root or the relevant <code dir="auto">apps/&#x3C;name>/</code>. If those fail, the
-change isn’t done.</li>
+<li><strong>Always</strong>: run the project’s typecheck and the relevant maintained lint gates before yielding.
+For Papercup, run <code dir="auto">npm run typecheck</code> plus the applicable scoped <code dir="auto">lint:*</code>
+scripts (for example, <code dir="auto">npm run lint:mdx</code> for docs or
+<code dir="auto">npm run lint:as-committed</code> for committed-file coverage) from the repo root
+or the relevant <code dir="auto">apps/&#x3C;name>/</code>. There is no aggregate root <code dir="auto">npm run lint</code>
+command. If a required check fails, the change isn’t done.</li>
 </ul>
 <p>If you can’t verify a change for some reason (no dev server, no test
 infrastructure for that surface), <strong>say so explicitly</strong>. “Typecheck
@@ -712,4 +714,4 @@ turns stale.</li>
 <li>Before introducing a new dependency, a new pattern, or a new
 cross-cutting abstraction.</li>
 </ul>
-<p>One sentence. Then wait. Then proceed.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-10T15:38:39.000Z">Aug 10, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr">   </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>
+<p>One sentence. Then wait. Then proceed.</p> </div> <footer class="sl-flex astro-j7wz5khy"> <div class="meta sl-flex astro-j7wz5khy">  <p>Last updated: <time datetime="2026-08-21T04:40:45.000Z">Aug 21, 2026</time></p> </div> <div class="pagination-links print:hidden astro-td3zbozv" dir="ltr">   </div>  </footer> </div> </div>  </main> </div> </div> </div> </div> </body></html>

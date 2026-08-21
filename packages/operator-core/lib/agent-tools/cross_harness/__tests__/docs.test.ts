@@ -50,6 +50,7 @@ describe('cross_harness:docs_outline', () => {
   it('returns harness_not_registered when slug is unknown', async () => {
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
     }));
     const tool = (await import('../docs_outline')).default;
     const result = await tool.handler({ harnessSlug: 'missing' }, MAKE_CTX());
@@ -59,7 +60,10 @@ describe('cross_harness:docs_outline', () => {
 
   it('returns outline when slug is registered', async () => {
     const reg = vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: reg }));
+    vi.doMock('../../../harness-registry', () => ({
+      loadHarnessRegistry: reg,
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
+    }));
     const tool = (await import('../docs_outline')).default;
     const result = await tool.handler({ harnessSlug: 'target' }, MAKE_CTX());
     const payload = parsePayload(result);
@@ -70,7 +74,10 @@ describe('cross_harness:docs_outline', () => {
 
   it('forwards workspaceId to loadHarnessRegistry', async () => {
     const reg = vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: reg }));
+    vi.doMock('../../../harness-registry', () => ({
+      loadHarnessRegistry: reg,
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
+    }));
     const tool = (await import('../docs_outline')).default;
     await tool.handler({ harnessSlug: 'target', workspaceId: 'other-ws' }, MAKE_CTX());
     expect(reg).toHaveBeenCalledWith('other-ws');
@@ -78,7 +85,10 @@ describe('cross_harness:docs_outline', () => {
 
   it('uses active workspace when workspaceId is unset', async () => {
     const reg = vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: reg }));
+    vi.doMock('../../../harness-registry', () => ({
+      loadHarnessRegistry: reg,
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
+    }));
     const tool = (await import('../docs_outline')).default;
     await tool.handler({ harnessSlug: 'target' }, MAKE_CTX());
     expect(reg).toHaveBeenCalledWith(undefined);
@@ -88,6 +98,7 @@ describe('cross_harness:docs_outline', () => {
     const metadata = vi.fn();
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] })),
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
     }));
     const tool = (await import('../docs_outline')).default;
     await tool.handler({ harnessSlug: 'target' }, MAKE_CTX({ metadata }));
@@ -101,6 +112,7 @@ describe('cross_harness:docs_get', () => {
   it('returns harness_not_registered when slug is unknown', async () => {
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
     }));
     const tool = (await import('../docs_get')).default;
     const result = await tool.handler({ harnessSlug: 'missing', slugs: ['x'] }, MAKE_CTX());
@@ -111,6 +123,7 @@ describe('cross_harness:docs_get', () => {
   it('returns content for a known slug + path', async () => {
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] })),
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
     }));
     const tool = (await import('../docs_get')).default;
     const result = await tool.handler(
@@ -125,7 +138,10 @@ describe('cross_harness:docs_get', () => {
 
   it('forwards workspaceId to loadHarnessRegistry', async () => {
     const reg = vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: reg }));
+    vi.doMock('../../../harness-registry', () => ({
+      loadHarnessRegistry: reg,
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
+    }));
     const tool = (await import('../docs_get')).default;
     await tool.handler(
       { harnessSlug: 'target', workspaceId: 'other-ws', slugs: ['harness-state/SPEC'] },
@@ -139,6 +155,7 @@ describe('cross_harness:docs_search', () => {
   it('returns harness_not_registered when slug is unknown', async () => {
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
     }));
     const tool = (await import('../docs_search')).default;
     const result = await tool.handler(
@@ -151,6 +168,7 @@ describe('cross_harness:docs_search', () => {
   it('returns ranked hits for known slug', async () => {
     vi.doMock('../../../harness-registry', () => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] })),
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
     }));
     const tool = (await import('../docs_search')).default;
     const result = await tool.handler(
@@ -164,7 +182,10 @@ describe('cross_harness:docs_search', () => {
 
   it('forwards workspaceId to loadHarnessRegistry', async () => {
     const reg = vi.fn(async () => ({ projects: [{ slug: 'target', path: tmpDir }] }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: reg }));
+    vi.doMock('../../../harness-registry', () => ({
+      loadHarnessRegistry: reg,
+      deregisterEphemeralForeignHarness: vi.fn(async () => false),
+    }));
     const tool = (await import('../docs_search')).default;
     await tool.handler(
       { harnessSlug: 'target', workspaceId: 'other-ws', query: 'spec', limit: 8 },

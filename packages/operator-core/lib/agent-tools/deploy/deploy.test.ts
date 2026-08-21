@@ -13,12 +13,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const migrateAllConfigJson = vi.fn();
 const loadHarnessRegistry = vi.fn();
+const deregisterEphemeralForeignHarness = vi.fn();
 
 vi.mock('../../deployment/instance-config', () => ({
   migrateAllConfigJson: (...a: unknown[]) => migrateAllConfigJson(...a),
 }));
 vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: (...a: unknown[]) => loadHarnessRegistry(...a),
+  // The deploy subject's import graph reaches p2p/revocation-reaper, which
+  // imports this registry export. Keep the narrow mock collection-safe.
+  deregisterEphemeralForeignHarness: (...a: unknown[]) => deregisterEphemeralForeignHarness(...a),
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
 
@@ -34,6 +38,7 @@ async function call(tool: unknown, args: Record<string, unknown>) {
 beforeEach(() => {
   migrateAllConfigJson.mockReset();
   loadHarnessRegistry.mockReset();
+  deregisterEphemeralForeignHarness.mockReset();
 });
 
 describe('harness:migrate-config-json envelope (Gap 10)', () => {
