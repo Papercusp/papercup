@@ -69,9 +69,6 @@ export interface ApplyTriageResult {
     unresolvedIds?: string[];
     circularIds?: string[];
   };
-  /** Present when the CODE-EXISTENCE GUARD downgraded an incoming place→gate
-   *  (EI-18801316749542776). `requestedDecision` is what the caller asked for. */
-  existenceDowngrade?: { requestedDecision: TriageDecision; tokens: string[]; matches: CodeExistenceMatch[] };
   error?: string;
 }
 
@@ -86,11 +83,6 @@ export interface TriageCoreDeps {
     opts?: { skipCompletionGate?: boolean },
   ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
-  /** EI-18801316749542776: search the live tree for a vocabulary token, returning the
-   *  repo-relative paths it occurs in (best-effort, capped). Optional — an omitted
-   *  dep silently skips the code-existence guard (never blocks a decision). Production
-   *  default: `defaultSearchTree` (grep over the integration root). */
-  searchTree?: (token: string) => Promise<string[]>;
   mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
 }
 
@@ -99,7 +91,6 @@ const defaultDeps: TriageCoreDeps = {
   setIssueState,
   commentIssue,
   mergeIssuePayload,
-  searchTree: defaultSearchTree,
 };
 
 const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
@@ -192,136 +183,6 @@ export async function evidenceStalenessCheck(
 ): Promise<{ stale: boolean; citedIds: string[]; staleIds: string[] }> {
   const check = await inspectEvidenceCitations(issue, deps);
   return { stale: check.stale, citedIds: check.citedIds, staleIds: check.staleIds };
-}
-
-/* ─── Code-existence pre-check (EI-18801316749542776) ──────────────────────────── *
- *
- * Two consecutive Scout analogical-lens ideas (EI-8167, EI-8337) proposed a whole
- * escalation ladder — bare-CF-429 vs quota classification, per-IP egress rotation,
- * per-account throttling — that was ALREADY FULLY IMPLEMENTED (`edgeThrottled`,
- * `egressPool`, `edgeThrottleBare429Streak`, …), costing a claim+investigate+drop
- * cycle each. The generator reads a friction/gap in the digest as a description of
- * a missing capability without checking whether the capability already exists.
- *
- * Mirrors evidenceStalenessCheck's shape exactly: best-effort, place→gate DOWNGRADE
- * ONLY (never a reject), a failed/skipped check never blocks a decision. The one
- * new ingredient is a `searchTree` dependency (grep over the live tree) rather than
- * `getIssue` — vocabulary EXISTENCE is a codebase fact, not a DB fact.
- */
-
-/** One distinctive-vocabulary token that already occurs in the tree. */
-export interface CodeExistenceMatch {
-  token: string;
-  /** Repo-relative paths it was found in (best-effort, capped). */
-  files: string[];
-}
-
-const BACKTICK_TOKEN_RE = /`([A-Za-z_][A-Za-z0-9_.]{3,60})`/g;
-const CAMEL_TOKEN_RE = /\b([a-zA-Z][a-zA-Z0-9]*)\b/g;
-const MAX_TOKENS = 8;
-
-/**
- * Distinctive code-like vocabulary from an idea's title+body: backtick-quoted
- * identifiers first (an idea proposing/describing a capability overwhelmingly names
- * it in backticks — exactly `edgeThrottled`, `egressPool` in the incident), then
- * bare camelCase/PascalCase identifiers with a length + mixed-case floor to keep
- * out ordinary English prose. Deduped, capped at `MAX_TOKENS` so a long idea body
- * can never turn this into an unbounded scan.
- */
-export function extractDistinctiveVocabulary(text: string): string[] {
-  const tokens: string[] = [];
-  const seen = new Set<string>();
-  const add = (t: string) => {
-    if (!seen.has(t)) {
-      seen.add(t);
-      tokens.push(t);
-    }
-  };
-  for (const m of text.matchAll(BACKTICK_TOKEN_RE)) add(m[1]);
-  for (const m of text.matchAll(CAMEL_TOKEN_RE)) {
-    const t = m[1];
-    // Mixed-case (an internal uppercase after the first char) + length floor is what
-    // separates a real identifier ("edgeThrottled", "SendOptions") from ordinary prose
-    // ("Scout", "already", "ALL") — a bare capitalized/uppercase word has no internal
-    // case transition and is excluded.
-    if (t.length >= 8 && /[a-z]/.test(t) && /[A-Z]/.test(t.slice(1)) && /^[a-zA-Z]/.test(t)) add(t);
-  }
-  return tokens.slice(0, MAX_TOKENS);
-}
-
-export interface CodeExistenceCheckResult {
-  /** Distinctive vocabulary tokens extracted from the idea's title+body. */
-  tokens: string[];
-  /** The subset of `tokens` confirmed to already occur in the tree, with hit paths. */
-  matches: CodeExistenceMatch[];
-}
-
-/**
- * Does the idea's OWN distinctive vocabulary already occur in the tree? Report-only
- * (D-005 conservatism, same as evidenceStalenessCheck): a search failure for one
- * token, or the absence of `searchTree` entirely, never blocks — it just narrows
- * what gets checked.
- */
-export async function codeExistenceCheck(
-  issue: Pick<EngineerIssue, 'id' | 'title' | 'body'>,
-  searchTree: (token: string) => Promise<string[]>,
-): Promise<CodeExistenceCheckResult> {
-  const tokens = extractDistinctiveVocabulary(`${issue.title ?? ''} ${issue.body ?? ''}`);
-  const matches: CodeExistenceMatch[] = [];
-  for (const token of tokens) {
-    try {
-      const files = await searchTree(token);
-      if (files.length) matches.push({ token, files: files.slice(0, 5) });
-    } catch {
-      // best-effort — a search failure for one token never blocks the rest
-    }
-  }
-  return { tokens, matches };
-}
-
-/**
- * Production `searchTree`: a bounded `grep` over the integration root's `packages`,
- * `apps`, and `libs` trees. Fails soft — grep exits non-zero on "no match", which
- * this reads as `[]`, not an error; a genuinely broken invocation (bad root, no
- * grep) also degrades to `[]` via the outer try/catch in `codeExistenceCheck`.
- */
-export async function defaultSearchTree(token: string): Promise<string[]> {
-  const root = integrationRoot();
-  const dirs = ['packages', 'apps', 'libs'];
-  try {
-    const { stdout } = await pexecFile(
-      'grep',
-      [
-        '-rl',
-        '--include=*.ts',
-        '--include=*.tsx',
-        '--exclude-dir=node_modules',
-        '--exclude-dir=dist',
-        '-F',
-        '-m',
-        '1',
-        '-e',
-        token,
-        ...dirs,
-      ],
-      { cwd: root, timeout: 5000, maxBuffer: 1024 * 1024 },
-    );
-    return stdout
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean);
-  } catch (e) {
-    // grep exits 1 (no match) or 2 (a named dir doesn't exist in a smaller test
-    // fixture root) — both are a clean "found nothing", not a failure to surface.
-    const err = e as { code?: number; stdout?: string };
-    if (typeof err?.code === 'number' && err.stdout) {
-      return err.stdout
-        .split('\n')
-        .map((l: string) => l.trim())
-        .filter(Boolean);
-    }
-    return [];
-  }
 }
 
 function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
