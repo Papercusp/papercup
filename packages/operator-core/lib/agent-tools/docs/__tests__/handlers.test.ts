@@ -81,6 +81,9 @@ vi.mock('@papercusp/docs-engine', () => ({
 function mockRegistry(projects: Array<{ slug: string; path: string }>) {
   vi.doMock('../../../harness-registry', () => ({
     loadHarnessRegistry: vi.fn(async () => ({ projects })),
+    // The docs handlers import the p2p revocation path transitively. Keep the
+    // registry mock complete when that path grows a new named export.
+    deregisterEphemeralForeignHarness: vi.fn(async () => false),
     // resolveAdapter's harness branch resolves the content path through this
     // (hive → member repo, else the harness's own path). It is pure over the
     // registry, so mirror it for the simple {slug,path} fixtures used here.
