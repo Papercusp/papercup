@@ -479,6 +479,102 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
 }
 
 /**
+ * Stable key for one workspace-relative failure entry.
+ *
+ * The runner resolves blobs outside this module, but the comparison itself stays pure here so
+ * the stale classification can be tested without a git checkout or a long test run.
+ *
+ * @param {{ workspace: string, file: string }} entry
+ * @returns {string}
+ */
+export function failureEntryKey({ workspace = "", file = "" } = {}) {
+  return `${workspace}\u0000${file}`;
+}
+
+/**
+ * Classify reported failure entries against blobs resolved at run start and report time.
+ *
+ * A stale entry is one whose two known blob ids differ: the test judged one version of the file,
+ * but the tree contains another version when the runner reports. Missing either blob is kept in
+ * `unknown` rather than called stale; a missing git object is an attribution gap, not evidence of
+ * a mid-run edit. This is deliberately advisory and does not change the task failure count.
+ *
+ * @param {{
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   runStartBlobs?: Record<string, string|null>,
+ *   reportBlobs?: Record<string, string|null>,
+ * }} args
+ * @returns {{
+ *   current: Array<object>,
+ *   stale: Array<object>,
+ *   unknown: Array<object>,
+ * }}
+ */
+export function classifyStaleFailureEntries({
+  entries = [],
+  runStartBlobs = {},
+  reportBlobs = {},
+} = {}) {
+  const current = [];
+  const stale = [];
+  const unknown = [];
+  for (const entry of entries) {
+    const key = failureEntryKey(entry);
+    const runStartBlob = runStartBlobs[key] ?? null;
+    const reportBlob = reportBlobs[key] ?? null;
+    const classified = { ...entry, runStartBlob, reportBlob };
+    if (runStartBlob && reportBlob) {
+      (runStartBlob === reportBlob ? current : stale).push(classified);
+    } else {
+      unknown.push(classified);
+    }
+  }
+  return { current, stale, unknown };
+}
+
+/** A stable token for the separate stale-failure advisory block. */
+export const AFFECTED_TESTS_STALE_FAILURES_TOKEN = 'AFFECTED_TESTS_STALE_FAILURES';
+
+/**
+ * Render the advisory for failures whose judged blob moved before report time.
+ *
+ * This stays separate from `AFFECTED_TESTS_RESULT` and `AFFECTED_TESTS_FAILING_FILES`: both are
+ * existing contracts consumed by the gate, while this block adds evidence about whether the
+ * named red may be a phantom without changing the red's gating status.
+ *
+ * @param {{
+ *   runStartHead?: string|null,
+ *   reportHead?: string|null,
+ *   stale?: Array<{ workspace: string, file: string, runStartBlob?: string|null, reportBlob?: string|null }>,
+ * }} args
+ * @returns {string[]}
+ */
+export function formatStaleFailureSummary({
+  runStartHead = null,
+  reportHead = null,
+  stale = [],
+} = {}) {
+  if (stale.length === 0) return [];
+  const lines = [
+    `\n⚠ STALE FAILURE ADVISORY — ${stale.length} reported file(s) changed after this run started.`,
+    `  The test judged an older blob; this run remains a failure, but the named red may be a phantom.`,
+    `  runStartHead=${runStartHead ?? "unknown"} reportHead=${reportHead ?? "unknown"}`,
+  ];
+  for (const entry of stale) {
+    lines.push(
+      `  - ${entry.workspace} :: ${entry.file} ` +
+        `(judgedBlob=${entry.runStartBlob ?? "unknown"} treeBlob=${entry.reportBlob ?? "unknown"})`,
+    );
+  }
+  lines.push(
+    `${AFFECTED_TESTS_STALE_FAILURES_TOKEN} runStartHead=${runStartHead ?? "unknown"} ` +
+      `reportHead=${reportHead ?? "unknown"} staleCount=${stale.length} ` +
+      `files=${JSON.stringify(stale)}`,
+  );
+  return lines;
+}
+
+/**
  * Parse the canonical, machine-readable break-set line emitted by
  * {@link formatFailingFilesLine}.
  *

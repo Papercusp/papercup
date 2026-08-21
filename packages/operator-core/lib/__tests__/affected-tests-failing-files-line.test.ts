@@ -45,6 +45,10 @@ import {
   transformCulpritsFrom,
   AFFECTED_TESTS_FAILING_FILES_TOKEN,
   FAILING_FILES_LINE_MAX_ENTRIES,
+  failureEntryKey,
+  classifyStaleFailureEntries,
+  formatStaleFailureSummary,
+  AFFECTED_TESTS_STALE_FAILURES_TOKEN,
 } from '../../../../scripts/lib/vitest-summary.mjs';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -469,6 +473,54 @@ describe('renderFailingFilesSummary — the block the red path actually prints',
   });
 });
 
+describe('stale failure advisory — a moved blob is evidence, not a green verdict', () => {
+  const entries = [
+    { workspace: '@papercusp/operator-core', file: 'lib/old.test.ts' },
+    { workspace: '@papercusp/operator-core', file: 'lib/current.test.ts' },
+    { workspace: '@papercusp/operator-core', file: 'lib/unresolved.test.ts' },
+  ];
+
+  it('classifies only entries whose known run-start and report blobs differ', () => {
+    const runStartBlobs = {
+      [failureEntryKey(entries[0])]: 'old-blob',
+      [failureEntryKey(entries[1])]: 'same-blob',
+      [failureEntryKey(entries[2])]: null,
+    };
+    const reportBlobs = {
+      [failureEntryKey(entries[0])]: 'new-blob',
+      [failureEntryKey(entries[1])]: 'same-blob',
+      [failureEntryKey(entries[2])]: 'now-known',
+    };
+    const classified = classifyStaleFailureEntries({ entries, runStartBlobs, reportBlobs });
+    expect(classified.stale).toEqual([{ ...entries[0], runStartBlob: 'old-blob', reportBlob: 'new-blob' }]);
+    expect(classified.current).toEqual([{ ...entries[1], runStartBlob: 'same-blob', reportBlob: 'same-blob' }]);
+    expect(classified.unknown).toEqual([{ ...entries[2], runStartBlob: null, reportBlob: 'now-known' }]);
+  });
+
+  it('renders a one-line, greppable advisory with both refs and blob evidence', () => {
+    const lines = formatStaleFailureSummary({
+      runStartHead: 'start-head',
+      reportHead: 'report-head',
+      stale: [
+        {
+          ...entries[0],
+          runStartBlob: 'old-blob',
+          reportBlob: 'new-blob',
+        },
+      ],
+    });
+    expect(lines[0]).toContain('STALE FAILURE ADVISORY');
+    expect(lines.join('\n')).toContain('runStartHead=start-head reportHead=report-head');
+    expect(lines.join('\n')).toContain('judgedBlob=old-blob treeBlob=new-blob');
+    expect(lines.at(-1)).toContain(AFFECTED_TESTS_STALE_FAILURES_TOKEN);
+    expect(lines.slice(1).every((line) => !line.includes('\n'))).toBe(true);
+  });
+
+  it('emits nothing when no entry is proven stale', () => {
+    expect(formatStaleFailureSummary({ stale: [] })).toEqual([]);
+  });
+});
+
 describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls is not a fix)', () => {
   const source = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
@@ -519,6 +571,15 @@ describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls 
 
   it('greps for the token via the shared constant, so a rename cannot desync', () => {
     expect(AFFECTED_TESTS_FAILING_FILES_TOKEN).toBe('AFFECTED_TESTS_FAILING_FILES');
+  });
+
+  it('captures the run-start ref and wires report-time stale classification', () => {
+    expect(source).toContain('const RUN_START_HEAD');
+    expect(source).toContain('runStartHead=${RUN_START_HEAD');
+    expect(source).toContain('classifyStaleFailureEntries({');
+    expect(source).toContain('runStartBlobs');
+    expect(source).toContain('reportBlobs');
+    expect(source).toContain('formatStaleFailureSummary({');
   });
 });
 
