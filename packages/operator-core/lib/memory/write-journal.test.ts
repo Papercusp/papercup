@@ -38,6 +38,7 @@ const backend = {
   remember: vi.fn(async () => ({ ids: ['new-mem-1'], storedEvents: 1 })),
   update: vi.fn(async () => {}),
   search: vi.fn(async () => [] as Array<{ id: string; text?: string; score?: number }>),
+  get: vi.fn(async () => null as null | { id: string; text: string; scope: string; metadata?: Record<string, unknown> }),
   invalidateEntry: vi.fn(async () => true),
 };
 vi.mock('./backend', () => ({ getMemoryBackend: () => backend }));
@@ -57,6 +58,7 @@ beforeEach(() => {
   backend.remember.mockClear().mockResolvedValue({ ids: ['new-mem-1'], storedEvents: 1 });
   backend.update.mockClear().mockResolvedValue(undefined);
   backend.search.mockClear().mockResolvedValue([]);
+  backend.get.mockClear().mockResolvedValue(null);
   backend.invalidateEntry.mockClear().mockResolvedValue(true);
 });
 
@@ -234,6 +236,29 @@ describe('drainMemoryWriteJournal', () => {
       metadata: { possible_secret: false, possible_secret_classes: [] },
     });
     expect(backend.remember).not.toHaveBeenCalled();
+  });
+
+  it('replays a journaled update patch and closes its superseded target before commit', async () => {
+    pendingRows = [{
+      ...baseRow,
+      id: 'row-us',
+      scope: 'userA',
+      content: 'edited text',
+      metadata: {
+        __journal_update_of: 'new-mem',
+        __journal_supersede_of: 'old-mem',
+        __journal_update_patch: { text: 'edited text', metadata: { kind: 'project' } },
+      },
+    }];
+    const r = await drainMemoryWriteJournal();
+    expect(r.recovered).toBe(1);
+    expect(backend.update).toHaveBeenCalledWith('new-mem', {
+      text: 'edited text', metadata: { kind: 'project' },
+    });
+    expect(backend.invalidateEntry).toHaveBeenCalledWith('old-mem', { supersededBy: 'new-mem' });
+    expect(backend.update.mock.invocationCallOrder[0]).toBeLessThan(
+      backend.invalidateEntry.mock.invocationCallOrder[0],
+    );
   });
 
   it('EI-10371: re-detects credentials at replay time and stamps the flag', async () => {

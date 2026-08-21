@@ -64,6 +64,7 @@ vi.mock('../../memory/configure', () => ({
 }));
 vi.mock('../../memory/write-journal', () => ({
   journalPendingWrite: vi.fn(async () => null),
+  markJournalCommitted: vi.fn(async () => undefined),
 }));
 
 import search from './search';
@@ -140,7 +141,21 @@ function fakeBackend(withInvalidateEntry = true) {
     available: vi.fn(async () => ({ ok: true })),
     search: vi.fn(async (_q: string, opts: { asOf?: string; includeSuperseded?: boolean }) => readFixture(opts)),
     list: vi.fn(async (opts: { asOf?: string; includeSuperseded?: boolean }) => readFixture(opts)),
-    get: vi.fn(async () => null),
+    get: vi.fn(async (id: string) => {
+      const row = FIXTURE.find((candidate) => candidate.id === id);
+      if (!row) return null;
+      return {
+        id: row.id,
+        text: row.text,
+        scope: row.scope,
+        metadata: {
+          validity: {
+            status: row.invalidAt === null ? 'current' : 'superseded',
+            superseded_by: row.supersededBy,
+          },
+        },
+      };
+    }),
     remember: vi.fn(async () => ({ ids: [] })),
     update: vi.fn(async () => undefined),
     forget: vi.fn(async () => undefined),
@@ -288,15 +303,48 @@ describe('memory:update supersedes (P-004 write path)', () => {
     expect(b.update).not.toHaveBeenCalled();
   });
 
-  it('an already-closed / unknown old id reports honestly: patch ok, superseded:false + note (first-wins)', async () => {
+  it('a concurrent immutable winner closes the losing replacement and reports failure', async () => {
     const b = fakeBackend();
     (b.invalidateEntry as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+    b.get.mockImplementation(async (id: string) => ({
+      id,
+      text: id === NEW_ID ? 'replacement' : 'old',
+      scope: 'user-1',
+      metadata: id === OLD_ID
+        ? { validity: { status: 'current', superseded_by: id === OLD_ID ? '33333333-3333-4333-8333-333333333333' : null } }
+        : { validity: { status: 'current', superseded_by: null } },
+    }));
     useBackend(b);
     const out = parse(
       await update.handler({ id: NEW_ID, content: 'x', supersedes: OLD_ID } as never, ctx),
     );
-    expect(out.results[0]).toMatchObject({ ok: true, id: NEW_ID, superseded: false });
-    expect(out.results[0].supersede_note).toContain('already superseded or unknown');
+    expect(out.results[0]).toMatchObject({ ok: false, id: NEW_ID, superseded: false });
+    expect(out.results[0].error).toContain('another replacement won');
+    expect(b.invalidateEntry).toHaveBeenNthCalledWith(1, OLD_ID, { supersededBy: NEW_ID });
+    expect(b.invalidateEntry).toHaveBeenNthCalledWith(2, NEW_ID);
+  });
+
+  it('rejects unknown, cross-scope, and entity supersession endpoints before mutation', async () => {
+    const b = fakeBackend();
+    useBackend(b);
+
+    b.get.mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+    let out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
+    expect(out.results[0]).toMatchObject({ ok: false });
+    expect(b.update).not.toHaveBeenCalled();
+    expect(b.invalidateEntry).not.toHaveBeenCalled();
+
+    b.get.mockReset()
+      .mockResolvedValueOnce({ id: NEW_ID, text: 'new', scope: 'scope-a' })
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'scope-b' });
+    out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
+    expect(out.results[0].error).toContain('same scope');
+
+    b.get.mockReset()
+      .mockResolvedValueOnce({ id: NEW_ID, text: 'new', scope: 'scope-a' })
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'scope-a', metadata: { entityType: 'person' } });
+    out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
+    expect(out.results[0].error).toContain('entity rows');
   });
 });
 
