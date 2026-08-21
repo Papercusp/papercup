@@ -53,6 +53,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { orderByDependencies } from '@papercusp/dependency-order';
 import { discover, discoverInvisible, realSpawn, runPackages } from './lib/typecheck-fanout.mjs';
+import { resolvePinnedTscBin } from './lib/tsc-baseline-gate.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -350,6 +351,30 @@ export function selectGatedPackages({
 }
 
 /**
+ * Replace only direct `npx tsc` fan-out commands with the repository's pinned native CLI.
+ * Declared package scripts remain untouched: npm must still supply their package-local cwd/env
+ * contract, while the direct promoted-tsconfig path has no reason to depend on an ambient bin.
+ *
+ * `resolveTscBin` is injectable so the command wiring can be tested against a synthetic tree
+ * without manufacturing a node_modules installation inside that fixture.
+ */
+export function pinDirectTscCommands(
+  packages,
+  repoRoot,
+  resolveTscBin = resolvePinnedTscBin,
+) {
+  let pinnedBin;
+  return packages.map((pkg) => {
+    if (pkg.command?.[0] !== 'npx' || pkg.command?.[1] !== 'tsc') return pkg;
+    pinnedBin ??= resolveTscBin(repoRoot);
+    return {
+      ...pkg,
+      command: [process.execPath, pinnedBin, ...pkg.command.slice(2)],
+    };
+  });
+}
+
+/**
  * The repo-relative prefixes this leg really compiles, for the sibling-gate resolver in
  * scripts/lib/tsc-baseline-gate.mjs (EI-19462776655300160).
  *
@@ -459,6 +484,9 @@ export function main({
   listOnly = process.argv.includes('--list'),
   listInvisible = process.argv.includes('--list-invisible'),
   spawn = realSpawn,
+  // Production resolves the pinned CLI. Focused tests inject `spawn` and keep their synthetic
+  // package commands untouched unless they explicitly exercise pinDirectTscCommands.
+  resolveTscBin = spawn === realSpawn ? resolvePinnedTscBin : null,
   log = console.log,
   warn = console.warn,
   error = console.error,
@@ -609,8 +637,11 @@ export function main({
     }
   }
 
+  const executablePackages = resolveTscBin
+    ? pinDirectTscCommands(ordered, repoRoot, resolveTscBin)
+    : ordered;
   const { failed } = runPackages({
-    packages: ordered,
+    packages: executablePackages,
     label: 'workspaces',
     unreadableCount: unreadable.length,
     spawn,

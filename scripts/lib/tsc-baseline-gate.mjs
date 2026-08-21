@@ -19,7 +19,8 @@
 
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { createRequire } from 'node:module';
+import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
@@ -1184,6 +1185,53 @@ export function formatLandingRaceCaveat({ recentCount, windowMin = LANDING_RACE_
 export const TSC_HEAP_MB = Number(process.env.PAPERCUSP_TSC_HEAP_MB) || 8192;
 
 /**
+ * Resolve the repository's pinned TypeScript CLI by package identity, never through the
+ * ambient `node_modules/.bin/tsc` slot (EI-21107417900847684).
+ *
+ * The toolchain contract deliberately installs TWO compilers: `@typescript/native` owns the
+ * TypeScript 7 CLI, while `typescript` names the TypeScript 6 compiler API required by TypeDoc,
+ * typescript-eslint, and declaration generation. During a concurrent install the shared `.bin`
+ * slot briefly resolved to the unrelated placeholder `tsc` package, so `npx tsc` exited 1 with
+ * zero diagnostics and red-pinned the release gate. Resolve the native package's declared bin
+ * from the root manifest instead; this is the CLI counterpart of gen-declarations.ts resolving
+ * its compiler-API input by package identity.
+ *
+ * @param {string} root repository root
+ * @returns {string} absolute path to the pinned native tsc entrypoint
+ */
+export function resolvePinnedTscBin(root) {
+  const requireFromRoot = createRequire(resolve(root, 'package.json'));
+  const manifestPath = requireFromRoot.resolve('@typescript/native/package.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  const declaredBin =
+    typeof manifest.bin === 'string' ? manifest.bin : manifest.bin?.tsc;
+  if (typeof declaredBin !== 'string' || declaredBin.length === 0) {
+    throw new Error(
+      `@typescript/native at ${manifestPath} does not declare a tsc bin`,
+    );
+  }
+  return resolve(dirname(manifestPath), declaredBin);
+}
+
+const shellQuote = (value) => `'${String(value).replaceAll("'", "'\\''")}'`;
+
+/**
+ * Replace only the canonical `npx tsc …` prefix with the pinned native compiler. Arbitrary
+ * injected commands (the focused tests use `cat <fixture>`) remain byte-for-byte unchanged.
+ *
+ * @param {string} root repository root
+ * @param {string} tscCommand configured command
+ * @returns {string}
+ */
+export function resolvePinnedTscCommand(root, tscCommand) {
+  const command = String(tscCommand ?? '');
+  const prefix = command.match(/^\s*npx(?:\s+--no-install)?\s+tsc(?=\s|$)/);
+  if (!prefix) return command;
+  const suffix = command.slice(prefix[0].length);
+  return `${shellQuote(process.execPath)} ${shellQuote(resolvePinnedTscBin(root))}${suffix}`;
+}
+
+/**
  * The child env for a tsc spawn: `process.env` plus `extra`, with
  * `--max-old-space-size` appended to NODE_OPTIONS.
  *
@@ -2035,9 +2083,10 @@ export async function runTscBaselineGate({
   // untracked-directory one still fails under `=normal`). Nothing here needs to compensate.
   const pcHeavyPath = resolve(root, 'scripts', 'pc-heavy.sh');
   const freshAfter = coalesceWatermarkFor({ root, files: explicitFiles, updateFlag });
+  const executableTscCommand = resolvePinnedTscCommand(root, tscCommand);
   try {
     tscOutput = existsSync(pcHeavyPath)
-      ? execFileSync('bash', [pcHeavyPath, 'sh', '-c', `${tscCommand} 2>&1`], {
+      ? execFileSync('bash', [pcHeavyPath, 'sh', '-c', `${executableTscCommand} 2>&1`], {
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,
@@ -2047,7 +2096,7 @@ export async function runTscBaselineGate({
             ...(freshAfter === null ? {} : { PC_HEAVY_FRESH_AFTER: String(freshAfter) }),
           }),
         })
-      : execSync(`${tscCommand} 2>&1`, {
+      : execSync(`${executableTscCommand} 2>&1`, {
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,

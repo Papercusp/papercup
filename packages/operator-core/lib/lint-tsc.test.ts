@@ -69,7 +69,12 @@ import {
   FOREIGN_BASELINES,
 } from '../../../scripts/lint-tsc-operator-vite.mjs';
 // eslint-disable-next-line import/no-relative-packages
-import { TSC_HEAP_MB, tscChildEnv } from '../../../scripts/lib/tsc-baseline-gate.mjs';
+import {
+  TSC_HEAP_MB,
+  resolvePinnedTscBin,
+  resolvePinnedTscCommand,
+  tscChildEnv,
+} from '../../../scripts/lib/tsc-baseline-gate.mjs';
 
 describe('typecheck mid-install diagnostics (EI-19366483607548056)', () => {
   const OUTPUT = [
@@ -391,6 +396,30 @@ describe('TSC_COMMAND (EI-487 regression guard)', () => {
     // as a "harmless" perf tweak without re-deriving why it's here.
     expect(TSC_COMMAND).toContain('--incremental false');
     expect(TSC_COMMAND).toContain('--noEmit');
+  });
+});
+
+describe('pinned TypeScript CLI resolution (EI-21107417900847684)', () => {
+  const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+  it('bypasses the ambient .bin slot and resolves the native TypeScript 7 package', () => {
+    const pinned = resolvePinnedTscBin(repoRoot);
+    expect(pinned).toContain('/node_modules/@typescript/native/bin/tsc');
+    expect(execFileSync(process.execPath, [pinned, '--version'], { encoding: 'utf8' }).trim()).toBe(
+      'Version 7.0.2',
+    );
+  });
+
+  it('rewrites canonical npx tsc commands but preserves injected canned commands', () => {
+    const rewritten = resolvePinnedTscCommand(
+      repoRoot,
+      'npx tsc -p packages/operator-core/tsconfig.json --noEmit',
+    );
+    expect(rewritten).toContain('/node_modules/@typescript/native/bin/tsc');
+    expect(rewritten).not.toContain('npx tsc');
+
+    const canned = 'cat /tmp/tsc-output.txt';
+    expect(resolvePinnedTscCommand(repoRoot, canned)).toBe(canned);
   });
 });
 

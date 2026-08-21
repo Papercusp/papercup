@@ -28,7 +28,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
-import { discover, discoverInvisible } from '../../../scripts/lib/typecheck-fanout.mjs';
+import {
+  commandFor,
+  discover,
+  discoverInvisible,
+} from '../../../scripts/lib/typecheck-fanout.mjs';
 // eslint-disable-next-line import/no-relative-packages
 import {
   DEFAULT_ROOTS,
@@ -37,6 +41,7 @@ import {
   main,
   orderPackages,
   ownedBySiblingGate,
+  pinDirectTscCommands,
   selectGatedPackages,
 } from '../../../scripts/lint-tsc-workspaces.mjs';
 
@@ -519,6 +524,39 @@ describe('dependency-ordered traversal (workstream G adoption, WI-36257)', () =>
         ).toBeLessThan(position.get(pkg.rel) as number);
       }
     }
+  });
+});
+
+describe('pinned TypeScript CLI fan-out (EI-21107417900847684)', () => {
+  it('rewrites direct promoted-tsconfig compiles but preserves declared npm scripts', () => {
+    const root = makeTree({
+      'libs/generic/promoted': { tsconfig: true },
+      'libs/generic/declared': { typecheck: true },
+    });
+    const selected = selectGatedPackages({
+      repoRoot: root,
+      roots: ['libs/generic'],
+      exempt: NO_EXEMPT,
+      untypecheckable: {},
+    }).packages;
+
+    const pinned = pinDirectTscCommands(selected, root, () => '/pinned/native/bin/tsc');
+    expect(
+      pinned.find((pkg: { rel: string }) => pkg.rel.endsWith('/promoted'))?.command,
+    ).toEqual([
+      process.execPath,
+      '/pinned/native/bin/tsc',
+      '--noEmit',
+      '-p',
+      'tsconfig.json',
+    ]);
+    expect(
+      commandFor(pinned.find((pkg: { rel: string }) => pkg.rel.endsWith('/declared'))),
+    ).toEqual([
+      'npm',
+      'run',
+      'typecheck',
+    ]);
   });
 });
 
