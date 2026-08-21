@@ -41,4 +41,17 @@ describe('renderCompactionStrategy (Claude compaction floor)', () => {
     expect(await renderCompactionStrategy(empty)).toBe('');
     await fs.rm(empty, { recursive: true, force: true });
   });
+
+  it('keeps the canonical directive-verification wording tied to search-hit origin', async () => {
+    const source = await fs.readFile(
+      new URL('../../../../apps/operator/prompts/papercusp-compaction.base.md', import.meta.url),
+      'utf8',
+    );
+
+    expect(source).toContain('`provenance.turn_origin`');
+    expect(source).toContain("origin:'loop-fire'");
+    expect(source).toContain("even when `speaker:'user'`");
+    expect(source).toContain('Missing, unrecognized, or `unknown` origin is UNKNOWN');
+    expect(source).toContain('never infer');
+  });
 });

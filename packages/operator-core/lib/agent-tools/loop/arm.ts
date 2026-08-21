@@ -49,6 +49,7 @@ import {
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
 import { getSessionBrief } from '../../session-brief';
+import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
@@ -664,6 +665,33 @@ export default defineTool({
     // softText fields (P-002): never bounced on length — clamp to cap here.
     const goal = clampText(args.goal, 4000);
     const wakePrompt = clampText(args.wakePrompt, 4000);
+
+    // EI-20034001963934568: the loop goal is replayed as machine-injected `user`
+    // text on every fire. A bare [owner:…] tag therefore launders an agent-authored
+    // goal into owner-looking speech. Require a verifiable turn ref at this source;
+    // the carry-surface lint already distinguishes real tags from documented
+    // placeholders and same-line [turn:…] anchors. Refuse before any claim or
+    // routine materialization so an invalid goal cannot create a doomed loop.
+    const goalProvenance = lintCarrySurfaceProvenance(goal);
+    if (goalProvenance.matches.some(({ kind }) => kind === 'manual-owner-tag')) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'unverified_goal_provenance',
+              message:
+                'Refusing to arm: the loop goal contains a bare [owner:…] tag without a verifiable [turn:…] anchor. ' +
+                'Loop goals replay as machine-injected user text, not owner turns. Replace the tag with [self-imposed], ' +
+                '[inferred], or [peer:…], or cite the actual human turn as [turn:<session>@<timestamp>] and verify its provenance before arming.',
+              matches: goalProvenance.matches.filter(({ kind }) => kind === 'manual-owner-tag'),
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
 
     // EI-19447204017443244 — MEASURE the caller's live push channels before the cap
     // message speaks about them. Gated to the one branch that consumes it (a declared
