@@ -17,6 +17,7 @@ describe('WAKE_TURN_CHANNELS — turn-burning wake channels', () => {
       'resume',
       'resume-headless',
       'hive-fresh-wake',
+      'fresh-context-warm-inject',
       'plan-run-resume',
     ] as const) {
       expect(WAKE_TURN_CHANNELS).toContain(ch);

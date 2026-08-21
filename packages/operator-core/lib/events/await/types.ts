@@ -192,6 +192,7 @@ export const WAKE_TURN_CHANNELS: readonly WakeChannel[] = [
   'resume',
   'resume-headless',
   'hive-fresh-wake',
+  'fresh-context-warm-inject',
   'plan-run-resume',
 ];
 
