@@ -90,6 +90,9 @@ import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { localModelIdsSync } from '../../inference-gateway/local-model-ids-cache';
 import { buildCapacityReport, buildFleetSizingAdvisory } from '../../fleet/capacity-dispatch';
+import { listFacts } from '../../agent-facts/store';
+import { getModes } from '../../modes/store';
+import { modeInstructionsFactKey } from '../mode/set';
 import {
   composeModelSpec,
   foldMemberSpec,
@@ -100,8 +103,10 @@ import {
   composeMemberLaunchContext as sharedComposeMemberLaunchContext,
   verifyFreshLaunchStarted,
   modelEffortFromSpec,
+  resolveLaunchMode,
   type FleetMemberDefaults,
   type FreshLaunchExpectedAttestation,
+  type LaunchMode,
   type MemberSpec,
 } from '../../agent-launch-core';
 export type { MemberLaunchOpts } from '../../agent-launch-core';
@@ -109,6 +114,43 @@ import { resolveGoalLaunch } from '../../goal-launch-settings';
 // type-only: the runtime call is a LAZY dynamic import in the handler (the promotion failsafe),
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
+
+/**
+ * Resolve the launch overlay from the caller's durable mode row and standing
+ * instruction fact. Keep this pure so the propagation contract is testable
+ * without opening a fleet or reaching PG; the handler owns the one mode/fact
+ * read and hands the result to every composer in the launch wave.
+ */
+export function resolveFleetLaunchMode(opts: {
+  modeRows: ReadonlyArray<{
+    mode?: unknown;
+    subject?: unknown;
+    ownerDirected?: unknown;
+  }>;
+  facts: ReadonlyArray<{ key?: unknown; body?: unknown }>;
+}): LaunchMode | null {
+  const instructions = opts.facts.find((fact) => fact.key === modeInstructionsFactKey('drain'));
+  return resolveLaunchMode({
+    modeRows: opts.modeRows,
+    instructionsFact: instructions?.body,
+  });
+}
+
+/** Read the caller's launch mode once per fleet launch; failures stay fail-soft
+ * so an observability/read outage cannot strand an otherwise valid fleet launch. */
+async function readCallerLaunchMode(workspaceId: string, ownerId: string): Promise<LaunchMode | null> {
+  try {
+    const modeRows = await getModes(workspaceId, ownerId);
+    if (!modeRows.some((row) => row.mode === 'drain')) return null;
+    const facts = await listFacts(
+      { scope: 'owner', scopeRef: ownerId },
+      { workspaceId, limit: 50 },
+    );
+    return resolveFleetLaunchMode({ modeRows, facts });
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Keep the promotion failsafe's prose aligned with its machine-readable result.
@@ -1228,6 +1270,10 @@ export default defineTool({
     // An explicit `workspace` arg (psu --workspace) scopes the fleet + envelope + every
     // member; otherwise the launch session's workspace (never the '*' wildcard).
     const workspaceId = args.workspace?.trim() || (callerWs && callerWs !== '*' ? callerWs : activeWorkspaceId());
+    // DRAIN is a durable caller overlay, not a fleet argument. Read the mode row and
+    // its owner-scoped instruction fact once, then thread the bounded result through
+    // every member/leader composer below so no launch path silently drops the mode.
+    const launchMode = await readCallerLaunchMode(workspaceId, ownerId);
     // `agent` and `model` are COUPLED: a local/gateway model (ollama-cc/…ornith) only runs on
     // the omp backend. Infer omp from such a model when agent is unspecified, and reject an
     // explicit claude/codex pairing outright — otherwise psu launches that backend with an
@@ -2613,6 +2659,7 @@ export default defineTool({
       agent: (goalLaunch.effective.agent as typeof effAgent) ?? effAgent,
       headless: args.headless || undefined,
       account: goalLaunch.effective.account ?? effAccount,
+      launchMode,
       // The caller's request scope is already resolved above. Always stamp that
       // authoritative workspace onto the psu command: omitting the flag makes a
       // fleet member inherit the operator process's workspace (commonly
