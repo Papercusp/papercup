@@ -5,11 +5,19 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "Code intelligence: which backend answers which question, and how to operate them"
-description: "The operator runbook for the five code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, how to re-provision each, and — the part that costs hours when missed — the four failure modes that return a CONFIDENT WRONG ANSWER rather than an error. Measured at HEAD 2026-08-21 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20."
+description: "The operator runbook for the five code-intelligence backends (rg, LSP, GitNexus, ast-grep, packers): the ratified routing contract, the exact pinned versions and where they live, how to re-provision each, and — the part that costs hours when missed — the five failure modes that return a CONFIDENT WRONG ANSWER rather than an error. Measured at HEAD 2026-08-21 under plan code-intelligence-routing-lsp-gitnexus-2026-08-20."
 type: Insight
 discovered: 2026-08-21
 tags: ["code-intelligence", "lsp", "gitnexus", "routing", "runbook"]
 status: active
+documents:
+  - "packages/operator-core/lib/code-intelligence/lsp-adapter.ts"
+  - "packages/operator-core/lib/code-intelligence/gitnexus-facade.ts"
+  - "packages/operator-core/lib/code-intelligence/packer-facade.ts"
+  - "packages/operator-core/lib/code-intelligence/contracts.ts"
+  - "packages/operator-core/lib/code-intelligence/code-intel-bench.ts"
+  - "packages/operator-core/lib/doc-claims/code-intel-routing-authority.ts"
+  - "libs/papercusp/plugins/gitnexus-bridge/index.ts"
 plans:
   - "code-intelligence-routing-lsp-gitnexus-2026-08-20"
 ---
@@ -74,7 +82,7 @@ npm install --prefix ~/.papercusp/vendor/lsp \
 npm install --prefix ~/.papercusp/vendor/gitnexus gitnexus@1.6.9
 ```
 
-## 3. The four failure modes that return a confident wrong answer
+## 3. The five failure modes that return a confident wrong answer
 
 This is the section worth reading before you trust a result. Every entry fails
 *toward* a plausible answer, so nothing throws and nothing looks broken.
@@ -110,6 +118,21 @@ absence as evidence about the code.
 > *rust-analyzer* binary while labelling its documents `rust` (WI-40250). The
 > `Record<LspLanguage, LanguageSpec>` is exhaustive by construction — do not relax
 > it to `Partial<…>` or an index signature.
+
+### 3.5 A STALE GitNexus index answers from the commit it last indexed
+
+`gitnexus` answers happily against whatever it indexed last and does not warn at
+query time, so a stale index is indistinguishable from a fresh one in the result.
+Measured 2026-08-21: `Indexed commit: 1b6621f` against `Current commit: ce1545d`,
+status `stale`, on a 5.3G index built ~50 minutes earlier. On a tree this active,
+under a git-sync routine that commits continuously, the index goes stale within
+the hour.
+
+The consequence that costs you: any *correctness* measurement taken against a
+stale index measures INDEX LAG and reports it as routing quality. Check with
+`gitnexus status` (want `Indexed commit` == `Current commit`) and re-run
+`gitnexus analyze` IMMEDIATELY before measuring — not at the start of a session
+that will still be running an hour later.
 
 ## 4. Performance you should expect
 
@@ -148,6 +171,9 @@ The recurring mistake is accepting a green suite that silently skipped.
   exercises both real servers; the facade and acceptance-corpus suites cover
   routing and fixtures. A bakeoff that reports success having *skipped* both
   servers looks identical to one that passed.
+- **Check the GitNexus index is FRESH, not merely present** — `gitnexus status`
+  must show `Indexed commit` == `Current commit`. A stale index answers without
+  erroring (§3.5), so "gitnexus responded" is not evidence the answer is current.
 - **Know what the corpus does not cover.** Interface implementations / type
   definitions and rename preview are UNEVALUATED. Do not claim coverage the
   corpus does not have.
