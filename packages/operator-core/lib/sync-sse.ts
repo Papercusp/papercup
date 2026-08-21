@@ -135,6 +135,26 @@ export function bridgeTriggerEvent(
   return queryNamesForTriggerEvent(name, args);
 }
 
+// These query names are low-volume control-plane projections of an agent's
+// posture. Their `agent_modes.changed` trigger is meaningful and should reach
+// an open popup promptly, but the same targets are also bridged from hot
+// sources such as coord_presence. Keep the override keyed by SOURCE + TARGET:
+// lowering a target-wide window would re-arm the heartbeat invalidate storm
+// that the bus's 90s default is designed to contain (WI-840/WI-37446).
+const LOW_VOLUME_AGENT_MODE_QUERY_NAMES = new Set([
+  'advRoster.list',
+  'agentDetail.byOwner',
+  'goals.detail',
+]);
+const LOW_VOLUME_AGENT_MODE_DEDUPE_WINDOW_MS = 1_000;
+
+function bridgedDedupeWindowMs(queryName: string, sourceEventName: string): number | undefined {
+  return sourceEventName === 'harness_shared.agent_modes.changed' &&
+    LOW_VOLUME_AGENT_MODE_QUERY_NAMES.has(queryName)
+    ? LOW_VOLUME_AGENT_MODE_DEDUPE_WINDOW_MS
+    : undefined;
+}
+
 const bus = createInvalidationBus({
   // Onto the shared listen-hub when enabled (server-class hosts, default ON —
   // see hubBackedListenSource above); a dedicated single LISTEN connection on
@@ -176,6 +196,9 @@ const bus = createInvalidationBus({
   // row id from mig 368) so a per-row query can be SCOPE-invalidated by id
   // instead of full-busting; queries without a per-id scope still full-bust.
   bridge: (name, args) => bridgeTriggerEvent(name, args),
+  // WI-37446: only low-volume agent-mode projections use the short bridge
+  // window; hot sources feeding those same names retain the global 90s guard.
+  bridgedDedupeWindowMs,
   log: (m) => console.log(m),
   onError: (where, e) => console.error(`[sync-sse] ${where} failed:`, e),
 });

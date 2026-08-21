@@ -166,6 +166,41 @@ describe('sync-sse LISTEN fan-out + replay', () => {
     expect(scoped.args).toEqual({ id: 'widget-42' });
   });
 
+  it('shortens agent-mode bridge windows without weakening hot-source targets', async () => {
+    const controlPlaneTargets = ['advRoster.list', 'agentDetail.byOwner', 'goals.detail'];
+    bridgeReturn = (name) =>
+      name === 'harness_shared.agent_modes.changed' || name === 'harness_shared.coord_presence.changed'
+        ? controlPlaneTargets
+        : [];
+    const { subscribe } = await load();
+    const sub = vi.fn();
+    await subscribe(sub);
+
+    capturedListen!(JSON.stringify({ name: 'harness_shared.agent_modes.changed', args: { id: 'm1' } }));
+    vi.advanceTimersByTime(500);
+    capturedListen!(JSON.stringify({ name: 'harness_shared.agent_modes.changed', args: { id: 'm2' } }));
+    for (const target of controlPlaneTargets) {
+      expect(sub.mock.calls.filter((c) => c[0].name === target)).toHaveLength(1);
+    }
+
+    // The operator's 1s source+target override lets the next meaningful mode
+    // change through, instead of inheriting the bus-wide 90s window.
+    vi.advanceTimersByTime(501);
+    capturedListen!(JSON.stringify({ name: 'harness_shared.agent_modes.changed', args: { id: 'm3' } }));
+    for (const target of controlPlaneTargets) {
+      expect(sub.mock.calls.filter((c) => c[0].name === target)).toHaveLength(2);
+    }
+
+    // The same query names still keep the production 90s guard for heartbeat
+    // events from coord_presence.
+    capturedListen!(JSON.stringify({ name: 'harness_shared.coord_presence.changed', args: { id: 'p1' } }));
+    vi.advanceTimersByTime(1);
+    capturedListen!(JSON.stringify({ name: 'harness_shared.coord_presence.changed', args: { id: 'p2' } }));
+    for (const target of controlPlaneTargets) {
+      expect(sub.mock.calls.filter((c) => c[0].name === target)).toHaveLength(3);
+    }
+  });
+
   it('taps emitSystemEvent for a <table>.changed event so cache.bumpTags fires on real DB changes', async () => {
     // caching-layer-tag-eca KEYSTONE: a real DB change (sync_invalidate NOTIFY) must reach the
     // in-process reaction matcher so the cache.bumpTags ECA rule invalidates — otherwise the
