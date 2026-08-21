@@ -53,6 +53,15 @@ import {
   type SymbolSite,
 } from './contracts.ts';
 
+/**
+ * The languages this adapter can drive.
+ *
+ * WI-40250: widening this union is NOT sufficient on its own — every
+ * language-varying behaviour is declared in `LANGUAGE_SPECS` below, which is a
+ * `Record` over this union and therefore exhaustive by construction. Adding a
+ * member here without adding its spec is a COMPILE error, which is exactly the
+ * point: it used to be a silent runtime mislabel.
+ */
 export type LspLanguage = 'typescript' | 'rust';
 
 /** Where the pinned pilot environment lives (P-007). */
@@ -101,23 +110,87 @@ export function resolveTsserverPath(vendorDir: string = LSP_VENDOR_DIR): string 
   );
 }
 
+/**
+ * Everything that varies BY LANGUAGE, declared in ONE place.
+ *
+ * WI-40250. This used to be three separate `if (language === 'typescript') …`
+ * branches whose ELSE ARM WAS RUST — in `resolveServerBin` and in two
+ * `languageId` ternaries. Widening `LspLanguage` therefore compiled cleanly and
+ * then silently resolved the new language to the rust-analyzer binary while
+ * labelling its documents `rust`: a confident wrong answer from the one module
+ * whose entire purpose is refusing to produce them. No `switch` existed, so
+ * TypeScript's exhaustiveness checking could not see it.
+ *
+ * `Record<LspLanguage, LanguageSpec>` is the structural fix and the `Record` is
+ * load-bearing: it is exhaustive BY CONSTRUCTION, so adding a member to the
+ * union without adding its spec here fails the typecheck. Do not relax this to
+ * `Partial<Record<…>>` or an index signature — either one silently restores the
+ * original failure mode.
+ */
+interface LanguageSpec {
+  /** The `textDocument.languageId` this server expects. */
+  readonly languageId: string;
+  /** Absolute path to the pinned server binary, or null when not provisioned. */
+  readonly resolveBin: () => string | null;
+  /**
+   * Readiness must come from the server's OWN progress signal rather than from
+   * an idle heuristic (WI-40224 — a server that is still indexing answers
+   * "no references" indistinguishably from a server that is ready).
+   */
+  readonly requiresProgressSignal: boolean;
+}
+
+const LANGUAGE_SPECS: Readonly<Record<LspLanguage, LanguageSpec>> = {
+  typescript: {
+    languageId: 'typescript',
+    resolveBin: () => {
+      const bin = join(LSP_VENDOR_DIR, 'node_modules', '.bin', 'typescript-language-server');
+      return existsSync(bin) ? bin : null;
+    },
+    requiresProgressSignal: false,
+  },
+  rust: {
+    languageId: 'rust',
+    // rust-analyzer is a rustup COMPONENT, so its version is pinned by the
+    // repo's toolchain rather than floating.
+    resolveBin: () => {
+      const raBin = join(
+        homedir(),
+        '.rustup',
+        'toolchains',
+        'stable-x86_64-unknown-linux-gnu',
+        'bin',
+        'rust-analyzer',
+      );
+      return existsSync(raBin) ? raBin : null;
+    },
+    requiresProgressSignal: true,
+  },
+};
+
+/**
+ * The spec for a language, or a LOUD refusal.
+ *
+ * The runtime guard is NOT redundant with the compile-time `Record`: this
+ * module is reachable from plain-JS callers, from persisted values, and from
+ * request payloads, where an unrecognised id would otherwise fall through to
+ * whichever branch happened to be last — which is precisely the WI-40250 bug.
+ */
+export function specForLanguage(language: LspLanguage): LanguageSpec {
+  const spec = LANGUAGE_SPECS[language];
+  if (!spec) {
+    throw new Error(
+      `Unknown LSP language ${JSON.stringify(language)}. Known: ` +
+        `${Object.keys(LANGUAGE_SPECS).join(', ')}. Add a LANGUAGE_SPECS entry — never ` +
+        `let an unknown language fall through to another language's server (WI-40250).`,
+    );
+  }
+  return spec;
+}
+
 /** Absolute path to a pinned server binary, or null when not provisioned. */
 export function resolveServerBin(language: LspLanguage): string | null {
-  if (language === 'typescript') {
-    const bin = join(LSP_VENDOR_DIR, 'node_modules', '.bin', 'typescript-language-server');
-    return existsSync(bin) ? bin : null;
-  }
-  // rust-analyzer is a rustup COMPONENT, so its version is pinned by the repo's
-  // toolchain rather than floating.
-  const raBin = join(
-    homedir(),
-    '.rustup',
-    'toolchains',
-    'stable-x86_64-unknown-linux-gnu',
-    'bin',
-    'rust-analyzer',
-  );
-  return existsSync(raBin) ? raBin : null;
+  return specForLanguage(language).resolveBin();
 }
 
 interface LspClient {
