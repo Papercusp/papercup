@@ -43,6 +43,46 @@ const BASE = "0".repeat(40);
 const INITIAL_RUN = "initial-proof-run";
 const VERIFIER_RUN = "repair-verifier-run";
 
+// Real launch surfaces share only this execution substrate. A manual checkpoint receives the
+// user-manager environment plus fresh systemd metadata; a scheduled/repair checkpoint inherits
+// the bg-host's service environment. The latter includes service identity, credentials, and
+// operator config that must not enter the green suite or its complete child-environment cache
+// identity. Values are deliberately synthetic — only the key/value shape is under test.
+const CANONICAL_LAUNCH_ENV = {
+  PATH: "/usr/local/bin:/usr/bin",
+  HOME: "/home/gate",
+  USER: "gate",
+  LOGNAME: "gate",
+  SHELL: "/bin/bash",
+  LANG: "C.UTF-8",
+  XDG_RUNTIME_DIR: "/run/user/1000",
+  DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+};
+
+const INITIAL_LAUNCH_ENV = {
+  ...CANONICAL_LAUNCH_ENV,
+  INVOCATION_ID: "manual-checkpoint-a",
+  JOURNAL_STREAM: "8:100",
+  SYSTEMD_EXEC_PID: "100",
+  MANAGERPID: "1000",
+  MEMORY_PRESSURE_WATCH: "/sys/fs/cgroup/manual/memory.pressure",
+};
+
+const VERIFIER_LAUNCH_ENV = {
+  ...CANONICAL_LAUNCH_ENV,
+  INVOCATION_ID: "repair-checkpoint-b",
+  JOURNAL_STREAM: "8:200",
+  SYSTEMD_EXEC_PID: "200",
+  MANAGERPID: "1000",
+  MEMORY_PRESSURE_WATCH: "/sys/fs/cgroup/bg-host/memory.pressure",
+  AGENT_CMD: "psu",
+  DATABASE_URL: "postgres://operator-service-only",
+  DBOS__APPVERSION: "repair-launch",
+  DBOS__VMID: "bg-host-b",
+  LATITUDE_API_KEY: "service-secret",
+  PAPERCUSP_AGENT_DEBUG: "1",
+};
+
 const commandFor = (task: FixtureTask, root: string) => ({
   cmd: "npm",
   argv: ["run", task.script, "--workspace", task.workspace],
@@ -139,7 +179,11 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
       ];
       const repoWideTaskKeys = new Set([tasks[5]!.key]);
       const trackedScan = { files, unscannedPresent: [] as string[] };
-      const initialEnv = buildGreenCheckpointEnv(BASE, {}, INITIAL_RUN);
+      const initialEnv = buildGreenCheckpointEnv(
+        BASE,
+        INITIAL_LAUNCH_ENV,
+        INITIAL_RUN,
+      );
       const initialIdentityEnv =
         passingTaskVerdictIdentityEnvironment(initialEnv).environment;
       const identityFor = (
@@ -217,7 +261,7 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
       });
       const verifierEnv = buildGreenCheckpointEnv(
         BASE,
-        {},
+        VERIFIER_LAUNCH_ENV,
         VERIFIER_RUN,
         "shared",
         queue.affectedTestProofGroup,
@@ -272,6 +316,53 @@ describe("P-009: frozen-repair passing-task reuse recurs end to end", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  it("keeps complete child-environment identity fail-closed for admitted test inputs", () => {
+    const initialEnvironment = passingTaskVerdictIdentityEnvironment(
+      buildGreenCheckpointEnv(BASE, INITIAL_LAUNCH_ENV, INITIAL_RUN),
+    ).environment;
+    const verifierEnvironment = passingTaskVerdictIdentityEnvironment(
+      buildGreenCheckpointEnv(
+        BASE,
+        VERIFIER_LAUNCH_ENV,
+        VERIFIER_RUN,
+        "shared",
+        INITIAL_RUN,
+      ),
+    ).environment;
+    expect(verifierEnvironment).toEqual(initialEnvironment);
+
+    const initialIdentity = buildPassingTaskVerdictIdentity({
+      taskKey: "@fixture/app :: test",
+      command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
+      environment: initialEnvironment,
+      gateConfig,
+      dependencyHash: "closure",
+    });
+    const changedPathIdentity = buildPassingTaskVerdictIdentity({
+      taskKey: initialIdentity.taskKey,
+      command: { cmd: "npm", argv: ["run", "test"], cwd: "/checkpoint" },
+      environment: passingTaskVerdictIdentityEnvironment(
+        buildGreenCheckpointEnv(
+          BASE,
+          { ...VERIFIER_LAUNCH_ENV, PATH: "/different/bin" },
+          VERIFIER_RUN,
+          "shared",
+          INITIAL_RUN,
+        ),
+      ).environment,
+      gateConfig,
+      dependencyHash: "closure",
+    });
+    expect(
+      decidePassingTaskVerdict({
+        enabled: true,
+        cacheRead: { reason: "cache-ready" },
+        entry: passingTaskVerdictEntry(initialIdentity),
+        identity: changedPathIdentity,
+      }),
+    ).toEqual({ hit: false, reason: "environment-changed" });
   });
 
   it("misses on every identity component and on corrupt or legacy cache state", () => {

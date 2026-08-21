@@ -4861,20 +4861,66 @@ export async function attemptWorkerCrashAbsorption(
  *  absorbs — and re-running many full workspace suites would blow the gate's wall-clock. */
 export const WORKER_CRASH_MAX_WORKSPACES = 2;
 
-/** Host-set, test-affecting NON-`PAPERCUSP_` env vars the gate must strip (P-008).
- *  `AGENT_MODELS` (the operator's per-role model map, e.g. `{"worker":"opus"}` in
- *  .env.local) leaked into the gate and broke `@papercusp/orchestrator` invoke.test
- *  2026-06-09 — green in a clean shell, red only under the routine. The gate measures
- *  the COMMITTED defaults; tests that need it set it themselves.
+/**
+ * The only inherited process substrate admitted to the green suite.
  *
- *  `HARNESS_SLUG` (WI-6583): the vitest/playwright test-run reporters now ALSO read
- *  this (not just `PAPERCUSP_*`-prefixed vars) as a harness-attribution fallback for
- *  a harness-spawned agent-role process. If the gate's own host process ever inherits
- *  a stray `HARNESS_SLUG`, leaving it unstripped would silently undo the deliberate
- *  "gate rows (`source='ci'`) stay unattributed" design this file documents just below
- *  (buildGateChildEnv's own comment on why `PAPERCUSP_TEST_RUN_HARNESS` /
- *  `PAPERCUSP_WORKSPACE_ID` are deliberately never stamped here). */
-export const HOST_ENV_STRIP = ["AGENT_MODELS", "HARNESS_SLUG"];
+ * Manual checkpoints start in a fresh `systemd-run --user` unit while scheduled and repair
+ * checkpoints start below the bg-host. Cloning either launcher's complete environment made the
+ * same candidate receive different child environments: per-unit metadata (`INVOCATION_ID`,
+ * `JOURNAL_STREAM`, `SYSTEMD_EXEC_PID`), DBOS identity, service credentials, and operator-only
+ * configuration all leaked into the suite. Besides making green depend on host identity, that
+ * defeated D-005's passing-task reuse: the cache correctly hashes the COMPLETE child environment,
+ * so every otherwise-reusable task missed with `environment-changed`.
+ *
+ * Keep the cache conservative. We do not weaken or filter its identity. Instead, construct the
+ * real child environment from the small execution substrate commands genuinely need, then add
+ * the gate-owned values below. `AFFECTED_*` / `VITEST_*` remain admitted because they explicitly
+ * tune the measured test run; changing one must still change the complete child environment and
+ * fail closed. An unfamiliar host variable never silently becomes relevant because it never
+ * reaches the child in the first place — the gate measures committed defaults.
+ */
+export const GREEN_CHECKPOINT_SOURCE_ENV_KEYS = [
+  "DBUS_SESSION_BUS_ADDRESS",
+  "HOME",
+  "LANG",
+  "LOGNAME",
+  "NODE_OPTIONS",
+  "PATH",
+  "SHELL",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "USERNAME",
+  "XDG_RUNTIME_DIR",
+] as const;
+
+export const GREEN_CHECKPOINT_SOURCE_ENV_PREFIXES = [
+  "AFFECTED_",
+  "VITEST_",
+] as const;
+
+const GREEN_CHECKPOINT_SOURCE_ENV_KEY_SET = new Set<string>(
+  GREEN_CHECKPOINT_SOURCE_ENV_KEYS,
+);
+
+export function canonicalGreenCheckpointSourceEnv(
+  source: Readonly<NodeJS.ProcessEnv>,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(source)) {
+    if (
+      value !== undefined &&
+      (GREEN_CHECKPOINT_SOURCE_ENV_KEY_SET.has(key) ||
+        GREEN_CHECKPOINT_SOURCE_ENV_PREFIXES.some((prefix) =>
+          key.startsWith(prefix),
+        ))
+    ) {
+      env[key] = value;
+    }
+  }
+  return env;
+}
 
 /**
  * Per-fork V8 old-space cap (MiB) the gate FORCES onto the spawned vitest forks.
@@ -5000,16 +5046,16 @@ export function sanitizeForkNodeOptions(
 }
 
 /**
- * Build the GREEN suite's environment — the COMMITTED DEFAULTS, with the host's
- * identity stripped — as a fresh env (so realCheckpointDeps.runGreen's env logic,
+ * Build the GREEN suite's environment — the COMMITTED DEFAULTS, from a canonical
+ * execution substrate rather than the launcher's identity — as a fresh env (so
+ * realCheckpointDeps.runGreen's env logic,
  * which twice held `main` red for hours via leaked env, is unit-testable without
  * running the suite). `source` defaults to the live process env.
  *
- * - Strip ALL `PAPERCUSP_*` (a demo flag leaked from the systemd user-manager env
- *   held `main` red for hours 2026-06-06; non-flag host vars — PAPERCUSP_OPERATOR_URL
- *   / SPAWN_SU_BEARER — struck again 2026-06-07, failing spawn-chokepoint tests 8/8
- *   under the routine while the same sha passed in a login shell) + every
- *   {@link HOST_ENV_STRIP} key. The host's identity must never define green.
+ * - Admit only {@link GREEN_CHECKPOINT_SOURCE_ENV_KEYS} plus explicit `AFFECTED_*` /
+ *   `VITEST_*` test controls. Host/service identity, credentials, feature flags, and
+ *   per-process systemd metadata never enter the child. The host's identity must never
+ *   define green, and manual/scheduled/repair launch surfaces must produce the same env.
  * - `GREEN_CHECKPOINT=1` — a marker so genuinely load-/live-network-sensitive tests
  *   that CANNOT be hermetic (real Hyperswarm/DHT, ports) self-exclude via
  *   `describe.skipIf(process.env.GREEN_CHECKPOINT === '1')`; they still run in CI/local.
@@ -5042,10 +5088,7 @@ export function buildGreenCheckpointEnv(
   capacityMode: GreenCheckpointCapacityMode = "shared",
   affectedTestProofGroup?: string | null,
 ): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...source };
-  for (const k of Object.keys(env)) {
-    if (k.startsWith("PAPERCUSP_") || HOST_ENV_STRIP.includes(k)) delete env[k];
-  }
+  const env = canonicalGreenCheckpointSourceEnv(source);
   // EI-19307211919650123 — MUST be set AFTER the strip above (these are the gate
   // declaring its OWN identity, which is exactly what the strip is protecting; cf.
   // GREEN_CHECKPOINT / PC_HEAVY_RELEASE_GATE below).
@@ -10632,7 +10675,7 @@ export function realCheckpointDeps(
       }
       const [cmd, ...args] = cfg.greenCmd.split(" ");
       // The gate measures the COMMITTED DEFAULTS: buildGreenCheckpointEnv strips the
-      // host's identity (all PAPERCUSP_* + HOST_ENV_STRIP), pins AFFECTED_BASE to the
+      // host's identity (canonical source substrate only), pins AFFECTED_BASE to the
       // last green, caps vitest parallelism + retries once to absorb load-flakes, and
       // marks GREEN_CHECKPOINT=1 (its doc records the incidents behind each rule).
       // EI-19307211919650123: `runId` groups every test_runs row this run writes.

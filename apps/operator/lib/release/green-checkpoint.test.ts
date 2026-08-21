@@ -5590,15 +5590,24 @@ describe("evaluateDeployStaleness (silent-drought alarm)", () => {
 // already tested above with stub deps; these cover the pure pieces of the heavy
 // path that don't need a real suite-run.
 describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () => {
-  it("strips ALL PAPERCUSP_* and HOST_ENV_STRIP keys, preserves unrelated env", () => {
+  it("admits only canonical execution substrate and explicit gate-owned values", () => {
     const src = {
       PATH: "/usr/bin",
       HOME: "/home/t",
+      USER: "gate-user",
+      LANG: "C.UTF-8",
+      XDG_RUNTIME_DIR: "/run/user/1000",
+      DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
       PAPERCUSP_FLAG_DEMO: "1", // the 2026-06-06 leaked-flag class
       PAPERCUSP_OPERATOR_URL: "http://host", // the 2026-06-07 non-flag class
-      SPAWN_SU_BEARER: "tok", // NOT PAPERCUSP_-prefixed and not in HOST_ENV_STRIP — survives
+      SPAWN_SU_BEARER: "tok", // operator credential, never a test input
       AGENT_MODELS: '{"worker":"opus"}', // the 2026-06-09 invoke.test class
       HARNESS_SLUG: "papercusp", // WI-6583: a non-PAPERCUSP_-prefixed attribution fallback
+      INVOCATION_ID: "systemd-run-a",
+      JOURNAL_STREAM: "8:123",
+      SYSTEMD_EXEC_PID: "123",
+      DBOS__VMID: "bg-host-a",
+      DATABASE_URL: "postgres://operator-only",
     };
     const env = buildGreenCheckpointEnv("base123", src);
     expect(env.PAPERCUSP_FLAG_DEMO).toBeUndefined();
@@ -5606,9 +5615,21 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     expect(env.AGENT_MODELS).toBeUndefined();
     expect(env.PATH).toBe("/usr/bin");
     expect(env.HOME).toBe("/home/t");
-    expect(env.SPAWN_SU_BEARER).toBe("tok");
+    expect(env.USER).toBe("gate-user");
+    expect(env.LANG).toBe("C.UTF-8");
+    expect(env.XDG_RUNTIME_DIR).toBe("/run/user/1000");
+    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(
+      "unix:path=/run/user/1000/bus",
+    );
+    expect(env.SPAWN_SU_BEARER).toBeUndefined();
+    expect(env.INVOCATION_ID).toBeUndefined();
+    expect(env.JOURNAL_STREAM).toBeUndefined();
+    expect(env.SYSTEMD_EXEC_PID).toBeUndefined();
+    expect(env.DBOS__VMID).toBeUndefined();
+    expect(env.DATABASE_URL).toBeUndefined();
     // pure — never mutates the caller's env object
     expect(src.PAPERCUSP_FLAG_DEMO).toBe("1");
+    expect(src.INVOCATION_ID).toBe("systemd-run-a");
   });
 
   // WI-6583: HARNESS_SLUG is a non-`PAPERCUSP_`-prefixed test-run-attribution
