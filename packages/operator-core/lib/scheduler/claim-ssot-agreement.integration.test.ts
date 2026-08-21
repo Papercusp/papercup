@@ -238,6 +238,10 @@ beforeAll(async () => {
   // EI-20467873456529090: excludes open work-items whose effective normalized plan-item is already
   // terminal, keeping the SSOT view in lockstep with the shared TS claim/diagnostic floor.
   await db.sql.unsafe(readMigration('853-plan-item-terminal-claim-floor.sql')).simple();
+  // abolish-human-review D-003: floor #15 reserves pending review work to the reviewer lane
+  // and revision-requested work to the submitter. Approval re-admits the still-open row.
+  // Apply the real migration so the queryable SSOT and the existing TS claim fragment must agree.
+  await db.sql.unsafe(readMigration('860-agent-review-claim-floor.sql.DRAFT')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -264,6 +268,12 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('WI-PLAIN'); // plain open/untaken/local bug
     await seed('WI-CHANGE', { kind: 'change' });
     await seed('WI-TASK', { kind: 'task' });
+    await seed('WI-REVIEW-APPROVED', {
+      kind: 'change',
+      payload: {
+        agentReview: { status: 'approved', submittedBy: 'su-filer', ledgerIdeaId: 'WI-REVIEW-APPROVED', round: 1 },
+      },
+    });
     await seed('WI-OP', { harnessSlug: OP }); // operator-scope encoding, still self-pickable
     // reserved-plan-lane floor SATISFIED: a draft plan with no live lease ⇒ free backlog.
     await seedPlan('draft-free', 'draft');
@@ -284,6 +294,23 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('WI-FEDDET', { payload: { _ei: { created_by: 'system:replication-liveness' } } }); // 8. federation-detector
     await seed('WI-LOOPNOISE', { title: 'Loop wake #3: continue backlog drain' }); // 9. loop-iteration-noise
     await seed('WI-COMPLETED', { terminalOwner: 'su-peer', terminalCompletionRef: 'commit:abc123' }); // 10. already-completed
+    await seed('WI-REVIEW-PENDING', {
+      kind: 'change',
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-REVIEW-PENDING', round: 1 },
+      },
+    }); // 15a. agent-review pending
+    await seed('WI-REVIEW-REVISION', {
+      kind: 'change',
+      payload: {
+        agentReview: {
+          status: 'revision-requested',
+          submittedBy: 'su-filer',
+          ledgerIdeaId: 'WI-REVIEW-REVISION',
+          round: 2,
+        },
+      },
+    }); // 15b. agent-review revision work
     await seedPlan('active-plan', 'active'); // 11a. reserved to an ACTIVE plan lane
     await seedPlanLinkedIssue('WI-ACTIVE-PLAN', 'active-plan', 'P-02');
     await seedPlan('other-lease-plan', 'draft'); // 11b. reserved by ANOTHER owner's live lease
@@ -313,7 +340,14 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seedPlanLinkedIssue('WI-PLAN-BLOCKED', 'blocked-graph', 'P-10'); // blocker is 'todo' ⇒ EXCLUDED
 
     const expected = [
-      'WI-CHANGE', 'WI-DEP-OK', 'WI-DONE-PLAN-FREE', 'WI-DRAFT-FREE', 'WI-OP', 'WI-PLAIN', 'WI-TASK',
+      'WI-CHANGE',
+      'WI-DEP-OK',
+      'WI-DONE-PLAN-FREE',
+      'WI-DRAFT-FREE',
+      'WI-OP',
+      'WI-PLAIN',
+      'WI-REVIEW-APPROVED',
+      'WI-TASK',
     ].sort();
     const viewSet = await viewClaimableIds();
     const drainSet = await drainInlineClaimIds();

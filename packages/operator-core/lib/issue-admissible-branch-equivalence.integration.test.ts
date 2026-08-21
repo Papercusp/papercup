@@ -161,6 +161,29 @@ const REFUSED: { floor: string; id: string; seed: SeedOpts }[] = [
   },
   { floor: 'claim hold', id: 'WI-HOLD', seed: { payload: { _claimHold: true } } },
   { floor: 'routed to a human', id: 'WI-HUMAN', seed: { payload: { needsHuman: true } } },
+  {
+    floor: 'pending agent review',
+    id: 'WI-REVIEW-PENDING',
+    seed: {
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-REVIEW-PENDING', round: 1 },
+      },
+    },
+  },
+  {
+    floor: 'revision-requested agent review',
+    id: 'WI-REVIEW-REVISION',
+    seed: {
+      payload: {
+        agentReview: {
+          status: 'revision-requested',
+          submittedBy: 'su-filer',
+          ledgerIdeaId: 'WI-REVIEW-REVISION',
+          round: 2,
+        },
+      },
+    },
+  },
   { floor: 'loop-wake marker', id: 'WI-WAKE', seed: { title: 'Loop wake #9775: continue papercusp drain' } },
   { floor: 'AUTO-loop marker', id: 'WI-AUTO', seed: { title: 'AUTO loop iteration: delta rollout contract' } },
   {
@@ -205,6 +228,15 @@ const ADMITTED: { control: string; id: string; seed: SeedOpts }[] = [
   { control: 'some other filer', id: 'WI-FILER-OK', seed: { createdBy: 'su-someone' } },
   { control: '_claimHold explicitly false', id: 'WI-HOLD-OFF', seed: { payload: { _claimHold: false } } },
   { control: 'needsHuman explicitly false', id: 'WI-HUMAN-OFF', seed: { payload: { needsHuman: false } } },
+  {
+    control: 'approved agent review is re-admitted for implementation',
+    id: 'WI-REVIEW-APPROVED',
+    seed: {
+      payload: {
+        agentReview: { status: 'approved', submittedBy: 'su-filer', ledgerIdeaId: 'WI-REVIEW-APPROVED', round: 1 },
+      },
+    },
+  },
   {
     // Guards against "fixing" the marker floors into substring matches, which would
     // swallow legitimate work — e.g. a bug report ABOUT the loop-wake markers.

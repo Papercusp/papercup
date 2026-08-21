@@ -758,6 +758,7 @@ import './coordination/tools/conversations-supersede';
 // engineer issues tagged `papercusp-improvement`; the digest triages them;
 // resolve closes the loop (a verified fix leaves the queue).
 import './improvements/capture';
+import './improvements/agent-review';
 import './improvements/digest';
 import './improvements/triage';
 import './improvements/resolve';
