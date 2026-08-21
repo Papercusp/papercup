@@ -255,6 +255,33 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
     });
   });
 
+  it('EI-210996: carries systemd-owned abnormal terminal evidence through the derived snapshot', () => {
+    expect(
+      mapActiveRun({
+        active: false,
+        terminal_marker: false,
+        terminal_evidence: {
+          source: 'systemd-exec-stop-post',
+          candidate: '1f64eb2d',
+          service_result: 'oom-kill',
+          exit_code: 'killed',
+          exit_status: 'KILL',
+          abnormal: true,
+        },
+      }),
+    ).toMatchObject({
+      active: false,
+      terminalMarker: false,
+      terminalEvidence: {
+        candidate: '1f64eb2d',
+        serviceResult: 'oom-kill',
+        exitCode: 'killed',
+        exitStatus: 'KILL',
+        abnormal: true,
+      },
+    });
+  });
+
   it('nulls an unparseable systemd timestamp instead of NaN', () => {
     expect(mapActiveRun({ active: true, started_at: 'not-a-date' }).startedAtMs).toBeNull();
     expect(mapActiveRun({ active: true, started_at: 'not-a-date' }).progressAtMs).toBeNull();
