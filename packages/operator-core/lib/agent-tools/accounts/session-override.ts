@@ -4,7 +4,7 @@
  * P-004; owner greenlit "allow-list + exclude"). The agent-surface twin of the
  * /api/admin/deploy-accounts/session-override route. Thin wrappers over
  * deployment/account-session-override; WORKSPACE-LEVEL (D-015 — no home hive required),
- * hive_settings-backed (no migration), fail-soft, applied BEFORE the headroom/drain selectors.
+ * operator-state-backed (no migration), fail-soft, applied BEFORE the headroom/drain selectors.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -23,7 +23,7 @@ export const accountsSetSessionOverrideTool = defineTool({
   name: 'accounts:set-session-override',
   profile: 'engineer',
   description:
-    "Set the owner's account steer the fleet honours when picking a pool account to spawn/deploy on: `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account), `defaultAccountId` (the Claude account standing in for this machine's ~/.claude login; null clears it). The two lists RESTRICT selection and are applied fail-soft BEFORE the headroom/drain selectors; the default only replaces the implicit local-login fallback, so it never narrows the pool or defeats failover. `clear:true` wipes all three. Returns {ok, override}.",
+    "Set the owner's account steer the fleet honours when picking a pool account to spawn/deploy on: `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account), `defaultAccountId` (the Claude account standing in for this machine's ~/.claude login; null clears it). The two lists RESTRICT selection and are applied fail-soft BEFORE the headroom/drain selectors; the default only replaces the implicit local-login fallback, so it never narrows the pool or defeats failover. `clear:true` wipes all three. Writes reject unknown pool ids, contradictory forced+excluded ids, and accidental zero-account collapse; pass `confirmCollapse:true` only when that narrowing is intentional. Returns {ok, override}.",
   guidance: {
     when: 'Steering account selection for the current session — focus the fleet on one account, or route around a flaky/limited one — without removing it from the pool.',
     notWhen: "Permanently removing an account — accounts:remove. Clearing a rate-limit penalty — accounts:reset-rate. Pausing the pot — pot:pause.",
@@ -43,6 +43,7 @@ export const accountsSetSessionOverrideTool = defineTool({
     excludeAccounts: z.array(z.string().min(1).max(200)).max(200).optional().describe('Account ids to skip this session (e.g. a flaky/limited account). [] = skip none.'),
     defaultAccountId: z.string().max(200).nullable().optional().describe("The Claude pool account that stands in for this machine's own ~/.claude login. null = clear (back to the local login). Validated against the pool; a Codex account is rejected."),
     clear: z.boolean().optional().describe('Wipe every axis — both lists AND the default — back to no steer.'),
+    confirmCollapse: z.boolean().optional().describe('Acknowledge intentionally narrowing a non-empty account pool to zero routable accounts.'),
   }),
   async handler(args, ctx) {
     const ws = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
@@ -50,6 +51,7 @@ export const accountsSetSessionOverrideTool = defineTool({
     if (args.forcedAccounts !== undefined) patch.forcedAccounts = args.forcedAccounts;
     if (args.excludeAccounts !== undefined) patch.excludeAccounts = args.excludeAccounts;
     if (args.clear !== undefined) patch.clear = args.clear;
+    if (args.confirmCollapse !== undefined) patch.confirmCollapse = args.confirmCollapse;
     try {
       // The default goes through the pool-validating setter (account-pool-store), NOT the raw
       // patch — naming a nonexistent/Codex account must fail HERE, not degrade silently to the

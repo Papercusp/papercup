@@ -44,7 +44,7 @@ const postRoute = defineTool({
   async handler(req) {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;
-    let body: { forcedAccounts?: unknown; excludeAccounts?: unknown; defaultAccountId?: unknown; clear?: unknown };
+    let body: { forcedAccounts?: unknown; excludeAccounts?: unknown; defaultAccountId?: unknown; clear?: unknown; confirmCollapse?: unknown };
     try {
       body = await req.json();
     } catch {
@@ -54,6 +54,7 @@ const postRoute = defineTool({
     if (Array.isArray(body?.forcedAccounts)) patch.forcedAccounts = body.forcedAccounts.filter((x): x is string => typeof x === 'string');
     if (Array.isArray(body?.excludeAccounts)) patch.excludeAccounts = body.excludeAccounts.filter((x): x is string => typeof x === 'string');
     if (typeof body?.clear === 'boolean') patch.clear = body.clear;
+    if (typeof body?.confirmCollapse === 'boolean') patch.confirmCollapse = body.confirmCollapse;
     // `null` clears the default and is meaningful — only an ABSENT key means "leave it alone",
     // so this cannot collapse to a truthiness check.
     const wantsDefault = body?.defaultAccountId !== undefined;
