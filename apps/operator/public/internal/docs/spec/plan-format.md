@@ -52,6 +52,7 @@ status: ...
 
 **State:** ...
 **Next:** ...
+**Next:** ...
 
 ## Phase N — Name   ← optional, multiple
 
@@ -592,6 +593,8 @@ Plans are read and written through the `plans:*` MCP tools.
 * `plans:set-item-phase \{ slug, itemId, phase \}` — move an item to a
   different phase section.
 * `plans:set-frontmatter \{ slug, … \}` — edit frontmatter fields.
+* `plans:set-title \{ slug, title, rationale? \}` — rename the reserved display title
+  without rewriting the rest of the frontmatter or plan body.
 * `plans:transfer-owner \{ slug, owner \}` — change the plan's human
   owner.
 * `plans:set-content { slug, content, expectedHash }` — replace the
