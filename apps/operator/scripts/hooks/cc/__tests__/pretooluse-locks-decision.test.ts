@@ -193,6 +193,15 @@ const editOf = (rel: string, toolUseId: string) => ({
   cwd: repo,
 });
 
+const nativeBatchInput = (
+  transcriptPath: string,
+  rel: string,
+  toolUseId: string,
+) => ({
+  ...editOf(rel, toolUseId),
+  transcript_path: transcriptPath,
+});
+
 describe('cc PreToolUse hook — operator decision rendering (stub operator)', () => {
   it('grant (ok:true) → allow (exit 0, no decision) and CACHES the lock_id for release', async () => {
     nextInner = { ok: true, lock_id: 'lock-xyz' };
@@ -212,6 +221,76 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(fs.existsSync(pathsCache)).toBe(true);
     expect(JSON.parse(fs.readFileSync(pathsCache, 'utf8'))).toEqual(['sub/grant.ts']);
     expect(fs.readFileSync(join(cache, 'tu-grant.domain'), 'utf8')).toBe(fs.realpathSync(repo));
+  });
+
+  it('Claude native two-Edit batch → one union acquire and terminal follower grants', async () => {
+    const transcriptPath = join(home, 'claude-transcript.jsonl');
+    const firstPath = join(repo, 'sub/batch-first.ts');
+    const secondPath = join(repo, 'sub/batch-second.ts');
+    fs.writeFileSync(
+      transcriptPath,
+      `${JSON.stringify({
+        type: 'assistant',
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'tu-batch-first',
+              name: 'Edit',
+              input: { file_path: firstPath },
+            },
+            {
+              type: 'tool_use',
+              id: 'tu-batch-second',
+              name: 'Edit',
+              input: { file_path: secondPath },
+            },
+          ],
+        },
+      })}\n`,
+    );
+
+    const env = {
+      PAPERCUSP_SID: 'batch-test-session',
+      PAPERCUSP_LOCK_SID: 'batch-test-session',
+    };
+    const [first, second] = await Promise.all([
+      run(nativeBatchInput(transcriptPath, 'sub/batch-first.ts', 'tu-batch-first'), env),
+      run(nativeBatchInput(transcriptPath, 'sub/batch-second.ts', 'tu-batch-second'), env),
+    ]);
+
+    expect(first.status).toBe(0);
+    expect(second.status).toBe(0);
+    expect(first.stdout).toBe('');
+    expect(second.stdout).toBe('');
+
+    const acquires = requests.filter(
+      (request) => request.body.params.name === 'locks:acquire',
+    );
+    expect(acquires).toHaveLength(1);
+    expect(acquires[0].body.params.arguments.paths).toEqual([
+      'sub/batch-first.ts',
+      'sub/batch-second.ts',
+    ]);
+    expect(acquires[0].body.params.arguments.coordination_domain).toBe(
+      fs.realpathSync(repo),
+    );
+
+    expect(fs.existsSync(join(cache, 'tu-batch-first.batch'))).toBe(true);
+    expect(fs.existsSync(join(cache, 'tu-batch-second.batch'))).toBe(true);
+    expect(fs.existsSync(join(cache, 'tu-batch-first.lock'))).toBe(false);
+    expect(fs.existsSync(join(cache, 'tu-batch-second.lock'))).toBe(false);
+
+    const stateFile = fs
+      .readdirSync(cache)
+      .find((name) => name.startsWith('batch-') && name.endsWith('.state.json'));
+    expect(stateFile).toBeDefined();
+    expect(JSON.parse(fs.readFileSync(join(cache, stateFile!), 'utf8'))).toMatchObject({
+      status: 'granted',
+      tool_use_ids: ['tu-batch-first', 'tu-batch-second'],
+      paths: ['sub/batch-first.ts', 'sub/batch-second.ts'],
+    });
   });
 
   it('ambiguous acquire response → releases only the fresh automatic lock it can identify', async () => {
