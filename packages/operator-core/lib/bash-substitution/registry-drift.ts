@@ -6,7 +6,7 @@
  * `ALL_PAIRS` has TWO downstream projections, and until this file only ONE of
  * them had a gate:
  *
- *   pairs ──> CLAUDE.md routing table   (gen-tool-routing --check: HARD gate)
+ *   pairs ──> canonical claude-md part (gen-tool-routing --check: HARD gate)
  *         └─> bash_tool_substitutions   (seed.ts: no caller at all)
  *
  * The gated projection stayed correct. The ungated one silently rotted: after
@@ -22,8 +22,10 @@
  * treatment its sibling already had.
  *
  * ── WHAT THIS CATCHES THAT gen-tool-routing CANNOT ──────────────────────────
- * `gen-tool-routing.ts` reads the pairs and never the database — deliberately,
- * so it can be a hard build gate with no Postgres. Its docstring names the cost:
+ * `gen-tool-routing.ts` reads the pairs and the canonical doc-part through the
+ * guarded `set-doc-part.ts --show` path. The database read is deliberate: it
+ * checks the part that is actually projected, rather than trusting a stale
+ * client file. Its docstring names the separate cost:
  *
  *   "a row inserted DIRECTLY into the table with a novel intent_label would be
  *    enforced by both hooks yet never appear here, and this generator cannot see
@@ -36,8 +38,8 @@
  * than folded into it.
  *
  * Pure functions only: no `postgres`, no `fs`. The I/O shell is
- * `scripts/seed-substitution-registry.ts`, mirroring how `routing-table.ts`
- * keeps `gen-tool-routing.ts` to file reads and exit codes.
+ * `scripts/seed-substitution-registry.ts`; the routing generator owns its
+ * separate canonical doc-part read/project path.
  */
 
 import { auditPair, meetsAuditFloor } from './equivalence';

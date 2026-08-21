@@ -91,6 +91,10 @@ import {
   type MessageWhy,
 } from '../message-fields';
 import { deriveBasedOn } from '../based-on';
+import {
+  completionClaimMismatch,
+  COMPLETION_CLAIM_MISMATCH_FIELD,
+} from '../completion-claim-mismatch';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
@@ -905,6 +909,18 @@ async function sendOne(
   if (fieldStamp.why) extra.why = fieldStamp.why;
   if (fieldStamp.blocking !== undefined) extra.blocking = fieldStamp.blocking;
   if (fieldStamp.basedOn) extra.basedOn = fieldStamp.basedOn;
+  // Completion claims are additive evidence, never a refusal. If the message
+  // names a plan/work-item/rubric as completed but the sender's recent read
+  // trace contains no corresponding artifact, preserve that contradiction on
+  // the envelope so recipients can challenge the claim without re-running the
+  // sender's session history.
+  const completionMismatch = completionClaimMismatch({
+    summary: msg.summary,
+    body: msg.body,
+    planSlug: msg.plan_slug,
+    basedOn,
+  });
+  if (completionMismatch) extra[COMPLETION_CLAIM_MISMATCH_FIELD] = completionMismatch;
   // P-033: ride the envelope so a reader (and the D-070 adoption measurement)
   // can tell an owner-GUI-derived value from an agent-authored one. Without
   // this stamp the derived defaults would silently inflate every adoption

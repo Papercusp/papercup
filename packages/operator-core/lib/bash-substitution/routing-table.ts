@@ -2,11 +2,12 @@
  * The CLAUDE.md routing-table projection — pure rendering, no I/O (plan
  * `bash-to-tool-substitution-2026-07-26`, P-019).
  *
- * `scripts/gen-tool-routing.ts` is the thin CLI around this: it reads CLAUDE.md,
- * calls {@link spliceRoutingBlock} with {@link renderRoutingBlock}, and either
- * writes or fails. Everything decidable without touching the filesystem lives
- * HERE so it is unit-testable and so the dependency runs `scripts/ → packages/`,
- * never the reverse (a package must not import build tooling).
+ * `scripts/gen-tool-routing.ts` is the thin CLI around this: it renders the
+ * expected block, compares it with the canonical `claude-md` part through
+ * `set-doc-part.ts`, and lets the doc-parts projector own the client files.
+ * Everything decidable without touching the filesystem lives HERE so it is
+ * unit-testable and so the dependency runs `scripts/ → packages/`, never the
+ * reverse (a package must not import build tooling).
  *
  * WHY A GENERATED TABLE. The audit behind this plan found the bash→tool problem
  * is routing, not capability: `dev:pg_query` was the only shell-replacing tool

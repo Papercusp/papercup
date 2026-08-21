@@ -51,6 +51,16 @@ describe('the mapping table — which reads produce which ref', () => {
     expect(READ_REF_MAPPERS['plans:items']!({ slug: 'p' })).toEqual(['plan:p']);
   });
 
+  it('maps rubrics:get singular and plural reads to the persisted rubric-template plan', () => {
+    expect(READ_REF_MAPPERS['rubrics:get']!({ rubricRef: 'acceptance-rubric' })).toEqual([
+      'plan:acceptance-rubric',
+    ]);
+    expect(READ_REF_MAPPERS['rubrics:get']!({ rubricRefs: ['rubric-a', 'rubric-b'] })).toEqual([
+      'plan:rubric-a',
+      'plan:rubric-b',
+    ]);
+  });
+
   it('maps a repo-relative file read, and REFUSES an absolute one', () => {
     // `file:` refs are repo-root-relative by contract. An absolute path names a
     // file in SOME tree — a tag that can never resolve is worse than no tag,

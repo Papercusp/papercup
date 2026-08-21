@@ -1836,6 +1836,24 @@ describe('basedOn — the sender’s read trace, derived (never authored)', () =
     const b = await body({ to: ['bee-1'], summary: 'hi', expects: 'none' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
   });
+
+  it('stamps an additive mismatch when completion names an unread artifact', async () => {
+    basedOnM.mockResolvedValue([
+      { ref: 'plan:unrelated-plan', via: 'plans:get', readAt: '2026-07-27T12:00:00.000Z' },
+    ] as never);
+    await body({
+      to: ['bee-1'],
+      summary: 'completed plan:shipped-feature',
+      plan_slug: 'shipped-feature',
+      expects: 'none',
+    });
+
+    const opts = sendM.mock.calls[0]![1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.completionClaimMismatch).toMatchObject({
+      kind: 'unread-artifact',
+      missingFromBasedOn: ['plan:shipped-feature'],
+    });
+  });
 });
 
 /**

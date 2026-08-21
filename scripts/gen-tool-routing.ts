@@ -44,7 +44,7 @@ const PROJECT_DOC_PARTS = join(REPO_ROOT, 'scripts/project-doc-parts.mjs');
 const CHECK = process.argv.includes('--check');
 
 function nodeScript(script: string, args: string[], input?: string): string {
-  return execFileSync(process.execPath, ["--import", "tsx", script, ...args], {
+  return execFileSync(process.execPath, ['--import', 'tsx', script, ...args], {
     cwd: REPO_ROOT,
     encoding: 'utf8',
     input,

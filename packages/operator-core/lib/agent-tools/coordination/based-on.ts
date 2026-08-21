@@ -132,6 +132,10 @@ export const READ_REF_MAPPERS: Readonly<
   'plans:get': (a) => scalarsAt(a, ['slug', 'slugs']).map((s) => `plan:${s}`),
   'plans:get-item': (a) => scalarsAt(a, ['slug']).map((s) => `plan:${s}`),
   'plans:items': (a) => scalarsAt(a, ['slug']).map((s) => `plan:${s}`),
+  // Rubrics are persisted as rubric-template plans. Keep the canonical
+  // `plan:` dependency kind so the existing plan freshness resolver can
+  // version the read without adding a parallel rubric resolver.
+  'rubrics:get': (a) => scalarsAt(a, ['rubricRef', 'rubricRefs']).map((s) => `plan:${s}`),
   // A repo-relative path only. An absolute path names a file in SOME tree, and
   // `file:` refs are repo-root-relative by contract — stamping one would produce
   // a ref that can never resolve, which is worse than no ref (it looks declared).
