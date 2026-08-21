@@ -6,6 +6,8 @@
  * an explicit empty array — is never overridden.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
 const createWorkItemMock = vi.fn(async (input: { kind: string; title: string; payload?: Record<string, unknown> }) => ({
@@ -38,7 +40,8 @@ vi.mock('./fulltext-lexical-dupe-guard', () => ({ findFulltextLexicalDupes: vi.f
 
 import { createOneWorkItem } from './_create-core';
 
-const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp' };
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
+const ctx = { ownerId: 'me', workspaceId: 'default', harnessSlug: 'papercusp', projectDir: repoRoot };
 
 beforeEach(() => {
   createWorkItemMock.mockClear();
@@ -47,12 +50,23 @@ beforeEach(() => {
 describe('createOneWorkItem × path-affinity fallback (EI-16028)', () => {
   it('derives payload.paths from title+summary when the caller supplied none', async () => {
     const r = await createOneWorkItem(
-      { kind: 'bug', title: 'crash in packages/operator-core/lib/foo.ts', summary: 'see libs/papercusp/lib/bar.ts too' },
+      {
+        kind: 'bug',
+        title: 'crash in packages/operator-core/lib/agent-tools/work_items/_create-core.ts',
+        summary:
+          'see packages/operator-core/lib/agent-tools/work_items/_derive-paths.ts too; ' +
+          'grep over apps/packages/libs/scripts and ignore packages/operator-core/' +
+          '../'.repeat(6) +
+          'etc/passwd',
+      },
       ctx,
     );
     expect(r.ok).toBe(true);
     const call = createWorkItemMock.mock.calls[0][0] as { payload?: { paths?: string[] } };
-    expect(call.payload?.paths).toEqual(['packages/operator-core/lib/foo.ts', 'libs/papercusp/lib/bar.ts']);
+    expect(call.payload?.paths).toEqual([
+      'packages/operator-core/lib/agent-tools/work_items/_create-core.ts',
+      'packages/operator-core/lib/agent-tools/work_items/_derive-paths.ts',
+    ]);
   });
 
   it('leaves payload untouched when title/summary carry no derivable path', async () => {
@@ -92,12 +106,16 @@ describe('createOneWorkItem × path-affinity fallback (EI-16028)', () => {
 
   it('preserves other payload keys alongside the derived paths', async () => {
     const r = await createOneWorkItem(
-      { kind: 'bug', title: 'crash in packages/operator-core/lib/foo.ts', payload: { severity_hint: 'high' } },
+      {
+        kind: 'bug',
+        title: 'crash in packages/operator-core/lib/agent-tools/work_items/_create-core.ts',
+        payload: { severity_hint: 'high' },
+      },
       ctx,
     );
     expect(r.ok).toBe(true);
     const call = createWorkItemMock.mock.calls[0][0] as { payload?: { paths?: string[]; severity_hint?: string } };
     expect(call.payload?.severity_hint).toBe('high');
-    expect(call.payload?.paths).toEqual(['packages/operator-core/lib/foo.ts']);
+    expect(call.payload?.paths).toEqual(['packages/operator-core/lib/agent-tools/work_items/_create-core.ts']);
   });
 });

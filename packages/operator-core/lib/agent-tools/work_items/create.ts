@@ -297,7 +297,12 @@ export default defineTool({
     .superRefine(rejectMissingScheduleCadence),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };
+    const createCtx = {
+      ownerId: ident.ownerId,
+      workspaceId: ctx.workspaceId,
+      harnessSlug: ctx.harnessSlug,
+      projectDir: ctx.projectDir,
+    };
     const list: CreateOneWorkItemArgs[] = args.items?.length
       ? args.items.map((it) => {
           // WI-4492: `body` is an accepted alias for `summary`. Drop the raw `body` key

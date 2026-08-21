@@ -33,6 +33,7 @@ import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
 import { deriveRepoPathsFromText } from './_derive-paths';
+import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 import {
   adoptConditionIncumbent,
@@ -126,6 +127,8 @@ export interface CreateOneWorkItemCtx {
   workspaceId?: string | null;
   /** The acting session's harness (ctx.harnessSlug) — used to auto-resolve the hive. */
   harnessSlug?: string | null;
+  /** The acting session's project tree, used to validate auto-derived repo paths. */
+  projectDir?: string;
 }
 
 export interface WorkItemDedupCoverage {
@@ -707,7 +710,9 @@ export async function createOneWorkItem(
     const payloadWithPaths =
       explicitPaths === undefined
         ? (() => {
-            const derived = deriveRepoPathsFromText(`${args.title}\n${args.summary ?? ''}`);
+            const derived = deriveRepoPathsFromText(`${args.title}\n${args.summary ?? ''}`, {
+              repoRoot: resolveAgentWorkspaceRoot(ctx),
+            });
             return derived.length > 0 ? { ...(payloadWithHint ?? {}), paths: derived } : payloadWithHint;
           })()
         : payloadWithHint;
