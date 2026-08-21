@@ -9,11 +9,7 @@
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import {
-  findMissingDocMirrors,
-  isVisibleDocPath,
-  sourceToMirrorPaths,
-} from '../../../../scripts/check-docs-mirror.mjs';
+import { findMissingDocMirrors, isVisibleDocPath, sourceToMirrorPaths } from '../../../../scripts/check-docs-mirror.mjs';
 
 describe('check-docs-mirror detector (EI-20041752458165941)', () => {
   it('maps root and nested index pages to Astro file-format HTML paths', () => {

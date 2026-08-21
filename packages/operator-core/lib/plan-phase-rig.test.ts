@@ -16,7 +16,7 @@ describe('phaseRequiresTwoMachineRig', () => {
     ['Phase 2 — Live 2-machine preparation', 'different phase'],
     ['Phase 3 — Single-machine verification', 'no two-machine marker'],
     ['ordinary plan section', 'ordinary section'],
-  ])('rejects %s (%s)', (phase) => {
+  ])('rejects %s (%s)', (phase, _label) => {
     expect(phaseRequiresTwoMachineRig(phase)).toBe(false);
   });
 });

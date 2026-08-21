@@ -167,11 +167,13 @@ const BINDING_CAUSE_TIE_PRIORITY: Record<CapacityBindingCause, number> = {
  */
 export function deriveCapacityBindingCause(accounts: AccountBindingTerms[]): CapacityBindingCause | null {
   const gates = accounts.flatMap((account) => {
-    const terms: Array<{ cause: CapacityBindingCause; resetAt: number }> = [
+    const terms = ([
       { cause: 'usage-wall', resetAt: account.usageResetAt ?? 0 },
       { cause: 'edge-throttle', resetAt: account.edgeThrottleResetAt ?? 0 },
       { cause: 'rate-pause', resetAt: account.ratePausedUntil ?? 0 },
-    ].filter((term) => Number.isFinite(term.resetAt) && term.resetAt > 0);
+    ] satisfies Array<{ cause: CapacityBindingCause; resetAt: number }>).filter(
+      (term) => Number.isFinite(term.resetAt) && term.resetAt > 0,
+    );
     if (terms.length === 0) return [];
     const bindingResetAt = Math.max(...terms.map((term) => term.resetAt));
     const bindingCause = terms

@@ -2874,7 +2874,14 @@ describe('changeInCandidate (P-004)', () => {
         },
         judging: { path: 'a.ts', inCandidate: true, reason: null, unknownReason: null },
         next: { path: 'a.ts', inCandidate: false, reason: 'newer-commit', unknownReason: null },
-        markerJudging: { marker: 'MY_FIX', present: true, count: 1, pathPresent: true },
+        markerJudging: {
+          marker: 'MY_FIX',
+          sha: 'inferred123456',
+          present: true,
+          count: 1,
+          pathPresent: true,
+          unknownReason: null,
+        },
       });
       expect(r).not.toHaveProperty('judgingContainsPath');
       expect(r.judgingSha).toBe('inferred123456');

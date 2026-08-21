@@ -1539,7 +1539,7 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     expect(second.fired).toEqual([]);
     expect(escalations).toHaveLength(2);
     expect(escalations[1]?.summary).toContain('101 of 151');
-    expect(open?.summary).toContain('101 of 151');
+    expect((open as EscalationRecord | null)?.summary).toContain('101 of 151');
     expect(pages).toEqual(['dead-routines']);
   });
 
