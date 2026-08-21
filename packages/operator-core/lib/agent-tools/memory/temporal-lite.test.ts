@@ -213,6 +213,20 @@ describe('memory:list temporal flags (P-006 read path)', () => {
   });
 });
 
+describe('temporal memory tool guidance (P-009 agent discipline)', () => {
+  it('teaches current-only defaults and the two historical read controls', () => {
+    expect(search.guidance.when).toContain('Default recall returns only facts CURRENT now');
+    expect(search.guidance.when).toContain('as_of:<ISO timestamp>');
+    expect(search.guidance.when).toContain('include_superseded:true');
+    expect(search.guidance.chaining).toContain('supersede:<old-id>');
+
+    expect(list.guidance.when).toContain('Default listing returns only facts CURRENT now');
+    expect(list.guidance.when).toContain('as_of:<ISO timestamp>');
+    expect(list.guidance.when).toContain('include_superseded:true');
+    expect(list.guidance.chaining).toContain('soft:true');
+  });
+});
+
 describe('memory:update supersedes (P-004 write path)', () => {
   it('patches the new fact, then closes the old one with superseded_by = new id', async () => {
     const b = fakeBackend();
