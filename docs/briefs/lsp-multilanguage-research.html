@@ -1,0 +1,768 @@
+<title>Beyond TypeScript and Rust</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+
+<style>
+:root {
+  --ground: #FBFCFD;
+  --surface: #F1F4F7;
+  --surface-2: #E7ECF1;
+  --ink: #16202B;
+  --ink-soft: #3D4C5A;
+  --muted: #5C6B7A;
+  --rule: #D3DCE4;
+  --rule-soft: #E3E9EF;
+  --accent: #0F6E6E;
+  --accent-soft: #E2F0EF;
+  --ok: #1F7A4D;
+  --ok-soft: #E3F1E9;
+  --warn: #9A6410;
+  --warn-soft: #F7EEDC;
+  --bad: #A33A32;
+  --bad-soft: #F7E7E5;
+  --shadow: 0 1px 2px rgba(22,32,43,.06), 0 8px 24px rgba(22,32,43,.05);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0E161E;
+    --surface: #16212C;
+    --surface-2: #1E2B37;
+    --ink: #E5ECF2;
+    --ink-soft: #BAC7D3;
+    --muted: #8697A6;
+    --rule: #2A3946;
+    --rule-soft: #22303C;
+    --accent: #4FB3AC;
+    --accent-soft: #14312F;
+    --ok: #5FBE8A;
+    --ok-soft: #142D20;
+    --warn: #D2A054;
+    --warn-soft: #2E2415;
+    --bad: #E0817A;
+    --bad-soft: #331C1A;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0E161E;
+  --surface: #16212C;
+  --surface-2: #1E2B37;
+  --ink: #E5ECF2;
+  --ink-soft: #BAC7D3;
+  --muted: #8697A6;
+  --rule: #2A3946;
+  --rule-soft: #22303C;
+  --accent: #4FB3AC;
+  --accent-soft: #14312F;
+  --ok: #5FBE8A;
+  --ok-soft: #142D20;
+  --warn: #D2A054;
+  --warn-soft: #2E2415;
+  --bad: #E0817A;
+  --bad-soft: #331C1A;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.28);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "Source Serif 4", Georgia, serif;
+  font-size: 17px;
+  line-height: 1.62;
+  margin: 0;
+  padding: 0 24px 96px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 1180px; margin: 0 auto; }
+.col { max-width: 68ch; }
+
+h1, h2, h3, .ui { font-family: "IBM Plex Sans", system-ui, sans-serif; }
+code, .mono, table { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+/* ---------- masthead ---------- */
+header.masthead {
+  padding: 72px 0 40px;
+  border-bottom: 2px solid var(--ink);
+  margin-bottom: 40px;
+}
+.eyebrow {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 20px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+}
+h1 {
+  font-size: clamp(34px, 5.4vw, 56px);
+  line-height: 1.04;
+  letter-spacing: -.025em;
+  font-weight: 700;
+  margin: 0 0 20px;
+  text-wrap: balance;
+  max-width: 20ch;
+}
+.standfirst {
+  font-size: 20px;
+  line-height: 1.5;
+  color: var(--ink-soft);
+  margin: 0;
+  max-width: 60ch;
+}
+
+/* ---------- verdict ---------- */
+.verdict {
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 3px;
+  padding: 28px 32px;
+  margin: 0 0 56px;
+  box-shadow: var(--shadow);
+}
+.verdict h2 {
+  font-size: 12px;
+  letter-spacing: .15em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 14px;
+  font-weight: 600;
+}
+.verdict p { margin: 0 0 12px; max-width: 68ch; }
+.verdict p:last-child { margin-bottom: 0; }
+
+/* ---------- sections ---------- */
+section { margin-bottom: 68px; scroll-margin-top: 24px; }
+.qhead {
+  display: flex;
+  gap: 18px;
+  align-items: baseline;
+  border-top: 1px solid var(--rule);
+  padding-top: 18px;
+  margin-bottom: 8px;
+}
+.qnum {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  letter-spacing: .1em;
+  flex: none;
+  padding-top: 8px;
+}
+h2.qtitle {
+  font-size: clamp(23px, 3vw, 31px);
+  line-height: 1.16;
+  letter-spacing: -.018em;
+  font-weight: 600;
+  margin: 0;
+  text-wrap: balance;
+}
+h3 {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.005em;
+  margin: 36px 0 12px;
+  color: var(--ink);
+}
+p { margin: 0 0 16px; }
+.col p, .col ul, .col ol { max-width: 68ch; }
+ul, ol { padding-left: 22px; margin: 0 0 16px; }
+li { margin-bottom: 8px; }
+strong { font-weight: 600; }
+a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+a:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+code {
+  font-size: .855em;
+  background: var(--surface-2);
+  padding: .12em .38em;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+/* ---------- evidence blocks ---------- */
+.evidence {
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  background: var(--surface);
+  padding: 0;
+  margin: 24px 0;
+  overflow: hidden;
+}
+.evidence-hd {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  padding: 9px 16px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--rule);
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.evidence-hd .tag { color: var(--ok); font-weight: 600; }
+.evidence-hd .tag.research { color: var(--accent); }
+.evidence-body {
+  padding: 16px;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+  color: var(--ink-soft);
+}
+.evidence-body pre { margin: 0; white-space: pre; }
+
+/* ---------- tables ---------- */
+.tablewrap {
+  overflow-x: auto;
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  margin: 24px 0;
+  background: var(--surface);
+}
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 640px;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+thead th {
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--rule);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+tbody td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--rule-soft);
+  vertical-align: top;
+  color: var(--ink-soft);
+}
+tbody tr:last-child td { border-bottom: none; }
+tbody td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+.num { font-variant-numeric: tabular-nums; }
+
+.pill {
+  display: inline-block;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 2px;
+  white-space: nowrap;
+}
+.p-ok { background: var(--ok-soft); color: var(--ok); }
+.p-warn { background: var(--warn-soft); color: var(--warn); }
+.p-bad { background: var(--bad-soft); color: var(--bad); }
+.p-acc { background: var(--accent-soft); color: var(--accent); }
+
+/* ---------- callout ---------- */
+.callout {
+  border-left: 3px solid var(--warn);
+  background: var(--warn-soft);
+  padding: 18px 22px;
+  border-radius: 0 3px 3px 0;
+  margin: 24px 0;
+}
+.callout.bad { border-left-color: var(--bad); background: var(--bad-soft); }
+.callout.ok { border-left-color: var(--ok); background: var(--ok-soft); }
+.callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
+.callout p { margin: 0 0 10px; max-width: 66ch; }
+.callout p:last-child { margin-bottom: 0; }
+.callout .lbl {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 8px;
+  color: var(--warn);
+}
+.callout.bad .lbl { color: var(--bad); }
+.callout.ok .lbl { color: var(--ok); }
+.callout.warn .lbl { color: var(--warn); }
+
+/* ---------- cost ladder ---------- */
+.ladder { display: flex; flex-direction: column; gap: 2px; margin: 24px 0; }
+.rung {
+  display: grid;
+  grid-template-columns: 108px 1fr;
+  gap: 20px;
+  padding: 18px 20px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  align-items: start;
+}
+.rung:first-child { border-radius: 3px 3px 0 0; }
+.rung:last-child { border-radius: 0 0 3px 3px; }
+.rung + .rung { border-top: none; }
+.rung .cost {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  font-weight: 600;
+  padding-top: 3px;
+}
+.rung h4 {
+  font-family: "IBM Plex Sans", sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.rung p { margin: 0; font-size: 15.5px; color: var(--ink-soft); }
+.c-low { color: var(--ok); }
+.c-med { color: var(--warn); }
+.c-high { color: var(--bad); }
+
+/* ---------- sources ---------- */
+.sources { border-top: 2px solid var(--ink); padding-top: 28px; }
+.sources ol { font-family: "IBM Plex Sans", sans-serif; font-size: 14.5px; max-width: 78ch; }
+.sources li { margin-bottom: 10px; color: var(--muted); }
+
+footer.foot {
+  margin-top: 56px;
+  padding-top: 22px;
+  border-top: 1px solid var(--rule);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.8;
+}
+
+@media (max-width: 640px) {
+  body { padding: 0 18px 64px; font-size: 16px; }
+  header.masthead { padding-top: 48px; }
+  .verdict { padding: 22px 20px; }
+  .qhead { gap: 12px; }
+  .rung { grid-template-columns: 1fr; gap: 8px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+</style>
+
+<div class="wrap">
+
+<header class="masthead">
+  <div class="eyebrow">
+    <span>Code intelligence</span>
+    <span>WI-40244</span>
+    <span>2026-08-21</span>
+  </div>
+  <h1>Beyond TypeScript and Rust</h1>
+  <p class="standfirst">Supporting every language out of the box for public users — what it costs, how our own wrapper compares to Serena and the field, and the two risks that only appear once you ship.</p>
+</header>
+
+<div class="callout col" style="margin-bottom:32px">
+  <span class="lbl">Requirement changed mid-analysis</span>
+  <p>This page was first written against <em>"we need TS and Rust, maybe Python and Bash."</em> The requirement is now <strong>public release, all languages out of the box</strong>. That falsifies the original Q4 conclusion — "a fifty-language maintenance surface is a bad trade for two" — and it is rewritten below rather than patched. Two findings survive unchanged; one recommendation reverses.</p>
+</div>
+
+<div class="verdict col">
+  <h2>The short answer</h2>
+  <p><strong>The LSP plumbing is not the cost. The provisioning matrix is</strong> — and at public scale that matrix <em>is</em> the product. Every project here, Serena included, converges on the same thin protocol client; what separates them is operational knowledge about how ~300 servers install, version, and boot.</p>
+  <p><strong>Do not hand-author all of it</strong> — but do not believe you can consume all of it either. <a href="https://github.com/mason-org/mason-registry">mason-registry</a> publishes its whole package set as a checksummed, version-pinnable <code>registry.json</code> release, and I have now downloaded one and attempted the mapping rather than reasoning from its documented shape. The result, measured: mason carries <strong>100%</strong> of the provisioning and licensing data and <strong>0%</strong> of the protocol contract — no <code>languageId</code>, no launch argv, no readiness semantics. Joining its declared <code>neovim.lspconfig</code> key to nvim-lspconfig recovers most of the rest, giving <strong>74.2% derivable as pure data</strong> — but the missing quarter is disproportionately the <em>popular</em> languages, TypeScript included. Two sources plus a hand-authored tier for the residue; see the update box at the end.</p>
+  <p>Keep our own wrapper — D-002 still holds, and for a reason that got <em>stronger</em>: our adapter is the only thing in this field that refuses to answer while a server is still indexing. At two languages that was a nicety. At three hundred, where most servers you have never tested, it is the difference between a product and a liar.</p>
+</div>
+
+<!-- ==================== Q1 ==================== -->
+<section>
+  <div class="qhead">
+    <span class="qnum">Q1</span>
+    <h2 class="qtitle">How we would add another language</h2>
+  </div>
+  <div class="col">
+    <p>Today it is a code change, not a config change — and it carries a trap worth fixing before anyone attempts it.</p>
+  </div>
+
+  <div class="evidence">
+    <div class="evidence-hd">
+      <span class="tag">✓ verified in our code</span>
+      <span>packages/operator-core/lib/code-intelligence/lsp-adapter.ts</span>
+    </div>
+    <div class="evidence-body"><pre>export type LspLanguage = 'typescript' | 'rust';        // closed union of two
+
+resolveServerBin(language) {
+  if (language === 'typescript') { ...vendor/.bin/typescript-language-server }
+  // no else-if, no switch — FALLS THROUGH to:
+  return ~/.rustup/.../bin/rust-analyzer
+}
+
+languageId: client.language === 'typescript' ? 'typescript' : 'rust'   // :616
+languageId: client.language === 'typescript' ? 'typescript' : 'rust'   // :1143</pre></div>
+  </div>
+
+  <div class="callout bad col">
+    <span class="lbl">The trap</span>
+    <p>The two-language assumption is expressed as <strong><code>if typescript … else RUST</code></strong> in at least three places. Add <code>'python'</code> to that union and it <strong>compiles clean</strong>, then hands you rust-analyzer labelled as Rust. Because there is no <code>switch</code>, TypeScript's exhaustiveness checking cannot catch it — the failure is silent and runtime-only.</p>
+  </div>
+
+  <div class="col">
+    <p>So the first step is not "add Python." It is converting language from a union-plus-branches into a <strong>declared spec</strong>. We already have the pattern in the same file — <code>REQUIRES_PROGRESS_SIGNAL</code> is a per-language <code>Set</code>, which is exactly the data-driven shape the rest should follow.</p>
+
+    <h3>The second problem: our intent matrix has holes already</h3>
+  </div>
+
+  <div class="evidence">
+    <div class="evidence-hd">
+      <span class="tag">✓ verified in our code</span>
+      <span>contracts.ts · lsp-adapter.ts</span>
+    </div>
+    <div class="evidence-body"><pre>CodeIntelIntent  = 9 declared
+  definition · references · implementations · callers · callees
+  impact · rename-preview · diagnostics · symbol-search
+
+METHOD_BY_INTENT: Partial&lt;Record&lt;CodeIntelIntent, string&gt;&gt; = {
+  definition:      'textDocument/definition',
+  references:      'textDocument/references',
+  implementations: 'textDocument/implementation',
+}                                              // 3 of 9 wired
+
+grep -c 'capabilit|unsupported' contracts.ts → 0   // no per-language declaration</pre></div>
+  </div>
+
+  <div class="col">
+    <p>Nine intents declared, three wired, and <strong>no place to say which language answers which intent</strong>. That is survivable at two languages where the answer is uniform. It stops being survivable the moment the matrix becomes ragged — and the research says it becomes ragged immediately (see Q2).</p>
+
+    <h3>The cost ladder</h3>
+  </div>
+
+  <div class="ladder">
+    <div class="rung">
+      <span class="cost c-low">Done</span>
+      <div>
+        <h4>Make <code>LanguageSpec</code> data <span class="pill p-ok">WI-40250 shipped</span></h4>
+        <p>One record per language, behind a <code>Record&lt;LspLanguage, LanguageSpec&gt;</code> — exhaustive by construction, so widening the union without adding a spec is now a <em>compile</em> error. All three <code>else-is-rust</code> sites are gone and an unknown language throws instead of resolving to someone else's server. 13 tests pass, <code>lint:tsc</code> clean.</p>
+      </div>
+    </div>
+    <div class="rung">
+      <span class="cost c-med">Next</span>
+      <div>
+        <h4>Open the registry — closed union → tiered</h4>
+        <p>All-languages needs an <em>open</em> registry, which is in tension with the closed union above. Resolve it by tiering rather than abandoning: a closed, exhaustive union for <strong>verified</strong> languages, plus a data-driven registry for the long tail. A generic LSP client can drive any stdio server; only the spec varies.</p>
+      </div>
+    </div>
+    <div class="rung">
+      <span class="cost c-med">Next</span>
+      <div>
+        <h4>Declare capability per intent, per language</h4>
+        <p>An explicit matrix cell: <em>answered</em>, <em>unsupported by this server</em>, or <em>not yet wired</em>. Optional at two uniform languages. <strong>Mandatory at three hundred</strong>, where you cannot have tested most cells — this is what stops an untested cell from rendering "cannot" as "none."</p>
+      </div>
+    </div>
+    <div class="rung">
+      <span class="cost c-high">The product</span>
+      <div>
+        <h4>Provisioning + licensing at public scale</h4>
+        <p>No longer a maintenance footnote — it is the bulk of the work and the only part with legal exposure. Consume mason-registry rather than authoring it; fetch at runtime rather than bundling. See §5.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ==================== Q2 ==================== -->
+<section>
+  <div class="qhead">
+    <span class="qnum">Q2</span>
+    <h2 class="qtitle">How the options compare</h2>
+  </div>
+  <div class="col">
+    <p>Four architectures are genuinely distinct here. They differ less on what they can answer than on <em>what they cost to keep alive</em> and <em>how they fail</em>.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Architecture</th>
+          <th>Truth source</th>
+          <th>Freshness</th>
+          <th>Cost shape</th>
+          <th>Fails as</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Our adapter <span class="pill p-acc">current</span></td>
+          <td>Official pinned servers</td>
+          <td>Live, incl. uncommitted edits</td>
+          <td>One warm process per language</td>
+          <td>False-empty during warmup <span class="pill p-ok">mitigated</span></td>
+        </tr>
+        <tr>
+          <td>Serena / SolidLSP</td>
+          <td>Same servers, via its own client</td>
+          <td>Live</td>
+          <td>Separate Python service + its deps</td>
+          <td>Same false-empty class</td>
+        </tr>
+        <tr>
+          <td>Index (SCIP / LSIF)</td>
+          <td>Precomputed index</td>
+          <td>Stale the moment you edit</td>
+          <td>Batch indexing job</td>
+          <td>Confidently out-of-date</td>
+        </tr>
+        <tr>
+          <td>Tree-sitter graph</td>
+          <td>Parse tree, no type resolution</td>
+          <td>Cheap to refresh</td>
+          <td>Index build</td>
+          <td>Syntactic guesses at semantic questions</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <p>Two things follow that are directly relevant to us.</p>
+
+    <p><strong>The fourth row is already ours.</strong> GitNexus is our tree-sitter-shaped layer, which means we are not choosing between LSP and a graph — we are running both and routing between them. D-001's authority table is exactly that routing decision, and it is already shipped.</p>
+
+    <p><strong>"Supported" does not mean "answers your intents."</strong> This is the finding I would most want on the record, because it changes the shape of the work rather than its size.</p>
+  </div>
+
+  <div class="callout col">
+    <span class="lbl">From Serena's own language table</span>
+    <p>Crystal has <strong>no find-references</strong>. HLSL has <strong>no reference search</strong>. Wolfram's references are <strong>file-local only</strong>. The Ansible server ships without document symbols, workspace symbols, references, <em>or</em> rename. Kotlin's server is pre-alpha; Erlang is flagged as possibly hanging.</p>
+    <p>These are languages on the <em>supported</em> list. Breadth counts languages; it does not count answered questions.</p>
+  </div>
+
+  <div class="col">
+    <p>Serena's 30–50 language claim is real, but it is a count of <em>adapters</em>, not a guarantee across our nine intents. Any multi-language plan we adopt has to model that raggedness explicitly — which is precisely the medium rung above, and it is a requirement we would not have derived without looking at their table.</p>
+  </div>
+</section>
+
+<!-- ==================== Q3 ==================== -->
+<section>
+  <div class="qhead">
+    <span class="qnum">Q3</span>
+    <h2 class="qtitle">What actually competes with Serena</h2>
+  </div>
+  <div class="col">
+    <p>Yes — several projects, though the field is thinner than the search volume suggests. Most top results for "Serena alternative" are <em>forks of Serena</em>. These are the genuinely independent ones.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Project</th>
+          <th>Lang</th>
+          <th>Shape</th>
+          <th>Notable</th>
+          <th>Maturity</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>isaacphi/<wbr>mcp-language-server</td>
+          <td>Go</td>
+          <td>One process per (workspace, server)</td>
+          <td>6 tools. Config is pure CLI args — no plugin system at all</td>
+          <td><span class="pill p-warn">beta</span></td>
+        </tr>
+        <tr>
+          <td>Token Saver MCP</td>
+          <td>TS</td>
+          <td>VSCode extension + MCP server</td>
+          <td>31 tools incl. browser control; needs VSCode running</td>
+          <td><span class="pill p-warn">niche</span></td>
+        </tr>
+        <tr>
+          <td>karellen-lsp-mcp</td>
+          <td>Py</td>
+          <td>Shared daemon, refcounted servers</td>
+          <td><strong>Refcounting is the fleet-economics answer</strong> — see below</td>
+          <td><span class="pill p-warn">early</span></td>
+        </tr>
+        <tr>
+          <td>mickeyinfoshan/<wbr>lsp-mcp</td>
+          <td>Go</td>
+          <td>Sessions keyed by (language, root)</td>
+          <td>gopls, tsserver, pylsp</td>
+          <td><span class="pill p-warn">early</span></td>
+        </tr>
+        <tr>
+          <td>ProfessioneIT/<wbr>lsp-mcp-server</td>
+          <td>TS</td>
+          <td>Claude Code-focused</td>
+          <td>Adds call + type hierarchy — the <code>callers</code>/<code>callees</code> we left unwired</td>
+          <td><span class="pill p-warn">early</span></td>
+        </tr>
+        <tr>
+          <td>microsoft/multilspy</td>
+          <td>Py</td>
+          <td>Library, not a server</td>
+          <td>The substrate Serena forked into SolidLSP</td>
+          <td><span class="pill p-ok">research</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="col">
+    <h3>Three things worth stealing</h3>
+    <p><strong>karellen's refcounted shared daemon</strong> independently arrives at D-002's rationale #5 — thirty concurrent agents cannot each run tsserver, so any winner must be one warm shared instance. That someone else converged on it is meaningful corroboration of a call we made on reasoning alone.</p>
+    <p><strong>nvim-lspconfig holds roughly 300 server configurations as data</strong>, with Mason as a parallel provisioning registry and a hand-maintained translation table joining them. That is the mature shape of the registry problem, and it is the pattern our <code>LanguageSpec</code> should imitate rather than reinvent. <span class="pill p-ok">confirmed by the spike</span> — this paragraph turned out to be the load-bearing one. The two-registry split is not an implementation detail of Neovim's ecosystem; it is <em>forced</em>, because provisioning data and protocol data have different owners and neither registry carries the other's half. We should copy the split, not just the contents.</p>
+    <p><strong>isaacphi's config model is a real design position</strong>, not an omission: no plugin system, no registration step — you install a binary and name it on the command line. It is the cheapest possible answer to Q1, and it works because it pushes provisioning entirely onto the operator.</p>
+
+    <h3>What nobody has solved</h3>
+    <p>None of these projects handles the failure that actually bit us. Every one returns whatever the server returns; a server that is still indexing returns an empty list, and an empty list renders as "no callers." We hit this in WI-40224 and built a readiness contract around it. <strong>That is the one place our wrapper is ahead of the field</strong> — which is also why adopting any of them would have been a step backwards on the axis we care about most.</p>
+  </div>
+</section>
+
+<!-- ==================== Q4 ==================== -->
+<section>
+  <div class="qhead">
+    <span class="qnum">Q4</span>
+    <h2 class="qtitle">What if we made our own wrapper?</h2>
+  </div>
+  <div class="col">
+    <p>We did. That is what D-002 chose and what <code>lsp-adapter.ts</code> is — 1,244 lines driving official pinned servers over <code>vscode-jsonrpc</code>. So the real question is not whether to build one, but <strong>what we would be signing up for at N languages</strong>.</p>
+
+    <p>The answer is visible in Serena's own documentation, and it is sobering. Their language table is not a list of names — it is fifty separate operational stories:</p>
+
+    <ul>
+      <li>Runtime prerequisites that are not ours to control — Java 21+, .NET v10+, <code>pwsh</code>, <code>opam</code>, <code>uv</code>/<code>uvx</code>, elan with a prior <code>lake build</code></li>
+      <li>Binaries auto-downloaded and <strong>SHA-256 verified</strong>, because supply chain is now your problem</li>
+      <li>Servers reached over TCP rather than stdio — Godot's is on port 6008, and Serena will not start Godot for you</li>
+      <li>A <em>licensed MATLAB R2021b+</em> installation</li>
+      <li>Per-language quirks that leak into the API — Erlang addresses functions as <code>name#arity</code> because <code>/</code> is their name-path separator</li>
+    </ul>
+
+    <p>None of that is protocol work. All of it is maintenance, and it recurs every time a server publishes a breaking release.</p>
+  </div>
+
+  <div class="callout ok col">
+    <span class="lbl">The reframe</span>
+    <p>Serena's moat is not its LSP client — it forked that from Microsoft's multilspy. Its moat is <strong>the accumulated per-language provisioning knowledge</strong>. And that knowledge is not merely public; for ~300 packages it is <strong>already machine-readable</strong>.</p>
+    <p>So the build-vs-buy question is malformed. The real axis is <em>authored vs consumed</em>: we keep our own client (buying one gains us nothing on truth) and consume someone else's registry (authoring one gains us nothing but toil).</p>
+  </div>
+
+  <div class="col">
+    <h3>What "all languages" actually costs</h3>
+    <p>My earlier answer — that a fifty-language surface was a bad trade for two more languages — was correct for the old requirement and is now void. Under public release the arithmetic inverts, and three costs replace it:</p>
+    <ul>
+      <li><strong>Registry ingestion</strong> — pull <code>registry.json.zip</code> + <code>checksums.txt</code> from a pinned mason-registry release, validate against its published JSON schema, map its <code>purl</code> source identifiers onto our <code>LanguageSpec</code>. Bounded, and it is a data pipeline rather than 300 hand-written adapters.</li>
+      <li><strong>Runtime provisioning</strong> — download, verify, cache and version-pin a server on first use for a language we may never have run. Serena does exactly this, SHA-256 included, which tells you it is necessary rather than optional.</li>
+      <li><strong>Honest degradation</strong> — the hard part, and the one nobody else does. With 300 languages you will ship cells you have never exercised, so the system must be able to say <em>"this server does not answer that"</em> and <em>"this server is not ready yet"</em> as first-class results, distinct from <em>"there are none."</em></li>
+    </ul>
+    <p>That third cost is the one that decides whether this is a product or a liability, and it is the one we are already ahead on.</p>
+  </div>
+</section>
+
+<!-- ==================== Q5 licensing ==================== -->
+<section>
+  <div class="qhead">
+    <span class="qnum">Q5</span>
+    <h2 class="qtitle">The two risks that only appear once you ship</h2>
+  </div>
+  <div class="col">
+    <p>Neither of these existed while this was an internal tool for one repo. Both arrive with the public release, and the first is the kind that is expensive to discover late.</p>
+
+    <h3>Licensing — process separation is the safe architecture</h3>
+    <p>Shipping language servers to public users is a redistribution question, and the servers are not uniformly permissive. clangd is <code>Apache-2.0 WITH LLVM-exception</code>; rust-analyzer is dual MIT/Apache-2.0; pyright is MIT. Those bundle cleanly with attribution. But the long tail is not uniform — <strong>texlab is GPL-3.0</strong>, and Serena's own docs note it runs as a separate process, which is precisely the mitigation. Others are worse than GPL: Serena lists MATLAB requiring <em>a licensed R2021b+ install</em>, and Pylance is proprietary and licensed only for Microsoft's own editors.</p>
+    <p><span class="pill p-ok">measured by the spike</span> The mason release quantifies this exactly, across its 325 LSP packages: MIT 203, Apache-2.0 70, then a real tail — 9 <code>GPL-3.0-or-later</code>, 9 <code>GPL-3.0</code>, 5 <code>GPL-3.0-only</code>, 9 MPL-2.0, 3 LGPL-2.1, 2 LGPL-3.0, 2 AGPL-3.0, 1 <code>LicenseRef-Qt-Commercial</code>, and <strong>8 flagged outright <code>proprietary</code></strong>. So roughly a tenth of the catalogue cannot be bundled on the same terms as the rest, and the licence field is machine-readable — which means the policy below can be <em>enforced by the pipeline</em> rather than remembered by a person.</p>
+  </div>
+
+  <div class="callout ok col">
+    <span class="lbl">The lever</span>
+    <p><strong>Fetch at runtime; never bundle.</strong> If the product downloads the user's own copy from upstream on first use, you are arguably not redistributing at all — which sidesteps notice obligations entirely. Invoking even a GPL server as a <em>separate process over a documented protocol</em> is the standard argument against derivative-work status; <em>bundling</em> that same server in an installer is what triggers source-offer obligations.</p>
+    <p>An LSP adapter is already a separate-process architecture. That is a genuine strategic advantage of the D-002 design that had nothing to do with why we chose it.</p>
+  </div>
+
+  <div class="col">
+    <p>Minimum viable compliance if we ever do bundle: a <code>THIRD-PARTY-NOTICES</code> file carrying each server's full license text and copyright headers, surfaced in-product, with a per-version manifest so the notices track what actually shipped. Flagging rather than deciding — this one wants a lawyer's eye, not an engineer's. <em>(I am not one, and this is not advice.)</em></p>
+
+    <h3>Supply chain — you are now an installer</h3>
+    <p>Auto-downloading executables onto user machines makes us a distribution channel with the attendant obligations: pin to a dated registry release rather than "latest", verify checksums on every fetch, and make the provisioned set inspectable so a user can see exactly which binaries we placed on their disk and why. mason-registry ships <code>checksums.txt</code> alongside the registry precisely because this is a known hazard.</p>
+  </div>
+</section>
+
+<!-- ==================== recommendation ==================== -->
+<section>
+  <div class="qhead">
+    <span class="qnum">↳</span>
+    <h2 class="qtitle">What I would actually do</h2>
+  </div>
+  <div class="col">
+    <p>Step 1 is done. The rest is ordered so that each step makes the next one safe:</p>
+    <ol>
+      <li><strong><s>Fix the <code>else-is-rust</code> fallthrough</s> — shipped as WI-40250.</strong> The three branch sites are now a <code>Record</code>-backed spec table; an unknown language throws instead of silently resolving to rust-analyzer. 13 tests, <code>lint:tsc</code> clean. Under the new requirement this was not optional housekeeping — arbitrary user languages would have hit that else arm constantly.</li>
+      <li><strong>Tier the registry.</strong> Keep the closed exhaustive union for verified languages; add an open, data-driven registry for the long tail. This is the one place the shipped fix needs deliberate extension rather than reuse.</li>
+      <li><strong>Add the per-intent capability matrix.</strong> Was "medium" under the old requirement; is <em>load-bearing</em> under the new one, because most cells will be untested. Never let "cannot" render as "none."</li>
+      <li><strong>Ingest mason-registry <em>and</em> nvim-lspconfig</strong> — <s>pinned release, checksum-verified, schema-validated, mapped onto <code>LanguageSpec</code></s>. <strong>Corrected by the spike (see the update box below):</strong> this is a <em>two-source</em> pipeline, not one. Mason supplies provisioning and licensing; nvim-lspconfig supplies the protocol contract mason does not carry at all. Together they cover 74.2% as data — and the missing 26% is disproportionately the popular languages, so it needs a hand-authored third tier rather than being treated as a long tail. Still a data pipeline rather than 300 adapters, but roughly 84 of those adapters are real.</li>
+      <li><strong>Runtime provisioning with fetch-not-bundle</strong> — for the licensing reason in §5 as much as the size one. Get a lawyer's read before any bundling decision.</li>
+      <li><strong>Wire <code>callers</code>/<code>callees</code></strong> via call hierarchy — we declare them and do not answer them.</li>
+    </ol>
+
+    <p><strong>What I would not do:</strong> adopt Serena. Not out of NIH — the reasoning has just inverted. Its value is the provisioning knowledge, and the machine-readable half of that is available without the dependency; meanwhile its one architectural weakness is the false-empty class, which is exactly the axis that gets <em>more</em> dangerous at 300 languages. We would be importing the liability and re-deriving the asset.</p>
+
+    <div class="callout warn col">
+      <span class="lbl">↻ Update — the spike has now been run, and it moved the answer</span>
+      <p>This box previously said the claim I most wanted challenged was that mason-registry's <code>registry.json</code> maps cleanly onto a <code>LanguageSpec</code>, and that I had <em>not</em> downloaded one to check. <strong>I have now done it</strong> — pinned release <code>2026-08-21-imaginary-beer</code>, both published checksums verified, joined against nvim-lspconfig <code>v2.11.0</code>. The premise survives, but not in the shape I described, and the correction matters more than the confirmation.</p>
+
+      <p><strong>Mason answers "how do I install this binary" and says nothing whatsoever about how to speak to it.</strong> Of the 325 LSP packages: provisioning recipe and licenses are 100% present, an executable declaration 98.2%. But <code>languageId</code>, the stdio launch argv, readiness semantics, and the capability matrix are <em>0%</em> — every single field our <code>LanguageSpec</code> exists to carry. A generator fed only by mason would have produced the half we could have guessed and none of the half that is hard.</p>
+
+      <p>The recovery is real but is a <strong>second</strong> pinned source: mason declares a <code>neovim.lspconfig</code> join key, and nvim-lspconfig carries <code>cmd</code> and <code>filetypes</code>. That key resolves for 274/325 (84.3%; 9 dangle, 42 absent). Of those, <code>cmd</code> is static data for 92% — and a <em>Lua function</em> for 18 servers. Net: <strong>241/325 = 74.2% derivable as pure data.</strong></p>
+
+      <p><strong>The sting is which 26% falls out.</strong> The function-<code>cmd</code> entries are not the long tail — they are typescript-language-server, tsgo, jdtls, eslint, json, html, css, yaml, tailwind, svelte, angular, astro, biome, ruby-lsp, csharp, powershell. Most of the web stack plus Java, Ruby and C#. And the reason is structural rather than accidental: <code>cmd</code> is a function precisely <em>because</em> those servers need per-project resolution (ts_ls prefers a project-local <code>node_modules/.bin</code> binary over a global one). The entries that need real logic are the entries that have real users — so <strong>74.2% must never be quoted unweighted</strong>. Our own first language, typescript-language-server, is in the residue.</p>
+
+      <p>So step 4 below is re-scoped rather than cancelled, and a third tier — hand-authored specs for the ~84 residue servers, ordered by usage rather than alphabet — is now an explicit plan item that was missing before. Recorded as <code>D-001</code> on plan <code>lsp-fleet-scale-all-languages-2026-08-21</code>, with the method caveat stated there: the static-vs-function split is a line-anchored regex over Lua source, not a Lua parse, so 74.2% is a <em>floor</em>.</p>
+    </div>
+
+    <div class="callout col">
+      <span class="lbl">The claim I would now most want challenged</span>
+      <p>That one warm server per <em>(language, projectRoot)</em> can actually absorb a thousand agents. Every number in the architecture above rests on sharing, and sharing rests on a saturation curve nobody has measured — an LSP server is effectively single-threaded, so the queue in front of it <em>is</em> the multiplexer. If the knee arrives at fifty concurrent queries rather than five hundred, replicas-by-shard stop being a contingency and become the design, and the memory arithmetic that ruled out per-agent servers has to be re-run against per-shard ones. That is the next spike, and it is the one that can still invalidate the shape.</p>
+    </div>
+  </div>
+</section>
+
+<div class="sources col">
+  <h3 style="margin-top:0">Sources</h3>
+  <ol>
+    <li><a href="https://github.com/oraios/serena">oraios/serena</a> — the toolkit, its SolidLSP fork of multilspy, and its DesktopCommander/codemcp comparison</li>
+    <li><a href="https://oraios.github.io/serena/01-about/020_programming-languages.html">Serena — Language Support</a> — the full language table, per-language prerequisites, capability gaps, and the "shallow adapter" extension model</li>
+    <li><a href="https://github.com/microsoft/multilspy">microsoft/multilspy</a> — the LSP client library underneath</li>
+    <li><a href="https://github.com/isaacphi/mcp-language-server">isaacphi/mcp-language-server</a> — six tools, CLI-arg configuration, stdio-only, one process per workspace</li>
+    <li><a href="https://github.com/karellen/karellen-lsp-mcp">karellen/karellen-lsp-mcp</a> — shared daemon with refcounted server instances</li>
+    <li><a href="https://github.com/mickeyinfoshan/lsp-mcp">mickeyinfoshan/lsp-mcp</a> · <a href="https://github.com/ProfessioneIT/lsp-mcp-server">ProfessioneIT/lsp-mcp-server</a> — further independent bridges</li>
+    <li><a href="https://glama.ai/mcp/servers/@jerry426/token-saver-mcp/blob/a80265744272aa76ac2c10d1c7d22934fcbfa8ea/docs/Token_Saver_MCP_vs_Serena.md">Token Saver MCP vs Serena</a> — the dual VSCode-extension architecture</li>
+    <li><a href="https://sourcegraph.com/blog/announcing-scip">Sourcegraph — announcing SCIP</a> · <a href="https://anthonywest.co.uk/research/code-intelligence-indexing-2026-openai">Code intelligence indexing survey, 2026</a> — indexed vs live trade-off</li>
+    <li><a href="https://github.com/mason-org/mason-lspconfig.nvim">mason-lspconfig.nvim</a> — the registry/provisioning split and its translation table</li>
+    <li><a href="https://github.com/mason-org/mason-registry/blob/main/CONTRIBUTING.md">mason-registry</a> · <a href="https://mason-registry.dev/registry/list">the package list</a> — the checksummed, schema-validated <code>registry.json</code> release artifact this plan depends on. Release <code>2026-08-21-imaginary-beer</code> is the pinned one measured in the update box.</li>
+    <li><a href="https://github.com/neovim/nvim-lspconfig">neovim/nvim-lspconfig</a> — <code>v2.11.0</code>, the second pinned source: 406 <code>lsp/*.lua</code> configs carrying the <code>cmd</code>/<code>filetypes</code>/<code>root_markers</code> that mason does not</li>
+    <li><a href="https://llvm.org/docs/DeveloperPolicy.html">LLVM Developer Policy</a> · <a href="https://spdx.org/licenses/LLVM-exception.html">LLVM-exception</a> — redistribution and attribution obligations for clangd</li>
+  </ol>
+</div>
+
+<footer class="foot">
+  WI-40244 · plan code-intelligence-routing-lsp-gitnexus-2026-08-20 · successor plan lsp-fleet-scale-all-languages-2026-08-21 · relates to D-002, D-044, D-045, D-001, WI-40224, WI-40242, WI-40250, WI-40251<br>
+  Code claims marked ✓ were verified against staging HEAD 60a4ed64 on 2026-08-21. Landscape claims are from the linked sources and were not independently benchmarked.<br>
+  <strong>Revised 2026-08-21 after the mason-registry spike</strong> — the "claim I would most want challenged" was tested and partly falsified; the correction is in the update box above and recorded as D-001. Registry figures are measured against mason-registry <code>2026-08-21-imaginary-beer</code> (checksums verified) joined to nvim-lspconfig <code>v2.11.0</code>, and are a floor, not a point estimate.<br>
+  <strong>This file is the durable source</strong> for artifact <code>b42ef3cf-9080-4ab0-9171-cd9397e6063c</code>. Republish from HERE, passing that URL as <code>url</code>, or a second artifact is forked instead of updating the existing one.
+</footer>
+
+</div>
