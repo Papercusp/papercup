@@ -11,11 +11,13 @@ Each entry has a kebab id, exact semver version, tier, package-or-pattern kind, 
 
 `package` means extracted consumable code with a source.package such as @papercusp/plan-parser. `pattern` means a documented shape whose canonical form lives in reference apps; it is not an npm package. Treating a pattern as installable is a category error.
 
-## Current members (22)
+## Current members (23)
 
 Project model: `plan-parser` — pure plan-document algebra plus the schema-v1 Project History contract and assembler.
 
 Seam and chassis: `pot-app-seam`, `tauri-shell`, `embedded-postgres-server`, `tauri-release-kit`, `typed-contracts`, `hono-host`, `next-standalone-host`, `embedded-pg-discovery`.
+
+Mobile architecture: `rust-uniffi-mobile-base` — the shared three-crate Rust/UniFFI pattern for official Android and iPhone templates, with one generated Kotlin/Swift boundary, deterministic design tokens, secret and placeholder hygiene, and portable acceptance checks. Its neutral checked reference lives in `templates/papercusp-mobile-base`; concrete apps are independent conformance consumers.
 
 Data and sync: `sync`, `sse`, `projection-index`, `debounce-coalesce`, `resumable-download`.
 
