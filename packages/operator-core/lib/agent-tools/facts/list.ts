@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
+import { InvalidInputError } from '@papercusp/tooldef';
 import {
   listFacts,
   countLiveFacts,
@@ -12,6 +13,7 @@ import {
   listFactEvictionDisclosures,
   FACT_SCOPES,
   isPermanentFactExpiry,
+  validateFactScope,
   type AgentFact,
 } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
@@ -227,6 +229,12 @@ export default defineTool({
     // lists YOUR facts without having to pass your own id — symmetry with assert.
     // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
     const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
+    // Keep the read-side identity contract aligned with facts:assert/retract. If
+    // context cannot supply a ref for a non-workspace scope, querying NULL is not
+    // an empty scope — it is an invalid selector that can mislead a follow-up
+    // facts:assert into writing against the wrong census.
+    const scopeErr = validateFactScope(args.scope, scopeRef);
+    if (scopeErr) throw new InvalidInputError(`facts:list — ${scopeErr}`);
     // P-008 (a): the version-history read. Deliberately a MODE on facts:list
     // rather than a new `facts:versions` tool — same scope resolution, same
     // projection, same aliases; a second tool would be a bespoke state-read

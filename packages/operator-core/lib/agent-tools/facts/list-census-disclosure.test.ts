@@ -79,6 +79,14 @@ beforeEach(() => {
 });
 
 describe('facts:list distinguishes the page from the census (WI-38910)', () => {
+  it('refuses a ref-bearing scope when context cannot resolve its scopeRef', async () => {
+    await expect(factsListTool.handler({ scope: 'harness' } as never, ctx)).rejects.toThrow(
+      "facts:list — scope 'harness' requires scope_ref",
+    );
+    expect(listFactsSpy).not.toHaveBeenCalled();
+    expect(countLiveFactsSpy).not.toHaveBeenCalled();
+  });
+
   it('reports the census on a DEFAULT no-argument call — the path that had no disclosure at all', async () => {
     listFactsSpy.mockResolvedValue(page(FACTS_LIST_MAX_LIMIT));
     countLiveFactsSpy.mockResolvedValue(271);
