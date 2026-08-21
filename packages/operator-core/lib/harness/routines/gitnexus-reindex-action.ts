@@ -413,6 +413,8 @@ export interface CanaryInputs {
   symbolCount: number | null;
   /** Call edges — the "who calls this" capability. null ⇒ query failed. */
   callEdgeCount: number | null;
+  /** Definition edges — the "where is this defined" capability. null ⇒ query failed. */
+  defEdgeCount: number | null;
   /**
    * Did a symbol read straight out of the graph resolve back through the lookup path?
    * null ⇒ could not be attempted (no symbol to sample, or the read failed).
@@ -449,6 +451,11 @@ export function judgeCanary(i: CanaryInputs): CanaryVerdict {
       name: 'call-edges',
       ok: i.callEdgeCount != null && i.callEdgeCount > 0,
       detail: i.callEdgeCount == null ? 'query failed' : `${i.callEdgeCount} call edges`,
+    },
+    {
+      name: 'definition-edges',
+      ok: i.defEdgeCount != null && i.defEdgeCount > 0,
+      detail: i.defEdgeCount == null ? 'query failed' : `${i.defEdgeCount} definition edges`,
     },
     {
       name: 'symbol-round-trip',
@@ -586,7 +593,16 @@ export async function runCanary(root: string, registryFiles: number | null, embe
   const t = CANARY_PROBE_TIMEOUT_MS;
   const fileCount = await cypherScalar(bin, root, 'MATCH (f:File) RETURN count(f) AS n', t);
   const symbolCount = await cypherScalar(bin, root, 'MATCH (f:Function) RETURN count(f) AS n', t);
-  const callEdgeCount = await cypherScalar(bin, root, 'MATCH ()-[r:CALLS]->() RETURN count(r) AS n', t);
+  // ⚠ THE EDGE TYPE IS A PROPERTY, NOT A TABLE. This graph has exactly ONE relationship
+  // table — `CodeRelation` — and the kind lives in `r.type` ('CALLS', 'DEFINES',
+  // 'IMPORTS', ...). The natural-looking `MATCH ()-[r:CALLS]->()` does NOT return zero;
+  // it throws "Binder exception: Table CALLS does not exist", which cypherScalar maps to
+  // null — i.e. it would have reported the read as UNREADABLE and failed this canary on
+  // every single healthy index, forever. Caught only by running it against the live
+  // graph; the pure judge cannot see a wrong query. Verify with:
+  //   MATCH ()-[r:CodeRelation]->() RETURN r.type AS t, count(r) AS n ORDER BY n DESC
+  const callEdgeCount = await cypherScalar(bin, root, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS' RETURN count(r) AS n", t);
+  const defEdgeCount = await cypherScalar(bin, root, "MATCH ()-[r:CodeRelation]->() WHERE r.type = 'DEFINES' RETURN count(r) AS n", t);
 
   // The round trip: sample a name OUT of the graph, then assert the graph can find that
   // same name again. No hardcoded symbol, so a rename can never false-alarm it.
@@ -597,7 +613,7 @@ export async function runCanary(root: string, registryFiles: number | null, embe
     const found = await cypherScalar(bin, root, `MATCH (f:Function) WHERE f.name = '${safe}' RETURN count(f) AS n`, t);
     roundTripOk = found != null && found > 0;
   }
-  return judgeCanary({ fileCount: fileCount ?? registryFiles, symbolCount, callEdgeCount, roundTripOk, embeddings });
+  return judgeCanary({ fileCount: fileCount ?? registryFiles, symbolCount, callEdgeCount, defEdgeCount, roundTripOk, embeddings });
 }
 
 /** The graph indexes the operator-home repo; a per-hive coding repo has no business

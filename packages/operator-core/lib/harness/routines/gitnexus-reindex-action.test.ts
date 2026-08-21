@@ -7,9 +7,10 @@
  * if load outranks a missing index and the interval floor outranks staleness.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   buildAnalyzeArgs,
   decideReindex,
@@ -325,10 +326,12 @@ describe('cleanCrashResidue', () => {
 // P-004 — the semantic canary. Pure policy, no graph and no subprocess.
 // ---------------------------------------------------------------------------
 describe('judgeCanary', () => {
+  // Real measured values from the live graph, 2026-08-21.
   const HEALTHY: Parameters<typeof judgeCanary>[0] = {
     fileCount: 19479,
-    symbolCount: 190707,
-    callEdgeCount: 380497,
+    symbolCount: 66982,
+    callEdgeCount: 99020,
+    defEdgeCount: 132452,
     roundTripOk: true,
     embeddings: 0,
   };
@@ -384,10 +387,55 @@ describe('judgeCanary', () => {
     expect(v.probes.find((p) => p.name === 'symbol-round-trip')!.detail).toContain('not attempted');
   });
 
-  it('reports every failing probe, not just the first', () => {
-    const v = judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, roundTripOk: null, embeddings: null });
+  it('fails when definition edges are missing — "where is this defined" is the other core capability', () => {
+    const v = judgeCanary({ ...HEALTHY, defEdgeCount: 0 });
     expect(v.healthy).toBe(false);
-    expect(v.summary).toContain('4/5');
+    expect(v.summary).toContain('definition-edges');
+  });
+
+  it('reports every failing probe, not just the first', () => {
+    const v = judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, defEdgeCount: null, roundTripOk: null, embeddings: null });
+    expect(v.healthy).toBe(false);
+    expect(v.summary).toContain('5/6');
+  });
+});
+
+describe('canary edge queries target the REAL graph schema', () => {
+  // A REGRESSION GUARD FOR A TRAP I FELL INTO. The obvious Cypher for call edges,
+  // `MATCH ()-[r:CALLS]->()`, does not return zero on this graph — it throws
+  // "Binder exception: Table CALLS does not exist", which the runner maps to null and
+  // the judge reads as UNREADABLE. That would have failed the canary on every healthy
+  // index forever: a permanent false alarm, in the exact shape the canary's own doc
+  // comment warns against. It survived unit tests because a pure judge cannot see a
+  // wrong query, and was caught only by running it against the live graph.
+  //
+  // This graph has ONE relationship table, `CodeRelation`; the kind is a PROPERTY
+  // (r.type ∈ CALLS | DEFINES | IMPORTS | ...). Asserting on the source text is
+  // deliberate: the alternative is a live-graph integration test, which cannot run in
+  // CI, so the schema assumption is pinned where it is cheap to check.
+  const SRC = readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'gitnexus-reindex-action.ts'), 'utf8');
+
+  // Comments are stripped before matching. The doc comment above runCanary quotes the
+  // bad query verbatim as a counter-example, and without this the guard fails on the
+  // very explanation of what it guards — which is a false positive, and false positives
+  // are what get a guard deleted.
+  const CODE = SRC.split('\n')
+    .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+    .join('\n');
+
+  it('queries CodeRelation with a type predicate, never a bare :CALLS/:DEFINES table', () => {
+    expect(CODE).toContain("r.type = 'CALLS'");
+    expect(CODE).toContain("r.type = 'DEFINES'");
+    expect(CODE).not.toMatch(/MATCH\s*\(\)-\[r:CALLS\]/);
+    expect(CODE).not.toMatch(/MATCH\s*\(\)-\[r:DEFINES\]/);
+  });
+
+  it('CALIBRATION: comment-stripping did not eat the executable source too', () => {
+    // Without this, a stripper bug that returned '' would make every not-toMatch above
+    // pass vacuously — the guard would be dead and look green.
+    expect(CODE.length).toBeGreaterThan(1000);
+    expect(CODE).toContain('CodeRelation');
+    expect(CODE).toContain('export async function runCanary');
   });
 });
 
