@@ -1759,6 +1759,30 @@ export async function runLivenessAlarmTick(
 
   const fired: AlarmSignal[] = [];
   const newBlockerSignals: AlarmSignal[] = [];
+  const escalationInput = (s: AlarmSignal) => ({
+    severity: s.severity,
+    summary: `${SUMMARY_PREFIX}${s.summary}`,
+    body:
+      `Detected by the request-path infra-liveness alarm (R4-3/R4-8) — it runs on a request worker, ` +
+      `independent of the background routine engine, so it fires even when that engine is frozen ` +
+      `(the failure that blinds the in-engine watchdog). Signal: ${s.key}. Workspace: ${ws}.`,
+    // EI-2146: stamp the signature so dedup + auto-resolve match exactly
+    // (no summary-parsing needed for records this alarm writes).
+    meta: {
+      // EI-11841: stable dedup identity must not include dynamic timing/evidence
+      // fields, or concurrent request workers can open duplicate flap rows.
+      livenessSignature: s.key,
+      dedupKind: 'infra-liveness',
+      subjectSignature: s.key,
+      ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
+      // EI-10060: no registered/derivable owner for this signal — nobody is
+      // durably on the hook for it beyond the ambient `to:['*']` broadcast
+      // (which digest-suppresses after EI-9939's flap threshold like every
+      // other repeat fire). Stamped so a human-facing surface can filter on
+      // "escalations nobody owns" instead of that fact staying implicit.
+      needsHumanRoute: resolveSevereEventOwner(s.key) === null,
+    },
+  });
   for (const s of signals) {
     // WI-36010: this dedup used to be `if (openBySig.has(s.key)) continue` — keyed on
     // the signature ALONE, so it was SEVERITY-BLIND. Both stale-paused branches emit
@@ -1784,7 +1808,25 @@ export async function runLivenessAlarmTick(
     const openForSig = openBySig.get(s.key);
     if (openForSig?.length) {
       const escalatesToBlocker = s.severity === 'blocker' && !openForSig.some((r) => r.severity === 'blocker');
-      if (!escalatesToBlocker) continue; // an open escalation at >= this severity already covers it
+      if (!escalatesToBlocker) {
+        // EI-20068390701347529: dead-routines is already a blocker, so severity
+        // cannot express a worsening incident. If its rendered magnitude/text
+        // changed, refresh the one durable row in place. This deliberately runs
+        // before the in-memory cooldown and does not enter `fired` or
+        // `newBlockerSignals`: it updates operator context without re-paging or
+        // re-opening the flap episode.
+        const renderedSummary = `${SUMMARY_PREFIX}${s.summary}`;
+        const shouldRefresh =
+          s.key === 'dead-routines' && openForSig.some((record) => record.summary !== renderedSummary);
+        if (shouldRefresh) {
+          try {
+            await escalate(escalationInput(s));
+          } catch {
+            /* a refresh failure must never crash the request worker */
+          }
+        }
+        continue; // an open escalation at >= this severity already covers it
+      }
     }
     if (s.key === 'dead-routines' && reverifyDeadRoutines) {
       const fresh = await reverifyDeadRoutines(ws, now).catch(() => null);
@@ -1799,30 +1841,7 @@ export async function runLivenessAlarmTick(
     lastAlertedAt.set(s.key, now);
     fired.push(s);
     try {
-      await escalate({
-        severity: s.severity,
-        summary: `${SUMMARY_PREFIX}${s.summary}`,
-        body:
-          `Detected by the request-path infra-liveness alarm (R4-3/R4-8) — it runs on a request worker, ` +
-          `independent of the background routine engine, so it fires even when that engine is frozen ` +
-          `(the failure that blinds the in-engine watchdog). Signal: ${s.key}. Workspace: ${ws}.`,
-        // EI-2146: stamp the signature so dedup + auto-resolve match exactly
-        // (no summary-parsing needed for records this alarm writes).
-        meta: {
-          // EI-11841: stable dedup identity must not include dynamic timing/evidence
-          // fields, or concurrent request workers can open duplicate flap rows.
-          livenessSignature: s.key,
-          dedupKind: 'infra-liveness',
-          subjectSignature: s.key,
-          ...(s.diagnosis ? { healthTickStallDiagnosis: s.diagnosis } : {}),
-          // EI-10060: no registered/derivable owner for this signal — nobody is
-          // durably on the hook for it beyond the ambient `to:['*']` broadcast
-          // (which digest-suppresses after EI-9939's flap threshold like every
-          // other repeat fire). Stamped so a human-facing surface can filter on
-          // "escalations nobody owns" instead of that fact staying implicit.
-          needsHumanRoute: resolveSevereEventOwner(s.key) === null,
-        },
-      });
+      await escalate(escalationInput(s));
     } catch {
       /* an alarm-send failure must never crash the request worker */
     }

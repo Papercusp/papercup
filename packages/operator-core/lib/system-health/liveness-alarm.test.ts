@@ -1384,6 +1384,66 @@ describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () =
     expect(store.openCount()).toBe(1);
   });
 
+  it('EI-20068390701347529: refreshes a growing dead-routines summary without a second fire or page', async () => {
+    let deadCount = 1;
+    let open: EscalationRecord | null = null;
+    let sequence = 0;
+    const escalations: Array<{ severity: string; summary: string }> = [];
+    const pages: string[] = [];
+    const health = () => mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: deadCount,
+            deadRoutinesInScope: 151,
+            deadRoutinesDistinct: deadCount,
+            deadRoutineNames: deadCount === 1 ? ['pr-poll'] : ['git-sync'],
+            deadRoutineCriticalNames: deadCount === 1 ? [] : ['git-sync'],
+          },
+        },
+      },
+    });
+    const deps = {
+      readLast: health,
+      computeHealth: async () => health(),
+      listOpen: async () => (open ? [open] : []),
+      escalate: async (input: { severity: string; summary: string; meta?: Record<string, unknown> }) => {
+        escalations.push(input);
+        sequence += 1;
+        open = {
+          msg_id: open?.msg_id ?? `esc-${sequence}`,
+          ts: new Date(sequence * 1000).toISOString(),
+          from: INFRA_LIVENESS_IDENTITY.ownerId,
+          to: ['human'],
+          kind: 'escalation',
+          severity: input.severity as EscalationRecord['severity'],
+          summary: input.summary,
+          resolved: null,
+          ...(input.meta ?? {}),
+        } as unknown as EscalationRecord;
+      },
+      page: async (signal: { key: string }) => { pages.push(signal.key); },
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+      readAutoloopFireRows: async () => [],
+    };
+
+    const first = await runLivenessAlarmTick('ws', deps);
+    expect(first.fired.map((s) => s.key)).toEqual(['dead-routines']);
+    expect(escalations).toHaveLength(1);
+    expect(pages).toEqual(['dead-routines']);
+
+    deadCount = 101;
+    const second = await runLivenessAlarmTick('ws', deps);
+    expect(second.fired).toEqual([]);
+    expect(escalations).toHaveLength(2);
+    expect(escalations[1]?.summary).toContain('101 of 151');
+    expect(open?.summary).toContain('101 of 151');
+    expect(pages).toEqual(['dead-routines']);
+  });
+
   // WI-36010: the durable dedup above is keyed on the SIGNATURE alone. Both stale-paused
   // branches emit key 'stale-paused-routines' and differ ONLY in severity, so an open
   // `advisory` row used to swallow every later `blocker` for that key. Measured live: an

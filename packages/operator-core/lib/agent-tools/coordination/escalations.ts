@@ -64,7 +64,8 @@ interface EscalationDedupIdentity {
  * A coalesced open is returned with a transient notice for the caller. These
  * fields are deliberately added only to the returned view, never to the
  * append-only event or materialized open projection: a duplicate fire remains
- * one row while the caller learns that its new text was not persisted.
+ * one row while the caller learns that its body (unlike its refreshed summary)
+ * was not persisted.
  */
 export type EscalationOpenResult = EscalationRecord & {
   coalesced?: boolean;
@@ -168,10 +169,16 @@ function withRepeatMetadata(
   // original (lower) severity. On the summary-derived path the bucket is keyed by
   // severity, so a coalesce there is always same-severity and this is a no-op.
   severity: EscalationSeverity,
+  // EI-20068390701347529: recurring liveness alarms render their current
+  // magnitude into the summary. Coalescing must keep the one open row readable
+  // at the latest observed magnitude instead of leaving its first-fire text
+  // frozen forever.
+  summary: string,
 ): EscalationRecord {
   return {
     ...record,
     severity,
+    summary,
     [OPEN_ESCALATION_DEDUP_KIND_KEY]: dedup.dedupKind,
     [OPEN_ESCALATION_LAST_SEEN_KEY]: nowIso,
     [OPEN_ESCALATION_REPEAT_COUNT_KEY]: repeatCount,
@@ -231,6 +238,9 @@ async function bumpProjectionDuplicateWithSql(
   // conditionKey re-escalation that graduated advisory→blocker upgrades the ONE
   // open row instead of leaving it displayed at the old lower severity.
   severity: EscalationSeverity,
+  // EI-20068390701347529: keep the materialized open row's rendered summary
+  // current when a recurring signal's magnitude changes.
+  summary: string,
 ): Promise<EscalationRecord | null> {
   const rows = await sql<{ body: EscalationRecord }[]>`
     UPDATE harness_shared.coord_open_escalations
@@ -249,7 +259,11 @@ async function bumpProjectionDuplicateWithSql(
              '{severity}',
              to_jsonb(${severity}::text),
              true
-           )
+           ),
+           '{summary}',
+           to_jsonb(${summary}::text),
+           true
+         )
      WHERE workspace_id = ${workspaceId}
        AND body->>'dedupKind' = ${dedup.dedupKind}
        AND body->>'subjectSignature' = ${dedup.subjectSignature}
@@ -299,7 +313,7 @@ async function openEscalationWithPgDedupLock(
           0
         ))
       `;
-      const bumped = await bumpProjectionDuplicateWithSql(tx, ws, dedup, nowIso, input.severity);
+      const bumped = await bumpProjectionDuplicateWithSql(tx, ws, dedup, nowIso, input.severity, input.summary);
       if (bumped) return { record: bumped, coalesced: true };
       const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
       await insertEscalationEventWithSql(tx, ws, env);
@@ -314,12 +328,13 @@ async function tryBumpProjectionDuplicate(
   dedup: EscalationDedupIdentity,
   nowIso: string,
   severity: EscalationSeverity,
+  summary: string,
 ): Promise<EscalationRecord | null> {
   if (!coordHasPgFastPath()) return null;
   try {
     const sql = coordSql();
     const ws = coordWorkspaceId();
-    return await bumpProjectionDuplicateWithSql(sql, ws, dedup, nowIso, severity);
+    return await bumpProjectionDuplicateWithSql(sql, ws, dedup, nowIso, severity, summary);
   } catch {
     return null;
   }
@@ -369,19 +384,24 @@ export async function openEscalation(
   const dedup = escalationDedupIdentity(input);
   const locked = await openEscalationWithPgDedupLock(identity, input, dedup, nowIso);
   if (locked) return locked.coalesced ? markCoalesced(locked.record) : locked.record;
-  const bumped = await tryBumpProjectionDuplicate(dedup, nowIso, input.severity);
+  const bumped = await tryBumpProjectionDuplicate(dedup, nowIso, input.severity, input.summary);
   if (bumped) return markCoalesced(bumped);
   const existing = await findOpenDuplicate(dedup);
-  if (existing)
-    return markCoalesced(
-      withRepeatMetadata(
-        existing,
-        dedup,
-        nowIso,
-        repeatCountOf(existing as Record<string, unknown>) + 1,
-        input.severity,
-      ),
+  if (existing) {
+    const refreshed = withRepeatMetadata(
+      existing,
+      dedup,
+      nowIso,
+      repeatCountOf(existing as Record<string, unknown>) + 1,
+      input.severity,
+      input.summary,
     );
+    // The non-PG fallback has no materialized projection to update. Upsert the
+    // coalesced record under its original msg_id so list/readers observe the
+    // refreshed summary instead of only the transient return value.
+    await coordLog.putEvent('escalations', refreshed.msg_id, refreshed);
+    return markCoalesced(refreshed);
+  }
 
   const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
   await coordLog.putEvent('escalations', env.msg_id, env);

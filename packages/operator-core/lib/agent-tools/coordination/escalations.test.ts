@@ -354,6 +354,29 @@ describe('openEscalation dedup + advisory expiry (WI-1503)', () => {
     expect(raw.filter((r) => r.kind === 'escalation')).toHaveLength(1);
   });
 
+  it('EI-20068390701347529: persists a refreshed summary on the non-PG coalescing fallback', async () => {
+    const log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    const meta = { dedupKind: 'infra-liveness', subjectSignature: 'dead-routines' };
+    const first = await openEscalation(identity, {
+      severity: 'blocker',
+      summary: '[infra-liveness] 1 of 151 dead routine(s) overdue >10m: pr-poll',
+      meta,
+    });
+    const refreshed = await openEscalation(identity, {
+      severity: 'blocker',
+      summary: '[infra-liveness] 101 of 151 dead routine(s) overdue >10m: git-sync',
+      meta,
+    });
+
+    expect(refreshed.msg_id).toBe(first.msg_id);
+    expect(refreshed.summary).toContain('101 of 151');
+    expect((await listEscalations({ status: 'open' }))[0]?.summary).toContain('101 of 151');
+    const raw = await log.readEvents('escalations');
+    expect(raw.filter((r) => r.kind === 'escalation')).toHaveLength(1);
+    expect(raw.find((r) => r.msg_id === first.msg_id)?.summary).toContain('101 of 151');
+  });
+
   it('does not dedup across dedupKind boundaries', async () => {
     configureCoordLog(new InMemoryCoordLog());
     const advisory = await openEscalation(identity, { severity: 'advisory', summary: 'same subject' });
