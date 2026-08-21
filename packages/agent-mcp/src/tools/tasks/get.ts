@@ -2,22 +2,19 @@
  * Get a single task by (harnessSlug, id). Summary returns id+title+status;
  * full returns the row.
  *
- * Typed via `createSelectSchema(harness_features_consolidated)` — NOT
- * `schemaOf`: that relation is a VIEW, and `schemaOf` is constrained to
- * `Table` (insert/update are meaningless for a view). drizzle-zod's
- * `createSelectSchema` carries the View overload; `schemaOf(view)` was a
- * TS2345 no gate counted. See WI-38031.
+ * Typed from the view's direct Drizzle select shape. Do not round-trip the
+ * entire generated view through drizzle-zod merely to recover the row type:
+ * TypeScript 7 correctly reaches its instantiation-depth guard on that graph.
  */
 
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generated, createSelectSchema } from '@papercusp/db-org';
+import { generated } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 
 const features = generated.harnessFeaturesConsolidatedInHarnessShared;
-const FeatureSelect = createSelectSchema(features);
-type FeatureRow = z.infer<typeof FeatureSelect>;
+type FeatureRow = typeof features.$inferSelect;
 
 export default defineTool({
   name: 'tasks:get',
