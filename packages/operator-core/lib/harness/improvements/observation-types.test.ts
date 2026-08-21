@@ -181,6 +181,7 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
       targetHive: 'shared-hive-test',
       rubricRef: 'pot-coordination-health',
       ratings: { 'end-to-end-flow': { rating: 'healthy', evidence: 'e1', suggestion: 'keep it' } },
+      acceptance: { verdict: 'accept', reasoning: 'The independent grading meets this plan.' },
       evidenceFingerprint: 'abc123',
       instrumentSnapshots: { flow: { verdict: 'pass' } },
     });
@@ -190,6 +191,7 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.targetHive).toBe('shared-hive-test');
     expect(out?.rubricRef).toBe('pot-coordination-health');
     expect(out?.ratings?.['end-to-end-flow']).toEqual({ rating: 'healthy', evidence: 'e1', suggestion: 'keep it' });
+    expect(out?.acceptance).toEqual({ verdict: 'accept', reasoning: 'The independent grading meets this plan.' });
     expect(out?.evidenceFingerprint).toBe('abc123');
     expect(out?.instrumentSnapshots).toEqual({ flow: { verdict: 'pass' } });
     expect(out?.refs).toEqual(['tool:pot:survey', 'WI-1']);
@@ -253,6 +255,12 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     expect(out?.ratings?.good).toEqual({ rating: 'healthy', evidence: 'e' });
     expect(out?.ratings?.missingEvidence).toBeUndefined();
     expect(out?.ratings?.junk).toBeUndefined();
+  });
+
+  it('drops malformed acceptance blocks rather than projecting a partial verdict', () => {
+    expect(asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'maybe', reasoning: 'x' } })?.acceptance).toBeUndefined();
+    expect(asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'accept', reasoning: '   ' } })?.acceptance).toBeUndefined();
+    expect(asStructuredObservation({ rubricRef: 'r', acceptance: 'accept' })?.acceptance).toBeUndefined();
   });
 
   it('returns undefined for non-object / empty / unknown-only input', () => {

@@ -27,6 +27,7 @@ import {
   normalizeScorecardRatings,
   type ObservationRatings,
   type ObservationSubject,
+  type ScorecardAcceptance,
   type ScorecardRetraction,
   type ScorecardRatingRubric,
   type ScorecardGradingAudit,
@@ -86,15 +87,18 @@ export function scorecardEvidenceFingerprint(input: {
   rubricRef: string;
   ratings: ObservationRatings;
   instrumentSnapshots?: Record<string, ScorecardInstrumentSnapshot>;
+  acceptance?: ScorecardAcceptance;
 }): string {
+  // Keep the pre-D-001 byte shape unchanged when no acceptance verdict exists,
+  // so historical stored fingerprints remain comparable without a migration.
+  const material: Record<string, unknown> = {
+    rubricRef: input.rubricRef,
+    ratings: input.ratings,
+    instrumentSnapshots: input.instrumentSnapshots ?? {},
+  };
+  if (input.acceptance) material.acceptance = input.acceptance;
   return createHash('sha256')
-    .update(
-      canonicalJson({
-        rubricRef: input.rubricRef,
-        ratings: input.ratings,
-        instrumentSnapshots: input.instrumentSnapshots ?? {},
-      }),
-    )
+    .update(canonicalJson(material))
     .digest('hex');
 }
 
@@ -250,6 +254,8 @@ export interface ScorecardRow {
   rubricRef: string;
   /** Per-criterion ratings, keyed by rubric criterion `key` (each {rating, evidence}). */
   ratings: ObservationRatings;
+  /** The acceptance-rubric author's post-independent-grading verdict, when recorded. */
+  acceptance?: ScorecardAcceptance;
   /** How many criteria this scorecard rated (`Object.keys(ratings).length`). */
   nKeys: number;
   /**
@@ -846,6 +852,7 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       ...(observation.subject ? { subject: observation.subject } : {}),
       rubricRef: observation.rubricRef,
       ratings,
+      ...(observation.acceptance ? { acceptance: observation.acceptance } : {}),
       nKeys: ratedKeys.size,
       missingKeys,
       extraKeys,

@@ -66,6 +66,18 @@ export interface ObservationRatingEntry {
  */
 export type ObservationRatings = Record<string, ObservationRatingEntry>;
 
+/**
+ * The plan implementer's post-grading acceptance call (plan-completion-audit-and-
+ * acceptance-verdict-2026-08-13 D-001). The independent grader owns `ratings`;
+ * the acceptance-rubric author records this separate judgment only after reading
+ * a complete independent grading.
+ */
+export interface ScorecardAcceptance {
+  verdict: 'accept' | 'reject';
+  /** Why the independent grading is (or is not) acceptable for this plan. */
+  reasoning: string;
+}
+
 /** v1 free-text observation fields (turn-end-reflection-observations D-005). */
 export type ObservationKind = 'friction' | 'workaround' | 'gap' | 'surprise' | 'reinforce';
 export type ObservationScope = 'self' | 'role' | 'harness' | 'papercusp';
@@ -99,6 +111,8 @@ export interface StructuredObservation {
   rubricRef?: string;
   /** Per-criterion ratings against `rubricRef` — each carries MANDATORY evidence. */
   ratings?: ObservationRatings;
+  /** Post-grading implementer verdict; valid only for acceptance-kind rubrics. */
+  acceptance?: ScorecardAcceptance;
   /**
    * Stable SHA-256 of the canonical rubricRef + ratings + deterministic instrument
    * snapshots. Written by scorecards:emit so repeated grading of unchanged evidence
@@ -542,6 +556,16 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       }
     }
     if (Object.keys(ratings).length > 0) out.ratings = ratings;
+  }
+  if (o.acceptance && typeof o.acceptance === 'object' && !Array.isArray(o.acceptance)) {
+    const a = o.acceptance as Record<string, unknown>;
+    if (
+      (a.verdict === 'accept' || a.verdict === 'reject') &&
+      typeof a.reasoning === 'string' &&
+      a.reasoning.trim()
+    ) {
+      out.acceptance = { verdict: a.verdict, reasoning: a.reasoning };
+    }
   }
   if (typeof o.evidenceFingerprint === 'string' && o.evidenceFingerprint.trim()) {
     out.evidenceFingerprint = o.evidenceFingerprint;

@@ -17,6 +17,7 @@ import {
   ObservationEvidenceError,
   type ObservationRatings,
   type ScorecardVetting,
+  type ScorecardAcceptance,
   asStructuredObservation,
 } from '../../harness/improvements/observation-types';
 import { readRunningGeneration } from '../../scout/generation-watermark';
@@ -80,6 +81,16 @@ export const scorecardEmitArgs = z
     title: z.string().min(1).max(240).optional(),
     body: z.string().max(8000).optional(),
     ratings: z.record(z.string().min(1), scorecardRatingEntrySchema),
+    acceptance: z
+      .object({
+        verdict: z.enum(['accept', 'reject']),
+        reasoning: z.string().trim().min(1).max(2000),
+      })
+      .strict()
+      .optional()
+      .describe(
+        "The acceptance-rubric AUTHOR's post-grading call. Valid only for kind:'acceptance', required when that author emits, and refused until a complete independent grading exists. Independent graders omit it.",
+      ),
     instrumentSnapshots: z.record(z.string().min(1), scorecardInstrumentSnapshotSchema).optional(),
     subject: z
       .object({
@@ -183,6 +194,51 @@ export async function emitScorecard(
   const rubric = await getRubric(args.rubricRef);
   if (!rubric) return { ok: false as const, error: `rubric '${args.rubricRef}' not found` };
   try {
+    const acceptance = args.acceptance as ScorecardAcceptance | undefined;
+    const implementer = rubric.proposedBy ?? rubric.createdBy ?? null;
+    if (acceptance && rubric.kind !== 'acceptance') {
+      return {
+        ok: false as const,
+        error: "acceptance is valid only for kind:'acceptance' rubrics — a standard scorecard records ratings, not a plan ship verdict",
+      };
+    }
+    if (rubric.kind === 'acceptance') {
+      const callerIsImplementer = implementer != null && input.createdBy === implementer;
+      if (!callerIsImplementer && acceptance) {
+        return {
+          ok: false as const,
+          error:
+            `acceptance must be recorded by the acceptance-rubric author ('${implementer ?? 'unknown'}'), ` +
+            `not grader '${input.createdBy}' — independent graders emit ratings without acceptance`,
+        };
+      }
+      if (callerIsImplementer && !acceptance) {
+        return {
+          ok: false as const,
+          error:
+            "the acceptance-rubric author must record acceptance:{ verdict:'accept'|'reject', reasoning } after reading the independent grading; independent graders omit acceptance",
+        };
+      }
+      if (callerIsImplementer) {
+        const prior = await listScorecards({ rubricRef: args.rubricRef, limit: 50 });
+        const independent = prior.find(
+          (card) =>
+            card.rubricResolved &&
+            card.missingKeys.length === 0 &&
+            !card.synthesized &&
+            card.createdBy != null &&
+            card.createdBy !== implementer,
+        );
+        if (!independent) {
+          return {
+            ok: false as const,
+            error:
+              `acceptance must follow a complete independent grading by someone other than '${implementer}' — ` +
+              `have a non-implementer emit ratings first, then record the implementer's verdict`,
+          };
+        }
+      }
+    }
     const ratings = normalizeScorecardRatings(args.ratings as ObservationRatings, rubric);
     const observationForValidation = { rubricRef: args.rubricRef, ratings };
     validateObservationRatings(observationForValidation);
@@ -195,6 +251,7 @@ export async function emitScorecard(
       rubricRef: args.rubricRef,
       ratings,
       instrumentSnapshots,
+      ...(acceptance ? { acceptance } : {}),
     });
     const instrumentContract = evaluateScorecardInstrumentContract({
       rubric,
@@ -397,7 +454,11 @@ export async function emitScorecard(
     )[0];
     const latestFingerprint = latest
       ? latest.evidenceFingerprint ??
-        scorecardEvidenceFingerprint({ rubricRef: latest.rubricRef, ratings: latest.ratings })
+        scorecardEvidenceFingerprint({
+          rubricRef: latest.rubricRef,
+          ratings: latest.ratings,
+          ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
+        })
       : null;
     const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
     // P-008: a terminal re-emit of IDENTICAL ratings is the finalization step, not a
@@ -530,6 +591,7 @@ export async function emitScorecard(
         observation: {
           rubricRef: args.rubricRef,
           ratings,
+          ...(acceptance ? { acceptance } : {}),
           ...(sourceHive ? { sourceHive } : {}),
           ...(args.targetHive ? { targetHive: args.targetHive } : {}),
           ...(instrumentSnapshots ? { instrumentSnapshots } : {}),
@@ -581,6 +643,7 @@ export async function emitScorecard(
         : {}),
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
+      ...(acceptance ? { acceptance } : {}),
       // P-008: surfaced loudly so the emitter knows this card is a working note — a
       // terminal re-emit (terminal:true, supersedes this issueId) finalizes it.
       ...(provisional ? { provisional } : {}),
@@ -598,7 +661,7 @@ export default defineTool({
   name: 'scorecards:emit',
   profile: 'engineer',
   description:
-    'Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion, stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.',
+    "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then re-emits with acceptance:{verdict,reasoning}. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
   guidance: {
     when:
       'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',

@@ -128,6 +128,23 @@ describe('scorecardEvidenceFingerprint (EI-12459)', () => {
     });
     expect(after).not.toBe(before);
   });
+
+  it('keeps legacy no-verdict fingerprints stable and changes identity when acceptance changes', () => {
+    const ratings = { a: { rating: 'PASS', evidence: 'n=1' } };
+    const legacy = scorecardEvidenceFingerprint({ rubricRef: 'r', ratings });
+    const accepted = scorecardEvidenceFingerprint({
+      rubricRef: 'r',
+      ratings,
+      acceptance: { verdict: 'accept', reasoning: 'Independent evidence is sufficient.' },
+    });
+    const rejected = scorecardEvidenceFingerprint({
+      rubricRef: 'r',
+      ratings,
+      acceptance: { verdict: 'reject', reasoning: 'Independent evidence is insufficient.' },
+    });
+    expect(accepted).not.toBe(legacy);
+    expect(rejected).not.toBe(accepted);
+  });
 });
 
 describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () => {
