@@ -69,7 +69,9 @@ describe('guardFileLock', () => {
     h.tryAcquire.mockResolvedValue({ ok: true, lock_id: 'L1', expires_ts: new Date(), held: ['foo.ts'] });
     const run = vi.fn().mockResolvedValue('RESULT');
     const out = await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run);
-    expect(out).toEqual({ acquired: true, result: 'RESULT' });
+    // `coordinated: true` is the load-bearing half: it reports that locking
+    // ACTUALLY happened, so a caller can never assume coordination it did not get.
+    expect(out).toEqual({ acquired: true, result: 'RESULT', coordinated: true });
     expect(run).toHaveBeenCalledOnce();
     expect(h.tryAcquire).toHaveBeenCalledOnce();
     expect(h.tryRelease).toHaveBeenCalledOnce();
@@ -85,7 +87,9 @@ describe('guardFileLock', () => {
     });
     const run = vi.fn().mockResolvedValue('RESULT');
     const out = await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run);
-    expect(out).toEqual({ acquired: true, result: 'RESULT' });
+    // Still coordinated: a lock WAS held (deliberately, by the same owner) — the
+    // guard simply released nothing, because it newly acquired nothing.
+    expect(out).toEqual({ acquired: true, result: 'RESULT', coordinated: true });
     expect(run).toHaveBeenCalledOnce();
     expect(h.tryRelease).not.toHaveBeenCalled();
   });
@@ -106,14 +110,16 @@ describe('guardFileLock', () => {
     h.tryAcquire.mockRejectedValue(new Error('pg down'));
     const run = vi.fn().mockResolvedValue('R');
     const out = await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run);
-    expect(out).toEqual({ acquired: true, result: 'R' });
+    // FAIL-OPEN: the body ran, but nothing was locked — `coordinated: false` is
+    // what stops a caller reading this as a guarded write.
+    expect(out).toEqual({ acquired: true, result: 'R', coordinated: false });
     expect(run).toHaveBeenCalledOnce();
   });
 
   it('skips locking entirely for an uncoordinated path', async () => {
     const run = vi.fn().mockResolvedValue('R');
     const out = await guardFileLock({ projectDir: NO_REPO, log: () => {} } as never, ['foo.ts'], { intent: 't' }, run);
-    expect(out).toEqual({ acquired: true, result: 'R' });
+    expect(out).toEqual({ acquired: true, result: 'R', coordinated: false });
     expect(h.tryAcquire).not.toHaveBeenCalled();
   });
 });
@@ -215,7 +221,9 @@ describe('guardFileLock — EI-1720 / worker-fire-path contention retry', () => 
       const p = guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run);
       await vi.runAllTimersAsync(); // advance the backoff sleep
       const out = await p;
-      expect(out).toEqual({ acquired: true, result: 'R' });
+      // `coordinated: true` states the same thing the tryRelease assertion below
+      // proves structurally: this path really ACQUIRED, it did not fail open.
+      expect(out).toEqual({ acquired: true, result: 'R', coordinated: true });
       expect(h.tryAcquire).toHaveBeenCalledTimes(2); // retried once, then acquired
       expect(h.tryRelease).toHaveBeenCalledOnce();    // released after a real acquire → proves NOT fail-open
       expect(run).toHaveBeenCalledOnce();
