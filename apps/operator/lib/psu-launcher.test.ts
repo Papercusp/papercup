@@ -72,6 +72,7 @@ import {
   addDirArgs,
   forkUnsupportedMessage,
   forkBootstrapBody,
+  launchModeFromArgs,
   trackedForkEnvelopeEnv,
   forkFallbackAccountRoute,
   freshSuBootstrapBody,
@@ -1755,6 +1756,36 @@ describe('psu-launcher arg parsing', () => {
     expect(() => parseArgs(['--mode='])).toThrow(/not recognized/);
   });
 
+  it('parses and bounds the propagated DRAIN subject/instructions payload', () => {
+    const args = parseArgs([
+      '--mode=drain',
+      '--mode-subject=  bug-drain  ',
+      '--mode-instructions=  checkpoint incidental defects  ',
+      '--mode-owner-directed',
+    ]);
+    expect(args.modeSubject).toBe('  bug-drain  ');
+    expect(args.modeInstructions).toBe('  checkpoint incidental defects  ');
+    expect(args.modeOwnerDirected).toBe(true);
+    expect(launchModeFromArgs(args)).toEqual({
+      mode: 'drain',
+      subject: 'bug-drain',
+      instructions: 'checkpoint incidental defects',
+      ownerDirected: true,
+    });
+    expect(
+      launchModeFromArgs({
+        mode: 'drain',
+        modeSubject: ` ${'s'.repeat(240)} `,
+        modeInstructions: ` ${'i'.repeat(540)} `,
+      }),
+    ).toEqual({
+      mode: 'drain',
+      subject: 's'.repeat(200),
+      instructions: 'i'.repeat(500),
+      ownerDirected: false,
+    });
+  });
+
   it('drain-mode P-003: DRAIN implies AUTO — effectiveAutoMode true even against --no-auto', () => {
     expect(effectiveAutoMode(parseArgs(['--mode=drain']))).toBe(true);
     // Not overridable: a non-auto drain is a contradiction.
@@ -2041,6 +2072,47 @@ describe('psu-launcher arg parsing', () => {
       parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--plan=p1']),
     );
     expect(plain).not.toHaveProperty('mode');
+  });
+
+  it('propagates bounded DRAIN scope fields through fresh argv/body and tracked fork body', () => {
+    const args = parseArgs([
+      '--no-picker',
+      '--agent=claude',
+      '--harness=h1',
+      '--plan=p1',
+      '--mode=drain',
+      '--mode-subject=bug-drain',
+      '--mode-instructions=checkpoint incidental defects',
+      '--mode-owner-directed',
+    ]);
+    const body = freshSuBootstrapBody(
+      { agent: 'claude', workspace: 'ws1', harness: 'h1', plan: 'p1' },
+      args,
+    );
+    expect(body).toMatchObject({
+      mode: 'drain',
+      mode_subject: 'bug-drain',
+      mode_instructions: 'checkpoint incidental defects',
+      mode_owner_directed: true,
+    });
+    expect(body.launch_argv).toEqual(expect.arrayContaining([
+      '--mode=drain',
+      '--mode-subject=bug-drain',
+      '--mode-instructions=checkpoint incidental defects',
+      '--mode-owner-directed',
+    ]));
+    expect(
+      forkBootstrapBody(
+        { agent: 'claude', workspaceId: 'ws1', planSlug: 'p1', cwd: '/repo' },
+        null,
+        launchModeFromArgs(args),
+      ),
+    ).toMatchObject({
+      mode: 'drain',
+      mode_subject: 'bug-drain',
+      mode_instructions: 'checkpoint incidental defects',
+      mode_owner_directed: true,
+    });
   });
 
   it('agent-allocation P-005: parseArgs takes --seat=<ref>; freshSuBootstrapBody forwards seat + records --seat= in launch_argv', () => {
