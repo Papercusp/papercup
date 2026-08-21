@@ -136,6 +136,14 @@ describe('routines:list', () => {
         last_fired_at: new Date('2026-08-12T16:00:00Z'),
         metadata: {
           gate_health: { inFlightRetriage: null, observedCandidate: 'abc123', consecutiveReds: 3 },
+          git_sync_activity: {
+            active: true,
+            phase: 'post-legs',
+            started_at: 1786550000000,
+            updated_at: 1786550005000,
+            completed_at: null,
+            outcome_status: 'synced',
+          },
           last_status: 'red',
           consecutive_error_ticks: 2,
           fire_count: 411,
@@ -146,6 +154,7 @@ describe('routines:list', () => {
     const b = body(await listTool.handler({} as never, { role: 'su' } as never));
     expect(b.routines[0].health).toMatchObject({
       gate_health: { observedCandidate: 'abc123', consecutiveReds: 3 },
+      git_sync_activity: { active: true, phase: 'post-legs', outcome_status: 'synced' },
       last_status: 'red',
       consecutive_error_ticks: 2,
       fire_count: 411,

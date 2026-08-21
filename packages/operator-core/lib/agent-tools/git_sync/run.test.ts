@@ -180,7 +180,7 @@ describe('git-sync:run', () => {
           workspace_id: 'default',
           install_slug: 'papercusp',
           target_role: 'system:git-sync',
-          fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha'],
+          fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha', 'git_sync_activity'],
         },
       },
     });
