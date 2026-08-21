@@ -124,6 +124,15 @@ export const GITNEXUS_NOT_ROUTABLE: Readonly<
     reason: 'Not implemented by GitNexus.',
     useInstead: 'ast-grep for structural/AST patterns.',
   },
+  diagnostics: {
+    reason:
+      'GitNexus is a graph index, not a compiler — it has no diagnostics. The ' +
+      'facade DOES expose op:"health" (backend liveness + index freshness), ' +
+      'but that answers "can I trust this backend", not "what is wrong with ' +
+      'this file". Routing diagnostics to a liveness probe would return a ' +
+      'healthy-looking empty for a file full of type errors.',
+    useInstead: 'lsp:query { op:"diagnostics" } for real compiler diagnostics.',
+  },
   implementations: {
     reason:
       'GitNexus exposes no implementations/trait-impl tool (the 1.6.9 catalog ' +
@@ -306,19 +315,48 @@ export function parseFreshnessNote(text: string): {
   };
 }
 
-/** Extract the JSON body the bridge returns ahead of its markdown decoration. */
-function parseEnvelope(raw: unknown): { json: Record<string, unknown> | null; text: string } {
+/**
+ * The bridge's response budget, measured from the runtime rather than assumed
+ * (`RESPONSE_BUDGET_CHARS` was 20000 on 2026-08-21).
+ */
+export const OBSERVED_RESPONSE_BUDGET_CHARS = 20_000;
+
+/**
+ * Extract the JSON body the bridge returns ahead of its markdown decoration.
+ *
+ * ⚠ The budget cut is applied to the SERIALIZED JSON and does not preserve
+ * validity: a large `impact` answer (20,383 chars) comes back sliced at
+ * exactly 20,000, mid-string, and `JSON.parse` fails with "Bad control
+ * character in string literal ... at position 20000". Measured 2026-08-21.
+ *
+ * That distinction matters more than it looks. A parse failure caused by
+ * TRUNCATION means "there was an answer and you got part of it"; a parse
+ * failure caused by anything else means "the backend is malformed". Reporting
+ * the first as the second sends the reader to debug the wrong system — which
+ * is exactly what this facade did on its first run, reporting a truncated
+ * impact answer as "returned no impactedCount", i.e. as an absence.
+ */
+function parseEnvelope(raw: unknown): {
+  json: Record<string, unknown> | null;
+  text: string;
+  truncated: boolean;
+} {
   const content = (raw as { content?: Array<{ text?: string }> } | null)?.content;
-  const text = content?.[0]?.text ?? (typeof raw === 'string' ? raw : '');
-  const head = String(text).split('\n---')[0];
+  const text = String(content?.[0]?.text ?? (typeof raw === 'string' ? raw : ''));
+  const head = text.split('\n---')[0];
   try {
     const parsed = JSON.parse(head) as unknown;
     return {
       json: parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null,
-      text: String(text),
+      text,
+      truncated: false,
     };
   } catch {
-    return { json: null, text: String(text) };
+    // Attribute the failure only when the evidence supports it: the payload
+    // reached the budget. Below it, an unparseable body is a real malformation
+    // and must not be excused as truncation.
+    const truncated = head.length >= OBSERVED_RESPONSE_BUDGET_CHARS;
+    return { json: null, text, truncated };
   }
 }
 
@@ -528,6 +566,12 @@ export async function gitnexusFacade(
  * the caller one uniform shape either way.
  */
 export function gitnexusOpForIntent(intent: CodeIntelIntent): GitnexusFacadeOp | null {
+  // The refusal table is AUTHORITATIVE and is consulted first. `health` claims
+  // the 'diagnostics' intent for shape reasons, but diagnostics is explicitly
+  // non-routable here — a liveness probe answering a diagnostics question
+  // would return a healthy-looking empty for a file full of type errors. This
+  // ordering is what keeps the two tables from disagreeing.
+  if (GITNEXUS_NOT_ROUTABLE[intent]) return null;
   for (const op of GITNEXUS_FACADE_OPS) {
     if (INTENT_BY_OP[op] === intent) return op;
   }
