@@ -90,6 +90,22 @@ export interface PriorAttemptBriefRecord {
   falsePremises?: string[];
   touchedFiles?: string[];
   tests?: string[];
+  /** P-017: this record's `text` was clipped to the budget — `rawRef` still
+   * resolves to the full source via resolvePriorAttemptRefs(). */
+  textTruncated?: boolean;
+  /** P-017: length of the full normalized source text, so a reader can size the
+   * drill-down before paying for it. */
+  fullTextChars?: number;
+}
+
+/** P-017: an omitted record, reduced to what makes it RETRIEVABLE. */
+export interface PriorAttemptOmittedRef {
+  authority: PriorAttemptAuthority;
+  scope: PriorAttemptScope;
+  rawRef: string;
+  workItemId?: string | null;
+  specId?: string | null;
+  at?: string | null;
 }
 
 export interface BoundedPriorAttemptBrief {
@@ -270,6 +286,7 @@ export function compilePriorAttempts(sources: readonly PriorAttemptSource[]): Pr
 }
 
 function briefRecord(record: PriorAttemptRecord, maxTextChars: number): PriorAttemptBriefRecord {
+  const text = boundedLine(record.text, maxTextChars);
   const out: PriorAttemptBriefRecord = {
     authority: record.authority,
     scope: record.scope,
@@ -278,8 +295,15 @@ function briefRecord(record: PriorAttemptRecord, maxTextChars: number): PriorAtt
     specId: record.specId,
     specRevision: record.specRevision,
     at: record.at,
-    text: boundedLine(record.text, maxTextChars),
+    text,
   };
+  // P-017: a clipped body is a DIFFERENT claim, not a shorter one — a record
+  // whose retraction lives past the cut reads as endorsement.  Mark it so the
+  // reader knows `rawRef` still has more, and can drill down for the full text.
+  if (text.length < record.text.replace(/\s+/g, ' ').trim().length) {
+    out.textTruncated = true;
+    out.fullTextChars = record.text.replace(/\s+/g, ' ').trim().length;
+  }
   if (record.approach) out.approach = boundedLine(record.approach, Math.min(maxTextChars, 500));
   if (record.outcome) out.outcome = boundedLine(record.outcome, Math.min(maxTextChars, 500));
   if (record.rootCauses.length) out.rootCauses = record.rootCauses;
