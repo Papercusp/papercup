@@ -33,7 +33,20 @@ vi.mock("../presence", () => ({ heartbeatPresence: M.heartbeatPresence }));
 // separate concern, so disable it here (always-beat) so "side effects run on a
 // cache hit" is tested independently of coalescing. The throttle itself is
 // covered by presence-beat-throttle.test.ts + inbox-heartbeat-throttle.test.ts.
-vi.mock("../presence-beat-throttle", () => ({
+//
+// ⚠ The `importOriginal` spread is LOAD-BEARING — do not "simplify" it back to a
+// bare factory. This suite only wants to stub createPresenceBeatThrottle, but a
+// bare `() => ({ createPresenceBeatThrottle })` factory makes every OTHER export
+// of the module undefined. dispatch-heartbeat.ts imports PRESENCE_BEAT_INTERVAL_MS
+// and evaluates it at MODULE SCOPE (`export const DISPATCH_BEAT_INTERVAL_MS =
+// PRESENCE_BEAT_INTERVAL_MS`), reached from here via projected-tool-deps.ts — so a
+// missing export throws at import time and the whole suite fails to COLLECT, with
+// no failing assertion to point at. That red froze `main` fleet-wide as part of the
+// green-checkpoint RED-23 streak (WI-40270). Spreading the real module keeps this
+// mock partial, so adding a new export to presence-beat-throttle can never strand
+// it again.
+vi.mock("../presence-beat-throttle", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../presence-beat-throttle")>()),
   createPresenceBeatThrottle: () => ({
     shouldBeat: () => true,
     reset: () => {},
