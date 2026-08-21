@@ -142,6 +142,25 @@ export async function checkAndFireErrorStreakAlarm(opts: {
           .filter((e): e is string => e !== null),
       ),
     ];
+
+    // EI-20949117919419640: `opts.installSlug` is the Scout TICK LEDGER's
+    // partition key, not necessarily a federating harness/hive-home slug.
+    // Under FLAGS.WORKSPACE_COORDINATION (default ON — see
+    // `workspaceBrainScopeKey`), `recordScoutTick` writes ticks with
+    // `install_slug` set to the WORKSPACE id itself (a sentinel meaning
+    // "workspace-wide", not any one hive — scout-cycle-action.ts's own
+    // "ctx.installSlug is the workspace SENTINEL — not a hive" comment).
+    // `SendOptions.harnessSlug` requires the OPPOSITE contract: a string
+    // "names a federating harness/hive-home", verbatim-stamped onto the
+    // outgoing coord_event_log row and captured into `substrate_outbox` for
+    // drain. A harness that is never booted (the sentinel never is — it is
+    // not a registered pot) can never drain its outbox rows, so every
+    // workspace-scoped error-streak page piled up as a permanent, growing
+    // `outbox-health` SLO breach. Thread the slug through ONLY when it is a
+    // real per-hive value (differs from the workspace id); the sentinel
+    // degrades to `null` — explicit machine-local, exactly the semantics
+    // migration 150 already gives an un-scoped/workspace-wide coord event.
+    const nudgeHarnessSlug = opts.installSlug && opts.installSlug !== ws ? opts.installSlug : null;
     const reason = `${threshold}-cycle error streak: ${errors[0] ?? 'no detail'}`;
     // EI-6777/EI-16038: claim the atomic debounce slot (closes the check-then-act race
     // the old recentWatchdogFires+recordFire pattern had, and backs off geometrically
@@ -173,7 +192,7 @@ export async function checkAndFireErrorStreakAlarm(opts: {
       summary,
       source: 'scout-error-streak-alarm',
       body: summary,
-      harnessSlug: opts.installSlug ?? null,
+      harnessSlug: nudgeHarnessSlug,
       payload: { kind: 'scout-error-streak', threshold, errors },
       // This alarm is a pager, not a quiet review nudge. The ladder persists the
       // message first, then re-invokes the selected su so the page cannot sit unread.
