@@ -41,6 +41,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
+import { fetchContextPressure } from '../coordination/context-pressure';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
@@ -323,6 +324,35 @@ export default defineTool({
           ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${target.live ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
           : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
       );
+
+      // EI-21007744826020808: a live source at the context cliff can technically
+      // fork/resume, accept the kickoff injection, and then die before it can take
+      // the turn. Kickoff delivery is transport evidence, not usable-context
+      // evidence. Reuse the same fresh/staleness-aware pressure oracle the fleet
+      // roster uses; a stale/unknown reading fails open, while a current CRITICAL
+      // reading fails closed before we open a doomed process.
+      if (target.ownerId) {
+        try {
+          const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
+          if (pressure === 'critical') {
+            return err(
+              `Cannot ${fork ? 'fork' : 'resume'} ${target.ownerId}: its current context is CRITICAL ` +
+                '(at or above 90% of its compaction limit). The resumed transcript may boot but cannot ' +
+                'reliably take another turn. Compact/recover that source first, or launch a FRESH agent ' +
+                'with a context-seeded brief.',
+            );
+          }
+          if (pressure === 'high') {
+            notes.push(
+              `⚠ ${target.ownerId} is already at HIGH context pressure (≥80%); the ${fork ? 'fork' : 'resume'} may need to compact before doing useful work.`,
+            );
+          }
+        } catch (e) {
+          notes.push(
+            `resume-context preflight unavailable (${(e as Error)?.message ?? e}) — proceeding without a context verdict`,
+          );
+        }
+      }
     }
 
     // Fleet: explicit name wins; else the caller's own presence fleet (WI-4234), so a
@@ -628,7 +658,7 @@ export default defineTool({
       }
     }
 
-    // ── P-003: kill the false "Launched" for a FRESH launch ──────────────────
+    // ── P-003: kill the false "Launched" for a FRESH/FORK launch ─────────────
     //
     // A clean spawn is not proof an agent is running — the 4th recurrence of this
     // class (EI-11543, WI-4752, EI-18696184925888288, and the measured acceptance
@@ -641,7 +671,10 @@ export default defineTool({
     // as failures. `null` says "still booting" honestly; only observed SILENCE is
     // reported as a failure, and only that sets isError.
     let freshVerdict: FreshLaunchVerdict | null = null;
-    if (!isResume && callerOwnerId && opened.length > 0) {
+    // A fork mints a fresh identity, so the same launched-by + spawn-time
+    // correlation used for a fresh agent is authoritative for it too. An
+    // in-place resume keeps its known owner id and uses verifyResumeStarted above.
+    if ((!isResume || fork) && callerOwnerId && opened.length > 0) {
       // EI-20823593041668393: a slow headless first turn can stop making MCP
       // statusline calls while its CLI is plainly alive and rendering into the
       // durable log. Snapshot here, then let the verifier compare at the end of
@@ -702,7 +735,7 @@ export default defineTool({
       if (args.brief || anyMemberBrief) {
         lines.push(
           isResume
-            ? '  ↪ the brief is delivered as the resumed session\'s next turn (psu\'s managed pty injects it once the agent reaches its prompt).'
+            ? '  ↪ the brief is QUEUED as the resumed session\'s next turn (psu\'s managed pty injects it once the agent reaches its prompt). Delivery alone is not proof the turn began; read the verification verdict below.'
             : '  ↪ the brief is the agent\'s first turn — it starts working on boot, it does not park idle.',
         );
       } else {

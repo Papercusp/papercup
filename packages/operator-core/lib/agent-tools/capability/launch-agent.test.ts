@@ -105,6 +105,13 @@ vi.mock('../coordination/presence-fleet', () => ({
   fetchPresenceFleet: (ids: string[]) => fetchPresenceFleetMock(ids),
 }));
 
+const fetchContextPressureMock = vi.fn(
+  async (_ids: string[]) => new Map<string, 'ok' | 'high' | 'critical'>(),
+);
+vi.mock('../coordination/context-pressure', () => ({
+  fetchContextPressure: (ids: string[]) => fetchContextPressureMock(ids),
+}));
+
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({
     ownerId: 'su-caller',
@@ -125,7 +132,7 @@ const resolveResumeTargetMock = vi.fn();
 const verifyFreshLaunchStartedMock = vi.fn(async (_args: unknown) => ({
   // agentStarted is deliberately THREE-state (true | false | null) per D-004 —
   // null means "not yet determinable", which is the stub's honest answer.
-  agentStarted: null,
+  agentStarted: null as boolean | null,
   waitedMs: 0,
   sessions: [],
   note: 'test launch verification stub',
@@ -174,6 +181,13 @@ beforeEach(() => {
     priorLaunchedBy: null,
   });
   fetchPresenceFleetMock.mockResolvedValue(new Map());
+  fetchContextPressureMock.mockResolvedValue(new Map());
+  verifyFreshLaunchStartedMock.mockResolvedValue({
+    agentStarted: null,
+    waitedMs: 0,
+    sessions: [],
+    note: 'test launch verification stub',
+  });
   getModesMock.mockResolvedValue([]);
   listFactsMock.mockResolvedValue([]);
 });
@@ -397,6 +411,43 @@ describe('resume + fork (D-004/D-007)', () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, fork: true }, ctx);
     expect(spawnedCommand()).toContain('--fork');
+  });
+
+  it('refuses a resume/fork whose source is at critical context pressure', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'take the routed consult' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('current context is CRITICAL');
+    expect(textOf(res)).toContain('launch a FRESH agent with a context-seeded brief');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('verifies a fork by real first-turn activity and fails an observed silent fork', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: false,
+      waitedMs: 25_000,
+      sessions: [],
+      note: '✗ AGENT DID NOT START — fork registered but never took a real turn.',
+    });
+
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, fork: true, brief: 'take the routed consult' },
+      ctx,
+    );
+
+    expect(verifyFreshLaunchStartedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ launcherOwnerId: 'su-caller', expected: 1 }),
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('AGENT DID NOT START');
+    expect(textOf(res)).toContain('Delivery alone is not proof the turn began');
   });
 
   it('surfaces an unresolvable target instead of launching something wrong', async () => {
