@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 750,
+  "count": 751,
   "tools": [
     {
       "name": "ablation:report",
@@ -12496,6 +12496,42 @@
         "when": "As the resolver behind host.memoryPressure. Direct use is mainly for debugging the state-cell wiring.",
         "notWhen": "General service health, process forensics, or waiting for the condition to change. Use state:read/state:subscribe on host.memoryPressure.",
         "chaining": "state:read { cell:\"host.memoryPressure\" } → branch on value + unknownHoist; state:subscribe waits for a band transition."
+      }
+    },
+    {
+      "name": "improvements:agent-review",
+      "http": {
+        "path": "/api/agent-tools/improvements/agent-review",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Claim the next peer-review item in one concrete harness, or resubmit your own revision-requested item. Review grades still go through blender:grade-idea; this door only owns reviewer pickup and submitter resubmission.",
+      "capabilities": [
+        "work_items:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Use mode:'claim-next' to take a pending change/feature for peer review, then grade its routed idea with blender:grade-idea. Use mode:'resubmit' after addressing the review feedback on your own revision-requested item.",
+        "notWhen": "Do not use this to grade or approve — blender:grade-idea is the sole grade authority. Do not use ordinary scheduler:get_next for pending review work; that lane excludes it until approval.",
+        "chaining": "improvements:agent-review { mode:'claim-next', harness? } → inspect the work item → blender:grade-idea { routedRef:'wi:<id>', grade, feedback? }; revision author fixes → improvements:agent-review { mode:'resubmit', id }."
       }
     },
     {
