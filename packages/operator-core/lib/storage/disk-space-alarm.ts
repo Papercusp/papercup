@@ -150,6 +150,27 @@ export function detectLowSpace(snapshots: DiskSnapshot[], policy: DiskAlarmPolic
   return out;
 }
 
+/**
+ * Fail-closed write headroom for expensive jobs such as the green checkpoint.
+ *
+ * Reuse the standing disk alarm's CRITICAL byte thresholds: its warning band is
+ * intentionally early enough for a human cleanup nudge, while a checkpoint only
+ * needs to refuse when writes are plausibly about to fail. Inode exhaustion stays
+ * at the alarm's ordinary floor because it produces ENOSPC just as surely as byte
+ * exhaustion. Keeping this as a policy projection over {@link detectLowSpace}
+ * prevents the gate and the alarm from inventing two definitions of a full disk.
+ */
+export function detectCriticalWriteHeadroom(
+  snapshots: DiskSnapshot[],
+  policy: DiskAlarmPolicy = DEFAULT_DISK_POLICY,
+): DiskBreach[] {
+  return detectLowSpace(snapshots, {
+    ...policy,
+    freePctMin: policy.criticalFreePctMin,
+    freeBytesMin: policy.criticalFreeBytesMin,
+  });
+}
+
 function fmtGb(bytes: number): string {
   return `${(bytes / GIB).toFixed(1)} GB`;
 }
@@ -214,9 +235,11 @@ export function formatDiskEscalation(critical: DiskBreach[]): { title: string; b
   };
 }
 
-async function defaultSample(): Promise<DiskSnapshot[]> {
+/** Sample explicit paths, or the standing watched-path set when omitted. Exported
+ * so correctness-critical writers can reuse the alarm's statfs interpretation. */
+export async function sampleDiskSnapshots(paths: string[] = watchedPaths()): Promise<DiskSnapshot[]> {
   const out: DiskSnapshot[] = [];
-  for (const path of watchedPaths()) {
+  for (const path of paths) {
     try {
       const fsst = await statfs(path);
       const bsize = Number(fsst.bsize) || 0;
@@ -272,7 +295,7 @@ export async function runDiskSpaceAlarmOnce(
   deps: DiskAlarmDeps = {},
   policy: DiskAlarmPolicy = diskPolicyFromEnv(),
 ): Promise<{ checked: number; breaches: DiskBreach[]; escalated: boolean }> {
-  const sample = deps.sample ?? defaultSample;
+  const sample = deps.sample ?? sampleDiskSnapshots;
   const emitToast = deps.emitToast ?? defaultEmitToast;
   const escalate = deps.escalate;
   const recentlyEscalated = deps.recentlyEscalated;

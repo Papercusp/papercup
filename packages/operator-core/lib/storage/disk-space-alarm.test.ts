@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { tmpdir } from 'node:os';
 import {
   detectLowSpace,
+  detectCriticalWriteHeadroom,
   formatDiskAlarmToast,
   runDiskSpaceAlarmOnce,
   diskPolicyFromEnv,
@@ -104,6 +105,30 @@ describe('detectLowSpace severity tiering', () => {
     const b = detectLowSpace([snap({ totalInodes: 1_000_000, freeInodes: 30_000, freeInodesPct: 0.03 })]);
     expect(b[0].kinds).toEqual(['low-inodes']);
     expect(b[0].severity).toBe('warning');
+  });
+});
+
+describe('detectCriticalWriteHeadroom', () => {
+  it('allows the warning band but refuses the critical byte band', () => {
+    // 8% free is intentionally an alarm warning, not a reason to burn no verdict.
+    expect(
+      detectCriticalWriteHeadroom([
+        snap({ totalBytes: 500 * GIB, freeBytes: 40 * GIB, freePct: 0.08 }),
+      ]),
+    ).toEqual([]);
+
+    const critical = detectCriticalWriteHeadroom([
+      snap({ totalBytes: 500 * GIB, freeBytes: 4 * GIB, freePct: 0.008 }),
+    ]);
+    expect(critical).toHaveLength(1);
+    expect(critical[0].kinds).toContain('low-bytes');
+  });
+
+  it('still refuses low inode headroom because inode exhaustion is ENOSPC too', () => {
+    const breaches = detectCriticalWriteHeadroom([
+      snap({ totalInodes: 1_000_000, freeInodes: 30_000, freeInodesPct: 0.03 }),
+    ]);
+    expect(breaches[0].kinds).toEqual(['low-inodes']);
   });
 });
 
