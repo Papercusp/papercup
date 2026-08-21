@@ -528,6 +528,44 @@ function buildSeedProposeInput(
 export async function ensureFirstPartyRubricsSeeded(): Promise<void> {
   if (rubricSeedState !== 'pending') return;
   rubricSeedState = 'running';
+  const ok = await runRubricSeedPass();
+  rubricSeedState = ok ? 'done' : 'pending';
+}
+
+/**
+ * Re-run the seed pass AFTER a Cupboard `kind='rubric'` install dropped a new
+ * self-describing dir into the writable user layer
+ * (cupboard-plan-rubric-recipe-sharing-2026-08-21 P-004).
+ *
+ * WHY THIS EXISTS (and why calling ensureFirstPartyRubricsSeeded would not work):
+ * that function is once-per-process by design — after the first read of the session
+ * its state is 'done' and it returns IMMEDIATELY. An installer calling it would
+ * therefore be a silent no-op: the dir would sit correctly in the user layer, the
+ * install would report success, and the rubric would never become a live row. It
+ * would appear to work and simply not.
+ *
+ * This runs the SAME pass (no forked seeding logic), so every guarantee the seed
+ * makes is inherited unchanged: idempotent, no-clobber (any rubricId under a real
+ * owner always wins, so an install can never overwrite a locally-ratified rubric),
+ * the WI-3617 wedge reclaim, the EI-12932 seedContentHash upgrade gate, and the
+ * WI-4287 loss-guards. `rubricSeedState` is held at 'running' across the pass to
+ * keep the re-entrancy short-circuit (the pass's own writes read back through
+ * loadAllRubrics), and re-armed to 'pending' on failure so a later read retries —
+ * identical to the once-path's own failure handling.
+ *
+ * Never throws: an install that landed the dir but could not seed is reported by the
+ * caller as installed-but-not-yet-live, not as a failed install.
+ */
+export async function reseedRubricsAfterInstall(): Promise<void> {
+  rubricSeedState = 'running';
+  const ok = await runRubricSeedPass();
+  rubricSeedState = ok ? 'done' : 'pending';
+}
+
+/** The seed pass itself, WITHOUT the once-per-process guard — shared by the lazy
+ *  boot path and the post-install re-seed. Returns whether the pass fully
+ *  succeeded; never throws. */
+async function runRubricSeedPass(): Promise<boolean> {
   let ok = true;
   try {
     const bundled = listLocalRubrics();
@@ -558,7 +596,7 @@ export async function ensureFirstPartyRubricsSeeded(): Promise<void> {
       err instanceof Error ? err.message : err,
     );
   }
-  rubricSeedState = ok ? 'done' : 'pending';
+  return ok;
 }
 
 export interface ListRubricsFilter {

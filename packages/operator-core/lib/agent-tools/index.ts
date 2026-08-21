@@ -1289,6 +1289,12 @@ import './cupboard/install-template';
 // install (cupboard:install-app over bundle-app-install-io.ts, shared with the
 // loopback POST /cupboard/install-app route).
 import './cupboard/install-app';
+// cupboard-plan-rubric-recipe-sharing-2026-08-21 P-003/P-004 — the rubric kind's
+// publish + install legs. install-rubric is two-step (place the self-describing dir
+// in the user layer, then run the EXISTING no-clobber seed) because a rubric is a
+// plan row, not a file the store reads directly.
+import './cupboard/publish-rubric';
+import './cupboard/install-rubric';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).

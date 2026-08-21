@@ -28,7 +28,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
-import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download, MonitorDown } from 'lucide-react';
+import { Search, Globe, RefreshCw, ExternalLink, GitBranch, Users, Clock, ShieldCheck, AlertTriangle, Plug, Boxes, Hexagon, Package, ArrowLeft, Box, Wrench, Sparkles, Brain, Loader2, KeyRound, ChevronRight, LayoutTemplate, AppWindow, Download, MonitorDown, Ruler, ListChecks, Workflow } from 'lucide-react';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import { toast } from 'sonner';
 import type { HarnessListing, ListingKind, HiveBrowseGroup } from '@papercusp/operator-core/lib/cupboard/types';
@@ -71,7 +71,11 @@ type KindFilter = 'all' | ListingKind;
  *  app/aspect templates.) */
 type ViewFilter = KindFilter | 'tools';
 
-const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'tools'];
+// cupboard-plan-rubric-recipe-sharing-2026-08-21 P-005: 'rubric', 'plan' and
+// 'recipe' get their own tabs. They sit AFTER the code kinds and before 'tools'
+// because they are the judgment/procedure family (what grades work, what work to
+// do, how to do it) rather than things that add runtime surface.
+const VIEW_FILTERS: ViewFilter[] = ['all', 'harness', 'app', 'blueprint', 'template', 'plugin', 'pack', 'knowledge-pack', 'rubric', 'plan', 'recipe', 'tools'];
 // Tab labels resolve inside the component via the lexicon — see the
 // VIEW_FILTER_LABEL memo in CupboardClient. The `harness` view lists hive-bound
 // listings, so its label is the project term ("Pots"/"Hives"), not "Harnesses".
@@ -89,6 +93,11 @@ function KindIcon({ kind, size = 11 }: { kind: ListingKind; size?: number }) {
     case 'template': return <LayoutTemplate size={size} />;
     // an app is a whole distributable application (cupboard-app-distribution).
     case 'app': return <AppWindow size={size} />;
+    // The judgment/procedure family (cupboard-plan-rubric-recipe-sharing):
+    // a rubric GRADES work, a plan is the work to do, a recipe is how to do it.
+    case 'rubric': return <Ruler size={size} />;
+    case 'plan': return <ListChecks size={size} />;
+    case 'recipe': return <Workflow size={size} />;
     default: return <Package size={size} />; // forward-compat: unknown kind from a newer worker
   }
 }
@@ -157,6 +166,12 @@ export default function CupboardClient() {
       plugin: 'Plugins',
       pack: 'Packs',
       'knowledge-pack': 'Knowledge Packs',
+      // The judgment/procedure family (cupboard-plan-rubric-recipe-sharing P-005).
+      // "Plans" is deliberately plain: what installs is a plan TEMPLATE, but the
+      // tab names the thing a user is looking for, and the card/detail says so.
+      rubric: 'Rubrics',
+      plan: 'Plans',
+      recipe: 'Recipes',
       // The Apps tab itself (adding 'app' to VIEW_FILTERS) lands in P-004; this
       // label keeps the Record<ViewFilter> exhaustive now the 'app' kind exists.
       app: 'Apps',
