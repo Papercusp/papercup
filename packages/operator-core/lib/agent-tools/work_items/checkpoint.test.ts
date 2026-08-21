@@ -513,6 +513,42 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
   });
 
+  describe('EI-21035020852712365: terminal items cannot receive active checkpoints', () => {
+    it('refuses a non-clear checkpoint on a terminal, unassigned item with a reopen path', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-DONE', harness: 'papercup', state: 'done', assignee: null });
+      setWorkItemCheckpoint.mockResolvedValue('should not land');
+
+      const r = await one({ id: 'WI-DONE', checkpoint: 'corrective work remains' });
+
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.errorCode).toBe('terminal_item');
+      expect(r.error).toContain('already terminal');
+      expect(r.recovery.reopen.args).toEqual({ state: 'open', force: true });
+    });
+
+    it('also refuses a non-clear checkpoint when the terminal item is assigned to the caller', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-DONE', harness: 'papercup', state: 'dropped', assignee: 'opspawn-bee-1' });
+
+      const r = await one({ id: 'WI-DONE', checkpoint: 'post-close edits' });
+
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.errorCode).toBe('terminal_item');
+    });
+
+    it('still allows an explicit clear on a terminal item for finish cleanup', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-DONE', harness: 'papercup', state: 'done', assignee: null });
+      setWorkItemCheckpoint.mockResolvedValue(null);
+
+      const r = await one({ id: 'WI-DONE', checkpoint: null });
+
+      expect(r.ok).toBe(true);
+      expect(r.cleared).toBe(true);
+    });
+  });
+
   describe('EI-19399101595349211: the mock must cover what checkpoint.ts actually imports', () => {
     /**
      * A `vi.mock` factory REPLACES the module wholesale, so the moment checkpoint.ts imports an
