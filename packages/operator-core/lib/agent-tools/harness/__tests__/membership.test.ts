@@ -14,6 +14,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+function mockHarnessRegistry(factory: () => Record<string, unknown>) {
+  vi.doMock('../../../harness-registry', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    ...factory(),
+  }));
+}
+
 const MAKE_CTX = (over: Record<string, unknown> = {}) =>
   ({
     log: vi.fn(),
@@ -58,7 +65,7 @@ describe('harness:membership op=list', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler({ op: 'list', slug: 'sheets' }, MAKE_CTX());
@@ -76,7 +83,7 @@ describe('harness:membership op=add', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -95,7 +102,7 @@ describe('harness:membership op=add', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -121,7 +128,7 @@ describe('harness:membership op=add', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [sheetsEntry] })),
     }));
 
@@ -153,7 +160,7 @@ describe('harness:membership op=add', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       // ... but the re-read of members[0] no longer has the slug (concurrent
       // move/remove between workspacesForHarness and this load).
       loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug: 'other', path: '/x' }] })),
@@ -190,7 +197,7 @@ describe('harness:membership op=remove', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace,
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -214,7 +221,7 @@ describe('harness:membership op=remove', () => {
       moveHarness: vi.fn(),
       removeHarnessFromWorkspace,
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -239,7 +246,7 @@ describe('harness:membership op=move', () => {
       moveHarness,
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -259,7 +266,7 @@ describe('harness:membership op=move', () => {
       moveHarness,
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -282,7 +289,7 @@ describe('harness:membership op=move', () => {
       moveHarness,
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(
@@ -305,7 +312,7 @@ describe('harness:membership op=move', () => {
       moveHarness,
       removeHarnessFromWorkspace: vi.fn(),
     }));
-    vi.doMock('../../../harness-registry', () => ({ loadHarnessRegistry: vi.fn() }));
+    mockHarnessRegistry(() => ({ loadHarnessRegistry: vi.fn() }));
 
     const { default: tool } = await import('../membership');
     const result = await tool.handler(

@@ -14,6 +14,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+function mockHarnessRegistry(factory: () => Record<string, unknown>) {
+  vi.doMock('../../../harness-registry', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    ...factory(),
+  }));
+}
+
 const ORIGINAL_ENV = process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
 
 beforeEach(() => {
@@ -36,14 +43,14 @@ const resolveHarnessContentPath = (
 ) => reg.projects.find((p) => p.slug === slug)?.path;
 
 function mockEmptyRegistry() {
-  vi.doMock('../../../harness-registry', () => ({
+  mockHarnessRegistry(() => ({
     loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     resolveHarnessContentPath,
   }));
 }
 
 function mockRegistryWith(slug: string, path: string) {
-  vi.doMock('../../../harness-registry', () => ({
+  mockHarnessRegistry(() => ({
     loadHarnessRegistry: vi.fn(async () => ({ projects: [{ slug, path }] })),
     resolveHarnessContentPath,
   }));

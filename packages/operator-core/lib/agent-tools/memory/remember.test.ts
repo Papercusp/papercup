@@ -73,6 +73,7 @@ import { createAnthropicJudge, conflictJudgeAvailable } from '../../memory/anthr
 type FakeBackend = {
   name: string;
   available: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
   remember: ReturnType<typeof vi.fn>;
   search: ReturnType<typeof vi.fn>;
   invalidateEntry?: ReturnType<typeof vi.fn>;
@@ -85,6 +86,10 @@ const fakeBackend = (
 ): FakeBackend => ({
   name: 'fake',
   available: vi.fn(async () => ({ ok: true })),
+  get: vi.fn(async (id: string) => {
+    const match = searchResults.find((entry) => entry.id === id);
+    return match ? { scope: 'user-1', metadata: {}, ...match } : null;
+  }),
   remember: vi.fn(async () => ({ ids: rememberIds })),
   search: vi.fn(async () =>
     searchResults.map((r) => ({ scope: 'user-1', ...r })),

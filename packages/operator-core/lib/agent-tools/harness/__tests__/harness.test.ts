@@ -4,6 +4,13 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+function mockHarnessRegistry(factory: () => Record<string, unknown>) {
+  vi.doMock('../../../harness-registry', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    ...factory(),
+  }));
+}
+
 const MAKE_CTX = (over: Record<string, unknown> = {}) =>
   ({
     log: vi.fn(),
@@ -35,7 +42,7 @@ describe('harness:phase_path', () => {
   it('resolves (slug, phase) → path via phasePath', async () => {
     const phasePath = vi.fn(() => '/tmp/sheets--testing');
     vi.doMock('../../../harness-phases', () => ({ phasePath }));
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({
         projects: [{ slug: 'sheets', path: '/tmp/sheets' }],
       })),
@@ -60,7 +67,7 @@ describe('harness:phase_path', () => {
 
   it('returns found:false when slug not in registry', async () => {
     vi.doMock('../../../harness-phases', () => ({ phasePath: vi.fn() }));
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
     }));
     const { default: tool } = await import('../phase_path');
@@ -80,7 +87,7 @@ describe('harness:phase_path', () => {
   it('falls back to ctx.harnessSlug when arg omitted', async () => {
     const phasePath = vi.fn(() => '/p');
     vi.doMock('../../../harness-phases', () => ({ phasePath }));
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({
         projects: [{ slug: 'fallback', path: '/p' }],
       })),

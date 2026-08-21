@@ -4,6 +4,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+function mockHarnessRegistry(factory: () => Record<string, unknown>) {
+  vi.doMock('../../../harness-registry', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
+    ...factory(),
+  }));
+}
+
 const MAKE_CTX = (over: Record<string, unknown> = {}) =>
   ({
     log: vi.fn(),
@@ -37,7 +44,7 @@ describe('harness:configure', () => {
       { slug: 'coding-harness', harness_kind: 'coding', configOverrides: { maxCostUsd: 5 } },
     ];
     const saveHarnessRegistry = vi.fn(async () => {});
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects })),
       saveHarnessRegistry,
     }));
@@ -65,7 +72,7 @@ describe('harness:configure', () => {
 
   it('rejects a hive slug — use pot:update instead', async () => {
     const projects = [{ slug: 'my-hive', harness_kind: 'hive' }];
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects })),
       saveHarnessRegistry: vi.fn(),
     }));
@@ -91,7 +98,7 @@ describe('harness:configure', () => {
   });
 
   it('returns harness_not_found for an unknown slug', async () => {
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
       saveHarnessRegistry: vi.fn(),
     }));
@@ -114,7 +121,7 @@ describe('harness:configure', () => {
   });
 
   it('rejects an empty configOverrides object', async () => {
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
       saveHarnessRegistry: vi.fn(),
     }));
@@ -137,7 +144,7 @@ describe('harness:configure', () => {
   });
 
   it('is root-only — rejects a fleet-spawn (bee) caller', async () => {
-    vi.doMock('../../../harness-registry', () => ({
+    mockHarnessRegistry(() => ({
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
       saveHarnessRegistry: vi.fn(),
     }));
