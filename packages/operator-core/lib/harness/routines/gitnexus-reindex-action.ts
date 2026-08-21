@@ -39,7 +39,7 @@
 import { spawn, execFile } from 'node:child_process';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { readFileSync, existsSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, unlinkSync, statSync } from 'node:fs';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
 
@@ -404,11 +404,47 @@ export function isOrphanWal(dbExists: boolean, shadowExists: boolean, walExists:
   return walExists && dbExists && !shadowExists;
 }
 
+/**
+ * A shadow that is EMPTY and has not been touched for this long is not a build in
+ * flight. Sized far above any plausible gap between a live analyze creating the shadow
+ * file and writing its first byte, so a genuinely running build is never mistaken for
+ * residue — the direction that matters, since acting on a live build corrupts it.
+ */
+export const DEAD_SHADOW_STALE_MS = 5 * 60_000;
+
+/**
+ * PURE — THE THIRD RESIDUE STATE. Observed live 2026-08-21T06:55Z, which is how it was
+ * found: the 06:35 analyze hit its 20-minute timeout at 1198s, was SIGKILLed mid-build,
+ * and left `lbug` (3.97 GiB, the intact 05:45 index) + `lbug.shadow` at ZERO BYTES +
+ * `lbug.wal.checkpoint`. Every read then segfaulted (`gitnexus cypher` exit 139, core
+ * dumped) — GitNexus dead for the whole fleet.
+ *
+ * NEITHER existing arm fires on it, which is the actual defect:
+ *   isOrphanShadow = shadowExists && !dbExists   -> false, the database exists
+ *   isOrphanWal    = walExists && dbExists && !shadowExists -> false, a shadow exists
+ * So cleanCrashResidue returned kind:'none', the poison stayed, and the next tick would
+ * re-run the same doomed sequence — precisely the self-perpetuating wedge this module's
+ * header says the residue policy exists to prevent.
+ *
+ * The gap is in the `!shadowExists` term. Its stated reasoning is sound — "shadow-present
+ * means a build is genuinely running and its WAL is live data, not residue" — but it
+ * treats the shadow's EXISTENCE as proof of liveness. A zero-byte shadow proves the
+ * opposite: a build that died before writing anything. Emptiness plus staleness
+ * distinguishes the two without ever touching a live build.
+ */
+export function isDeadShadow(
+  shadowExists: boolean,
+  shadowSizeBytes: number,
+  shadowAgeMs: number,
+): boolean {
+  return shadowExists && shadowSizeBytes === 0 && shadowAgeMs > DEAD_SHADOW_STALE_MS;
+}
+
 export interface OrphanShadowCleanup {
   cleaned: boolean;
   removed: string[];
   /** Which residue was found, for a log line that names the failure mode rather than the files. */
-  kind: 'none' | 'orphan-shadow' | 'orphan-wal';
+  kind: 'none' | 'orphan-shadow' | 'orphan-wal' | 'dead-shadow-wal';
 }
 
 /**
@@ -424,14 +460,37 @@ export function cleanCrashResidue(root: string): OrphanShadowCleanup {
   const shadowExists = existsSync(shadow);
   const walExists = existsSync(wal);
 
+  // A shadow only counts as "a build is in flight" if it shows any sign of being one.
+  // An empty, stale shadow is a corpse, and treating it as live is what left the tree
+  // segfaulting on 2026-08-21 with NEITHER arm firing (see isDeadShadow).
+  let shadowIsDead = false;
+  if (shadowExists) {
+    try {
+      const st = statSync(shadow);
+      shadowIsDead = isDeadShadow(true, st.size, Date.now() - st.mtimeMs);
+    } catch {
+      // Vanished between the check and the stat — that IS the not-present case.
+      shadowIsDead = false;
+    }
+  }
+  // What the two existing predicates should have been asking all along: is a build LIVE?
+  const liveShadow = shadowExists && !shadowIsDead;
+
   let kind: OrphanShadowCleanup['kind'] = 'none';
   let targets: string[] = [];
-  if (isOrphanShadow(dbExists, shadowExists)) {
+  if (isOrphanShadow(dbExists, liveShadow)) {
     kind = 'orphan-shadow';
     targets = [shadow, walCheckpoint];
-  } else if (isOrphanWal(dbExists, shadowExists, walExists)) {
-    kind = 'orphan-wal';
-    targets = [wal, walCheckpoint];
+  } else if (isOrphanWal(dbExists, liveShadow, walExists)) {
+    // The dead shadow goes too: leaving it behind re-arms the exact trap, because the
+    // NEXT tick would again read shadow-present as build-in-flight.
+    kind = shadowIsDead ? 'dead-shadow-wal' : 'orphan-wal';
+    targets = shadowIsDead ? [wal, walCheckpoint, shadow] : [wal, walCheckpoint];
+  } else if (shadowIsDead && dbExists) {
+    // Dead shadow with no WAL: not yet poisoning reads, but it still masks the next
+    // real orphan-WAL from being classified. Clear it while it is cheap.
+    kind = 'dead-shadow-wal';
+    targets = [shadow, walCheckpoint];
   } else {
     return { cleaned: false, removed: [], kind: 'none' };
   }
@@ -829,7 +888,9 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     const why =
       residue.kind === 'orphan-shadow'
         ? 'shadow present, no database — a prior analyze died BEFORE promoting it'
-        : 'pending WAL beside a real database with no shadow — a prior analyze was killed AFTER promoting it; every read-only open was segfaulting on WAL replay';
+        : residue.kind === 'dead-shadow-wal'
+          ? 'an EMPTY, stale shadow beside a real database — a prior analyze was SIGKILLed mid-build (the 20-minute timeout does this). The empty shadow used to make this state match neither residue arm, so nothing cleaned it and every read-only open segfaulted on WAL replay'
+          : 'pending WAL beside a real database with no shadow — a prior analyze was killed AFTER promoting it; every read-only open was segfaulting on WAL replay';
     console.warn(`[gitnexus-reindex] cleaned ${residue.kind.toUpperCase()} residue (${why}): ${residue.removed.join(', ')}`);
   }
 

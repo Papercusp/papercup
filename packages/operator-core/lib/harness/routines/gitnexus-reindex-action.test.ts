@@ -7,7 +7,7 @@
  * if load outranks a missing index and the interval floor outranks staleness.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,8 @@ import {
   gitnexusDbPaths,
   isOrphanShadow,
   isOrphanWal,
+  isDeadShadow,
+  DEAD_SHADOW_STALE_MS,
   cleanCrashResidue,
   judgeCanary,
   GITNEXUS_HEALTH_DEFAULT,
@@ -201,6 +203,53 @@ describe('analyzeEnv — the LadybugDB ceiling pin (P-004)', () => {
     // failing -- this assertion is the tripwire that says so while it is still cheap.
     const measuredDbGib = 3.97;
     expect(GITNEXUS_LBUG_MAX_DB_BYTES / 1024 ** 3).toBeGreaterThan(measuredDbGib * 3);
+  });
+});
+
+describe('isDeadShadow — the THIRD residue state (D-016 recurrence, 2026-08-21)', () => {
+  const STALE = DEAD_SHADOW_STALE_MS + 1;
+  const FRESH = 1_000;
+
+  it('REPRODUCES the live state that neither existing arm classified', () => {
+    // Observed 06:55Z: lbug 3.97 GiB + lbug.shadow at ZERO BYTES + lbug.wal.checkpoint,
+    // after the 06:35 analyze was SIGKILLed at its 1200s timeout. Reads segfaulted
+    // (exit 139) and cleanCrashResidue returned kind:'none'.
+    const dbExists = true;
+    const shadowExists = true;
+    const walExists = true;
+
+    // The old classification — both arms silent, which IS the bug:
+    expect(isOrphanShadow(dbExists, shadowExists)).toBe(false);
+    expect(isOrphanWal(dbExists, shadowExists, walExists)).toBe(false);
+
+    // The new predicate names it:
+    expect(isDeadShadow(shadowExists, 0, STALE)).toBe(true);
+
+    // ...and with the shadow correctly treated as absent, the WAL arm now fires:
+    const liveShadow = shadowExists && !isDeadShadow(shadowExists, 0, STALE);
+    expect(isOrphanWal(dbExists, liveShadow, walExists)).toBe(true);
+  });
+
+  it('NEVER claims a live build is dead — a non-empty shadow is a build in flight', () => {
+    // The direction that matters: acting on a live build corrupts it. A build that has
+    // written even one byte is live regardless of age (a slow analyze is still analyze).
+    expect(isDeadShadow(true, 1, STALE)).toBe(false);
+    expect(isDeadShadow(true, 4_266_192_896, STALE)).toBe(false);
+  });
+
+  it('NEVER claims a just-created empty shadow is dead', () => {
+    // A live analyze creates the shadow before writing to it; staleness is what stops
+    // that instant being misread as a corpse.
+    expect(isDeadShadow(true, 0, FRESH)).toBe(false);
+  });
+
+  it('is inert when there is no shadow at all', () => {
+    expect(isDeadShadow(false, 0, STALE)).toBe(false);
+  });
+
+  it('CALIBRATION: the predicate can return true — so the negatives above mean something', () => {
+    // Without this, an isDeadShadow() hardcoded to `false` passes every assertion above.
+    expect(isDeadShadow(true, 0, STALE)).toBe(true);
   });
 });
 
@@ -446,6 +495,54 @@ describe('cleanCrashResidue', () => {
     expect(result.cleaned).toBe(true);
     expect(result.kind).toBe('orphan-shadow');
     expect(result.removed).toEqual([shadow]);
+  });
+
+  it('clears the EMPTY-shadow + WAL + real-db tree that wedged the fleet on 2026-08-21', () => {
+    // END-TO-END reproduction of the live outage, not just the predicate. The 06:35
+    // analyze was SIGKILLed at its 1200s timeout leaving exactly this tree; BOTH
+    // existing arms returned false, cleanCrashResidue no-opped, and every
+    // `gitnexus cypher` segfaulted (exit 139) until it was cleared by hand.
+    const root = freshRoot();
+    const { db, shadow, walCheckpoint, wal } = gitnexusDbPaths(root);
+    writeFileSync(db, 'a real promoted database');
+    writeFileSync(shadow, ''); // ZERO BYTES — the build died before writing anything
+    writeFileSync(wal, 'pending wal');
+    writeFileSync(walCheckpoint, 'checkpoint');
+    // Backdate the shadow past the staleness floor: a corpse, not a build in flight.
+    const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
+    utimesSync(shadow, old, old);
+
+    const result = cleanCrashResidue(root);
+
+    expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('dead-shadow-wal');
+    // The dead shadow MUST go too — leaving it re-arms the trap, because the next tick
+    // would again read shadow-present as build-in-flight.
+    expect(existsSync(shadow)).toBe(false);
+    expect(existsSync(wal)).toBe(false);
+    expect(existsSync(walCheckpoint)).toBe(false);
+    // ...and the real index is NEVER touched: it is the last good graph.
+    expect(existsSync(db)).toBe(true);
+    expect(readFileSync(db, 'utf8')).toBe('a real promoted database');
+  });
+
+  it('LEAVES A LIVE BUILD ALONE — a non-empty shadow is not residue', () => {
+    // The dangerous direction. If this ever cleans, a running analyze is corrupted
+    // mid-build and we have traded an outage for a worse one.
+    const root = freshRoot();
+    const { db, shadow, wal } = gitnexusDbPaths(root);
+    writeFileSync(db, 'real db');
+    writeFileSync(shadow, 'a build genuinely in progress');
+    writeFileSync(wal, 'live wal');
+    const old = new Date(Date.now() - (DEAD_SHADOW_STALE_MS + 60_000));
+    utimesSync(shadow, old, old); // even STALE, a written shadow is a slow build
+
+    const result = cleanCrashResidue(root);
+
+    expect(result.cleaned).toBe(false);
+    expect(result.kind).toBe('none');
+    expect(existsSync(shadow)).toBe(true);
+    expect(existsSync(wal)).toBe(true);
   });
 
   it('removes the orphan WAL beside a real db — the read-path segfault (D-016)', () => {
