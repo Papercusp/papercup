@@ -8,7 +8,7 @@
  *
  * Live cost (bug-drain-nonp2p, 2026-07-12): a leader fed THREE consecutive claim-spec tranches
  * that every read surface called claimable and get_next silently refused — blocked by three
- * DIFFERENT floors (observation-lane, plan-lane reservation, _claimHold/needsHuman). Three
+ * DIFFERENT floors (observation-lane, plan-lane reservation, _claimHold/owner-action). Three
  * members idled; three separate agents had to reverse-engineer the floors from raw payload
  * reads. Every one of those digs was one line of tool output away.
  *

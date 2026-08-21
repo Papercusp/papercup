@@ -1463,7 +1463,7 @@ export default defineTool({
           })
         : null;
     // WI-5561: the issue-family floor-breakdown sibling of cooldownDiag above — surfaces WHY a
-    // fleet-scoped miss happened (federation-detector / needs-human / claim-hold / … floors)
+    // fleet-scoped miss happened (federation-detector / owner-action / claim-hold / … floors)
     // instead of the bare "no claimable work-item matched fleet scope" a member previously got
     // with zero explanation. Always attempted alongside cooldownDiag (independent signals, both
     // fail soft); fleetScopedMiss itself suppresses it while paused.
