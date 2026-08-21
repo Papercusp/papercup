@@ -4,18 +4,21 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Zero (sync layer)
-description: How a Postgres row becomes a row in your React component, in real time.
+title: "Zero (sync layer)"
+description: "How a Postgres row becomes a row in your React component, in real time."
+type: Insight
+discovered: 2026-08-21
+status: active
+plans:
+  - "fumadocs-to-starlight-2026-05-20"
+  - "finish-next-removal-2026-06-01"
+  - "operator-vite-migration-2026-05-20"
+  - "http2-sse-transport-2026-05-20"
+  - "sse-typed-events-2026-05-12"
+  - "desktop-native-transport-2026-05-12"
+  - "starlight-projection-site-2026-06-18"
 sidebar:
   order: 3
-plans:
-  - fumadocs-to-starlight-2026-05-20
-  - finish-next-removal-2026-06-01
-  - operator-vite-migration-2026-05-20
-  - http2-sse-transport-2026-05-20
-  - sse-typed-events-2026-05-12
-  - desktop-native-transport-2026-05-12
-  - starlight-projection-site-2026-06-18
 ---
 
 :::danger[Zero is fully decommissioned — historical reference only]
@@ -250,12 +253,12 @@ Per-harness schemas (`harness_<slug>`) **no longer contain physical
 tables** — Migration 032 dropped them and replaced them with
 auto-updatable VIEWs over the `harness_shared.*_consolidated` tables. So
 there is no per-harness template DDL column to add and nothing
-per-harness to add to the `zero_harness` publication. The canonical
-scaffold is the inline TypeScript
-`packages/operator-core/lib/scaffold-harness-schema.ts` ("Inline
-TypeScript replacement for `bin/scaffold-harness-schema.sh`"), called
-from the add-project / onboard flows; `bin/scaffold-harness-schema.sh` is
-the superseded bash path.
+per-harness to add to the `zero_harness` publication. The current compatibility-view provisioner is the inline TypeScript
+`packages/operator-core/lib/scaffold-harness-schema.ts`, called
+from the add-project / onboard flows. The former
+`libs/papercusp/libs/db/sql/002-per-harness-template.sql` and
+`bin/scaffold-harness-schema.sh` paths were deleted; do not recreate
+or execute them.
 
 ## Replication slot recovery
 

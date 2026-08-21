@@ -4,16 +4,19 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Multi-harness spawning / communication
-description: Plan to make harness-spawning + cross-harness coordination first-class substrate features. Auth-bound identity from day one; papercup-org is the first consumer, not a special case.
+title: "Multi-harness spawning / communication"
+description: "Plan to make harness-spawning + cross-harness coordination first-class substrate features. Auth-bound identity from day one; papercup-org is the first consumer, not a special case."
+type: Insight
+discovered: 2026-08-21
+status: active
+plans:
+  - "promote-spawn-child-harness-2026-05-31"
+  - "endpoint-hono-elimination-2026-05-21"
+  - "harness-state-storage-unification-2026-06-01"
+  - "deprecate-harness-config-json-2026-06-06"
+  - "directed-wake-honesty-and-spawn-handoff-2026-06-14"
 sidebar:
   order: 4
-plans:
-  - promote-spawn-child-harness-2026-05-31
-  - endpoint-hono-elimination-2026-05-21
-  - harness-state-storage-unification-2026-06-01
-  - deprecate-harness-config-json-2026-06-06
-  - directed-wake-honesty-and-spawn-handoff-2026-06-14
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.
@@ -245,7 +248,15 @@ Single 2–3 page document at `apps/operator/app/api/_hono/execute-action.contra
 
 **Gate:** committed to repo.
 
-### Step 1 — PG schema migration *(\~1d)*
+:::danger[Do not execute — historical / superseded step]
+This Step 1 is preserved as the original plan record only. The per-harness
+table scaffold it describes was retired: `002-per-harness-template.sql` and
+`bin/scaffold-harness-schema.sh` are deleted, and the live system uses
+slug-filtered compatibility views over the consolidated `harness_shared`
+tables. Do not run or recreate the DDL or shell path below.
+:::
+
+### Step 1 — PG schema migration (historical / superseded)
 
 Update `bin/scaffold-harness-schema.sh` to add to every per-harness schema:
 

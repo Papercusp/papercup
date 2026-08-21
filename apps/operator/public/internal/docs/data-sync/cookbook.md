@@ -134,64 +134,23 @@ Steps in order:
    even when rows is empty; provide a sibling empty-state component if
    you need a friendlier message).
 
-## Recipe 3: Adding a new column to an existing Zero-synced table
+## Recipe 3: Adding a column to a consolidated table
 
-:::caution\[Per-harness tables are being retired]
-The per-harness-table model below predates the consolidation migrations.
-The canonical stores are now the `harness_shared.*_consolidated` tables —
-writers should target those directly (see the
-`COMMENT ON harness_features_consolidated` in `000-baseline.sql`), and Zero
-exposes only the `*Consolidated.bySlug` / `*Consolidated.all` queries
-(the per-harness named queries — `featuresSheets`, `issuesOrg`, … — were
-removed; see the comment in `libs/zero-harness/src/queries.ts`). Add columns
-to the consolidated table (Recipe 5) rather than to per-harness tables.
-:::
+The canonical data store is the relevant harness\_shared.\*\_consolidated table. Compatibility views under `harness_<slug>` use SELECT \* and pick up a column automatically; there is no per-harness template or per-harness DDL to update.
 
-The per-harness table names are **not** uniformly `harness_<table>` —
-several (e.g. `feature_audit`, `agent_runs`) carry no `harness_` prefix.
-The published per-harness tables are `harness_features`, `feature_audit`,
-`harness_issues`, `harness_proposals`, `agent_runs`, `harness_snapshots`
-(plus `messages`, `supervisor_notes`); see the publication list in
-`bin/scaffold-harness-schema.sh` and `libs/zero-harness/src/schema.ts`.
+1. Add an idempotent migration under `libs/papercusp/libs/db/sql/<NNN>-*.sql`.
+2. Update the shared TypeScript/schema projections and consumers for the new column.
+3. Apply the migration through the normal database migration path and verify the live table and any compatibility view.
+4. Update the affected query or panel and run its focused tests.
 
-```sql
-ALTER TABLE harness_<slug>.harness_snapshots
-  ADD COLUMN new_col text;
-```
+## Recipe 4: Adding a new harness-scoped entity
 
-For each existing harness, repeat. Then:
+Add a slug-keyed consolidated table through a numbered migration, publish it through the current sync/transport path if the consumer needs replication, and expose a named query or server read filtered by harness\_slug. Do not create one physical table per harness and do not add runtime DDL to an onboarding script.
 
-1. Update the per-harness template SQL (the file `bin/scaffold-harness-schema.sh`
-   `sed`-substitutes `{{SCHEMA}}` into and runs) so future harnesses get it —
-   the column DDL lives in the template, not in the shell script itself.
-2. Update `libs/zero-harness/src/schema.ts` — add `new_col: string()`
-   (or the right type — beware TIMESTAMPTZ).
-3. The publication already includes the table; the new column flows
-   automatically.
-4. Restart `zero-cache-harness`.
-5. Update consumers (`useSyncQuery` results now include `new_col`).
-
-## Recipe 4: Adding a new table to all harnesses
-
-Bigger lift. Steps:
-
-1. Add the `CREATE TABLE` DDL to the **per-harness template SQL** (the
-   file `bin/scaffold-harness-schema.sh` renders via `sed
-   "s/{{SCHEMA}}/$schema/g"`), and add the table to the publication list
-   in the scaffold script's `add_to_zero_publication` array. The script
-   itself contains no DDL — it only substitutes the schema name into the
-   template and runs it.
-2. Run scaffold against every existing harness:
-   ```bash
-   for slug in $(psql -tAc "SELECT nspname FROM pg_namespace WHERE nspname LIKE 'harness\_%'" | sed 's/^harness_//'); do
-     bin/scaffold-harness-schema.sh "$slug"
-   done
-   ```
-3. Add the table to `libs/zero-harness/src/schema.ts` (register it in the
-   `createSchema({ tables: [...] })` list).
-4. Add a query factory to `queries.ts`.
-5. Add a `slugToXxxKey` helper to `queries.ts`.
-6. Restart `zero-cache-harness`.
+1. Define `harness_shared.<entity>_consolidated` with harness\_slug in its key or required scope columns.
+2. Add the migration and grants/publication changes required by the live transport.
+3. Add the shared schema type, query factory, and slug-scoped key helper where applicable.
+4. Verify a fresh harness and an existing harness read the same canonical table through their scope filter.
 
 ## Recipe 5: Cross-harness consolidated table
 

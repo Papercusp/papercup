@@ -1,7 +1,7 @@
 # Schema conventions
 URL: /internal/docs/data-sync/schema
 
-Per-harness Postgres schemas, shared schemas, publications, scaffolding.
+Consolidated Postgres tables, compatibility views, shared schemas, and transport conventions.
 
 :::danger\[Zero is being retired — historical reference]
 Zero / zero-cache / ZQL named-queries / WebSocket push is **on the retirement
@@ -94,22 +94,13 @@ Trade-off accepted: a single hot table per entity (the original concern
 about replication-slot lag on one hot table) in exchange for far less
 operational and DDL surface.
 
-## Per-harness scaffolding (largely superseded)
+## Per-harness compatibility views
 
-`bin/scaffold-harness-schema.sh <slug>` is the historical per-harness
-scaffolder — it rendered a per-harness DDL template into a
-`harness_<slug>` schema and added its tables to the `zero_harness`
-publication. With the move to consolidated tables, the per-harness
-physical tables (and the template `002-per-harness-template.sql`) are
-gone, so this path is **mostly vestigial**: adding a harness no longer
-creates a schema or runs any DDL — the slug is just a new row value in
-the consolidated tables. The schema itself is defined by the migration
-baseline (`000-baseline.sql` + incrementals from `107+`), not by a
-runtime scaffold.
+A `harness_<slug>` namespace, when present, is a compatibility surface. Its relations are auto-updatable VIEWs over harness\_shared.\*\_consolidated tables filtered by harness\_slug; it contains no physical per-harness entity tables.
 
-To change the schema today, add an idempotent migration under
-`libs/papercusp/libs/db/sql/<NNN>-*.sql` (never runtime DDL), then
-`node libs/papercusp/libs/db/scripts/pull-schema.mjs`.
+The live helper is packages/operator-core/lib/scaffold-harness-schema.ts. The add-project and onboard flows call it to create the schema, views, grants, and safe column defaults needed by legacy slug-scoped writers. It does not render a SQL template and it does not add per-harness tables to the publication.
+
+To change canonical storage, add an idempotent numbered migration under `libs/papercusp/libs/db/sql/<NNN>-*.sql`, then refresh the schema projection with node libs/papercusp/libs/db/scripts/pull-schema.mjs. The slug is a row value in the shared table, not a physical-table namespace.
 
 ## The `zero_harness` publication
 
@@ -126,11 +117,7 @@ WHERE pubname = 'zero_harness'
 ORDER BY schemaname, tablename;
 ```
 
-When you scaffold a new harness, `bin/scaffold-harness-schema.sh` runs
-the right `ALTER PUBLICATION ADD TABLE` commands. When you add a new
-canonical table, `scripts/regenerate-harness-features-view.sh` (despite
-its narrow name) regenerates the cross-harness view AND can be adapted
-to add new tables.
+When a new harness is registered, the TypeScript helper creates only the slug-filtered compatibility VIEWs. The canonical shared tables and their transport/publication membership are established by migrations. Adding a harness therefore does not require per-harness DDL or publication edits.
 
 ## Cross-harness consolidated tables
 

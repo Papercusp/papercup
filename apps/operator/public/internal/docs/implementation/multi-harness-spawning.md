@@ -227,7 +227,15 @@ Single 2–3 page document at `apps/operator/app/api/_hono/execute-action.contra
 
 **Gate:** committed to repo.
 
-### Step 1 — PG schema migration *(\~1d)*
+:::danger\[Do not execute — historical / superseded step]
+This Step 1 is preserved as the original plan record only. The per-harness
+table scaffold it describes was retired: `002-per-harness-template.sql` and
+`bin/scaffold-harness-schema.sh` are deleted, and the live system uses
+slug-filtered compatibility views over the consolidated `harness_shared`
+tables. Do not run or recreate the DDL or shell path below.
+:::
+
+### Step 1 — PG schema migration (historical / superseded)
 
 Update `bin/scaffold-harness-schema.sh` to add to every per-harness schema:
 

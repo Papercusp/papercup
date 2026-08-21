@@ -235,12 +235,12 @@ Per-harness schemas (`harness_<slug>`) **no longer contain physical
 tables** — Migration 032 dropped them and replaced them with
 auto-updatable VIEWs over the `harness_shared.*_consolidated` tables. So
 there is no per-harness template DDL column to add and nothing
-per-harness to add to the `zero_harness` publication. The canonical
-scaffold is the inline TypeScript
-`packages/operator-core/lib/scaffold-harness-schema.ts` ("Inline
-TypeScript replacement for `bin/scaffold-harness-schema.sh`"), called
-from the add-project / onboard flows; `bin/scaffold-harness-schema.sh` is
-the superseded bash path.
+per-harness to add to the `zero_harness` publication. The current compatibility-view provisioner is the inline TypeScript
+`packages/operator-core/lib/scaffold-harness-schema.ts`, called
+from the add-project / onboard flows. The former
+`libs/papercusp/libs/db/sql/002-per-harness-template.sql` and
+`bin/scaffold-harness-schema.sh` paths were deleted; do not recreate
+or execute them.
 
 ## Replication slot recovery
 
