@@ -95,10 +95,7 @@ import { readExternalBlockers, type ExternalBlockerRecord } from './external-blo
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
 import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
-import {
-  AUTO_CLOSE_DEFAULT_MIN_TICKS,
-  AUTO_CLOSE_ELIGIBLE_SOURCES,
-} from './harness/improvements/auto-close-sources';
+import { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES } from './harness/improvements/auto-close-sources';
 import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
@@ -472,8 +469,6 @@ function extractTerminalCompletionEvidence(payload: unknown): CompletionVerifica
   return v as CompletionVerificationEvidence;
 }
 
-
-
 /** Allocate the next kind-independent WI-NNN id (D-008). */
 export async function nextWorkItemId(): Promise<string> {
   const { sql } = getOrgPg();
@@ -519,9 +514,11 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     goalId: i.goalId,
     // WI-20288042426947475 / migration 815: carry the issue view's claim-spec columns through
     // without collapsing an unprojected legacy view (undefined) into a projected NULL (null).
-    ...(i.tags !== undefined ? {
-      tags: Array.isArray(i.tags) ? i.tags.filter((t): t is string => typeof t === 'string') : null,
-    } : {}),
+    ...(i.tags !== undefined
+      ? {
+          tags: Array.isArray(i.tags) ? i.tags.filter((t): t is string => typeof t === 'string') : null,
+        }
+      : {}),
     ...(i.sourcePlanSlug !== undefined ? { sourcePlanSlug: i.sourcePlanSlug } : {}),
     ...(i.sourcePlanItemIds !== undefined ? { sourcePlanItemIds: i.sourcePlanItemIds } : {}),
     ...(i.redundancy !== undefined ? { redundancy: i.redundancy } : {}),
@@ -927,11 +924,7 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
   const states = filter.states && filter.states.length > 0 ? filter.states : null;
   return sql`
     ${states ? sql`status = ANY(${states as string[]}::text[])` : sql`TRUE`}
-    AND ${
-      filter.notTerminal
-        ? sql`NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`
-        : sql`TRUE`
-    }
+    AND ${filter.notTerminal ? sql`NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))` : sql`TRUE`}
     AND ${
       filter.createdSince
         ? sql`created_ts >= (EXTRACT(EPOCH FROM ${filter.createdSince}::timestamptz) * 1000)::bigint`
@@ -1040,9 +1033,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
-      scopes: filter.harness
-        ? undefined
-        : filter.harnesses?.map((harness) => `harness:${harness}`),
+      scopes: filter.harness ? undefined : filter.harnesses?.map((harness) => `harness:${harness}`),
       state: (filter.state as IssueState) || undefined,
       ...issueShapeFilterArgs(filter),
       q,
@@ -1145,9 +1136,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
-      scopes: filter.harness
-        ? undefined
-        : filter.harnesses?.map((harness) => `harness:${harness}`),
+      scopes: filter.harness ? undefined : filter.harnesses?.map((harness) => `harness:${harness}`),
       state: (filter.state as IssueState) || undefined,
       ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
@@ -1249,9 +1238,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
-      scopes: filter.harness
-        ? undefined
-        : filter.harnesses?.map((harness) => `harness:${harness}`),
+      scopes: filter.harness ? undefined : filter.harnesses?.map((harness) => `harness:${harness}`),
       state: (filter.state as IssueState) || undefined,
       ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
@@ -1863,7 +1850,9 @@ function maybeFireUrgentWake(input: CreateWorkItemInput, wi: WorkItem): void {
  */
 function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
   if (!assignTo) return;
-  void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemClaimedEvent(wi, assignTo)).catch(() => {});
+  void trackDetached(import('./work-items-events'))
+    .then((m) => m.emitWorkItemClaimedEvent(wi, assignTo))
+    .catch(() => {});
 }
 
 /**
@@ -1874,7 +1863,9 @@ function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
 function maybeFireCreatedEvent(wi: WorkItem): void {
   // P-007: emitWorkItemCreatedEvent internally co-fires the canonical
   // `work-item:claimable` key for an unclaimed-claimable create — one hook here.
-  void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemCreatedEvent(wi)).catch(() => {});
+  void trackDetached(import('./work-items-events'))
+    .then((m) => m.emitWorkItemCreatedEvent(wi))
+    .catch(() => {});
 }
 
 /** Create a work-item of any kind, minting a kind-independent WI-NNN id (D-008). */
@@ -2816,9 +2807,7 @@ export async function setWorkItemState(
       // archived, so the attestation carries what is already on the row; otherwise
       // it carries THIS close's declaration, which is the one the `||` merge would
       // otherwise drop on the floor.
-      assumptions: upgrade
-        ? readStoredAssumptions(wi.payload)
-        : (opts.assumptions ?? null),
+      assumptions: upgrade ? readStoredAssumptions(wi.payload) : (opts.assumptions ?? null),
       outcome: upgrade ? 'superseded' : 'attested',
     };
     // Best-effort, and deliberately so on the ATTESTED path: failing to file the second
@@ -3057,8 +3046,9 @@ export async function setWorkItemState(
     // typed OrgTxnTimeoutError instead — which the caller (work_items:complete/
     // set_state) already catches and reports as `stateError` (the completion record is
     // never lost, EI-24).
-    const rows = await boundedOrgTxn(async (tx) => isTerminal
-      ? await tx<FeatureRowDb[]>`
+    const rows = await boundedOrgTxn(async (tx) =>
+      isTerminal
+        ? await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
              requeue_count = 0,
@@ -3105,14 +3095,15 @@ export async function setWorkItemState(
                        END
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
       RETURNING ${tx.unsafe(FEATURE_COLS)}`
-      : await tx<FeatureRowDb[]>`
+        : await tx<FeatureRowDb[]>`
       UPDATE harness_shared.harness_features_consolidated
          SET status = ${state},
              requeue_count = CASE WHEN ${resetRequeue} THEN 0 ELSE requeue_count END,
              last_progress_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> '' THEN now() ELSE last_progress_at END,
              updated_ts = ${Date.now()}
        WHERE harness_slug = ${wi.harness} AND feature_id = ${id}
-      RETURNING ${tx.unsafe(FEATURE_COLS)}`);
+      RETURNING ${tx.unsafe(FEATURE_COLS)}`,
+    );
     result = rows[0] ? featureRowToWorkItem(rows[0]) : null;
   }
   // work-item-status-full-unify (P-003 writer-flip): preserve the collapsed
@@ -3203,8 +3194,7 @@ export async function setWorkItemState(
       // Only a close made UNDER the authority contract can be contradicted into
       // 'invalid'; a legacy (null) close is left exactly as it was. See the block
       // comment above — this ternary is D-005 expressed as a write, not a policy.
-      const reopenedAuthority: WorkItemCompletionAuthority | null =
-        wi.completionAuthority === null ? null : 'invalid';
+      const reopenedAuthority: WorkItemCompletionAuthority | null = wi.completionAuthority === null ? null : 'invalid';
       await sql`
         UPDATE harness_shared.work_items
            SET terminal_owner = NULL,
@@ -3227,8 +3217,7 @@ export async function setWorkItemState(
       // Reflect the clear in the returned row so callers see the truth this turn.
       (result as { terminalOwner?: string | null }).terminalOwner = null;
       (result as { terminalCompletionRef?: string | null }).terminalCompletionRef = null;
-      (result as { completionAuthority?: WorkItemCompletionAuthority | null }).completionAuthority =
-        reopenedAuthority;
+      (result as { completionAuthority?: WorkItemCompletionAuthority | null }).completionAuthority = reopenedAuthority;
       (result as { terminalCompletionEvidence?: CompletionVerificationEvidence | null }).terminalCompletionEvidence =
         null;
     } catch {
@@ -3245,7 +3234,9 @@ export async function setWorkItemState(
   if (result && result.state !== wi.state) {
     const transitioned = result;
     const prevState = wi.state;
-    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemStatusEvent(transitioned, prevState)).catch(() => {});
+    void trackDetached(import('./work-items-events'))
+      .then((m) => m.emitWorkItemStatusEvent(transitioned, prevState))
+      .catch(() => {});
   }
   // await-event-primitive P-012/P-013: a SETTLED item fires
   // `work-item:done:<id>` (+ `work-item:unblocked:<dep>` for dependents whose
@@ -3253,7 +3244,9 @@ export async function setWorkItemState(
   // imports this module statically) — an emit failure never breaks the write.
   if (result && isSettledWorkItemState(result.state)) {
     const settled = result;
-    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemSettledEvents(settled)).catch(() => {});
+    void trackDetached(import('./work-items-events'))
+      .then((m) => m.emitWorkItemSettledEvents(settled))
+      .catch(() => {});
     // WI-4119: generated blocker follows are no longer useful once this
     // blocker settles. Keep cleanup on the lifecycle write path so it does not
     // depend on a subscriber's next turn or on the event fan-out succeeding.
@@ -3302,7 +3295,9 @@ export async function setWorkItemState(
   // durable signal, not a prose message. Same fire-and-forget shape.
   if (result && result.state === 'blocked' && wi.state !== 'blocked') {
     const blocked = result;
-    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemBlockedEvent(blocked)).catch(() => {});
+    void trackDetached(import('./work-items-events'))
+      .then((m) => m.emitWorkItemBlockedEvent(blocked))
+      .catch(() => {});
   }
   // EI-15461: a feature transitioning INTO `passed` that was minted by
   // promote-issue.ts (metadata.sourceIssueId) auto-resolves its SOURCE issue —
@@ -3865,7 +3860,9 @@ export async function claimWorkItem(
   // (events:await leg; reaction rules observe the claim tools via postInvoke).
   if (claimed) {
     const won = claimed;
-    void trackDetached(import('./work-items-events')).then((m) => m.emitWorkItemClaimedEvent(won, assignee)).catch(() => {});
+    void trackDetached(import('./work-items-events'))
+      .then((m) => m.emitWorkItemClaimedEvent(won, assignee))
+      .catch(() => {});
     // P-009 / D-011 / D-014: "claiming IS declaring the goal" — so the goal ref
     // is stamped from here, the ONE chokepoint every by-id claim path funnels
     // through (work_items:claim, claim_next, pickup, scheduler:get_next), rather
@@ -4848,10 +4845,7 @@ export interface HeldDependencyEscapeContext {
  * case for a concrete reason: that warning ASSERTED "no checkpoint was ever written", so its
  * swallowed error became a false positive claim; this one asserts nothing when it says nothing.
  */
-export async function readUnresolvedDepBlockers(
-  id: string,
-  harness?: string,
-): Promise<UnresolvedDepBlocker[]> {
+export async function readUnresolvedDepBlockers(id: string, harness?: string): Promise<UnresolvedDepBlocker[]> {
   const { sql } = getOrgPg();
   const rows = await sql<{ blocker_ref: string; blocker_kind: string }[]>`
     SELECT DISTINCT d.blocker_ref, d.blocker_kind
@@ -4892,17 +4886,16 @@ export async function readHeldDependencyEscapeContext(args: {
   const dependencyId = args.dependencyId.trim();
   const member = args.member.trim();
   if (!dependencyId || !member) return null;
-  const memberRefs = [...new Set([
-    member,
-    ...(args.memberAliases ?? []).map((alias) => alias.trim()).filter(Boolean),
-  ])];
+  const memberRefs = [...new Set([member, ...(args.memberAliases ?? []).map((alias) => alias.trim()).filter(Boolean)])];
   const { sql } = getOrgPg();
-  const rows = await sql<{
-    dependency_kind: string;
-    blocked_id: string;
-    blocked_kind: string;
-    blocked_harness: string | null;
-  }[]>`
+  const rows = await sql<
+    {
+      dependency_kind: string;
+      blocked_id: string;
+      blocked_kind: string;
+      blocked_harness: string | null;
+    }[]
+  >`
     WITH refused AS (
       SELECT feature_id, item_kind, harness_slug,
              CASE
@@ -5401,7 +5394,9 @@ export function ensureClaimHoldAttribution(
  */
 export function looksLikePolicyGate(reason: string | null): boolean {
   if (!reason) return false;
-  return /\bD-\d{3}\b/i.test(reason) || /triageDecision\s*[:=]\s*["']?gate["']?/i.test(reason) || /policy-tier/i.test(reason);
+  return (
+    /\bD-\d{3}\b/i.test(reason) || /triageDecision\s*[:=]\s*["']?gate["']?/i.test(reason) || /policy-tier/i.test(reason)
+  );
 }
 
 /**
@@ -5798,7 +5793,7 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'claim-hold':
     'payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before ' +
     'assuming a row is unattributed: `held_open_by`/`held_open_reason` (a liveness-bound LEASE, work_items:hold_open) or ' +
-    '`claim_hold_by`/`claim_hold_reason` (a durable PARK that outlives its parker\'s session, release{claimHold:true}) — ' +
+    "`claim_hold_by`/`claim_hold_reason` (a durable PARK that outlives its parker's session, release{claimHold:true}) — " +
     'see readWorkItemClaimHoldProvenance / EI-18672701535825889.',
   'plan-lane-reserved': 'payload.plan_item — reserved to its own plan lane while that plan is active (WI-2118/WI-3667)',
   'federation-detector': 'an auto-filed replication-liveness detector, gated to the p2p fleet (WI-2633)',
@@ -5809,7 +5804,7 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'cross-machine-rig': 'needs a ≥2-machine rig this caller does not have (WI-2796)',
   'blocked-dep': 'has a PRESENT, non-terminal blocker (work_item_deps)',
   origin:
-    'a true-peer federated row (origin not local/null, and not one of this workspace\'s own ' +
+    "a true-peer federated row (origin not local/null, and not one of this workspace's own " +
     'substrate-log author keys) — not self-selectable from this node (isIssueLocallyClaimableWhereSql)',
   cooldown:
     'cooling down FOR THIS CALLER — either released by THIS caller within the release-cooldown window ' +
@@ -5914,25 +5909,25 @@ export async function explainIssueClaimFloors(
                   ? 'agent-review'
                   : !r.ok_external_blocker
                     ? 'external-blocker'
-                  : !r.ok_claim_hold
-                    ? 'claim-hold'
-                    : !r.ok_plan_lane
-                      ? 'plan-lane-reserved'
-                      : !r.ok_federation
-                        ? 'federation-detector'
-                        : !r.ok_loop_noise
+                    : !r.ok_claim_hold
+                      ? 'claim-hold'
+                      : !r.ok_plan_lane
+                        ? 'plan-lane-reserved'
+                        : !r.ok_federation
+                          ? 'federation-detector'
+                          : !r.ok_loop_noise
                             ? 'loop-noise'
-                          : !r.ok_completed
-                            ? 'already-completed'
-                            : !r.ok_watchdog_recovery
-                              ? 'watchdog-recovery-window'
-                              : !r.ok_rig
-                              ? 'cross-machine-rig'
-                              : !r.ok_no_blocker
-                                ? 'blocked-dep'
-                                : !r.ok_cooldown
-                                  ? 'cooldown'
-                                  : null;
+                            : !r.ok_completed
+                              ? 'already-completed'
+                              : !r.ok_watchdog_recovery
+                                ? 'watchdog-recovery-window'
+                                : !r.ok_rig
+                                  ? 'cross-machine-rig'
+                                  : !r.ok_no_blocker
+                                    ? 'blocked-dep'
+                                    : !r.ok_cooldown
+                                      ? 'cooldown'
+                                      : null;
     return {
       id,
       admissible: refusedBy === null,
@@ -6098,16 +6093,12 @@ export async function claimNextIssueWorkItem(
   // source_plan_slug, payload->'paths', …) which resolve against `wi` — the only table in
   // the inner SELECT's scope — so the fragment drops in as one more AND leg alongside the
   // id/kind narrowings. Undefined ⇒ TRUE ⇒ unrestricted, the pre-existing behavior.
-  const specFilterSql = (opts.specFilterSql ?? undefined) as
-    | ReturnType<OrgSql>
-    | undefined;
+  const specFilterSql = (opts.specFilterSql ?? undefined) as ReturnType<OrgSql> | undefined;
   // The caller's compiled spec.rank (see `specOrderSql` on opts). Like the filter above,
   // `compileRank` emits UNQUALIFIED column references (payload->'_ei'->>'severity',
   // feature_order, created_ts, …) which resolve against `wi` — the only table in the inner
   // SELECT's scope. Undefined ⇒ the pre-existing hardcoded ordering.
-  const specOrderSql = (opts.specOrderSql ?? undefined) as
-    | ReturnType<OrgSql>
-    | undefined;
+  const specOrderSql = (opts.specOrderSql ?? undefined) as ReturnType<OrgSql> | undefined;
   // Mig 499: the SAME release-cooldown floor claimFloorsWhereSql applies for the
   // feature family (mig 485/EI-6956) — without it, an agent that releases an
   // issue-family item immediately re-claims that EXACT row on its very next
@@ -6322,7 +6313,13 @@ export interface WorkItemObservation {
    * this is the pre-claim question of whether the plan item is already spoken
    * for by anyone at all.
    */
-  planItemLiveClaimed?: { reason: string; planSlug: string; itemId: string; claimedBy: string; claimedByLabel: string | null };
+  planItemLiveClaimed?: {
+    reason: string;
+    planSlug: string;
+    itemId: string;
+    claimedBy: string;
+    claimedByLabel: string | null;
+  };
 }
 
 /**
@@ -7035,7 +7032,9 @@ export async function unlinkWorkItem(
   // silently strands to its 30-min timeout-wake. Fire-and-forget + lazy import
   // (mirrors the settle-path call above) — never blocks or fails this write.
   if (rel === 'blocks') {
-    void trackDetached(import('./work-items-events')).then((m) => m.emitUnblockedOnEdgeRemoved(dst, id)).catch(() => {});
+    void trackDetached(import('./work-items-events'))
+      .then((m) => m.emitUnblockedOnEdgeRemoved(dst, id))
+      .catch(() => {});
   }
   return { ok: true };
 }
@@ -7210,14 +7209,10 @@ async function updateWorkItemGoal(id: string, wi: WorkItem, goal: string | null)
        SET goal_id = ${goal}, updated_ts = ${Date.now()}
      WHERE workspace_id = ${workspace}
        AND feature_id = ${id}
-       AND ${
-         wi.family === 'issue'
-           ? sql`item_kind = ${wi.kind}`
-           : sql`harness_slug = ${wi.harness}`
-       }
+       AND ${wi.family === 'issue' ? sql`item_kind = ${wi.kind}` : sql`harness_slug = ${wi.harness}`}
      RETURNING feature_id`;
   if (!rows[0]) return null;
-  return getWorkItem(id, wi.family === 'feature' ? wi.harness ?? undefined : undefined);
+  return getWorkItem(id, wi.family === 'feature' ? (wi.harness ?? undefined) : undefined);
 }
 
 function hasIssueFieldPatch(patch: UpdateWorkItemPatch): boolean {
