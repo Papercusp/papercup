@@ -247,6 +247,22 @@ export interface BenchMeasurement {
   readonly grade: GradeResult;
   readonly error: string | null;
   /**
+   * What the backend actually returned, as `path:line` keys. `must-contain`
+   * grading does not compute extras, so without this a failure reports only
+   * what is MISSING and gives no way to see what came back instead — which is
+   * usually the whole diagnosis.
+   */
+  readonly returnedSites: readonly string[];
+  /**
+   * Set when the backend first answered HEALTHY-and-EMPTY and only later
+   * produced sites — the elapsed ms between the two. A non-null value is
+   * PROOF of a false-empty: the backend affirmatively claimed health while
+   * having nothing, which `isTrustworthyEmpty` accepts. This is the exact
+   * failure the acceptance corpus exists to catch, so it is measured rather
+   * than inferred.
+   */
+  readonly emptyThenFilledMs: number | null;
+  /**
    * True when the leg budget ran out before this probe was tried. Recorded
    * EXPLICITLY rather than omitted: a probe that never ran must never be
    * mistaken for one that ran and passed, and a short report is otherwise
@@ -385,6 +401,8 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
         trustworthyEmpty: true, // never queried, so it made no empty claim at all
         grade: { correct: false, missing: [], extra: [], reason: 'not attempted' },
         error: `leg budget of ${legBudgetMs}ms exhausted before this probe ran`,
+        returnedSites: [],
+        emptyThenFilledMs: null,
         notAttempted: true,
       });
       continue;
@@ -394,6 +412,7 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
 
     const started = Date.now();
     let attempts = 0;
+    let firstHealthyEmptyAt: number | null = null;
     let last: CodeIntelAnswer | null = null;
     let grade: GradeResult = { correct: false, missing: [], extra: [], reason: 'never queried' };
 
@@ -405,6 +424,25 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
       if (grade.correct) break;
       // An unserved intent will never become correct by waiting.
       if (last.error && /not served/.test(last.error)) break;
+      // A HEALTHY answer WITH SITES is the server's FINAL word, right or wrong.
+      // Polling past it cannot change the result — it only spins to the
+      // deadline and then reports a TIMEOUT, which misattributes a correctness
+      // failure as a latency failure. (Measured: this turned an 8s wrong answer
+      // into a 420s fake hang, and sent me looking at the box and the language
+      // server instead of at the answer I already had.)
+      if (last.freshness.health === 'healthy' && last.sites.length > 0) break;
+
+      // ...but a HEALTHY EMPTY is the single most dangerous answer in this
+      // system, and it must NOT be taken as final. It is byte-identical to
+      // "still loading": awaitProjectReady concludes the project is ready as
+      // soon as no progress token is pending, which a server that has not yet
+      // CREATED its token satisfies vacuously. So we keep asking. If sites
+      // appear later, the earlier "healthy empty" was a LIE — and that is a
+      // finding about the backend, not about this probe. `emptyThenFilledMs`
+      // records it so the lie is measured rather than merely suspected.
+      if (last.freshness.health === 'healthy' && firstHealthyEmptyAt === null) {
+        firstHealthyEmptyAt = Date.now();
+      }
       await sleep(pollMs);
     }
 
@@ -434,6 +472,11 @@ export async function runLspAdapterLeg(opts: LspLegOptions): Promise<LspLegRepor
       trustworthyEmpty: last ? isTrustworthyEmpty(last) : false,
       grade,
       error: last?.error ?? null,
+      returnedSites: (last?.sites ?? []).map((s) => `${s.path}:${s.line1 ?? '?'}`),
+      emptyThenFilledMs:
+        firstHealthyEmptyAt !== null && (last?.sites.length ?? 0) > 0
+          ? Date.now() - firstHealthyEmptyAt
+          : null,
       notAttempted: false,
     });
   }
@@ -537,11 +580,18 @@ export function formatLegReport(report: LspLegReport): string {
       m.notAttempted ? 'SKIP' : m.correct ? 'PASS' : 'FAIL',
       m.caseId,
       m.intent,
-      m.serverWasCold ? `cold=${m.timeToCorrectMs ?? 'never'}ms` : `warm-start`,
-      `toCorrect=${m.timeToCorrectMs ?? 'never'}ms`,
-      `warm=${m.warmQueryMs ?? 'n/a'}ms`,
+      m.serverWasCold ? 'cold-start' : 'warm-start',
+      `toCorrect=${m.timeToCorrectMs === null ? 'NEVER' : `${m.timeToCorrectMs}ms`}`,
+      `warm=${m.warmQueryMs === null ? 'n/a' : `${m.warmQueryMs}ms`}`,
       `attempts=${m.attempts}`,
+      m.emptyThenFilledMs !== null
+        ? `⚠ FALSE-EMPTY: claimed healthy+empty, filled ${m.emptyThenFilledMs}ms later`
+        : '',
       m.correct ? '' : `(${m.grade.reason})`,
+      !m.correct && !m.notAttempted
+        ? `returned=[${m.returnedSites.join(', ') || 'nothing'}]`
+        : '',
+      m.error && !m.notAttempted ? `err=${m.error}` : '',
     ]
       .filter(Boolean)
       .join('  '),

@@ -51,10 +51,14 @@ describe.skipIf(missing.length > 0)(
         report = await runLspAdapterLeg({
           repoRoot: REPO_ROOT,
           cold: true,
-          // Generous on purpose: rust-analyzer indexes a large crate graph on a
-          // cold start. A tight deadline would record a TIMEOUT as a WRONG
-          // ANSWER, which misreports the backend rather than the box.
-          deadlineMs: 420_000,
+          // Sized from the MEASURED cold start (~7.8s for TypeScript on this
+          // repo, per lsp-adapter.integration.test.ts), with generous headroom
+          // for rust-analyzer's larger crate graph. Still bounded: a probe that
+          // has not answered in 90s is not going to.
+          deadlineMs: 90_000,
+          // The whole leg is bounded too, so one slow probe cannot starve the
+          // rest and cost us the entire report.
+          legBudgetMs: 480_000,
           pollMs: 500,
         });
 
