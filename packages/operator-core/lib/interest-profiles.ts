@@ -228,6 +228,92 @@ export function interestProfilesFor(context: InterestContext): InterestProfileRo
   return INTEREST_PROFILES.filter((row) => row.context === context);
 }
 
+export type InterestProfileRule =
+  | 'unregistered-cell'
+  | 'unknown-event-family'
+  | 'auto-arm-cell-without-predicate'
+  | 'fold-with-predicate'
+  | 'unresolved-required-params';
+
+export interface InterestProfileViolation {
+  readonly rule: InterestProfileRule;
+  readonly row: InterestProfileRow;
+  /** What is wrong, and where the remedy is. */
+  readonly detail: string;
+}
+
+/**
+ * Validate profile rows against the live cell registry and event catalog.
+ *
+ * Takes `rows` rather than reading INTEREST_PROFILES directly so the test can run
+ * this exact logic against deliberately-wrong control rows and prove each rule CAN
+ * fail. A guard that has only ever been run against known-good data is not a guard,
+ * and the alternative — mutating the real registry to prove it — is unsafe on a
+ * swept shared tree.
+ *
+ * ⚠ Every rule PUSHES. Rules are independent, never else-if chained: a row can
+ * violate several at once and a caller is entitled to see all of them, exactly as
+ * validateCellSpec reports its full rejection set.
+ */
+export function validateInterestProfiles(
+  rows: readonly InterestProfileRow[],
+): InterestProfileViolation[] {
+  const violations: InterestProfileViolation[] = [];
+  const registered = new Set(BUILTIN_CELLS.map((spec) => spec.cell));
+
+  for (const row of rows) {
+    if (row.watch.kind === 'cell') {
+      const { cell } = row.watch;
+      if (!registered.has(cell)) {
+        violations.push({
+          rule: 'unregistered-cell',
+          row,
+          detail: `cell '${cell}' is not in BUILTIN_CELLS. A profile pointing at an unregistered cell resolves to undefined and discloses nothing, silently — add the cell to cell-registrations.ts or drop the row.`,
+        });
+      }
+      if (row.tier === 'auto-arm' && !row.on) {
+        violations.push({
+          rule: 'auto-arm-cell-without-predicate',
+          row,
+          detail: `cell '${cell}' is auto-arm but declares no 'on'. state:subscribe cannot arm without a predicate, so this row would silently never fire.`,
+        });
+      }
+    } else {
+      const { family } = row.watch;
+      const entry = catalogEntry(family);
+      if (!entry) {
+        violations.push({
+          rule: 'unknown-event-family',
+          row,
+          detail: `event family '${family}' is not in EVENT_CATALOG. events:await patterns are EXACT-match, so a key built from an unknown family never fires and the waiter sleeps forever.`,
+        });
+      } else {
+        const required = entry.params.filter((p) => p.required);
+        const supplied = row.of?.length ?? 0;
+        if (supplied < required.length) {
+          violations.push({
+            rule: 'unresolved-required-params',
+            row,
+            detail: `event family '${family}' requires ${required.length} key param(s) (${required
+              .map((p) => p.name)
+              .join(', ')}) but 'of' names ${supplied} context field(s). An unresolved key param produces a key nothing emits — a silent forever-wait.`,
+          });
+        }
+      }
+    }
+
+    if (row.tier === 'fold' && row.on) {
+      violations.push({
+        rule: 'fold-with-predicate',
+        row,
+        detail: `a 'fold' row declares 'on', but folding has no edge to trigger on — the predicate would be silently ignored. Use tier 'suggest' or 'auto-arm', or drop the predicate.`,
+      });
+    }
+  }
+
+  return violations;
+}
+
 /** Every distinct cell id referenced by any profile. */
 export function referencedCellIds(): string[] {
   return [...new Set(INTEREST_PROFILES.flatMap((r) => (r.watch.kind === 'cell' ? [r.watch.cell] : [])))];
