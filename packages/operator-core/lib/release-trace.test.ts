@@ -398,6 +398,60 @@ describe('buildReleaseTrace', () => {
     });
   });
 
+  it('awaits an exact active detached repair verifier before origin publication', () => {
+    const checkpointRun = {
+      active: true,
+      candidate: sha,
+      activeSource: 'run-lock' as const,
+      startedAtMs: 123,
+      elapsedSec: 42,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: false, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
+        }),
+        gate: { ...input().gate, checkpointRunInFlight: checkpointRun },
+      }),
+    );
+
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
+      'actively judging this exact detached candidate',
+    );
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain(
+      'cannot test it',
+    );
+    expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+    expect(out.nextVerb?.reason).toContain(sha);
+  });
+
+  it('keeps an unrelated active verifier from masking the exact origin-egress wait', () => {
+    const checkpointRun = {
+      active: true,
+      candidate: 'b'.repeat(40),
+      activeSource: 'run-lock' as const,
+      startedAtMs: 123,
+      elapsedSec: 42,
+      asOfAgeMs: 0,
+    };
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, checkpointRunInFlight: checkpointRun },
+        }),
+        gate: { ...input().gate, checkpointRunInFlight: checkpointRun },
+      }),
+    );
+
+    expect(out.nextVerb).toMatchObject({
+      name: 'events:await',
+      args: { event: `git-sync:egressed:${sha}` },
+    });
+  });
+
   // EI-18672078222841101 — the stampede. Three agents read a red here within 15 minutes and
   // each was told to go classify the failures, with nothing saying a fixer already held them.
   describe('a red that someone already owns', () => {

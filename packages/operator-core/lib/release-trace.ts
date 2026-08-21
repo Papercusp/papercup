@@ -104,6 +104,14 @@ function gateJudgedTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): 
   return sameSha(input.position.targetSha, observedCandidate);
 }
 
+function gateIsActivelyJudgingTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): boolean {
+  // Repair verification may deliberately judge a detached worktree commit before the
+  // separate staging-containment/promotion step. In that state origin visibility cannot
+  // outrank the live singleton: the exact SHA is already being tested.
+  const checkpointRun = input.gate.checkpointRunInFlight ?? input.position.gate.checkpointRunInFlight;
+  return checkpointRun?.active === true && sameSha(input.position.targetSha, checkpointRun.candidate);
+}
+
 /**
  * Prefer the canonical gate owner over a historical release-fixer record.
  *
@@ -205,6 +213,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const constraints: ReleaseTraceConstraint[] = [];
   const add = (code: string, blocking: boolean, summary: string) => constraints.push({ code, blocking, summary });
   const targetWasGateTested = gateJudgedTarget(input);
+  const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
   if (position.dirtyUncommitted) {
@@ -226,6 +235,8 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
       true,
       targetWasGateTested
         ? `The target commit is not present on origin/staging, but the local green-checkpoint already judged this exact candidate; origin visibility is a separate public-release requirement.`
+        : targetIsUnderActiveVerification
+          ? `The target commit is not present on origin/staging, but the live green-checkpoint is actively judging this exact detached candidate; origin visibility is a separate post-verification requirement.`
         : 'The target commit is not present on origin/staging, so the green gate cannot test it.',
     );
   }
@@ -278,6 +289,8 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const { position, deploy, gate, pipeline, workItem } = input;
   const targetSha = position.targetSha;
   const targetWasGateTested = gateJudgedTarget(input);
+  const checkpointRun = gate.checkpointRunInFlight ?? position.gate.checkpointRunInFlight;
+  const targetIsUnderActiveVerification = gateIsActivelyJudgingTarget(input);
   if (!targetSha) {
     return {
       name: 'dev:pipeline_position',
@@ -309,6 +322,15 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
       : null;
   }
   if (!position.positions.onStaging && !targetWasGateTested) {
+    if (targetIsUnderActiveVerification) {
+      return {
+        name: 'checkpoint:await',
+        args: { pipeline },
+        reason:
+          `A green-checkpoint run is already actively judging this exact detached candidate ${targetSha}; ` +
+          'await its terminal verdict, then re-read release:trace instead of waiting on publication or launching a duplicate.',
+      };
+    }
     if (position.positions.committedLocal) {
       return {
         // A local commit has already fired git-sync:committed:<sha>; waiting on
@@ -326,7 +348,6 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
     };
   }
   if (!position.positions.inMain) {
-    const checkpointRun = gate.checkpointRunInFlight;
     if (checkpointRun?.active) {
       return {
         name: 'checkpoint:await',
