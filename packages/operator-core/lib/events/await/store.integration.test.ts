@@ -551,6 +551,11 @@ describe('verified-wait fallback campaign (PG)', () => {
         remedy: expect.stringContaining('claim/take over WI-producer'),
       }),
     ]);
+
+    // EI-20540454577146535: the SAME verified-timeout verdict, once WI-producer has
+    // since closed, must stop recommending a takeover of it.
+    await rootSql`INSERT INTO harness_shared.work_items (feature_id, status) VALUES ('WI-producer', 'done')`;
+    expect(await listVerifiedWaitTakeoversForSubscribers(['waiter-died'])).toEqual([]);
   });
 
   it('slow-but-progressing producer: renews the same one-shot row without consuming it', async () => {

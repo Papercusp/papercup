@@ -210,9 +210,13 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
       const supersedeOf = typeof row.metadata?.__journal_supersede_of === 'string'
         ? (row.metadata.__journal_supersede_of as string)
         : null;
+      const updatePatch = row.metadata?.__journal_update_patch && typeof row.metadata.__journal_update_patch === 'object'
+        ? row.metadata.__journal_update_patch as { text?: string; metadata?: Record<string, unknown> }
+        : null;
       const {
         __journal_update_of: _journalUpdateOf,
         __journal_supersede_of: _journalSupersedeOf,
+        __journal_update_patch: _journalUpdatePatch,
         ...storedMetadata
       } = row.metadata ?? {};
 
@@ -225,10 +229,23 @@ export async function drainMemoryWriteJournal(): Promise<DrainResult> {
         // A journaled memory:update text edit — replay as an update, not an add.
         // The flag re-stamps BOTH ways, matching a live edit's semantics
         // (editing a secret out must clear it).
-        await backend.update(updateOf, {
+        await backend.update(updateOf, updatePatch ?? {
           text: row.content,
           metadata: { possible_secret: secrets.matched, possible_secret_classes: secrets.classes },
         });
+        if (supersedeOf) {
+          const invalidateEntry = backend.invalidateEntry?.bind(backend);
+          if (!invalidateEntry) throw new Error('journal update supersede requires validity-window support');
+          const closed = await invalidateEntry(supersedeOf, { supersededBy: updateOf });
+          if (!closed) {
+            const after = await backend.get(supersedeOf);
+            const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
+            if (validity?.superseded_by !== updateOf) {
+              await invalidateEntry(updateOf);
+              throw new Error('journal update supersession lost immutable-winner race; replacement closed');
+            }
+          }
+        }
         await sql`
           UPDATE harness_shared.memory_write_journal
              SET status = 'committed', committed_at = now(), committed_memory_id = ${updateOf},

@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getMemoryBackend } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadline';
-import { journalPendingWrite } from '../../memory/write-journal';
+import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
 import { detectPossibleSecrets, possibleSecretWarning } from '../../memory/secret-detect';
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
@@ -206,6 +206,8 @@ export default defineTool({
         // patch is applied so a bad supersedes never leaves a half-done item
         // (patch landed, supersession silently skipped).
         const invalidateEntry = backend.invalidateEntry?.bind(backend);
+        let replacementBefore: Awaited<ReturnType<typeof backend.get>> = null;
+        let supersededBefore: Awaited<ReturnType<typeof backend.get>> = null;
         if (it.supersedes !== undefined) {
           if (!UUID_RE.test(it.supersedes)) {
             return { ok: false as const, id: it.id, error: 'supersedes must be a valid memory UUID' };
@@ -218,6 +220,35 @@ export default defineTool({
               ok: false as const,
               id: it.id,
               error: 'supersedes requires a backend with validity-window support (temporal-lite unavailable)',
+            };
+          }
+          [replacementBefore, supersededBefore] = await Promise.all([
+            withMemoryToolTimeout(backend.get(it.id), 'memory:update replacement preflight'),
+            withMemoryToolTimeout(backend.get(it.supersedes), 'memory:update superseded preflight'),
+          ]);
+          if (!replacementBefore) {
+            return { ok: false as const, id: it.id, error: `Memory with ID ${it.id} not found` };
+          }
+          if (!supersededBefore) {
+            return { ok: false as const, id: it.id, error: `Superseded memory ${it.supersedes} not found` };
+          }
+          if (replacementBefore.metadata?.entityType || supersededBefore.metadata?.entityType) {
+            return { ok: false as const, id: it.id, error: 'entity rows cannot participate in memory supersession' };
+          }
+          if (!replacementBefore.scope || replacementBefore.scope !== supersededBefore.scope) {
+            return { ok: false as const, id: it.id, error: 'supersession requires both memories to belong to the same scope' };
+          }
+          if (it.scope !== undefined && it.scope !== supersededBefore.scope) {
+            return { ok: false as const, id: it.id, error: 'a superseding update cannot move the replacement across scopes' };
+          }
+          const validity = supersededBefore.metadata?.validity as { status?: unknown; superseded_by?: unknown } | undefined;
+          if (validity?.status === 'superseded') {
+            return {
+              ok: false as const,
+              id: it.id,
+              error: validity.superseded_by === it.id
+                ? 'supersession already converged'
+                : 'superseded memory already has a different immutable winner',
             };
           }
         }
@@ -233,10 +264,26 @@ export default defineTool({
               warning: possibleSecretWarning(secrets.classes),
             }
           : {};
+        const patch = toPatch(it);
+        const journalId = it.supersedes !== undefined && replacementBefore
+          ? await journalPendingWrite({
+              scope: replacementBefore.scope,
+              content: it.content ?? replacementBefore.text,
+              kind: replacementBefore.kind,
+              metadata: {
+                __journal_update_of: it.id,
+                __journal_supersede_of: it.supersedes,
+                __journal_update_patch: patch,
+              },
+              verbatim: true,
+            })
+          : null;
+        const journaledFields = journalId
+          ? { journaled: true as const, will_retry: true as const, journal_id: journalId }
+          : {};
         try {
           // A supersedes-only item carries no patch — skip the store update
           // and go straight to closing the old memory's window.
-          const patch = toPatch(it);
           if (secrets) {
             patch.metadata = {
               ...(patch.metadata ?? {}),
@@ -255,17 +302,17 @@ export default defineTool({
             // an outage here would lose the edit — park it; the drain replays
             // it via backend.update (metadata.__journal_update_of). Metadata-
             // only patches ride the vec-safe merge path and aren't journaled.
-            const journalId = it.content !== undefined
+            const timeoutJournalId = journalId ?? (it.content !== undefined
               ? await journalPendingWrite({
                   scope: `__update__:${it.id}`,
                   content: it.content,
                   metadata: { __journal_update_of: it.id },
                   verbatim: true,
                 })
-              : null;
+              : null);
             return {
               ok: false as const, id: it.id, reason: 'memory_timeout' as const,
-              ...(journalId ? { journaled: true, will_retry: true, journal_id: journalId } : {}),
+              ...(timeoutJournalId ? { journaled: true, will_retry: true, journal_id: timeoutJournalId } : {}),
             };
           }
           // A well-formed id that names no existing memory is a clean negative
@@ -279,17 +326,17 @@ export default defineTool({
           const error = notFound ? `Memory with ID ${it.id} not found` : message;
           // Journal the text edit on infrastructure failures only — a
           // not-found is a clean negative, not a lost write.
-          const journalId = !notFound && it.content !== undefined
+          const failureJournalId = journalId ?? (!notFound && it.content !== undefined
             ? await journalPendingWrite({
                 scope: `__update__:${it.id}`,
                 content: it.content,
                 metadata: { __journal_update_of: it.id },
                 verbatim: true,
               })
-            : null;
+            : null);
           return {
             ok: false as const, id: it.id, error,
-            ...(journalId ? { journaled: true, will_retry: true, journal_id: journalId } : {}),
+            ...(failureJournalId ? { journaled: true, will_retry: true, journal_id: failureJournalId } : {}),
           };
         }
         // Learning signal (learning-system-audit P-050): an agent-driven CONTENT
@@ -313,15 +360,27 @@ export default defineTool({
               invalidateEntry(it.supersedes, { supersededBy: it.id }),
               'memory:update supersede',
             );
-            return closed
-              ? { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields }
-              : {
-                  ok: true as const,
-                  id: it.id,
-                  superseded: false as const,
-                  supersede_note: 'no open memory matched — already superseded or unknown id',
-                  ...secretFields,
-                };
+            if (closed) {
+              if (journalId) await markJournalCommitted(journalId, it.id);
+              return { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields };
+            }
+            const after = await withMemoryToolTimeout(backend.get(it.supersedes), 'memory:update supersede reconcile');
+            const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
+            if (validity?.superseded_by === it.id) {
+              if (journalId) await markJournalCommitted(journalId, it.id);
+              return { ok: true as const, id: it.id, superseded: it.supersedes, ...secretFields };
+            }
+            // A concurrent immutable winner beat this replacement. Close the
+            // losing replacement so two current facts can never survive.
+            await withMemoryToolTimeout(invalidateEntry(it.id), 'memory:update supersede loser cleanup');
+            if (journalId) await markJournalCommitted(journalId, it.id);
+            return {
+              ok: false as const,
+              id: it.id,
+              error: 'supersession conflict: another replacement won; this losing replacement was closed',
+              superseded: false as const,
+              ...secretFields,
+            };
           } catch (err) {
             const msg =
               err instanceof MemoryTimeoutError
@@ -330,10 +389,11 @@ export default defineTool({
                   ? err.message
                   : String(err);
             return {
-              ok: true as const,
+              ok: false as const,
               id: it.id,
               superseded: false as const,
-              supersede_note: `patch applied but supersession failed: ${msg}`,
+              error: `patch applied but supersession is pending durable repair: ${msg}`,
+              ...journaledFields,
               ...secretFields,
             };
           }

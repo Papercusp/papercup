@@ -267,6 +267,26 @@ export default defineTool({
       scope = 'user';
     }
 
+    // Supersession authorization/link-integrity preflight. The target must be
+    // a real current memory in the exact pool this write is authorized to use;
+    // UUID shape alone is not authority, and mem0 entity rows are not facts.
+    if (args.supersede) {
+      const target = await withMemoryToolTimeout(backend.get(args.supersede), 'memory:remember supersede preflight');
+      if (!target) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'supersede_not_found' }) }] };
+      }
+      if (target.metadata?.entityType) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'supersede_entity_forbidden' }) }] };
+      }
+      if (!target.scope || target.scope !== scopeKey) {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'supersede_scope_mismatch' }) }] };
+      }
+      const validity = target.metadata?.validity as { status?: unknown } | undefined;
+      if (validity?.status === 'superseded') {
+        return { content: [{ type: 'text', text: JSON.stringify({ ok: false, reason: 'supersede_already_closed' }) }] };
+      }
+    }
+
     const metadata: Record<string, unknown> = {
       scope,
       // The principal carries the resolved workspace (incl. a per-call
@@ -645,7 +665,19 @@ export default defineTool({
           );
           superseded = closed ? args.supersede : false;
           if (!closed) {
-            supersedeNote = 'no open memory matched — already superseded or unknown id';
+            const after = await withMemoryToolTimeout(backend.get(args.supersede), 'memory:remember supersede reconcile');
+            const validity = after?.metadata?.validity as { superseded_by?: unknown } | undefined;
+            if (validity?.superseded_by === replacingId) {
+              superseded = args.supersede;
+            } else {
+              // Another immutable winner closed the old row first. Close this
+              // losing replacement so the race cannot leave two current facts.
+              await withMemoryToolTimeout(
+                invalidateSuperseded(replacingId),
+                'memory:remember supersede loser cleanup',
+              );
+              supersedeNote = 'another replacement won; this losing replacement was closed';
+            }
           }
         } catch (err) {
           superseded = false;
