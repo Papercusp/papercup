@@ -171,8 +171,8 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   test it rather than assuming: if a call answers `Unknown namespace(s):
   gitnexus`, the pinned-resolver fix has not deployed yet (P-006) — fall back to
   `rg` + `lsp:query` for that question class until it does, and do NOT read the
-  absence as "no call chains exist". 📖 Versions, re-provisioning, and the four
-  failure modes that return a CONFIDENT WRONG ANSWER:
+  absence as "no call chains exist". 📖 Versions, re-provisioning, and the five
+  failure modes that return a CONFIDENT WRONG ANSWER (incl. a STALE index):
   `/internal/docs/agent-insights/code-intelligence-backends-runbook`. (Plugin tools — `design-phase.*`, `fetch_plus.*`,
   `gitnexus.*` — surface on every su session since the plugin-host boot warm;
   EI-38's "workspace-scoped only" was the post-restart empty-registry window
