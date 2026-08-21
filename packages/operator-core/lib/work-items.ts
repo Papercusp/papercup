@@ -99,6 +99,7 @@ import {
   AUTO_CLOSE_DEFAULT_MIN_TICKS,
   AUTO_CLOSE_ELIGIBLE_SOURCES,
 } from './harness/improvements/auto-close-sources';
+import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,
@@ -1007,6 +1008,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
                  -- assignee) — mirrors issueAdmissibleWhereSql's own list-context shape.
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
+                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1113,6 +1115,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
                  -- denominator not).
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
+                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -1232,6 +1235,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
                  ${autoPickableWhereSql(sql, ws)}
                  AND ${claimHoldExclusionSql(sql, 'payload')}
                  AND ${reservedPlanLaneExclusionSql(sql, '', 'payload')}
+                 AND ${agentReviewNormalExclusionSql(sql, 'payload')}
                )`
              : sql`TRUE`
          }
@@ -4151,6 +4155,9 @@ export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
     -- read the tag. Same COALESCE-for-NULL-safety shape, unaliased (this fragment
     -- runs in harness_features_consolidated context).
     AND COALESCE(payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
+    -- D-003/P-004: work awaiting peer review, or returned to its submitter for revision,
+    -- belongs exclusively to the agent-review lifecycle. Approval re-admits the row.
+    AND ${agentReviewNormalExclusionSql(sql, 'payload')}
     -- EI-19441925633833456: the HIVE-CANARY floor. A canary (payload.canary=true) is a
     -- MEASUREMENT INSTRUMENT for "does the autonomous loop carry queued work end-to-end?",
     -- so an agent self-selecting it and completing it does not answer that question — it

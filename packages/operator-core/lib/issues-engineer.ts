@@ -73,6 +73,7 @@ import {
   AUTO_CLOSE_DEFAULT_MIN_TICKS,
   AUTO_CLOSE_ELIGIBLE_SOURCES,
 } from './harness/improvements/auto-close-sources';
+import { agentReviewNormalExclusionSql } from './harness/improvements/agent-review-policy';
 
 /**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
@@ -1470,7 +1471,11 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
           )
         )
       )`);
-  return sql`(${base} AND ${watchdogRecoveryWindowExclusionSqlForIssueView(sql, c)})`;
+  return sql`(
+    ${base}
+    AND ${watchdogRecoveryWindowExclusionSqlForIssueView(sql, c)}
+    AND ${agentReviewNormalExclusionSql(sql, aliased ? 'ei.payload' : 'payload')}
+  )`;
 }
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {

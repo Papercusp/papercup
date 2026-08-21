@@ -81,7 +81,7 @@ export function agentReviewEligibility(candidate: AgentReviewCandidate):
 /** Normal implementation lane: review work is invisible until approved. */
 export function agentReviewNormalExclusionSql(
   sql: OrgSql,
-  payloadCol: 'wi.payload' | 'payload' = 'wi.payload',
+  payloadCol: 'wi.payload' | 'ei.payload' | 'payload' = 'wi.payload',
 ) {
   const payload = sql.unsafe(payloadCol);
   return sql`(
@@ -98,4 +98,3 @@ export function agentReviewPendingSelectorSql(
   const payload = sql.unsafe(payloadCol);
   return sql`COALESCE(${payload}, '{}'::jsonb) -> 'agentReview' ->> 'status' = 'pending'`;
 }
-

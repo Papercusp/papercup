@@ -85,6 +85,7 @@ import {
 import { issuesScopeWorkspace } from '../issues-engineer';
 import { isIssueLocallyClaimableWhereSql } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
+import { agentReviewNormalExclusionSql } from '../harness/improvements/agent-review-policy';
 
 /** A composed `sql` WHERE/ORDER-BY fragment (porsager pending-query — the type a bare
  *  `sql`...`` tagged template returns, so fragments compose by `${}` interpolation). */
@@ -813,6 +814,7 @@ export interface IssueClaimExclusionBreakdown {
     taken: number;
     claimHold: number;
     needsHuman: number;
+    agentReview: number;
     observationLane: number;
     externalBlocker: number;
     planLaneReserved: number;
@@ -869,7 +871,7 @@ export interface IssueClaimExclusionBreakdown {
  *  here fails immediately instead of silently widening the queue. Add a floor to the
  *  subquery ⇒ add it here. */
 export const ALL_ISSUE_CLAIM_FLOORS_PASS =
-  `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_observation ` +
+  `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_agent_review AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
   `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
   `AND ok_cooldown AND ok_origin`;
@@ -908,6 +910,7 @@ export function issueClaimCandidateSubquery(
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
       (${needsHumanExclusionSql(sql)})                                  AS ok_needs_human,
+      (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
       (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
       (${reservedPlanLaneExclusionSql(sql, assignee)})                  AS ok_plan_lane,
@@ -1006,6 +1009,7 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_human)::int     AS needs_human,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_agent_review)::int     AS agent_review,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int     AS observation_lane,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_external_blocker)::int AS external_blocker,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_plan_lane)::int       AS plan_lane_reserved,
@@ -1023,6 +1027,7 @@ export async function aggregateIssueClaimExclusions(
     taken: number;
     claim_hold: number;
     needs_human: number;
+    agent_review: number;
     observation_lane: number;
     external_blocker: number;
     plan_lane_reserved: number;
@@ -1042,6 +1047,7 @@ export async function aggregateIssueClaimExclusions(
       taken: r?.taken ?? 0,
       claimHold: r?.claim_hold ?? 0,
       needsHuman: r?.needs_human ?? 0,
+      agentReview: r?.agent_review ?? 0,
       observationLane: r?.observation_lane ?? 0,
       externalBlocker: r?.external_blocker ?? 0,
       planLaneReserved: r?.plan_lane_reserved ?? 0,
@@ -1065,6 +1071,7 @@ export interface IssueClaimExclusionSample {
   taken: string[];
   claimHold: string[];
   needsHuman: string[];
+  agentReview: string[];
   observationLane: string[];
   externalBlocker: string[];
   planLaneReserved: string[];
@@ -1146,6 +1153,7 @@ export async function sampleIssueClaimExclusions(
       ${sampleOf('NOT ok_untaken', '')}        AS taken,
       ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
       ${sampleOf('NOT ok_needs_human')}         AS needs_human,
+      ${sampleOf('NOT ok_agent_review')}         AS agent_review,
       ${sampleOf('NOT ok_observation')}         AS observation_lane,
       ${sampleOf('NOT ok_external_blocker')}    AS external_blocker,
       ${sampleOf('NOT ok_plan_lane')}           AS plan_lane_reserved,
@@ -1160,6 +1168,7 @@ export async function sampleIssueClaimExclusions(
     taken: string[];
     claim_hold: string[];
     needs_human: string[];
+    agent_review: string[];
     observation_lane: string[];
     external_blocker: string[];
     plan_lane_reserved: string[];
@@ -1176,6 +1185,7 @@ export async function sampleIssueClaimExclusions(
     taken: r?.taken ?? [],
     claimHold: r?.claim_hold ?? [],
     needsHuman: r?.needs_human ?? [],
+    agentReview: r?.agent_review ?? [],
     observationLane: r?.observation_lane ?? [],
     externalBlocker: r?.external_blocker ?? [],
     planLaneReserved: r?.plan_lane_reserved ?? [],
