@@ -56,13 +56,19 @@ import remember, { neighbourSearchQuery } from './remember';
 import { getMemoryBackend } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { getOrgPg } from '@papercusp/db-org';
+import { journalPendingWrite, markJournalCommitted } from '../../memory/write-journal';
 
 type FakeBackend = {
   name: string;
   available: ReturnType<typeof vi.fn>;
   remember: ReturnType<typeof vi.fn>;
   search: ReturnType<typeof vi.fn>;
+  get: ReturnType<typeof vi.fn>;
+  invalidateEntry: ReturnType<typeof vi.fn>;
 };
+
+const OLD_ID = '11111111-1111-4111-8111-111111111111';
+const NEW_ID = '22222222-2222-4222-8222-222222222222';
 
 const fakeBackend = (): FakeBackend => ({
   name: 'fake',
@@ -71,6 +77,10 @@ const fakeBackend = (): FakeBackend => ({
   // A neighbour is always available to return, so a test that sees zero
   // search calls is seeing the GATE, never an empty-store coincidence.
   search: vi.fn(async () => [{ id: 'n-1', text: 'an existing neighbour', scope: 'user-1', score: 0.5 }]),
+  get: vi.fn(async (id: string) => id === OLD_ID
+    ? { id, text: 'old fact', scope: 'user-1', metadata: { validity: { status: 'current' } } }
+    : null),
+  invalidateEntry: vi.fn(async () => true),
 });
 
 const fakeCtx = { principal: { workspaceId: 'ws-test' } } as unknown as Parameters<typeof remember.handler>[1];
@@ -84,6 +94,7 @@ const ENV_KEYS = [
 let saved: Record<string, string | undefined> = {};
 
 beforeEach(() => {
+  vi.clearAllMocks();
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   for (const k of ENV_KEYS) delete process.env[k];
   vi.mocked(getSessionUserOrDefault).mockResolvedValue({
@@ -93,6 +104,8 @@ beforeEach(() => {
   vi.mocked(getOrgPg).mockReturnValue({
     sql: vi.fn(async () => undefined) as unknown,
   } as unknown as ReturnType<typeof getOrgPg>);
+  vi.mocked(journalPendingWrite).mockResolvedValue(null);
+  vi.mocked(markJournalCommitted).mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -208,5 +221,80 @@ describe('P-009 class 2 — the neighbour-search query stays bounded', () => {
   it('honours an explicit opt-out (<= 0 restores the old unbounded query)', () => {
     process.env.PAPERCUSP_MEMORY_NEIGHBOUR_QUERY_CHARS = '0';
     expect(neighbourSearchQuery(LONG)).toBe(LONG);
+  });
+});
+
+describe('memory:remember supersession convergence', () => {
+  it.each([
+    ['unknown target', null, 'supersede_not_found'],
+    ['cross-scope target', { id: OLD_ID, text: 'old', scope: 'harness:other' }, 'supersede_scope_mismatch'],
+    ['entity target', { id: OLD_ID, text: 'old', scope: 'user-1', metadata: { entityType: 'person' } }, 'supersede_entity_forbidden'],
+  ])('rejects %s before journal or store mutation', async (_label, target, reason) => {
+    const b = fakeBackend();
+    b.get.mockResolvedValue(target);
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toMatchObject({ ok: false, reason });
+    expect(journalPendingWrite).not.toHaveBeenCalled();
+    expect(b.remember).not.toHaveBeenCalled();
+    expect(b.invalidateEntry).not.toHaveBeenCalled();
+  });
+
+  it('journals before storing and commits only after the old row closes', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    vi.mocked(journalPendingWrite).mockResolvedValue('journal-1');
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toMatchObject({ ok: true, ids: [NEW_ID], superseded: OLD_ID });
+    expect(b.invalidateEntry).toHaveBeenCalledWith(OLD_ID, { supersededBy: NEW_ID });
+    expect(markJournalCommitted).toHaveBeenCalledWith('journal-1', NEW_ID);
+    expect(vi.mocked(journalPendingWrite).mock.invocationCallOrder[0]).toBeLessThan(b.remember.mock.invocationCallOrder[0]);
+    expect(b.remember.mock.invocationCallOrder[0]).toBeLessThan(b.invalidateEntry.mock.invocationCallOrder[0]);
+  });
+
+  it('keeps a durable retry record when replacement stores but closing the old row fails', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    b.invalidateEntry.mockRejectedValue(new Error('close failed'));
+    vi.mocked(journalPendingWrite).mockResolvedValue('journal-2');
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toMatchObject({
+      ok: true,
+      ids: [NEW_ID],
+      superseded: false,
+      journaled: true,
+      will_retry: true,
+      journal_id: 'journal-2',
+    });
+    expect(markJournalCommitted).not.toHaveBeenCalled();
+  });
+
+  it('closes a losing replacement when another immutable winner wins the race', async () => {
+    const b = fakeBackend();
+    b.remember.mockResolvedValue({ ids: [NEW_ID] });
+    b.invalidateEntry.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    b.get
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'user-1', metadata: { validity: { status: 'current' } } })
+      .mockResolvedValueOnce({ id: OLD_ID, text: 'old', scope: 'user-1', metadata: { validity: { status: 'superseded', superseded_by: '33333333-3333-4333-8333-333333333333' } } });
+    useBackend(b);
+
+    const res = await remember.handler({ content: 'replacement', kind: 'reference', supersede: OLD_ID }, fakeCtx);
+    const parsed = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(parsed).toMatchObject({ ok: true, ids: [NEW_ID], superseded: false });
+    expect(parsed.supersede_note).toContain('another replacement won');
+    expect(b.invalidateEntry).toHaveBeenNthCalledWith(1, OLD_ID, { supersededBy: NEW_ID });
+    expect(b.invalidateEntry).toHaveBeenNthCalledWith(2, NEW_ID);
   });
 });

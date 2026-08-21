@@ -251,6 +251,12 @@ describe('temporal memory tool guidance (P-009 agent discipline)', () => {
 describe('memory:update supersedes (P-004 write path)', () => {
   it('patches the new fact, then closes the old one with superseded_by = new id', async () => {
     const b = fakeBackend();
+    b.get.mockImplementation(async (id: string) => ({
+      id,
+      text: id === NEW_ID ? 'memory embed default is harrier' : 'memory embed default is gemma',
+      scope: 'user-1',
+      metadata: { validity: { status: 'current', superseded_by: null } },
+    }));
     useBackend(b);
     const out = parse(
       await update.handler(
@@ -273,6 +279,12 @@ describe('memory:update supersedes (P-004 write path)', () => {
 
   it('a supersedes-ONLY item is valid: no patch call, just the window close', async () => {
     const b = fakeBackend();
+    b.get.mockImplementation(async (id: string) => ({
+      id,
+      text: id === NEW_ID ? 'memory embed default is harrier' : 'memory embed default is gemma',
+      scope: 'user-1',
+      metadata: { validity: { status: 'current', superseded_by: null } },
+    }));
     useBackend(b);
     const out = parse(await update.handler({ id: NEW_ID, supersedes: OLD_ID } as never, ctx));
     expect(out.results[0]).toMatchObject({ ok: true, id: NEW_ID, superseded: OLD_ID });
