@@ -6191,6 +6191,34 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
   });
 });
 
+describe("realCheckpointDeps.runGateAtRef — test-task rescue watchdog (EI-204898)", () => {
+  it("bounds test:* rescues with the batch watchdog and process-group kill, but leaves lint rescues unchanged", async () => {
+    let testOpts: Parameters<CheckpointExec>[2];
+    let lintOpts: Parameters<CheckpointExec>[2];
+    const exec: CheckpointExec = async (cmd, args, opts) => {
+      if (cmd === "npm" && args.includes("test:lane-stateful")) testOpts = opts;
+      if (cmd === "npm" && args.includes("lint:tsc")) lintOpts = opts;
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const deps = realCheckpointDeps(cfg(), exec);
+    // The production setupTree materializes a release checkout; this seam test only needs
+    // the real invocation wiring, so keep the checkout in the test repo and skip setup.
+    deps.setupTree = async () => {};
+
+    const result = await deps.runGateAtRef!("tip-sha", [
+      "@papercusp/operator-core :: test:lane-stateful",
+      "lint:tsc",
+    ]);
+
+    expect(result.pass).toBe(true);
+    expect(testOpts?.timeoutMs).toBeTypeOf("number");
+    expect(testOpts?.timeoutMs).toBeGreaterThan(0);
+    expect(testOpts?.killProcessGroupOnTimeout).toBe(true);
+    expect(lintOpts?.timeoutMs).toBeUndefined();
+    expect(lintOpts?.killProcessGroupOnTimeout).toBeUndefined();
+  });
+});
+
 // EI-18694489428714850: PAPERCUSP_RETAIN_DIST_CHUNKS had ZERO callers for weeks even though
 // the retention mechanism (WI-1484) was fully built — nothing ever set the env var that turns
 // it on for a one-shot build, so every gate-triggered SPA rebuild kept emptying dist/ and
