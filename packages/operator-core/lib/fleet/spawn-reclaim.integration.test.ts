@@ -418,7 +418,7 @@ describe('reclaimOrphanedSpawns: spawn-kind PID-reuse (Gap 12, real /proc cmdlin
 
 describe('spawnRowKind: launch-row handoff provenance (EI-20981156698708733)', () => {
   it('keeps an unhanded durable row as launch-owned while it has no pid', () => {
-    expect(spawnRowKind({ spawnId: 'durable-spawn:release-fix:1', runId: 'launch:key', pid: null }, 700)).toBe('launch');
+    expect(spawnRowKind({ spawnId: 'durable-spawn:release-fix:1', runId: 'launch:key', pid: null })).toBe('launch');
   });
 
   it('treats a durable row stamped with the route child pid as a supervised spawn', () => {
@@ -426,7 +426,7 @@ describe('spawnRowKind: launch-row handoff provenance (EI-20981156698708733)', (
   });
 
   it('preserves legacy in-process launch semantics for the firing process pid', () => {
-    expect(spawnRowKind({ spawnId: 's-legacy', runId: 'launch-legacy', pid: 700 }, 700)).toBe('launch');
+    expect(spawnRowKind({ spawnId: 's-legacy', runId: 'launch-legacy', pid: 700 })).toBe('launch');
   });
 });
 
@@ -1510,6 +1510,7 @@ describe('dead-holder claim release (reclaim frees taken_by/assignee/plan claims
   });
 
   it('boot reconcile frees the dead bee’s claim BEFORE relaunch, so the relaunched bee can re-claim under its new spawn id', async () => {
+    const originalBootId = launcherBootId();
     __setLauncherBootIdForTests('boot-now');
     try {
       await insertSpawn('s-boot-dead', 'running', 5, {
@@ -1527,7 +1528,7 @@ describe('dead-holder claim release (reclaim frees taken_by/assignee/plan claims
       expect(r.relaunched).toEqual(['s-boot-dead']);
       expect(claimStateAtRelaunch).toEqual([null]);
     } finally {
-      __setLauncherBootIdForTests(null);
+      __setLauncherBootIdForTests(originalBootId);
     }
   });
 });

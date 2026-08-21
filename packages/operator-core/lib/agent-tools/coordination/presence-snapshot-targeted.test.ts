@@ -25,7 +25,7 @@ const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock, find
   tier1Mock: vi.fn(async (..._a: unknown[]) => new Map()),
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
   fleetMock: vi.fn(async (..._a: unknown[]) => new Map()),
-  findLiveHostMock: vi.fn(() => null),
+  findLiveHostMock: vi.fn<(id: string) => { ownerId: string } | null>(() => null),
 }));
 // importOriginal spread (not a bare factory): real presence-wakeability — kept
 // real below via its own importOriginal — imports PRESENCE_STALE_MS from
