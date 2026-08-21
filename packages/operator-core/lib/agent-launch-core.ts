@@ -124,6 +124,69 @@ export function injectAccountArg(
   return { command: command.replace(PSU_TOKEN, `$1psu --account=${account}$2`), injected: true };
 }
 
+/**
+ * Launch-time mode overlay carried across a scripted spawn boundary.
+ *
+ * DRAIN is the only mode with a psu launch spelling today. Keep this payload
+ * deliberately small and closed: a caller may propagate the leader's durable
+ * mode row + standing instructions, but it must never smuggle arbitrary mode
+ * prose or an unbounded value into a shell command / bootstrap body.
+ */
+export type LaunchModeId = 'drain';
+
+export const LAUNCH_MODE_SUBJECT_MAX_CHARS = 200;
+export const LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS = 500;
+
+export interface LaunchMode {
+  mode: LaunchModeId;
+  subject: string | null;
+  instructions: string | null;
+  ownerDirected: boolean;
+}
+
+function boundedLaunchModeText(value: unknown, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().slice(0, maxChars);
+  return text || null;
+}
+
+/** Normalize an untrusted launch-mode value before it reaches argv or JSON. */
+export function normalizeLaunchMode(value: unknown): LaunchMode | null {
+  if (!value || typeof value !== 'object') return null;
+  const input = value as Record<string, unknown>;
+  if (input.mode !== 'drain') return null;
+  return {
+    mode: 'drain',
+    subject: boundedLaunchModeText(input.subject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
+    instructions: boundedLaunchModeText(input.instructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
+    ownerDirected: input.ownerDirected === true,
+  };
+}
+
+/**
+ * Resolve the launch overlay from the caller's durable mode row and standing
+ * fact. The inputs are intentionally structural so this shared core stays
+ * client-safe; callers read `agent_modes` / `mode-instructions:drain` once and
+ * hand the bounded result to every launch composer.
+ */
+export function resolveLaunchMode(opts: {
+  modeRows?: ReadonlyArray<{
+    mode?: unknown;
+    subject?: unknown;
+    ownerDirected?: unknown;
+  }>;
+  instructionsFact?: unknown;
+}): LaunchMode | null {
+  const drain = opts.modeRows?.find((row) => row?.mode === 'drain');
+  if (!drain) return null;
+  return normalizeLaunchMode({
+    mode: 'drain',
+    subject: drain.subject,
+    instructions: opts.instructionsFact,
+    ownerDirected: drain.ownerDirected,
+  });
+}
+
 /** A resume/fork target fully resolved to the exact session to act on. */
 export interface ResumeTarget {
   /** The native CLI session uuid `psu --resume` takes. */
@@ -271,6 +334,8 @@ export function buildAgentLaunchCommand(opts: {
   addDir?: string[] | null;
   /** psu --launch-context: path to a brief/markdown file injected as the launch context. */
   launchContext?: string | null;
+  /** Durable launch-mode overlay inherited from the launching session. */
+  launchMode?: LaunchMode | null;
   /**
    * psu --owner-id: PRE-PIN the launched session's coord identity instead of
    * letting bootstrap-su mint one (WI-5002/EI-13277 exist for exactly this
@@ -349,6 +414,15 @@ export function buildAgentLaunchCommand(opts: {
   if (opts.allowSubagents) parts.push('--allow-subagents');
   for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
   if (opts.launchContext) parts.push(`--launch-context=${quoteLaunchValue(opts.launchContext)}`);
+  if (opts.launchMode) {
+    const launchMode = normalizeLaunchMode(opts.launchMode);
+    if (launchMode) {
+      parts.push(`--mode=${launchMode.mode}`);
+      if (launchMode.subject) parts.push(`--mode-subject=${quoteLaunchValue(launchMode.subject)}`);
+      if (launchMode.instructions) parts.push(`--mode-instructions=${quoteLaunchValue(launchMode.instructions)}`);
+      if (launchMode.ownerDirected) parts.push('--mode-owner-directed');
+    }
+  }
   for (const a of opts.extraArgs ?? []) parts.push(safe('extraArg', a));
   return parts.join(' ');
 }
@@ -399,6 +473,8 @@ export interface MemberLaunchOpts {
   effort?: string;
   feature?: string;
   launchContext?: string;
+  /** Durable launch-mode overlay inherited from the launching session. */
+  launchMode?: LaunchMode | null;
   profile?: string;
   contextSize?: 'full' | 'trimmed';
   /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch
@@ -640,6 +716,15 @@ export function memberLaunchCommand(opts: MemberLaunchOpts): string {
   if (opts.allowSubagents) parts.push('--allow-subagents');
   if (opts.seat) parts.push(`--seat=${quoteLaunchValue(opts.seat)}`);
   for (const dir of opts.addDir ?? []) if (dir) parts.push(`--add-dir=${quoteLaunchValue(dir)}`);
+  if (opts.launchMode) {
+    const launchMode = normalizeLaunchMode(opts.launchMode);
+    if (launchMode) {
+      parts.push(`--mode=${launchMode.mode}`);
+      if (launchMode.subject) parts.push(`--mode-subject=${quoteLaunchValue(launchMode.subject)}`);
+      if (launchMode.instructions) parts.push(`--mode-instructions=${quoteLaunchValue(launchMode.instructions)}`);
+      if (launchMode.ownerDirected) parts.push('--mode-owner-directed');
+    }
+  }
   for (const arg of opts.extraArgs ?? []) if (arg) parts.push(quoteLaunchValue(arg));
   return parts.join(' ');
 }
