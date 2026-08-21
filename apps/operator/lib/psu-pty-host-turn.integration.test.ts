@@ -867,8 +867,10 @@ describe(
         // gate releases and the (now-settled) recycle proceeds: kill + respawn. The
         // FRESH child runs the SAME script, so it busy-emits '.' for another ~900ms
         // before the carry-inject retry loop's own waitAtPrompt lets the carry land —
-        // budget generously for both busy windows + the respawn/boot overhead.
-        await sleep(3200);
+        // Wait on the outcome rather than a fixed wall-clock guess: under a
+        // loaded full gate the same two busy windows can exceed 3.2s even
+        // though the bounded carry retry is still progressing normally.
+        expect(await waitForOutput(captured, 'ECHO:CARRIED', 6000)).toBe(true);
         const bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
         expect(bootsAfter).toHaveLength(2); // the recycle DID eventually fire, once settled
         expect(bootsAfter[1]).not.toBe(bootsAfter[0]);

@@ -30,6 +30,7 @@ import type { FlagKey } from '@papercusp/flags';
 
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
+import { getOrgPg } from '@papercusp/db-org';
 
 /** The operator-state key holding the `{ [flagKey]: boolean }` override map. */
 export const FLAG_OVERRIDES_STATE_KEY = 'operator_flag_overrides';
@@ -57,7 +58,6 @@ let warnedNotifyFailed = false;
  */
 async function notifyFlagChange(key: FlagKey): Promise<void> {
   try {
-    const { getOrgPg } = await import('@papercusp/db-org');
     const payload = JSON.stringify({ workspaceId: activeWorkspaceId(), key });
     await getOrgPg().sql`SELECT pg_notify(${FLAG_CHANGE_CHANNEL}, ${payload})`;
   } catch (err) {
