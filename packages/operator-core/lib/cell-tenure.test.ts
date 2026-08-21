@@ -232,6 +232,20 @@ describe('the registry declares what the rule needs', () => {
     ).toEqual([]);
   });
 
+  /**
+   * FALSIFIABILITY CONTROL for the guard above. That guard passes today because
+   * all 10 registrations were dated — which is indistinguishable from a guard whose
+   * predicate detects nothing. A synthetic undated spec proves the predicate still
+   * fires. Kept in the test file rather than mutating cell-registrations.ts: an
+   * in-tree mutation can be committed by the git-sync sweep even when nothing goes
+   * wrong (CLAUDE.md, "Proving a guard is falsifiable").
+   */
+  it('DELIBERATE VIOLATION: an undated spec is detected by the same predicate', () => {
+    const withAMissingDate = [...BUILTIN_CELLS, { cell: 'synthetic.undated' } as (typeof BUILTIN_CELLS)[number]];
+
+    expect(withAMissingDate.filter((c) => !c.registeredOn).map((c) => c.cell)).toEqual(['synthetic.undated']);
+  });
+
   it('every declared registeredOn parses as a real date and is not in the future', () => {
     for (const spec of BUILTIN_CELLS) {
       if (!spec.registeredOn) continue;

@@ -50,6 +50,15 @@ import {
   wasStaleAtDeclaration,
   type AssumptionCondition,
 } from './agent-facts/assumptions';
+import { listCellsUnchecked } from './cell-registry';
+import {
+  composeCellTenure,
+  formatCellTenureLog,
+  CELL_TENURE_WINDOW_DAYS,
+  type CellReadCount,
+  type CellTenureLine,
+  type CellTenureSubject,
+} from './cell-tenure';
 import {
   composePlaneMeasurement,
   isStructuralZero,
@@ -161,6 +170,74 @@ export async function loadCallAggregates(opts: {
        AND invoked_at <  ${end}
   `;
   return rows[0] ?? { calls: 0, attributed: 0, clarification_calls: 0, enriched_calls: 0, enriched_sized: 0, enriched_bytes: 0 };
+}
+
+/**
+ * P-008 — per-cell demand over the window, for the tenure verdict.
+ *
+ * Counts `state:read` rows, which is the SAME source the ADMISSION rule counts
+ * ("a read with 0 calls is never promoted", measured from `tool_invocations`).
+ * Deliberately not a second derivation of "how adopted is this cell": a tenure
+ * rule that disagreed with the admission rule it is the counterpart to would be
+ * the axis-5 / D-038 defect this module's header already refuses for the
+ * divergence numbers.
+ *
+ * Cells that were never read simply do not appear — absence IS the signal, so the
+ * caller must supply the registered population separately and treat a miss as zero.
+ */
+export async function loadCellReadCounts(opts: {
+  workspaceId: string;
+  windowStartMs: number;
+  windowEndMs: number;
+  sql?: Sql;
+}): Promise<Map<string, CellReadCount>> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const start = new Date(opts.windowStartMs).toISOString();
+  const end = new Date(opts.windowEndMs).toISOString();
+  const rows = await sql<{ cell: string; reads: string | number; callers: string | number }[]>`
+    SELECT args_json->>'cell'              AS cell,
+           count(*)                        AS reads,
+           count(DISTINCT coord_owner_id)  AS callers
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${opts.workspaceId}
+       AND tool_name = 'state:read'
+       AND args_json->>'cell' IS NOT NULL
+       AND invoked_at >= ${start}
+       AND invoked_at <  ${end}
+     GROUP BY 1
+  `;
+  return new Map(rows.map((r) => [r.cell, { reads: num(r.reads), callers: num(r.callers) }]));
+}
+
+/**
+ * P-008 — the OBSERVABILITY horizon: the oldest `tool_invocations` row still
+ * retained, in epoch ms, or null when the table is empty.
+ *
+ * This is what stops "pruned history" being read as "no demand". It is measured
+ * rather than assumed from {@link TOOL_INVOCATIONS_RETENTION_DAYS} on purpose: the
+ * constant states the retention POLICY, and a policy is not evidence that the
+ * pruning routine actually ran, or that the table is as old as it is allowed to be.
+ * A fresh database is the obvious case — every cell would otherwise read as
+ * dormant on day one.
+ *
+ * Not scoped to `state:read`: the horizon is a property of the TABLE's retention,
+ * and scoping it to one tool would date the tool's first use instead — which for a
+ * cell nobody reads is exactly the circularity the tenure rule exists to avoid.
+ */
+export async function loadTelemetryHorizonMs(opts: {
+  workspaceId: string;
+  sql?: Sql;
+}): Promise<number | null> {
+  const sql = opts.sql ?? getOrgPg().sql;
+  const rows = await sql<{ oldest: Date | string | null }[]>`
+    SELECT min(invoked_at) AS oldest
+      FROM harness_shared.tool_invocations
+     WHERE workspace_id = ${opts.workspaceId}
+  `;
+  const oldest = rows[0]?.oldest ?? null;
+  if (oldest == null) return null;
+  const ms = oldest instanceof Date ? oldest.getTime() : Date.parse(String(oldest));
+  return Number.isFinite(ms) ? ms : null;
 }
 
 /**
@@ -363,12 +440,62 @@ export interface PlaneMeasurementDeps {
   /** Injected for tests; the default reads the series' newest row. */
   lastMeasuredAtMs?: () => Promise<number | null>;
   recordMeasurement?: (m: PlaneMeasurement, ctx: { workspaceId: string; harnessSlug: string }) => Promise<void>;
+  /** P-008 — injected for tests; the defaults read PG and the live registry. */
+  loadCellReadCounts?: typeof loadCellReadCounts;
+  loadTelemetryHorizonMs?: typeof loadTelemetryHorizonMs;
+  listRegisteredCells?: () => CellTenureSubject[];
 }
 
 export type PlaneSweepOutcome =
-  | { outcome: 'recorded'; measurement: PlaneMeasurement }
+  | { outcome: 'recorded'; measurement: PlaneMeasurement; tenure?: CellTenureLine[] }
   | { outcome: 'skipped'; reason: string }
   | { outcome: 'error'; reason: string };
+
+/**
+ * P-008 — the tenure verdict for every registered cell.
+ *
+ * FAIL-SOFT on its own, for the same reason the commitment leg is: a fault in the
+ * newest leg must not cost the window every OTHER metric. It degrades to `null`,
+ * which the caller reports as "not evaluated" rather than as an empty registry —
+ * an empty tenure list would read as "no cells to assess", the precise misread the
+ * whole rule is built to prevent.
+ */
+async function evaluateCellTenure(
+  deps: PlaneMeasurementDeps,
+  workspaceId: string,
+  nowMs: number,
+): Promise<CellTenureLine[] | null> {
+  try {
+    const windowStartMs = nowMs - CELL_TENURE_WINDOW_DAYS * 86_400_000;
+    const [reads, horizon] = await Promise.all([
+      (deps.loadCellReadCounts ?? loadCellReadCounts)({
+        workspaceId,
+        windowStartMs,
+        windowEndMs: nowMs,
+        sql: deps.sql,
+      }),
+      (deps.loadTelemetryHorizonMs ?? loadTelemetryHorizonMs)({ workspaceId, sql: deps.sql }),
+    ]);
+    const registered = (deps.listRegisteredCells ?? defaultListRegisteredCells)();
+    return composeCellTenure({ registered, reads, nowMs, observableSinceMs: horizon });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The registered population, from the LIVE registry.
+ *
+ * `listCellsUnchecked` is correct here and `listCells(reader)` is not: a background
+ * sweep has NO reader identity, and manufacturing a synthetic principal to obtain
+ * one is how P-030's enrichment broke (see this module's header). This is an
+ * INVENTORY read — it counts the registry and never serves a cell's value to an
+ * agent — which is the case cell-access-parity's CALL_SITE_ALLOWLIST exists for,
+ * and this call site is listed there with that reason.
+ */
+function defaultListRegisteredCells(): CellTenureSubject[] {
+  return listCellsUnchecked().map((c) => ({ cell: c.cell, registeredOn: c.registeredOn }));
+}
 
 /** Newest reading in the series, for the once-per-window gate. */
 async function defaultLastMeasuredAtMs(
@@ -570,7 +697,13 @@ export async function planeMeasurementSweep(
       ? deps.recordMeasurement(measurement, { workspaceId, harnessSlug })
       : defaultRecordMeasurement(measurement, { workspaceId, harnessSlug }, deps.sql));
 
-    return { outcome: 'recorded', measurement };
+    // P-008 — the tenure verdict rides the same window and the same once-per-window
+    // gate, so the cut-or-keep line cannot be emitted more often than the metrics it
+    // sits beside. Null (its leg failed) is omitted rather than reported as an empty
+    // registry; see evaluateCellTenure.
+    const tenure = await evaluateCellTenure(deps, workspaceId, now);
+
+    return tenure ? { outcome: 'recorded', measurement, tenure } : { outcome: 'recorded', measurement };
   } catch (e) {
     return { outcome: 'error', reason: e instanceof Error ? e.message : String(e) };
   }
@@ -601,3 +734,5 @@ export function formatMeasurementLog(m: PlaneMeasurement): string {
 }
 
 export { isStructuralZero, isConcerningZero, metricVerdict, explainZero };
+/** P-008 — re-exported so the routine reads its tenure line from the sweep it called. */
+export { formatCellTenureLog };

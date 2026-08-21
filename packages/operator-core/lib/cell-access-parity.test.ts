@@ -346,6 +346,21 @@ const CALL_SITE_ALLOWLIST: Record<string, string> = {
   // into a silently wrong handle. First-match-then-check is the deterministic order.
   'packages/operator-core/lib/events/await/predicate-watch.ts':
     'derives the P-001 reread handle: enumerates by (tool, path), then audience-checks against the WATCH ROW\'s identity',
+  // P-008 / D-012 — the tenure sweep COUNTS the registry; it never serves a cell's
+  // value to anyone. Its output is a per-cell cut-or-keep verdict derived from
+  // `state:read` call volume, and the only cell data that leaves the function is the
+  // id and its declared registration date — both of which the verdict is ABOUT.
+  //
+  // `listCells(reader)` is not available to it and would be wrong if it were: a
+  // background sweep has no reader identity, and minting a synthetic principal to
+  // obtain one is exactly how P-030's enrichment broke (agent-plane-measurement-sweep's
+  // header records that `resolveAgentIdentity` throws for an unattributable caller).
+  // An audience-FILTERED population would also silently corrupt the measurement —
+  // cells invisible to whatever principal was manufactured would read as "not
+  // registered" rather than "not assessed", i.e. they would vanish from a census
+  // whose entire job is to be complete.
+  'packages/operator-core/lib/agent-plane-measurement-sweep.ts':
+    'P-008 tenure census: counts the registry to emit a cut-or-keep verdict per cell; inventory only, never serves a value',
 };
 
 function scanForBypassCallSites(rootDir: string, repoRoot: string): string[] {

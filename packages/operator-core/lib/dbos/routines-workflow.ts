@@ -1174,13 +1174,20 @@ async function routinesTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { planeMeasurementSweep, formatMeasurementLog } = await import('../agent-plane-measurement-sweep');
+        const { planeMeasurementSweep, formatMeasurementLog, formatCellTenureLog } = await import(
+          '../agent-plane-measurement-sweep'
+        );
         const out = await planeMeasurementSweep({ divergence: divergenceReport ?? null });
         if (out.outcome === 'error') console.warn(`[plane-measurement] ${out.reason}`);
         // Logged in full: the line leads with how much is MEASURABLE and names the
         // missing producer behind each structural zero, because "0 divergences, 0
         // conflicts" is the exact misread D-087/D-089 were written to prevent.
-        else if (out.outcome === 'recorded') console.info(formatMeasurementLog(out.measurement));
+        else if (out.outcome === 'recorded') {
+          console.info(formatMeasurementLog(out.measurement));
+          // P-008 — the tenure cut-or-keep line. Absent when its leg failed, which is
+          // NOT the same as an empty registry and must not print as one.
+          if (out.tenure) console.info(formatCellTenureLog(out.tenure));
+        }
       } catch (e) {
         console.warn(`[plane-measurement] sweep failed: ${e instanceof Error ? e.message : e}`);
       }
