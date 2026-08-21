@@ -19,6 +19,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readdirSync,
@@ -570,6 +571,123 @@ describe("EI-21007486441633274: real frozen-repair ancestry reconciliation", () 
       if (priorHarness === undefined)
         delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
       else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
+  it("populates submodule working trees so a fixer can reproduce the red it was sent to fix", async () => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-repair-submodule-"));
+    const subOrigin = join(root, "sub.git");
+    const subWork = join(root, "sub-work");
+    const repo = join(root, "work");
+    // Submodule clones over a local path are refused by default since CVE-2022-39253.
+    // Production submodule URLs are ssh, so this is a FIXTURE concession only — it lets
+    // the local submodule clone at all and never weakens the assertions below.
+    const allowFile = ["-c", "protocol.file.allow=always"];
+    mkdirSync(repo);
+    mkdirSync(subWork);
+    const git = (cwd: string, ...args: string[]) => {
+      const result = spawnSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+        },
+      });
+      if (result.status !== 0) {
+        throw new Error(
+          `git ${args.join(" ")} failed: ${result.stderr || result.stdout}`,
+        );
+      }
+      return result.stdout.trim();
+    };
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+    const priorProtocol = process.env.GIT_ALLOW_PROTOCOL;
+
+    try {
+      // A submodule carrying a file the superproject reaches by RELATIVE path — the exact
+      // shape (packages/operator-core/test/_org-test-db.ts -> ../../../libs/papercusp/...)
+      // that node_modules resolution can never repair.
+      // -b main so the bare repo's HEAD names the branch we push; without it the clone
+      // lands on an unborn default branch and the submodule checkout fails.
+      git(root, "init", "--bare", "-q", "-b", "main", subOrigin);
+      git(subWork, "init", "-q", "-b", "main");
+      git(subWork, "config", "user.email", "fixture@example.invalid");
+      git(subWork, "config", "user.name", "fixture");
+      writeFileSync(join(subWork, "raw-serializers.ts"), "export const x = 1;\n");
+      git(subWork, "add", "-A");
+      git(subWork, "commit", "-qm", "sub");
+      git(subWork, "push", "-q", subOrigin, "main");
+
+      git(repo, "init", "-q", "-b", "staging");
+      git(repo, "config", "user.email", "fixture@example.invalid");
+      git(repo, "config", "user.name", "fixture");
+      writeFileSync(join(repo, "a"), "1");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "ready");
+      const base = git(repo, "rev-parse", "HEAD");
+      git(repo, ...allowFile, "submodule", "add", "-q", subOrigin, "libs/sub");
+      git(repo, "add", "-A");
+      git(repo, "commit", "-qm", "add submodule");
+      const repairHead = git(repo, "rev-parse", "HEAD");
+
+      process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+      process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+      // The subject's submodule clone is its own `git clone` subprocess and does NOT
+      // inherit the superproject's local `protocol.file.allow`, so the fixture grants the
+      // file transport through the environment the subject forwards. Real submodule URLs
+      // are ssh and never take this path.
+      process.env.GIT_ALLOW_PROTOCOL = "file:git:ssh:https";
+      const deps = realCheckpointDeps({
+        ...cfg,
+        integrationRoot: repo,
+        releaseRoot: repo,
+        checkpointRoot: repo,
+        integrationBranch: "staging",
+      });
+
+      const worktreePath = join(root, "repair-worktree");
+      await deps.prepareFrozenRepairWorktree?.({
+        schemaVersion: 2,
+        phase: "awaiting-fixer",
+        candidate: repairHead,
+        base,
+        repairHead,
+        worktreePath,
+        attempts: 1,
+        openedAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now(),
+        fixerSpawnId: "fixture-fixer",
+        failingTests: ["lint:tsc"],
+      });
+
+      // The superproject checkout itself (a plain `git worktree add` already does this).
+      expect(existsSync(join(worktreePath, "a"))).toBe(true);
+
+      // THE GUARD: the submodule WORKING TREE. `git worktree add` alone leaves this
+      // absent, which made lint:tsc fail TS2307 "Cannot find module" in the repair tree
+      // no matter what the fixer edited — three fixers were dispatched on candidate
+      // 3a3e4587 and `repairHead` never advanced. Drop the submodule init from
+      // prepareFrozenRepairWorktree and these two expectations fail.
+      expect(existsSync(join(worktreePath, "libs", "sub", "raw-serializers.ts"))).toBe(
+        true,
+      );
+      // git's own verdict: a leading '-' on any line means "not initialized".
+      expect(git(worktreePath, "submodule", "status")).not.toMatch(/^-/m);
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      if (priorProtocol === undefined) delete process.env.GIT_ALLOW_PROTOCOL;
+      else process.env.GIT_ALLOW_PROTOCOL = priorProtocol;
       rmSync(root, { recursive: true, force: true });
     }
   });
