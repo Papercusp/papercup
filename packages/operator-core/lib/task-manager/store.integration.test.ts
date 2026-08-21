@@ -95,6 +95,39 @@ describe('clearVanishedUnaccounted (EI-18824358724907941)', () => {
   });
 });
 
+describe('upsertUnaccounted scope identity', () => {
+  it('persists managed scope_unit canonically and backfills it on conflict without erasing it', async () => {
+    const group = {
+      taskId: 't-scope-unit',
+      cgroupPath: '/sys/fs/cgroup/papercusp.slice/pc-t-scope-unit.scope',
+      scopeUnit: null as string | null,
+      pids: [11],
+      sampleCmdline: 'managed residue',
+    };
+
+    await store.upsertUnaccounted([group], { workspaceId: WS });
+    let [row] = await db.sql`
+      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+    `;
+    expect(row!.scope_unit).toBeNull();
+
+    await store.upsertUnaccounted(
+      [{ ...group, scopeUnit: 'pc-t-scope-unit.scope', pids: [12] }],
+      { workspaceId: WS },
+    );
+    [row] = await db.sql`
+      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+    `;
+    expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
+
+    await store.upsertUnaccounted([{ ...group, pids: [13] }], { workspaceId: WS });
+    [row] = await db.sql`
+      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = ${group.taskId}
+    `;
+    expect(row!.scope_unit).toBe('pc-t-scope-unit.scope');
+  });
+});
+
 /**
  * D-014 (process-lifecycle-no-orphans-2026-08-02). `markSpawned` stamps the
  * unconfined REASON into `detail`, which is shared jsonb other writers already use —

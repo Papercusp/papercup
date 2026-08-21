@@ -418,15 +418,16 @@ export async function upsertUnaccounted(
     await sql`
       INSERT INTO harness_shared.task_ledger (
         task_id, workspace_id, root_task_id, class, title, argv,
-        launched_by, cgroup_path, pid, confined, state, detail
+        launched_by, scope_unit, cgroup_path, pid, confined, state, detail
       ) VALUES (
         ${g.taskId}, ${ws}, ${g.taskId}, 'other',
         ${g.sampleCmdline.slice(0, 200) || '(unknown)'},
-        '[]'::jsonb, 'unknown', ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
+        '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
         ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::jsonb
       )
       ON CONFLICT (task_id) DO UPDATE
-        SET last_seen_at = now(),
+        SET scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
+            last_seen_at = now(),
             updated_at = now(),
             state = CASE WHEN harness_shared.task_ledger.ended_at IS NULL
                          THEN 'unaccounted' ELSE harness_shared.task_ledger.state END,
