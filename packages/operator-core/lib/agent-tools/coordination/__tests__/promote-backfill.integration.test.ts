@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import promoteTool from '../tools/promote';
 import {
+  cleanupPlans,
   setupPlanPgFixture,
   seedPlan,
   type PlanPgFixture,
@@ -33,6 +34,9 @@ const PARENT_HARNESS = operatorHomeHarnessSlug();
 const RUN = Math.random().toString(36).slice(2, 8);
 const SLUG = `zzz-promote-backfill-${RUN}-2026-07-10`;
 const EMPTY_SLUG = `zzz-promote-backfill-empty-${RUN}-2026-07-10`;
+const SCOPED_HARNESS = `zzz-promote-backfill-scope-${RUN}`;
+const SCOPED_SLUG = `zzz-promote-backfill-scoped-${RUN}-2026-08-21`;
+const SCOPED_FEATURE_ID = `F-BACKFILL-SCOPED-${RUN.toUpperCase()}`;
 
 /** A plan with NO `## Promote` policy and NO `## Promoted` record block —
  *  the exact shape lint's `missing_promoted_block` flags once features
@@ -85,19 +89,23 @@ status: active
 let fx: PlanPgFixture;
 let admin: postgres.Sql;
 
-function makeCtx() {
+function makeCtx(harnessSlug?: string) {
   return {
     log: () => {},
     progress: () => {},
     metadata: () => {},
     signal: new AbortController().signal,
     workspaceId: PAPERCUSP_WORKSPACE_ID,
+    ...(harnessSlug ? { harnessSlug } : {}),
     principal: { kind: 'agent', slug: 'agent-promote-backfill-test', workspaceId: PAPERCUSP_WORKSPACE_ID },
   } as never;
 }
 
-async function runPromote(args: Record<string, unknown>): Promise<{ data: any; isError: boolean }> {
-  const res = (await promoteTool.handler(args as never, makeCtx())) as {
+async function runPromote(
+  args: Record<string, unknown>,
+  harnessSlug?: string,
+): Promise<{ data: any; isError: boolean }> {
+  const res = (await promoteTool.handler(args as never, makeCtx(harnessSlug))) as {
     content: { text: string }[];
     isError?: boolean;
   };
@@ -109,6 +117,13 @@ beforeAll(async () => {
   admin = fx.admin;
   await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, SLUG, backfillPlanContent(SLUG));
   await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, EMPTY_SLUG, emptyPlanContent(EMPTY_SLUG));
+  await seedPlan(
+    admin,
+    PAPERCUSP_WORKSPACE_ID,
+    SCOPED_HARNESS,
+    SCOPED_SLUG,
+    backfillPlanContent(SCOPED_SLUG),
+  );
 
   // Seed the "already promoted" features directly — as if a prior promote
   // (or an out-of-band import) minted these against this plan before the
@@ -118,12 +133,14 @@ beforeAll(async () => {
       (harness_slug, feature_id, title, status, workspace_id, source_plan_slug, source_plan_item_ids, wave, feature_order)
     VALUES
       (${PARENT_HARNESS}, 'F-BACKFILL-001', 'Foundation work (already promoted)', 'todo', ${PAPERCUSP_WORKSPACE_ID}, ${SLUG}, ARRAY['P-001'], 'w1', 1),
-      (${PARENT_HARNESS}, 'F-BACKFILL-002', 'Second item (already promoted)', 'todo', ${PAPERCUSP_WORKSPACE_ID}, ${SLUG}, ARRAY['P-002'], 'w1', 2)
+      (${PARENT_HARNESS}, 'F-BACKFILL-002', 'Second item (already promoted)', 'todo', ${PAPERCUSP_WORKSPACE_ID}, ${SLUG}, ARRAY['P-002'], 'w1', 2),
+      (${SCOPED_HARNESS}, ${SCOPED_FEATURE_ID}, 'Harness-scoped promoted feature', 'todo', ${PAPERCUSP_WORKSPACE_ID}, ${SCOPED_SLUG}, ARRAY['P-001'], 'w1', 1)
   `;
 }, 120_000);
 
 afterAll(async () => {
-  await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE feature_id IN ('F-BACKFILL-001', 'F-BACKFILL-002')`.catch(() => {});
+  await admin`DELETE FROM harness_shared.harness_features_consolidated WHERE feature_id IN ('F-BACKFILL-001', 'F-BACKFILL-002', ${SCOPED_FEATURE_ID})`.catch(() => {});
+  await cleanupPlans(admin, PAPERCUSP_WORKSPACE_ID, SCOPED_HARNESS).catch(() => {});
   await admin`DELETE FROM harness_shared.harness_plans WHERE plan_slug IN (${SLUG}, ${EMPTY_SLUG})`.catch(() => {});
   await admin`DELETE FROM harness_shared.plan_revisions WHERE plan_slug IN (${SLUG}, ${EMPTY_SLUG})`.catch(() => {});
   await fx.dispose();
@@ -181,5 +198,26 @@ describe('plans:promote — WI-3972 backfill of ## Promoted (no policy, already-
     expect(isError).toBe(true);
     expect(data.ok).toBe(false);
     expect(data.error).toBe('no_promote_policy');
+  });
+
+  it('resolves and writes back a plan owned by the caller\'s concrete harness scope', async () => {
+    const { data, isError } = await runPromote(
+      { slug: SCOPED_SLUG, apply: true },
+      SCOPED_HARNESS,
+    );
+    expect(isError).toBe(false);
+    expect(data.ok).toBe(true);
+    expect(data.mode).toBe('backfill');
+    expect(data.backfilled.feature_ids).toEqual([SCOPED_FEATURE_ID]);
+
+    const rows = await admin<{ harness_slug: string; content: string }[]>`
+      SELECT harness_slug, content
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID}
+         AND plan_slug = ${SCOPED_SLUG}
+    `;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].harness_slug).toBe(SCOPED_HARNESS);
+    expect(rows[0].content).toMatch(new RegExp(SCOPED_FEATURE_ID));
   });
 });
