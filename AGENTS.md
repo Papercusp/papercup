@@ -192,16 +192,6 @@ stale-docs-to-mistrust list:
 Some code is **retired but deliberately kept** — not deleted, not deployed, not
 tested, not to be extended. 
 
-## Borrowable libraries — generic-first
-
-Domain-free libs live as standalone submodules under `libs/generic/*`; the
-catalog is `BORROWABLE.md` (generated — `npm run gen:borrowable`). **A genuinely
-domain-free algorithm STARTS as `libs/generic/<name>` behind a `configure*()`
-seam** — never inside `operator-core/lib` to be extracted later. `npm run
-lint:generic-first` (advisory) flags violations; incidental keyword hits go in
-the `ALLOW` set in `scripts/check-generic-first.mjs`. Long form + the seam
-pattern: [repo-conventions § borrowable](/internal/docs/system/repo-conventions).
-
 ## This app is in testing — there are no users yet
 
 There is no production. **Don't defer fixes for "let's see how it fares in
@@ -277,6 +267,31 @@ Code-truth refusal codes are `plan_items_unfinished`, `acceptance_unaudited`, `a
 `force:{ reason }` on the ship write waives ONLY the four code-truth checks and appends a permanent, actor-attributed `forcedPast` marker naming every waived check. It NEVER waives rubric existence, vetting, independent grading, or the implementer's verdict.
 
 Do NOT author the acceptance rubric at plan creation or maintain it mid-implementation; it is deliberately authored against as-built reality. Full payloads, citation-root rules, and repair recipes: [Plan completion — code-truth audit, acceptance grading, and ship verdict](/internal/docs/agent-insights/acceptance-rubrics-on-every-plan-runbook). Vetting detail: [Acceptance rubric vetting](/internal/docs/agent-insights/acceptance-rubric-vetting).
+
+
+## Verify mixed-family work-item citations against the base table
+
+When checking whether a work-item citation is real, do not treat a zero-row
+lookup in `harness_shared.engineer_issues` as proof that the citation is
+fabricated. `engineer_issues` is an issue-family view (bug/change/task) with
+harness scope; it does not cover feature-family `WI-`/`F-` rows. Those rows live
+in the canonical `harness_shared.work_items` table under `feature_id`, so a
+mixed `EI-`/`WI-`/`F-` citation set must be checked there (or with
+`work_items:get`) before an absence claim is made. Preserve the applicable
+`workspace_id` and `harness_slug` predicates when using the base-table query:
+
+```sql
+SELECT feature_id, item_kind, status, workspace_id, harness_slug
+  FROM harness_shared.work_items
+ WHERE workspace_id = '<workspace-id>'
+   AND harness_slug = '<harness-slug>'
+   AND feature_id IN ('<EI-or-WI-or-F-id>', ...);
+```
+
+The view's `issue_id` and the base table's `feature_id` are relation-specific;
+neither relation uses a generic `id` column for this check. Only call a
+citation fabricated after the family-correct lookup and a nearby-id sanity
+check both support genuine absence.
 
 
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
@@ -462,28 +477,6 @@ stale, restart the *right* host and re-probe. Detail:
 
 Two `/internal/docs` sections are **required reading before the corresponding
 work**, not optional references. Check them *first*, then act:
-
-- **Before ANY design work** — new or changed UI, an API/schema shape, an
-  architecture, or a new durable surface (component, tool, table, service) —
-  read the **design docs** at [`/internal/docs/design`](/internal/docs/design)
-  and check the `design-phase:*` tools (the DTCG token set + component registry)
-  for what already exists. Don't hand-roll a design without checking the system
-  first.
-- **Before ANY testing work** — writing, adding, or changing tests, or verifying
-  behavior — read the **testing docs** at
-  [`/internal/docs/testing`](/internal/docs/testing) (+
-  [`/internal/docs/testing/agent-e2e`](/internal/docs/testing/agent-e2e) for UI).
-  They say which of the four canonical frameworks to use and how (see also
-  "Where new tests go" below).
-
-## Read this before changing code — performance anti-patterns
-
-Performance regressions here repeatedly come from the same small set of patterns
-(serial fs loops, per-slug PG-pool opens, `<details>` gating, duplicate React
-keys, stale Radix pointer-events overrides, …). **Read
-`/internal/docs/performance` before any non-trivial change** — especially the
-"What NOT to do" sections (A1–A14). If your change matches an anti-pattern,
-change the approach first.
 
 ## Storage policy: Postgres by default
 
@@ -919,15 +912,6 @@ locks:release_resource { lock_id: '<returned lock_id>' }
 
 Holding it, pass `--sweep-lock-held` so the probe records which choice you made; `--accept-sweep-race` is the escape when the checkout is not swept.
 
-## Browser checks — use `verdict`
-
-Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
-MCP tools or ad-hoc Puppeteer. Playwright is only for running/extending the
-committed `apps/operator/e2e/*.spec.ts` suite. `verdict` is for
-**arbitrary/external** pages — operator UI (`:3055`/`:3070`) is verified inside
-the **Tauri shell** per `/internal/docs/testing/agent-e2e`, never by pointing
-verdict at those ports.
-
 ## Use Context7 for current library docs
 
 Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
@@ -991,3 +975,23 @@ scenarios** `packages/operator-core/lib/llm-testing/scenarios/<role>/`. **Never*
 fires for a new subsystem, widen a domain in
 `packages/operator-core/lib/testing-domains-registry.ts` then `npm run
 gen:contract` (root). See `/internal/docs/testing` §1.0a.
+
+## Trimmed to fit this client’s budget
+
+> ⚠ **4 part(s) (2,106 chars) did not fit this client's
+> 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
+> deprecated — they are canonical rows in Postgres, and this list is how you find them:
+>
+> ```sql
+> SELECT part_key, target_section, body FROM harness_shared.harness_doc_parts
+>  WHERE doc_id = 'claude-md' AND tombstone = false AND part_key = ANY(...);
+> ```
+>
+> A rule appearing here means the budget, not a decision, removed it. If one of these
+> matters more than something still above, change its `project_rank` — do not re-add it
+> by hand, which the next projection would undo.
+
+- `borrowable-libraries-generic-domain-free-libs-li` — *Borrowable libraries — generic-first* — Domain-free libs live as standalone submodules under `libs/generic/*`; the
+- `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
+- `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
+- `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
