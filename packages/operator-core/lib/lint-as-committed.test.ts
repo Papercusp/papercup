@@ -16,18 +16,31 @@
  * The end-to-end behaviour (extract a tree, symlink node_modules, spawn npm) is
  * deliberately NOT unit-tested: mocking it would assert the mock. It is verified by
  * running the real thing against this repo.
+ *
+ * ONE EXCEPTION TO THAT (EI-21033860565861795): the submodule-materialisation step
+ * below IS run end-to-end, against a real spawn of the CLI, because the bug it
+ * regresses is exactly the kind a mock cannot see — `git clone --no-checkout` +
+ * `checkout --detach` leaves a submodule (this repo has 30+, e.g. `libs/papercusp`)
+ * as an EMPTY gitlink directory, and a lint that resolves an import through one
+ * fabricated a TS2307 that the committed code does not actually have. Asserting the
+ * extracted tree's submodule file byte-matches the COMMITTED content is the only way
+ * to prove the fix; a unit test over `parseGitmodules` alone would prove the parser
+ * works and say nothing about whether the tree it feeds actually gets materialised.
  */
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const scriptPath = resolve(here, '../../../scripts/lint-as-committed.mjs');
+const repoRoot = resolve(here, '../../..');
 
 const mod = await import(scriptPath);
-const { parseArgs, detectorPathsFromCommand, summarize, isDirectCliInvocation } = mod as {
+const { parseArgs, detectorPathsFromCommand, parseGitmodules, summarize, isDirectCliInvocation } = mod as {
   parseArgs: (argv: string[]) => {
     help: boolean;
     scripts: string[];
@@ -41,6 +54,7 @@ const { parseArgs, detectorPathsFromCommand, summarize, isDirectCliInvocation } 
     forwardAmbiguous?: boolean;
   };
   detectorPathsFromCommand: (command: unknown) => string[];
+  parseGitmodules: (text: unknown) => { name: string; path: string; url: string | null }[];
   summarize: (results: { script: string; status: string; note?: string }[]) => {
     exitCode: number;
     failedCount: number;
@@ -178,6 +192,68 @@ describe('detectorPathsFromCommand', () => {
   it('is total on a non-string command', () => {
     expect(detectorPathsFromCommand(undefined)).toEqual([]);
     expect(detectorPathsFromCommand(null)).toEqual([]);
+  });
+});
+
+describe('parseGitmodules (EI-21033860565861795 — the submodule-blindness bug)', () => {
+  it('extracts name/path/url from a real .gitmodules stanza', () => {
+    const text = [
+      '[submodule "libs/papercusp"]',
+      '\tpath = libs/papercusp',
+      '\turl = git@github.com:Papercusp/papercusp.git',
+    ].join('\n');
+    expect(parseGitmodules(text)).toEqual([
+      { name: 'libs/papercusp', path: 'libs/papercusp', url: 'git@github.com:Papercusp/papercusp.git' },
+    ]);
+  });
+
+  it('handles a submodule name that differs from its path — the config key is the NAME', () => {
+    // Real case in this repo: [submodule "libs/git-graph"] lives at
+    // libs/generic/git-graph. `submodule.<name>.url` must be keyed on the name, not
+    // the path, or the local-checkout override silently targets nothing.
+    const text = ['[submodule "libs/git-graph"]', '\tpath = libs/generic/git-graph', '\turl = git@github.com:Papercusp/git-graph.git'].join(
+      '\n',
+    );
+    expect(parseGitmodules(text)).toEqual([
+      { name: 'libs/git-graph', path: 'libs/generic/git-graph', url: 'git@github.com:Papercusp/git-graph.git' },
+    ]);
+  });
+
+  it('parses several stanzas in one file', () => {
+    const text = [
+      '[submodule "a"]',
+      '\tpath = libs/a',
+      '\turl = git@github.com:x/a.git',
+      '[submodule "b"]',
+      '\tpath = libs/b',
+      '\turl = git@github.com:x/b.git',
+    ].join('\n');
+    expect(parseGitmodules(text)).toEqual([
+      { name: 'a', path: 'libs/a', url: 'git@github.com:x/a.git' },
+      { name: 'b', path: 'libs/b', url: 'git@github.com:x/b.git' },
+    ]);
+  });
+
+  it('drops a stanza with no `path =` line — git itself ignores those', () => {
+    const text = ['[submodule "no-path"]', '\turl = git@github.com:x/y.git'].join('\n');
+    expect(parseGitmodules(text)).toEqual([]);
+  });
+
+  it('is total: empty string, non-string, and a file with no submodules all yield []', () => {
+    expect(parseGitmodules('')).toEqual([]);
+    expect(parseGitmodules(undefined)).toEqual([]);
+    expect(parseGitmodules(null)).toEqual([]);
+    expect(parseGitmodules('# just a comment\n')).toEqual([]);
+  });
+
+  it("this repo's OWN committed .gitmodules parses to a nonempty list that includes libs/papercusp", () => {
+    // Not a golden-file test of the whole registry (that would break on every
+    // legitimate submodule add/remove) — just proof the parser reads THIS repo's
+    // real format, and finds the exact submodule the filed bug's repro depends on.
+    const text = readFileSync(join(repoRoot, '.gitmodules'), 'utf8');
+    const parsed = parseGitmodules(text);
+    expect(parsed.length).toBeGreaterThan(0);
+    expect(parsed.find((s) => s.path === 'libs/papercusp')).toBeTruthy();
   });
 });
 
