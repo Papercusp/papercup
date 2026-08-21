@@ -30,6 +30,11 @@ vi.mock('../git-sync/pipeline-events', () => ({
   appendPipelineEvent: (...a: unknown[]) => appendPipelineEvent(...a),
 }));
 
+const emitAwaitedEvent = vi.fn(async (..._a: unknown[]) => ({}));
+vi.mock('../../events/await/engine', () => ({
+  emitAwaitedEvent: (...a: unknown[]) => emitAwaitedEvent(...a),
+}));
+
 // EI-10158: the green-checkpoint action's fail-safe stall-tracking + flake-history
 // (trackGateStall / trackFlakeHistory) and release-trigger's back-off read reach
 // @papercusp/db-org DIRECTLY (getOrgPg().sql.unsafe) — not through appendPipelineEvent.
@@ -128,6 +133,7 @@ import {
   resolveGreenCheckpointDbPoolMax,
   RELEASE_FIXER_DEDUP_MS,
   recordCheckpointVerdict,
+  recordPendingCheckpointVerdict,
   buildCheckpointDetail,
   readFrozenCandidateRepairQueue,
   writeFrozenCandidateRepairQueue,
@@ -640,6 +646,7 @@ afterAll(() => {
 beforeEach(() => {
   spawnMock.mockReset();
   appendPipelineEvent.mockClear();
+  emitAwaitedEvent.mockClear();
   fakeSql.unsafe.mockClear();
 });
 
@@ -1307,6 +1314,68 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
   });
 
+  it('EI-20810521712303819: decision-pending records the red once, then finalizes without double-counting', async () => {
+    const target = { workspaceId: 'ws-42', installSlug: 'my-harness' };
+    const pendingRecorded = await recordPendingCheckpointVerdict(target, {
+      reason: 'not-green',
+      green: false,
+      candidate: 'abc123def456789',
+      from: '28a3a3d50258',
+      failingTests: [],
+      promotionPending: true,
+      runId: 'run-pending-1',
+    });
+
+    expect(pendingRecorded).toBe(true);
+    expect(appendPipelineEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'decision-pending',
+        detail: expect.objectContaining({
+          green: false,
+          candidate: 'abc123def456',
+          promotionPending: true,
+          runId: 'run-pending-1',
+        }),
+      }),
+    );
+    const pendingWrite = [...fakeSql.unsafe.mock.calls]
+      .reverse()
+      .find(([query]) => /UPDATE\s+harness_shared\.routines/i.test(String(query)));
+    expect(pendingWrite).toBeDefined();
+    const pendingArgs = pendingWrite![1] as unknown[];
+    const pendingPayload = JSON.parse(String(pendingArgs[1])) as { gate_health: Record<string, unknown> };
+    expect(pendingPayload.gate_health).toMatchObject({
+      consecutiveReds: 1,
+      lastVerdict: 'decision-pending',
+      pendingRunId: 'run-pending-1',
+    });
+
+    // Feed the early write back into the final recorder. The same run must finalize
+    // the marker while preserving the already-counted streak.
+    fakeSql.unsafe.mockResolvedValueOnce([{ gh: pendingPayload.gate_health, lf: null }] as never);
+    const finalRecorded = await recordCheckpointVerdict(target, {
+      reason: 'not-green',
+      green: false,
+      candidate: 'abc123def456789',
+      from: '28a3a3d50258',
+      failingTests: [],
+      runId: 'run-pending-1',
+    });
+
+    expect(finalRecorded).toBe(true);
+    const finalWrite = [...fakeSql.unsafe.mock.calls]
+      .reverse()
+      .find(([query]) => /UPDATE\s+harness_shared\.routines/i.test(String(query)));
+    expect(finalWrite).toBeDefined();
+    const finalArgs = finalWrite![1] as unknown[];
+    const finalPayload = JSON.parse(String(finalArgs[1])) as { gate_health: Record<string, unknown> };
+    expect(finalPayload.gate_health).toMatchObject({
+      consecutiveReds: 1,
+      lastVerdict: 'not-green',
+      pendingRunId: null,
+    });
+  });
+
   it('a GREEN from any runner records too — that is what resets a frozen streak', async () => {
     expect(
       await recordCheckpointVerdict({ workspaceId: 'ws-42', installSlug: 'my-harness' }, { reason: 'advanced', green: true, candidate: 'deadbeefcafe' }),
@@ -1745,6 +1814,43 @@ describe('WI-4494: the routine defers to a run that already recorded (no double-
     expect(fakeSql.unsafe).toHaveBeenCalledWith(expect.stringContaining('gate_health'), ['my-harness']);
   });
 
+  it('EI-20981232855780375: an OLD CLI red fallback emits global + pipeline-scoped await keys', async () => {
+    const stdout = `${GREEN_MARKER} ${JSON.stringify({
+      reason: 'not-green',
+      green: false,
+      candidate: 'abc123def456789',
+      from: 'fedcba987654321',
+      summary: 'lint:identity-leak',
+      failingTests: [],
+      logPath: '/tmp/green-checkpoint.log',
+      runId: 'legacy-run-1',
+    })}\n`;
+    spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
+
+    await getSystemAction('green-checkpoint')!(ctx);
+
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(2);
+    const calls = emitAwaitedEvent.mock.calls.map(([args]) => args as Record<string, unknown>);
+    expect(calls.map((args) => args.key)).toEqual(['green-checkpoint:red', 'green-checkpoint:red:papercusp']);
+    for (const args of calls) {
+      expect(args).toMatchObject({
+        source: 'green-checkpoint',
+        summary: '[papercusp] green-checkpoint: abc123de not green — main held',
+        cancelSiblingKeysFor: ['release:green', 'release:green:papercusp'],
+        payload: {
+          sha: 'abc123def456789',
+          from: 'fedcba987654321',
+          pipeline: 'papercusp',
+          summary: 'lint:identity-leak',
+          failingTests: [],
+          logPath: '/tmp/green-checkpoint.log',
+          runId: 'legacy-run-1',
+          lineage: null,
+        },
+      });
+    }
+  });
+
   it('⭐ hands the CLI the record target — without this env the run cannot know whose gate it judges', async () => {
     const stdout = `${GREEN_MARKER} ${JSON.stringify({ reason: 'up-to-date', green: true, recorded: true })}\n`;
     spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
@@ -1792,7 +1898,13 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     // routine handler — exactly the shape a manual release:checkpoint-run self-records through.
     expect(fireLaunchBlueprintForEvent).toHaveBeenCalledWith(
       'green-checkpoint:red',
-      expect.objectContaining({ installSlug: 'my-harness', workspaceId: 'ws-42' }),
+      expect.objectContaining({
+        installSlug: 'my-harness',
+        workspaceId: 'ws-42',
+        // EI-20978485106613438: the fixer must receive the full invoke budget; the old
+        // 900_000ms value killed it at exactly 15 minutes before it could repair the gate.
+        timeoutMs: 2_700_000,
+      }),
     );
   });
 

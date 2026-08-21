@@ -25,7 +25,9 @@ import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { appendPipelineEvent } from '../git-sync/pipeline-events';
+import { emitAwaitedEvent } from '../../events/await/engine';
 import { gateVerdictEnv, isRecordableVerdict, type GateVerdictTarget } from '../../release/gate-verdict-target';
+import { pipelineName } from '../../release/pipeline-name';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../../release/green-checkpoint-schedule';
 import {
@@ -92,6 +94,48 @@ function parseMarkerLine(stdout: string, marker: string): Record<string, unknown
     return JSON.parse(line.slice(line.indexOf(marker) + marker.length).trim()) as Record<string, unknown>;
   } catch {
     return null;
+  }
+}
+
+/**
+ * EI-20981232855780375: keep the legacy routine fallback's red verdict wake-compatible with
+ * the current CLI producer. An older integration-tree CLI cannot emit the awaitable event itself,
+ * so the deployed routine must emit both the global and pipeline-scoped keys after parsing its
+ * candidate-bound red result. Best-effort: a wake failure must not change gate recording.
+ */
+async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdict): Promise<void> {
+  if (verdict.green !== false || !verdict.candidate) return;
+  const pipeline = pipelineName(root);
+  const candidate = verdict.candidate;
+  const summary = `[${pipeline}] green-checkpoint: ${candidate.slice(0, 8)} not green — main held`;
+  const payload = {
+    sha: candidate,
+    from: verdict.from ?? null,
+    pipeline,
+    summary: verdict.summary ?? null,
+    failingTests: verdict.failingTests ?? [],
+    logPath: verdict.logPath ?? null,
+    runId: verdict.runId ?? null,
+    lineage: verdict.lineage ?? null,
+  };
+  const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
+  try {
+    await emitAwaitedEvent({
+      key: 'green-checkpoint:red',
+      summary,
+      payload,
+      source: 'green-checkpoint',
+      cancelSiblingKeysFor,
+    });
+    await emitAwaitedEvent({
+      key: `green-checkpoint:red:${pipeline}`,
+      summary,
+      payload,
+      source: 'green-checkpoint',
+      cancelSiblingKeysFor,
+    });
+  } catch (e) {
+    console.warn(`${orchestratorStdoutTag()} legacy green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -399,6 +443,11 @@ export interface CheckpointVerdict {
    *  The routine then MUST NOT record it again — a second `trackGateStall` for one verdict would
    *  double-increment the red streak. Absent/false ⇒ the caller records, exactly as pre-WI-4494. */
   recorded?: boolean;
+  /** EI-20810521712303819: the suite verdict is known, but promotion has not reached its
+   *  disposition point yet. This is written before optional post-suite legs so a kill in that
+   *  window cannot leave the log ahead of gate_health. The final verdict for the same run clears
+   *  this marker without incrementing the red streak a second time. */
+  promotionPending?: boolean;
   /** WI-4957: this run's own identity (structural mirror of CheckpointResult.runId) —
    *  distinguishes two runs that happen to judge the same candidate sha. */
   runId?: string;
@@ -525,6 +574,7 @@ export interface CheckpointVerdict {
  *  routine run's — the /admin/git timeline must not be able to tell who launched the suite. */
 export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unknown> {
   const detail: Record<string, unknown> = { green: v.green ?? null };
+  if (v.promotionPending === true) detail.promotionPending = true;
   if (v.candidate) detail.candidate = v.candidate.slice(0, 12);
   if (v.from) detail.from = v.from.slice(0, 12);
   // P-016: on a partial advance, record the prefix sha `main` was FF'd to (the red tip stays in
@@ -784,6 +834,8 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
     verdict.from ?? null,
     verdict.retriage,
     verdict.summary ?? null,
+    undefined,
+    { runId: verdict.runId },
   );
   // EI-13723: see the doc above — the dispatch check moved here so a manual run gets fixer
   // coverage identical to a routine run. Fail-safe: never let a dispatch problem break verdict
@@ -793,6 +845,43 @@ export async function recordCheckpointVerdict(target: GateVerdictTarget, verdict
       console.warn(`${orchestratorStdoutTag()} release-fixer dispatch failed: ${e instanceof Error ? e.message : e}`),
     );
   }
+  return true;
+}
+
+/**
+ * EI-20810521712303819: persist the suite's known green/red result before optional promotion
+ * work begins. The early `GATE_PROMOTION ... reason=decision-pending` trailer is durable log
+ * evidence, but a process killed in the post-suite window never reaches the terminal recorder;
+ * without this bridge, gate_health stays on the previous run and verdict watchers never wake.
+ *
+ * This deliberately records a separate `decision-pending` pipeline event. On normal completion,
+ * the terminal recorder replaces the pending marker for the same run; `trackGateStall` uses the
+ * run id to avoid counting that red twice. A failure here is handled by the CLI's best-effort
+ * seam and must never prevent the promotion decision from continuing.
+ */
+export async function recordPendingCheckpointVerdict(
+  target: GateVerdictTarget,
+  verdict: CheckpointVerdict,
+): Promise<boolean> {
+  if (!verdict.promotionPending || !isRecordableVerdict(verdict.reason)) return false;
+  await appendPipelineEvent({
+    workspaceId: target.workspaceId,
+    installSlug: target.installSlug,
+    kind: 'green_checkpoint',
+    status: 'decision-pending',
+    detail: buildCheckpointDetail(verdict),
+  });
+  await trackGateStall(
+    target,
+    verdict.reason,
+    verdict.candidate,
+    verdict.failingTests,
+    verdict.from ?? null,
+    verdict.retriage,
+    verdict.summary ?? null,
+    undefined,
+    { promotionPending: true, green: verdict.green, runId: verdict.runId },
+  );
   return true;
 }
 
@@ -930,6 +1019,12 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
         : // No parseable result marker (crash before print / non-zero exit) → 'error'.
           { code: r.code, stderr: (r.stderr || r.stdout).slice(-300) },
     });
+    // EI-20981232855780375: an old CLI can record the red result but cannot emit the
+    // candidate-bound awaitable wake. Keep this strictly on the parsed red fallback;
+    // modern producer-side recording already emits it, and crash/green results do not.
+    if (parsed?.green === false && parsed.candidate) {
+      await emitLegacyRedVerdictEvent(root, parsed);
+    }
   }
 
   // P-006 (release-pipeline-resilience-2026-06-09): a held gate auto-dispatches a
@@ -1419,11 +1514,19 @@ export async function trackGateStall(
   /** EI-19329732364513693 test seam — injectable git runner for the candidate-staleness
    *  measurement below. Defaults to the real one; mirrors checkReleaseFixerCandidateStale. */
   gitRunner?: GitCheckRunner,
+  options: {
+    promotionPending?: boolean;
+    green?: boolean | null;
+    runId?: string;
+  } = {},
 ): Promise<void> {
   // P-016 (D-010): a partial advance ('advanced-prefix') MOVED `main` (the longest green
   // prefix is deployable), so it resets the "main hasn't advanced" stall streak just like
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
-  const isGreen = status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix';
+  const promotionPending = options.promotionPending === true;
+  const isGreen =
+    !promotionPending &&
+    (status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix');
   // P-006: every non-green verdict OTHER than 'skipped-locked' counts toward the stall
   // streak — INCLUDING 'error' (a green-checkpoint script crash or unparseable JSON).
   // WI-39841 CARVED THE TIMEOUT BACK OUT of that set: a run killed at its own suite budget
@@ -1455,6 +1558,7 @@ export async function trackGateStall(
       lastFrom?: string;
       lastMainPin?: string | null;
       watchdogAlerted?: boolean;
+      pendingRunId?: string | null;
       failingTests?: string[];
       retriageStaleTip?: string | null;
       retriageDetail?: string | null;
@@ -1490,7 +1594,11 @@ export async function trackGateStall(
   // "main never moved".
   const lastObservedMainPin = gh.lastMainPin ?? gh.lastFrom ?? null;
   const pinMoved = fromPin != null && lastObservedMainPin != null && fromPin !== lastObservedMainPin;
-  const gateClass = classifyGateStallStatus(status, pinMoved, retriage);
+  const gateClass = promotionPending
+    ? options.green === false
+      ? 'red'
+      : 'record-only'
+    : classifyGateStallStatus(status, pinMoved, retriage);
   if (gateClass === 'noop') {
     // EI-2615: a lock collision with an ACTIVE peer run proves nothing about the
     // gate's health — leave gate_health completely untouched (don't even seed
@@ -1640,6 +1748,7 @@ export async function trackGateStall(
           lastFrom: fromPin ?? gh.lastFrom ?? null,
           lastFromFresh: fromPin != null,
           lastMainPin: mainPinAfterRun,
+          pendingRunId: null,
           watchdogAlerted: false,
           failingTests: [],
           observedAt: Date.now(),
@@ -1660,6 +1769,7 @@ export async function trackGateStall(
           lastFrom: fromPin ?? gh.lastFrom ?? null,
           lastFromFresh: fromPin != null,
           lastMainPin: mainPinAfterRun,
+          pendingRunId: null,
           watchdogAlerted: gh.watchdogAlerted ?? false,
           failingTests: (failingTests ?? []).slice(0, 20),
           observedAt: Date.now(),
@@ -1775,9 +1885,20 @@ export async function trackGateStall(
     // `firstRedAt` is left alone for the same reason — a non-verdict must not START a streak,
     // or a `stalledByAge` escalation could be dated from a tick that judged nothing current.
     const recordOnly = gateClass === 'record-only';
-    if (recordOnly) console.log(gateStallRecordOnlyLogMessage(status));
-    const consecutiveReds = recordOnly ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1;
-    const firstRedAt = recordOnly ? (gh.firstRedAt ?? null) : (gh.firstRedAt ?? Date.now());
+    const alreadyCountedPending =
+      !promotionPending &&
+      !!options.runId &&
+      gh.pendingRunId === options.runId;
+    if (recordOnly) {
+      console.log(
+        promotionPending
+          ? `${orchestratorStdoutTag()} '${status}' — suite verdict recorded before promotion decision; carrying the prior red streak until final disposition`
+          : gateStallRecordOnlyLogMessage(status),
+      );
+    }
+    const carryStreak = recordOnly || alreadyCountedPending;
+    const consecutiveReds = carryStreak ? (gh.consecutiveReds ?? 0) : (gh.consecutiveReds ?? 0) + 1;
+    const firstRedAt = carryStreak ? (gh.firstRedAt ?? null) : (gh.firstRedAt ?? Date.now());
     const lastGreenAt = gh.lastGreenAt ?? null;
     let stallAlerted = gh.stallAlerted ?? false;
     const stalledByCount = consecutiveReds >= releaseCheckpointConfig().stallReds;
@@ -1930,10 +2051,11 @@ export async function trackGateStall(
       stallAlerted,
       // EI-20706962612084953: the explicit verdict marker. Every write path states it, so a
       // reader never has to infer green-ness from a side-effect field like `lastGreenAt`.
-      lastVerdict: 'not-green',
+      lastVerdict: promotionPending ? 'decision-pending' : 'not-green',
       lastFrom: fromPin ?? gh.lastFrom ?? null,
       // EI-20706962612084953: a red leaves `main` exactly where it found it.
       lastMainPin: mainPinAfterRun,
+      pendingRunId: promotionPending ? options.runId ?? null : null,
       // EI-20571364274022293 — the PROVENANCE of the line above, and the only ordering evidence
       // this blob carries about the pin. `fromPin ?? gh.lastFrom` silently carries the PREVIOUS
       // pin forward whenever this run could not resolve the live one (a broken/orphaned release
@@ -2526,9 +2648,9 @@ export async function dispatchReleaseFixer(
         },
       },
       // P-010: the fixer's reproduce→classify→fix loop (maxTurns 30) needs far more than
-      // the old 280s; the invoke-route ceiling is 1200s. 900s. The liveness-aware dedup
+      // the old 280s. Give it the full 45-minute invoke budget; the liveness-aware dedup
       // re-dispatches promptly if this fixer dies, so a long timeout is no longer a 2h gap.
-      timeoutMs: 900_000,
+      timeoutMs: 2_700_000,
     });
   } catch (e) {
     console.warn(`${orchestratorStdoutTag()} release-fixer fire failed: ${e instanceof Error ? e.message : e}`);
