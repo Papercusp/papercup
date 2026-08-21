@@ -260,6 +260,14 @@ function orgObjectProperty(object, name) {
   return object.properties.find((property) => orgPropertyName(property.name) === name) ?? null;
 }
 
+/** Read a property value, including shorthand `{ sql }` / `{ getOrgPg }` assignments. */
+function orgPropertyValue(property) {
+  if (!property) return null;
+  if (property.initializer) return property.initializer;
+  if (ts.isShorthandPropertyAssignment(property)) return property.name;
+  return null;
+}
+
 function orgIsCall(node, objectName, methodName, sourceFile) {
   node = orgUnwrap(node);
   return (
@@ -357,9 +365,17 @@ function orgStaticShapeIndex(sourceFile) {
       const target = assignmentTarget(node.left);
       if (target) beginAssignments.add(target);
     }
-    if (orgIsCall(node, 'Object', 'assign', sourceFile) && node.arguments.length > 1) {
-      const target = orgUnwrap(node.arguments[0]);
-      if (ts.isIdentifier(target) && node.arguments.slice(1).some((argument) => hasExplicitBegin(orgUnwrap(argument)))) {
+    // `orgIsCall` deliberately unwraps parenthesized/as/satisfies expressions, but this
+    // visitor still owns the original node. Keep the unwrapped call here before reading
+    // `.arguments`; an `Object.assign(...) as ...` declaration otherwise crashes the live
+    // census instead of classifying the fake (WI-40234).
+    const objectAssign = orgUnwrap(node);
+    if (orgIsCall(objectAssign, 'Object', 'assign', sourceFile) && objectAssign.arguments.length > 1) {
+      const target = orgUnwrap(objectAssign.arguments[0]);
+      if (
+        ts.isIdentifier(target) &&
+        objectAssign.arguments.slice(1).some((argument) => hasExplicitBegin(orgUnwrap(argument)))
+      ) {
         beginAssignments.add(target.text);
       }
     }
@@ -499,11 +515,11 @@ export function analyzeOrgPgSqlDoubles(text, fileName) {
         // hide a missing transaction method.
         if (orgFactoryUsesImportActual(factory, sourceFile)) {
           const factoryObject = orgReturnedObject(orgFunctionValue(factory));
-          const getOrgPg = orgObjectProperty(factoryObject, 'getOrgPg');
-          const getOrgPgObject = orgReturnedObject(orgFunctionValue(getOrgPg?.initializer));
-          const sql = orgObjectProperty(getOrgPgObject, 'sql');
+          const getOrgPg = orgPropertyValue(orgObjectProperty(factoryObject, 'getOrgPg'));
+          const getOrgPgObject = orgReturnedObject(orgFunctionValue(getOrgPg));
+          const sql = orgPropertyValue(orgObjectProperty(getOrgPgObject, 'sql'));
           if (sql) {
-            const shape = orgSqlShape(sql.initializer, index, sourceFile);
+            const shape = orgSqlShape(sql, index, sourceFile);
             if (shape.kind === 'tagged-template') {
               out.push({
                 line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
@@ -808,6 +824,78 @@ export const SELF_TESTS = [
   },
 ];
 
+const ORG_FIXTURE_PATH = 'packages/operator-core/lib/dbos/org-pg-double.test.ts';
+
+/**
+ * Fixtures for the @papercusp/db-org transaction-shape guard (WI-40234). Keep these in the
+ * executable checker, rather than in a `.test.ts`: the live census reads tracked test files,
+ * so embedding a deliberately incomplete `vi.mock` in the Vitest guard would make the guard
+ * report its own positive control as a live defect.
+ */
+export const ORG_PG_SQL_SELF_TESTS = [
+  {
+    name: 'FIRES on a tagged-template sql fake with no begin method',
+    path: ORG_FIXTURE_PATH,
+    text: [
+      `const sql = async (strings: TemplateStringsArray, ...values: unknown[]) => [];`,
+      `vi.mock('${ORG_PG_MODULE}', async (orig) => ({`,
+      `  ...(await orig<typeof import('${ORG_PG_MODULE}')>()),`,
+      `  getOrgPg: () => ({ sql }),`,
+      `}));`,
+    ].join('\n'),
+    expect: 1,
+  },
+  {
+    name: 'silent when Object.assign adds the begin transaction method',
+    path: ORG_FIXTURE_PATH,
+    text: [
+      `const sql = Object.assign(`,
+      `  async (strings: TemplateStringsArray, ...values: unknown[]) => [],`,
+      `  { begin: vi.fn() },`,
+      `);`,
+      `vi.mock('${ORG_PG_MODULE}', async (orig) => ({`,
+      `  ...(await orig<typeof import('${ORG_PG_MODULE}')>()),`,
+      `  getOrgPg: () => ({ sql }),`,
+      `}));`,
+    ].join('\n'),
+    expect: 0,
+  },
+  {
+    name: 'silent when begin is assigned after constructing the tagged template',
+    path: ORG_FIXTURE_PATH,
+    text: [
+      `const sql = async (strings: TemplateStringsArray, ...values: unknown[]) => [];`,
+      `sql.begin = vi.fn();`,
+      `vi.mock('${ORG_PG_MODULE}', async (orig) => ({`,
+      `  ...(await orig<typeof import('${ORG_PG_MODULE}')>()),`,
+      `  getOrgPg: () => ({ sql }),`,
+      `}));`,
+    ].join('\n'),
+    expect: 0,
+  },
+  {
+    name: 'silent for a narrow async function mock outside the tagged-template surface',
+    path: ORG_FIXTURE_PATH,
+    text: [
+      `vi.mock('${ORG_PG_MODULE}', async (orig) => ({`,
+      `  ...(await orig<typeof import('${ORG_PG_MODULE}')>()),`,
+      `  getOrgPg: () => ({ sql: async () => [] }),`,
+      `}));`,
+    ].join('\n'),
+    expect: 0,
+  },
+  {
+    name: 'silent for a full replacement factory handled by the general mock guard',
+    path: ORG_FIXTURE_PATH,
+    text: [
+      `vi.mock('${ORG_PG_MODULE}', () => ({`,
+      `  getOrgPg: () => ({ sql: async (strings: TemplateStringsArray, ...values: unknown[]) => [] }),`,
+      `}));`,
+    ].join('\n'),
+    expect: 0,
+  },
+];
+
 function runSelfTest() {
   let failed = 0;
   for (const t of SELF_TESTS) {
@@ -816,8 +904,20 @@ function runSelfTest() {
     if (!ok) failed += 1;
     console.log(`  ${ok ? '✓' : '✗'} ${t.name} (expected ${t.expect}, got ${got})`);
   }
-  console.log(`\n${SELF_TESTS.length - failed}/${SELF_TESTS.length} self-tests passed`);
-  return failed === 0;
+  console.log(`\n${SELF_TESTS.length - failed}/${SELF_TESTS.length} full-replacement mock self-tests passed`);
+
+  let orgFailed = 0;
+  for (const t of ORG_PG_SQL_SELF_TESTS) {
+    const got = checkOrgPgSqlDoubles(t).length;
+    const ok = got === t.expect;
+    if (!ok) orgFailed += 1;
+    console.log(`  ${ok ? '✓' : '✗'} ${t.name} (expected ${t.expect}, got ${got})`);
+  }
+  console.log(
+    `\n${ORG_PG_SQL_SELF_TESTS.length - orgFailed}/${ORG_PG_SQL_SELF_TESTS.length} ` +
+      'org-pg sql self-tests passed',
+  );
+  return failed === 0 && orgFailed === 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -875,6 +975,8 @@ function main() {
   const allFiles = readAllFiles({ listFiles: gitTestFiles, read });
   const candidates = selectCandidates({ files: allFiles, protectedModules: PROTECTED_MODULES });
   const exposure = exposureCensus({ files: allFiles, protectedModules: PROTECTED_MODULES });
+  const orgSqlCandidates = candidates.filter((c) => c.text.includes(ORG_PG_MODULE));
+  const orgSqlViolations = orgSqlCandidates.flatMap((c) => checkOrgPgSqlDoubles(c));
 
   if (argv.includes('--list')) {
     // One parse per candidate, not one per (module × candidate): the analyzer now runs a
@@ -901,18 +1003,27 @@ function main() {
       console.log(`  ${String(r.files).padStart(4)}  ${r.module}${r.internal ? '' : '   [external]'}`);
     }
     if (exposure.top.length > 25) console.log(`  … and ${exposure.top.length - 25} more`);
+    console.log(
+      `org-pg sql doubles: ${orgSqlViolations.length} incomplete tagged-template ` +
+        `getOrgPg().sql fake(s) across ${orgSqlCandidates.length} candidate test file(s).`,
+    );
+    for (const v of orgSqlViolations) console.log(`  ${v.path}:${v.line}  →  ${v.spec}`);
     process.exit(0);
   }
 
-  const violations = candidates.flatMap((c) =>
+  const mockViolations = candidates.flatMap((c) =>
     checkFile({ path: c.path, text: c.text, protectedModules: PROTECTED_MODULES }),
   );
 
-  if (violations.length === 0) {
+  if (mockViolations.length === 0 && orgSqlViolations.length === 0) {
     console.log(
       `✓ full-replacement-mocks: no bare vi.mock factories on the ` +
         `${PROTECTED_MODULES.length} PROTECTED module(s) ` +
         `(${candidates.length} candidate test file(s) parsed).`,
+    );
+    console.log(
+      `✓ org-pg sql doubles: no incomplete tagged-template getOrgPg().sql fakes ` +
+        `(${orgSqlCandidates.length} candidate test file(s) parsed).`,
     );
     // EI-20836231573383362: never print this pass as a tree-wide all-clear. It was read as
     // one, on a tree that had a collection-breaking bare factory in it the whole time.
@@ -920,17 +1031,30 @@ function main() {
     process.exit(0);
   }
 
-  console.error(
-    `✗ full-replacement-mocks: ${violations.length} bare vi.mock factor(y/ies) on a PROTECTED module.\n`,
-  );
-  console.error('  A bare `() => ({ ... })` factory enumerates the exports it happens to need today, so the');
-  console.error('  next export added to that module silently strands it and reds the fleet gate hours later.');
-  console.error('  Spread the real module instead and override only what the test controls:\n');
-  console.error("    vi.mock('<spec>', async (orig) => ({ ...(await orig<typeof import('<spec>')>()), ...overrides }));\n");
-  for (const v of violations) {
-    console.error(`    ${v.path}:${v.line}  →  ${v.spec}`);
-    console.error(`        protected: ${v.module}`);
-    console.error(`        ${v.why}`);
+  if (mockViolations.length > 0) {
+    console.error(
+      `✗ full-replacement-mocks: ${mockViolations.length} bare vi.mock factor(y/ies) on a PROTECTED module.\n`,
+    );
+    console.error('  A bare `() => ({ ... })` factory enumerates the exports it happens to need today, so the');
+    console.error('  next export added to that module silently strands it and reds the fleet gate hours later.');
+    console.error('  Spread the real module instead and override only what the test controls:\n');
+    console.error("    vi.mock('<spec>', async (orig) => ({ ...(await orig<typeof import('<spec>')>()), ...overrides }));\n");
+    for (const v of mockViolations) {
+      console.error(`    ${v.path}:${v.line}  →  ${v.spec}`);
+      console.error(`        protected: ${v.module}`);
+      console.error(`        ${v.why}`);
+    }
+  }
+  if (orgSqlViolations.length > 0) {
+    console.error(
+      `✗ org-pg sql doubles: ${orgSqlViolations.length} tagged-template ` +
+        `getOrgPg().sql fake(s) are missing .begin.\n`,
+    );
+    console.error('  Production org clients support transactions; add a begin stub or use a transaction-capable fixture.');
+    for (const v of orgSqlViolations) {
+      console.error(`    ${v.path}:${v.line}  →  ${v.spec}`);
+      console.error(`        ${v.why}`);
+    }
   }
   process.exit(1);
 }

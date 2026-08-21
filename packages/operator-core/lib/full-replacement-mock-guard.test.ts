@@ -32,6 +32,8 @@ import { join } from 'node:path';
 import {
   analyzeMockCalls,
   checkFile,
+  checkOrgPgSqlDoubles,
+  analyzeOrgPgSqlDoubles,
   collectCandidateFiles,
   exposureCensus,
   printExposureNote,
@@ -42,10 +44,13 @@ import {
   FIXTURE_PROTECTED,
   EXPOSURE_FIXTURES,
   SELF_TESTS,
+  ORG_PG_MODULE,
+  ORG_PG_SQL_SELF_TESTS,
 } from '../../../scripts/check-full-replacement-mocks.mjs';
 
 const ROOT = join(import.meta.dirname, '../../..');
 type Fixture = { name: string; path: string; text: string; expect: number };
+type OrgFixture = Fixture;
 
 describe('full-replacement mock guard: the analyzer has teeth (WI-7187)', () => {
   it.each(SELF_TESTS as Fixture[])('$name', (t: Fixture) => {
@@ -79,6 +84,27 @@ describe('full-replacement mock guard: the analyzer has teeth (WI-7187)', () => 
     expect(resolveSpec('a/b/x.test.ts', 'vitest')).toBe('vitest');
     // Sub-path exports stay distinct identities — never collapsed onto the package root.
     expect(resolveSpec('a/b/x.test.ts', '@papercusp/flags/server')).toBe('@papercusp/flags/server');
+  });
+});
+
+describe('db-org SQL-shape guard: the analyzer has teeth (WI-40234)', () => {
+  it.each(ORG_PG_SQL_SELF_TESTS as OrgFixture[])('$name', (t: OrgFixture) => {
+    expect(checkOrgPgSqlDoubles(t)).toHaveLength(t.expect);
+  });
+
+  it('covers both directions — at least one fixture FIRES and one stays SILENT', () => {
+    const fixtures = ORG_PG_SQL_SELF_TESTS as OrgFixture[];
+    expect(fixtures.filter((t) => t.expect > 0).length).toBeGreaterThan(0);
+    expect(fixtures.filter((t) => t.expect === 0).length).toBeGreaterThan(0);
+  });
+
+  it('runs both guard families through the executable --self-test path', () => {
+    const out = execFileSync('node', ['scripts/check-full-replacement-mocks.mjs', '--self-test'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(out).toMatch(/full-replacement mock self-tests passed/);
+    expect(out).toMatch(/org-pg sql self-tests passed/);
   });
 });
 
@@ -158,6 +184,9 @@ describe('full-replacement mock guard: the live tree', () => {
   };
   const allFiles = readAllFiles(io);
   const candidates = selectCandidates({ files: allFiles, protectedModules: PROTECTED_MODULES });
+  const orgSqlCandidates = candidates.filter((c: { path: string; text: string }) =>
+    c.text.includes(ORG_PG_MODULE),
+  );
 
   it('has no bare vi.mock factory on any protected module', () => {
     const violations = candidates.flatMap((c: { path: string; text: string }) =>
@@ -192,6 +221,7 @@ describe('full-replacement mock guard: the live tree', () => {
       maxBuffer: 16 * 1024 * 1024,
     });
     expect(out).toContain('PROTECTED module(s)');
+    expect(out).toContain('org-pg sql doubles: no incomplete tagged-template');
     expect(out).toContain('NOT a tree-wide all-clear');
     expect(out).toMatch(/unprotected module\(s\).*carry \d+ bare/s);
 
@@ -227,5 +257,21 @@ describe('full-replacement mock guard: the live tree', () => {
       ),
     );
     expect(advMockers.length).toBeGreaterThanOrEqual(30);
+  });
+
+  it('has no incomplete tagged-template getOrgPg().sql fake in the live tree (WI-40234)', () => {
+    const findings = orgSqlCandidates.flatMap((c: { path: string; text: string }) =>
+      checkOrgPgSqlDoubles(c),
+    );
+    expect(findings.map((v: { path: string; line: number }) => `${v.path}:${v.line}`)).toEqual([]);
+  });
+
+  it('actually scanned db-org mock files and observed the tagged-template shape', () => {
+    expect(orgSqlCandidates.length).toBeGreaterThan(0);
+    const analyzed = orgSqlCandidates.flatMap((c: { path: string; text: string }) =>
+      analyzeOrgPgSqlDoubles(c.text, c.path),
+    );
+    expect(analyzed.length).toBeGreaterThan(0);
+    expect(analyzed.some((finding: { begin: string }) => finding.begin === 'present')).toBe(true);
   });
 });
