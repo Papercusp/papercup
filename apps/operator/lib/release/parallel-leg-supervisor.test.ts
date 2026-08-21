@@ -94,6 +94,21 @@ report() {
 }
 trap report EXIT
 
+# Deterministic WI-4230 seam. Bash resolves functions before builtins, so this
+# returns the exact signal-interrupted wait shape once (rc>128 and -p leaves
+# the destination unset), then delegates every subsequent collection to the
+# real builtin. The supervisor bytes themselves remain verbatim.
+WAIT_INTERRUPT_INJECTED=0
+wait() {
+  if [[ "\${INJECT_WAIT_INTERRUPT:-0}" == "1" && "$WAIT_INTERRUPT_INJECTED" == "0" && " $* " == *" -n "* ]]; then
+    WAIT_INTERRUPT_INJECTED=1
+    unset finished
+    echo "SYNTHETIC_WAIT_INTERRUPT_RC=138"
+    return 138
+  fi
+  builtin wait "$@"
+}
+
 # shellcheck disable=SC1090
 source "$WORK/supervisor.inc"
 
@@ -109,22 +124,16 @@ mk_leg() { # name ticks rc artifact?
 }
 
 eval "\${SCENARIO:?}"
-if [[ "\${STORM:-0}" == "1" ]]; then
+if [[ "\${SIGNAL_SMOKE:-0}" == "1" ]]; then
   HPID=$$
   trap 'true' USR1
-  ( for _ in $(seq 1 200); do kill -USR1 "$HPID" 2>/dev/null || exit 0; sleep 0.02; done ) &
+  ( sleep 0.1; kill -USR1 "$HPID" 2>/dev/null || true ) &
   STORM_PID=$!
 fi
 supervise_legs
-# BOUND THE STORM TO ITS SUBJECT. The storm runs ~4s (200 x 0.02s) but the legs
-# finish in ~2s, so it used to OUTLIVE supervise_legs and keep signalling this
-# shell through its own teardown (trap report EXIT). Signals arriving after
-# supervise_legs has returned test NOTHING — the wait is over — they only race the
-# harness's shutdown, and that race made this test flake on the shared gate: on
-# the identical candidate 7eb6e188 it failed at 10:59 and 11:10 and passed twice
-# at 11:12, freezing main for the whole fleet. Reproduced locally at 2/6 under
-# load. Killing the storm here keeps ALL of the intended coverage (the storm still
-# spans the entire wait) and removes only the untested tail.
+# Bound the one real-signal smoke child to its subject. Deterministic interruption
+# coverage lives in the wait override above; this child only proves the extracted
+# real shell remains healthy when an actual trapped USR1 is delivered.
 if [[ -n "\${STORM_PID:-}" ]]; then
   kill "$STORM_PID" 2>/dev/null || true
   wait "$STORM_PID" 2>/dev/null || true
@@ -250,22 +259,34 @@ mk_leg b 4 0 b.artifact`,
   }, 45_000);
 
   it('does not false-FAIL a healthy leg when a trapped signal interrupts the wait (WI-4230)', () => {
-    // A trapped signal makes `wait` return >128 IMMEDIATELY while every leg is still
-    // running — that is what made the 0.0.8 cut declare a healthy linux leg FAILED
-    // mid-appimagetool. It also exposed a second trap here: `wait -n -p VAR` UNSETS VAR
-    // when it collected no child, which under `set -u` aborts the supervisor on the
-    // first interruption. Both are only reachable with a real signal storm.
+    // A trapped signal makes `wait` return >128 IMMEDIATELY while every leg is
+    // still running. Inject that exact builtin result once instead of relying on
+    // ambient signal scheduling; the extracted supervisor bytes remain real.
     const run = runSupervisor(
       `
 mk_leg a 8 0 a.artifact
 mk_leg b 4 0 b.artifact`,
-      { STORM: '1' },
+      { INJECT_WAIT_INTERRUPT: '1' },
+    );
+
+    expect(run.status).toBe(0);
+    expect(run.out).toContain('SYNTHETIC_WAIT_INTERRUPT_RC=138');
+    expect(run.out).toContain('SUPERVISOR_RETURNED_OK');
+    expect(run.out).not.toContain('FAILED');
+    expect(run.out).not.toContain('unbound variable');
+  }, 45_000);
+
+  it('keeps the real extracted shell healthy under one trapped USR1 smoke', () => {
+    const run = runSupervisor(
+      `
+mk_leg a 8 0 a.artifact
+mk_leg b 4 0 b.artifact`,
+      { SIGNAL_SMOKE: '1' },
     );
 
     expect(run.status).toBe(0);
     expect(run.out).toContain('SUPERVISOR_RETURNED_OK');
     expect(run.out).not.toContain('FAILED');
-    expect(run.out).not.toContain('unbound variable');
   }, 45_000);
 
   it('registers EVERY launched leg with the supervisor', () => {
