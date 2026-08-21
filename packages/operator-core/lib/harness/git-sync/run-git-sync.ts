@@ -991,6 +991,34 @@ export function addFailureIgnoredPaths(output: string): string[] {
   ];
 }
 
+/**
+ * Return the protected paths that are currently ignored and UNTRACKED.
+ *
+ * `git check-ignore` intentionally does not report tracked paths unless
+ * `--no-index` is supplied. That default is load-bearing here: a tracked file
+ * may still be covered by a later ignore rule, but its exclusion pathspec must
+ * remain in the staging command so git-sync does not commit the protected
+ * mutation. Conversely, an ignored untracked path is already excluded by Git's
+ * normal ignore handling; passing it as a negative pathspec makes `git add`
+ * reject the entire command. Exit code 1 means "none matched"; any other
+ * non-zero result fails open by returning no matches and preserving all
+ * exclusions for the existing add-failure recovery path.
+ */
+export async function ignoredUntrackedSubset(
+  runGit: RunGit,
+  repoPath: string,
+  paths: readonly string[],
+): Promise<Set<string>> {
+  const ignored = new Set<string>();
+  for (let i = 0; i < paths.length; i += 500) {
+    const chunk = paths.slice(i, i + 500);
+    const result = await runGit(['check-ignore', '-z', '--', ...chunk], repoPath);
+    if (result.code !== 0 && result.code !== 1) return new Set<string>();
+    for (const path of result.stdout.split('\0')) if (path) ignored.add(path);
+  }
+  return ignored;
+}
+
 /** The `git add`/`git commit` fatal for a held index lock ("Unable to create
  *  '….git/index.lock': File exists"). Exported for unit testing (a git wording
  *  change must fail a test, not silently disable the self-heal below). */
@@ -1961,12 +1989,26 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         ...contentErrors.map((c) => c.file),
       ]),
     ];
+    // EI-21026041751032400: a live protected-path lock can name an ignored
+    // untracked artifact. Git already omits that artifact from `add -A`, but
+    // rejects the whole command when the artifact is also mentioned as a
+    // negative pathspec. Filter only that population before either the
+    // attribution path-specific adds or the catch-all stage; tracked ignored
+    // paths remain protected by their exclusion pathspec.
+    const ignoredUntrackedExcludes = await ignoredUntrackedSubset(runGit, repoPath, excludePaths);
+    const stagingExcludePaths = excludePaths.filter((path) => !ignoredUntrackedExcludes.has(path));
+    if (ignoredUntrackedExcludes.size > 0) {
+      o.log(
+        `[git-sync] ${repoPath}: pre-filtering ignored untracked protected path(s) ` +
+          `[${[...ignoredUntrackedExcludes].join(', ')}] from staging pathspecs — Git already excludes them`,
+      );
+    }
     let committedAny = false;
     // P-004: when an attribution map is supplied (flag GIT_SYNC_DERIVED_ATTRIBUTION on), peel
     // each declaring agent's dirty files into its OWN commit (intent subject + Co-Authored-By)
     // BEFORE the catch-all. Absent/empty → no-op, so the flag-OFF path stays byte-identical.
     if (o.attribution && o.attribution.size > 0) {
-      const res = await commitAttributedGroups(runGit, repoPath, o.attribution, excludePaths, message, {
+      const res = await commitAttributedGroups(runGit, repoPath, o.attribution, stagingExcludePaths, message, {
         diffSubjects: o.diffSubjects,
       });
       if (res.error) {
@@ -1989,7 +2031,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // origin-sides, etc.). Byte-identical to the pre-P-004 commit path.
     const buildAddArgs = (extraExcludes: string[], omittedExcludes: readonly string[] = []): string[] => {
       const omitted = new Set(omittedExcludes);
-      const ex = [...new Set([...excludePaths, ...extraExcludes])].filter((path) => !omitted.has(path));
+      const ex = [...new Set([...stagingExcludePaths, ...extraExcludes])].filter((path) => !omitted.has(path));
       return ex.length === 0 ? ['add', '-A'] : ['add', '-A', '--', '.', ...ex.map((p) => `:(exclude,literal)${p}`)];
     };
     // STRANDING GUARD (2026-06-30 ROOT CAUSE): a stray EMBEDDED git repo with no commit
