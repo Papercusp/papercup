@@ -229,6 +229,29 @@ describe('classifyImprovement — infra-environment never auto (EI-408 / D-002 /
     expect(d.protectedHit).toMatch(/stalled-feature/);
     expect(infraEnvironmentHit({ watchdogKey: 'stalled-feature:stalled:some-harness' })).toMatch(/stalled-feature/);
   });
+  it('shared-hive peer-federation-silence is infra too (EI-20983096990125721: peer liveness/announce, not code — sibling shared-hive kinds like double-completion stay code-bug)', () => {
+    const d = classifyImprovement(
+      cand({
+        id: 'i8',
+        kind: 'bug',
+        title: 'shared-hive invariant: peer federation silence in papercusp',
+        watchdogKey: 'shared-hive:peer-federation-silence:papercusp',
+      }),
+    );
+    expect(d.tier).toBe('human');
+    expect(d.protectedHit).toMatch(/peer federation silence/);
+    expect(infraEnvironmentHit({ watchdogKey: 'shared-hive:peer-federation-silence:some-harness' })).toMatch(
+      /peer federation silence/,
+    );
+    // A SIBLING shared-hive incident kind (same "shared-hive" source segment) is a
+    // genuine, code-fixable defect class and must stay auto-eligible.
+    expect(infraEnvironmentHit({ watchdogKey: 'shared-hive:double-completion:papercusp' })).toBeNull();
+    expect(
+      classifyImprovement(
+        cand({ id: 'i9', kind: 'bug', title: 'shared-hive invariant: cross-swarm double completion', watchdogKey: 'shared-hive:double-completion:papercusp' }),
+      ).tier,
+    ).toBe('auto');
+  });
   it('infra beats graduation — even with every kind graduated, an infra item stays human', () => {
     const graduated: RiskTierPolicy = { ...DEFAULT_RISK_TIER_POLICY, autoKinds: ['bug', 'change', 'feature'] };
     const d = classifyImprovement(cand({ id: 'i5', kind: 'bug', watchdogKey: 'service-down:openai' }), graduated);
