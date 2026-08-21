@@ -116,8 +116,9 @@ export default defineTool({
           `below the ~55s MCP transport cap, so a slow command returns an actionable timeout instead of an opaque ` +
           `transport failure. Raising it past the clamp does nothing: run anything longer with run_in_background. ` +
           `BACKGROUND (run_in_background): default ${DEFAULT_BACKGROUND_TIMEOUT_MS}, max ${MAX_BACKGROUND_TIMEOUT_MS} — ` +
-          `not bound by the transport cap, but the job IS terminated at its own deadline (SIGTERM, then SIGKILL), ` +
-          `so raise this for a job that legitimately runs longer.`,
+          `not bound by the transport cap, but the shell job IS terminated at its own deadline (SIGTERM, then SIGKILL), ` +
+          `so raise this for a job that legitimately runs longer. Deliberately daemonized descendants remain tracked ` +
+          `separately and are not given the shell's deadline; stop them with processes:kill when their service lifetime ends.`,
       ),
     run_in_background: z
       .boolean()
@@ -250,7 +251,9 @@ export default defineTool({
                 `(or { bash_id: "${job.id}" } in this launching context). ` +
                 `Stop: processes:kill { taskId: "${job.taskId}" }. ` +
                 `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
-                `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if it needs longer.` +
+                `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if the shell job needs longer. ` +
+                `Deliberately daemonized descendants are tracked under the task_id and are not stopped by this shell deadline; ` +
+                `use processes:kill when their service lifetime ends.` +
                 bufferingNote +
                 heapNote,
             }),

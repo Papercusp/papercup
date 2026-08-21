@@ -7,7 +7,7 @@
 import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV,
   CAPABILITY_SANDBOX_TMPDIR,
@@ -31,6 +31,7 @@ import {
   startBackground,
 } from './bash-jobs';
 import { taskManagerEnabledSync } from '../../task-manager/enabled';
+import * as enrollSync from '../../task-manager/enroll-sync';
 
 const STATE = mkdtempSync(join(tmpdir(), 'cap-bash-'));
 const never = new AbortController().signal;
@@ -601,6 +602,18 @@ describe('background job deadlines (WI-6677)', () => {
     expect(job.timeoutMs).toBe(45_000);
     expect(job.deadlineAt).toBeGreaterThanOrEqual(job.startedAt + 45_000 - 50);
     killJob(job);
+  });
+
+  it('does not turn the shell deadline into a cgroup deadline for daemonized descendants (EI-20074092697233904)', () => {
+    const begin = vi.spyOn(enrollSync, 'beginSyncEnrolment');
+    try {
+      const job = startBackground({ command: 'sleep 60', cwd: STATE, stateDir: STATE }, 45_000);
+      expect(begin).toHaveBeenLastCalledWith({ class: 'bash-job' });
+      expect(begin.mock.lastCall?.[0]).not.toHaveProperty('runtimeMaxSec');
+      killJob(job);
+    } finally {
+      begin.mockRestore();
+    }
   });
 
   it('clamps to the BACKGROUND ceiling, not the foreground one', () => {

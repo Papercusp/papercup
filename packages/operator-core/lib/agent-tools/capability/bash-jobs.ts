@@ -335,19 +335,46 @@ function appendOutput(job: BashJob, chunk: string): void {
  * byte-identical to a raw file read — that ambiguity is exactly what closed a
  * red typecheck as a clean claim in the filed bug.
  *
- * Its ABSENCE from a raw read means the job has not reached a terminal state yet
- * (or its tracking/log was lost some other way) — never read an empty/partial
- * file lacking this line as evidence of a clean or completed result. Kept as one
- * exported, pure formatter (rather than inlined at each of the three call sites)
- * so the exact text can be asserted in a test and can never drift between them.
+ * Its ABSENCE from a raw read means no terminal marker has been durably recorded
+ * yet — it does NOT prove that the job is still running. A job can die before its
+ * close handler gets to this write (for example when the operator is killed), in
+ * which case the recovery path appends a JOB DIED marker once the task ledger
+ * confirms the unobserved death. Never read an empty/partial file lacking either
+ * marker as evidence of a clean or completed result. Kept as one exported, pure
+ * formatter (rather than inlined at each of the three call sites) so the exact
+ * text can be asserted in a test and can never drift between them.
  */
 export const JOB_LOG_END_MARKER_PREFIX = '[capability:bash] JOB END';
+export const JOB_LOG_DIED_MARKER_PREFIX = '[capability:bash] JOB DIED';
 
 export function formatJobLogEndMarker(status: BashStatus, exitCode: number | null, endedAtMs: number): string {
   return (
     `\n${JOB_LOG_END_MARKER_PREFIX}: status=${status} exit=${exitCode ?? 'null'} at ${new Date(endedAtMs).toISOString()}` +
-    ' — this line marks the job reaching a terminal state; if it is ABSENT, the job has not finished yet ' +
-    '(an empty or partial read before this line is NOT evidence of a clean or completed result).\n'
+    ' — this line marks the job reaching an OBSERVED terminal state; if it is ABSENT, no terminal marker has ' +
+    'been durably recorded yet: the job may still be running, or it may have died before its close handler wrote ' +
+    'JOB END. Check capability:bash_output/task ledger; recovery writes JOB DIED after a ledger-confirmed ' +
+    'unobserved death.\n'
+  );
+}
+
+/**
+ * Marker written by `capability:bash_output` after the durable task ledger
+ * confirms that a background job reached a terminal state without the child
+ * close handler recording its normal JOB END line. This is intentionally a
+ * separate marker: an unobserved death must never be presented as a clean exit,
+ * and the absence of JOB END must not leave a raw log reader believing the job
+ * is still running forever.
+ */
+export function formatJobLogDiedMarker(
+  state: string,
+  exitCode: number | null,
+  exitReason: string | null,
+  endedAtMs: number,
+): string {
+  return (
+    `\n${JOB_LOG_DIED_MARKER_PREFIX}: state=${state} exit=${exitCode ?? 'null'} at ${new Date(endedAtMs).toISOString()}` +
+    ` reason=${JSON.stringify(exitReason)} — this line records a ledger-confirmed terminal state after the child ` +
+    'exit was not observed; it is NOT a clean-exit marker.\n'
   );
 }
 
@@ -436,13 +463,15 @@ export function formatBufferingPipelineAdvice(stage: string, context: 'launch' |
     return (
       `This job's last pipeline stage pipes through \`${stage}\`, which BUFFERS its output. ` +
       'Because tracking is already lost, do not keep polling for growing output or a JOB END marker: ' +
-      'the buffered bytes and terminal marker may be unrecoverable. Read `log_path` directly for any retained output. ' +
+      'the buffered bytes and JOB END marker may be unrecoverable. Absence of JOB END is not proof the job is ' +
+      'still running; the task ledger is authoritative, and capability:bash_output appends JOB DIED after it ' +
+      'confirms an unobserved death. Read `log_path` directly for any retained output. ' +
       redirect
     );
   }
   return (
     ` NOTE: this command's last pipeline stage pipes through \`${stage}\`, which BUFFERS its output — the log will most likely stay at 0 bytes for the whole run and fill all at once at exit. ` +
-    'An empty bash_output read here is NOT evidence the job has not started or produced nothing. If tracking is lost while this job runs, the buffered bytes may be unrecoverable and the JOB END marker may never be written. ' +
+    'An empty bash_output read here is NOT evidence the job has not started or produced nothing. If tracking is lost while this job runs, the buffered bytes may be unrecoverable and the JOB END marker may never be written. Its absence is not proof the job is still running; a ledger-confirmed unobserved death is recorded as JOB DIED. ' +
     redirect
   );
 }
@@ -738,7 +767,13 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // task-manager P-008: mint the task id + confinement decision BEFORE the fork so
   // the scope name can go into the argv; the ledger WRITES happen afterwards,
   // fire-and-forget, and can never block or fail this spawn (see enroll-sync.ts).
-  const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec: Math.ceil(effectiveTimeoutMs / 1000) });
+  //
+  // EI-20074092697233904: the timeout is the shell job's local deadline, not a
+  // lifetime for every process the command deliberately daemonizes. A
+  // systemd-scope RuntimeMaxSec would kill a surviving qemu/nohup/setsid child
+  // after the shell had already reported exit=0. The task-manager scope still
+  // tracks those descendants; an operator can stop the whole scope explicitly.
+  const enrolment = beginSyncEnrolment({ class: 'bash-job' });
   const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
 
   // Physical drills are long-running and must survive the interactive caller.
@@ -798,7 +833,6 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       launchedBy: opts.launchedBy ?? 'capability:bash',
       workItemId: opts.workItemId ?? null,
       logPath,
-      runtimeMaxSec: Math.ceil(effectiveTimeoutMs / 1000),
       detail: { bashJobId: id, sandboxed: Boolean(opts.sandboxEnabled) },
     },
     child.pid ?? null,
