@@ -217,6 +217,18 @@ function extractKickoff(bodyKickoff: unknown): string {
 }
 
 /**
+ * Internal launch-row correlation passed by launch-blueprint/durable-spawn.
+ * Only the two server-generated id families are accepted; arbitrary request
+ * bodies must not gain a write primitive against spawned_agents.
+ */
+export function extractSpawnRecordId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  if (id.length === 0 || id.length > 512) return null;
+  return id.startsWith('s-') || id.startsWith('durable-spawn:') ? id : null;
+}
+
+/**
  * Single-role invocation — used by NEXT_HARNESS dispatch from a parent
  * harness's coordinator. Synchronously runs the TS orchestrator's
  * `invoke-once` (`invoke <role>`) in the child harness's project dir and
@@ -290,6 +302,7 @@ const invoke = defineTool({
       }
     }
     const body = await req.json().catch(() => ({} as any));
+    const spawnRecordId = extractSpawnRecordId((body as any)?.spawnRecordId);
     const invokeDir = resolveInvokeProjectDir({ projectPath: project.path, role, body });
     if (!invokeDir.ok) {
       return Response.json(
@@ -687,7 +700,28 @@ const invoke = defineTool({
       role,
       extra,
       env,
-      { timeoutMs },
+      {
+        timeoutMs,
+        ...(spawnRecordId
+          ? {
+              // The firing DBOS/operator process may differ from this /invoke
+              // worker. Stamp the actual invoke-once child, not the caller's
+              // pid, so boot/reclaim liveness remains truthful across the
+              // handoff (EI-20981156698708733).
+              onChildPid: (pid: number) => {
+                void import('../../../fleet/spawn-reclaim')
+                  .then(({ recordSpawnPid }) => recordSpawnPid(getOrgPg().sql, spawnRecordId, pid, { handoff: true }))
+                  .catch((error) => {
+                    console.warn(
+                      `[invoke ${project.slug}/${role}] launch-row PID stamp failed for ${spawnRecordId}: ${
+                        error instanceof Error ? error.message : String(error)
+                      }`,
+                    );
+                  });
+              },
+            }
+          : {}),
+      },
     );
     const workerRuntimeMs = Date.now() - spawnStartMs;
 
@@ -840,4 +874,4 @@ const resume = defineTool({
 export default [launch, invoke, resume];
 
 // Exported for unit tests (pure helpers; the spawn path is live-exercised).
-export const __test = { resolveInvokeTimeoutMs, extractKickoff };
+export const __test = { resolveInvokeTimeoutMs, extractKickoff, extractSpawnRecordId };

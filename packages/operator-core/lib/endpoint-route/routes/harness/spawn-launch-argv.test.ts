@@ -59,7 +59,7 @@ vi.mock('../../../backend-feature-capabilities', () => ({
   interactiveBackendFromSpawnBackend: vi.fn((b: string) => b),
 }));
 
-import { reconstructHiveLaunchArgv } from './spawn';
+import { reconstructHiveLaunchArgv, __test as spawnTest } from './spawn';
 
 describe('reconstructHiveLaunchArgv (WI-1347)', () => {
   it('builds a forensic invoke descriptor for a hive launch', () => {
@@ -104,5 +104,21 @@ describe('reconstructHiveLaunchArgv (WI-1347)', () => {
       modelPin: null,
     });
     expect(withoutPin.some((a) => a.startsWith('--model='))).toBe(false);
+  });
+});
+
+describe('extractSpawnRecordId (EI-20981156698708733)', () => {
+  it('accepts only server-generated launch-row id families', () => {
+    expect(spawnTest.extractSpawnRecordId('s-1787234559693-450a04ed')).toBe('s-1787234559693-450a04ed');
+    expect(spawnTest.extractSpawnRecordId('durable-spawn:launch:papercup:release-fix:1')).toBe(
+      'durable-spawn:launch:papercup:release-fix:1',
+    );
+  });
+
+  it('rejects arbitrary, empty, and oversized request values', () => {
+    expect(spawnTest.extractSpawnRecordId('work-item-1')).toBeNull();
+    expect(spawnTest.extractSpawnRecordId('   ')).toBeNull();
+    expect(spawnTest.extractSpawnRecordId('s-' + 'x'.repeat(512))).toBeNull();
+    expect(spawnTest.extractSpawnRecordId(42)).toBeNull();
   });
 });
