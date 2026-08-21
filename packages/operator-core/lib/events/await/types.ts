@@ -23,6 +23,17 @@ export type AwaitPolicy = 'wake' | 'notify' | 'announce';
 export type TimeoutBehavior = 'expire' | 'wake';
 
 /**
+ * Why an automatically/suggested-armed watch exists. Manual awaits leave this
+ * null: their lifecycle remains caller-owned. Bound watches are retired when
+ * the state named here dies, and the same object is folded into their wake
+ * payload so the recipient can attribute (and cancel) the machinery.
+ */
+export interface LifecycleBinding {
+  kind: string;
+  ref: string;
+}
+
+/**
  * The fallback timeout-wake window: the default deadline for a one-shot wake
  * await when the caller names none (await-timeout-fallback-defaults-2026-07-03).
  *
@@ -92,6 +103,8 @@ export interface AwaitRow {
    *  rule's `when`), in ADDITION to the key/pattern match. null = no payload
    *  predicate (today's behavior, unchanged fast path). */
   payloadFilter: unknown | null;
+  /** Interest-machinery lifecycle owner. Null/undefined on manually armed rows. */
+  boundTo?: LifecycleBinding | null;
   /** EI-9270 (announced gate events): DISCOVERY scope of a policy='announce' row —
    *  who sees the declaration in events:catalog / coord:orient ('fleet'|'plan'|
    *  'harness'|'global'). null on ordinary awaits. The rendezvous plane itself

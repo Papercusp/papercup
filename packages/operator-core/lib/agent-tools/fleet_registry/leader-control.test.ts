@@ -7,7 +7,7 @@ const materializeLoop = vi.fn();
 const buildLoopWakePrompt = vi.fn((_args: unknown) => 'wake prompt');
 const listActiveAwaits = vi.fn();
 const cancelAwait = vi.fn();
-const cancelAwaitsForSubscribersOnKeys = vi.fn();
+const retireLifecycleBoundWatches = vi.fn();
 const registerAwait = vi.fn();
 const captureWakeHandleForOwner = vi.fn();
 const armInboxWake = vi.fn();
@@ -27,7 +27,7 @@ vi.mock('../../harness/routines/loop', () => ({
 vi.mock('../../events/await/store', () => ({
   listActiveAwaits: (...args: unknown[]) => listActiveAwaits(...args),
   cancelAwait: (...args: unknown[]) => cancelAwait(...args),
-  cancelAwaitsForSubscribersOnKeys: (...args: unknown[]) => cancelAwaitsForSubscribersOnKeys(...args),
+  retireLifecycleBoundWatches: (...args: unknown[]) => retireLifecycleBoundWatches(...args),
   registerAwait: (...args: unknown[]) => registerAwait(...args),
 }));
 
@@ -65,6 +65,7 @@ function activeWatches() {
     policy: 'wake',
     once: false,
     wakeHandle: { kind: 'psu-socket' },
+    boundTo: { kind: 'fleet-leadership', ref: 'alpha' },
     ...(transition === 'member-dead' || transition === 'context-critical'
       ? { payloadFilter: { not: { agentId: { equals: input.ownerId } } } }
       : {}),
@@ -93,20 +94,20 @@ beforeEach(() => {
     id: 'new-await',
   }));
   cancelAwait.mockResolvedValue(undefined);
-  cancelAwaitsForSubscribersOnKeys.mockResolvedValue(0);
+  retireLifecycleBoundWatches.mockResolvedValue({ awaits: 0, predicateWatches: 0 });
   armInboxWake.mockResolvedValue(undefined);
   getPresence.mockResolvedValue({ potSlug: 'papercusp' });
 });
 
 describe('retireFleetLeaderWatches', () => {
-  it('cancels only the exact standing transition keys for the departed fleet', async () => {
-    cancelAwaitsForSubscribersOnKeys.mockResolvedValue(5);
+  it('retires only the departed owner\'s fleet-leadership binding', async () => {
+    retireLifecycleBoundWatches.mockResolvedValue({ awaits: 5, predicateWatches: 1 });
 
-    await expect(retireFleetLeaderWatches('leader-1', 'alpha')).resolves.toBe(5);
+    await expect(retireFleetLeaderWatches('leader-1', 'alpha')).resolves.toBe(6);
 
-    expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
-      ['leader-1'],
-      LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:alpha`),
+    expect(retireLifecycleBoundWatches).toHaveBeenCalledWith(
+      { kind: 'fleet-leadership', ref: 'alpha' },
+      { ownerIds: ['leader-1'] },
     );
   });
 });
@@ -160,6 +161,9 @@ describe('ensureFleetLeaderControl', () => {
     );
 
     const registrations = registerAwait.mock.calls.map(([args]) => args as Record<string, unknown>);
+    expect(registrations.every((args) =>
+      JSON.stringify(args.boundTo) === JSON.stringify({ kind: 'fleet-leadership', ref: 'alpha' }),
+    )).toBe(true);
     expect(registrations.find((args) => args.eventKey === 'fleet:member-dead:alpha')).toMatchObject({
       payloadFilter: { not: { agentId: { equals: 'leader-1' } } },
     });

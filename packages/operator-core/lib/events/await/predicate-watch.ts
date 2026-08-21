@@ -39,6 +39,8 @@ import {
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { emitAwaitedEvent } from './engine';
 import { listCellsUnchecked, canReadCell } from '../../cell-registry';
+import { assertLifecycleBinding } from './store';
+import type { LifecycleBinding } from './types';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -90,6 +92,7 @@ export interface PredicateWatchRow {
   consecutiveErrors: number;
   active: boolean;
   createdAt: string;
+  boundTo: LifecycleBinding | null;
 }
 
 function log(msg: string): void {
@@ -153,6 +156,7 @@ function mapRow(r: any): PredicateWatchRow {
     consecutiveErrors: Number(r.consecutive_errors ?? 0),
     active: Boolean(r.active),
     createdAt: new Date(r.created_at).toISOString(),
+    boundTo: parseJsonb<LifecycleBinding>(r.bound_to),
   };
 }
 
@@ -305,23 +309,36 @@ export async function registerPredicateWatch(input: {
   value?: unknown;
   intervalSec?: number;
   once?: boolean;
+  /** Lifecycle owner for auto/suggested-armed rows. Manual watches omit it. */
+  boundTo?: LifecycleBinding | null;
 }): Promise<PredicateWatchRow> {
   const { sql } = getOrgPg();
-  const rows = await sql`
-    INSERT INTO harness_shared.predicate_watches
-      (id, workspace_id, owner_id, role, harness_slug, event_key, tool, args, path, op, value,
-       interval_sec, once, last_polled_at)
-    VALUES
-      (${input.id}, ${input.workspaceId}, ${input.ownerId}, ${input.role},
-       ${input.harnessSlug ?? null}, ${input.eventKey}, ${input.tool},
-       ${JSON.stringify(input.args ?? {})}::text::jsonb, ${input.path}, ${input.op},
-       ${input.value === undefined ? null : JSON.stringify(input.value)}::text::jsonb,
-       ${input.intervalSec ?? 60}, ${input.once ?? true},
-       -- stamp now(): registration runs ONE inline eval itself, so the poller's
-       -- first pickup is one interval out, not immediately after.
-       now())
-    RETURNING *
-  `;
+  const rows = input.boundTo
+    ? await sql`
+        INSERT INTO harness_shared.predicate_watches
+          (id, workspace_id, owner_id, role, harness_slug, event_key, tool, args, path, op, value,
+           interval_sec, once, last_polled_at, bound_to)
+        VALUES
+          (${input.id}, ${input.workspaceId}, ${input.ownerId}, ${input.role},
+           ${input.harnessSlug ?? null}, ${input.eventKey}, ${input.tool},
+           ${JSON.stringify(input.args ?? {})}::text::jsonb, ${input.path}, ${input.op},
+           ${input.value === undefined ? null : JSON.stringify(input.value)}::text::jsonb,
+           ${input.intervalSec ?? 60}, ${input.once ?? true}, now(),
+           ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
+        RETURNING *
+      `
+    : await sql`
+        INSERT INTO harness_shared.predicate_watches
+          (id, workspace_id, owner_id, role, harness_slug, event_key, tool, args, path, op, value,
+           interval_sec, once, last_polled_at)
+        VALUES
+          (${input.id}, ${input.workspaceId}, ${input.ownerId}, ${input.role},
+           ${input.harnessSlug ?? null}, ${input.eventKey}, ${input.tool},
+           ${JSON.stringify(input.args ?? {})}::text::jsonb, ${input.path}, ${input.op},
+           ${input.value === undefined ? null : JSON.stringify(input.value)}::text::jsonb,
+           ${input.intervalSec ?? 60}, ${input.once ?? true}, now())
+        RETURNING *
+      `;
   return mapRow(rows[0]);
 }
 

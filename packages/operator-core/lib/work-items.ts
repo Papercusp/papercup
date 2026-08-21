@@ -3248,6 +3248,11 @@ export async function setWorkItemState(
   // imports this module statically) — an emit failure never breaks the write.
   if (result && isSettledWorkItemState(result.state)) {
     const settled = result;
+    // state-plane-interest-and-hardening P-013 / D-003: a terminal item (and
+    // its linked plan lane) no longer justifies any machinery-armed watches.
+    // Await this cleanup: a fire-and-forget miss after the terminal write would
+    // have no later lifecycle edge on which to retry.
+    await retireLifecycleBindingsForWorkItem(settled);
     void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemSettledEvents(settled))
       .catch(() => {});
@@ -6474,6 +6479,32 @@ export async function observeWorkItem(
   return { item: wi, available: unclaimed, claimedBy: wi.assignee };
 }
 
+/**
+ * Lifecycle bindings that cease to be true when a work-item is released or
+ * settled. The plan-lane form is included because releaseWorkItem already
+ * releases that linked lane at the same boundary.
+ */
+export function lifecycleBindingsForWorkItem(
+  wi: Pick<WorkItem, 'id' | 'sourcePlanSlug' | 'sourcePlanItemIds'>,
+): Array<{ kind: string; ref: string }> {
+  const bindings: Array<{ kind: string; ref: string }> = [{ kind: 'work-item', ref: wi.id }];
+  if (wi.sourcePlanSlug) {
+    for (const itemId of wi.sourcePlanItemIds ?? []) {
+      bindings.push({ kind: 'plan-lane', ref: `${wi.sourcePlanSlug}#${itemId}` });
+    }
+  }
+  return bindings;
+}
+
+async function retireLifecycleBindingsForWorkItem(
+  wi: Pick<WorkItem, 'id' | 'sourcePlanSlug' | 'sourcePlanItemIds'>,
+): Promise<void> {
+  const { retireLifecycleBoundWatches } = await import('./events/await/store');
+  for (const binding of lifecycleBindingsForWorkItem(wi)) {
+    await retireLifecycleBoundWatches(binding);
+  }
+}
+
 export async function releaseWorkItem(
   id: string,
   opts: {
@@ -6595,6 +6626,7 @@ export async function releaseWorkItem(
   if (wi.family === 'issue') {
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
+    if (released) await retireLifecycleBindingsForWorkItem(released);
     emitReleased(released);
     return released;
   }
@@ -6632,6 +6664,7 @@ export async function releaseWorkItem(
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   const released = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  if (released) await retireLifecycleBindingsForWorkItem(released);
   emitReleased(released);
   return released;
 }

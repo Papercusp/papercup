@@ -16,9 +16,9 @@ import {
 } from '../../harness/routines/loop';
 import {
   cancelAwait,
-  cancelAwaitsForSubscribersOnKeys,
   listActiveAwaits,
   registerAwait,
+  retireLifecycleBoundWatches,
 } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
@@ -92,7 +92,11 @@ function watchKeys(fleetSlug: string): string[] {
  * forever.  Keep this key-exact so ordinary member-authored fleet awaits are untouched.
  */
 export async function retireFleetLeaderWatches(ownerId: string, fleetSlug: string): Promise<number> {
-  return cancelAwaitsForSubscribersOnKeys([ownerId], watchKeys(fleetSlug));
+  const retired = await retireLifecycleBoundWatches(
+    { kind: 'fleet-leadership', ref: fleetSlug },
+    { ownerIds: [ownerId] },
+  );
+  return retired.awaits + retired.predicateWatches;
 }
 
 function selfExcludingPayloadFilter(eventKey: string, fleetSlug: string, ownerId: string): unknown | undefined {
@@ -240,7 +244,9 @@ export async function ensureFleetLeaderControl(
           row.policy === 'wake' &&
           row.once === false &&
           row.wakeHandle != null &&
-          payloadFilterMatches(row.payloadFilter, payloadFilter),
+          payloadFilterMatches(row.payloadFilter, payloadFilter) &&
+          row.boundTo?.kind === 'fleet-leadership' &&
+          row.boundTo.ref === input.fleetSlug,
       );
       if (healthy) {
         watches.active.push(eventKey);
@@ -258,6 +264,7 @@ export async function ensureFleetLeaderControl(
         once: false,
         minSleepSec: LEADER_MONITOR_INTERVAL_SEC,
         ...(payloadFilter == null ? {} : { payloadFilter }),
+        boundTo: { kind: 'fleet-leadership', ref: input.fleetSlug },
       });
       watches.active.push(eventKey);
       if (rows.length > 0) watches.repaired.push(eventKey);

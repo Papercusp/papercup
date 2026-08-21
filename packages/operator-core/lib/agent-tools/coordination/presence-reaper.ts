@@ -78,9 +78,11 @@ export interface PresenceReapResult {
   ownerIds: string[];
   /** Rows considered but left alone (parked/live, or ended-but-inside-grace). */
   skipped: number;
+  /** Auto/suggested awaits + predicate watches retired with the dead owners. */
+  boundWatchesRetired: number;
 }
 
-const EMPTY_RESULT: PresenceReapResult = { reaped: 0, ownerIds: [], skipped: 0 };
+const EMPTY_RESULT: PresenceReapResult = { reaped: 0, ownerIds: [], skipped: 0, boundWatchesRetired: 0 };
 
 /**
  * IO: read the WHOLE (all-workspace) coord_presence roster, batch-fetch
@@ -117,7 +119,16 @@ export async function reapEndedPresenceRows(
     heartbeatAt: r.heartbeatAt,
   }));
   const toReap = planPresenceReap(candidates, wakeableOwnerIds, nowMs, ttlMs);
-  if (toReap.length === 0) return { reaped: 0, ownerIds: [], skipped: rows.length };
+  if (toReap.length === 0) {
+    return { reaped: 0, ownerIds: [], skipped: rows.length, boundWatchesRetired: 0 };
+  }
+
+  // P-013 / D-003: retire machinery-authored watches BEFORE deleting the
+  // presence rows. If cleanup fails the presence row remains for the next
+  // scheduled retry; deleting first would erase the only lifecycle edge and
+  // strand the watches forever. Manual awaits have bound_to=NULL and survive.
+  const { retireLifecycleBoundWatchesForOwners } = await import('../../events/await/store');
+  const retired = await retireLifecycleBoundWatchesForOwners(toReap);
 
   const { sql } = getOrgPg();
   const deleted = await sql<{ owner_id: string }[]>`
@@ -142,5 +153,6 @@ export async function reapEndedPresenceRows(
     reaped: deleted.length,
     ownerIds: reapedIds,
     skipped: rows.length - deleted.length,
+    boundWatchesRetired: retired.awaits + retired.predicateWatches,
   };
 }

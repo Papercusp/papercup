@@ -36,6 +36,9 @@ const {
   cancelAwait,
   cancelAwaitsForSubscribersOnKeys,
   cancelAwaitsByIds,
+  insertDeliveries,
+  retireLifecycleBoundWatches,
+  retireLifecycleBoundWatchesForOwners,
   listActiveAwaits,
   listActiveAwaitsForKey,
   fireAwaitsForKey,
@@ -83,6 +86,7 @@ beforeAll(async () => {
       fired_at timestamptz, fired_reason text, cancelled_at timestamptz,
       once boolean NOT NULL DEFAULT true, min_sleep_sec integer, urgency boolean NOT NULL DEFAULT false,
       payload_filter jsonb,
+      bound_to jsonb,
       scope_kind text, scope_ref text,
       causal_generation bigint, expected_condition jsonb, superseded_at timestamptz,
       fired_by text, fired_payload jsonb,
@@ -107,6 +111,11 @@ beforeAll(async () => {
       status text NOT NULL DEFAULT 'pending', channel text, attempts integer NOT NULL DEFAULT 0,
       last_error text, next_attempt_at timestamptz NOT NULL DEFAULT now(),
       created_at timestamptz NOT NULL DEFAULT now(), delivered_at timestamptz
+    )`);
+  await rootSql.unsafe(`
+    CREATE TABLE harness_shared.predicate_watches (
+      id text PRIMARY KEY, owner_id text NOT NULL, bound_to jsonb,
+      active boolean NOT NULL DEFAULT true, last_error text
     )`);
   // FAITHFUL to mig 632 (EI-13705) — the unconditional per-key fire latch.
   await rootSql.unsafe(`
@@ -133,6 +142,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.event_awaits RESTART IDENTITY`;
   await rootSql`TRUNCATE harness_shared.event_wake_deliveries RESTART IDENTITY`;
+  await rootSql`TRUNCATE harness_shared.predicate_watches`;
   await rootSql`TRUNCATE harness_shared.event_key_fires`;
   await rootSql`TRUNCATE harness_shared.work_items`;
 });
@@ -167,6 +177,55 @@ async function waitForAnnouncementAdvisoryLock(eventKey: string, expected: 'held
 }
 
 describe('await-event store (PG)', () => {
+  it('persists lifecycle bindings, folds their provenance into deliveries, and retires only matching machinery rows', async () => {
+    const binding = { kind: 'fleet-leadership', ref: 'alpha' };
+    const bound = await registerAwait({
+      subscriberId: 'leader-a',
+      eventKey: 'fleet:member-dead:alpha',
+      once: false,
+      boundTo: binding,
+    });
+    const sibling = await registerAwait({
+      subscriberId: 'leader-b',
+      eventKey: 'fleet:member-dead:alpha',
+      once: false,
+      boundTo: binding,
+    });
+    const manual = await registerAwait({
+      subscriberId: 'leader-a',
+      eventKey: 'manual:key',
+      once: false,
+    });
+    await rootSql`
+      INSERT INTO harness_shared.predicate_watches (id, owner_id, bound_to)
+      VALUES ('pw-a', 'leader-a', ${JSON.stringify(binding)}::text::jsonb),
+             ('pw-b', 'leader-b', ${JSON.stringify(binding)}::text::jsonb)`;
+
+    expect(bound.boundTo).toEqual(binding);
+    expect(manual.boundTo).toBeNull();
+
+    await insertDeliveries({ awaits: [bound], payload: { agentId: 'member-1' } });
+    const deliveries = await rootSql<{ payload: unknown }[]>`
+      SELECT payload FROM harness_shared.event_wake_deliveries WHERE await_id = ${bound.id}`;
+    expect(deliveries[0]?.payload).toEqual({
+      agentId: 'member-1',
+      bound_to: binding,
+      armed_because: 'interest machinery bound this watch to fleet-leadership:alpha',
+    });
+
+    await expect(
+      retireLifecycleBoundWatches(binding, { ownerIds: ['leader-a'] }),
+    ).resolves.toEqual({ awaits: 1, predicateWatches: 1 });
+    expect((await listActiveAwaits('leader-a')).map((row) => row.id)).toEqual([manual.id]);
+    expect((await listActiveAwaits('leader-b')).map((row) => row.id)).toEqual([sibling.id]);
+
+    await expect(retireLifecycleBoundWatchesForOwners(['leader-b'])).resolves.toEqual({
+      awaits: 1,
+      predicateWatches: 1,
+    });
+    expect(await listActiveAwaits('leader-b')).toEqual([]);
+  });
+
   it('registerAwait persists a one-shot watch; listActiveAwaits reads it back', async () => {
     const row = await registerAwait({
       subscriberId: 'sub-1',

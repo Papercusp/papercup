@@ -27,6 +27,7 @@ import { observeCheckpointProducer } from './checkpoint-verified-wait';
 import type {
   AwaitPolicy,
   AwaitRow,
+  LifecycleBinding,
   DeliveryStatus,
   DeliveryRow,
   DeliveryWork,
@@ -102,6 +103,7 @@ function mapAwait(r: any): AwaitRow {
     minSleepSec: r.min_sleep_sec != null ? Number(r.min_sleep_sec) : null,
     urgency: r.urgency ?? false,
     payloadFilter: parseJsonb(r.payload_filter),
+    boundTo: parseJsonb<LifecycleBinding>(r.bound_to),
     scopeKind: r.scope_kind ?? null,
     scopeRef: r.scope_ref ?? null,
     causalGeneration: r.causal_generation != null ? Number(r.causal_generation) : null,
@@ -177,6 +179,8 @@ export async function registerAwait(input: {
   payloadFilter?: unknown | null;
   /** Optional verified-wait producer certificate. Legacy awaits omit it. */
   producerHealthCertificate?: ProducerHealthCertificate | null;
+  /** Lifecycle owner for auto/suggested-armed rows. Manual awaits omit it. */
+  boundTo?: LifecycleBinding | null;
 }): Promise<AwaitRow> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
@@ -187,24 +191,148 @@ export async function registerAwait(input: {
   // guards a future caller that forgets. The always-armed inbox-wake path is separate
   // (upsertInboxWakeAwait hardcodes 'expire' + no deadline), so it is unaffected.
   const timeoutBehavior: TimeoutBehavior = input.timeoutBehavior ?? 'wake';
-  const rows = await sql`
-    INSERT INTO harness_shared.event_awaits
-      (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
-    VALUES
-      (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-       ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-       ${timeoutBehavior},
-       ${
-         // ISO text, not a raw Date — the live org postgres-js client throws on
-         // Date binding (the repo's known quirk); PG casts text→timestamptz.
-         input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null
-       },
-       ${input.once ?? true}, ${input.minSleepSec ?? null}, ${input.urgency ?? false},
-       ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-       ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
-    RETURNING *
-  `;
+  const expiresTs =
+    // ISO text, not a raw Date — the live org postgres-js client throws on
+    // Date binding (the repo's known quirk); PG casts text→timestamptz.
+    input.timeoutSec != null ? new Date(Date.now() + input.timeoutSec * 1000).toISOString() : null;
+  // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
+  // supplied. Besides preserving manual-watch semantics, this lets older
+  // hand-rolled test fixtures keep exercising the unbound path honestly.
+  const rows = input.boundTo
+    ? await sql`
+        INSERT INTO harness_shared.event_awaits
+          (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
+           expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
+        VALUES
+          (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+           ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+           ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+           ${input.urgency ?? false},
+           ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+           ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
+           ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
+        RETURNING *
+      `
+    : await sql`
+        INSERT INTO harness_shared.event_awaits
+          (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
+        VALUES
+          (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+           ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+           ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+           ${input.urgency ?? false},
+           ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+           ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
+        RETURNING *
+      `;
   return mapAwait(rows[0]);
+}
+
+/** Fail before SQL rather than persisting an unaddressable lifecycle owner. */
+export function assertLifecycleBinding(binding: LifecycleBinding): LifecycleBinding {
+  const kind = binding.kind?.trim();
+  const ref = binding.ref?.trim();
+  if (!kind || !ref) throw new Error('bound_to requires non-empty kind and ref');
+  return { kind, ref };
+}
+
+export interface LifecycleRetirementResult {
+  awaits: number;
+  predicateWatches: number;
+}
+
+/**
+ * Retire every auto/suggested watch carrying one exact lifecycle binding. An
+ * optional owner filter is load-bearing for leadership transfer: old and new
+ * leaders can share the same fleet binding during a handoff, but only the
+ * displaced owner's rows may be cancelled.
+ */
+export async function retireLifecycleBoundWatches(
+  binding: LifecycleBinding,
+  opts: { ownerIds?: readonly string[] } = {},
+): Promise<LifecycleRetirementResult> {
+  const normalized = assertLifecycleBinding(binding);
+  const owners = [...new Set((opts.ownerIds ?? []).map((id) => id.trim()).filter(Boolean))];
+  return boundedOrgTxn(async (tx) => {
+    const bindingJson = JSON.stringify(normalized);
+    const awaits = owners.length > 0
+      ? await tx`
+          UPDATE harness_shared.event_awaits
+             SET cancelled_at = now()
+           WHERE bound_to = ${bindingJson}::text::jsonb
+             AND subscriber_id = ANY(${owners}::text[])
+             AND cancelled_at IS NULL
+             AND (once = false OR fired_at IS NULL)
+          RETURNING id`
+      : await tx`
+          UPDATE harness_shared.event_awaits
+             SET cancelled_at = now()
+           WHERE bound_to = ${bindingJson}::text::jsonb
+             AND cancelled_at IS NULL
+             AND (once = false OR fired_at IS NULL)
+          RETURNING id`;
+    const predicateWatches = owners.length > 0
+      ? await tx`
+          UPDATE harness_shared.predicate_watches
+             SET active = false,
+                 last_error = coalesce(last_error, 'gc: lifecycle binding retired')
+           WHERE bound_to = ${bindingJson}::text::jsonb
+             AND owner_id = ANY(${owners}::text[])
+             AND active
+          RETURNING id`
+      : await tx`
+          UPDATE harness_shared.predicate_watches
+             SET active = false,
+                 last_error = coalesce(last_error, 'gc: lifecycle binding retired')
+           WHERE bound_to = ${bindingJson}::text::jsonb
+             AND active
+          RETURNING id`;
+    return { awaits: awaits.length, predicateWatches: predicateWatches.length };
+  });
+}
+
+/** Presence-reap inverse: retire only machinery-authored rows for dead owners. */
+export async function retireLifecycleBoundWatchesForOwners(
+  ownerIds: readonly string[],
+): Promise<LifecycleRetirementResult> {
+  const owners = [...new Set(ownerIds.map((id) => id.trim()).filter(Boolean))];
+  if (owners.length === 0) return { awaits: 0, predicateWatches: 0 };
+  return boundedOrgTxn(async (tx) => {
+    const awaits = await tx`
+      UPDATE harness_shared.event_awaits
+         SET cancelled_at = now()
+       WHERE subscriber_id = ANY(${owners}::text[])
+         AND bound_to IS NOT NULL
+         AND cancelled_at IS NULL
+         AND (once = false OR fired_at IS NULL)
+      RETURNING id`;
+    const predicateWatches = await tx`
+      UPDATE harness_shared.predicate_watches
+         SET active = false,
+             last_error = coalesce(last_error, 'gc: bound owner presence reaped')
+       WHERE owner_id = ANY(${owners}::text[])
+         AND bound_to IS NOT NULL
+         AND active
+      RETURNING id`;
+    return { awaits: awaits.length, predicateWatches: predicateWatches.length };
+  });
+}
+
+/** Fold lifecycle provenance without overwriting source payload fields silently. */
+export function withLifecycleBindingProvenance(
+  payload: unknown,
+  boundTo: LifecycleBinding | null | undefined,
+): unknown {
+  if (!boundTo) return payload;
+  const binding = assertLifecycleBinding(boundTo);
+  const provenance = {
+    bound_to: binding,
+    armed_because: `interest machinery bound this watch to ${binding.kind}:${binding.ref}`,
+  };
+  if (payload != null && typeof payload === 'object' && !Array.isArray(payload)) {
+    return { ...(payload as Record<string, unknown>), ...provenance };
+  }
+  return { event_payload: payload ?? null, ...provenance };
 }
 
 /**
@@ -911,12 +1039,13 @@ export async function insertDeliveries(input: {
   if (input.awaits.length === 0) return 0;
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  const payloadJson = input.payload === undefined ? null : JSON.stringify(input.payload);
   let n = 0;
   for (const a of input.awaits) {
     // The delivery is urgent if EITHER the emit declared it OR the watch is an
     // always-urgent watch (a.urgency) — either bypasses the floor.
     const urgent = (input.urgent ?? false) || a.urgency;
+    const deliveryPayload = withLifecycleBindingProvenance(input.payload, a.boundTo);
+    const payloadJson = deliveryPayload === undefined ? null : JSON.stringify(deliveryPayload);
     await sql`
       INSERT INTO harness_shared.event_wake_deliveries
         (workspace_id, await_id, subscriber_id, event_key, payload, summary, urgent, min_sleep_sec, source)
