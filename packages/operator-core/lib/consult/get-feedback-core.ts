@@ -12,7 +12,10 @@
  *    v1 picks the top qualified candidate that is not 'ended'/'recorded'.
  *    All-qualified-dead is an honest no_qualified_responder with
  *    reason 'no_live_responder' + the evidence refs (retrieval fallback —
- *    the requester reads the cited turns via sessions:read).
+ *    the requester reads the cited turns via sessions:read). When semantic
+ *    embeddings are unavailable, the router may provide explicitly labeled
+ *    lexical candidates; those are bounded minimum-fill manual-review picks,
+ *    never floor-qualified experts.
  *  - SELECTION (consult-min-max-and-rubric-vetting-2026-08-17 D-001/D-005):
  *    min/max responder selection over the router's ranked pool. The per-task
  *    wake budget is REMOVED (D-005: maxResponders is the only per-consult
@@ -196,7 +199,13 @@ export interface GetFeedbackResult {
    * next selectee); returned as retrieval refs, not a re-call worklist. On
    * no_live_responder it falls back to the (dead) floor-qualified candidates
    * so the retrieval path keeps its refs. */
-  remaining_candidates: Array<{ ownerId: string; score: number; liveness: string; via: SelectionVia }>;
+  remaining_candidates: Array<{
+    ownerId: string;
+    score: number;
+    liveness: string;
+    via: SelectionVia;
+    fallback?: 'lexical';
+  }>;
   origin_task_ref: string | null;
   latency_contract: LatencyContract;
   expires_at: string | null;
@@ -262,14 +271,18 @@ function consultBody(req: GetFeedbackRequest): string {
 export interface RevivalBriefCandidate {
   score: number;
   signals: { similarity: number };
-  evidence: Array<{ session_id: string; turn_idx: number; sim: number }>;
+  evidence: Array<{ session_id: string; turn_idx: number; sim: number; lexicalRank?: number }>;
 }
 
 /** Compact why-you-were-chosen evidence for the wake body (D-008 §5) — refs
  * resolvable via sessions:read, so relevance validation is a cheap check. */
 function evidenceLine(c: Pick<RevivalBriefCandidate, 'evidence'>): string {
   return c.evidence
-    .map((e) => `${e.session_id}#${e.turn_idx} (sim ${e.sim.toFixed(2)})`)
+    .map((e) =>
+      e.lexicalRank !== undefined
+        ? `${e.session_id}#${e.turn_idx} (lexical rank ${e.lexicalRank.toFixed(3)})`
+        : `${e.session_id}#${e.turn_idx} (sim ${e.sim.toFixed(2)})`,
+    )
     .join('; ');
 }
 
@@ -476,6 +489,15 @@ export async function getFeedbackCore(
     question: req.question,
     ...(excludeOwners.length ? { excludeOwners } : {}),
   });
+
+  // The real router labels every lexical fallback candidate. Preserve that
+  // contract for injected/test route implementations too: a degraded snapshot
+  // must never turn an unlabeled token match into an apparently semantic pick.
+  if (route.snapshot.fallback === 'lexical') {
+    route.snapshot.candidates = route.snapshot.candidates.map((candidate) =>
+      candidate.fallback ? candidate : { ...candidate, fallback: 'lexical' as const },
+    );
+  }
 
   // 2b) Archive-first retrieval (P-006, D-005/D-006 "retrieval, not consult"):
   //     BEFORE any wake or insert, check whether a CLOSED consult already
@@ -691,8 +713,9 @@ export async function getFeedbackCore(
 
   // With a minimum in play (D-003 default 1), an empty selection means the
   // minimum was UNFILLABLE — the distinct causes stay distinguishable (D-003):
-  // instrument down ⇒ embed_unavailable; a pool that only LIVENESS kept out
-  // (qualified-but-dead, or a min>0 fill pool that was all dead) ⇒
+  // instrument down with no fallback candidate ⇒ embed_unavailable; a pool
+  // that only LIVENESS kept out (qualified-but-dead, or a min>0 fill pool
+  // that was all dead) ⇒
   // no_live_responder; nothing selectable in the first place (no match at
   // all, or pure-floor min:0 with nothing above the floor) ⇒ below_floor —
   // a live below-floor pool under min:0 is a FLOOR verdict, not a liveness one.
@@ -756,7 +779,12 @@ export async function getFeedbackCore(
       conversationId: opened.conversation_id,
       summary: `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
       body:
-        finalChosenVia === 'minimum'
+        finalChosen.fallback === 'lexical'
+          ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
+            `Lexical evidence: ${evidenceLine(finalChosen)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n` +
+            `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
+            `consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. Untyped conversations:post is refused.`
+          : finalChosenVia === 'minimum'
           ? `Selected as BEST-AVAILABLE reviewer (blended score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
             `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n` +
             `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence — labeled first-principles reasoning is admissible here); ` +
@@ -818,6 +846,10 @@ export async function getFeedbackCore(
     finalChosenVia === 'minimum'
       ? ' ⚠ Best-available pick BELOW the relevance floor (minimum-fill, D-001) — weigh the reply as a first-principles review, not grounded expertise.'
       : '';
+  const fallbackNote =
+    finalChosen?.fallback === 'lexical'
+      ? ' ⚠ Semantic embedding was unavailable: this is a BOUNDED MANUAL-REVIEW pick from lexical text_tsv token matches, not a qualified semantic responder. Validate independently.'
+      : '';
   const revivalNote = revival
     ? revival.spawned
       ? ` 🧭 REVIVED ${revival.ownerId} (${revival.trigger}: carry-respawn ${revival.verified === true ? 'verified live' : revival.verified === null ? 'still booting — the cascade expiry guards the reply' : 'spawned'}); the consult brief is their first turn.`
@@ -825,8 +857,8 @@ export async function getFeedbackCore(
     : '';
   const hint = finalChosen
     ? latency === 'hard-blocked'
-      ? `Routed + woke ${finalChosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${revivalNote}`
-      : `Routed + woke ${finalChosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${revivalNote}`
+      ? `Routed + woke ${finalChosen.ownerId}. Park on events:await { event: '${parkKey}' } and end your turn — the reply wakes you (latched). Expires ${expiresAt}.${viaNote}${fallbackNote}${revivalNote}`
+      : `Routed + woke ${finalChosen.ownerId}; the reply lands in conversation ${opened.conversation_id}. PROCEED on your own judgment meanwhile and reconcile when it arrives. Declines/expiries advance the cascade SERVER-side (the next selectee is woken with the feedback so far, D-005) — no re-call needed unless the whole menu exhausts.${viaNote}${fallbackNote}${revivalNote}`
     : reason === 'embed_unavailable'
       ? `The embedder is unavailable on this host — similarity could NOT be measured, so there is no ranking to fill a minimum from (cannot-measure ≠ measured-nothing). Proceed on your own judgment; retry later if the answer matters.${revivalNote}`
       : reason === 'no_live_responder'
@@ -850,6 +882,7 @@ export async function getFeedbackCore(
       score: s.candidate.score,
       liveness: s.candidate.liveness,
       via: s.via,
+      ...(s.candidate.fallback ? { fallback: s.candidate.fallback } : {}),
     })),
     origin_task_ref: originRef,
     latency_contract: latency,

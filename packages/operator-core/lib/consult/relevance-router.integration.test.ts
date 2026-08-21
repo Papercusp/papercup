@@ -15,7 +15,8 @@
  *  - the D-003 honesty invariants end-to-end: no_qualified_responder is a
  *    first-class verdict (far query), the HARD sim sub-floor blocks a
  *    high-track-record candidate even when its BLENDED score clears the floor,
- *    and a missing embedder degrades honestly instead of routing.
+ *    and a missing embedder degrades honestly while exposing only an explicit
+ *    lexical fallback path (never semantic qualification).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import postgres, { type Sql } from 'postgres';
@@ -108,6 +109,7 @@ beforeAll(async () => {
       text text NOT NULL,
       ingested_at timestamptz NOT NULL DEFAULT now(),
       text_embedding vector(384),
+      text_tsv tsvector GENERATED ALWAYS AS (to_tsvector('english', left(text, 20000))) STORED,
       turn_origin_verdict text,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
     )`);
@@ -249,6 +251,35 @@ describe('routeConsult — D-003 honesty invariants', () => {
     expect(r.qualified).toEqual([]);
     expect(r.snapshot.degraded).toBe('embed-unavailable');
     expect(r.snapshot.candidates).toEqual([]);
+  });
+
+  it('no embedder → bounded lexical fallback keeps measurable ranking but no semantic qualification', async () => {
+    await rootSql`
+      INSERT INTO harness_shared.session_turns
+        (workspace_id, source_kind, session_id, turn_idx, ts, owner, speaker, text)
+      VALUES
+        ('default', 'claude', 'sess-lexical-best', 1, ${NOW.toISOString()}::timestamptz,
+         'agent-lexical-best', 'assistant', 'consult router fallback evidence for manual review'),
+        ('default', 'claude', 'sess-lexical-second', 1, ${new Date(NOW.getTime() - DAY).toISOString()}::timestamptz,
+         'agent-lexical-second', 'assistant', 'consult router fallback notes')
+    `;
+    const r = await routeConsult(
+      { ...baseParams, question: 'consult router fallback' },
+      deps(null, { getLiveness: async (owners) => Object.fromEntries(owners.map((owner) => [owner, 'live'])) }),
+    );
+    expect(r.verdict).toBe('no_qualified_responder');
+    expect(r.qualified).toEqual([]);
+    expect(r.snapshot.degraded).toBe('embed-unavailable');
+    expect(r.snapshot.fallback).toBe('lexical');
+    expect(r.snapshot.candidates.map((c) => c.ownerId)).toEqual([
+      'agent-lexical-best',
+      'agent-lexical-second',
+    ]);
+    expect(r.snapshot.candidates[0]).toMatchObject({ fallback: 'lexical' });
+    expect(r.snapshot.candidates[0]!.score).toBeGreaterThan(0);
+    expect(r.snapshot.candidates[0]!.signals.similarity).toBe(0);
+    expect(r.snapshot.candidates[0]!.evidence[0]!.lexicalRank).toBeGreaterThan(0);
+    expect(r.queryVec).toBeNull();
   });
 
   it('an embedder that throws degrades the same way', async () => {

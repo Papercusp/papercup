@@ -26,9 +26,12 @@
  * the get_feedback tool (P-003) writes it.
  *
  * Honesty on degraded instruments: when no embedder is available the router
- * CANNOT measure similarity — it returns `no_qualified_responder` with
- * `degraded: 'embed-unavailable'` rather than hallucinating a responder, and
- * the snapshot says so (cannot-measure ≠ measured-nothing).
+ * CANNOT measure similarity. It therefore keeps semantic qualification empty,
+ * marks the snapshot `degraded: 'embed-unavailable'`, and uses the existing
+ * session_turns.text_tsv lexical contract as a bounded minimum-fill fallback.
+ * Lexical candidates are explicitly marked `fallback: 'lexical'` so a caller
+ * can request manual review without presenting token overlap as semantic
+ * expertise (cannot-measure ≠ measured-nothing).
  *
  * Dependency seams are injected (sql, embedder, liveness, clock) so the core
  * is testable against a fixture Postgres with a deterministic embedder; the
@@ -69,6 +72,9 @@ export interface TurnEvidence {
   turn_idx: number;
   ts: string | null;
   sim: number;
+  /** Present only on embed-free lexical fallback evidence. This is a
+   * ts_rank_cd score, never a cosine similarity. */
+  lexicalRank?: number;
 }
 
 export interface RoutingCandidate {
@@ -88,6 +94,9 @@ export interface RoutingCandidate {
    * 'unknown' otherwise. The consult layer owns the liveness GATE (D-008 §5) —
    * the router only annotates. */
   liveness: string;
+  /** Present only when semantic discovery degraded to session_turns.text_tsv.
+   * These candidates can be selected only as labeled minimum-fill reviewers. */
+  fallback?: 'lexical';
 }
 
 export interface RoutingSnapshot {
@@ -100,6 +109,8 @@ export interface RoutingSnapshot {
   /** Set when the instrument itself was degraded — 'embed-unavailable' means
    * similarity could not be measured at all (≠ measured and found nothing). */
   degraded?: 'embed-unavailable';
+  /** The bounded retrieval leg used while the semantic instrument was down. */
+  fallback?: 'lexical';
   /** Min/max responder-selection provenance (consult-min-max-and-rubric-vetting
    * D-001/D-002/D-003) — stamped by the CONSULT layer at selection time and
    * persisted with the snapshot, so the D-003 honesty feed can always
@@ -129,6 +140,7 @@ export interface SnapshotSelection {
     score: number;
     similarity: number;
     liveness: string;
+    fallback?: 'lexical';
     /** WI-39852 revival leg: this selectee's session was DEAD at route time and
      * a carry-respawn was launched to make them reachable (labeled, never
      * silent — the D-002 rule applied to liveness provenance). */
@@ -203,6 +215,7 @@ export function selectionSnapshot(min: number, max: number, selected: SelectedRe
       score: s.candidate.score,
       similarity: s.candidate.signals.similarity,
       liveness: s.candidate.liveness,
+      ...(s.candidate.fallback ? { fallback: s.candidate.fallback } : {}),
     })),
   };
 }
@@ -292,17 +305,107 @@ export async function routeConsult(
     computedAt: now.toISOString(),
   };
 
+  const sql = deps.getSql();
   const vec = deps.embed ? await deps.embed(params.question).catch(() => null) : null;
   if (!vec || vec.length === 0) {
+    // The semantic instrument is unavailable, but the session-turn index still
+    // has the same bounded lexical contract as search: `text_tsv` generated
+    // from the first 20k chars, `plainto_tsquery('english', ...)`, and
+    // `ts_rank_cd` ordered best-first. This is retrieval provenance, not a
+    // semantic qualification path: qualified stays empty and every candidate
+    // is labeled as lexical fallback for the minimum-fill/manual-review layer.
+    let lexicalRows: Array<{
+      owner: string;
+      session_id: string;
+      turn_idx: number;
+      ts: string | Date | null;
+      lexicalRank: number;
+    }> = [];
+    try {
+      lexicalRows = (await sql`
+        SELECT owner, session_id, turn_idx,
+               COALESCE(ts, ingested_at) AS ts,
+               ts_rank_cd(text_tsv, plainto_tsquery('english', ${params.question})) AS lexical_rank
+          FROM harness_shared.session_turns
+         WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
+           AND owner IS NOT NULL
+           AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
+           AND (turn_origin_verdict IS NULL OR turn_origin_verdict <> 'machine-surface')
+           AND text_tsv @@ plainto_tsquery('english', ${params.question})
+      ORDER BY lexical_rank DESC, COALESCE(ts, ingested_at) DESC
+         LIMIT ${turnLimit}
+      `) as unknown as Array<{
+        owner: string;
+        session_id: string;
+        turn_idx: number;
+        ts: string | Date | null;
+        lexical_rank: number;
+      }>;
+      lexicalRows = lexicalRows.map((r) => ({ ...r, lexicalRank: Number(r.lexical_rank) }));
+    } catch {
+      // A partially migrated host may not have text_tsv yet. The semantic
+      // instrument is already degraded, so preserve an honest empty result and
+      // let the core expose its bounded manual-review/park contract instead of
+      // turning a recoverable fallback miss into a consult failure.
+      lexicalRows = [];
+    }
+
+    const byOwner = new Map<string, { ranks: number[]; newestTs: number | null; evidence: TurnEvidence[] }>();
+    for (const r of lexicalRows) {
+      let owner = byOwner.get(r.owner);
+      if (!owner) {
+        owner = { ranks: [], newestTs: null, evidence: [] };
+        byOwner.set(r.owner, owner);
+      }
+      const lexicalRank = Number(r.lexicalRank);
+      owner.ranks.push(lexicalRank);
+      const tsMs = r.ts ? new Date(r.ts as string).getTime() : null;
+      if (tsMs !== null && (owner.newestTs === null || tsMs > owner.newestTs)) owner.newestTs = tsMs;
+      if (owner.evidence.length < evidencePerOwner) {
+        owner.evidence.push({
+          session_id: r.session_id,
+          turn_idx: r.turn_idx,
+          ts: tsMs !== null ? new Date(tsMs).toISOString() : null,
+          // `sim` is retained for the shared evidence shape, but remains zero:
+          // no cosine similarity was measured on this path.
+          sim: 0,
+          lexicalRank,
+        });
+      }
+    }
+
+    const owners = [...byOwner.keys()];
+    let livenessByOwner: Record<string, string> = {};
+    if (deps.getLiveness && owners.length > 0) {
+      livenessByOwner = await deps.getLiveness(owners).catch(() => ({}));
+    }
+    const candidates: RoutingCandidate[] = owners.map((ownerId) => {
+      const owner = byOwner.get(ownerId)!;
+      const lexicalRank = clamp01(Math.max(...owner.ranks));
+      const ageDays = owner.newestTs === null ? Infinity : (now.getTime() - owner.newestTs) / 86_400_000;
+      const recency = owner.newestTs === null ? 0 : clamp01(Math.pow(2, -ageDays / RECENCY_HALF_LIFE_DAYS));
+      return {
+        ownerId,
+        // Score is the lexical rank on this path. It is intentionally not
+        // blended with semantic weights: the caller must be able to see that
+        // this is a token-match minimum-fill candidate, not a qualified expert.
+        score: lexicalRank,
+        signals: { similarity: 0, recency, verification: 0, authorship: 0 },
+        evidence: owner.evidence,
+        liveness: livenessByOwner[ownerId] ?? 'unknown',
+        fallback: 'lexical' as const,
+      };
+    });
+    candidates.sort((a, b) => b.score - a.score || a.ownerId.localeCompare(b.ownerId));
+    const snapshotCandidates = candidates.slice(0, maxCandidates);
     return {
       verdict: 'no_qualified_responder',
       qualified: [],
-      snapshot: { ...base, candidates: [], degraded: 'embed-unavailable' },
+      snapshot: { ...base, candidates: snapshotCandidates, degraded: 'embed-unavailable', fallback: 'lexical' },
       queryVec: null,
     };
   }
 
-  const sql = deps.getSql();
   const qVec = JSON.stringify(vec);
 
   // 1) Top-K turns by cosine similarity over the cross-agent transcript index.

@@ -114,7 +114,11 @@ const cand = (ownerId: string, over: Partial<RoutingCandidate> = {}): RoutingCan
   ...over,
 });
 
-const snapshotOf = (candidates: RoutingCandidate[], degraded?: 'embed-unavailable'): RoutingSnapshot => ({
+const snapshotOf = (
+  candidates: RoutingCandidate[],
+  degraded?: 'embed-unavailable',
+  fallback?: 'lexical',
+): RoutingSnapshot => ({
   query: 'q',
   floor: 0.5,
   simFloor: 0.4,
@@ -122,12 +126,21 @@ const snapshotOf = (candidates: RoutingCandidate[], degraded?: 'embed-unavailabl
   candidates,
   computedAt: NOW.toISOString(),
   ...(degraded ? { degraded } : {}),
+  ...(fallback ? { fallback } : {}),
 });
 
-const routeOf = (qualified: RoutingCandidate[], opts: { degraded?: 'embed-unavailable'; all?: RoutingCandidate[]; queryVec?: number[] | null } = {}): RouteResult => ({
+const routeOf = (
+  qualified: RoutingCandidate[],
+  opts: {
+    degraded?: 'embed-unavailable';
+    fallback?: 'lexical';
+    all?: RoutingCandidate[];
+    queryVec?: number[] | null;
+  } = {},
+): RouteResult => ({
   verdict: qualified.length > 0 ? 'routed' : 'no_qualified_responder',
   qualified,
-  snapshot: snapshotOf(opts.all ?? qualified, opts.degraded),
+  snapshot: snapshotOf(opts.all ?? qualified, opts.degraded, opts.fallback),
   // Default null: existing scenarios exercise the pre-P-006 paths (no archive
   // leg); archive tests pass an explicit vector.
   queryVec: opts.queryVec ?? null,
@@ -283,6 +296,48 @@ describe('getFeedbackCore — honest no_qualified_responder', () => {
     expect(r.degraded).toBe('embed-unavailable');
     const row = await stateRow(r.conversation_id);
     expect((row.routing as { degraded?: string }).degraded).toBe('embed-unavailable');
+  });
+
+  it('embed_unavailable lexical candidates route one bounded manual-review pick', async () => {
+    const lexical = cand('agent-lexical', {
+      score: 0.31,
+      signals: { similarity: 0, recency: 0.8, verification: 0, authorship: 0 },
+      evidence: [{
+        session_id: 'sess-agent-lexical',
+        turn_idx: 4,
+        ts: NOW.toISOString(),
+        sim: 0,
+        lexicalRank: 0.42,
+      }],
+      fallback: 'lexical',
+    });
+    const second = cand('agent-lexical-2', {
+      score: 0.2,
+      signals: { similarity: 0, recency: 0.4, verification: 0, authorship: 0 },
+      fallback: 'lexical',
+    });
+    const { deps, opened, reached } = makeDeps(
+      routeOf([], { degraded: 'embed-unavailable', fallback: 'lexical', all: [lexical, second] }),
+    );
+    const r = asOk(await getFeedbackCore(baseReq, deps));
+    expect(r.verdict).toBe('routed');
+    expect(r.reason).toBeUndefined();
+    expect(r.degraded).toBe('embed-unavailable');
+    expect(r.responder).toMatchObject({ ownerId: 'agent-lexical', fallback: 'lexical' });
+    expect(r.responder_via).toBe('minimum');
+    // The default minimum is one, so the lexical fallback does not broadcast
+    // to the second candidate; it remains only in the router snapshot.
+    expect(r.remaining_candidates).toEqual([]);
+    expect(opened[0].direct_to).toEqual(['agent-lexical']);
+    expect(reached).toHaveLength(1);
+    expect(reached[0].body).toContain('MANUAL-REVIEW');
+    expect(reached[0].body).toContain('lexical rank 0.420');
+    expect(r.hint).toContain('BOUNDED MANUAL-REVIEW');
+    const row = await stateRow(r.conversation_id);
+    expect((row.routing as { fallback?: string }).fallback).toBe('lexical');
+    expect((row.routing as { selection?: { selected: Array<{ fallback?: string }> } }).selection?.selected[0]?.fallback).toBe(
+      'lexical',
+    );
   });
 });
 
