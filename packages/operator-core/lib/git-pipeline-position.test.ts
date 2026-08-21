@@ -483,6 +483,29 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.summary).toMatch(/main ✓/);
     });
 
+    it('a MARKER removed by the target change CORRECTS an absent ref marker by strict count decrease', async () => {
+      const git = fakeGit({
+        pathCommit: PEER,
+        contains: { HEAD: [PEER], 'origin/staging': [PEER], 'origin/main': [], deployedsha0: [] },
+        newestInRef: { 'origin/main': MINE },
+        // The target change removes the only occurrence from the file. The ref has
+        // the target's version, so the marker is fully absent there (count 0).
+        blobAtRef: { 'origin/main': 'function remains() {}\n' },
+        parentBlobAtTarget: 'function looksDeadOrStuck() {}\n',
+      });
+      const res = await gitPipelinePosition(
+        { path: P, marker: 'looksDeadOrStuck' },
+        { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+      );
+      expect(res.positions.inMain).toBe(true);
+      expect(res.positionsMarker?.inMain?.present).toBe(false);
+      expect(res.positionsMarker?.inMain?.count).toBe(0);
+      expect(res.positionsNewerCommit).not.toContain('inMain');
+      expect(res.notes.join('\n')).toMatch(/CORRECTED to true by the marker/);
+      expect(res.notes.join('\n')).toMatch(/strict net-decrease/);
+      expect(res.summary).toMatch(/main ✓/);
+    });
+
     it('a MARKER absent from the ref confirms a GENUINE miss and does not cry newer-commit', async () => {
       const git = fakeGit({
         pathCommit: PEER,

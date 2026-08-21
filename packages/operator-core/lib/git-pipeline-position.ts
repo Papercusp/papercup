@@ -3989,26 +3989,31 @@ export async function gitPipelinePosition(
           if (marker) {
             const verdict = await markerAtCommit(gitReadForMarker, ref, relPath, marker);
             markerLegs[leg] = verdict;
+            // Require a STRICT count change against the pre-change baseline — never
+            // bare presence. A count comparison can only under-claim (a change that
+            // adds/removes no occurrence of the marker is simply not detected, the
+            // pre-existing behaviour), never over-claim, mirroring markerPartialAgainst.
+            const strictlyAdded =
+              typeof verdict.count === 'number' &&
+              typeof markerBaselineCount === 'number' &&
+              verdict.count > markerBaselineCount;
+            const strictlyRemoved =
+              typeof verdict.count === 'number' &&
+              typeof markerBaselineCount === 'number' &&
+              verdict.count < markerBaselineCount;
+            if (strictlyAdded || strictlyRemoved) {
+              positions[leg] = true;
+              notes.push(
+                `${leg}: CORRECTED to true by the marker. The newest commit touching '${relPath}' ` +
+                  `(${targetSha.slice(0, 9)}) is not in ${ref} — but ${ref}'s own version of the file ` +
+                  `contains your marker ${verdict.count}× against a baseline of ${markerBaselineCount}× at ` +
+                  `${targetSha.slice(0, 9)}~1 (before your change), a strict net-${strictlyAdded ? 'increase' : 'decrease'} ` +
+                  `in occurrences, so YOUR change IS there. The false was about a later commit to the same file, ` +
+                  `not about your change.`,
+              );
+              continue;
+            }
             if (verdict.present === true) {
-              // Require STRICT net-new occurrence against the pre-change baseline —
-              // never bare presence. A count comparison can only under-claim (a change
-              // that adds no new occurrence of the marker is simply not detected, the
-              // pre-existing behaviour), never over-claim, mirroring markerPartialAgainst.
-              const strictlyNew =
-                typeof verdict.count === 'number' &&
-                typeof markerBaselineCount === 'number' &&
-                verdict.count > markerBaselineCount;
-              if (strictlyNew) {
-                positions[leg] = true;
-                notes.push(
-                  `${leg}: CORRECTED to true by the marker. The newest commit touching '${relPath}' ` +
-                    `(${targetSha.slice(0, 9)}) is not in ${ref} — but ${ref}'s own version of the file ` +
-                    `contains your marker ${verdict.count}× against a baseline of ${markerBaselineCount}× at ` +
-                    `${targetSha.slice(0, 9)}~1 (before your change), a strict net-new occurrence, so YOUR ` +
-                    `change IS there. The false was about a later commit to the same file, not about your change.`,
-                );
-                continue;
-              }
               if (typeof markerBaselineCount === 'number') {
                 notes.push(
                   `${leg}: marker '${marker}' is present in ${ref} (${verdict.count}×), but it is NOT unique ` +
@@ -4034,9 +4039,9 @@ export async function gitPipelinePosition(
               );
               continue;
             }
-            // present === null (unknown), or present === true but not strictly new:
-            // fall through to the explanation below, which is still better than a
-            // bare false, but never claim the marker settled it.
+            // present === null (unknown), or the measured count did not strictly
+            // change against the baseline: fall through to the explanation below,
+            // which is still better than a bare false, but never claim the marker settled it.
           }
 
           const earlier = await newestTouchingInRef(git, root, ref, relPath);
