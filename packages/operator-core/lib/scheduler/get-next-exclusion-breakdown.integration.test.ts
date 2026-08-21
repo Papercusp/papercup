@@ -123,7 +123,9 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     await seedIssue('WI-9403', {}, { takenBy: 'su-outside-agent' });
     await seedIssue('WI-9404', { plan_item: { plan_slug: 'live-plan', item_id: 'P-001' } });
 
-    // Every-day floors the aggregate must also carry correctly:
+    // Every-day floors the aggregate must also carry correctly. Migration 864
+    // retired the ambiguous legacy `needsHuman` floor, so WI-9405 is now an
+    // admitted compatibility row rather than an exclusion bucket.
     await seedIssue('WI-9405', { needsHuman: true });
     await seedIssue('WI-9411', { needsOwnerAction: true });
     await seedIssue('WI-9406', { lane: 'observation' });
@@ -148,7 +150,7 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     expect(out.excluded).toMatchObject({
       taken: 1, // WI-9403
       claimHold: 1, // WI-9402
-      legacyNeedsHuman: 1, // WI-9405
+      legacyNeedsHuman: 0, // compatibility field retained after migration 864 retired the floor
       needsOwnerAction: 1, // WI-9411
       observationLane: 1, // WI-9406
       externalBlocker: 1, // WI-9407
@@ -385,13 +387,13 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     expect(breakdownOnly.admitted.total).toBe(2);
   });
 
-  it('sampleExcluded surfaces the SAME excluded ids the breakdown counts, through the materialized snapshot', async () => {
+  it('keeps the retired legacy-needs-human bucket empty through the materialized snapshot', async () => {
     await seedIssue('WI-RC-20', { needsHuman: true });
     await seedIssue('WI-RC-21', null);
 
     const out = await readIssueClaimability(undefined, { harness: H }, { limit: 20, sampleLimit: 5 });
-    expect(out.breakdown.excluded.legacyNeedsHuman).toBe(1);
-    expect(out.sample?.legacyNeedsHuman).toEqual(['WI-RC-20']);
+    expect(out.breakdown.excluded.legacyNeedsHuman).toBe(0);
+    expect(out.sample?.legacyNeedsHuman).toEqual([]);
   });
 });
 

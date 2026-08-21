@@ -92,6 +92,8 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     await seedIssue('WI-9002', { lane: 'observation', origin: 'checkpoint-harvest' });
     await seedIssue('WI-9003', { plan_item: { plan_slug: 'live-plan', item_id: 'P-001' } });
     await seedIssue('WI-9004', { _claimHold: true, held_open_by: 'su-other', held_open_reason: 'blocked' });
+    // Migration 864 retired the ambiguous legacy `needsHuman` floor. Keep a
+    // compatibility-shaped row here to prove the diagnosis now admits it.
     await seedIssue('WI-9005', { needsHuman: true });
     await seedIssue('WI-9008', {
       externalBlockers: [
@@ -129,7 +131,7 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     expect(by.get('WI-9002')).toMatchObject({ admissible: false, refusedBy: 'observation-lane' });
     expect(by.get('WI-9003')).toMatchObject({ admissible: false, refusedBy: 'plan-lane-reserved' });
     expect(by.get('WI-9004')).toMatchObject({ admissible: false, refusedBy: 'claim-hold' });
-    expect(by.get('WI-9005')).toMatchObject({ admissible: false, refusedBy: 'needs-human' });
+    expect(by.get('WI-9005')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9006')).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
     expect(by.get('WI-9007')).toMatchObject({ admissible: true, refusedBy: null });
     expect(by.get('WI-9008')).toMatchObject({ admissible: false, refusedBy: 'external-blocker' });

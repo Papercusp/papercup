@@ -333,16 +333,16 @@ describe('EI-13501: cup-forbidden items are excluded from the placement frontier
     expect(placeable).toBe(1);
   });
 
-  it('fetchEscalatedIssueFrontierRows excludes legacy needsHuman, strict needsOwnerAction, claim-held, AND rig-gated issue rows — mirroring claimNextIssueWorkItem\'s floors so the Mug\'s count never disagrees with what the claim path actually serves', async () => {
+  it('fetchEscalatedIssueFrontierRows admits retired legacy needsHuman while excluding typed owner-action, claim-held, and rig-gated rows', async () => {
     await seedIssue(MEMBER_A, 'EI-NEEDS-HUMAN', { createdTs: 1, payload: { needsHuman: true } });
     await seedIssue(MEMBER_A, 'EI-NEEDS-OWNER-ACTION', { createdTs: 2, payload: { needsOwnerAction: true } });
     await seedIssue(MEMBER_A, 'EI-CLAIM-HELD', { createdTs: 3, payload: { _claimHold: true } });
     await seedIssue(MEMBER_A, 'EI-RIG-GATED', { createdTs: 4, payload: { needs_2_machine_rig: true } });
     await seedIssue(MEMBER_A, 'EI-GENUINE', { createdTs: 5 });
     const rows = await fetchEscalatedIssueFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
-    // Live-verified 2026-07-17: 4 of 10 sampled real escalated-issue-frontier rows carried
-    // payload.needsHuman:true and were STILL counted as "ready to place" before this fix.
-    expect(rows.map((r) => r.feature_id)).toEqual(['EI-GENUINE']);
+    // Migration 864 retired the ambiguous payload.needsHuman floor. The compatibility
+    // row is therefore placeable, while the typed/current floors remain enforced.
+    expect(rows.map((r) => r.feature_id)).toEqual(['EI-NEEDS-HUMAN', 'EI-GENUINE']);
   });
 
   it('fetchEscalatedIssueFrontierRows still surfaces a genuinely placeable severity-major issue (no false exclusion)', async () => {
