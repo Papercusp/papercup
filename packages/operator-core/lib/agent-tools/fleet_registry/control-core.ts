@@ -181,6 +181,39 @@ export async function applyFleetControl(
     };
   }
 
+  // The typed cue below is deliberately fleet-leader-scoped. An owner/queen may
+  // authorize a fleet control action, but must not emit a leader-shaped cue when
+  // the registry points at an absent leader: members would obey the cue and route
+  // their follow-up to a dead `@fleet-leader` while the real controller is this
+  // session (EI-21094636043854606). Keep the recovery explicit — take leadership
+  // first — rather than silently changing the fleet's owner as a side effect of a
+  // control read. A liveness read failure also fails closed; an unverified leader
+  // cannot safely back a leader-authority cue.
+  if (invokedAs !== 'leader') {
+    let leaderIsLive = false;
+    let leaderReadFailed = false;
+    if (fleet.leaderOwnerId) {
+      try {
+        leaderIsLive = (await getPresence(fleet.leaderOwnerId)) !== null;
+      } catch {
+        leaderReadFailed = true;
+      }
+    }
+    if (!leaderIsLive) {
+      const leaderState = leaderReadFailed ? 'could not be confirmed live' : 'has no live presence';
+      return {
+        ok: false,
+        fleet: slug,
+        invokedAs,
+        error: 'fleet_leader_mismatch',
+        message:
+          `fleet:${action} cannot emit a fleet-leader cue as ${invokedAs}: the registry leader ` +
+          `(${fleet.leaderOwnerId ?? 'none'}) ${leaderState}. ` +
+          `Call fleet:take-leadership { fleet: "${slug}" } first, then retry the control action.`,
+      };
+    }
+  }
+
   // P-006 (work-item-claimability-clarity-2026-07-20): on a WIND-DOWN, snapshot the
   // live scheduler-oracle drain breakdown and AUTO-STAMP it onto the reason, so the
   // durable control_reason records WHY the lane is (or is not) drained in the ONE
@@ -240,9 +273,9 @@ export async function applyFleetControl(
     slug,
     { state: targetState, reason: effectiveReason, by: ownerId },
     undefined,
-    invokedAs === 'leader' ? fleet.leaderOwnerId : undefined,
+    fleet.leaderOwnerId,
   );
-  if (!updated && invokedAs === 'leader') {
+  if (!updated) {
     return {
       ok: false,
       error: 'fleet_leadership_superseded',

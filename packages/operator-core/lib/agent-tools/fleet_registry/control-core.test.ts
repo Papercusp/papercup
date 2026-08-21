@@ -231,8 +231,30 @@ describe('applyFleetControl', () => {
 
   it('an su session invokes as OWNER (the owner-authority proxy) even when not leader', async () => {
     getFleetM.mockResolvedValue(fleet({ leaderOwnerId: 'su-someone-else' }));
+    presenceM.mockResolvedValue({} as never); // the registered leader is live
     const r = await applyFleetControl({} as never, 'backend', 'wind-down');
     expect(r).toMatchObject({ ok: true, invokedAs: 'owner' });
+  });
+
+  it('refuses an owner control cue when the registry leader is absent', async () => {
+    const registeredLeader = 'su-ended-leader';
+    getFleetM.mockResolvedValue(fleet({ leaderOwnerId: registeredLeader }));
+    membersM.mockResolvedValue(['m-1']);
+
+    const r = await applyFleetControl({} as never, 'backend', 'resume', 'restart intake');
+
+    expect(r).toMatchObject({
+      ok: false,
+      fleet: 'backend',
+      invokedAs: 'owner',
+      error: 'fleet_leader_mismatch',
+    });
+    expect(r.message).toContain(registeredLeader);
+    expect(r.message).toContain('fleet:take-leadership');
+    expect(presenceM).toHaveBeenCalledWith(registeredLeader);
+    expect(setControlM).not.toHaveBeenCalled();
+    expect(sendM).not.toHaveBeenCalled();
+    expect(membersM).not.toHaveBeenCalled();
   });
 
   it('refuses a stale leader control write when leadership changed after authorization', async () => {
@@ -245,7 +267,9 @@ describe('applyFleetControl', () => {
 
   it('a mug (queen) invokes as QUEEN', async () => {
     callerRef.ownerId = 's-172000-queen'; // not su-prefixed — kind comes from the role
-    presenceM.mockResolvedValue({ agentRole: 'mug' } as never);
+    presenceM.mockImplementation(async (ownerId) =>
+      (ownerId === callerRef.ownerId ? { agentRole: 'mug' } : {}) as never,
+    );
     getFleetM.mockResolvedValue(fleet({ leaderOwnerId: 'su-someone-else' }));
     const r = await applyFleetControl({} as never, 'backend', 'wind-down');
     expect(r).toMatchObject({ ok: true, invokedAs: 'queen' });
