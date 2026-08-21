@@ -302,6 +302,74 @@ export function formatFailingFilesLine({ runToken, entries, unattributed, transf
     transformCulprits?: string[];
 }): string;
 /**
+ * Stable key for one workspace-relative failure entry.
+ *
+ * The runner resolves blobs outside this module, but the comparison itself stays pure here so
+ * the stale classification can be tested without a git checkout or a long test run.
+ *
+ * @param {{ workspace: string, file: string }} entry
+ * @returns {string}
+ */
+export function failureEntryKey({ workspace, file }?: {
+    workspace: string;
+    file: string;
+}): string;
+/**
+ * Classify reported failure entries against blobs resolved at run start and report time.
+ *
+ * A stale entry is one whose two known blob ids differ: the test judged one version of the file,
+ * but the tree contains another version when the runner reports. Missing either blob is kept in
+ * `unknown` rather than called stale; a missing git object is an attribution gap, not evidence of
+ * a mid-run edit. This is deliberately advisory and does not change the task failure count.
+ *
+ * @param {{
+ *   entries?: Array<{ workspace: string, file: string }>,
+ *   runStartBlobs?: Record<string, string|null>,
+ *   reportBlobs?: Record<string, string|null>,
+ * }} args
+ * @returns {{
+ *   current: Array<object>,
+ *   stale: Array<object>,
+ *   unknown: Array<object>,
+ * }}
+ */
+export function classifyStaleFailureEntries({ entries, runStartBlobs, reportBlobs, }?: {
+    entries?: Array<{
+        workspace: string;
+        file: string;
+    }>;
+    runStartBlobs?: Record<string, string | null>;
+    reportBlobs?: Record<string, string | null>;
+}): {
+    current: Array<object>;
+    stale: Array<object>;
+    unknown: Array<object>;
+};
+/**
+ * Render the advisory for failures whose judged blob moved before report time.
+ *
+ * This stays separate from `AFFECTED_TESTS_RESULT` and `AFFECTED_TESTS_FAILING_FILES`: both are
+ * existing contracts consumed by the gate, while this block adds evidence about whether the
+ * named red may be a phantom without changing the red's gating status.
+ *
+ * @param {{
+ *   runStartHead?: string|null,
+ *   reportHead?: string|null,
+ *   stale?: Array<{ workspace: string, file: string, runStartBlob?: string|null, reportBlob?: string|null }>,
+ * }} args
+ * @returns {string[]}
+ */
+export function formatStaleFailureSummary({ runStartHead, reportHead, stale, }?: {
+    runStartHead?: string | null;
+    reportHead?: string | null;
+    stale?: Array<{
+        workspace: string;
+        file: string;
+        runStartBlob?: string | null;
+        reportBlob?: string | null;
+    }>;
+}): string[];
+/**
  * Parse the canonical, machine-readable break-set line emitted by
  * {@link formatFailingFilesLine}.
  *
@@ -469,3 +537,5 @@ export const AFFECTED_TESTS_FAILING_FILES_TOKEN: "AFFECTED_TESTS_FAILING_FILES";
 /** Beyond this many entries the JSON payload is truncated and says so. A break set this
  *  large is a tree-wide event, not a triage list; the counts stay exact either way. */
 export const FAILING_FILES_LINE_MAX_ENTRIES: 400;
+/** A stable token for the separate stale-failure advisory block. */
+export const AFFECTED_TESTS_STALE_FAILURES_TOKEN: "AFFECTED_TESTS_STALE_FAILURES";
