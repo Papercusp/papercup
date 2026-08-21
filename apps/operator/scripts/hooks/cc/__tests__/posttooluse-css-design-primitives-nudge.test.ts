@@ -45,6 +45,10 @@ describe('posttooluse-css-design-primitives-nudge', () => {
       join(REPO, 'apps/operator/app/_lints/letter-spacing-pattern.mjs')
     );
     expect(mod.findNonzeroLetterSpacing('.x { letter-spacing: 0.04em; }')).toHaveLength(1);
+    const titleMod = await import(
+      join(REPO, 'apps/operator/app/_lints/title-only-tooltip-pattern.mjs')
+    );
+    expect(titleMod.findButtonTitleTooltips('<button title="help">x</button>')).toHaveLength(1);
   });
 
   describe('against real files', () => {
@@ -59,6 +63,10 @@ describe('posttooluse-css-design-primitives-nudge', () => {
         join(dir, 'apps/operator/app/_lints/letter-spacing-pattern.mjs'),
         `export * from ${JSON.stringify(join(REPO, 'apps/operator/app/_lints/letter-spacing-pattern.mjs'))};`,
       );
+      writeFileSync(
+        join(dir, 'apps/operator/app/_lints/title-only-tooltip-pattern.mjs'),
+        `export * from ${JSON.stringify(join(REPO, 'apps/operator/app/_lints/title-only-tooltip-pattern.mjs'))};`,
+      );
       const file = join(scanned, 'scratch.css');
       writeFileSync(file, contents);
       return { dir, file };
@@ -71,6 +79,18 @@ describe('posttooluse-css-design-primitives-nudge', () => {
         expect(out).toContain('BANNED letter-spacing ADDED');
         expect(out).toContain('GREEN-CHECKPOINT LEG');
         expect(out).toContain('scratch.css');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('NUDGES on a newly added title-only button tooltip', () => {
+      const { dir, file } = scratchCss('<button title="help">x</button>\n');
+      try {
+        const out = runHook(file);
+        expect(out).toContain('TITLE-ONLY BUTTON TOOLTIP ADDED');
+        expect(out).toContain('GREEN-CHECKPOINT LEG');
+        expect(out).toContain('aria-label');
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
@@ -90,6 +110,17 @@ describe('posttooluse-css-design-primitives-nudge', () => {
       // hud.css:564 quotes `letter-spacing:0.09em` while explaining its removal.
       const { dir, file } = scratchCss(
         '/* was letter-spacing:0.09em, removed — reds the lint */\n.a { letter-spacing: 0; }\n',
+      );
+      try {
+        expect(runHook(file).trim()).toBe('');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('stays SILENT when a button title appears only inside a comment', () => {
+      const { dir, file } = scratchCss(
+        '/* <button title="documented example"> */\nconst ok = true;\n',
       );
       try {
         expect(runHook(file).trim()).toBe('');

@@ -27,6 +27,7 @@ import { describe, expect, it, vi } from 'vitest';
 // mattered: hud.css red-pinned the fleet 3x on this one rule, and prose comments in the
 // file failed to prevent the 3rd.
 import { nonzeroLetterSpacingRe as makeNonzeroLetterSpacingRe } from './letter-spacing-pattern.mjs';
+import { buttonTitleTooltipRe as makeButtonTitleTooltipRe } from './title-only-tooltip-pattern.mjs';
 
 const OPERATOR_ROOT = resolve(__dirname, '../..');
 const APPS_ROOT = resolve(OPERATOR_ROOT, '..');
@@ -677,7 +678,7 @@ describe('design primitive lint', () => {
   it('blocks title-only tooltips on buttons', () => {
     expectNoUnexpected(
       'Button title tooltip',
-      unexpectedFiles(/<button\b(?:=>|[^>])*\btitle=/g, BUTTON_TITLE_ALLOWED_FILES),
+      unexpectedFiles(makeButtonTitleTooltipRe(), BUTTON_TITLE_ALLOWED_FILES),
     );
   });
 

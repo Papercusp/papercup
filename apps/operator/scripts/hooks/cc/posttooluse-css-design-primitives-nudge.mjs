@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // apps/operator/scripts/hooks/cc/posttooluse-css-design-primitives-nudge.mjs
 //
-// PostToolUse (Edit|Write|MultiEdit) ADVISORY nudge when an edit ADDS a banned nonzero
-// `letter-spacing` — i.e. when it arms the `lint:design-primitives` green-checkpoint leg
-// (EI-20023819609804890).
+// PostToolUse (Edit|Write|MultiEdit) ADVISORY nudges when an edit ADDS a banned
+// `lint:design-primitives` violation — currently nonzero `letter-spacing` and
+// title-only tooltips on buttons (EI-20023819609804890, EI-19423906701785726).
 //
 // THE TRAP THIS CLOSES IS NOT THE DECLARATION — IT IS WHO PAYS FOR IT
 //   `lint:design-primitives` is a green-checkpoint leg, so a banned declaration bites ONLY
@@ -33,14 +33,16 @@
 //   write, when `git show HEAD:<file>` is still unambiguously the PRE-edit content — the
 //   one moment the signal is both correct and attributable.
 //
-// REUSES THE LINT'S OWN MATCHER
+// REUSES THE LINT'S OWN MATCHERS
 //   `findNonzeroLetterSpacing` is dynamically imported from
 //   apps/operator/app/_lints/letter-spacing-pattern.mjs, resolved off the edited file's
 //   own path (this hook is INSTALLED to ~/.papercusp/hooks/cc/, detached from any repo, so
 //   a static import is impossible). Re-implementing the regex here would fork it — and the
 //   drift would be silent and severe, because the negative lookahead is precisely what
 //   separates a banned `0.04em` from the REQUIRED `letter-spacing: 0`. A hand-rewrite that
-//   dropped it would fire on every compliant declaration in the tree.
+//   dropped it would fire on every compliant declaration in the tree. The title-only
+//   button matcher is likewise imported from apps/operator/app/_lints/
+//   title-only-tooltip-pattern.mjs so its multiline JSX pattern stays in step with the gate.
 //
 // CONTRACT
 //   - ADVISORY ONLY. PostToolUse cannot block and must not try to. The gate remains the
@@ -62,6 +64,7 @@ import process from 'node:process';
 
 /** Shared matcher, relative to the repo root — also how the root is identified. */
 const MODULE_REL = join('apps', 'operator', 'app', '_lints', 'letter-spacing-pattern.mjs');
+const TITLE_MODULE_REL = join('apps', 'operator', 'app', '_lints', 'title-only-tooltip-pattern.mjs');
 
 /** Directories the lint actually scans (SOURCE_DIRS in design-primitives.test.ts). */
 const SCANNED_DIRS = [join('apps', 'operator', 'app'), join('apps', 'operator-vite', 'src')];
@@ -74,6 +77,10 @@ const MAX_BYTES = 400_000;
 
 /** At most this many NEW sites are listed; the count line always states the true total. */
 const MAX_LISTED = 5;
+
+// Deliberate exception mirrored from BUTTON_TITLE_ALLOWED_FILES in the gate. This button
+// uses native title= to avoid a Radix Tooltip remounting the DOM node when its label changes.
+const BUTTON_TITLE_ALLOWED_FILES = new Set(['operator/app/harness/AgentInspectorModal.tsx']);
 
 // Run ONLY when executed as a binary — never on import. Without this, importing the module
 // (as a test does) runs main(), which waits on stdin and then exits, killing the runner.
@@ -135,11 +142,15 @@ export function findRepoRoot(filePath, exists = existsSync) {
  */
 export function newOffenders(beforeFound, afterFound) {
   const remaining = new Map();
-  for (const e of beforeFound) remaining.set(e.snippet, (remaining.get(e.snippet) || 0) + 1);
+  for (const e of beforeFound) {
+    const key = e.key ?? e.snippet;
+    remaining.set(key, (remaining.get(key) || 0) + 1);
+  }
   const fresh = [];
   for (const e of afterFound) {
-    const left = remaining.get(e.snippet) || 0;
-    if (left > 0) remaining.set(e.snippet, left - 1);
+    const key = e.key ?? e.snippet;
+    const left = remaining.get(key) || 0;
+    if (left > 0) remaining.set(key, left - 1);
     else fresh.push(e);
   }
   return fresh;
@@ -166,6 +177,25 @@ export function formatNudge(relPath, fresh, beforeCount, afterCount) {
   return lines.join('\n');
 }
 
+/** Advisory text for a newly introduced title-only button tooltip. */
+export function formatTitleNudge(relPath, fresh, beforeCount, afterCount) {
+  const lines = [
+    `⚠ TITLE-ONLY BUTTON TOOLTIP ADDED (+${afterCount - beforeCount}) — this arms lint:design-primitives, a GREEN-CHECKPOINT LEG.`,
+    `  ${relPath}  (${beforeCount} → ${afterCount} in this file)`,
+  ];
+  for (const e of fresh.slice(0, MAX_LISTED)) lines.push(`    • L${e.line}  ${e.snippet}`);
+  if (fresh.length > MAX_LISTED) lines.push(`    … and ${fresh.length - MAX_LISTED} more`);
+  lines.push(
+    '',
+    '  A native title= on an action button is invisible to keyboard and touch users, and',
+    '  the gate red-pins the WHOLE FLEET when this reaches green-checkpoint.',
+    '',
+    '  Use an accessible aria-label plus the shared Tooltip primitive for supplemental',
+    '  help. The only approved native-title exception is AgentInspectorModal.tsx.',
+  );
+  return lines.join('\n');
+}
+
 /** The nudge for one edited path, or null. */
 export async function nudgeFor(filePath) {
   const repoRoot = findRepoRoot(filePath);
@@ -179,16 +209,50 @@ export async function nudgeFor(filePath) {
   const { findNonzeroLetterSpacing } = await import(
     `file://${join(repoRoot, MODULE_REL)}`
   );
-
-  const after = findNonzeroLetterSpacing(readFileSync(abs, 'utf8'));
-  if (after.length === 0) return null; // nothing to say — the common case
-
+  const raw = readFileSync(abs, 'utf8');
   const relPath = relative(repoRoot, abs);
-  const before = findNonzeroLetterSpacing(headVersion(repoRoot, relPath));
-  const fresh = newOffenders(before, after);
-  if (fresh.length === 0) return null; // pre-existing; not this edit's doing
+  const messages = [];
 
-  return formatNudge(relPath, fresh, before.length, after.length);
+  const afterLetterSpacing = findNonzeroLetterSpacing(raw);
+  const beforeLetterSpacing = findNonzeroLetterSpacing(headVersion(repoRoot, relPath));
+  const freshLetterSpacing = newOffenders(beforeLetterSpacing, afterLetterSpacing);
+  if (freshLetterSpacing.length > 0) {
+    messages.push(
+      formatNudge(
+        relPath,
+        freshLetterSpacing,
+        beforeLetterSpacing.length,
+        afterLetterSpacing.length,
+      ),
+    );
+  }
+
+  // Older detached hook installs may run against a checkout predating this optional
+  // matcher. Preserve the existing letter-spacing nudge and fail open for the new rule.
+  if (!BUTTON_TITLE_ALLOWED_FILES.has(relPath.replaceAll('\\', '/'))) {
+    try {
+      const { findButtonTitleTooltips } = await import(
+        `file://${join(repoRoot, TITLE_MODULE_REL)}`
+      );
+      const afterButtonTitles = findButtonTitleTooltips(raw);
+      const beforeButtonTitles = findButtonTitleTooltips(headVersion(repoRoot, relPath));
+      const freshButtonTitles = newOffenders(beforeButtonTitles, afterButtonTitles);
+      if (freshButtonTitles.length > 0) {
+        messages.push(
+          formatTitleNudge(
+            relPath,
+            freshButtonTitles,
+            beforeButtonTitles.length,
+            afterButtonTitles.length,
+          ),
+        );
+      }
+    } catch {
+      // Optional matcher unavailable — preserve fail-open hook behavior.
+    }
+  }
+
+  return messages.length > 0 ? messages.join('\n\n') : null;
 }
 
 /** The committed content of `relPath`, or '' when there is no HEAD version. */
@@ -264,11 +328,19 @@ function selfTest() {
   check('added duplicate counts once', newOffenders([a], [a, b]).length === 1);
   check('removal is silent', newOffenders([a, b], [a]).length === 0);
 
+  const titleA = { line: 2, snippet: '<button title=', key: 'button-title-tooltip' };
+  const titleB = { line: 12, snippet: '<button className="new" title=', key: 'button-title-tooltip' };
+  check('button attribute edits are not new title offenders', newOffenders([titleA], [titleB]).length === 0);
+
   const msg = formatNudge('apps/operator/app/adv/hud/hud.css', [a], 0, 1);
   check('names the leg', msg.includes('GREEN-CHECKPOINT LEG'));
   check('names the file', msg.includes('hud.css'));
   check('shows the offending line', msg.includes('L1'));
   check('offers the alternative', msg.includes('letter-spacing: 0'));
+
+  const titleMsg = formatTitleNudge('apps/operator/app/adv/DepGraphPanel.tsx', [titleA], 0, 1);
+  check('names the title rule', titleMsg.includes('TITLE-ONLY BUTTON TOOLTIP ADDED'));
+  check('offers the accessible alternative', titleMsg.includes('aria-label'));
 
   process.stdout.write(failures === 0 ? 'self-test OK\n' : `self-test FAILED (${failures})\n`);
   process.exit(failures === 0 ? 0 : 1);
