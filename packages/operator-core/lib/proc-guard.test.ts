@@ -23,6 +23,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   getAncestryChain,
   getOperationalArgv,
+  matchesAdjacentArgvSequence,
   isStructuredPayloadArg,
   listProcesses,
   matchExternalProcesses,
@@ -103,6 +104,44 @@ describe('parseArgv and getOperationalArgv', () => {
       '--json',
     ];
     expect(getOperationalArgv(argv)).toEqual(['node', '/repo/scripts/ptool.mjs', 'work_items:checkpoint', '--json']);
+  });
+});
+
+describe('matchesAdjacentArgvSequence', () => {
+  const sequence = ['gitnexus', 'analyze'];
+
+  it('matches npx when gitnexus and analyze are adjacent tokens', () => {
+    expect(matchesAdjacentArgvSequence(['npx', '--yes', 'gitnexus', 'analyze', '/repo'], sequence)).toBe(true);
+  });
+
+  it('matches a node-launched gitnexus.js path by basename', () => {
+    expect(
+      matchesAdjacentArgvSequence(
+        ['node', '/repo/node_modules/gitnexus/bin/gitnexus.js', 'analyze', '/repo'],
+        sequence,
+      ),
+    ).toBe(true);
+  });
+
+  it('matches the direct gitnexus executable', () => {
+    expect(matchesAdjacentArgvSequence(['/usr/local/bin/gitnexus', 'analyze', '/repo'], sequence)).toBe(true);
+  });
+
+  it('rejects a python hook whose JSON payload merely names the command', () => {
+    expect(
+      matchesAdjacentArgvSequence(
+        ['python3', '-', JSON.stringify({ tool_input: { command: 'npx --yes gitnexus analyze /repo' } })],
+        sequence,
+      ),
+    ).toBe(false);
+  });
+
+  it('rejects the right executable with the wrong verb', () => {
+    expect(matchesAdjacentArgvSequence(['npx', '--yes', 'gitnexus', 'cypher', '/repo'], sequence)).toBe(false);
+  });
+
+  it('rejects command text embedded in a node -e script', () => {
+    expect(matchesAdjacentArgvSequence(['node', '-e', 'gitnexus analyze /repo'], sequence)).toBe(false);
   });
 });
 
@@ -312,6 +351,33 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
     // because row order follows /proc readdir order, which is lexicographic.
     expect(report.fullMatches.map((m) => m.pid).sort((a, b) => a - b)).toEqual([777, 269555, 269556, 269557]);
     expect(report.argvTextOnly.map((m) => m.pid).sort((a, b) => a - b)).toEqual([269555, 269556, 269557]);
+  });
+
+  it('uses argv adjacency mode to ignore gitnexus prose while retaining real commands', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'gitnexus.*analyze';
+    const sequence = ['gitnexus', 'analyze'];
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+    fixtureProc(fixtureRoot, 777, 1, ['npx', '--yes', 'gitnexus', 'analyze', '/repo']);
+    fixtureProc(fixtureRoot, 778, 1, ['node', '/repo/bin/gitnexus.js', 'analyze', '/repo']);
+    fixtureProc(fixtureRoot, 779, 1, ['/usr/local/bin/gitnexus', 'analyze', '/repo']);
+    fixtureProc(fixtureRoot, 888, 1, [
+      'python3',
+      '-',
+      JSON.stringify({ tool_input: { command: 'npx --yes gitnexus analyze /repo' } }),
+    ]);
+    fixtureProc(fixtureRoot, 889, 1, ['node', '-e', 'gitnexus analyze /repo']);
+    fixtureProc(fixtureRoot, 890, 1, ['npx', '--yes', 'gitnexus', 'cypher', '/repo']);
+
+    const report = matchExternalProcessesDetailed(PATTERN, {
+      procRoot: fixtureRoot,
+      selfPid: 100,
+      argvSequence: sequence,
+    });
+    expect(report.matches.map((m) => m.pid)).toEqual([777, 778, 779]);
+    expect(report.fullMatches.map((m) => m.pid).sort((a, b) => a - b)).toEqual([777, 778, 779, 888, 889]);
+    expect(report.argvTextOnly.map((m) => m.pid).sort((a, b) => a - b)).toEqual([888, 889]);
   });
 
   // Calibration for the test above: the payload rule must not be so broad that

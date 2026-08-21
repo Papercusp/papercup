@@ -76,6 +76,7 @@
  *   getAncestryChain(pid, byPid)           -> Set<pid> (pid + every ancestor, incl. pid 1)
  *   isStructuredPayloadArg(arg)           -> is this argv entry a JSON payload (data, not identity)?
  *   getOperationalArgv(argv)              -> argv with prompt + structured payloads removed
+ *   matchesAdjacentArgvSequence(argv, seq) -> interpreter-backed literal argv adjacency match
  *   matchExternalProcesses(pattern, opts) -> operational matching rows, self + ancestors excluded
  *   matchExternalProcessesDetailed(...)   -> operational, full, and argv-text-only rows
  */
@@ -126,6 +127,7 @@ const GREEN_CHECKPOINT_CGROUP = /(?:^|\/)(?:papercup|papercusp)-green-checkpoint
 /** @typedef {CgroupBusyOk | CgroupBusyUnknown} CgroupBusySample */
 
 const PROMPT_ARG_MARKERS = ['PAPERCUSP_KICKOFF_PROMPT=', '⟦turn-origin:'];
+const DEFAULT_INTERPRETER_BASENAMES = new Set(['node', 'nodejs', 'npx', 'npm', 'gitnexus', 'gitnexus.js']);
 
 /**
  * Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args).
@@ -197,6 +199,46 @@ export function getOperationalArgv(argv) {
     (arg, index) =>
       index === 0 || (!PROMPT_ARG_MARKERS.some((marker) => arg.includes(marker)) && !isStructuredPayloadArg(arg)),
   );
+}
+
+function argvBasename(arg) {
+  return path.basename(String(arg).replaceAll('\\', '/'));
+}
+
+/**
+ * Match a literal command sequence at argv-token boundaries.
+ *
+ * The first sequence token is compared by basename, so an installed binary
+ * such as `/repo/node_modules/.bin/gitnexus` is equivalent to `gitnexus`.
+ * Every following token is compared literally and must be immediately
+ * adjacent. The argv[0] basename must also be an interpreter that could
+ * execute the command. This prevents prose in a JSON/tool payload or a
+ * `node -e 'gitnexus analyze'` script from becoming a process match.
+ *
+ * @param {string[]} argv
+ * @param {string[]} sequence - e.g. ['gitnexus', 'analyze']
+ * @param {{ interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * @returns {boolean}
+ */
+export function matchesAdjacentArgvSequence(argv, sequence, opts = {}) {
+  if (
+    !Array.isArray(sequence) ||
+    sequence.length < 2 ||
+    sequence.some((token) => typeof token !== 'string' || !token)
+  ) {
+    return false;
+  }
+
+  const operationalArgv = getOperationalArgv(argv);
+  const interpreterBasenames = new Set(opts.interpreterBasenames ?? DEFAULT_INTERPRETER_BASENAMES);
+  if (!interpreterBasenames.has(argvBasename(operationalArgv[0] ?? ''))) return false;
+
+  const commandBasenames = new Set(opts.commandBasenames ?? [sequence[0], `${sequence[0]}.js`]);
+  for (let start = 0; start <= operationalArgv.length - sequence.length; start += 1) {
+    if (!commandBasenames.has(argvBasename(operationalArgv[start]))) continue;
+    if (sequence.slice(1).every((token, offset) => operationalArgv[start + offset + 1] === token)) return true;
+  }
+  return false;
 }
 
 /**
@@ -338,7 +380,7 @@ export function getAncestryChain(pid, byPid, maxHops = 512) {
  * external process with the same pattern in a real argument still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
- * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
  * For the known `green-checkpoint` workload, gate-owned environment/cgroup
  * identity is also accepted so argv-blind descendants are not missed.
  * @returns {ProcRow[]}
@@ -355,7 +397,7 @@ export function matchExternalProcesses(pattern, opts = {}) {
  * audit what was ignored — nothing is silently dropped.
  *
  * @param {string} pattern - A RegExp source.
- * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
  * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
 export function matchExternalProcessesDetailed(pattern, opts = {}) {
@@ -368,7 +410,14 @@ export function matchExternalProcessesDetailed(pattern, opts = {}) {
   const re = new RegExp(pattern);
   const external = all.filter((p) => !excluded.has(p.pid));
   const fullMatches = external.filter((p) => re.test(p.cmdline));
-  const operationalMatches = external.filter((p) => re.test(getOperationalArgv(p.argv).join(' ')));
+  const operationalMatches = opts.argvSequence
+    ? external.filter((p) =>
+        matchesAdjacentArgvSequence(p.argv, opts.argvSequence, {
+          interpreterBasenames: opts.interpreterBasenames,
+          commandBasenames: opts.commandBasenames,
+        }),
+      )
+    : external.filter((p) => re.test(getOperationalArgv(p.argv).join(' ')));
   const matchedOperationalPids = new Set(operationalMatches.map((p) => p.pid));
   const identityMatches = knownIdentity ? external.filter(matchesGreenCheckpointIdentity) : [];
   const matchedIdentityPids = new Set(identityMatches.map((p) => p.pid));
@@ -579,14 +628,31 @@ async function main(argv) {
   const flags = argv.filter((a) => a.startsWith('--'));
   const positional = argv.filter((a) => !a.startsWith('--'));
   const [cmd, pattern] = positional;
+  const argvSequenceFlag = flags.find((f) => f.startsWith('--argv-sequence='));
+  const argvSequence = argvSequenceFlag
+    ? argvSequenceFlag
+        .slice('--argv-sequence='.length)
+        .split(',')
+        .map((token) => token.trim())
+        .filter(Boolean)
+    : undefined;
   const busy = flags.includes('--busy');
   const sampleMsFlag = flags.find((f) => f.startsWith('--sample-ms='));
   const sampleMs = sampleMsFlag ? Number(sampleMsFlag.slice('--sample-ms='.length)) : DEFAULT_SAMPLE_MS;
   const budgetMsFlag = flags.find((f) => f.startsWith('--budget-ms='));
   const budgetMs = budgetMsFlag ? Number(budgetMsFlag.slice('--budget-ms='.length)) : DEFAULT_BUSY_BUDGET_MS;
-  if (cmd !== 'check' || !pattern || !(sampleMs > 0) || !Number.isFinite(sampleMs) || !(budgetMs > 0) || !Number.isFinite(budgetMs)) {
+  if (
+    cmd !== 'check' ||
+    !pattern ||
+    (argvSequenceFlag && (!argvSequence || argvSequence.length < 2)) ||
+    !(sampleMs > 0) ||
+    !Number.isFinite(sampleMs) ||
+    !(budgetMs > 0) ||
+    !Number.isFinite(budgetMs)
+  ) {
     console.error(
-      'usage: node scripts/proc-guard.mjs check <pattern> [--busy] [--sample-ms=<n>] [--budget-ms=<n>]\n' +
+      'usage: node scripts/proc-guard.mjs check <pattern> [--argv-sequence=<first,second>] [--busy] [--sample-ms=<n>] [--budget-ms=<n>]\n' +
+        '  --argv-sequence=<csv>  require literal adjacent argv tokens; the first token is matched by basename\n' +
         '  --busy  also answer "is it WORKING" — a two-sample cgroup CPU rate per match,\n' +
         '          which sees every descendant at any depth (a /proc tree walk does not).\n' +
         '  --budget-ms=<n>  shared wall-clock budget for all --busy samples (default 15s).',
@@ -594,7 +660,7 @@ async function main(argv) {
     process.exit(2);
     return;
   }
-  const report = matchExternalProcessesDetailed(pattern);
+  const report = matchExternalProcessesDetailed(pattern, { argvSequence });
   const { matches, fullMatches, argvTextOnly, identityMatches } = report;
   if (matches.length === 0) {
     if (fullMatches.length > 0) {
