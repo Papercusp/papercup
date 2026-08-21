@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 757,
+  "count": 759,
   "tools": [
     {
       "name": "ablation:report",
@@ -6488,6 +6488,24 @@
       }
     },
     {
+      "name": "cupboard:install-rubric",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-rubric",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a rubric from the Cupboard into this workspace: give a listingId (resolves the mirror repo + ref from the listing) OR a githubUrl + listingRef directly; the operator clones the mirror, validates <listingRef>/rubric.json, drops the dir into ~/.papercusp/rubrics/<ref>/ (shadowing the bundled floor), then seeds it into the workspace rubric store. NO-CLOBBER: a rubricId this workspace already owns always wins — an install never overwrites a locally-ratified rubric. Returns { ok, ref, rubricId, title, characteristic, seeded }.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a published rubric so this workspace can grade against it — you found a rubric listing (cupboard:search kind='rubric') and want it available to scorecards:emit / acceptance grading.",
+        "notWhen": "Authoring a rubric here (rubrics:propose). Reading rubrics this workspace already has (rubrics:list / rubrics:get). Grading (scorecards:emit). Installing a plan template (cupboard:install-plan) or a template (cupboard:install-template).",
+        "chaining": "cupboard:search { kind:'rubric' } → cupboard:install-rubric { listingId } → rubrics:get { rubricRef } to confirm it is live → scorecards:emit against it. If `seeded` comes back false the dir is installed but not yet live — any later rubrics read retries the seed."
+      }
+    },
+    {
       "name": "cupboard:install-template",
       "http": {
         "path": "/api/agent-tools/cupboard/install-template",
@@ -6539,6 +6557,24 @@
         "when": "Sharing a plugin or code-tool pack you have INSTALLED (its manifest name is the slug), so others can install it from the Cupboard — one tool for both (the manifest's kind decides plugin vs pack).",
         "notWhen": "Publishing a blueprint (blueprint:publish), a knowledge pack (knowledge_packs:publish), a whole standalone app (cupboard:publish-app), or an app-template (cupboard:publish-template). If the unit is not installed locally, pass githubUrl pointing at its repo; either way the code must be pushed to GitHub first.",
         "chaining": "Publish points at the GitHub repo, so commit + push the unit first. The response carries the listing + its review_status — a reviewed kind lands PENDING until an operator approves it at /admin/cupboard-moderation."
+      }
+    },
+    {
+      "name": "cupboard:publish-rubric",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-rubric",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a rubric on the Cupboard's Rubrics tab: points a kind='rubric' listing at the public mirror repo the rubric's self-describing dir (rubric.json + listing.json + optional METHOD.md) was pushed to, with listing_ref = the per-rubric subdir. Title/description default from the local rubric. Rubrics are a reviewed kind — the publish lands PENDING until an operator approves it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a rubric you authored so other workspaces can install and grade against it — after its dir is pushed to a public mirror repo.",
+        "notWhen": "Proposing/ratifying a rubric in THIS workspace (rubrics:propose / rubrics:ratify) — publishing is distribution, not authorship. Grading something (scorecards:emit). Publishing a plan template (cupboard:publish-plan) or a template (cupboard:publish-template).",
+        "chaining": "Push the rubric dir to its public mirror repo first (githubUrl points there). The response carries review_status — a reviewed kind lands PENDING until an operator approves it at /admin/cupboard-moderation."
       }
     },
     {

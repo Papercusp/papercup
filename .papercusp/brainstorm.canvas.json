@@ -1,34 +1,34 @@
 {
   "elements": [
     {
-      "id": "GNRyLAG-An9cIZxkxFFGR",
-      "type": "embeddable",
       "x": 116.5625,
       "y": 111,
+      "id": "GNRyLAG-An9cIZxkxFFGR",
+      "link": "https://twitter.com/Interior/status/463440424141459456",
+      "seed": 1895716148,
+      "type": "embeddable",
+      "angle": 0,
+      "index": "a0",
       "width": 260,
       "height": 230,
-      "angle": 0,
-      "strokeColor": "#1e1e1e",
-      "backgroundColor": "transparent",
-      "fillStyle": "solid",
-      "strokeWidth": 2,
-      "strokeStyle": "solid",
-      "roughness": 1,
-      "opacity": 100,
-      "groupIds": [],
+      "locked": false,
       "frameId": null,
-      "index": "a0",
+      "opacity": 100,
+      "updated": 1787324107518,
+      "version": 6,
+      "groupIds": [],
+      "fillStyle": "solid",
+      "isDeleted": false,
+      "roughness": 1,
       "roundness": {
         "type": 3
       },
-      "seed": 1895716148,
-      "version": 6,
+      "strokeColor": "#1e1e1e",
+      "strokeStyle": "solid",
+      "strokeWidth": 2,
       "versionNonce": 1500078604,
-      "isDeleted": false,
-      "boundElements": null,
-      "updated": 1787324107518,
-      "link": "https://twitter.com/Interior/status/463440424141459456",
-      "locked": false
+      "boundElements": [],
+      "backgroundColor": "transparent"
     }
   ],
   "appState": {
