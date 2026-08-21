@@ -401,9 +401,10 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
       `--max-old-space-size=${GREEN_CHECKPOINT_POST_SUITE_HEAP_MB}`,
     );
     expect(calls[0].args.slice(0, 3)).toEqual(["run", "lint:tsc", "--"]);
-    expect(calls[0].args[3]).toMatch(
-      /^--files-from=\/tmp\/.*green-checkpoint-typecheck-files-/,
-    );
+    const responseArg = calls[0].args[3];
+    expect(responseArg).toMatch(/^--files-from=/);
+    expect(responseArg.startsWith(`--files-from=${tmpdir()}/`)).toBe(true);
+    expect(responseArg).toContain("green-checkpoint-typecheck-files-");
   });
 
   it("keeps a large changed-file set out of argv while preserving the exact response-file set", async () => {
