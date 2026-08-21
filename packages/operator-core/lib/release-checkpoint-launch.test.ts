@@ -96,7 +96,8 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(argv).toContain('--property=ManagedOOMPreference=avoid');
     const stopPost = argv.find((arg) => arg.startsWith('--property=ExecStopPost='));
     expect(stopPost).toContain(GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER);
-    expect(stopPost).toContain('service_result=%%s');
+    expect(stopPost).toContain('service_result=%s exit_code=%s exit_status=%s');
+    expect(stopPost).not.toContain('%%s');
     expect(stopPost).toContain('$$SERVICE_RESULT');
     expect(stopPost).toContain('>> "/tmp/cp.log"');
     expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
@@ -425,6 +426,25 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
         abnormal: true,
       },
     });
+  });
+
+  it('EI-210996: rejects literal printf placeholders instead of inventing abnormal terminal evidence', () => {
+    const log = [
+      '[green-checkpoint] checkpointing candidate 1f64eb2d (base abc12345)',
+      `${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} service_result=%s exit_code=%s exit_status=%s`,
+    ].join('\n');
+    const r = checkActiveCheckpointRun(
+      '/tree',
+      fakeSystemctlShow({ ActiveState: 'inactive', ExecMainStartTimestamp: '' }),
+      () => null,
+      undefined,
+      undefined,
+      undefined,
+      vi.fn(() => log),
+    );
+
+    expect(r).toMatchObject({ active: false, terminal_marker: false });
+    expect(r).not.toHaveProperty('terminal_evidence');
   });
 
   it('reports active:true with started_at, a bounded eta_sec, and the parsed candidate when the unit is active', () => {

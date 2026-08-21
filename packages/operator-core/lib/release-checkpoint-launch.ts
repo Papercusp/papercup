@@ -585,6 +585,10 @@ export function parseCheckpointSystemdTerminalEvidence(
       /^__GREEN_CHECKPOINT_SYSTEMD_TERMINAL__ service_result=(\S+) exit_code=(\S+) exit_status=(\S+)$/,
     );
     if (!match) continue;
+    // Fail closed if the systemd-run/printf serialization regresses and writes its
+    // format placeholders literally. A literal "%s" tuple is not manager evidence;
+    // accepting it would classify every finished unit as an abnormal termination.
+    if (match[1]!.includes('%') || match[2]!.includes('%') || match[3]!.includes('%')) continue;
     tuple = { service_result: match[1]!, exit_code: match[2]!, exit_status: match[3]! };
   }
   if (!tuple) return undefined;
@@ -1351,11 +1355,13 @@ export function buildCheckpointSystemdArgv(
     `apps/operator/lib/release/green-checkpoint.ts > ${target} 2>&1`;
   // EI-210996: the checkpoint process cannot publish its own verdict after SIGKILL/OOM.
   // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
-  // tuple to this run's immutable log. `%%`/`$$` deliberately survive systemd's own
-  // specifier/environment expansion and become printf placeholders + shell variables.
+  // tuple to this run's immutable log. The transient property is passed over D-Bus, so
+  // printf's `%s` placeholders must stay single-percent; `%%s` reaches printf unchanged and
+  // prints literal `%s` tokens. `$$` still deliberately survives systemd's environment
+  // expansion and becomes shell variables.
   const terminalMarkerCommand =
     `/bin/sh -c 'printf "\\n${GREEN_CHECKPOINT_SYSTEMD_TERMINAL_MARKER} ` +
-    `service_result=%%s exit_code=%%s exit_status=%%s\\n" ` +
+    `service_result=%s exit_code=%s exit_status=%s\\n" ` +
     `"$$SERVICE_RESULT" "$$EXIT_CODE" "$$EXIT_STATUS" >> "${target}"'`;
   // WI-4494: a detached unit does NOT inherit the launcher's env (same reason the partial-green
   // flag above has to be forwarded explicitly), so the record target must be passed as --setenv or

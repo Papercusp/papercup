@@ -49,6 +49,7 @@ function row(overrides: Partial<PredicateWatchRow> = {}): PredicateWatchRow {
     lastError: null,
     consecutiveErrors: 0,
     active: true,
+    boundTo: null,
     createdAt: '2026-08-21T00:00:00.000Z',
     ...overrides,
   };
