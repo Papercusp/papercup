@@ -94,6 +94,17 @@ describe('sendMessage / readInbox', () => {
     expect(inboxA).toEqual([]); // excludeOwn = true default
   });
 
+  it('renders a body with the generated msg_id before persisting the envelope', async () => {
+    const A = fakeIdentity('A');
+    const sent = await sendMessage(A, {
+      to: ['B'],
+      summary: 'ack this cue',
+      bodyWithMsgId: (msgId) => `coord:ack { msg_id: '${msgId}' }`,
+    });
+    expect(sent.body).toBe(`coord:ack { msg_id: '${sent.msg_id}' }`);
+    expect((await readInbox('B'))[0]?.body).toBe(sent.body);
+  });
+
   it('persists the sender-declared expectsReply envelope field', async () => {
     const A = fakeIdentity('A');
     const sent = await sendMessage(A, { to: ['B'], summary: 'question', expectsReply: true });
