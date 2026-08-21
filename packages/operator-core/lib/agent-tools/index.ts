@@ -60,6 +60,7 @@ import '../goals/stop-fanout';
 // `lsp.*` facade over the pinned language servers. ONE tool with an op enum
 // rather than seven — D-007 makes prompt weight an acceptance criterion.
 import './lsp/query';
+import './lsp/apply';
 
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';

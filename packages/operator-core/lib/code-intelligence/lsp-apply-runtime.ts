@@ -39,7 +39,10 @@ import type { ApplyDeps, LockOutcome } from './lsp-apply.ts';
  * subsystem off means by it.
  */
 async function bothFlagsEnabled(): Promise<{ ok: true } | { ok: false; message: string }> {
-  if (!(await getFlag(FLAGS.CODE_INTEL_LSP))) {
+  // `.catch(() => false)` matches the read facade, and matters more here: if the
+  // flag service cannot be reached we do not know whether an operator has turned
+  // this capability off, and the safe reading of "unknown" for a WRITER is off.
+  if (!(await getFlag(FLAGS.CODE_INTEL_LSP, 'system').catch(() => false))) {
     return {
       ok: false,
       message:
@@ -47,7 +50,7 @@ async function bothFlagsEnabled(): Promise<{ ok: true } | { ok: false; message: 
         `may be consulted and nothing can be applied`,
     };
   }
-  if (!(await getFlag(FLAGS.CODE_INTEL_LSP_APPLY))) {
+  if (!(await getFlag(FLAGS.CODE_INTEL_LSP_APPLY, 'system').catch(() => false))) {
     return {
       ok: false,
       message:
