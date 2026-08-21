@@ -5,11 +5,9 @@
  * For agent use when prompt-injected feature history was capped or when
  * inspecting a non-current feature (cross-feature exploration).
  *
- * Typed via `createSelectSchema(harness_features_consolidated)` — NOT
- * `schemaOf`: that relation is a VIEW, and `schemaOf` is constrained to
- * `Table` (insert/update are meaningless for a view). drizzle-zod's
- * `createSelectSchema` carries the View overload; `schemaOf(view)` was a
- * TS2345 no gate counted. See WI-38031.
+ * Typed from the view's direct Drizzle select shape. Do not round-trip the
+ * entire generated view through drizzle-zod merely to recover the row type:
+ * TypeScript 7 correctly reaches its instantiation-depth guard on that graph.
  *
  * Bulk by default (the house keyed-array contract,
  * bulk-endpoint-standardization-2026-06-21): the feature key is the COMPOUND
@@ -22,7 +20,7 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { and, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generated, createSelectSchema } from '@papercusp/db-org';
+import { generated } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 // The bulk helpers' LEAF module — relative, NOT the '@papercusp/agent-mcp'
 // barrel: the barrel re-exports through index.ts, an ESM circular-init that
@@ -31,7 +29,6 @@ import { defineTool } from '@papercusp/tooldef';
 // relative leaf resolves under both and dodges the cycle.
 import { runBulk, bulkContent } from '../../_bulk';
 const features = generated.harnessFeaturesConsolidatedInHarnessShared;
-const FeatureSelect = createSelectSchema(features);
 const SLUG_RE = /^[a-z0-9._-]+$/i;
 const FeatureKey = z.object({
     slug: z.string().min(1),
