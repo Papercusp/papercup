@@ -80,7 +80,9 @@ const ITEM_GRAMMAR =
  * `[ ]` checkbox, OR carries a `P-NNN` token, OR sits under a `## Phase`
  * heading (where content is items by convention). Lines inside fenced code
  * blocks and inside the ## Now / ## Decisions sections are ignored, matching
- * the parser. `parsedItemRawLines` is the set of lines the parser DID accept,
+ * the parser. The machine-managed ## Promoted record is ignored too: its
+ * checkbox rows describe realized feature/work-item provenance, not P-NNN
+ * plan items. `parsedItemRawLines` is the set of lines the parser DID accept,
  * so a correctly-formatted item is never re-flagged.
  */
 export function detectUnparsedItemLines(
@@ -93,7 +95,7 @@ export function detectUnparsedItemLines(
   const maskedLines = maskFences(writtenBody).split('\n');
   const realLines = writtenBody.split('\n');
   const out: UnparsedItemLine[] = [];
-  let skipSection = false; // inside ## Now or ## Decisions
+  let skipSection = false; // inside ## Now, ## Decisions, or ## Promoted
   let underPhase = false; // inside a ## Phase… section
 
   for (let i = 0; i < maskedLines.length; i++) {
@@ -103,7 +105,7 @@ export function detectUnparsedItemLines(
     const heading = /^(#{1,2})\s+(.*)$/.exec(masked);
     if (heading) {
       const norm = (heading[2] ?? '').replace(/^\d+(?:\.\d+)?\.\s+/, '').trim();
-      skipSection = /^(Now|Decisions)$/i.test(norm);
+      skipSection = /^(Now|Decisions|Promoted)$/i.test(norm);
       underPhase = /^Phase\b/i.test(norm);
       continue;
     }

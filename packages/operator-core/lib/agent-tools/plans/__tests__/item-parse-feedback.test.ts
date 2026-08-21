@@ -180,4 +180,24 @@ describe('detectUnparsedItemLines — precision unit', () => {
     expect(found.length).toBe(1);
     expect(found[0]?.text).toContain('Do the first thing');
   });
+
+  it('ignores machine-managed ## Promoted rows but still flags malformed plan items elsewhere', () => {
+    const body = written(
+      [
+        '## Promoted',
+        '',
+        '<!-- plan-pipeline: do not edit this block manually -->',
+        '- [ ] WI-40290 — Unified feature-family work item',
+        '- [x] F-AUTO-ABC123 — Legacy feature row',
+        '',
+        '## Phase 1',
+        '',
+        '- **P-001** missing the required status token',
+      ].join('\n'),
+    );
+
+    const found = detectUnparsedItemLines(body, new Set());
+    expect(found).toHaveLength(1);
+    expect(found[0]?.text).toContain('P-001');
+  });
 });
