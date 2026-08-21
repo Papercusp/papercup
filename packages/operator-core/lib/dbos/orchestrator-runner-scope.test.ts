@@ -57,12 +57,22 @@ vi.mock('../harness-invoke-once', () => ({
 }));
 
 const E = vi.hoisted(() => ({
+  completeCalls: [] as unknown[][],
   finishCalls: [] as unknown[][],
 }));
 vi.mock('../task-manager/enroll-sync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../task-manager/enroll-sync')>();
   return {
     ...actual,
+    completeSyncEnrolment: (...args: unknown[]) => {
+      E.completeCalls.push(args);
+      return actual.completeSyncEnrolment(
+        args[0] as Parameters<typeof actual.completeSyncEnrolment>[0],
+        args[1] as Parameters<typeof actual.completeSyncEnrolment>[1],
+        args[2] as Parameters<typeof actual.completeSyncEnrolment>[2],
+        args[3] as Parameters<typeof actual.completeSyncEnrolment>[3],
+      );
+    },
     finishSyncEnrolment: (...args: unknown[]) => {
       E.finishCalls.push(args);
       return actual.finishSyncEnrolment(
@@ -107,6 +117,7 @@ const savedMemEnv = process.env.PAPERCUSP_AGENT_SPAWN_MEMORY_MAX_G;
 
 beforeEach(() => {
   S.probe = { ok: true }; // default: a host that CAN make user scopes
+  E.completeCalls = [];
   E.finishCalls = [];
   // PIN the task-manager flag rather than inheriting it. `taskManagerEnabledSync()`
   // reads a module-level cache that fails open (`cached !== false`), so an unpinned
@@ -175,6 +186,22 @@ describe('agent-turn spawn scope isolation (WI-1499)', () => {
     expect(E.finishCalls).toHaveLength(1);
     const scopeCgroupPath = (E.finishCalls[0]?.[2] as { scopeCgroupPath?: string } | undefined)?.scopeCgroupPath;
     expect(scopeCgroupPath).toMatch(/\/papercusp-agent-session\.slice\/[^/]+\.scope$/);
+  });
+
+  it('records the spawn-row correlation on the named agent-session task', async () => {
+    spawnMock.mockImplementationOnce(() => fakeSpawn({ stdout: 'ok', code: 0 }));
+
+    await spawnInvokeOnce(process.cwd(), 'release-fixer', [], {}, {
+      taskSpawnId: 's-frozen-repair-2',
+    });
+
+    expect(E.completeCalls).toHaveLength(1);
+    const spec = E.completeCalls[0]?.[1] as { detail?: Record<string, unknown> };
+    expect(spec.detail).toMatchObject({
+      role: 'release-fixer',
+      scopeRequested: true,
+      spawnRecordId: 's-frozen-repair-2',
+    });
   });
 
   // The other half of the enrolment contract (task-manager-no-escape P-009). Confinement

@@ -17,13 +17,26 @@ import { releaseFixerSpawnAlive, decideReleaseFixerDispatch } from './release-ac
 const SPAWNED_DDL = `
   CREATE TABLE IF NOT EXISTS harness_shared.spawned_agents (
     spawn_id text PRIMARY KEY,
+    workspace_id text NOT NULL,
     session_owner text,
     run_id text,
     status text NOT NULL,
+    started_at timestamptz NOT NULL DEFAULT now(),
     heartbeat_at timestamptz,
     pid integer,
     launcher_host text,
     launcher_boot_id text
+  )`;
+
+const TASK_LEDGER_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.task_ledger (
+    task_id text PRIMARY KEY,
+    workspace_id text NOT NULL,
+    class text NOT NULL,
+    launched_by text NOT NULL,
+    state text NOT NULL,
+    last_seen_at timestamptz NOT NULL,
+    detail jsonb NOT NULL DEFAULT '{}'::jsonb
   )`;
 
 let db: FreshPgDb;
@@ -34,6 +47,7 @@ beforeAll(async () => {
   sql = db.sql;
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(SPAWNED_DDL);
+  await sql.unsafe(TASK_LEDGER_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -41,7 +55,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.spawned_agents`;
+  await sql`TRUNCATE harness_shared.spawned_agents, harness_shared.task_ledger`;
 });
 
 async function seedSpawn(
@@ -52,10 +66,24 @@ async function seedSpawn(
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.spawned_agents
-      (spawn_id, session_owner, run_id, status, heartbeat_at, pid, launcher_host, launcher_boot_id)
-    VALUES (${spawnId}, ${spawnId}, ${spawnId}, ${status},
+      (spawn_id, workspace_id, session_owner, run_id, status, heartbeat_at, pid, launcher_host, launcher_boot_id)
+    VALUES (${spawnId}, 'papercusp-workspace', ${spawnId}, ${spawnId}, ${status},
             ${heartbeatAgoMin == null ? null : sql`now() - make_interval(mins => ${heartbeatAgoMin})`},
             ${identity.pid ?? null}, ${identity.launcherHost ?? null}, ${identity.launcherBootId ?? null})`;
+}
+
+async function seedTaskScope(
+  spawnId: string,
+  state: string,
+  lastSeenAgoMin = 0,
+): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.task_ledger
+      (task_id, workspace_id, class, launched_by, state, last_seen_at, detail)
+    VALUES (${`task-${spawnId}`}, 'papercusp-workspace', 'agent-session',
+            'orchestrator:release-fixer', ${state},
+            now() - make_interval(mins => ${lastSeenAgoMin}),
+            jsonb_build_object('spawnRecordId', ${spawnId}::text))`;
 }
 
 describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)', () => {
@@ -67,6 +95,31 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
   it('a fixer whose spawn FAILED is gone → re-dispatch (the incident: a dead fixer)', async () => {
     await seedSpawn('s-fixer-dead', 'failed', 1);
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-dead')).toBe(false);
+  });
+
+  it('a terminal spawn row with a live correlated task scope remains covered', async () => {
+    await seedSpawn('s-fixer-handed-off', 'failed', 30, {
+      launcherHost: hostname(),
+      launcherBootId: launcherBootId(),
+      pid: 999_999_999,
+    });
+    await seedTaskScope('s-fixer-handed-off', 'running');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-handed-off')).toBe(true);
+  });
+
+  it('a correlated scope stops covering once the task reconciler closes it', async () => {
+    await seedSpawn('s-fixer-scope-ended', 'failed', 30);
+    await seedTaskScope('s-fixer-scope-ended', 'exited');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-scope-ended')).toBe(false);
+  });
+
+  it('a stale correlated task row does not keep a dead fixer covered', async () => {
+    await seedSpawn('s-fixer-scope-stale', 'failed', 30);
+    await seedTaskScope('s-fixer-scope-stale', 'running', 30);
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-scope-stale')).toBe(false);
   });
 
   it('a RUNNING fixer with a STALE heartbeat (crashed mid-run, beats stopped) is gone → re-dispatch', async () => {

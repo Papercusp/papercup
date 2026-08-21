@@ -702,6 +702,7 @@ const invoke = defineTool({
       env,
       {
         timeoutMs,
+        ...(spawnRecordId ? { taskSpawnId: spawnRecordId } : {}),
         ...(spawnRecordId
           ? {
               // The firing DBOS/operator process may differ from this /invoke

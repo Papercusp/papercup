@@ -95,9 +95,11 @@ export async function recordReleaseFixerNoTurnEscalation(
 }
 
 /**
- * Is the recorded release-fixer spawn still ALIVE — `running`/`restarting` with a
- * heartbeat inside the shared STALE_MS window (the SAME liveness definition the
- * fleet_assignment view + the stale-claim reconciler use, so they can't drift)?
+ * Is the recorded release-fixer spawn still ALIVE? Prefer the task-manager's
+ * named-scope row when present: `systemd-run --scope` can finish its client while
+ * the real agent payload keeps running, and the task reconciler is the authority
+ * that follows that handoff (WI-37509 / EI-21065737245117808). Otherwise retain
+ * the existing `running`/`restarting` + fresh-heartbeat/PID rules.
  * Returns `null` when there's no spawn id to check (a DBOS-durable fire / legacy
  * record), which the decision treats as "presumed covered". Fail-soft: a query
  * error returns null (presumed covered) rather than hammering a re-dispatch.
@@ -110,19 +112,40 @@ export async function releaseFixerSpawnAlive(
   const graceSec = Math.max(1, Math.round(STALE_MS / 1000));
   try {
     const rows = (await sql.unsafe(
-      `SELECT launcher_host, launcher_boot_id, pid
-         FROM harness_shared.spawned_agents
-        WHERE spawn_id = $1 AND status IN ('running','restarting')
-          AND heartbeat_at IS NOT NULL AND (now() - heartbeat_at) < make_interval(secs => $2)
+      `SELECT sa.launcher_host, sa.launcher_boot_id, sa.pid,
+              (sa.status IN ('running','restarting')
+                AND sa.heartbeat_at IS NOT NULL
+                AND (now() - sa.heartbeat_at) < make_interval(secs => $2)) AS spawn_lease_live,
+              EXISTS (
+                SELECT 1
+                  FROM harness_shared.task_ledger tl
+                 WHERE tl.workspace_id = sa.workspace_id
+                   AND tl.class = 'agent-session'
+                   AND tl.launched_by = 'orchestrator:release-fixer'
+                   AND tl.state IN ('pending','running')
+                   AND tl.detail->>'spawnRecordId' = sa.spawn_id
+                   AND tl.last_seen_at IS NOT NULL
+                   AND (now() - tl.last_seen_at) < make_interval(secs => $2)
+              ) AS live_task_scope
+         FROM harness_shared.spawned_agents sa
+        WHERE sa.spawn_id = $1
         LIMIT 1`,
       [spawnId, graceSec],
     )) as Array<{
       launcher_host?: string | null;
       launcher_boot_id?: string | null;
       pid?: number | string | null;
+      spawn_lease_live?: boolean;
+      live_task_scope?: boolean;
     }>;
     const row = rows[0];
     if (!row) return false;
+
+    // The named scope owns the real payload after systemd-run's client handoff.
+    // It outranks a terminal/stale spawn row until the task reconciler proves the
+    // scope ended; otherwise a second fixer can mutate the same frozen candidate.
+    if (row.live_task_scope) return true;
+    if (!row.spawn_lease_live) return false;
 
     // A PID is only meaningful within the launcher boot that recorded it. A
     // same-host row from an earlier boot is provably orphaned even when its

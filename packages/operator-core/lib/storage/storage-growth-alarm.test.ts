@@ -176,6 +176,22 @@ describe('detectUndeclaredGrowth', () => {
     expect(undeclared).toEqual([]);
   });
 
+  it('does NOT flag the four measured session archive/index tables with verified retention owners', () => {
+    const sessionTables = [
+      tbl('session_archive_files', 7_000),
+      tbl('session_turns', 5_000),
+      tbl('session_turn_chunks', 2_600),
+      tbl('session_turn_parts', 800),
+    ];
+    const { undeclared } = detectUndeclaredGrowth(sessionTables, DECLARED, 128 * MB);
+
+    expect(undeclared).toEqual([]);
+    expect(RETENTION_COVERED_ELSEWHERE.session_archive_files).toContain('session-archive.ts');
+    expect(RETENTION_COVERED_ELSEWHERE.session_turns).toContain('RETENTION_DAYS=45');
+    expect(RETENTION_COVERED_ELSEWHERE.session_turn_parts).toContain('PART_RETENTION_DAYS=14');
+    expect(RETENTION_COVERED_ELSEWHERE.session_turn_chunks).toContain('migration 749');
+  });
+
   it('does NOT flag an undeclared table under the floor', () => {
     const { undeclared } = detectUndeclaredGrowth([tbl('scout_ticks', 2)], DECLARED, 128 * MB);
     expect(undeclared).toEqual([]);

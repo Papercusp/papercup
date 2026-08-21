@@ -274,6 +274,11 @@ export async function spawnInvokeOnce(
     /** Optional bounded silence guard used by the release-fixer before its first
      *  agent stream. Ordinary roles retain only their overall invoke timeout. */
     firstTurnTimeoutMs?: number;
+    /** Durable spawn-row identity whose real payload is being enrolled. The
+     *  systemd-run client may exit while its named scope keeps running, so this
+     *  correlation lets liveness readers follow the payload instead of the
+     *  short-lived client PID (EI-21065737245117808). */
+    taskSpawnId?: string;
   },
 ): Promise<SpawnInvokeOnceResult> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
@@ -440,12 +445,12 @@ export async function spawnInvokeOnce(
           return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait', rawStdoutTail: '' };
         }
         console.warn(`[dbos-invoke] role=${role} spawn-governor bucket paced past maxWait → proceeding via inference-gateway failover`);
-        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity, opts?.taskSpawnId);
         feedGovernor(inner);
         return inner;
       }
       try {
-        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity, opts?.taskSpawnId);
         feedGovernor(inner);
         return inner;
       } finally {
@@ -455,7 +460,7 @@ export async function spawnInvokeOnce(
     // Pacing off (the default): run directly, but STILL feed the child's 429/overload back into
     // the shared governor (EI-86). The await happens here (inside the try) so the display
     // lease's finally releases AFTER the child exits, not when the promise is handed back.
-    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity, opts?.taskSpawnId);
     feedGovernor(inner);
     return inner;
   } catch (err) {
@@ -552,6 +557,7 @@ function runChild(
   firstTurnTimeoutMs?: number,
   onChildPid?: (pid: number) => void,
   onOutputActivity?: () => void,
+  taskSpawnId?: string,
   useScope: boolean = agentSpawnScopeEnabled(),
   // WI-5601: one bounded retry for an "exec-shaped" transient failure — a fast
   // (<5s) non-zero exit with BOTH stdout and stderr completely empty (the
@@ -660,7 +666,11 @@ function runChild(
         launchedBy: `orchestrator:${role}`,
         memoryMaxBytes: agentSpawnScopeMemoryMaxG() * 1024 ** 3,
         runtimeMaxSec: timeoutMs ? Math.ceil(timeoutMs / 1000) : null,
-        detail: { role, scopeRequested: useScope },
+        detail: {
+          role,
+          scopeRequested: useScope,
+          ...(taskSpawnId ? { spawnRecordId: taskSpawnId } : {}),
+        },
       },
       child.pid ?? null,
     );
@@ -767,7 +777,7 @@ function runChild(
           exitCode: code,
           exitReason: 'scope launch failed — retried unconfined',
         }, { scopeCgroupPath });
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, false, execFailureRetried));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, taskSpawnId, false, execFailureRetried));
         return;
       }
       if (isExecShapedTransientFailure(code)) {
@@ -781,7 +791,7 @@ function runChild(
           `[dbos-invoke] role=${role} exited ${code} in ${Date.now() - launchedAt}ms with BOTH streams empty — ` +
             `treating as a transient exec failure, retrying once (WI-5601)`,
         );
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, useScope, true));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, taskSpawnId, useScope, true));
         return;
       }
       settled = true;
@@ -850,7 +860,7 @@ function runChild(
           exitCode: null,
           exitReason: `scope spawn error — retried unconfined: ${err instanceof Error ? err.message : String(err)}`,
         }, { scopeCgroupPath });
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, false));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, taskSpawnId, false));
         return;
       }
       settled = true;
@@ -1732,6 +1742,7 @@ export async function spawnInvokeOnceWithFallback(
     timeoutMs?: number;
     resultPath?: string;
     forceSessionId?: string;
+    taskSpawnId?: string;
     onChildPid?: (pid: number) => void;
     onOutputActivity?: () => void;
   },
@@ -1804,6 +1815,7 @@ export async function spawnInvokeOnceWithFallback(
           timeoutMs: opts?.timeoutMs,
           resultPath: opts?.resultPath,
           forceSessionId: opts?.forceSessionId,
+          taskSpawnId: opts?.taskSpawnId,
         },
         {
           onPid: opts?.onChildPid,

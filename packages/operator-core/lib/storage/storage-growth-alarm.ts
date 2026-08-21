@@ -124,6 +124,11 @@ export const RETENTION_COVERED_ELSEWHERE: Readonly<Record<string, string>> = {
   operator_conversations: 'pruned by operator-turns-gc.ts',
   plan_revisions: 'pruned by agent-tools/plans/revisions-gc.ts',
   coord_thread_posts: 'pruned by agent-tools/coordination/message-log-gc.ts',
+  session_archive_files:
+    'permanent canonical archive — archiveSession() writes/updates it in session-archive.ts; no age-prune by design',
+  session_turns: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (RETENTION_DAYS=45)',
+  session_turn_parts: 'pruned by search/session-ingest.ts pruneSessionTurnsOnce (PART_RETENTION_DAYS=14)',
+  session_turn_chunks: 'derived cache — migration 749 ON DELETE CASCADE from session_turns; inherits parent retention',
   work_items: 'canonical work ledger — not age-prunable by design',
   memory_canonical: 'canonical memory store — not age-prunable by design',
   memory_vec_harrier: 'canonical memory vectors — not age-prunable by design',

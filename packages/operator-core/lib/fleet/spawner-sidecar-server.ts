@@ -21,7 +21,7 @@
  *
  * ── Protocol ──
  * Request  `spawn:invokeOnce` { projectDir, role, extras, extraEnv, timeoutMs?,
- *            resultPath?, forceSessionId? } → runs the real spawnInvokeOnce; while
+ *            resultPath?, forceSessionId?, taskSpawnId? } → runs the real spawnInvokeOnce; while
  *            in flight it PUSHES (server→client notifications, no id):
  *              `spawn:pid`            { requestId, pid }
  *              `spawn:outputActivity` { requestId }
@@ -76,6 +76,7 @@ interface InvokeOnceParams {
   timeoutMs?: number;
   resultPath?: string;
   forceSessionId?: string;
+  taskSpawnId?: string;
 }
 
 /**
@@ -197,6 +198,7 @@ export function runSpawnerSidecarServer(): void {
               timeoutMs: p.timeoutMs,
               resultPath: p.resultPath,
               forceSessionId: p.forceSessionId,
+              taskSpawnId: p.taskSpawnId,
               onChildPid: (pid) => write(rpcNotification('spawn:pid', { requestId: id, pid })),
               onOutputActivity: () => write(rpcNotification('spawn:outputActivity', { requestId: id })),
             },

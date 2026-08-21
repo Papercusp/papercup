@@ -1700,6 +1700,7 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     signal: abort.signal,
     forceSessionId,
     resultPath,
+    taskSpawnId: spawnId,
     ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}),
     // EI-85: record the child OS pid + this host so the reclaim sweep can
     // /proc-liveness-check the process instead of mislabeling a stale-heartbeat

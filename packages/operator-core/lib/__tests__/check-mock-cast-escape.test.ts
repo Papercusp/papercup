@@ -5,9 +5,14 @@
  * installed via `.mockImplementation((...) => ({...})) as never)`, so adding the
  * required `admitted` field went unnoticed by tsc and took 14 tests down at runtime.
  */
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
 import { decide, findMockCastEscapesInText } from '../../../../scripts/check-mock-cast-escape.mjs';
+import { runGuardScript } from '../testing-guard-script';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 
 describe('findMockCastEscapesInText', () => {
   it('flags a single-line `.mockResolvedValue(... as never)`', () => {
@@ -161,5 +166,26 @@ describe('decide (ratchet-only-down policy)', () => {
 
   it('is ok when the count exactly equals the baseline', () => {
     expect(decide({ count: 5, baselineCount: 5 })).toEqual({ verdict: 'ok' });
+  });
+});
+
+describe('the --json CLI report', () => {
+  it('fully drains a large piped report before returning the verdict status', () => {
+    const guard = runGuardScript('node', ['scripts/check-mock-cast-escape.mjs', '--json'], {
+      cwd: REPO_ROOT,
+      timeoutMs: 180_000,
+    });
+
+    let report: { count: number; baselineCount: number; verdict: string; byFile: Record<string, unknown> };
+    try {
+      report = JSON.parse(guard.stdout) as typeof report;
+    } catch {
+      throw new Error(`the mock-cast-escape guard produced no parseable --json report:\n${guard.output}`);
+    }
+
+    expect(report.count).toBeGreaterThanOrEqual(0);
+    expect(report.baselineCount).toBeGreaterThanOrEqual(0);
+    expect(report.verdict).toMatch(/^(?:fail-exceeds|ok-ratchet|ok-below|ok)$/);
+    expect(guard.status, guard.output).toBe(report.verdict === 'fail-exceeds' ? 1 : 0);
   });
 });

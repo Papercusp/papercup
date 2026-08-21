@@ -289,13 +289,16 @@ function main() {
         console.error('   If this genuinely cannot be typed, that is a deliberate exception — lower the count back');
         console.error('   down elsewhere, or raise the baseline with an explicit justification (never a silent bump).');
       }
-      process.exit(1);
-      break;
+      // `stdout` may contain a large JSON report. `process.exit()` can terminate
+      // before a piped stream drains, so preserve the status and let Node exit
+      // naturally after flushing the report.
+      process.exitCode = 1;
+      return;
     }
     case 'ok-ratchet':
       writeBaseline(decision.newBaseline);
-      process.exit(0);
-      break;
+      process.exitCode = 0;
+      return;
     case 'ok-below':
       if (!json) {
         console.log(
@@ -304,14 +307,15 @@ function main() {
             describeUnscanned(unscanned),
         );
       }
-      process.exit(0);
-      break;
+      process.exitCode = 0;
+      return;
     default:
       if (!json) {
         if (updateFlag) console.log('✓ --update: count equals baseline — nothing to lower.');
         console.log(`✓ mock-cast-escape count is at baseline (${count})` + describeUnscanned(unscanned));
       }
-      process.exit(0);
+      process.exitCode = 0;
+      return;
   }
 }
 
