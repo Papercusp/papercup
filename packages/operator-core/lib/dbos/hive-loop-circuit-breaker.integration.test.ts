@@ -30,15 +30,40 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { teardownTestPg } from '@papercusp/test-config/pg';
 import type { DBOS as DBOSType } from '@dbos-inc/dbos-sdk';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { writeOperatorState } from '../operator-state-pg';
 
 const WS = 'ws-circuit';
 const SLUG = 'circuit';
 const RID = 'rt-circuit-0';
 const PAUSED_RID = 'rt-circuit-paused';
-const ROLE = 'director'; // the coding blueprint's decider — the role the fire gates on
+const ROLE = 'director'; // the fixture blueprint's declared decider — the role the fire gates on
+
+// Keep this test tied to an explicit multi-role blueprint. The blueprint-less fallback is
+// intentionally coding-solo (decider `worker`); relying on it would make this circuit test
+// silently change roles whenever the platform's safe default evolves.
+const TEST_BLUEPRINT_YAML = `
+id: circuit-breaker-fixture
+version: 0.1.0
+description: Test-only multi-role blueprint for the autoloop circuit-breaker E2E.
+workItem:
+  kind: feature
+  idPrefix: F
+spine:
+  decider: director
+  maxTurns: 8
+  edges:
+    DONE: { to: done }
+  default: { to: idle }
+roles:
+  - id: director
+    description: Decides the next step.
+`;
 
 process.env.PAPERCUSP_WORKSPACE_ID = WS;
 process.env.PAPERCUSP_SKIP_PG_DISCOVERY = '1';
@@ -52,6 +77,7 @@ process.env.PAPERCUSP_AUTOLOOP_CIRCUIT_THRESHOLD = '8';
 let DBOS: typeof DBOSType;
 let db: OrgTestDb;
 let server: Server;
+let harnessDir = '';
 let respondOk = false;
 const invokeHits: string[] = [];
 
@@ -60,9 +86,21 @@ let checkFireGate: typeof import('../autoloop').checkFireGate;
 
 beforeAll(async () => {
   db = await createOrgTestDb();
+
+  // Route the REAL connection resolvers at the migrated throwaway DB before
+  // writing the registry. The blueprint-run path resolves this registry through
+  // getOrgPg(), so registering it before these env pins would write to the
+  // ambient operator DB and leave the test DB blueprint-less.
   process.env.HARNESS_DATABASE_URL = db.appDsn;
   process.env.HARNESS_ADMIN_DATABASE_URL = db.adminDsn;
   process.env.DATABASE_URL = db.adminDsn;
+
+  // Register the fixture so system:blueprint-run resolves the declared
+  // director role instead of the blueprint-less coding-solo fallback.
+  harnessDir = mkdtempSync(join(tmpdir(), 'hive-loop-circuit-'));
+  mkdirSync(join(harnessDir, '.papercusp'), { recursive: true });
+  writeFileSync(join(harnessDir, '.papercusp', 'blueprint.yaml'), TEST_BLUEPRINT_YAML);
+  await writeOperatorState('harness_registry', { projects: [{ slug: SLUG, path: harnessDir }] }, WS);
 
   // Stub operator host: the decider fire's invoke route. 500 = a failing
   // decider dispatch; 200 = a successful one. Recorded for withheld-assertions.
@@ -114,6 +152,7 @@ afterAll(async () => {
   }
   await new Promise<void>((r) => server?.close(() => r()));
   await db?.cleanup();
+  if (harnessDir) rmSync(harnessDir, { recursive: true, force: true });
   if (!process.env.KEEP_TEST_PG) await teardownTestPg();
 });
 
