@@ -1216,8 +1216,8 @@ function likeContainsPattern(query: string): string {
  * federated-origin-only gate to also mirror the real self-select claim path's floors
  * (claimNextIssueWorkItem, work-items.ts) that a generic backlog read never applied —
  * the D-005 observation-lane note (observationLaneExclusionSql), a peer's explicit
- * claim-hold (claimHoldExclusionSql), a row `improvements:resolve` already routed to
- * a human (needsHumanExclusionSql), and a row reserved to an ACTIVELY-driven plan
+ * claim-hold (claimHoldExclusionSql), a row requiring a strict owner capability
+ * (needsOwnerActionExclusionSql), and a row reserved to an ACTIVELY-driven plan
  * lane / a live plan_item_claims lease (reservedPlanLaneExclusionSql). ROOT CAUSE of a
  * 3-member idle fleet (bug-drain-nonp2p, 2026-07-12): a leader fed a 3-item tranche
  * (EI-10375 observation-lane, WI-3868/WI-4147 plan-reserved) that `admissibleOnly:true`
@@ -1343,7 +1343,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // (work-items.ts). Any `payload ->> 'lane'` here forces the whole payload datum to
   // be fetched and decompressed (payload/_search are large and out-of-line) for every
   // candidate row, on TOP of the three payload accesses still below it (_claimHold,
-  // needsHuman, plan_item) — this was the one of the four with a ready-made fast
+  // needsOwnerAction, plan_item) — this was the one of the four with a ready-made fast
   // column, so it's the one fixed here; the other three are tracked in WI-7102 rather
   // than migrated in the same breath (each needs its own generated-column migration +
   // A/B measurement, mirroring 721's own diligence). Same NULL-safety as the COALESCE
@@ -1365,7 +1365,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // work_items and derives it as `(payload -> '_ei') ->> 'created_by'` (verified
   // against pg_get_viewdef in prod AND test/_work-items-schema.ts — they agree), so
   // this floor touches the same out-of-line payload datum as the `_claimHold` /
-  // `needsHuman` floors below. It does NOT add a fetch (those already force it), but
+  // `needsOwnerAction` floors below. It does NOT add a fetch (those already force it), but
   // do not "optimize" it on the belief that it is a plain column — it is the SAME
   // class WI-7102 tracks for a generated-column migration, and belongs in that batch.
   //
@@ -1405,12 +1405,12 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
   // ⚠ COST: none of the three adds a datum fetch. `title`, `terminal_owner`,
   // `terminal_completion_ref` and `authority` are real in-line columns on this view, and
   // `title` is already in ISSUE_COLS; the jsonb_path_exists touches the SAME out-of-line
-  // payload datum the `_claimHold` / `needsHuman` floors above already force. The ILIKE pair
+  // payload datum the `_claimHold` / `needsOwnerAction` floors above already force. The ILIKE pair
   // is the same predicate, at the same cost, the claim path already runs on this table.
   //
   // ⚠ The helpers are written `wi.`-prefixed against the base work_items TABLE, so they are
   // RESTATED here in the view's column form rather than imported — the same deliberate
-  // duplication as the needsHuman/_claimHold floors above. `externalBlockers` survives the
+  // duplication as the needsOwnerAction/_claimHold floors above. `externalBlockers` survives the
   // view's `payload - '_ei'` subtraction because it is a TOP-LEVEL payload key, not an _ei
   // sub-field (verified against WI-5107's live payload).
   // WI-37827: ONE definition, rendered in the caller's column form. These two forms were
@@ -1437,7 +1437,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
         AND ${c}lane IS DISTINCT FROM 'observation'
         AND ${c}created_by IS DISTINCT FROM 'system:replication-liveness'
         AND COALESCE(${c}payload, '{}'::jsonb) ->> '_claimHold' IS DISTINCT FROM 'true'
-        AND COALESCE(${c}payload, '{}'::jsonb) ->> 'needsHuman' IS DISTINCT FROM 'true'
+        AND COALESCE(${c}payload, '{}'::jsonb) ->> 'needsOwnerAction' IS DISTINCT FROM 'true'
         AND COALESCE(${c}title, '') NOT ILIKE 'Loop wake #%'
         AND COALESCE(${c}title, '') NOT ILIKE 'AUTO loop iteration:%'
         AND (
@@ -2487,18 +2487,18 @@ export async function setIssueState(
  * LEADER-TRIAGE lane instead of the owner's inbox.
  *
  * Mechanism: set state='blocked' (excluded from ISSUE_FAMILY_CLAIMABLE_STATES=['open'], so it
- * leaves the auto-dispatch/claim/thrash loop exactly as payload.needsHuman did — the dispatcher
+ * leaves the auto-dispatch/claim/thrash loop by its stored status — the dispatcher
  * reads readItems({state:'open'}) and every claim path gates on status='open') + stamp
- * payload.blockedReason/blockedAt for the triaging leader — WITHOUT setting payload.needsHuman,
- * so policy.ts never routes it to tier:'human' and it never reaches the owner's
- * plans:items{needsHuman:true} inbox. A fleet leader triages it (work_items:list{state:'blocked'})
+ * payload.blockedReason/blockedAt for the triaging leader — WITHOUT setting
+ * payload.needsOwnerAction or enrolling agent review. A fleet leader triages it
+ * (work_items:list{state:'blocked'})
  * and either re-opens it (setIssueState 'open') or, for a GENUINE human need, re-routes it with a
  * typed capability.
  *
  * The whole point: 7 of 8 `mergeIssuePayload(id,{needsHuman:true})` SETTERS were routing
  * operational failures to the human queue, over-flagging ~82 agent-fixable bugs out of the drain
- * (WI-5679 diagnosis). needsHuman is now reserved for genuine human-capability verdicts
- * (credential / physical-device / product-decision / external-service-action).
+ * (WI-5679 diagnosis). Strict credential / physical-device / external-service-action
+ * capabilities now use payload.needsOwnerAction; product decisions use agent review.
  *
  * Returns the setIssueState result (EngineerIssue | null). NULL on a no-op UPDATE — a remote-owned
  * row (the engineer_issues INSTEAD OF trigger refuses local mutation) or a missing row — which a
