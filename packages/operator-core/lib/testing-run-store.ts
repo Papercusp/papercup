@@ -99,7 +99,7 @@ export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
         stdio: ['ignore', 'pipe', 'ignore'],
       });
       if (output == null) return null;
-      return (typeof output === 'string' ? output : output.toString('utf8')).trim();
+      return output.trim();
     } catch {
       return null;
     }

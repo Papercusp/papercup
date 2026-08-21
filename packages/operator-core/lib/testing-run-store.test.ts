@@ -46,7 +46,9 @@ vi.mock('node:child_process', async (orig) => {
   };
 });
 vi.mock('@papercusp/db-org', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>().catch(
+    () => ({}) as typeof import('@papercusp/db-org'),
+  );
   return {
     ...actual,
     getOrgPg: () => ({ sql: persistSqlMock }),
@@ -209,6 +211,9 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
 
 describe('fallback persistence worktree snapshots (EI-18795303393201472)', () => {
   it('uses the post-run commit and marks a run dirty when the tree changes', async () => {
+    // Load the partial db-org mock before the close handler starts its 1s
+    // persistence window; importOriginal is cold after resetModules.
+    await import('@papercusp/db-org');
     const commitAnswers = ['before-sha\n', 'after-sha\n'];
     const porcelainAnswers = ['', ' M peer-edit.ts\n'];
     execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
