@@ -153,10 +153,10 @@ export async function ensureInboxWakeArmedForActiveSession(input: {
     // ended_at IS NULL even after the latest incarnation ended cleanly.  Using
     // "any live row" here resurrects the ended owner on every later tool
     // report, recreating the standing inbox-wake we just cancelled.
-    const live = await sql<{ one: number }[]>`
-      SELECT 1 AS one
+    const live = await sql<{ started_at: string }[]>`
+      SELECT started_at::text AS started_at
         FROM (
-          SELECT ended_at
+          SELECT started_at, ended_at
             FROM harness_shared.adv_sessions
            WHERE coord_owner_id = ${ownerId}
            ORDER BY started_at DESC, id DESC
@@ -164,6 +164,24 @@ export async function ensureInboxWakeArmedForActiveSession(input: {
         ) latest
        WHERE latest.ended_at IS NULL`;
     if (live.length === 0) return false; // not a live tracked session — don't arm
+
+    // EI-21003383555793967: an explicit events:cancel of the standing inbox wake is a
+    // deliberate opt-out for THIS session, not evidence that SessionStart lost its arm.
+    // Without this durable check, the next ordinary tool report (often events:status right
+    // after cancellation) sees a live adv_sessions row and immediately recreates the await,
+    // so loop:end + cancellation leaves a retired owner wakeable forever. Scope the marker to
+    // the latest session incarnation: a new SessionStart naturally has a later started_at and
+    // is entitled to arm a fresh standing watch.
+    const explicitlyCancelled = await sql`
+      SELECT 1 AS one
+        FROM harness_shared.event_awaits
+       WHERE subscriber_id = ${ownerId}
+         AND event_key = ${key}
+         AND cancelled_at IS NOT NULL
+         AND cancelled_at >= ${live[0]?.started_at}
+       LIMIT 1`;
+    if (explicitlyCancelled.length > 0) return false;
+
     await armInboxWake({ ownerId, workspaceId: input.workspaceId });
     return true;
   } catch {
