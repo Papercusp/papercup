@@ -290,6 +290,7 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('WI-HOLD', { payload: { _claimHold: true } }); // 4. claim-hold
     await seed('WI-OBS', { kind: 'change', payload: { lane: 'observation' } }); // 5. observation-lane
     await seed('WI-NEEDSHUMAN', { payload: { needsHuman: true } }); // 6. needs-human
+    await seed('WI-OWNER-ACTION', { payload: { needsOwnerAction: true } }); // 16. strict owner action
     await seed('WI-EXTBLOCK', { payload: { externalBlockers: [{ status: 'active' }] } }); // 7. external-blocker
     await seed('WI-FEDDET', { payload: { _ei: { created_by: 'system:replication-liveness' } } }); // 8. federation-detector
     await seed('WI-LOOPNOISE', { title: 'Loop wake #3: continue backlog drain' }); // 9. loop-iteration-noise
