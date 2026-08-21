@@ -21,6 +21,7 @@ import {
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
   projectMember,
+  readLeaderMonitoringBlindAdvisory,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
   selectLeaderBriefMembers,
@@ -36,6 +37,49 @@ const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 describe('fleet:leader-brief — ambient workspace transaction safety (EI-20192040030675541)', () => {
   it('opts out because the supervision read never uses ctx.tx', () => {
     expect((leaderBriefTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
+describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)', () => {
+  const expectedKeys = [
+    'fleet:member-dead:alpha',
+    'fleet:drained:alpha',
+    'fleet:context-critical:alpha',
+    'fleet:claim-released:alpha',
+  ];
+
+  it('reads the exact four standard profile keys and stays absent when every key has a live awaiter', async () => {
+    const seen: string[] = [];
+    const advisory = await readLeaderMonitoringBlindAdvisory('alpha', async (eventKey) => {
+      seen.push(eventKey);
+      return [{}];
+    });
+
+    expect(seen).toEqual(expectedKeys);
+    expect(advisory).toBeUndefined();
+  });
+
+  it('warns when any required key has zero awaiters and carries one actionable fleet arm handle', async () => {
+    const advisory = await readLeaderMonitoringBlindAdvisory('alpha', async (eventKey) =>
+      eventKey === 'fleet:drained:alpha' ? [] : [{}],
+    );
+
+    expect(advisory).toMatchObject({
+      line: expect.stringMatching(/monitoring blind.*1\/4.*live_awaiters:0/i),
+      missingEventKeys: ['fleet:drained:alpha'],
+      arm: {
+        tool: 'events:await',
+        args: { event: '@fleet:alpha', note: expect.stringContaining('leader control') },
+      },
+    });
+  });
+
+  it('fails soft by omitting the advisory when the live-awaiter read cannot be established', async () => {
+    await expect(
+      readLeaderMonitoringBlindAdvisory('alpha', async () => {
+        throw new Error('await store unavailable');
+      }),
+    ).resolves.toBeUndefined();
   });
 });
 
