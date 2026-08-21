@@ -248,6 +248,75 @@ describe('killTask — reapTerminalResidue (WI-37521)', () => {
   });
 });
 
+describe('killTask — residue diagnostics on an incomplete kill (EI-21065795494500135)', () => {
+  it('reports WHICH kernel state the survivors are stuck in, not a bare unexplained count — all zombie', async () => {
+    row({ taskId: 'residue1' });
+    const scopeDir = '/sys/fs/cgroup/papercusp.slice/pc-residue1.scope';
+    const out = await killTask('residue1', {
+      sleep: async () => {},
+      fs: {
+        readFile: (p: string) => {
+          if (p === `${scopeDir}/cgroup.procs`) return '101\n102\n103\n';
+          const m = /^\/proc\/(\d+)\/stat$/.exec(p);
+          return m ? `${m[1]} (node) Z 1` : null;
+        },
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
+    const detail = (out as { detail: string }).detail;
+    // The base "N process(es) still alive" phrasing existing callers assert on
+    // must survive unchanged — the diagnostics are an ADDITION, not a rewrite.
+    expect(detail).toMatch(/3 process\(es\) still alive/);
+    expect(detail).toMatch(/3 zombie/);
+    expect(detail).toMatch(/ALL zombie/);
+    expect(detail).toMatch(/re-escalating will not help/);
+  });
+
+  it('buckets a MIXED survivor population and only warns "uninterruptible" — never "all zombie" — when they are not all zombies', async () => {
+    row({ taskId: 'residue2' });
+    const scopeDir = '/sys/fs/cgroup/papercusp.slice/pc-residue2.scope';
+    const states: Record<string, string> = { '201': 'Z', '202': 'D', '203': 'R' };
+    const out = await killTask('residue2', {
+      sleep: async () => {},
+      fs: {
+        readFile: (p: string) => {
+          if (p === `${scopeDir}/cgroup.procs`) return '201\n202\n203\n';
+          const m = /^\/proc\/(\d+)\/stat$/.exec(p);
+          return m ? `${m[1]} (node) ${states[m[1]]} 1` : null;
+        },
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    const detail = (out as { detail: string }).detail;
+    expect(detail).toMatch(/1 zombie/);
+    expect(detail).toMatch(/1 uninterruptible-sleep/);
+    expect(detail).toMatch(/1 running/);
+    expect(detail).not.toMatch(/ALL zombie/);
+    expect(detail).toMatch(/blocked inside the kernel/);
+  });
+
+  it('degrades to "unknown" instead of crashing when a survivor pid\'s /proc/<pid>/stat is unreadable', async () => {
+    row({ taskId: 'residue3' });
+    const scopeDir = '/sys/fs/cgroup/papercusp.slice/pc-residue3.scope';
+    const out = await killTask('residue3', {
+      sleep: async () => {},
+      fs: {
+        readFile: (p: string) => (p === `${scopeDir}/cgroup.procs` ? '301\n' : null),
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async () => ({ stdout: '', stderr: '' })) as never,
+    });
+    expect(out).toMatchObject({ ok: false, error: 'incomplete' });
+    expect((out as { detail: string }).detail).toMatch(/1 unknown/);
+  });
+});
+
 describe('killScopeUnit — explicit orphan-scope teardown', () => {
   it('resolves a validated Papercusp scope, requires a live cgroup, and verifies it empty', async () => {
     let alive = true;
