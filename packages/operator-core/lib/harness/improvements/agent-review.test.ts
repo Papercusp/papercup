@@ -181,7 +181,7 @@ describe('enterAgentReview (abolish-human-review D-003)', () => {
 });
 
 describe('agent-review grading lifecycle', () => {
-  let pending: EngineerIssue;
+  let pending: WorkItem;
 
   beforeEach(() => {
     pending = issue({
