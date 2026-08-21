@@ -280,6 +280,40 @@ describe('transitiveDeps', () => {
     const bFirst = transitiveDeps(index);
     expect([...bFirst(`${ROOT}/b.ts`)].sort()).toEqual([...aFirst(`${ROOT}/b.ts`)].sort());
   });
+
+  it('does not let removing an import edge enlarge a later closure', () => {
+    const indexWithEdge = buildIndex({
+      rootDir: ROOT,
+      fs: vfs({
+        [`${ROOT}/a.ts`]: `import './b'; import './c';`,
+        [`${ROOT}/b.ts`]: `import './a';`,
+        [`${ROOT}/c.ts`]: 'export const c = 1;',
+      }),
+    });
+    const indexWithoutEdge = buildIndex({
+      rootDir: ROOT,
+      fs: vfs({
+        [`${ROOT}/a.ts`]: `import './c';`,
+        [`${ROOT}/b.ts`]: `import './a';`,
+        [`${ROOT}/c.ts`]: 'export const c = 1;',
+      }),
+    });
+
+    const closureForB = (index: ReturnType<typeof buildIndex>) => {
+      const reach = transitiveDeps(index);
+      // Prime both resolvers through A first, matching the batch measurement that
+      // exposed the old traversal-order-dependent cache. With the former DFS,
+      // the A↔B cycle cached B as only {A}; removing A→B then made B incorrectly
+      // GROW to {A,C}. Exact SCC reachability returns {A,C} in both graphs.
+      reach(`${ROOT}/a.ts`);
+      return [...reach(`${ROOT}/b.ts`)].sort();
+    };
+
+    const withEdge = closureForB(indexWithEdge);
+    const withoutEdge = closureForB(indexWithoutEdge);
+    expect(withEdge).toEqual([`${ROOT}/a.ts`, `${ROOT}/c.ts`].sort());
+    expect(withoutEdge).toEqual(withEdge);
+  });
 });
 
 describe('repository test import surfaces', () => {
