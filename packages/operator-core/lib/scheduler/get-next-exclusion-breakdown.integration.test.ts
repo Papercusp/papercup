@@ -150,7 +150,6 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     expect(out.excluded).toMatchObject({
       taken: 1, // WI-9403
       claimHold: 1, // WI-9402
-      legacyNeedsHuman: 0, // compatibility field retained after migration 864 retired the floor
       needsOwnerAction: 1, // WI-9411
       observationLane: 1, // WI-9406
       externalBlocker: 1, // WI-9407
@@ -221,7 +220,6 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     expect(out.excluded).toMatchObject({
       taken: 1,
       claimHold: 0,
-      legacyNeedsHuman: 0,
       needsOwnerAction: 0,
     });
   });
@@ -392,8 +390,8 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     await seedIssue('WI-RC-21', null);
 
     const out = await readIssueClaimability(undefined, { harness: H }, { limit: 20, sampleLimit: 5 });
-    expect(out.breakdown.excluded.legacyNeedsHuman).toBe(0);
-    expect(out.sample?.legacyNeedsHuman).toEqual([]);
+    expect(out.breakdown.excluded).not.toHaveProperty('legacyNeedsHuman');
+    expect(out.sample).not.toHaveProperty('legacyNeedsHuman');
   });
 });
 

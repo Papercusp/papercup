@@ -439,8 +439,8 @@ export default defineTool({
           }
           // EI-19919820196426791: raising severity to critical/major is a silent no-op on
           // claimability when the item sits in a lane the claim path structurally never
-          // serves (payload.lane='observation') or is routed to a human
-          // (payload.needsHuman=true) — the write reports ok:true/written:1 exactly like a
+          // serves (payload.lane='observation') or requires a strict owner capability
+          // (payload.needsOwnerAction=true) — the write reports ok:true/written:1 exactly like a
           // real steer, with nothing anywhere flagging that the two facts conflict. Surface
           // it at the write, using the SAME floor oracle the real claim path (and its own
           // miss-diagnosis) reads, so this can't drift from what scheduler:get_next actually
@@ -454,14 +454,13 @@ export default defineTool({
                 if (
                   floor &&
                   (floor.refusedBy === 'observation-lane' ||
-                    floor.refusedBy === 'legacy-needs-human' ||
                     floor.refusedBy === 'needs-owner-action')
                 ) {
                   claimabilityWarning =
                     `⚠ severity set to '${it.severity}', but this item is structurally UNCLAIMABLE and will stay ` +
                     `invisible to scheduler:get_next / claim_next regardless: ${floor.detail}. Raising severity ` +
                     `(or work_items:set_priority) does not change this. If it should actually be worked, clear the ` +
-                    `blocking flag first — work_items:update { id, needsHuman:false } for a needs-human routing, or ` +
+                    `blocking flag first — work_items:update { id, needsHuman:false } for an owner-action routing, or ` +
                     `re-file/relocate it out of the observation lane (it was captured via improvements:capture ` +
                     `{ lane:'observation' }, which by design never enters the work queue).`;
                 }

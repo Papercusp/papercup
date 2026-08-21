@@ -108,7 +108,7 @@ type Spec = z.infer<typeof itemSpec>;
 const STRUCTURALLY_UNCLAIMABLE_FLOORS = new Set([
   'not-claimable-status',
   'observation-lane',
-  'needs-human',
+  'needs-owner-action',
   'external-blocker',
   'claim-hold',
   'plan-lane-reserved',
@@ -124,7 +124,7 @@ async function structuralClaimabilityWarning(harness: string | null, id: string)
     const [floor] = await explainIssueClaimFloors(harness, [id]);
     if (!floor || !floor.refusedBy || !STRUCTURALLY_UNCLAIMABLE_FLOORS.has(floor.refusedBy)) return undefined;
     const remediation =
-      floor.refusedBy === 'needs-human'
+      floor.refusedBy === 'needs-owner-action'
         ? ' Clear it with work_items:update { id, needsHuman:false } if it should actually be worked.'
         : floor.refusedBy === 'observation-lane'
           ? ' It was captured via improvements:capture { lane:\'observation\' }, which by design never enters the work queue — re-file/relocate it out of that lane if it should actually be worked.'

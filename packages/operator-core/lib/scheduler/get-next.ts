@@ -839,8 +839,6 @@ export interface IssueClaimExclusionBreakdown {
   excluded: {
     taken: number;
     claimHold: number;
-    /** Legacy compatibility cohort awaiting the P-006 data migration. */
-    legacyNeedsHuman: number;
     /** Strict owner capability: credential, physical device, or external-service action. */
     needsOwnerAction: number;
     agentReview: number;
@@ -1048,7 +1046,6 @@ export async function aggregateIssueClaimExclusions(
       )::int AS claimable_with_paths,
       count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
-      0::int                                                                         AS legacy_needs_human,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_owner_action)::int AS needs_owner_action,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_agent_review)::int     AS agent_review,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int     AS observation_lane,
@@ -1068,7 +1065,6 @@ export async function aggregateIssueClaimExclusions(
     claimable_with_paths: number;
     taken: number;
     claim_hold: number;
-    legacy_needs_human: number;
     needs_owner_action: number;
     agent_review: number;
     observation_lane: number;
@@ -1097,7 +1093,6 @@ export async function aggregateIssueClaimExclusions(
     excluded: {
       taken: r?.taken ?? 0,
       claimHold: r?.claim_hold ?? 0,
-      legacyNeedsHuman: r?.legacy_needs_human ?? 0,
       needsOwnerAction: r?.needs_owner_action ?? 0,
       agentReview: r?.agent_review ?? 0,
       observationLane: r?.observation_lane ?? 0,
@@ -1122,7 +1117,6 @@ export async function aggregateIssueClaimExclusions(
 export interface IssueClaimExclusionSample {
   taken: string[];
   claimHold: string[];
-  legacyNeedsHuman: string[];
   needsOwnerAction: string[];
   agentReview: string[];
   observationLane: string[];
@@ -1205,7 +1199,6 @@ export async function sampleIssueClaimExclusions(
     SELECT
       ${sampleOf('NOT ok_untaken', '')}        AS taken,
       ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
-      ARRAY[]::text[]                          AS legacy_needs_human,
       ${sampleOf('NOT ok_needs_owner_action')}  AS needs_owner_action,
       ${sampleOf('NOT ok_agent_review')}         AS agent_review,
       ${sampleOf('NOT ok_observation')}         AS observation_lane,
@@ -1221,7 +1214,6 @@ export async function sampleIssueClaimExclusions(
   `) as Array<{
     taken: string[];
     claim_hold: string[];
-    legacy_needs_human: string[];
     needs_owner_action: string[];
     agent_review: string[];
     observation_lane: string[];
@@ -1239,7 +1231,6 @@ export async function sampleIssueClaimExclusions(
   return {
     taken: r?.taken ?? [],
     claimHold: r?.claim_hold ?? [],
-    legacyNeedsHuman: r?.legacy_needs_human ?? [],
     needsOwnerAction: r?.needs_owner_action ?? [],
     agentReview: r?.agent_review ?? [],
     observationLane: r?.observation_lane ?? [],

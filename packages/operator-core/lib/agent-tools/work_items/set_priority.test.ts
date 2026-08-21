@@ -172,7 +172,7 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
 
   // EI-19919820196426791: a backlog-priority write that actually lands (written:true)
   // used to report a plain ok:true even when the item sits in a lane the claim path
-  // structurally never serves (observation lane / needs-human) — reordering the
+  // structurally never serves (observation lane / owner action) — reordering the
   // backlog does nothing there, and nothing flagged the conflict.
   describe('structural claimability warning (EI-19919820196426791)', () => {
     it('set mode: a committed write on an observation-lane item surfaces claimabilityWarning', async () => {
@@ -187,14 +187,14 @@ describe('work_items:set_priority handler (bulk keyed-array)', () => {
       expect(r.claimabilityWarning).toMatch(/observation/);
     });
 
-    it('bump mode: a committed bump on a needs-human item surfaces claimabilityWarning', async () => {
+    it('bump mode: a committed bump on an owner-action item surfaces claimabilityWarning', async () => {
       bumpM.mockResolvedValue({ id: 'WI-1', harness: 'papercusp', priority: 0, applicable: true } as never);
       floorsM.mockResolvedValue([
-        { id: 'WI-1', admissible: false, refusedBy: 'needs-human', detail: 'payload.needsHuman = true — routed to a human for ratification (EI-7776)' },
+        { id: 'WI-1', admissible: false, refusedBy: 'needs-owner-action', detail: 'payload.needsOwnerAction = true — a credential requires the owner' },
       ] as never);
       const r = await one({ workItem: 'WI-1', position: 'top' });
       expect(floorsM).toHaveBeenCalledWith('papercusp', ['WI-1']);
-      expect(r.claimabilityWarning).toMatch(/needs a human|needs-human|human/i);
+      expect(r.claimabilityWarning).toMatch(/owner|credential/i);
     });
 
     // EI-19932455002723461 (MEASURED 2026-08-09): the original check covered only 2 of the

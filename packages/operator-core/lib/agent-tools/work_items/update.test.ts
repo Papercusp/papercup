@@ -224,7 +224,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   // EI-19919820196426791: raising severity to critical/major on an item structurally
-  // unclaimable (observation lane / needs-human) used to report a plain ok:true with
+  // unclaimable (observation lane / owner action) used to report a plain ok:true with
   // nothing flagging that the write can't move it into the work queue.
   it('severity:major on an observation-lane item surfaces claimabilityWarning', async () => {
     updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', harness: 'papercusp' } } as never);
@@ -237,13 +237,13 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0].claimabilityWarning).toMatch(/observation/);
   });
 
-  it('severity:critical on a needs-human item surfaces claimabilityWarning', async () => {
+  it('severity:critical on an owner-action item surfaces claimabilityWarning', async () => {
     updM.mockResolvedValue({ ok: true, item: { id: 'WI-1', harness: 'papercusp' } } as never);
     floorsM.mockResolvedValue([
-      { id: 'WI-1', admissible: false, refusedBy: 'legacy-needs-human', detail: 'legacy payload.needsHuman = true — awaiting P-006 re-triage' },
+      { id: 'WI-1', admissible: false, refusedBy: 'needs-owner-action', detail: 'payload.needsOwnerAction = true — a credential requires the owner' },
     ] as never);
     const b = await body({ id: 'WI-1', severity: 'critical' });
-    expect(b.results[0].claimabilityWarning).toMatch(/needs a human|needs-human|human/i);
+    expect(b.results[0].claimabilityWarning).toMatch(/owner|credential/i);
   });
 
   it('severity:minor never checks claim floors (only critical/major do)', async () => {

@@ -91,11 +91,6 @@ function payloadObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
-function legacyNeedsHuman(item: WorkItem): boolean {
-  const value = payloadObject(item.payload).needsHuman;
-  return value === true || value === 'true';
-}
-
 function completionEvidence(item: WorkItem): string | null {
   const direct = item.terminalCompletionRef?.trim();
   if (direct) return direct;
@@ -141,10 +136,10 @@ function workItemsToFragments(rows: readonly WorkItem[], potSlug: string): Dream
   const out: DreamFragment[] = [];
   for (const item of rows) {
     const evidence = completionEvidence(item);
-    // The legacy payload.needsHuman cohort remains out of the dream substrate
-    // until P-006 gives it an explicit interpretation; a terminal row without
-    // completion evidence is not a completion signal either.
-    if (!evidence || legacyNeedsHuman(item)) continue;
+    // Migration 864 made payload.needsHuman historical metadata only. A terminal row
+    // with completion evidence remains a valid Dream signal even if that legacy key
+    // survived in its history; only missing completion evidence excludes it here.
+    if (!evidence) continue;
     out.push({
       id: `work-item:${item.id}`,
       kind: 'work_item',

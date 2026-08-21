@@ -160,7 +160,7 @@ const REFUSED: { floor: string; id: string; seed: SeedOpts }[] = [
     seed: { createdBy: 'system:replication-liveness' },
   },
   { floor: 'claim hold', id: 'WI-HOLD', seed: { payload: { _claimHold: true } } },
-  { floor: 'routed to a human', id: 'WI-HUMAN', seed: { payload: { needsHuman: true } } },
+  { floor: 'strict owner action', id: 'WI-OWNER-ACTION', seed: { payload: { needsOwnerAction: true } } },
   {
     floor: 'pending agent review',
     id: 'WI-REVIEW-PENDING',
@@ -227,6 +227,7 @@ const ADMITTED: { control: string; id: string; seed: SeedOpts }[] = [
   { control: 'a non-observation lane', id: 'WI-LANE-OK', seed: { payload: { lane: 'bug' } } },
   { control: 'some other filer', id: 'WI-FILER-OK', seed: { createdBy: 'su-someone' } },
   { control: '_claimHold explicitly false', id: 'WI-HOLD-OFF', seed: { payload: { _claimHold: false } } },
+  { control: 'legacy needsHuman is historical metadata, not an admission floor', id: 'WI-HUMAN', seed: { payload: { needsHuman: true } } },
   { control: 'needsHuman explicitly false', id: 'WI-HUMAN-OFF', seed: { payload: { needsHuman: false } } },
   {
     control: 'approved agent review is re-admitted for implementation',

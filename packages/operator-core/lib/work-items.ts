@@ -3434,7 +3434,7 @@ export async function setWorkItemStateWithAliasInfo(
       if (appliedLower === 'needs-human') {
         await mergeIssuePayload(id, { needsHuman: true });
         autoGateNote =
-          ' It has been auto-routed to a human (payload.needsHuman) — excluded from claim_next/scheduler:get_next self-selection (reads as drained, not pending) until cleared.';
+          " Its stored status='needs-human' parks it outside claim_next/scheduler:get_next; payload.needsHuman is retained only as a compatibility mirror and is not an admission floor.";
         // WI-5689: mergeIssuePayload durably persists payload.needsHuman, but the
         // `workItem` snapshot above was captured BEFORE this write — echoing it back
         // as-is silently reports the STALE pre-merge payload (needsHuman still false)

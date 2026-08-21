@@ -39,7 +39,6 @@ function breakdown(
     excluded: {
       taken: 0,
       claimHold: 0,
-      legacyNeedsHuman: 0,
       needsOwnerAction: 0,
       agentReview: 0,
       observationLane: 0,
@@ -70,7 +69,7 @@ const sentinel = (over: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   vi.clearAllMocks();
   recM.mockResolvedValue(sentinel() as never);
-  aggM.mockResolvedValue(breakdown({ federationDetector: 60, legacyNeedsHuman: 40 }, 100));
+  aggM.mockResolvedValue(breakdown({ federationDetector: 60, needsOwnerAction: 40 }, 100));
 });
 
 describe('buildFleetDrainStamp', () => {
@@ -92,7 +91,7 @@ describe('buildFleetDrainStamp', () => {
     );
     // the summary names the dominant floors, descending, and the re-verify command.
     expect(s!.summary).toContain('100 in-lane issue-family row(s)');
-    expect(s!.summary).toContain('federationDetector=60, legacyNeedsHuman=40');
+    expect(s!.summary).toContain('federationDetector=60, needsOwnerAction=40');
     expect(s!.summary).toContain("scheduler:get_next { harness: 'papercusp' }");
   });
 

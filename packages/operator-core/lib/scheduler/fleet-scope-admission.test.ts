@@ -642,8 +642,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 33,
-        legacyNeedsHuman: 80,
-        needsOwnerAction: 0,
+        needsOwnerAction: 80,
         agentReview: 0,
         observationLane: 21,
         externalBlocker: 0,
@@ -710,7 +709,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.windDown).toBe(true);
       expect(miss.excludedBreakdown).toEqual(floorGatedBreakdown);
       expect(miss.excludedBreakdownSummary).toMatch(/federationDetector=169/);
-      expect(miss.excludedBreakdownSummary).toMatch(/legacyNeedsHuman=80/);
+      expect(miss.excludedBreakdownSummary).toMatch(/needsOwnerAction=80/);
       expect(miss.excludedBreakdownSummary).toMatch(/claimHold=33/);
       expect(miss.excludedBreakdownSummary).toMatch(/observationLane=21/);
       // zero-count buckets are dropped from the summary, not padded in
@@ -745,7 +744,6 @@ describe('fleet scope assignment admission (P-016)', () => {
         excluded: {
           taken: 0,
           claimHold: 0,
-          legacyNeedsHuman: 0,
           needsOwnerAction: 0,
           agentReview: 0,
           observationLane: 0,
@@ -838,7 +836,6 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 0,
-        legacyNeedsHuman: 0,
         needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
@@ -1020,7 +1017,6 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 0,
-        legacyNeedsHuman: 0,
         needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
@@ -1137,7 +1133,6 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 0,
-        legacyNeedsHuman: 0,
         needsOwnerAction: 0,
         agentReview: 0,
         observationLane: 0,
@@ -1265,8 +1260,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       excluded: {
         taken: 0,
         claimHold: 1,
-        legacyNeedsHuman: 1,
-        needsOwnerAction: 0,
+        needsOwnerAction: 1,
         agentReview: 0,
         observationLane: 0,
         externalBlocker: 0,

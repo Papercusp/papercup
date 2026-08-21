@@ -113,13 +113,14 @@ describe('readDreamSources', () => {
     expect(snapshot).toMatchObject({
       harnessScopes: ['harness:papercusp', 'harness:member'],
       embeddingMode: 'test-embedder',
-      census: { observations: 1, workItems: 1, memories: 1, stats: 1, indexed: 4, embedded: 4 },
+      census: { observations: 1, workItems: 2, memories: 1, stats: 1, indexed: 5, embedded: 5 },
     });
     expect(snapshot.fragments.map((fragment) => fragment.ref).sort()).toEqual([
       'analyze-cycle:analyze-1',
       'memory:MEM-1',
       'observation:EI-1',
       'wi:WI-DONE',
+      'wi:WI-NEEDS-HUMAN',
     ]);
     expect(snapshot.fragments.every((fragment) => fragment.embedding?.length === 2)).toBe(true);
   });
