@@ -234,7 +234,9 @@ export function gitChangedFiles(root) {
 /**
  * EI-18731016038876755 — parse an EXPLICIT `--files=a.ts,b.ts` CLI flag naming exactly the
  * files the caller changed THIS session, as an alternative to `--mine`'s implicit
- * git-status-derived scoping.
+ * git-status-derived scoping. Large callers may use `--files-from=/path/to/json`, where the
+ * response file contains a JSON array of paths; keeping the list out of argv avoids Linux's
+ * exec E2BIG limit without changing the scoped-verdict semantics.
  *
  * WHY: `gitChangedFiles` (above) attributes "mine" from working-tree dirt (`git status`), which
  * on this concurrently-edited shared checkout includes every PEER's uncommitted edits too — not
@@ -259,13 +261,35 @@ export function gitChangedFiles(root) {
  * @returns {Set<string> | null} null when the flag is absent; an EMPTY set means "scoped to zero files".
  */
 export function parseExplicitFiles(argv) {
-  const flag = argv.find((a) => a.startsWith('--files='));
-  if (flag === undefined) return null;
-  const list = flag
-    .slice('--files='.length)
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
+  const inlineFlags = argv.filter((a) => a.startsWith('--files='));
+  const responseFlags = argv.filter((a) => a.startsWith('--files-from='));
+  if (inlineFlags.length === 0 && responseFlags.length === 0) return null;
+
+  const list = inlineFlags.flatMap((flag) =>
+    flag
+      .slice('--files='.length)
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+  for (const flag of responseFlags) {
+    const responsePath = flag.slice('--files-from='.length).trim();
+    if (!responsePath) {
+      throw new Error('--files-from= requires a JSON response-file path');
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(readFileSync(responsePath, 'utf8'));
+    } catch (error) {
+      throw new Error(
+        `could not read --files-from response file ${responsePath}: ${error instanceof Error ? error.message : error}`,
+      );
+    }
+    if (!Array.isArray(parsed) || parsed.some((file) => typeof file !== 'string')) {
+      throw new Error(`--files-from response file ${responsePath} must contain a JSON array of strings`);
+    }
+    list.push(...parsed.map((file) => file.trim()).filter(Boolean));
+  }
   return new Set(list);
 }
 

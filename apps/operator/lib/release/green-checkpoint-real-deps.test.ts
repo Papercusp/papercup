@@ -388,12 +388,6 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       cmd: "npm",
-      args: [
-        "run",
-        "lint:tsc",
-        "--",
-        "--files=docs/note.md,packages/operator-core/lib/a.ts",
-      ],
       opts: {
         cwd: typecheckTree,
         allowNonZero: true,
@@ -405,6 +399,40 @@ describe("realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422", () 
     expect(calls[0].opts?.env?.NODE_OPTIONS).toContain(
       `--max-old-space-size=${GREEN_CHECKPOINT_POST_SUITE_HEAP_MB}`,
     );
+    expect(calls[0].args.slice(0, 3)).toEqual(["run", "lint:tsc", "--"]);
+    expect(calls[0].args[3]).toMatch(
+      /^--files-from=\/tmp\/.*green-checkpoint-typecheck-files-/,
+    );
+  });
+
+  it("keeps a large changed-file set out of argv while preserving the exact response-file set", async () => {
+    const files = Array.from(
+      { length: 50_000 },
+      (_, index) => `packages/operator-core/lib/generated-${index}.ts`,
+    );
+    let responseArg: string | undefined;
+    let responseFiles: string[] | undefined;
+    const exec: CheckpointExec = async (_cmd, args) => {
+      responseArg = args.find((arg) => arg.startsWith("--files-from="));
+      expect(responseArg).toBeDefined();
+      responseFiles = JSON.parse(
+        readFileSync(responseArg!.slice("--files-from=".length), "utf8"),
+      ) as string[];
+      return {
+        code: 0,
+        stdout:
+          "LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean\n",
+        stderr: "",
+      };
+    };
+    const deps = realCheckpointDeps(preflightCfg, exec, "large-preflight-run");
+
+    const result = await deps.runChangedFileTypecheckPreflight?.(files);
+
+    expect(result).toMatchObject({ status: "passed", failingSignatures: [] });
+    expect(responseArg).toBeDefined();
+    expect(responseArg!.length).toBeLessThan(256);
+    expect(responseFiles).toEqual(files);
   });
 
   it("maps a completed non-zero scoped lint verdict to the stable lint:tsc failure signature", async () => {

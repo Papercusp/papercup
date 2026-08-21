@@ -653,6 +653,18 @@ describe('parseExplicitFiles (EI-18731016038876755)', () => {
   it('finds --files= among other flags in any position', () => {
     expect(parseExplicitFiles(['--update', '--files=lib/a.ts', '--mine'])).toEqual(new Set(['lib/a.ts']));
   });
+
+  it('loads a JSON response file through --files-from= for large explicit scopes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'lint-tsc-files-from-'));
+    const responseFile = join(dir, 'files.json');
+    const files = ['packages/operator-core/lib/a.ts', 'packages/operator-core/lib/b.ts'];
+    writeFileSync(responseFile, JSON.stringify(files));
+    try {
+      expect(parseExplicitFiles([`--files-from=${responseFile}`])).toEqual(new Set(files));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // Integration with the existing decidePerFile policy: an explicit file list is just another
