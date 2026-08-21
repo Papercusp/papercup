@@ -11,6 +11,8 @@
  * (items:[{ id, accepted_answer|accepted_post_id, capture? }]) — each item carries
  * its OWN accepted answer → { ok, results:[{ ok, id, state? | error }], counts }.
  * Each result self-describes its id; one not-found item never fails the rest.
+ * Consult conversations must be closed through consult:close so their typed
+ * consult_state outcome and coarse conversation projection stay coherent.
  */
 
 import { z } from 'zod';
@@ -37,7 +39,7 @@ export default defineTool({
     when:
       'A question conversation has been answered satisfactorily. Accept the best answer here — this both closes it and feeds the answer back so nobody has to ask again. Resolve several at once via items:[…] (each item supplies its own accepted answer).',
     notWhen:
-      'Still gathering answers → leave it open. For an open-ended discussion that just ran its course, this still works (capture is skippable with capture:none).',
+      'Still gathering answers → leave it open. For an open-ended discussion that just ran its course, this still works (capture is skippable with capture:none). Consults must use consult:close so their typed outcome is recorded.',
     chaining:
       'conversations:answer → conversations:resolve { id, accepted_post_id }. Provide accepted_answer to write a synthesized answer instead of quoting a single post.',
     seeAlso: [
@@ -89,7 +91,16 @@ export default defineTool({
           accepted_post_id: it.accepted_post_id,
           capture: it.capture,
         });
-        if ('error' in res) return { ok: false as const, id: it.id, error: res.error };
+        if ('error' in res) {
+          return {
+            ok: false as const,
+            id: it.id,
+            error: res.error,
+            ...(res.error === 'consult_requires_typed_verb'
+              ? { hint: 'This is a consult thread — use consult:close { outcome, answer|reason } so consult_state records the typed terminal outcome.' }
+              : {}),
+          };
+        }
         return {
           ok: true as const,
           id: res.conversation.id,

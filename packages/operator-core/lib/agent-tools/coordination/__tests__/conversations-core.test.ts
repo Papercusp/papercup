@@ -504,6 +504,23 @@ describe('the consult kind gate (get-feedback-relevance-consults P-004, D-008 §
 });
 
 describe('resolveConversationCore', () => {
+  it('refuses generic resolution for consults: typed close owns the lifecycle and no capture/state write occurs', async () => {
+    const opened = await openConversationCore(deps, ident('requester'), { kind: 'consult', body: 'q' });
+
+    const res = await resolveConversationCore(deps, ident('requester'), {
+      conversation_id: opened.conversation.id,
+      accepted_answer: 'untyped answer',
+    });
+
+    expect(res).toEqual({ error: 'consult_requires_typed_verb' });
+    expect(captureCalls).toHaveLength(0);
+    expect(await store.get(opened.conversation.id)).toMatchObject({
+      kind: 'consult',
+      state: 'open',
+      accepted_answer: null,
+    });
+  });
+
   it('a whitespace-only accepted_answer is no_answer: no capture, no state flip', async () => {
     const opened = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'q', topics: ['area'] });
     const res = await resolveConversationCore(deps, ident('asker'), {

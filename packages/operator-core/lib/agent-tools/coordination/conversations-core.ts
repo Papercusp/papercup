@@ -537,13 +537,25 @@ export interface ResolveResult {
   delivered: number;
 }
 
+export type ResolveError =
+  | { error: 'not_found' }
+  | { error: 'no_answer' }
+  | { error: 'already_resolved' }
+  | { error: 'consult_requires_typed_verb' };
+
 export async function resolveConversationCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: ResolveInput,
-): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' } | { error: 'already_resolved' }> {
+): Promise<ResolveResult | ResolveError> {
   const conv = await deps.conversations.get(input.conversation_id);
   if (!conv) return { error: 'not_found' };
+  // Consults have a finer-grained lifecycle and typed terminal outcomes in
+  // consult_state. Generic resolution would only update the coarse
+  // coord_conversations projection, making a consult look resolved while the
+  // authoritative consult row is still open/expired and has no critique. Keep
+  // consult:close as the sole terminal writer for consult conversations.
+  if (conv.kind === 'consult') return { error: 'consult_requires_typed_verb' };
   // Re-resolving is rejected (P1-17): without this guard a SECOND resolve re-ran
   // capture and OVERWROTE the accepted answer with the new one — silently
   // corrupting the record the first resolver captured. The accepted answer is

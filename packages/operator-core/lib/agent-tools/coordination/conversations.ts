@@ -147,6 +147,7 @@ import {
   type PromoteConversationInput,
   type PromoteConversationResult,
   type ResolveInput,
+  type ResolveError,
   type ResolveResult,
   type SupersedeConversationInput,
   type SupersedeConversationResult,
@@ -212,6 +213,7 @@ export type {
   OpenConversationResult,
   PostResult,
   ResolveInput,
+  ResolveError,
   ResolveResult,
   SupersedeConversationInput,
   SupersedeConversationResult,
@@ -268,7 +270,7 @@ export async function settleConsultConversation(
 export async function resolveConversation(
   identity: AgentIdentity,
   input: ResolveInput,
-): Promise<ResolveResult | { error: 'not_found' } | { error: 'no_answer' } | { error: 'already_resolved' }> {
+): Promise<ResolveResult | ResolveError> {
   const result = await withConversationsIdentityScope(identity, undefined, () =>
     resolveConversationCore(deps, identity, input),
   );
