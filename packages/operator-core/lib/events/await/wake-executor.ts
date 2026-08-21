@@ -1215,6 +1215,13 @@ export interface ExecuteWakeDeps {
    *  pass `null` to force-disable even with the flag on (hermetic tests that must
    *  not touch the ambient store). */
   prepareAmbientPushBlock?: ((input: { ownerId: string }) => Promise<string>) | null;
+  /** P-023 / D-008: advance the subscriber's CONTEXT GENERATION when a cold wake
+   *  discards its context (see the call site). Injected for tests for the SAME
+   *  unmockable-real-PG reason as getLoopStatusFn above — the default reaches
+   *  Postgres via getOrgPg, which trips assertRealPgAllowed in a unit test.
+   *  Defaults to the real bumpSessionEpoch (memory/session-epoch-ledger.ts);
+   *  best-effort — a failed bump degrades the dedup, never the wake. */
+  bumpSessionEpochFn?: (ownerId: string) => Promise<void>;
 }
 
 /**
@@ -1334,6 +1341,53 @@ async function injectPsuHostWake(
   }
 
   if (decision.cold) {
+    // ── P-023 / D-008: A COLD WAKE IS A CONTEXT BOUNDARY, AND IT WAS THE ONLY ONE
+    //    NOT SAYING SO ────────────────────────────────────────────────────────────
+    //
+    // The text composed below is the cold successor's ENTIRE opening context;
+    // everything the predecessor was told is gone. But the coord owner id SURVIVES
+    // a cold wake — so every dedup keyed on the OWNER carries across a context that
+    // no longer exists, and both context folds on the turn-start rail go quiet for a
+    // reader that has seen neither:
+    //   • the orientation fold's cursor suppresses ("already told you"), and
+    //   • the memory surfaced-ledger dedups ("already surfaced").
+    // Worse, the suppression is ANTI-correlated with need: a cold wake usually
+    // changes no orientation state at all — the process merely restarted — which is
+    // exactly the case the fingerprint reads as "nothing to say".
+    //
+    // The compaction boundary already advances this counter (request-compaction.ts
+    // and compact-reprime.ts); a cold wake is the same kind of boundary and was
+    // simply never wired to it. This is the wiring, not a new mechanism.
+    //
+    // FIRST in the block, deliberately — mirroring compact-reprime's own ordering
+    // ("the epoch bump deliberately happens FIRST"): the context is being discarded
+    // whether or not the extras below render.
+    //
+    // ⚠ If a later guard DROPS this delivery (the stale-fire drop below), the bump
+    // still happened. That direction is the safe one: the cost is one redundant
+    // orientation block and a re-primable memory pool, against the silent stale
+    // suppression this exists to remove. Fail-soft like the extras render — a wake
+    // must never be dropped or delayed for memory hygiene.
+    //
+    // Routed through the injectable seam rather than a direct import, per WI-6860's
+    // ruling a few fields above: the real reader reaches Postgres via getOrgPg,
+    // which is unmockable and trips assertRealPgAllowed in any unit test that
+    // reaches this branch.
+    try {
+      const bump =
+        deps.bumpSessionEpochFn ??
+        (async (ownerId: string) => {
+          const [{ bumpSessionEpoch }, { getOrgPg }] = await Promise.all([
+            import('../../memory/session-epoch-ledger'),
+            import('@papercusp/db-org'),
+          ]);
+          const { sql } = getOrgPg();
+          await bumpSessionEpoch(sql, ownerId);
+        });
+      await bump(d.subscriberId);
+    } catch {
+      /* never block a wake on memory hygiene */
+    }
     // Wrap the carry-note with the standing re-checkpoint mandate (P-002 producer): the
     // injected text is the cold agent's ENTIRE opening context, so it must both frame the
     // note as the working state AND tell the agent to refresh it before ending — else the

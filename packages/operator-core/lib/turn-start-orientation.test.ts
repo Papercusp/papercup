@@ -148,6 +148,23 @@ describe('turn-start-orientation — the context boundary (P-023 / D-008)', () =
       false,
     );
   });
+
+  it('CONTROL: the pre-P-023 comparator cannot tell a boundary crossing apart', () => {
+    // Falsifiability control, kept permanently rather than proved by mutating the
+    // tree (the repo's tier for a module subject: a deliberately-wrong
+    // implementation lives beside the real one). Without it the assertions above
+    // could pass for the wrong reason — e.g. if the two states differed in some
+    // field other than the epoch, "re-emits" would be true but vacuous.
+    //
+    // Here every content field is identical BY CONSTRUCTION (same `withWork`), so
+    // the old three-field comparator returns "unchanged" and would suppress the
+    // block. That is the exact defect: a fresh successor, told nothing.
+    const a = fingerprintOrientation(withWork, 7);
+    const b = fingerprintOrientation(withWork, 8);
+    const preP023Comparator = a.held === b.held && a.unanswered === b.unanswered && a.loop === b.loop;
+    expect(preP023Comparator).toBe(true); // old logic: "nothing changed" → silence
+    expect(orientationUnchanged(a, b)).toBe(false); // new logic: context moved → speak
+  });
 });
 
 describe('turn-start-orientation — what it says', () => {

@@ -1713,6 +1713,69 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(msg.data).toContain('## Next action\nresume');
   });
 
+  /**
+   * P-023 / D-008 — a cold wake is a CONTEXT BOUNDARY and must say so.
+   *
+   * The coord owner id survives a cold wake but the context does not, so every
+   * owner-keyed dedup (the turn-start orientation cursor, the memory
+   * surfaced-ledger) would otherwise carry across a context that no longer
+   * exists — going quiet for a successor that has seen nothing. The compaction
+   * boundary already advanced this counter; the cold wake never did.
+   */
+  it('a COLD wake advances the CONTEXT GENERATION (P-023 / D-008)', async () => {
+    const bumpSessionEpochFn = vi.fn(async () => {});
+    await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: vi.fn(async () => true) as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        bumpSessionEpochFn,
+      }),
+    );
+    expect(bumpSessionEpochFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('CONTROL: a WARM wake does NOT advance it — the context survives, so the dedup must too', async () => {
+    // The load-bearing complement. If the bump fired on every wake it would reset
+    // the dedup constantly and turn a per-boundary fold into a per-wake cost —
+    // passing the test above for entirely the wrong reason.
+    const bumpSessionEpochFn = vi.fn(async () => {});
+    await executeWake(
+      work({ wakeHandle: advHandle(), payload: { wakeCount: 1, harness: 'papercusp' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: vi.fn(async () => true) as never,
+        coldAutoEnabled: vi.fn(async () => false),
+        bumpSessionEpochFn,
+      }),
+    );
+    expect(bumpSessionEpochFn).not.toHaveBeenCalled();
+  });
+
+  it('a FAILING generation bump never costs the wake — memory hygiene is not delivery', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const out = await executeWake(
+      work({ wakeHandle: advHandle(), payload: { carry: 'cold', wakeCount: 1, harness: 'papercusp' } }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        coldAutoEnabled: vi.fn(async () => true),
+        getLoopCarryNoteFn: vi.fn(async () => '## Next action\nresume'),
+        bumpSessionEpochFn: vi.fn(async () => {
+          throw new Error('ledger unavailable');
+        }),
+      }),
+    );
+    // `psu-socket-reset`, not `-inject`: a cold wake RESETS the context, and the
+    // point of this case is that a failed bump leaves that path completely
+    // untouched — same channel, same carry-note, as if the ledger were healthy.
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-reset' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toContain('## Next action\nresume');
+  });
+
   it('the degrade-to-inbox body is NEVER tagged (coord messages carry native provenance)', async () => {
     const sendCoordMessage = vi.fn(async () => ({}) as never);
     const { tag } = spyTagger();
