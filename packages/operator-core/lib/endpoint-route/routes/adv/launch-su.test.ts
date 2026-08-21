@@ -126,18 +126,36 @@ function headedOneliner(): string {
 function headlessOneliner(): string {
   return spawnHeadlessMock.mock.calls[0]![0].envelope.greetingCmd;
 }
+/** Decode one shellEscape()-produced single shell word without executing it. */
+function decodeShellWord(word: string): string {
+  if (!word.startsWith("'") || !word.endsWith("'")) {
+    throw new Error(`expected a shellEscape() single word, got: ${word}`);
+  }
+  return word.slice(1, -1).replace(/'\\''/g, "'");
+}
+
 /**
- * The psu command line INSIDE the headed one-liner's keep-open wrapper (WI-37743),
- * unwrapped back to what the shell will actually eval — so it can still be
- * compared token-for-token with the headless form, which needs no wrapper.
- * Throws rather than returning something plausible if the wrapper is missing:
- * losing it is the regression this whole file is guarding.
+ * The interactive rcfile script inside WI-40182's terminal-holding bash.
+ * Decoding both wrapper layers keeps these assertions structural: a test that
+ * merely searched the twice-escaped outer string could pass while the script
+ * handed to bash was malformed.
+ */
+function headedInteractiveScript(): string {
+  const oneliner = headedOneliner();
+  const m = /^exec bash --noprofile --rcfile <\(printf '%s\\n' (.+)\) -i$/s.exec(oneliner);
+  if (!m) throw new Error(`headed one-liner is not in keep-open form: ${oneliner}`);
+  return decodeShellWord(m[1]!);
+}
+
+/**
+ * The psu command inside the headed wrapper, decoded back to what the rcfile
+ * evals so it can be compared token-for-token with the headless form.
  */
 function headedPsuCommand(): string {
-  const oneliner = headedOneliner();
-  const m = /^\(eval '(.*)'\); __papercusp_greeting_rc=/s.exec(oneliner);
-  if (!m) throw new Error(`headed one-liner is not in keep-open form: ${oneliner}`);
-  return m[1]!.replace(/'\\''/g, "'"); // undo shellEscape's quote-splicing
+  const script = headedInteractiveScript();
+  const m = /^\(eval (.+?)\); __papercusp_greeting_rc=/s.exec(script);
+  if (!m) throw new Error(`headed rcfile script does not eval psu: ${script}`);
+  return decodeShellWord(m[1]!);
 }
 /** `--owner-id=su-<uuid>` is freshly minted per launch, so normalise it to diff two argvs. */
 const normaliseOwner = (s: string): string => s.replace(/--owner-id=su-[0-9a-f-]+/i, '--owner-id=<pinned>');
@@ -224,19 +242,22 @@ describe('launch-su — headless routes to spawnHeadless, headed to spawnInTermi
     await launch({ headless: false });
     const cmd = headedOneliner();
 
-    // (1) psu is EVAL'd in a subshell, not exec'd — an exec leaves no shell to
-    //     return to, so nothing after it can ever run.
-    expect(cmd).toMatch(/^\(eval '/);
-    expect(cmd).not.toMatch(/^exec /);
+    const script = headedInteractiveScript();
+
+    // (1) the outer exec installs a genuinely interactive bash supervisor;
+    //     the psu command itself is still EVAL'd inside that rcfile rather than
+    //     exec'd, so Ctrl+C cannot kill the terminal-holding shell with it.
+    expect(cmd).toMatch(/^exec bash --noprofile --rcfile /);
+    expect(script).toMatch(/^\(eval '/);
 
     // (2) the separators are `;`, never `&&` — with `&&` a non-zero psu exit
     //     short-circuits past the banner AND the trailing shell, which is
     //     precisely the failure case the window is being held open FOR.
-    expect(cmd).toContain("'); __papercusp_greeting_rc=$?;");
-    expect(cmd).not.toMatch(/&&\s*exec/);
+    expect(script).toContain("'); __papercusp_greeting_rc=$?;");
+    expect(script).not.toMatch(/&&\s*exec/);
 
     // (3) a trailing interactive login shell is what actually holds it open.
-    expect(cmd).toMatch(/exec "\$\{SHELL:-\/bin\/bash\}" -l\s*$/);
+    expect(script).toMatch(/exec "\$\{SHELL:-\/bin\/bash\}" -l\s*$/);
   });
 
   it('the HEADLESS one-liner keeps the bare exec (no window to hold open)', async () => {
@@ -291,7 +312,7 @@ describe('launch-su — the terminal child gets a RE-DERIVED operator base, neve
     const expected = psuLaunchLogPath(ownerId);
     expect(expected).toBeTruthy();
     // The banner printf is tee'd to the receipt inside the keep-open wrapper.
-    expect(headedOneliner()).toContain(`| tee -a '${expected}'`);
+    expect(headedInteractiveScript()).toContain(`| tee -a '${expected}'`);
   });
 
   it('omits the receipt on a RESUME, which pins no owner (no path to derive)', async () => {
