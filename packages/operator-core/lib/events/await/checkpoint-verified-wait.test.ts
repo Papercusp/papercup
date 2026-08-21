@@ -171,9 +171,54 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
-  it('keeps a candidate-bound wait on the stalled path when its run disappears', async () => {
+  it('EI-20971831715218093: a candidate-bound wait with no checkpoint candidate/run at all is unknown, never stalled', async () => {
+    // activeRun IS observed here (unlike the EI-21045433666635330 case above) but
+    // carries no candidate -- the checkpoint mechanism has not started judging
+    // anything. That reading previously fell through to the timestamp-staleness
+    // heuristic and could misread an intentionally quiescent producer (e.g. one
+    // waiting behind a live, unrelated affected-test verifier task) as "stalled",
+    // recommending an owner-takeover that would provoke duplicate checkpoint work.
+    // No candidate/run existing is not evidence THIS candidate's run stalled --
+    // it may simply not have started yet.
     const current = snapshot({
       activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+      routines: {
+        gitSync: null,
+        greenCheckpoint: {
+          name: 'green-checkpoint',
+          active: true,
+          cron: null,
+          lastFiredAtMs: null,
+          nextFireAtMs: null,
+          pause: null,
+        },
+        releaseTrigger: null,
+      },
+    });
+    const certificate = checkpointProducerCertificate({
+      pipeline: 'papercusp',
+      candidateSha: 'abc1',
+      ownerId: 'su-1',
+      issuedAtMs: 1_500,
+      expectedCadenceMs: 5_000,
+      verificationDeadlineMs: 2_000,
+      snapshot: current,
+    });
+    const observed = await observeCheckpointProducer(certificate, { snapshot: async () => current });
+    expect(observed.state).toBe('unknown');
+    expect(classifyVerifiedWaitTimeout(certificate, { ...observed, checkedAtMs: 2_000 })).toMatchObject({
+      classification: 'unknown',
+      nextAction: 're-await',
+    });
+  });
+
+  it('keeps a candidate-bound wait on the stalled path once a DIFFERENT candidate is the one being judged', async () => {
+    // Distinct from the case above: here activeRun.candidate is non-null, so the
+    // checkpoint mechanism DID pick something up -- just not the candidate this
+    // wait names. That is real evidence our candidate was skipped/superseded, so
+    // the old stalled/absent (timestamp-staleness) diagnosis still applies.
+    const current = snapshot({
+      activeRun: { active: false, candidate: 'def456', startedAtMs: null, elapsedSec: null },
       routines: {
         gitSync: null,
         greenCheckpoint: {
