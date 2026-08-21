@@ -3,6 +3,7 @@ import { z } from 'zod';
 import captureTool, { defaultScorecardConditionKey } from './capture';
 import { coerceCaptureKind, coerceIdeateProvenance } from './capture-coerce';
 import { captureImprovement } from '../../harness/improvements/capture-core';
+import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
@@ -20,6 +21,12 @@ const drainAdmission = vi.hoisted(() => ({
 // identity tier, and (2) passing every arg + the resolved identity through to
 // the shared core unchanged. (self-learning-central P-001/P-010.)
 vi.mock('../../harness/improvements/capture-core');
+vi.mock('../../harness/improvements/agent-review', () => ({
+  enterAgentReview: vi.fn(async () => ({
+    entered: true,
+    state: { status: 'pending', submittedBy: 'su-test', ledgerIdeaId: 'EI-1', round: 1 },
+  })),
+}));
 vi.mock('../coordination/identity');
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
 vi.mock('../work_items/drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
@@ -39,6 +46,7 @@ vi.mock('../../scout/generation-watermark', () => ({
 }));
 
 const mockCapture = vi.mocked(captureImprovement);
+const mockEnterAgentReview = vi.mocked(enterAgentReview);
 const mockIdentity = vi.mocked(resolveAgentIdentity);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
 const mockRecordRoutedIdea = vi.mocked(recordRoutedIdea);
@@ -56,6 +64,98 @@ drainAdmission.gate.mockImplementation(async (_args, persist) => {
   return drainAdmission.blocked
     ? { ok: true, allowed: false, code: 'drain_flow_circuit_open', message: 'terminal one first', flow }
     : { ok: true, allowed: true, flow, value: await persist(flow) };
+});
+
+describe('improvements:capture → agent-review enrollment (abolish-human-review D-003/P-004)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-filer'));
+    mockEnterAgentReview.mockResolvedValue({
+      entered: true,
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
+    });
+  });
+
+  it('enrolls a freshly-created change and reports the routing state in the tool result', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42', title: 'Replace human review' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    const result = await callTool({ title: 'Replace human review', kind: 'change', harness: 'papercusp' }, {
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+    const body = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(mockEnterAgentReview).toHaveBeenCalledWith({
+      id: 'EI-42',
+      submittedBy: 'su-filer',
+      harnessSlug: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+    expect(body.agentReview).toEqual({
+      entered: true,
+      state: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'EI-42', round: 1 },
+    });
+  });
+
+  it('preserves su-ideate provenance by recording it before feature enrollment', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'F-42', title: 'A grounded feature' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+
+    await callTool({
+      title: 'A grounded feature',
+      kind: 'feature',
+      ideation: { lens: 'risk-first', addressesPatternRefs: ['wi:EI-9'] },
+    });
+
+    expect(mockRecordRoutedIdea).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ideaId: 'F-42',
+        origin: 'su-ideate',
+        lens: 'risk-first',
+        addressesPatternRefs: ['wi:EI-9'],
+      }),
+    );
+    expect(mockRecordRoutedIdea.mock.invocationCallOrder[0]).toBeLessThan(
+      mockEnterAgentReview.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does not enroll bugs, observations, or a capture that created no row', async () => {
+    mockCapture.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-bug' } } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    await callTool({ title: 'bug', kind: 'bug' });
+
+    mockCapture.mockResolvedValue({ ok: true, created: true, issue: { id: 'EI-observation' } } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    await callTool({ title: 'observation', kind: 'change', lane: 'observation' });
+
+    mockCapture.mockResolvedValue({ ok: true, created: false, reason: 'likely-duplicate' } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    await callTool({ title: 'duplicate', kind: 'change' });
+
+    expect(mockEnterAgentReview).not.toHaveBeenCalled();
+  });
+
+  it('fails loudly when required enrollment fails after creation', async () => {
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-42', title: 'Review me' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    mockEnterAgentReview.mockRejectedValueOnce(new Error('enrollment failed'));
+
+    await expect(callTool({ title: 'Review me', kind: 'change' })).rejects.toThrow('enrollment failed');
+  });
 });
 
 function identity(source: ReturnType<typeof resolveAgentIdentity>['source'], ownerId = 'su-test') {

@@ -53,6 +53,8 @@ function fakeDeps(over: Partial<GradeIdeaDeps> = {}): GradeIdeaDeps {
     // D-012: default row is UNattributed (created_by null) — no self-grade path.
     readCreatedBy: vi.fn(async () => null),
     sendRevisionNotice: vi.fn(async () => ({ woken: 0 })),
+    preflightAgentReviewGrade: vi.fn(async () => ({ applicable: false })),
+    reconcileAgentReviewGrade: vi.fn(async () => null),
     ...over,
   };
 }
@@ -267,6 +269,8 @@ describe('D-012 no-self-grade guard (su-ideate-learning-substrate-2026-07-10 WI-
     expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
     expect(deps.readIdeaSummary).not.toHaveBeenCalled();
     expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+    expect(deps.preflightAgentReviewGrade).not.toHaveBeenCalled();
+    expect(deps.reconcileAgentReviewGrade).not.toHaveBeenCalled();
   });
 
   it('catches a self-grade keyed by routedRef too (guard runs AFTER ref→ideaId resolution)', async () => {
@@ -299,6 +303,124 @@ describe('D-012 no-self-grade guard (su-ideate-learning-substrate-2026-07-10 WI-
     expect(deps.readCreatedBy).not.toHaveBeenCalled(); // short-circuit on null callerOwnerId
     expect(deps.gradeRoutedIdea).toHaveBeenCalledTimes(1);
     expect(out.applied).toBe(true);
+  });
+});
+
+describe('agent-review grade lifecycle (abolish-human-review D-003/P-004)', () => {
+  const pending = {
+    status: 'pending' as const,
+    submittedBy: 'su-filer',
+    ledgerIdeaId: 'idea-1',
+    round: 1,
+  };
+
+  it('refuses a low review grade without feedback before either store is mutated', async () => {
+    const deps = fakeDeps({
+      preflightAgentReviewGrade: vi.fn(async () => ({
+        applicable: true,
+        workItemId: 'WI-42',
+        state: pending,
+        refusal: 'agent-review-feedback-required' as const,
+      })),
+    });
+
+    const out = await runGradeIdea({ ideaId: 'idea-1', grade: 3 }, { ownerId: 'su-reviewer' }, deps);
+
+    expect(out).toEqual({
+      applied: false,
+      reason: 'agent-review-feedback-required',
+      gradedBy: 'su-reviewer',
+      ideaId: 'idea-1',
+      idea: null,
+    });
+    expect(deps.gradeRoutedIdea).not.toHaveBeenCalled();
+    expect(deps.reconcileAgentReviewGrade).not.toHaveBeenCalled();
+  });
+
+  it('writes an accepted grade, reconciles the work item, and returns the lifecycle transition', async () => {
+    const reconciled = {
+      workItemId: 'WI-42',
+      status: 'approved' as const,
+      round: 1,
+      changed: true,
+    };
+    const deps = fakeDeps({
+      preflightAgentReviewGrade: vi.fn(async () => ({ applicable: true, workItemId: 'WI-42', state: pending })),
+      reconcileAgentReviewGrade: vi.fn(async () => reconciled),
+    });
+
+    const out = await runGradeIdea(
+      { routedRef: 'wi:WI-42', grade: 5, feedback: 'ready' },
+      { ownerId: 'su-reviewer' },
+      deps,
+    );
+
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({
+      ideaId: 'idea-1',
+      grade: 5,
+      feedback: 'ready',
+      gradedBy: 'su-reviewer',
+    });
+    expect(deps.reconcileAgentReviewGrade).toHaveBeenCalledWith({
+      ideaId: 'idea-1',
+      gradedBy: 'su-reviewer',
+    });
+    expect(out.agentReview).toEqual(reconciled);
+  });
+
+  it('uses the agent-review revision delivery only, even when enrollment preserved su-ideate provenance', async () => {
+    const deps = fakeDeps({
+      preflightAgentReviewGrade: vi.fn(async () => ({ applicable: true, workItemId: 'WI-42', state: pending })),
+      reconcileAgentReviewGrade: vi.fn(async () => ({
+        workItemId: 'WI-42',
+        status: 'revision-requested' as const,
+        round: 1,
+        changed: true,
+        woken: 1,
+      })),
+      readIdeaSummary: vi.fn(async () => summary({ origin: 'su-ideate', createdBy: 'su-filer' })),
+    });
+
+    const out = await runGradeIdea(
+      { ideaId: 'idea-1', grade: 2, feedback: 'tighten the evidence' },
+      { ownerId: 'su-reviewer' },
+      deps,
+    );
+
+    expect(out.agentReview).toMatchObject({ status: 'revision-requested', woken: 1 });
+    expect(deps.sendRevisionNotice).not.toHaveBeenCalled();
+    expect('revisionWake' in out).toBe(false);
+  });
+
+  it('retries through an owner-sovereign ledger no-op and still converges routing from the standing grade', async () => {
+    const preflight = vi.fn(async () => ({ applicable: true, workItemId: 'WI-42', state: pending }));
+    const reconcile = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('payload write interrupted'))
+      .mockResolvedValueOnce({ workItemId: 'WI-42', status: 'approved', round: 1, changed: true });
+    const grade = vi
+      .fn()
+      .mockResolvedValueOnce({ applied: true })
+      .mockResolvedValueOnce({ applied: false, reason: 'owner-grade-sovereign' });
+    const deps = fakeDeps({
+      preflightAgentReviewGrade: preflight,
+      reconcileAgentReviewGrade: reconcile,
+      gradeRoutedIdea: grade,
+    });
+
+    await expect(
+      runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'approved' }, { ownerId: 'su-reviewer' }, deps),
+    ).rejects.toThrow('payload write interrupted');
+    const retry = await runGradeIdea(
+      { ideaId: 'idea-1', grade: 5, feedback: 'approved' },
+      { ownerId: 'su-reviewer' },
+      deps,
+    );
+
+    expect(retry.applied).toBe(false);
+    expect(retry.reason).toBe('owner-grade-sovereign');
+    expect(retry.agentReview).toMatchObject({ status: 'approved', changed: true });
+    expect(reconcile).toHaveBeenCalledTimes(2);
   });
 });
 

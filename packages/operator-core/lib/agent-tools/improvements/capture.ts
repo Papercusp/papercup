@@ -22,6 +22,7 @@ import {
   captureImprovement,
   DedupCoverageUnavailableError,
 } from '../../harness/improvements/capture-core';
+import { enterAgentReview } from '../../harness/improvements/agent-review';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { CONDITION_KEY_RULE, OBSERVATION_TITLE_RULE } from '../../harness/improvements/observation-title-guidance';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
@@ -251,7 +252,7 @@ export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
-    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:"observation" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).',
+    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → agent-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:"observation" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).',
   guidance: {
     when: 'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them.',
     notWhen:
@@ -914,6 +915,30 @@ export default defineTool({
           // best-effort provenance — never affects the capture the user requested
         }
       }
+      // abolish-human-review D-003/P-004: every freshly-created local change/feature
+      // enters the existing Blender-backed agent-review lifecycle. This deliberately
+      // runs AFTER the su-ideate provenance bridge above: enterAgentReview records with
+      // preserveExisting:true, so an su feature keeps its origin, lens, grounding refs,
+      // and creator instead of being overwritten by the routing-only agent-review row.
+      // Unlike optional ideation provenance, enrollment is required for queue safety:
+      // letting this fail silently would leave the created item visible to ordinary
+      // implementation selectors before any peer approved it.
+      let agentReview: Awaited<ReturnType<typeof enterAgentReview>> | undefined;
+      if (
+        (effectiveKind === 'change' || effectiveKind === 'feature') &&
+        effectiveLane !== 'observation' &&
+        captured.created &&
+        captured.issue?.id
+      ) {
+        const reviewHarness =
+          ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
+        agentReview = await enterAgentReview({
+          id: captured.issue.id,
+          submittedBy: id.ownerId,
+          harnessSlug: reviewHarness,
+          workspaceId: resolveConcreteWorkspaceId(id.workspaceId, ctxWorkspace),
+        });
+      }
       // WI-3594 (scorecard→improvement flow): link a freshly-filed GRADE filing to
       // its named follow-up work-items AT FILE TIME, so a scorecard's motivating
       // improvement is never a separate round-trip someone forgets to make. Fires
@@ -995,6 +1020,7 @@ export default defineTool({
               ...(experimentGap ? { experimentGap } : {}),
               ...(lensAttribution ? { lensAttribution } : {}),
               ...(groundingGap ? { groundingGap } : {}),
+              ...(agentReview ? { agentReview } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
               ...(warnings.length > 0 ? { warnings } : {}),

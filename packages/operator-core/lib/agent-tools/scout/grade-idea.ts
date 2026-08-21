@@ -32,6 +32,12 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 
 import { gradeRoutedIdea, type GradeRoutedIdeaInput, type GradeRoutedIdeaResult } from '../../scout/routed-ledger';
+import {
+  preflightAgentReviewGrade,
+  reconcileAgentReviewGrade,
+  type AgentReviewGradePreflight,
+  type AgentReviewReconcileOutcome,
+} from '../../harness/improvements/agent-review';
 import { softText, clampText, LIMITS } from '../limits';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
@@ -78,7 +84,10 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
    * a guard that lives ABOVE the write seam — the ledger's gradeRoutedIdea never
    * produces it — so it widens `reason` only here, keeping the seam type clean.
    */
-  reason?: GradeRoutedIdeaResult['reason'] | 'no-self-grade';
+  reason?:
+    | GradeRoutedIdeaResult['reason']
+    | 'no-self-grade'
+    | NonNullable<AgentReviewGradePreflight['refusal']>;
   gradedBy: GradedBy;
   /** The resolved ledger key (null when a routedRef resolved to nothing). */
   ideaId: string | null;
@@ -87,6 +96,8 @@ export interface GradeIdeaOutcome extends Omit<GradeRoutedIdeaResult, 'reason'> 
   /** P-005: revision-notice delivery report — present iff a notice was attempted
    *  (an APPLIED grade on a su-ideate row with feedback + a known originator). */
   revisionWake?: RevisionWakeOutcome;
+  /** D-003: work-item routing transition driven by this standing ledger grade. */
+  agentReview?: AgentReviewReconcileOutcome;
 }
 
 export const gradeIdeaArgs = z
@@ -362,6 +373,10 @@ export interface GradeIdeaDeps {
   readCreatedBy: typeof readCreatedBy;
   /** P-005: the revision-notice delivery port (durable note + optional wake). */
   sendRevisionNotice: RevisionNoticePort;
+  /** D-003: refuse unactionable/non-pending review grades before touching the ledger. */
+  preflightAgentReviewGrade: typeof preflightAgentReviewGrade;
+  /** D-003: converge work-item routing state from the standing ledger grade after the write. */
+  reconcileAgentReviewGrade: typeof reconcileAgentReviewGrade;
 }
 
 const defaultDeps: GradeIdeaDeps = {
@@ -371,6 +386,8 @@ const defaultDeps: GradeIdeaDeps = {
   readIdeaSummary,
   readCreatedBy,
   sendRevisionNotice: deliverRevisionNotice,
+  preflightAgentReviewGrade,
+  reconcileAgentReviewGrade,
 };
 
 /** The testable core: resolve key → C-2 write → row read-back. */
@@ -411,6 +428,25 @@ export async function runGradeIdea(
     }
   }
 
+  // D-003/P-004: an agent-review grade is a work-item lifecycle command, not
+  // merely a learning signal. Refuse low grades without actionable feedback and
+  // grades against a non-pending round BEFORE the ledger write. General Scout and
+  // su-ideate rows return applicable:false and retain their existing semantics.
+  const agentReviewPreflight = await deps.preflightAgentReviewGrade({
+    ideaId,
+    grade: args.grade,
+    ...(feedback !== undefined ? { feedback } : {}),
+  });
+  if (agentReviewPreflight.refusal) {
+    return {
+      applied: false,
+      reason: agentReviewPreflight.refusal,
+      gradedBy,
+      ideaId,
+      idea: null,
+    };
+  }
+
   const result = await deps.gradeRoutedIdea({
     ideaId,
     grade: args.grade,
@@ -446,12 +482,25 @@ export async function runGradeIdea(
     }
   }
 
+  // The ledger remains the grade authority. Reconcile the work-item payload from
+  // that standing row after either an applied write OR an owner-sovereign retry;
+  // this is the idempotent recovery seam required when the two stores cannot share
+  // one transaction. A preflight that said "applicable" followed by a missing
+  // reconciliation target is a consistency failure, so surface it and let retry
+  // converge instead of returning a false success.
+  let agentReview: AgentReviewReconcileOutcome | undefined;
+  if (agentReviewPreflight.applicable && result.reason !== 'not-found') {
+    const reconciled = await deps.reconcileAgentReviewGrade({ ideaId, gradedBy });
+    if (!reconciled) throw new Error(`agent-review-reconcile-missing:${ideaId}`);
+    agentReview = reconciled;
+  }
+
   // P-005 (D-008): a graded su-ideate filing notifies its originator — grade at
   // or below REVISION_WAKE_MAX_GRADE with feedback WAKES them to revise or
   // defend; a higher grade with feedback is an unwoken FYI. Best-effort by
   // contract: a delivery failure NEVER fails the grade.
   let revisionWake: RevisionWakeOutcome | undefined;
-  if (idea?.createdBy && feedback) {
+  if (!agentReviewPreflight.applicable && idea?.createdBy && feedback) {
     const mode = revisionNoticeMode({
       applied: result.applied,
       origin: idea.origin,
@@ -480,7 +529,14 @@ export async function runGradeIdea(
     }
   }
 
-  return { ...result, gradedBy, ideaId, idea, ...(revisionWake ? { revisionWake } : {}) };
+  return {
+    ...result,
+    gradedBy,
+    ideaId,
+    idea,
+    ...(revisionWake ? { revisionWake } : {}),
+    ...(agentReview ? { agentReview } : {}),
+  };
 }
 
 /** Map the outcome onto the tool result envelope (isError ONLY for not-found — a sovereign no-op is designed behavior). */
