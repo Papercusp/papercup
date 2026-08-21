@@ -1641,6 +1641,8 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     'lib/a.ts(11,3): error TS2339: Property x does not exist.',
   ].join('\n');
 
+  const SYNTAX_TSC_LINES = "lib/a.ts(834,18): error TS1005: ';' expected.";
+
   /** Run the real gate over canned compiler output; returns its combined output. */
   function runGate(baseline: Record<string, number>): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-wiring-'));
@@ -1675,6 +1677,34 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     }
   }
 
+  /** Run the real gate over a canned TS1xxx compiler failure; returns its combined output. */
+  function runSyntaxGate(): string {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-syntax-wiring-'));
+    try {
+      writeFileSync(join(root, 'tsc-output.txt'), `${SYNTAX_TSC_LINES}\n`);
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'lib/a.ts': 0 } }));
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+          `  label: 'test',\n` +
+          `  argv: ['--files=lib/a.ts'],\n` +
+          `});\n`,
+      );
+      try {
+        return execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (e: any) {
+        // The gate exits 1 on a syntax failure — that IS the path under test, not a test failure.
+        return `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+
   it('a regression in a NAMED file prints the compiler message, not just the count', () => {
     const out = runGate({ 'lib/a.ts': 0 });
     // The count line the gate always printed...
@@ -1689,6 +1719,12 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).toContain('lib/a.ts: 1 → 2');
     expect(out).toContain('PRE-DATE');
     expect(out).not.toContain('every error above is new');
+  });
+
+  it('a syntax failure prints the compiler location and message, not just the filename', () => {
+    const out = runSyntaxGate();
+    expect(out).toContain('lib/a.ts');
+    expect(out).toContain(SYNTAX_TSC_LINES);
   });
 
   it('forwards pc-heavy stderr while preserving captured compiler output', () => {

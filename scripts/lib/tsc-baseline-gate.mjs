@@ -2185,11 +2185,19 @@ export async function runTscBaselineGate({
   });
 
   switch (result.verdict) {
-    case 'fail-syntax':
+    case 'fail-syntax': {
       console.error(`❌ ${result.brokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) — hard fail regardless of baseline:`);
-      for (const f of result.brokenFiles) console.error(`   - ${f}`);
+      // The compiler output already contains the location and message that explain why the
+      // file cannot parse. Keep the file-only headline, but quote those diagnostics here so a
+      // reader does not need a second full compile just to learn what the syntax error is.
+      const diagnostics = diagnosticLinesForFiles(tscOutput, result.brokenFiles);
+      for (const f of result.brokenFiles) {
+        console.error(`   - ${f}`);
+        for (const line of diagnostics.get(f) ?? []) console.error(`      ${line}`);
+      }
       process.exit(1);
       break;
+    }
     case 'fail-regressed': {
       console.error(`❌ ${result.regressions.length} file(s) added type errors above their baseline:`);
       // EI-19454211066351073 — quote the compiler lines the `+N` stands for. The gate has already
