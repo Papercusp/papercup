@@ -10,7 +10,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { claimReplicaSlot, resolveReplicaHiveSlug } from '../../work-item-redundancy';
 import { activeWorkspaceId } from '../../workspace-registry';
@@ -40,7 +40,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
-    const owner = args.owner ?? ident.ownerId;
+    const owner = resolveSelfLiteral(args.owner, ident.ownerId) ?? ident.ownerId;
     const workspaceId = activeWorkspaceId();
     const potSlug = await resolveReplicaHiveSlug(workspaceId, args.harness);
     const res = await claimReplicaSlot({

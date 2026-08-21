@@ -16,6 +16,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me' })),
+  resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
 }));
 vi.mock('../../work-item-redundancy', () => ({
   claimReplicaSlot: vi.fn(),
@@ -55,6 +56,15 @@ describe('work_items:claim_replica reason mapping', () => {
 });
 
 describe('work_items:claim_replica success', () => {
+  it('resolves owner self to the calling owner id', async () => {
+    claimM.mockResolvedValue({
+      ok: true, reused: false,
+      replica: { workItemId: 'F-1', harnessSlug: 'web', replicaIndex: 0, redundancy: 2, claimId: 'c1', owner: 'me', expiresTs: 't1' },
+    } as never);
+    await tool.handler({ id: 'F-1', harness: 'web', owner: 'self' } as never, {} as never);
+    expect((claimM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('me');
+  });
+
   it('projects the claimed slot fields', async () => {
     claimM.mockResolvedValue({
       ok: true, reused: false,

@@ -11,7 +11,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })),
+  resolveSelfLiteral: (value: string | undefined, callerOwnerId: string) => (value === 'self' ? callerOwnerId : value),
+}));
 vi.mock('../../work-item-redundancy', () => ({
   recordReplicaResult: vi.fn(),
   resolveReplicaHiveSlug: vi.fn(async () => 'hive-x'),
@@ -50,5 +53,11 @@ describe('work_items:record_replica_result handler', () => {
     recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 1, status: 'complete', redundancy: 2 } as never);
     await call({ owner: 'other-swarm', replicaIndex: 1 });
     expect((recordM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('other-swarm');
+  });
+
+  it('resolves owner self to the calling owner id', async () => {
+    recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 0, status: 'complete', redundancy: 2 } as never);
+    await call({ owner: 'self' });
+    expect((recordM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('me');
   });
 });
