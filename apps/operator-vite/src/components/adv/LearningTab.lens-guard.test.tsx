@@ -128,6 +128,10 @@ vi.mock("@/app/adv/create/ObservationsPanel", () => ({
   default: () => <div data-testid="observations-panel" />,
 }));
 vi.mock("@/app/harness/filters", () => ({
+  // LearningTab parses the shared URL-backed filter state before issuing its
+  // reads. This render probe owns the state bag directly, so only the parser's
+  // module shape is needed here.
+  parseAsColumnFilters: () => ({}),
   useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
     rows,
     controller: null,

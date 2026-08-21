@@ -19,7 +19,9 @@ import { Hono } from 'hono';
 
 // ── side-effecting collaborators (all mocked) ──
 const { mugKettleSystemEnabled } = vi.hoisted(() => ({
-  mugKettleSystemEnabled: vi.fn(async () => true),
+  // Production is permanently closed. Tests that need the retired route's
+  // lower bookkeeping seam reopen it explicitly in beforeEach below.
+  mugKettleSystemEnabled: vi.fn(async () => false),
 }));
 
 const launchRun = vi.fn();
