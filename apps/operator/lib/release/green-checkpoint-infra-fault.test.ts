@@ -167,6 +167,21 @@ describe("classifyDiskInfraFault — post-suite ENOSPC attribution", () => {
     expect(fault).toBeNull();
   });
 
+  it("does not count passing ENOSPC selftest narration as a write failure below the floor", () => {
+    const output = Array.from(
+      { length: DISK_ENOSPC_MIN_OCCURRENCES },
+      () =>
+        "  ✓ require_free_gb refuses an impossible requirement with exit 28 (ENOSPC)",
+    ).join("\n");
+    const fault = classifyDiskInfraFault(output, {
+      before: [diskSnapshot("/tmp", 158.8 * 1024 ** 3, 0.0213, 0.98)],
+      after: [diskSnapshot("/tmp", 148.2 * 1024 ** 3, 0.0199, 0.9786)],
+      policy: DISK_POLICY,
+    });
+
+    expect(fault).toBeNull();
+  });
+
   it("does not treat an isolated ENOSPC mention as infrastructure without low-space evidence", () => {
     const output = Array.from(
       { length: DISK_ENOSPC_MIN_OCCURRENCES },
