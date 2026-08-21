@@ -17,6 +17,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const convertMocks = vi.hoisted(() => ({
   findCoverageWorkItems: vi.fn(async () => [] as Array<{ id: string; state: string }>),
 }));
+const reconcileMocks = vi.hoisted(() => ({
+  findAllLinkedWorkItems: vi.fn(async () => [] as Array<{
+    id: string;
+    state: string;
+    family?: string;
+    assignee?: string | null;
+    viaImplementsEdge?: boolean;
+  }>),
+}));
 
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
@@ -47,6 +56,10 @@ vi.mock('../../plan-items/convert', async (orig) => ({
   ...(await orig<typeof import('../../plan-items/convert')>()),
   findCoverageWorkItems: convertMocks.findCoverageWorkItems,
 }));
+vi.mock('../../plan-items/reconcile-linked-work-items', async (orig) => ({
+  ...(await orig<typeof import('../../plan-items/reconcile-linked-work-items')>()),
+  findAllLinkedWorkItems: reconcileMocks.findAllLinkedWorkItems,
+}));
 
 import { withPlanLock } from './with-plan-lock';
 const lockM = vi.mocked(withPlanLock);
@@ -71,6 +84,7 @@ function lockReturnsMutatorValue(knownItems: Set<string>, currentStatus = 'wip')
 beforeEach(() => {
   vi.clearAllMocks();
   convertMocks.findCoverageWorkItems.mockResolvedValue([]);
+  reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([]);
 });
 
 describe('plans:set-status residual-coverage guard (EI-18655063958515097)', () => {
@@ -81,6 +95,34 @@ describe('plans:set-status residual-coverage guard (EI-18655063958515097)', () =
     expect(b.results[0].ok).toBe(true); // never blocks
     expect(b.results[0].residualWarning).toMatch(/EI-999/);
     expect(b.results[0].residualWarning).toMatch(/non-terminal/);
+  });
+
+  it('describes feature coverage that the terminal reaction will auto-resolve as residue', async () => {
+    convertMocks.findCoverageWorkItems.mockResolvedValue([
+      { id: 'WI-38675', state: 'open', family: 'feature', assignee: null } as never,
+    ]);
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'WI-38675', state: 'open', family: 'feature', assignee: null, viaImplementsEdge: false } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-001']));
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'done' });
+    expect(b.results[0].residualWarning).toMatch(/auto-resolved as residue/);
+    expect(b.results[0].residualWarning).toMatch(/WI-38675/);
+    expect(b.results[0].residualWarning).not.toMatch(/hold this item open until they close/);
+  });
+
+  it('keeps the follow-up warning for an issue stamp without an implements edge', async () => {
+    convertMocks.findCoverageWorkItems.mockResolvedValue([
+      { id: 'EI-issue-stamp', state: 'open', family: 'issue', assignee: null } as never,
+    ]);
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([
+      { id: 'EI-issue-stamp', state: 'open', family: 'issue', assignee: null, viaImplementsEdge: false } as never,
+    ]);
+    lockReturnsMutatorValue(new Set(['P-001']));
+    const b = await body({ slug: 'plan-a', item: 'P-001', status: 'done' });
+    expect(b.results[0].residualWarning).toMatch(/remain non-terminal/);
+    expect(b.results[0].residualWarning).toMatch(/hold this item open until they close/);
+    expect(b.results[0].residualWarning).not.toMatch(/auto-resolved as residue/);
   });
 
   it('does NOT warn when the linked coverage work-item is already terminal', async () => {

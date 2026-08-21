@@ -1106,11 +1106,57 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       const coverage = await findCoverageWorkItems(it.slug, it.itemId);
       const openCoverage = coverage.filter((wi) => !TERMINAL_WORK_ITEM_STATES.has(wi.state));
       if (openCoverage.length > 0) {
-        residualWarning =
-          `${it.itemId} is closing (${it.status}) while ${openCoverage.length} linked coverage work-item(s) ` +
-          `(${openCoverage.map((w) => w.id).join(', ')}) remain non-terminal — the plan will read as fully ` +
-          `satisfied even though that work is still open. Confirm they're genuinely out of scope, or hold this ` +
-          `item open until they close.`;
+        // The done reaction runs after this tool returns and may reconcile some
+        // linked coverage rows as residue. Reporting every row as work that must
+        // stay open is backwards for those rows (EI-20391344760498156): the
+        // warning was observed immediately before the same operation auto-closed
+        // WI-38675. Keep the warning conservative when the proof lookup fails,
+        // but distinguish rows the reconciler will actually settle from rows it
+        // deliberately preserves for follow-up.
+        let reconciledAsResidue = new Set<string>();
+        if (it.status === 'done') {
+          try {
+            const linked = await findAllLinkedWorkItems(it.slug, it.itemId);
+            const linkedById = new Map(linked.map((wi) => [wi.id, wi]));
+            reconciledAsResidue = new Set(
+              openCoverage
+                .filter((wi) => {
+                  const candidate = linkedById.get(wi.id);
+                  if (!candidate || candidate.assignee || wi.assignee) return false;
+                  // This mirrors reconcileLinkedWorkItemsForPlanItem: feature
+                  // rows are stamp-borne by design; issue rows need an explicit
+                  // `implements` edge so a discovered bug is never buried.
+                  return candidate.family !== 'issue' || candidate.viaImplementsEdge;
+                })
+                .map((wi) => wi.id),
+            );
+          } catch (e) {
+            console.warn(
+              `[plans:set-status] residual-reconcile classification ${it.slug}#${it.itemId} failed:`,
+              (e as Error)?.message ?? e,
+            );
+          }
+        }
+
+        const reconciledIds = openCoverage.filter((wi) => reconciledAsResidue.has(wi.id)).map((wi) => wi.id);
+        const retainedIds = openCoverage.filter((wi) => !reconciledAsResidue.has(wi.id)).map((wi) => wi.id);
+        if (reconciledIds.length > 0) {
+          residualWarning =
+            `${it.itemId} is closing (${it.status}) while ${reconciledIds.length} linked coverage work-item(s) ` +
+            `(${reconciledIds.join(', ')}) are non-terminal at check time and will be auto-resolved as residue ` +
+            `by the terminal plan-item reaction.`;
+          if (retainedIds.length > 0) {
+            residualWarning +=
+              ` The remaining linked item(s) (${retainedIds.join(', ')}) are not eligible for that reconciliation ` +
+              `and require follow-up.`;
+          }
+        } else {
+          residualWarning =
+            `${it.itemId} is closing (${it.status}) while ${openCoverage.length} linked coverage work-item(s) ` +
+            `(${openCoverage.map((w) => w.id).join(', ')}) remain non-terminal — the plan will read as fully ` +
+            `satisfied even though that work is still open. Confirm they're genuinely out of scope, or hold this ` +
+            `item open until they close.`;
+        }
       } else if (looksLikeResidualClosure(`${it.note ?? ''} ${it.rationale ?? ''}`)) {
         residualWarning =
           `${it.itemId}'s note/rationale reads like an unmet acceptance criterion was split off, but no ` +
