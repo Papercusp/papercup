@@ -1335,15 +1335,19 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       // than a scheduler-specific wall-clock slice.
       const bootsDeadline = Date.now() + 8_000;
       let bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
-      while (bootsAfter.length < 2 && Date.now() < bootsDeadline) {
+      let metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
+      while (
+        (bootsAfter.length < 2 || metaAfter.carryDropCount !== 1) &&
+        Date.now() < bootsDeadline
+      ) {
         await sleep(50);
         bootsAfter = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+        metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
       }
       expect(bootsAfter).toHaveLength(2); // respawned, even though the carry drops
       // The carry was NEVER injected (the fresh child never reached its prompt)…
       expect(captured()).not.toContain('ECHO:CARRIED');
       // …and the drop is DURABLY OBSERVABLE, not silent (WI-1941 core guarantee).
-      const metaAfter = JSON.parse(readFileSync(meta, 'utf8'));
       expect(metaAfter.carryDropCount).toBe(1);
       expect(typeof metaAfter.lastCarryDropAt).toBe('number');
 
