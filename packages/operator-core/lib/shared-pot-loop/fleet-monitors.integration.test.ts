@@ -150,6 +150,29 @@ describe('P-012 + P-013 — the live-fleet monitor family on real failure states
       });
       expect(scopedOther.undrainedDepth).toBe(0);
 
+      // Regression for EI-21009625512310918: a QUARANTINED row (WI-3896's
+      // poison-row triage, mig 645) is DELIBERATELY left undrained forever —
+      // it must not count toward this scan's depth/age SLO, exactly as
+      // `load-drain-stats.ts`'s `loadSubstrateDrainStats` already excludes it
+      // over the same table. Before the fix this ancient quarantined row alone
+      // made a fully-healthy harness report a permanent, ever-worsening
+      // outbox-health breach.
+      await b.sql`
+        INSERT INTO harness_shared.substrate_outbox
+          (workspace_id, harness_slug, table_name, op, key, row, ts, drained_at, quarantined_at)
+        VALUES
+          (${rig.workspaceId}, ${HARNESS}, 'harness_features', 'put', 'F-POISON', '{}'::jsonb,
+           ${Date.now() - 60 * 60_000}, NULL, ${Date.now() - 30 * 60_000})`;
+      const quarantineExcluded = await scanOutboxHealth(b.sql, {
+        maxDepth: 0,
+        maxAgeMs: 1,
+        workspaceId: rig.workspaceId,
+        harness: HARNESS,
+      });
+      expect(quarantineExcluded.undrainedDepth).toBe(0);
+      expect(quarantineExcluded.oldestUndrainedAgeMs).toBeNull();
+      expect(quarantineExcluded.breaches).toEqual([]);
+
       // ════ 4. P-013: the convergence-lag probe ════
       const probe = await measureConvergenceLag({
         write: async () => {
