@@ -27,6 +27,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { runGoldSet, seedCorpus, type SeedManifest } from '@papercusp/memory/bench';
 
+import { collectChildOutput } from '../../child-output';
 import { pushSearchFloors } from '../injection';
 import { loadCorpusFixture } from './corpus';
 import { loadGoldSetFixture } from './gold-set';
@@ -112,8 +113,9 @@ export async function runBenchInWorker(opts: {
   }
 
   return new Promise<MemoryPrecisionMetrics>((resolve, reject) => {
-    let stdout = '';
-    let stderr = '';
+    // Boundary-safe capture: a multi-byte UTF-8 character split across two
+    // 'data' events must not decode to replacement chars (WI-6728).
+    const { stdout, stderr } = collectChildOutput(child);
     let settled = false;
     const timer = setTimeout(() => {
       if (settled) return;
@@ -126,15 +128,6 @@ export async function runBenchInWorker(opts: {
       reject(new Error(`precision bench worker timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     timer.unref?.();
-
-    child.stdout?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string | Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.setEncoding('utf8');
-    child.stderr?.on('data', (chunk: string | Buffer) => {
-      stderr += chunk.toString();
-    });
 
     const fail = (error: Error): void => {
       if (settled) return;
@@ -152,13 +145,13 @@ export async function runBenchInWorker(opts: {
         reject(
           new Error(
             `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}` +
-              (stderr.trim() ? `: ${stderr.trim().slice(-1_000)}` : ''),
+              (stderr.text().trim() ? `: ${stderr.text().trim().slice(-1_000)}` : ''),
           ),
         );
         return;
       }
       try {
-        resolve(parsePrecisionBenchWorkerOutput(stdout));
+        resolve(parsePrecisionBenchWorkerOutput(stdout.text()));
       } catch (error) {
         reject(error);
       }
