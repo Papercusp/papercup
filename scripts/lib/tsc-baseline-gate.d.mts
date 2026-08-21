@@ -10,7 +10,55 @@
  */
 export function parseTscErrors(tscOutput: string): TscErrorEntry[];
 /**
- * Files carrying parse-level (TS1xxx) errors — they fail to compile at all.
+ * Parse only TS7016/TS2307 diagnostics whose message names a module specifier.
+ *
+ * @param {string} tscOutput
+ * @returns {MissingModuleDiagnostic[]}
+ */
+export function parseMissingModuleDiagnostics(tscOutput: string): MissingModuleDiagnostic[];
+/**
+ * Match a module subpath (`@scope/pkg/subpath`) to its declared package name.
+ * Relative and absolute specifiers are deliberately not candidates.
+ *
+ * @param {string} moduleSpecifier
+ * @returns {string | null}
+ */
+export function packageNameFromModuleSpecifier(moduleSpecifier: string): string | null;
+/**
+ * Decide whether the tsc output plus a dependency-doctor snapshot proves the mid-install shape.
+ * The returned diagnostics are the subset that actually match a missing direct dependency, so
+ * an unrelated TS2307 elsewhere cannot manufacture the warning.
+ *
+ * @param {{tscOutput:string, missing?:{dep:string,workspace?:string}[], minimum?:number}} input
+ * @returns {{diagnostics:MissingModuleDiagnostic[], dependencies:string[]} | null}
+ */
+export function detectUnextractedDependencyDiagnostics({ tscOutput, missing, minimum }: {
+    tscOutput: string;
+    missing?: {
+        dep: string;
+        workspace?: string;
+    }[];
+    minimum?: number;
+}): {
+    diagnostics: MissingModuleDiagnostic[];
+    dependencies: string[];
+} | null;
+/**
+ * Format the shared marker used by test-file routing, enriched with the tsc/doctor evidence.
+ * This is reporting only: callers must retain tsc's original non-zero exit status.
+ *
+ * @param {{label:string, diagnostics:MissingModuleDiagnostic[], dependencies:string[]}} input
+ * @returns {string[]}
+ */
+export function formatMidInstallWarning({ label, diagnostics, dependencies }: {
+    label: string;
+    diagnostics: MissingModuleDiagnostic[];
+    dependencies: string[];
+}): string[];
+/**
+ * Files carrying TS1xxx hard-fail diagnostics. Most TS1xxx diagnostics are parser errors, but
+ * the range also contains semantic/type errors such as TS1320; keep the legacy helper name and
+ * hard-fail policy while letting the compiler message explain the actual problem.
  *
  * @param {TscErrorEntry[]} errors
  * @returns {string[]}
@@ -298,9 +346,9 @@ export function partitionNewFilesByLiveEdit(newFiles: PerFileGateEntry[]): {
     standing: PerFileGateEntry[];
 };
 /**
- * Split unattributed TS1xxx-broken files (outside the caller's `--mine`/`--files` set — see
+ * Split files with unattributed TS1xxx hard-fail diagnostics (outside the caller's `--mine`/`--files` set — see
  * `decidePerFile`'s `unattributedBrokenFiles`) into a peer's LIVE EDIT (uncommitted right now)
- * vs a COMMITTED standing red — the parse-error analog of `partitionNewFilesByLiveEdit` above
+ * vs a COMMITTED standing red — the hard-fail analog of `partitionNewFilesByLiveEdit` above
  * (EI-19321397364088260).
  *
  * Before this split, every unattributed broken file was reported with one blanket "a peer is
@@ -821,6 +869,23 @@ export function runTscBaselineGate({ root, tscCommand, baselineFile, label, argv
     foreignBaselines?: never[] | undefined;
 }): Promise<void>;
 /**
+ * A module-resolution diagnostic that may be explained by a package being half-written during
+ * a concurrent npm install. This is intentionally narrower than every TS2307/TS7016: one
+ * missing module can be a real code defect, while a burst that names a directly-declared package
+ * absent from node_modules is the distinctive shared-tree failure this guard can substantiate.
+ *
+ * @typedef {object} MissingModuleDiagnostic
+ * @property {string | null} file
+ * @property {'TS7016' | 'TS2307'} code
+ * @property {string} module
+ */
+/**
+ * Two matching diagnostics are the minimum signal. A single TS7016 is common for an intentionally
+ * untyped package; two or more diagnostics for a package that the dependency doctor cannot find on
+ * disk is the measured concurrent-install shape (EI-19366483607548056).
+ */
+export const MID_INSTALL_DIAGNOSTIC_MIN: 2;
+/**
  * Per-file quote cap for a REGRESSED file, deliberately larger than the new-file cap of 3.
  *
  * A new file's every error is new, so three lines are a fair sample of one homogeneous set. A
@@ -1034,11 +1099,22 @@ export type PerFileGateResult = {
     ratchetFiles?: PerFileGateEntry[] | undefined;
     brokenFiles?: string[] | undefined;
     /**
-     * - TS1xxx-broken files OUTSIDE the caller's
+     * - Files with TS1xxx hard-fail diagnostics OUTSIDE the caller's
      * `changedFiles` set (EI-19321179234197157). Never gates the verdict — reported so the caller
      * knows tsc's counts for other files may be under/over-reported while these stay broken — but a
-     * parse error in a file the caller did not name must not fail a `--mine`/`--files`-scoped run,
+     * TS1xxx diagnostic in a file the caller did not name must not fail a `--mine`/`--files`-scoped run,
      * mirroring how an unattributed TYPE-error regression is `peerDrift`, not a gate failure.
      */
     unattributedBrokenFiles?: string[] | undefined;
+};
+/**
+ * A module-resolution diagnostic that may be explained by a package being half-written during
+ * a concurrent npm install. This is intentionally narrower than every TS2307/TS7016: one
+ * missing module can be a real code defect, while a burst that names a directly-declared package
+ * absent from node_modules is the distinctive shared-tree failure this guard can substantiate.
+ */
+export type MissingModuleDiagnostic = {
+    file: string | null;
+    code: "TS7016" | "TS2307";
+    module: string;
 };

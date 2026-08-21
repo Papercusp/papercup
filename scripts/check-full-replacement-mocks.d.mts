@@ -66,6 +66,19 @@ export function checkFile({ path, text, protectedModules }: {
     module: any;
     why: any;
 }[];
+/** Find statically identifiable tagged-template getOrgPg doubles and report their shape. */
+export function analyzeOrgPgSqlDoubles(text: any, fileName: any): any[];
+/** Pure check of one file for a definitely missing `.begin` on a tagged-template org fake. */
+export function checkOrgPgSqlDoubles({ path, text }: {
+    path: any;
+    text: any;
+}): {
+    path: any;
+    line: any;
+    spec: any;
+    module: string;
+    why: string;
+}[];
 /**
  * The guard's OWN BLIND SPOT, measured — the population carrying the risky shape on modules
  * the registry does NOT cover.
@@ -138,6 +151,8 @@ export const PROTECTED_MODULES: {
     module: string;
     why: string;
 }[];
+/** The production getOrgPg().sql surface is a tagged-template client with `.begin`. */
+export const ORG_PG_MODULE: "@papercusp/db-org";
 export const FIXTURE_PROTECTED: {
     module: string;
     why: string;
@@ -171,6 +186,18 @@ export namespace EXPOSURE_FIXTURES {
  * violation in that file. The vitest test drives THESE cases, so the two can never drift.
  */
 export const SELF_TESTS: {
+    name: string;
+    path: string;
+    text: string;
+    expect: number;
+}[];
+/**
+ * Fixtures for the @papercusp/db-org transaction-shape guard (WI-40234). Keep these in the
+ * executable checker, rather than in a `.test.ts`: the live census reads tracked test files,
+ * so embedding a deliberately incomplete `vi.mock` in the Vitest guard would make the guard
+ * report its own positive control as a live defect.
+ */
+export const ORG_PG_SQL_SELF_TESTS: {
     name: string;
     path: string;
     text: string;
