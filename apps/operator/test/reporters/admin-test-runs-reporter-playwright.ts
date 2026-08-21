@@ -23,6 +23,11 @@
 import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
 import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
+import {
+  captureWorktreeSnapshot,
+  computeWorktreeDirty,
+  type WorktreeGitSnapshot,
+} from '@papercusp/operator-core/lib/testing-run-store';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
@@ -34,6 +39,7 @@ interface TestRunRow {
   startedAt: Date;
   finishedAt: Date;
   outputTail: string | null;
+  worktreeDirty: boolean;
 }
 
 let _loopLagMonitor: ReturnType<typeof monitorEventLoopDelay> | null = null;
@@ -99,14 +105,16 @@ async function tryGetPg(): Promise<{
   }
 }
 
-async function insertRow(row: TestRunRow): Promise<void> {
+async function insertRow(row: TestRunRow, worktreeAfter: WorktreeGitSnapshot): Promise<void> {
   let branch: string | null = null;
-  let commit: string | null = null;
   try {
     const ctx = await resolveGitContext();
     branch = ctx.branch;
-    commit = ctx.commit;
   } catch { /* fail-soft */ }
+  // Use the post-run snapshot for attribution. The cached resolver's commit
+  // may describe a different tree if git-sync or a peer changed it while the
+  // Playwright run was in flight.
+  const commit = worktreeAfter.commit;
 
   const pg = await tryGetPg();
   if (!pg) return;
@@ -127,10 +135,10 @@ async function insertRow(row: TestRunRow): Promise<void> {
     await Promise.race([
       pg.sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
         VALUES
           (${row.filePath}, 'playwright', ${row.status}, ${row.durationMs}, ${row.startedAt},
-           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb})
+           ${row.finishedAt}, ${row.outputTail}, ${runGroupId}, ${source}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${row.worktreeDirty})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => {
@@ -153,9 +161,12 @@ interface PerFile {
 export default class AdminTestRunsPlaywrightReporter implements Reporter {
   private byFile = new Map<string, PerFile>();
   private pending: Promise<void>[] = [];
+  /** Captured before Playwright begins executing tests. */
+  private worktreeBefore: WorktreeGitSnapshot | null = null;
 
   onBegin(): void {
     ensureLoopLagMonitor();
+    this.worktreeBefore = captureWorktreeSnapshot();
   }
 
   onTestEnd(test: TestCase, result: TestResult): void {
@@ -204,6 +215,16 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
 
   onEnd(): void {
     try {
+      let worktreeAfter: WorktreeGitSnapshot = { commit: null, porcelain: null };
+      try {
+        worktreeAfter = captureWorktreeSnapshot();
+      } catch {
+        // D-007: missing proof of stability is dirty, never a false clean.
+      }
+      const worktreeDirty = computeWorktreeDirty(
+        this.worktreeBefore ?? { commit: null, porcelain: null },
+        worktreeAfter,
+      );
       for (const [file, agg] of this.byFile) {
         try {
           const filePath = toWorkspaceRel(file);
@@ -222,7 +243,8 @@ export default class AdminTestRunsPlaywrightReporter implements Reporter {
               startedAt: new Date(agg.startedAt),
               finishedAt: new Date(agg.finishedAt),
               outputTail,
-            }),
+              worktreeDirty,
+            }, worktreeAfter),
           );
         } catch {
           /* swallow per-file */

@@ -35,10 +35,19 @@ const spawnMock = vi.fn(() => {
   lastChild = makeChild();
   return lastChild;
 });
+const execFileSyncMock = vi.fn();
+const persistSqlMock = vi.fn();
 vi.mock('node:child_process', async (orig) => {
   const actual = await orig<typeof import('node:child_process')>();
-  return { ...actual, spawn: (...a: unknown[]) => spawnMock(...(a as [])) };
+  return {
+    ...actual,
+    spawn: (...a: unknown[]) => spawnMock(...(a as [])),
+    execFileSync: (...a: unknown[]) => execFileSyncMock(...a),
+  };
 });
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: persistSqlMock }),
+}));
 
 type Store = typeof import('./testing-run-store');
 const req = (over: Partial<Parameters<Store['startRun']>[0]> = {}) =>
@@ -48,6 +57,8 @@ let store: Store;
 beforeEach(async () => {
   vi.resetModules();
   spawnMock.mockClear();
+  execFileSyncMock.mockReset();
+  persistSqlMock.mockReset();
   store = await import('./testing-run-store');
 });
 
@@ -189,5 +200,34 @@ describe('persistHarnessTestRuns worktree_dirty (EI-18795303393201472)', () => {
       sql: fakeSql,
     });
     expect(capturedValues.at(-1)).toBe(true);
+  });
+});
+
+describe('fallback persistence worktree snapshots (EI-18795303393201472)', () => {
+  it('uses the post-run commit and marks a run dirty when the tree changes', async () => {
+    const commitAnswers = ['before-sha\n', 'after-sha\n'];
+    const porcelainAnswers = ['', ' M peer-edit.ts\n'];
+    execFileSyncMock.mockImplementation((_command: string, args: string[]) => {
+      if (args.includes('rev-parse')) return commitAnswers.shift();
+      if (args.includes('status')) return porcelainAnswers.shift();
+      return '';
+    });
+    let capturedValues: unknown[] = [];
+    persistSqlMock.mockImplementation((_strings: TemplateStringsArray, ...values: unknown[]) => {
+      capturedValues = values;
+      return Promise.resolve([]);
+    });
+    const previousPersistOptIn = process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+    process.env.PAPERCUSP_TEST_RUNS_PERSIST = '1';
+    try {
+      store.startRun(req({ kind: 'shell' }));
+      lastChild._emitClose(0);
+      await vi.waitFor(() => expect(persistSqlMock).toHaveBeenCalled());
+      expect(capturedValues[10]).toBe('after-sha');
+      expect(capturedValues.at(-1)).toBe(true);
+    } finally {
+      if (previousPersistOptIn === undefined) delete process.env.PAPERCUSP_TEST_RUNS_PERSIST;
+      else process.env.PAPERCUSP_TEST_RUNS_PERSIST = previousPersistOptIn;
+    }
   });
 });
