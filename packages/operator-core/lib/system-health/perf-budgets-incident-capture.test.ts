@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { preserveIncidentCapture } from './perf-budgets';
+import { preserveIncidentCapture, selectIncidentFilesToPrune } from './perf-budgets';
 
 const execFileAsync = promisify(execFile);
 const CAPTURE_SCRIPT = fileURLToPath(
@@ -85,26 +85,95 @@ describe('preserveIncidentCapture', () => {
     expect(files.filter((f) => f.includes('-incident-'))).toHaveLength(1);
   });
 
-  it('bounds the incident set to the newest 100, pruning older ones', async () => {
+  // EI-20985533910345265: the old policy pruned to a flat newest-100 file
+  // COUNT, which — measured live on a host whose infra panel flaps into
+  // `crit` frequently — evicted evidence within HOURS instead of the "days
+  // later" root-cause window EI-12982 exists to guarantee. Retention is now
+  // AGE-based (a count cap remains only as a defense-in-depth backstop), so
+  // these tests prove the age behavior directly instead of re-asserting the
+  // count behavior that caused the regression.
+  it('keeps MANY more than the old 100-file count when every file is recent (age governs, not count)', async () => {
     await writeFile(join(dir, 'src-scheduled.json'), CAPTURE);
-    // Pre-seed 100 incident files with strictly increasing mtimes (oldest first).
-    const base = Date.parse('2026-07-01T00:00:00Z');
-    for (let i = 0; i < 100; i++) {
+    // Pre-seed 150 incident files — well past the old flat cap — but all
+    // within the retention window (a few minutes old).
+    const now = Date.now();
+    for (let i = 0; i < 150; i++) {
       const p = join(dir, `seed-${i}-incident-old.json`);
       await writeFile(p, CAPTURE);
-      const t = new Date(base + i * 1000);
+      const t = new Date(now - (150 - i) * 1000);
       await utimes(p, t, t);
     }
-    // One more preserve call pushes the incident count to 101 — the oldest
-    // seeded file must be pruned back down to 100.
     const out = await preserveIncidentCapture('infra-crit', dir);
     expect(out.preserved).toBe(true);
 
     const files = await readdir(dir);
     const incidents = files.filter((f) => f.includes('-incident-'));
-    expect(incidents).toHaveLength(100);
-    expect(incidents).not.toContain('seed-0-incident-old.json'); // the oldest, pruned
-    expect(incidents).toContain('seed-99-incident-old.json'); // newest seed, kept
+    // All 150 recent seeds + the 1 just preserved survive — nothing was
+    // evicted purely for exceeding the old count.
+    expect(incidents).toHaveLength(151);
+    expect(incidents).toContain('seed-0-incident-old.json');
+    expect(incidents).toContain('seed-149-incident-old.json');
+  });
+
+  it('prunes incident files older than the retention window, regardless of count', async () => {
+    await writeFile(join(dir, 'src-scheduled.json'), CAPTURE);
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const stalePath = join(dir, 'stale-incident-old.json');
+    await writeFile(stalePath, CAPTURE);
+    await utimes(stalePath, new Date(now - 20 * dayMs), new Date(now - 20 * dayMs)); // well past 14d
+    const freshPath = join(dir, 'fresh-incident-old.json');
+    await writeFile(freshPath, CAPTURE);
+    await utimes(freshPath, new Date(now - 1 * dayMs), new Date(now - 1 * dayMs)); // within 14d
+
+    const out = await preserveIncidentCapture('infra-crit', dir);
+    expect(out.preserved).toBe(true);
+
+    const files = await readdir(dir);
+    const incidents = files.filter((f) => f.includes('-incident-'));
+    expect(incidents).not.toContain('stale-incident-old.json'); // aged out
+    expect(incidents).toContain('fresh-incident-old.json'); // within the window
+  });
+});
+
+describe('selectIncidentFilesToPrune (pure retention policy)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const now = Date.parse('2026-08-21T00:00:00Z');
+
+  it('keeps everything within the retention window regardless of count', () => {
+    const entries = Array.from({ length: 500 }, (_, i) => ({
+      path: `f${i}`,
+      mtimeMs: now - i * 1000, // all within the last ~8 minutes
+    }));
+    const toDelete = selectIncidentFilesToPrune(entries, now, { retentionDays: 14, maxFiles: 5000 });
+    expect(toDelete).toEqual([]);
+  });
+
+  it('prunes everything older than the retention window', () => {
+    const entries = [
+      { path: 'old', mtimeMs: now - 20 * DAY },
+      { path: 'boundary-inside', mtimeMs: now - 13 * DAY },
+      { path: 'recent', mtimeMs: now - 1 * DAY },
+    ];
+    const toDelete = selectIncidentFilesToPrune(entries, now, { retentionDays: 14, maxFiles: 5000 });
+    expect(toDelete).toEqual(['old']);
+  });
+
+  it('falls back to a count-based safety cap, oldest-first, when age alone leaves too many', () => {
+    // 10 files, all within the retention window, but the safety cap is 3.
+    const entries = Array.from({ length: 10 }, (_, i) => ({
+      path: `f${i}`,
+      mtimeMs: now - i * 1000, // f0 newest, f9 oldest
+    }));
+    const toDelete = selectIncidentFilesToPrune(entries, now, { retentionDays: 14, maxFiles: 3 });
+    expect(toDelete.sort()).toEqual(['f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9'].sort());
+  });
+
+  it('never mutates the input array', () => {
+    const entries = [{ path: 'a', mtimeMs: now - 20 * DAY }];
+    const copy = [...entries];
+    selectIncidentFilesToPrune(entries, now, { retentionDays: 14, maxFiles: 5000 });
+    expect(entries).toEqual(copy);
   });
 });
 

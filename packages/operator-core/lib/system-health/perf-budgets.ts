@@ -775,12 +775,63 @@ export async function readLatestPerfSignals(dir: string = PERF_BASELINES_DIR): P
   } catch { return null; }
 }
 
-/** Newest N `*-incident-*.json` files kept by {@link preserveIncidentCapture} —
- *  bounded so a genuinely wedged host repeatedly re-triggering the edge (crit →
- *  recover → crit) can't grow the dir unbounded. Generous vs. the routine
- *  KEEP=15 scheduled-capture window because these are meant to survive a
- *  root-cause pass that may happen days later. */
-const INCIDENT_CAPTURE_KEEP = 100;
+/**
+ * Retention window for `*-incident-*.json` forensic snapshots preserved by
+ * {@link preserveIncidentCapture} — TIME-bounded, not count-bounded.
+ *
+ * EI-20985533910345265: the prior policy pruned to a flat newest-N (100) file
+ * COUNT regardless of age. EI-12982's stated purpose is to survive "a
+ * root-cause pass that may happen days later" — but on a host whose infra
+ * panel flaps into `crit` frequently (measured live 2026-08-21: exactly 100
+ * incident files present, the OLDEST dated ~13h earlier — the entire 100-file
+ * budget consumed in under half a day), that count cap silently evicted
+ * evidence within HOURS, defeating the "days later" guarantee the mechanism
+ * exists to provide. The filed bug ("the generator/saturation mechanism still
+ * needs attribution") was unattributable for exactly this reason: by the time
+ * anyone looked, the evidence needed for attribution had already been
+ * evicted. Age is now the PRIMARY retention criterion — anything younger than
+ * this window survives regardless of count. */
+const INCIDENT_CAPTURE_RETENTION_DAYS = 14;
+
+/**
+ * Hard ceiling on file COUNT even within the retention window — the
+ * defense-in-depth backstop against unbounded disk growth if a host stays
+ * pathologically flappy for the WHOLE retention window (a genuinely wedged
+ * host repeatedly re-triggering the edge). Sized generously above the
+ * observed live churn (100 files / ~13h ⇒ ~185/day ⇒ ~2,600 over 14d), so
+ * this is a safety net, not the everyday limiter — the everyday limiter is
+ * age, per the constant above.
+ */
+const INCIDENT_CAPTURE_MAX_FILES = 5000;
+
+/**
+ * PURE: decide which incident-capture files to delete, given every
+ * candidate's path + mtime and the current time. Age-first — anything older
+ * than the retention window is pruned unconditionally — then, ONLY if the
+ * survivors still exceed the safety cap, oldest-first among the survivors.
+ * Exported so the retention policy is unit-testable without touching the
+ * filesystem (the `preserveIncidentCapture` IO wrapper below is the thin
+ * caller). Never mutates `entries`.
+ */
+export function selectIncidentFilesToPrune(
+  entries: ReadonlyArray<{ path: string; mtimeMs: number }>,
+  nowMs: number,
+  opts: { retentionDays?: number; maxFiles?: number } = {},
+): string[] {
+  const retentionMs = (opts.retentionDays ?? INCIDENT_CAPTURE_RETENTION_DAYS) * 24 * 60 * 60 * 1000;
+  const maxFiles = opts.maxFiles ?? INCIDENT_CAPTURE_MAX_FILES;
+  const sorted = [...entries].sort((a, b) => b.mtimeMs - a.mtimeMs); // newest first
+  const toDelete: string[] = [];
+  const survivors: { path: string; mtimeMs: number }[] = [];
+  for (const e of sorted) {
+    if (nowMs - e.mtimeMs > retentionMs) toDelete.push(e.path);
+    else survivors.push(e);
+  }
+  if (survivors.length > maxFiles) {
+    for (const e of survivors.slice(maxFiles)) toDelete.push(e.path);
+  }
+  return toDelete;
+}
 
 /**
  * EI-12982: preserve the LATEST perf-signals-v1 capture as a durably-named
@@ -833,8 +884,8 @@ export async function preserveIncidentCapture(
       return { preserved: false };
     }
 
-    // Bound the incident set the same way capture-perf-signals.sh bounds the
-    // scheduled set — keep only the newest INCIDENT_CAPTURE_KEEP.
+    // Bound the incident set by AGE (see INCIDENT_CAPTURE_RETENTION_DAYS above),
+    // with a count-based safety backstop — never a flat newest-N count alone.
     try {
       const all = await readdir(dir);
       const incidents: { path: string; mtimeMs: number }[] = [];
@@ -845,9 +896,8 @@ export async function preserveIncidentCapture(
           incidents.push({ path: join(dir, f), mtimeMs: st.mtimeMs });
         } catch { /* unreadable — skip */ }
       }
-      incidents.sort((a, b) => b.mtimeMs - a.mtimeMs);
-      for (const stale of incidents.slice(INCIDENT_CAPTURE_KEEP)) {
-        await unlink(stale.path).catch(() => {});
+      for (const stale of selectIncidentFilesToPrune(incidents, Date.now())) {
+        await unlink(stale).catch(() => {});
       }
     } catch { /* pruning is best-effort — never fail the preserve on it */ }
 
