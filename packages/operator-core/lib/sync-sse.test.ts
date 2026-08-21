@@ -56,8 +56,8 @@ afterEach(() => {
 
 async function load() {
   vi.doMock('postgres', () => ({
-      default: () => ({
-        listen: (_ch: string, cb: (raw: string) => void, onListen?: () => void) => {
+    default: () => ({
+      listen: (_ch: string, cb: (raw: string) => void, onListen?: () => void) => {
         if (listenFailuresRemaining > 0) {
           listenFailuresRemaining--;
           return Promise.reject(new Error('simulated LISTEN failure (PG not up yet)'));
@@ -65,10 +65,10 @@ async function load() {
         capturedListen = cb;
         capturedOnListen = onListen ?? null;
         onListen?.();
-          return Promise.resolve();
-        },
-        end: listenEnd,
-      }),
+        return Promise.resolve();
+      },
+      end: listenEnd,
+    }),
   }));
   vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
   vi.doMock('@papercusp/db-org', async (orig) => ({
@@ -331,7 +331,9 @@ describe('boot wiring: hono-host.ts eagerly starts the invalidation LISTEN (EI-6
       path.join(__dirname, '../../../apps/operator/bin/hono-host.ts'),
       'utf8',
     );
-    expect(src).toContain("import { ensureInvalidationListener } from '@papercusp/operator-core/lib/sync-sse'");
+    expect(src).toContain("} from '@papercusp/operator-core/lib/sync-sse'");
+    expect(src).toContain('ensureInvalidationListener');
+    expect(src).toContain('stopInvalidationListener');
     const fnStart = src.indexOf('function startRequestServers');
     expect(fnStart).toBeGreaterThan(-1);
     // The call must live INSIDE startRequestServers, not merely somewhere in the file —

@@ -226,6 +226,7 @@ describe('gracefulHostRecycle', () => {
   });
 
   it('closes additional process resources even when native substrate teardown is skipped', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const exit = vi.fn();
     const closeSubstrate = vi.fn(() => Promise.resolve());
     const closeAdditionalResources = vi.fn(() => Promise.resolve());
@@ -244,6 +245,7 @@ describe('gracefulHostRecycle', () => {
     drain();
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledExactlyOnceWith(75);
+    warnSpy.mockRestore();
   });
 
   // EI-16949: whenever the real substrate teardown is SKIPPED (either the
@@ -609,6 +611,7 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
   });
 
   it('forwards closeAdditionalResources so a SIGTERM closes process-owned LISTEN clients', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const exit = vi.fn();
     const closeSubstrate = vi.fn(() => Promise.resolve());
     const closeAdditionalResources = vi.fn(() => Promise.resolve());
@@ -630,6 +633,7 @@ describe('installGracefulShutdown (D4/P-017 — SIGTERM connection-drain)', () =
     drain();
     await vi.advanceTimersByTimeAsync(0);
     expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+    warnSpy.mockRestore();
   });
 
   it('can drain SIGTERM and then hard-exit without running Node native teardown', async () => {
