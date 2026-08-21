@@ -39,6 +39,17 @@ function commands(section: Array<{ hooks: Array<{ command: string }> }> | undefi
 }
 
 describe('papercusp-worker hooks.json', () => {
+  it('wires the matcher-less PostToolBatch lock-release hook', () => {
+    const batch = hooks.hooks.PostToolBatch as Array<{
+      matcher?: string;
+      hooks: Array<{ command: string }>;
+    }>;
+    expect(commands(batch)).toEqual([
+      '${HOME}/.papercusp/hooks/cc/posttoolbatch-locks-release.sh',
+    ]);
+    expect(batch[0]?.matcher).toBeUndefined();
+  });
+
   it('wires the lock + activity-bridge (coord-folding, EI-11405) PostToolUse hooks', () => {
     const post = commands(hooks.hooks.PostToolUse);
     expect(post.some((c) => c.includes('posttooluse-locks-release.sh'))).toBe(true);

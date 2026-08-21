@@ -429,6 +429,13 @@ describe('install parity — hooks/cc reaches ALL THREE deploy paths', () => {
     // more than one extension in it — otherwise `uncovered` is trivially empty.
     expect(exts.length).toBeGreaterThan(1);
     expect(exts).toContain('.mjs');
+
+    // Claude native edit batches need a separate matcher-less lifecycle hook;
+    // copying the file without registering it would leave the union lock held
+    // until TTL. Pin the standalone installer wiring, not just the copy glob.
+    expect(sh).toContain('CC_POST_BATCH_LOCKS_HOOK');
+    expect(sh).toContain('posttoolbatch-locks-release.sh');
+    expect(sh).toContain("hooks['PostToolBatch'] = arr");
   });
 
   it('2/3 build-desktop-sidecar.sh ships the *.py libs, not just *.sh', () => {

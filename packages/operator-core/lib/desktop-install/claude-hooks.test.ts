@@ -76,13 +76,17 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(matcherOf('pretooluse-generated-file-edit-guard.mjs')).toBe(FILE_WRITE_MATCHER);
     expect(matcherOf('pretooluse-unreserved-migration-guard.mjs')).toBe(FILE_WRITE_MATCHER);
 
-    // PostToolBatch: mid-turn context push (context-injection-audit-2026-07-28 P-015).
+    // PostToolBatch: complete native edit-batch lock release first, then the
+    // mid-turn context push (context-injection-audit-2026-07-28 P-015).
     // ⚠ It lives HERE and not on PreToolUse deliberately (D-027) — PreToolUse only
     // injects additionalContext alongside a permissionDecision, and a context hook
     // emitting 'allow' would blanket auto-approve everything it matched. If a future
     // change moves this back to PreToolUse, it will silently inject nothing.
-    expect(commandsFor(cfg, 'PostToolBatch')).toEqual([`${DEST}/posttoolbatch-midturn-context.sh`]);
-    expect(cfg.hooks.PostToolBatch[0].matcher).toBeUndefined(); // the event takes no matcher
+    expect(commandsFor(cfg, 'PostToolBatch')).toEqual([
+      `${DEST}/posttoolbatch-locks-release.sh`,
+      `${DEST}/posttoolbatch-midturn-context.sh`,
+    ]);
+    expect(cfg.hooks.PostToolBatch.every((entry: any) => entry.matcher === undefined)).toBe(true);
 
     // PostToolUse: lock-release + activity (coord-folding, EI-11405) + workitem-nudge +
     // required-field-strand nudge (EI-19374535041074908) + ts-parse nudge
