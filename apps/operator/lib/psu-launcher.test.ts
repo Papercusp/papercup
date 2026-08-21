@@ -110,6 +110,7 @@ import {
   tryRematerializeFromArchive,
   isClaudeConfigDirLaunchReady,
   ensureInteractiveConfigViaOperator,
+  ompLspArgs,
   roleLaunchArgs,
   suLaunchArgs,
   resolveOmpInjectHookPath,
@@ -2902,6 +2903,59 @@ describe('psu-launcher arg parsing', () => {
   });
 });
 
+/**
+ * P-021 (D-013). `--no-lsp` strips OMP's OWN `lsp` builtin as weak-model
+ * tool-attractor suppression — it is NOT a statement about Papercusp's `lsp.*`
+ * facade. These tests pin the two properties that matter at this layer:
+ *   • DEFAULT UNCHANGED — absent an explicit allow, the builtin is still
+ *     stripped, byte-identical to the pre-P-021 hard-coded literal. That is
+ *     what makes the launcher half of this change a no-op until the server
+ *     side says otherwise.
+ *   • BOTH SITES — the role and su omp branches were two separate literals;
+ *     a change applied to one is a half-applied change.
+ * The safety invariant itself (a local model never gets the builtin) lives
+ * server-side and is pinned in omp-native-lsp-gate.test.ts.
+ */
+describe('ompLspArgs (omp native lsp builtin)', () => {
+  it('strips the builtin by default — absent/false/undefined all mean strip', () => {
+    expect(ompLspArgs(undefined)).toEqual(['--no-lsp']);
+    expect(ompLspArgs(false)).toEqual(['--no-lsp']);
+  });
+
+  it('keeps the builtin only on an explicit boolean true', () => {
+    expect(ompLspArgs(true)).toEqual([]);
+  });
+
+  it('does not truthy-coerce — a stray string never opens the gate', () => {
+    // The value arrives from an env comparison, so anything non-boolean
+    // reaching here is a bug; it must fail closed rather than open.
+    expect(ompLspArgs('1' as unknown as boolean)).toEqual(['--no-lsp']);
+    expect(ompLspArgs(1 as unknown as boolean)).toEqual(['--no-lsp']);
+  });
+
+  it('BOTH omp branches honour it — role and su were separate literals', () => {
+    const role = roleLaunchArgs('omp', { promptFile: '/p.md', allowNativeLsp: true });
+    const su = suLaunchArgs('omp', { promptFile: '/p.md', allowNativeLsp: true });
+    expect(role.args).not.toContain('--no-lsp');
+    expect(su.args).not.toContain('--no-lsp');
+
+    // CONTROL: the same two calls WITHOUT the allow still strip. Without this
+    // the assertions above would pass against a build that dropped `--no-lsp`
+    // unconditionally — the regression this feature could plausibly cause.
+    expect(roleLaunchArgs('omp', { promptFile: '/p.md' }).args).toContain('--no-lsp');
+    expect(suLaunchArgs('omp', { promptFile: '/p.md' }).args).toContain('--no-lsp');
+  });
+
+  it('never emits --no-lsp on non-omp backends (it is an omp flag)', () => {
+    for (const backend of ['claude', 'codex']) {
+      expect(suLaunchArgs(backend, { promptFile: '/p.md' }).args).not.toContain('--no-lsp');
+      expect(
+        suLaunchArgs(backend, { promptFile: '/p.md', allowNativeLsp: true }).args,
+      ).not.toContain('--no-lsp');
+    }
+  });
+});
+
 describe('roleLaunchArgs (interactive role session)', () => {
   const files = { promptFile: '/lc/session-7.md', mcpJsonPath: '/proj/.mcp.json' };
 
@@ -3088,6 +3142,12 @@ describe('roleLaunchArgs (interactive role session)', () => {
     const { bin, args } = roleLaunchArgs('omp', files);
     expect(bin).toBe('omp');
     expect(args).toEqual(['--approval-mode', 'yolo', '--no-lsp', '--append-system-prompt', '/lc/session-7.md']);
+  });
+
+  it('omp: keeps the native lsp builtin when the server-resolved gate allows it (P-021/D-013)', () => {
+    const { args } = roleLaunchArgs('omp', { ...files, allowNativeLsp: true });
+    expect(args).not.toContain('--no-lsp');
+    expect(args).toEqual(['--approval-mode', 'yolo', '--append-system-prompt', '/lc/session-7.md']);
   });
 
   it('omp: loads the coordination extension (-e) when a coordExtPath is supplied (lock + activity bridge)', () => {
