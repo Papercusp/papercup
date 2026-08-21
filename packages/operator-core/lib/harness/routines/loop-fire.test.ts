@@ -7,6 +7,7 @@ import {
   renderLoopCheckpointBlock,
   renderLoopWakeText,
   renderLoopWallsBlock,
+  renderLoopChecksBlock,
   loopCheckpointStaleMs,
   decideLoopAwaitSuppression,
   LOOP_WAKE_FULL_TEMPLATE_EVERY,
@@ -68,6 +69,18 @@ const baseInput = {
   targetOwnerId: 'su-pinned',
   payloadTemplate: null as Record<string, unknown> | null,
 };
+
+describe('renderLoopChecksBlock — contested verification is explicit on wake', () => {
+  it('labels contested evidence ⚠ so a successor is told to re-check it', () => {
+    const out = renderLoopChecksBlock([
+      { claim: 'the suite is green', recheck: 'run the suite', contested: 'STILL RUNNING at compaction' },
+    ]);
+    expect(out).toContain('⚠ CONTESTED');
+    expect(out).toContain('• ⚠ ');
+    expect(out).toContain('STILL RUNNING');
+    expect(out).not.toContain('✓ verified w/ evidence · ? PREDICTED');
+  });
+});
 
 describe('fireLoopWake — the warm-wake fire (B-LOOP-3)', () => {
   it('wakes the SAME pinned session warm (the loop-continuity invariant)', async () => {
