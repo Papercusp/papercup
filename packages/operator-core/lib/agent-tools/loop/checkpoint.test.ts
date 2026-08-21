@@ -17,10 +17,15 @@ const readInbox = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const readWatermark = vi.fn(async (..._a: unknown[]) => ({ messages_since_ts: '' }));
 const orgSql = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const currentContextTokensForOwner = vi.fn(async (..._a: unknown[]) => null as number | null);
-const defaultCompactionLimitForSpec = vi.fn(() => 100);
+const defaultCompactionLimitForSpec = vi.fn(
+  (..._a: Parameters<typeof import('../../agent-config-constants').defaultCompactionLimitForSpec>) => 100,
+);
 const listActiveAwaits = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const getModes = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
-const selfCompactionAvailability = vi.fn(() => ({ available: false }));
+const selfCompactionAvailability = vi.fn(
+  (..._a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailability>) =>
+    ({ available: false }),
+);
 const readFleetWindDownLoopEndAuthorization = vi.fn(async (..._a: unknown[]) => null as boolean | null);
 const withBoundedTimeout = vi.fn(
   async (..._a: unknown[]): Promise<{ value: unknown; degraded: boolean; elapsedMs: number }> =>
@@ -114,7 +119,9 @@ vi.mock('../../compaction-usage', async (importOriginal) => ({
 }));
 vi.mock('../../agent-config-constants', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  defaultCompactionLimitForSpec: (...a: unknown[]) => defaultCompactionLimitForSpec(...a),
+  defaultCompactionLimitForSpec: (
+    ...a: Parameters<typeof import('../../agent-config-constants').defaultCompactionLimitForSpec>
+  ) => defaultCompactionLimitForSpec(...a),
 }));
 vi.mock('../../modes/store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -122,7 +129,9 @@ vi.mock('../../modes/store', async (importOriginal) => ({
 }));
 vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  selfCompactionAvailability: (...a: unknown[]) => selfCompactionAvailability(...a),
+  selfCompactionAvailability: (
+    ...a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailability>
+  ) => selfCompactionAvailability(...a),
 }));
 vi.mock('../coordination/tools/continuation-gate', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
