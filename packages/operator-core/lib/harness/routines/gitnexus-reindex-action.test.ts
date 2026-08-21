@@ -23,6 +23,7 @@ import {
   isOrphanShadow,
   isOrphanWal,
   cleanCrashResidue,
+  judgeCanary,
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
   decideGitnexusHealthUpdate,
@@ -317,6 +318,76 @@ describe('cleanCrashResidue', () => {
     expect(result.cleaned).toBe(false);
     expect(result.kind).toBe('none');
     expect(result.removed).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P-004 — the semantic canary. Pure policy, no graph and no subprocess.
+// ---------------------------------------------------------------------------
+describe('judgeCanary', () => {
+  const HEALTHY: Parameters<typeof judgeCanary>[0] = {
+    fileCount: 19479,
+    symbolCount: 190707,
+    callEdgeCount: 380497,
+    roundTripOk: true,
+    embeddings: 0,
+  };
+
+  it('passes a healthy graph', () => {
+    const v = judgeCanary(HEALTHY);
+    expect(v.healthy).toBe(true);
+    expect(v.summary).toContain('canary OK');
+  });
+
+  it('does NOT fail on 0 embeddings — a known, accepted condition (WI-35557)', () => {
+    // A canary that fires on an accepted state gets muted, and the mute takes the real
+    // signal with it. Vector status is reported, never fatal.
+    const v = judgeCanary({ ...HEALTHY, embeddings: 0 });
+    expect(v.healthy).toBe(true);
+    expect(v.probes.find((p) => p.name === 'vector-search')!.detail).toContain('EXPECTED');
+  });
+
+  it('CALIBRATION: fails when the graph is unreadable, and says so as UNREADABLE not EMPTY', () => {
+    // THE OUTAGE, in one assertion. A segfaulting read returns no rows, which is
+    // trivially mistaken for "the graph is empty". Those need different responses:
+    // empty means re-index, unreadable means recover the crash residue first.
+    const v = judgeCanary({ ...HEALTHY, fileCount: null });
+    expect(v.healthy).toBe(false);
+    expect(v.summary).toContain('graph-answers');
+    expect(v.probes.find((p) => p.name === 'graph-answers')!.detail).toContain('unreadable');
+    expect(v.probes.find((p) => p.name === 'graph-answers')!.detail).toContain('NOT merely empty');
+  });
+
+  it('fails a genuinely empty graph too, distinctly from an unreadable one', () => {
+    const v = judgeCanary({ ...HEALTHY, fileCount: 0 });
+    expect(v.healthy).toBe(false);
+    expect(v.probes.find((p) => p.name === 'graph-answers')!.detail).toBe('0 files');
+  });
+
+  it('fails when call edges are missing — "who calls this" is the capability agents come for', () => {
+    const v = judgeCanary({ ...HEALTHY, callEdgeCount: 0 });
+    expect(v.healthy).toBe(false);
+    expect(v.summary).toContain('call-edges');
+  });
+
+  it('fails when a symbol PRESENT in the graph will not resolve through the lookup path', () => {
+    // Data intact, read path broken — invisible to every count-based check.
+    const v = judgeCanary({ ...HEALTHY, roundTripOk: false });
+    expect(v.healthy).toBe(false);
+    expect(v.probes.find((p) => p.name === 'symbol-round-trip')!.detail).toContain('read path is broken');
+  });
+
+  it('fails rather than passes when the round trip could not be attempted at all', () => {
+    // Unknown must not read as OK — the same in-band rule as the freshness metadata.
+    const v = judgeCanary({ ...HEALTHY, roundTripOk: null });
+    expect(v.healthy).toBe(false);
+    expect(v.probes.find((p) => p.name === 'symbol-round-trip')!.detail).toContain('not attempted');
+  });
+
+  it('reports every failing probe, not just the first', () => {
+    const v = judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, roundTripOk: null, embeddings: null });
+    expect(v.healthy).toBe(false);
+    expect(v.summary).toContain('4/5');
   });
 });
 
