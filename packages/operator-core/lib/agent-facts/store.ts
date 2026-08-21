@@ -518,6 +518,36 @@ export type AssertFactResult = AgentFact & {
    * ranking, and whether the next assert into this scope destroys it.
    */
   survival?: FactSurvival;
+  /**
+   * P-006 / D-011: repairs this write applied to a recoverable caller intent, instead of
+   * refusing it. Absent when the input needed no repair — never an empty object, matching
+   * the `evicted` convention above, so `if (result.normalized)` reads correctly.
+   *
+   * This field is the whole reason the normalization is legitimate rather than a surprise:
+   * a silent repair teaches the caller nothing and they keep making the same call forever.
+   */
+  normalized?: FactNormalization;
+};
+
+/**
+ * What {@link assertFact} repaired rather than refused (P-006 / D-011).
+ *
+ * Each field is stated as WHAT WAS INFERRED / CHANGED, not merely that something happened,
+ * so the receipt is actionable on its own without re-reading the tool schema.
+ */
+export type FactNormalization = {
+  /**
+   * `subjectVolatile:true` was inferred because `measuredAt` was supplied without it.
+   * Carries the consequence, not just the flag: the fact is now a SNAPSHOT with a
+   * bounded TTL, which is a materially different lifetime from an ordinary fact.
+   */
+  subjectVolatileInferred?: true;
+  /** The ttlSec originally requested, before the volatile ceiling clamped it. */
+  ttlClampedFrom?: number;
+  /** The ceiling actually applied. */
+  ttlClampedTo?: number;
+  /** One line a caller can act on, assembled from whichever repairs fired. */
+  note: string;
 };
 
 /**
@@ -1102,18 +1132,36 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const body = clampFactBody(input.body);
   if (!body) throw new InvalidInputError('facts:assert — body required');
-  const subjectVolatile = input.subjectVolatile === true;
+  const measuredAtInput = input.measuredAt?.trim() || null;
+
+  /**
+   * P-006 / D-011 — NORMALIZE A RECOVERABLE INTENT INSTEAD OF REFUSING IT.
+   *
+   * "This is a volatile snapshot" is ONE intent that the schema makes a caller express
+   * across THREE co-varying fields (subjectVolatile + measuredAt + a <=15min ttlSec), and
+   * every two-of-three combination used to be a hard refusal that stored NOTHING.
+   * Measured over 14 days: 41.0% of 7,639 calls rejected, across 576 distinct agents —
+   * `measuredAt` without `subjectVolatile` alone accounted for 385 rejections from 192
+   * DISTINCT agents. That many agents do not independently misread one field; the shape
+   * was the defect.
+   *
+   * The line adopted (D-011): repair what is UNAMBIGUOUS and deterministic, keep refusing
+   * what is ambiguous or whose repair would manufacture a falsehood.
+   */
+  const volatileInferred = input.subjectVolatile !== true && measuredAtInput !== null;
+  const subjectVolatile = input.subjectVolatile === true || volatileInferred;
   const capPartition: FactCapPartition = subjectVolatile ? 'volatile' : 'ordinary';
   const cap = factCapFor(capPartition);
-  const measuredAtInput = input.measuredAt?.trim() || null;
-  if (subjectVolatile && !measuredAtInput) {
+
+  // KEEP REFUSING. Defaulting measuredAt to now() is the one repair available here, and it
+  // would stamp a sample of unknown age as fresh — precisely the lie `measuredAt` exists to
+  // prevent. A caller who marked the subject volatile is telling us the value moves; only
+  // they know when it was read. Correct to refuse even though it costs ~44 agents.
+  if (input.subjectVolatile === true && !measuredAtInput) {
     throw new InvalidInputError(
-      'facts:assert — subjectVolatile:true requires measuredAt (the ISO timestamp of the sample)',
-    );
-  }
-  if (!subjectVolatile && measuredAtInput) {
-    throw new InvalidInputError(
-      'facts:assert — measuredAt is only meaningful with subjectVolatile:true; mark the subject volatile or omit the timestamp',
+      'facts:assert — subjectVolatile:true requires measuredAt (the ISO timestamp of the sample). ' +
+        'It is NOT defaulted to now(): that would stamp a sample of unknown age as fresh, which is ' +
+        'the exact misreading measuredAt exists to prevent.',
     );
   }
   let measurement: FactMeasurement | null = null;
@@ -1127,11 +1175,26 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     }
     measurement = { subjectVolatile: true, measuredAt: new Date(measuredAtMs).toISOString() };
   }
-  if (subjectVolatile && input.ttlSec != null && input.ttlSec > FACT_VOLATILE_MAX_TTL_SEC) {
-    throw new InvalidInputError(
-      `facts:assert — a volatile measurement must use ttlSec <= ${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes); ` +
-        `the requested ${input.ttlSec}-second TTL would leave a moving snapshot in the standing-facts fold too long`,
-    );
+  /**
+   * P-006 / D-011 — CLAMP, do not refuse. 676 rejections from 149 distinct agents, and at
+   * least five separately-filed work-items reporting it as a bug (EI-21067601687722994,
+   * EI-20497443937803976, EI-21034891637991771, EI-20418039553264569, EI-20510170202088917)
+   * — five independent reporters is a design signal, not five mistakes.
+   *
+   * Safe to normalize because the clamp only ever SHORTENS a TTL: the ceiling exists to stop
+   * a moving snapshot lingering in the standing-facts fold, and clamping enforces exactly
+   * that. The old refusal enforced it too — by storing nothing at all, which serves the
+   * caller strictly worse while protecting nothing extra.
+   *
+   * Disclosed, never silent: `ttlClampedFrom` is returned so the caller learns the ceiling
+   * (that is what makes this a teaching normalization rather than a surprise), and a
+   * deliberate long-lived fact is still available by simply not marking it volatile.
+   */
+  let ttlClampedFrom: number | null = null;
+  let effectiveTtlSec = input.ttlSec ?? null;
+  if (subjectVolatile && effectiveTtlSec != null && effectiveTtlSec > FACT_VOLATILE_MAX_TTL_SEC) {
+    ttlClampedFrom = effectiveTtlSec;
+    effectiveTtlSec = FACT_VOLATILE_MAX_TTL_SEC;
   }
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
@@ -1157,10 +1220,13 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // 90 days. Active governance is refreshed by stable-key re-assertion; stale
   // governance becomes eligible for the existing expiry reaper instead of
   // growing the deterministic orient fold forever.
+  // P-006 / D-011: reads `effectiveTtlSec`, NOT `input.ttlSec` — that is what makes the
+  // volatile clamp above actually bind. Outside the clamped case the two are identical, so
+  // every pre-existing TTL path is unchanged.
   const ttl = subjectVolatile
-    ? (input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_VOLATILE_MAX_TTL_SEC)
-    : input.ttlSec && input.ttlSec > 0
-      ? input.ttlSec
+    ? (effectiveTtlSec && effectiveTtlSec > 0 ? effectiveTtlSec : FACT_VOLATILE_MAX_TTL_SEC)
+    : effectiveTtlSec && effectiveTtlSec > 0
+      ? effectiveTtlSec
       : input.kind === 'convention'
         ? FACT_CONVENTION_DEFAULT_TTL_SEC
         : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
@@ -1449,6 +1515,34 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                   AND id = ${writtenId}))
     RETURNING key, confidence, expires_at, created_by`;
   const fact = rowToFact(rows[0]) as AssertFactResult;
+
+  // P-006 / D-011: disclose every repair. Attached only when something was actually
+  // repaired, so `if (result.normalized)` stays a correct read on the common path.
+  if (volatileInferred || ttlClampedFrom !== null) {
+    const parts: string[] = [];
+    if (volatileInferred) {
+      parts.push(
+        'subjectVolatile:true was INFERRED because you supplied measuredAt without it — ' +
+          'this fact is stored as a SNAPSHOT with a bounded TTL, not an ordinary fact. ' +
+          'Omit measuredAt if you meant a durable claim.',
+      );
+    }
+    if (ttlClampedFrom !== null) {
+      parts.push(
+        `ttlSec was CLAMPED from ${ttlClampedFrom}s to ${FACT_VOLATILE_MAX_TTL_SEC}s: a volatile ` +
+          'snapshot may not linger in the standing-facts fold. For a longer-lived claim, assert the ' +
+          'invariant conclusion WITHOUT subjectVolatile and point at the live source instead.',
+      );
+    }
+    fact.normalized = {
+      ...(volatileInferred ? { subjectVolatileInferred: true as const } : {}),
+      ...(ttlClampedFrom !== null
+        ? { ttlClampedFrom, ttlClampedTo: FACT_VOLATILE_MAX_TTL_SEC }
+        : {}),
+      note: parts.join(' '),
+    };
+  }
+
   if (evictedRows.length > 0) {
     // Dedupe by key. The UPDATE matches on (workspace_id, scope, ref, key), so a
     // key carrying more than one live row would otherwise be reported twice —
