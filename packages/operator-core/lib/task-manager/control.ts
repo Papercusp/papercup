@@ -23,7 +23,7 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readProcessIdentity } from '../process-identity';
+import { linuxProcStateFromStat, readProcessIdentity } from '../process-identity';
 import { absCgroupDir, nodeCgroupFs, walkCgroupTree, type CgroupFs } from './cgroup-read';
 import { closeTask, getSubtree, getTask } from './store';
 import { isLiveOwnedState, taskIdFromScopeUnit, type TaskRow } from './types';
@@ -299,14 +299,14 @@ export async function killTask(taskId: string, opts: KillTaskOptions = {}): Prom
     // otherwise unkillable descendant can survive both SIGTERM and an escalated
     // SIGKILL. Re-probe (bounded, not wall-clock — see waitForScopeEmpty) before
     // reporting anything, and never close the row as `killed` while it is not.
-    const { empty, survivors } = await waitForScopeEmpty(row, d);
+    const { empty, survivors, residue } = await waitForScopeEmpty(row, d);
     if (!empty) {
       return {
         ok: false,
         taskId,
         action: 'kill',
         error: 'incomplete',
-        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it`,
+        detail: `scope ${row.scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — task left LIVE (not closed) so a retry or a fresh listing can still find it${residue ? describeResidue(residue) : ''}`,
       };
     }
     if (reapingResidue) {
@@ -401,14 +401,14 @@ export async function killScopeUnit(
     }
   }
 
-  const { empty, survivors } = await waitForCgroupEmpty(resolved.cgroupPath, d);
+  const { empty, survivors, residue } = await waitForCgroupEmpty(resolved.cgroupPath, d);
   if (!empty) {
     return {
       ok: false,
       scopeUnit,
       action,
       error: 'incomplete',
-      detail: `scope ${scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — no ledger row was changed`,
+      detail: `scope ${scopeUnit} signalled ${signal}${escalated ? ' (escalated to SIGKILL)' : ''} but ${survivors} process(es) still alive after the verification window — no ledger row was changed${residue ? describeResidue(residue) : ''}`,
     };
   }
   return {
@@ -428,43 +428,123 @@ export async function killScopeUnit(
 const REPROBE_RETRIES = 5;
 const REPROBE_POLL_MS = 100;
 
-/** Deep pid count under a task's cgroup — walks nested child cgroups too (unlike
- *  a bare `readCgroupProcs`, which only reads the ONE directory named by
+/** Deep pid SET under a task's cgroup — walks nested child cgroups too (unlike a
+ *  bare `readCgroupProcs`, which only reads the ONE directory named by
  *  `cgroupPath` and would miss anything a descendant delegated into a sub-cgroup
  *  of its own). This is the same walk `processes:list` uses to enumerate what is
  *  actually alive, so "did the kill work" and "what's running" can't disagree. */
-function countCgroupProcesses(cgroupPath: string | null, d: ReturnType<typeof deps>): number {
-  if (!cgroupPath) return 0;
+function collectCgroupPids(cgroupPath: string | null, d: ReturnType<typeof deps>): Set<number> {
   const pids = new Set<number>();
+  if (!cgroupPath) return pids;
   for (const node of walkCgroupTree(absCgroupDir(cgroupPath), d.fs)) {
     for (const pid of node.pids) pids.add(pid);
   }
-  return pids.size;
+  return pids;
+}
+
+function countCgroupProcesses(cgroupPath: string | null, d: ReturnType<typeof deps>): number {
+  return collectCgroupPids(cgroupPath, d).size;
 }
 
 function countScopeProcesses(row: TaskRow, d: ReturnType<typeof deps>): number {
   return countCgroupProcesses(row.cgroupPath ?? null, d);
 }
 
+/** Human label for a `/proc/<pid>/stat` state letter (`man proc`, `/proc/pid/stat`).
+ *  Unrecognised/unreadable states fall through to `residueLabel`'s own default —
+ *  never invented here. */
+const PROC_STATE_LABEL: Record<string, string> = {
+  R: 'running',
+  S: 'sleeping',
+  D: 'uninterruptible-sleep',
+  Z: 'zombie',
+  T: 'stopped',
+  t: 'trace-stopped',
+  X: 'dead',
+  x: 'dead',
+  I: 'idle',
+  W: 'paging',
+};
+
+function residueLabel(state: string | null): string {
+  if (state === null) return 'unknown';
+  return PROC_STATE_LABEL[state] ?? `state-${state}`;
+}
+
+/** EI-21065795494500135: a cgroup that survives verification must never be
+ *  reported as a bare, unexplained survivor count — that leaves an agent unable
+ *  to tell "still finishing up, retry" from "this can NEVER drain, stop asking".
+ *  Reads each survivor's kernel state and buckets it into an actionable summary.
+ *  Diagnostic-only: a state that fails to read is `null` -> "unknown", never
+ *  treated as gone (cgroup membership remains the sole liveness signal). */
+export interface ResidueBreakdown {
+  survivors: number;
+  byLabel: Record<string, number>;
+  /** Every survivor is a zombie: SIGKILL cannot reach an already-dead process —
+   *  further escalation is pointless; something must wait() on its parent. */
+  allZombie: boolean;
+  /** At least one survivor is blocked in the kernel (usually I/O); the signal is
+   *  queued and only delivered once that syscall returns. */
+  anyUninterruptible: boolean;
+}
+
+function summarizeResidue(pids: ReadonlySet<number>, d: ReturnType<typeof deps>): ResidueBreakdown {
+  const byLabel: Record<string, number> = {};
+  let zombieCount = 0;
+  let uninterruptibleCount = 0;
+  for (const pid of pids) {
+    const stat = d.fs.readFile(`/proc/${pid}/stat`);
+    const state = stat == null ? null : linuxProcStateFromStat(stat);
+    const label = residueLabel(state);
+    byLabel[label] = (byLabel[label] ?? 0) + 1;
+    if (state === 'Z') zombieCount++;
+    if (state === 'D') uninterruptibleCount++;
+  }
+  return {
+    survivors: pids.size,
+    byLabel,
+    allZombie: pids.size > 0 && zombieCount === pids.size,
+    anyUninterruptible: uninterruptibleCount > 0,
+  };
+}
+
+/** Renders a `ResidueBreakdown` as the trailing clause of an `incomplete` detail
+ *  string — the breakdown plus, where it changes what the caller should DO next,
+ *  one line of guidance. */
+function describeResidue(r: ResidueBreakdown): string {
+  const breakdown = Object.entries(r.byLabel)
+    .sort((a, b) => b[1] - a[1])
+    .map(([label, n]) => `${n} ${label}`)
+    .join(', ');
+  const advice = r.allZombie
+    ? ' — ALL zombie: a signal cannot reach an already-dead process; this scope will not drain until something reaps its parent (its own leader, or systemd once it notices) — re-escalating will not help'
+    : r.anyUninterruptible
+      ? ' — includes uninterruptible-sleep process(es): blocked inside the kernel (usually I/O); the signal is queued and is delivered only once that syscall returns'
+      : '';
+  return ` [residue: ${breakdown}${advice}]`;
+}
+
 async function waitForCgroupEmpty(
   cgroupPath: string,
   d: ReturnType<typeof deps>,
-): Promise<{ empty: boolean; survivors: number }> {
-  let survivors = countCgroupProcesses(cgroupPath, d);
-  for (let i = 0; i < REPROBE_RETRIES && survivors > 0; i++) {
+): Promise<{ empty: boolean; survivors: number; residue?: ResidueBreakdown }> {
+  let pids = collectCgroupPids(cgroupPath, d);
+  for (let i = 0; i < REPROBE_RETRIES && pids.size > 0; i++) {
     await d.sleep(REPROBE_POLL_MS);
-    survivors = countCgroupProcesses(cgroupPath, d);
+    pids = collectCgroupPids(cgroupPath, d);
   }
-  return { empty: survivors === 0, survivors };
+  if (pids.size === 0) return { empty: true, survivors: 0 };
+  return { empty: false, survivors: pids.size, residue: summarizeResidue(pids, d) };
 }
 
 /** Re-probe up to REPROBE_RETRIES times (REPROBE_POLL_MS apart) for the scope to
- *  actually empty. Returns the LAST observed survivor count so a non-empty
- *  outcome can be reported honestly instead of as a bare "signalled". */
+ *  actually empty. Returns the LAST observed survivor count (plus a residue
+ *  diagnostic when non-empty) so a non-empty outcome can be reported honestly
+ *  instead of as a bare "signalled". */
 async function waitForScopeEmpty(
   row: TaskRow,
   d: ReturnType<typeof deps>,
-): Promise<{ empty: boolean; survivors: number }> {
+): Promise<{ empty: boolean; survivors: number; residue?: ResidueBreakdown }> {
   return waitForCgroupEmpty(row.cgroupPath ?? '', d);
 }
 
