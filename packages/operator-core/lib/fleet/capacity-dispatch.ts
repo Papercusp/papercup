@@ -131,6 +131,60 @@ export interface AccountPoolAvailability {
    * the pool, was wrong). Optional, same fail-safe-omit contract as the other optional fields here.
    */
   blindCount?: number;
+  /**
+   * Per-account reset terms used to identify the constraint that gates the earliest recovery. Counts
+   * alone are only a marginal fallback: one account may be both edge-throttled and usage-walled, so
+   * the count with the larger population is not necessarily the term that actually binds capacity.
+   */
+  accountBindingTerms?: AccountBindingTerms[];
+}
+
+export type CapacityBindingCause = 'edge-throttle' | 'usage-wall' | 'rate-pause';
+
+/** Active reset terms for one account, projected from AccountStatusRow by the capacity reader. */
+export interface AccountBindingTerms {
+  id: string;
+  /** Binding 5h/7d usage-window reset, when this account is usage-walled. */
+  usageResetAt?: number;
+  /** Live edge-throttle cooldown reset, when this account is edge-throttled. */
+  edgeThrottleResetAt?: number;
+  /** Bounded local rate-governor pause reset, when this account is rate-paused. */
+  ratePausedUntil?: number;
+}
+
+const BINDING_CAUSE_TIE_PRIORITY: Record<CapacityBindingCause, number> = {
+  // A usage wall is a non-escalating quota diagnosis and is the safest tie-break when two terms
+  // recover at the same instant. An edge-throttle tie must never manufacture an owner escalation.
+  'usage-wall': 3,
+  'rate-pause': 2,
+  'edge-throttle': 1,
+};
+
+/**
+ * PURE: identify the cause on the account(s) that recover first. An account's binding term is the
+ * latest of its active reset terms; the pool's gating account is the one with the earliest such
+ * recovery. Equal reset times use the non-escalating cause priority above.
+ */
+export function deriveCapacityBindingCause(accounts: AccountBindingTerms[]): CapacityBindingCause | null {
+  const gates = accounts.flatMap((account) => {
+    const terms: Array<{ cause: CapacityBindingCause; resetAt: number }> = [
+      { cause: 'usage-wall', resetAt: account.usageResetAt ?? 0 },
+      { cause: 'edge-throttle', resetAt: account.edgeThrottleResetAt ?? 0 },
+      { cause: 'rate-pause', resetAt: account.ratePausedUntil ?? 0 },
+    ].filter((term) => Number.isFinite(term.resetAt) && term.resetAt > 0);
+    if (terms.length === 0) return [];
+    const bindingResetAt = Math.max(...terms.map((term) => term.resetAt));
+    const bindingCause = terms
+      .filter((term) => term.resetAt === bindingResetAt)
+      .sort((a, b) => BINDING_CAUSE_TIE_PRIORITY[b.cause] - BINDING_CAUSE_TIE_PRIORITY[a.cause])[0].cause;
+    return [{ bindingResetAt, bindingCause }];
+  });
+  if (gates.length === 0) return null;
+  const earliestRecoveryAt = Math.min(...gates.map((gate) => gate.bindingResetAt));
+  return gates
+    .filter((gate) => gate.bindingResetAt === earliestRecoveryAt)
+    .sort((a, b) => BINDING_CAUSE_TIE_PRIORITY[b.bindingCause] - BINDING_CAUSE_TIE_PRIORITY[a.bindingCause])[0]
+    .bindingCause;
 }
 
 /** One account's edge-throttle state, as read at ONE point in time — the pure input to
@@ -516,7 +570,7 @@ export interface CapacityReport {
    *  When true, `factor` is forced to 0, `recommendedHeadroom` to the floor, and `advice` is the loud hold. */
   poolExhausted: boolean;
   /** Why the usable set is empty, when poolExhausted is true. */
-  exhaustionReason: 'session-override' | 'edge-throttle' | 'usage-wall' | 'unknown' | null;
+  exhaustionReason: 'session-override' | 'edge-throttle' | 'usage-wall' | 'rate-pause' | 'unknown' | null;
   /** Real usable accounts (from the account-pool projection) that are `sustainedlyLimited`, when supplied.
    *  null when no cross-check was passed or the accountAvailability omitted the count (EI-18791793869559327). */
   sustainedlyLimitedAccounts: number | null;
@@ -665,6 +719,7 @@ export function buildCapacityReport(
     acct?.sessionOverride != null &&
     acct.overrideExcludedCount === acct.total &&
     acct.total > 0;
+  const bindingCause = acct?.accountBindingTerms ? deriveCapacityBindingCause(acct.accountBindingTerms) : null;
   // EI-18791793869559327: `poolExhausted` is a binary all-dead check (usable<=0) against a failure mode
   // that is fundamentally gradual — an account can be fully `usable` (not walled, not edge-throttled) and
   // still be `sustainedlyLimited` (the rate governor's own "repeatedly hitting penalties" verdict, already
@@ -723,10 +778,20 @@ export function buildCapacityReport(
         `this is not quota exhaustion.`
       );
     }
-    const edge = acct!.edgeThrottledCount ?? 0;
-    const wall = acct!.usageWalledCount ?? 0;
-    if (edge === 0 && wall === 0) return null; // no breakdown supplied → unchanged generic phrasing
-    if (edge > 0 && edge >= wall) {
+    const bindingTerms = acct!.accountBindingTerms ?? [];
+    const edge = acct!.edgeThrottledCount ?? bindingTerms.filter((terms) => terms.edgeThrottleResetAt != null).length;
+    const wall = acct!.usageWalledCount ?? bindingTerms.filter((terms) => terms.usageResetAt != null).length;
+    const ratePause = acct!.accountBindingTerms
+      ? bindingTerms.filter((terms) => terms.ratePausedUntil != null).length
+      : 0;
+    // Counts are only a marginal fallback: they cannot prove which constraint's reset actually gates
+    // recovery when an account can be both edge-throttled and usage-walled. Use the per-account binding
+    // term when the reader supplied one; retain the legacy count rule for older callers/tests.
+    const countBasedCause: CapacityBindingCause | null =
+      edge > 0 && edge > wall ? 'edge-throttle' : wall > 0 ? 'usage-wall' : null;
+    const cause = bindingCause ?? countBasedCause;
+    if (cause == null) return null; // no breakdown supplied → unchanged generic phrasing
+    if (cause === 'edge-throttle') {
       // EI-18683773458136367: a bare edge-throttled COUNT proves neither "shared/down egress IP" nor
       // "escalate to the owner" — both are falsifiable claims that need the shared-egress evidence
       // below. `sharedEgress === false` (proven DISTINCT egress IPs among the throttled accounts) is
@@ -803,6 +868,12 @@ export function buildCapacityReport(
         `its own; escalate rather than waiting for a quota reset.`
       );
     }
+    if (cause === 'rate-pause') {
+      return (
+        ` — dominant cause: ${ratePause}/${acct!.total} rate-paused (bounded local rate-governor cooldowns) ` +
+        `→ re-read shortly as the pauses clear; no owner/egress escalation needed.`
+      );
+    }
     return (
       ` — dominant cause: ${wall}/${acct!.total} usage-walled (their own 5h/7d budget window is at cap) ` +
       `→ this clears on the window reset; adding accounts or waiting is the fix, no infra escalation needed.`
@@ -859,15 +930,13 @@ export function buildCapacityReport(
 
   const edgeCount = acct?.edgeThrottledCount ?? 0;
   const wallCount = acct?.usageWalledCount ?? 0;
+  const countBasedCause: CapacityBindingCause | null =
+    edgeCount > 0 && edgeCount > wallCount ? 'edge-throttle' : wallCount > 0 ? 'usage-wall' : null;
   const exhaustionReason: CapacityReport['exhaustionReason'] = !poolExhausted
     ? null
     : sessionOverrideExhausted
       ? 'session-override'
-      : edgeCount > 0 && edgeCount >= wallCount
-        ? 'edge-throttle'
-        : wallCount > 0
-          ? 'usage-wall'
-          : 'unknown';
+      : bindingCause ?? countBasedCause ?? 'unknown';
 
   return {
     reachable: true,

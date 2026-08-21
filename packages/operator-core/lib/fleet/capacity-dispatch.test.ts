@@ -10,6 +10,7 @@ import {
   buildFleetSizingAdvisory,
   buildCapacityReport,
   deriveEdgeThrottleEvidence,
+  deriveCapacityBindingCause,
   egressIdentityOf,
   DEFAULT_SHARED_EGRESS_IDENTITY,
 } from './capacity-dispatch';
@@ -338,7 +339,7 @@ test('WI-36943 — poolExhausted does NOT escalate an egress fault when traffic 
   };
   const accountAvailability = {
     provider: 'claude', total: 3, available: 0, usable: 0,
-    edgeThrottledCount: 1, usageWalledCount: 1, // 1/3 edge-throttled, 1/3 usage-walled → 1/3 (aviynw10) is neither
+    edgeThrottledCount: 1, usageWalledCount: 0, // 1/3 edge-throttled; the other 2/3 are provably neither
     sustainedlyLimitedCount: 3,
   };
   const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
@@ -383,10 +384,10 @@ test('P-007 — a BLIND pool reading must not manufacture an owner-gated egress 
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 0, usable: 0,
-    // edge(2) + wall(2) === total(4) → the WI-36943 "provably neither" bound cannot fire,
+    // edge(3) + wall(1) === total(4) → the WI-36943 "provably neither" bound cannot fire,
     // and inFlight is 0 → its traffic evidence cannot fire either. Blindness is the ONLY
     // thing standing between this reading and a false owner escalation.
-    edgeThrottledCount: 2, usageWalledCount: 2,
+    edgeThrottledCount: 3, usageWalledCount: 1,
     blindCount: 2, // 2/4 = 0.5 → majority-blind
     sustainedlyLimitedCount: 4,
   };
@@ -412,7 +413,7 @@ test('P-007 — companion: the SAME fixture with a non-blind reading still escal
   };
   const accountAvailability = {
     provider: 'claude', total: 4, available: 0, usable: 0,
-    edgeThrottledCount: 2, usageWalledCount: 2,
+    edgeThrottledCount: 3, usageWalledCount: 1,
     blindCount: 0, // the ONLY difference from the test above
     sustainedlyLimitedCount: 4,
   };
@@ -420,6 +421,61 @@ test('P-007 — companion: the SAME fixture with a non-blind reading still escal
   assert.equal(r.blind, false);
   assert.match(r.advice, /DOMINANT CAUSE/, 'a MEASURED edge-throttle majority may still escalate');
   assert.match(r.advice, /OWNER-GATED/);
+});
+
+test('EI-19995356951235246 — a marginal edge/usage tie chooses the non-escalating branch', () => {
+  const hr = {
+    reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+  };
+  const accountAvailability = {
+    provider: 'claude', total: 4, available: 0, usable: 0,
+    // Equal marginal counts do not identify the binding reset term.
+    edgeThrottledCount: 2, usageWalledCount: 2,
+    blindCount: 0,
+  };
+  const r = buildCapacityReport(hr, { clampArmed: true, headroom: 10, accountAvailability });
+
+  assert.equal(r.poolExhausted, true);
+  assert.equal(r.exhaustionReason, 'usage-wall');
+  assert.match(r.advice, /dominant cause: 2\/4 usage-walled/);
+  assert.doesNotMatch(r.advice, /DOMINANT CAUSE/);
+  assert.doesNotMatch(r.advice, /OWNER-GATED/);
+  assert.doesNotMatch(r.advice, /escalate rather than waiting/i);
+});
+
+test('EI-19995356951235246 — binding reset terms override marginal counts', () => {
+  assert.equal(
+    deriveCapacityBindingCause([
+      { id: 'edge-a', edgeThrottleResetAt: 2_000 },
+      { id: 'edge-b', edgeThrottleResetAt: 2_000 },
+      { id: 'wall-a', usageResetAt: 1_000 },
+      { id: 'wall-b', usageResetAt: 1_000 },
+    ]),
+    'usage-wall',
+    'the usage-wall accounts recover first even though edge-throttle has the same marginal count',
+  );
+  const hr = {
+    reachable: true, utilization: 0.99, utilizationPct: 99, paused: true, queueDepth: 4, inFlight: 0,
+    priorityTiers: { healthyAccounts: 0, tier1Reserve: 1, tiers: [{ tier: 3, cap: 20, inFlight: 0, queued: 4 }] },
+  };
+  const r = buildCapacityReport(hr, {
+    clampArmed: true,
+    headroom: 10,
+    accountAvailability: {
+      provider: 'claude', total: 4, available: 0, usable: 0,
+      edgeThrottledCount: 2, usageWalledCount: 2, blindCount: 0,
+      accountBindingTerms: [
+        { id: 'edge-a', edgeThrottleResetAt: 2_000 },
+        { id: 'edge-b', edgeThrottleResetAt: 2_000 },
+        { id: 'wall-a', usageResetAt: 1_000 },
+        { id: 'wall-b', usageResetAt: 1_000 },
+      ],
+    },
+  });
+  assert.equal(r.exhaustionReason, 'usage-wall');
+  assert.match(r.advice, /dominant cause: 2\/4 usage-walled/);
+  assert.doesNotMatch(r.advice, /OWNER-GATED/);
 });
 
 test('EI-18683773458136367 — shared-egress evidence UNKNOWN (not supplied) ⇒ unchanged legacy phrasing (fail-safe-omit)', () => {
