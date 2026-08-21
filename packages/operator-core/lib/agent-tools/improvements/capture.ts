@@ -1033,7 +1033,7 @@ export default defineTool({
       // (absent = not checked; [] = checked, nothing similar).
       const priorArtRaw =
         source === 'su' && args.kind === 'feature' && args.lane !== 'observation'
-          ? await noveltyPriorArt(args.title).catch(() => undefined)
+          ? await noveltyPriorArt(captureText.title).catch(() => undefined)
           : undefined;
       // The su-ideate ledger bridge above inserts THIS filing's own row (wi:<id>)
       // BEFORE this read, so the corpus contains the filing itself — a similarity-1.0
@@ -1047,10 +1047,10 @@ export default defineTool({
           ? await notifyAgents(id, {
               addressees: args.notifyAgents,
               objectRef: issueRef(captured.issue.id),
-              summary: `🔖 ${id.ownerLabel} tagged you on ${captured.issue.id}: ${(captured.issue.title ?? args.title).slice(0, 80)}`,
+              summary: `🔖 ${id.ownerLabel} tagged you on ${captured.issue.id}: ${(captured.issue.title ?? captureText.title).slice(0, 80)}`,
               body:
-                `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? args.title}` +
-                (args.body ? `\n\n${args.body.slice(0, 600)}` : '') +
+                `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? captureText.title}` +
+                (captureText.body ? `\n\n${captureText.body.slice(0, 600)}` : '') +
                 `\n\n— it's on your radar: work_items:get ${captured.issue.id} (comment / claim there).`,
               harnessSlug: captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : undefined,
             }).catch(() => null)

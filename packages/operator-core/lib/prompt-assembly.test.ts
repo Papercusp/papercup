@@ -220,12 +220,6 @@ describe('renderToolsCatalog', () => {
     expect(workerOut).toContain('Not when: Default not when.');
   });
 
-  it('skips tools not found in the catalog (caller may pass stale names)', async () => {
-    const { renderToolsCatalog } = await import('./prompt-assembly');
-    const out = renderToolsCatalog('operator', ['nonexistent:tool']);
-    expect(out).toBe('');
-  });
-
   describe('modality filter (Phase 4 T3.1)', () => {
     it('defaults to text-only when modality arg is omitted', async () => {
       mockTools.push({

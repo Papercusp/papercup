@@ -83,7 +83,7 @@ describe('defaultGetRegisteredSchedules', () => {
         methodReg: { className: 'Worker', name: 'tick' },
         methodConfig: { crontab: '*/5 * * * * *', queueName: 'maint' },
       },
-    ]);
+    ] as unknown as ReturnType<typeof sdk.DBOS.getAssociatedInfo>);
 
     try {
       const registered = await defaultGetRegisteredSchedules();

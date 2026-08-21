@@ -436,6 +436,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
       intent: '',
       currentPlanSlug: null,
       currentFiles: [],
+      ambientExcludedRefs: null,
       harnessSlug: 'oriented-harness',
       potSlug: null,
       goalId: null,
