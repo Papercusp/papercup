@@ -26341,7 +26341,7 @@
           "POST"
         ]
       },
-      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas; an active DRAIN caller also receives exact canonical bug-flow economics and breaker state for its DRAIN window. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.",
+      "description": "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID. Pass `since` for itemized closed/opened deltas. Pass `fleet` plus `window:'fleet-lifetime'` for the canonical stored-spec fleet snapshot (current-spec or at-event-spec flow), including explicit population, unit, exactness, and attribution metadata.",
       "capabilities": [
         "work_items:read"
       ],
