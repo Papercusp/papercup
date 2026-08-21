@@ -50,6 +50,13 @@ vi.mock('../source', async (orig) => {
   const actual = await orig<typeof import('../source')>();
   return {
     ...actual,
+    getPlanRow: vi.fn(async () => ({
+      planSlug: 'mock',
+      status: H.state.frontmatterStatus,
+      template: null,
+      templateData: null,
+      inputSchema: null,
+    })),
     readPlanBySlug: vi.fn(async () => ({
       parsed: { frontmatter: { status: H.state.frontmatterStatus }, items: [] },
       archived: false,

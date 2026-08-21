@@ -21,7 +21,8 @@ import {
   DEFAULT_MIN_INTERVAL_SEC,
   gitnexusDbPaths,
   isOrphanShadow,
-  cleanOrphanShadow,
+  isOrphanWal,
+  cleanCrashResidue,
   GITNEXUS_HEALTH_DEFAULT,
   GITNEXUS_FAILURE_ALERT_THRESHOLD,
   decideGitnexusHealthUpdate,
@@ -177,7 +178,42 @@ describe('isOrphanShadow', () => {
   });
 });
 
-describe('cleanOrphanShadow', () => {
+// D-016 — the MIRROR condition the shadow arm structurally cannot see. Killed AFTER the
+// promote: db present, shadow absent, WAL left holding pending data. `analyze` still
+// starts fine, so nothing in the WRITE path notices; every READ-ONLY open segfaults in
+// the native LadybugDB binding replaying that WAL.
+describe('isOrphanWal', () => {
+  it('is the orphan condition: wal + db present, no shadow (a writer was killed after promoting)', () => {
+    expect(isOrphanWal(true, false, true)).toBe(true);
+  });
+
+  it('is NOT orphan when a shadow is present — that WAL belongs to a live build', () => {
+    // The single term that makes deleting the WAL safe. Without it this arm would
+    // destroy the pending writes of a concurrent analyze.
+    expect(isOrphanWal(true, true, true)).toBe(false);
+  });
+
+  it('is NOT orphan when there is no wal at all (a healthy index carries none)', () => {
+    // Measured 2026-08-21: repeated successful reads leave `.gitnexus/` holding only
+    // `lbug` — reads never create a WAL, which is what makes "wal present" meaningful.
+    expect(isOrphanWal(true, false, false)).toBe(false);
+  });
+
+  it('is NOT orphan when there is no db — that is the SHADOW arm\'s corner, not this one', () => {
+    expect(isOrphanWal(false, true, true)).toBe(false);
+    expect(isOrphanWal(false, false, true)).toBe(false);
+  });
+
+  it('does not fire on the exact input the shadow arm handles (the two arms are disjoint)', () => {
+    // Guards the whole point of D-016: the arms must partition the state space, never
+    // both claim a cell and race each other's cleanup.
+    const shadowCorner = { db: false, shadow: true, wal: false };
+    expect(isOrphanShadow(shadowCorner.db, shadowCorner.shadow)).toBe(true);
+    expect(isOrphanWal(shadowCorner.db, shadowCorner.shadow, shadowCorner.wal)).toBe(false);
+  });
+});
+
+describe('cleanCrashResidue', () => {
   function freshRoot(): string {
     const root = mkdtempSync(join(tmpdir(), 'gitnexus-orphan-'));
     mkdirSync(join(root, '.gitnexus'));
@@ -191,9 +227,10 @@ describe('cleanOrphanShadow', () => {
     writeFileSync(walCheckpoint, '');
     expect(existsSync(db)).toBe(false);
 
-    const result = cleanOrphanShadow(root);
+    const result = cleanCrashResidue(root);
 
     expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('orphan-shadow');
     expect(result.removed.sort()).toEqual([shadow, walCheckpoint].sort());
     expect(existsSync(shadow)).toBe(false);
     expect(existsSync(walCheckpoint)).toBe(false);
@@ -204,10 +241,30 @@ describe('cleanOrphanShadow', () => {
     const { shadow } = gitnexusDbPaths(root);
     writeFileSync(shadow, '');
 
-    const result = cleanOrphanShadow(root);
+    const result = cleanCrashResidue(root);
 
     expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('orphan-shadow');
     expect(result.removed).toEqual([shadow]);
+  });
+
+  it('removes the orphan WAL beside a real db — the read-path segfault (D-016)', () => {
+    // THE REGRESSION. Before this arm existed, cleanCrashResidue's predecessor no-opped
+    // on exactly this tree, the next tick re-ran analyze, re-timed-out, and re-orphaned
+    // the WAL — while every agent's gitnexus call died on WAL replay.
+    const root = freshRoot();
+    const { db, shadow, wal } = gitnexusDbPaths(root);
+    writeFileSync(db, 'promoted-db');
+    writeFileSync(wal, 'pending-writes-from-a-killed-analyze');
+    expect(existsSync(shadow)).toBe(false);
+
+    const result = cleanCrashResidue(root);
+
+    expect(result.cleaned).toBe(true);
+    expect(result.kind).toBe('orphan-wal');
+    expect(result.removed).toEqual([wal]);
+    expect(existsSync(wal)).toBe(false);
+    expect(existsSync(db)).toBe(true); // the database itself is never touched
   });
 
   it('touches NOTHING when the db exists — a shadow beside a real db is an in-progress build', () => {
@@ -216,18 +273,49 @@ describe('cleanOrphanShadow', () => {
     writeFileSync(db, 'not-really-a-db-but-present');
     writeFileSync(shadow, '');
 
-    const result = cleanOrphanShadow(root);
+    const result = cleanCrashResidue(root);
 
     expect(result.cleaned).toBe(false);
+    expect(result.kind).toBe('none');
     expect(result.removed).toEqual([]);
     expect(existsSync(db)).toBe(true);
     expect(existsSync(shadow)).toBe(true); // untouched
   });
 
-  it('touches NOTHING when there is no shadow at all (nothing to clean)', () => {
+  it('leaves a live build\'s WAL alone when a shadow is present beside it', () => {
+    // The concurrency rail: db + shadow + wal is an analyze mid-flight. Deleting that
+    // WAL would corrupt a healthy build to "fix" a tree that was never broken.
     const root = freshRoot();
-    const result = cleanOrphanShadow(root);
+    const { db, shadow, wal } = gitnexusDbPaths(root);
+    writeFileSync(db, 'promoted-db');
+    writeFileSync(shadow, 'building');
+    writeFileSync(wal, 'live-pending-writes');
+
+    const result = cleanCrashResidue(root);
+
     expect(result.cleaned).toBe(false);
+    expect(result.kind).toBe('none');
+    expect(existsSync(wal)).toBe(true);
+    expect(existsSync(shadow)).toBe(true);
+  });
+
+  it('touches NOTHING on a healthy index — db present, no shadow, no wal', () => {
+    const root = freshRoot();
+    const { db } = gitnexusDbPaths(root);
+    writeFileSync(db, 'promoted-db');
+
+    const result = cleanCrashResidue(root);
+
+    expect(result.cleaned).toBe(false);
+    expect(result.kind).toBe('none');
+    expect(existsSync(db)).toBe(true);
+  });
+
+  it('touches NOTHING when there is no index at all (nothing to clean)', () => {
+    const root = freshRoot();
+    const result = cleanCrashResidue(root);
+    expect(result.cleaned).toBe(false);
+    expect(result.kind).toBe('none');
     expect(result.removed).toEqual([]);
   });
 });

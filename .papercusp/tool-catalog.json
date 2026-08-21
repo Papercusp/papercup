@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 753,
+  "count": 754,
   "tools": [
     {
       "name": "ablation:report",
@@ -18902,7 +18902,7 @@
       ],
       "guidance": {
         "when": "Setting a custom/template frontmatter field that has no dedicated setter (e.g. template:rubric) — the structured alternative to a plans:edit string-replace on the frontmatter.",
-        "notWhen": "A reserved/managed key — use its dedicated setter (status→plans:set-plan-status, owner/co_owners→plans:transfer-owner, initiative→plans:set-initiative, slug/title/created→plans:set-frontmatter). A whole-document edit — plans:set-content. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter.",
+        "notWhen": "A reserved/managed key — use its dedicated setter (title→plans:set-title, status→plans:set-plan-status, owner/co_owners→plans:transfer-owner, initiative→plans:set-initiative, slug/created→plans:set-frontmatter). A whole-document edit — plans:set-content. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter.",
         "chaining": "plans:get (mode:meta) to see current frontmatter → plans:set-frontmatter-field → plans:get to confirm."
       }
     },
@@ -19822,6 +19822,80 @@
         "when": "Writing/updating a plan's structured data — a rubric instance's fields, or the input values a parameterized plan will run with.",
         "notWhen": "Declaring the SCHEMA rather than the values — plans:set-input-schema (plan-authored) or plans:set-frontmatter-field { key:\"template\" } (registry type). Editing prose/items — plans:set-content. Reading the data back — plans:get-template-data.",
         "chaining": "declare a schema (plans:set-input-schema | plans:set-frontmatter-field { key:\"template\" }) → plans:set-template-data { slug, data } → plans:get-input-schema to see what is still missing before starting."
+      }
+    },
+    {
+      "name": "plans:set-title",
+      "http": {
+        "path": "/api/agent-tools/plans/set-title",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Rename a first-class plan's `title` — surgical frontmatter edit (other keys and the body preserved), inside the plan lock, records a revision + refreshes the plans list. Refuses a legacy plan — convert it with plans:set-frontmatter first.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Renaming the display title of an existing first-class plan without rewriting its whole document or using a raw string replacement.",
+        "notWhen": "Converting a legacy (no valid slug/status frontmatter) plan — plans:set-frontmatter. Editing arbitrary custom frontmatter — plans:set-frontmatter-field. Flipping lifecycle status — plans:set-plan-status.",
+        "chaining": "plans:get { slug } to inspect the current title → plans:set-title → plans:get or plans:list to confirm the rename."
       }
     },
     {

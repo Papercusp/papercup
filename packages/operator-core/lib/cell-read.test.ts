@@ -81,6 +81,32 @@ describe('readCell — the happy path', () => {
     expect(dispatchReadOnlyTool).toHaveBeenCalledWith('dev:pipeline_position', {}, expect.objectContaining({ role: 'su' }));
   });
 
+  it('projects a declared stage order without a second resolver call', async () => {
+    const stages = ['committedLocal', 'onStaging', 'inMain', 'deployed', 'serving'];
+    registerCell(spec({ ordered: { stages } }));
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: {} });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.ordered).toEqual({ stages });
+      // The projection must not hand callers a mutable reference into the registry.
+      expect(r.ordered?.stages).not.toBe(stages);
+    }
+    expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not invent an ordering opinion for a cell that declares none', async () => {
+    registerCell(spec());
+    dispatchReadOnlyTool.mockResolvedValue({ positions: { deployed: true }, serving: {} });
+
+    const r = await readCell('test.cell', READER, ENV);
+
+    expect(r.status).toBe('value');
+    if (r.status === 'value') expect(r.ordered).toBeUndefined();
+  });
+
   it('a null AT the path is a VALUE, not an unknown — a nullable cell must be able to answer "null"', async () => {
     // P-016's goal cell is nullable:true, and "this agent has no goal" is a real
     // answer. If null collapsed to unknown, "no goal" would be indistinguishable from
@@ -781,6 +807,28 @@ describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist'
       }
     },
   );
+
+  it('the ordered built-in cell reaches readers with its declared order', async () => {
+    const orderedBuiltins = BUILTIN_CELLS.filter((s) => s.ordered && s.changeSignal.kind === 'poll');
+    // Without this control, deleting the only ordered registration makes the loop
+    // vacuous and the reachability guard keeps passing.
+    expect(orderedBuiltins.length).toBeGreaterThan(0);
+
+    for (const s of orderedBuiltins) {
+      registerCell(s);
+      const path = (s.changeSignal as { path: string }).path;
+      dispatchReadOnlyTool.mockResolvedValue(payloadAtPaths([[path, true]]));
+
+      const subject = s.callerRelativity.kind === 'parameter' ? 'a-subject' : undefined;
+      const r = await readCell(s.cell, READER, ENV, subject);
+
+      expect(r.status).toBe('value');
+      if (r.status === 'value') {
+        expect(r.ordered).toEqual({ stages: s.ordered?.stages });
+        expect(r.ordered?.stages.length).toBeGreaterThan(0);
+      }
+    }
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

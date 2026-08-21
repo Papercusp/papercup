@@ -288,6 +288,66 @@ export function isStateReadCandidate({ name, capability }) {
   return STATE_NOUN_RE.test(name);
 }
 
+/**
+ * Runtime volume is an ADVISORY second signal, not a replacement for the static
+ * gate above. A fresh CI database has no meaningful agent telemetry, and a busy
+ * tool can be a report/read without being live state. The floors therefore select
+ * a review corpus; they do not assert that a selected tool is a cell candidate.
+ *
+ * The values are deliberately small relative to the measured 30-day corpus. Five
+ * calls from three distinct agent callers is enough to distinguish a real shared
+ * surface from a one-off probe while keeping the report useful for low-volume
+ * doors such as `dev:pg_active_queries`.
+ */
+export const VOLUME_WINDOW_DAYS = 30;
+export const VOLUME_MIN_CALLS = 5;
+export const VOLUME_MIN_DISTINCT_CALLERS = 3;
+
+/** Pure floor predicate, kept separate so calibration can be tested without PG. */
+export function meetsVolumeFloor(
+  { calls, callers },
+  { minCalls = VOLUME_MIN_CALLS, minDistinctCallers = VOLUME_MIN_DISTINCT_CALLERS } = {},
+) {
+  const callCount = Number(calls);
+  const callerCount = Number(callers);
+  return (
+    Number.isFinite(callCount) &&
+    Number.isFinite(callerCount) &&
+    callCount >= minCalls &&
+    callerCount >= minDistinctCallers
+  );
+}
+
+/**
+ * Select unmarked, read-shaped tools from measured runtime rows. The result is
+ * intentionally named `candidates`: volume cannot prove the semantic state-read
+ * question, so this report must never turn a noisy corpus into a CI failure.
+ */
+export function findVolumeCandidates(rows, definitions, options = {}) {
+  const byName = new Map(definitions.map((definition) => [definition.name, definition]));
+  return rows
+    .map((row) => {
+      const definition = byName.get(row.toolName ?? row.tool_name);
+      if (!definition) return null;
+      const verb = definition.name.slice(definition.name.indexOf(':') + 1);
+      if (definition.capability && capabilityEffect(definition.capability) === 'write') return null;
+      if (isMutatingVerb(verb) || definition.lens !== null || definition.exemption !== null) return null;
+      if (!meetsVolumeFloor(row, options)) return null;
+      const calls = Number(row.calls);
+      const callers = Number(row.callers ?? row.distinctCallers);
+      return {
+        name: definition.name,
+        file: definition.file,
+        calls,
+        callers,
+        callsPerCaller: callers > 0 ? Number((calls / callers).toFixed(2)) : null,
+        syntacticCandidate: isStateReadCandidate(definition),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.calls - a.calls || b.callers - a.callers || a.name.localeCompare(b.name));
+}
+
 /** `@cell-lens <dotted.cell.id>` — the intended path. */
 export const CELL_LENS_RE = /@cell-lens\s+(\S+)/;
 /** A well-formed cell id: dotted, lowerCamel segments (matches CellSpec.cell). */

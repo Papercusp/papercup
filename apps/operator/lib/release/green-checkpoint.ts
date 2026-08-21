@@ -7984,6 +7984,14 @@ export async function runGreenCheckpoint(
  *  WIRING (env-strip, SPA-build-folds-into-green per P-005, the push guard, the
  *  setup-script invocation) is unit-testable without running the suite / build /
  *  a git push (hive-run-evaluation gap #10). */
+export interface CheckpointExecResult {
+  code: number;
+  /** The child-process `close` signal, when it terminated by signal rather than by exit code. */
+  signal?: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}
+
 export type CheckpointExec = (
   cmd: string,
   args: string[],
@@ -8007,7 +8015,15 @@ export type CheckpointExec = (
     /** Report that the child produced output so a progress-aware watchdog can reset its idle budget. */
     onProgress?: () => void;
   },
-) => Promise<{ code: number; stdout: string; stderr: string }>;
+) => Promise<CheckpointExecResult>;
+
+/** A signaled child is not a successful zero-exit command, even though Node reports
+ * `code === null` and the compatibility result maps that null to `code: 0`. */
+function commandCompletedSuccessfully(
+  result: Pick<CheckpointExecResult, "code" | "signal">,
+): boolean {
+  return result.code === 0 && result.signal == null;
+}
 
 /** load-flake-isolation-2026-06-23: hard cap for ONE isolated single-file re-run.
  *  A single test file at single concurrency finishes in seconds; 5 min covers even a
@@ -10541,6 +10557,15 @@ export function realCheckpointDeps(
         heavy: true,
         relayAffectedProgress: true,
       });
+      const suiteCompleted = commandCompletedSuccessfully(r);
+      const signalNote = r.signal
+        ? `\n\n=== CHECKPOINT CHILD TERMINATED BY SIGNAL (${r.signal}) — the suite did not produce a zero-exit verdict ===\n`
+        : "";
+      if (r.signal) {
+        log(
+          `green suite child terminated by ${r.signal} (code=${r.code}); preserving the signal in the checkpoint output and holding the candidate red`,
+        );
+      }
 
       // WI-6053: the post-suite legs (typecheck · migrations lint · identity lints ·
       // design-primitives lint · agent-state-plane lints · SPA build) live in ONE function
@@ -10551,7 +10576,7 @@ export function realCheckpointDeps(
       // read as "passed"; absorption then set green without ever running them. See
       // runPostSuiteLegs' doc for the incident this cost us.
       let legs =
-        r.code === 0
+        suiteCompleted
           ? await runPostSuiteLegs(
               treeDir,
               env,
@@ -10562,8 +10587,8 @@ export function realCheckpointDeps(
           : legsNotRun(
               "suite red — post-suite legs deferred until the suite is considered passing",
             );
-      let green = r.code === 0 && legs.ok;
-      let fullOutput = r.stdout + r.stderr + legs.output;
+      let green = suiteCompleted && legs.ok;
+      let fullOutput = r.stdout + r.stderr + signalNote + legs.output;
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0) — a build break is deterministic, never a
@@ -10588,7 +10613,10 @@ export function realCheckpointDeps(
       // WI-6053: did absorption prove the suite's red was flakes? If so the SUITE is no
       // longer what is failing — but the five legs it skipped have still never run.
       let suiteAbsorbed = false;
-      if (r.code !== 0) {
+      // A directly signaled checkpoint child has no trustworthy file-level failure set for
+      // isolation to re-run. Keep that signal red and visible instead of letting an empty
+      // parser result become a load-flake absorption candidate.
+      if (!suiteCompleted && !r.signal) {
         // EI-19328677512071640: publish the `isolating` phase for the DURATION of the
         // isolation re-run only. This is the single-concurrency window whose verdict is
         // corrupted by host contention, so it is what pc-heavy's gate reserve clamps for.
@@ -11601,7 +11629,7 @@ export function runCmd(
      *  diagnostic/liveness-only; failures in it must never change the command verdict. */
     onProgress?: () => void;
   } = {},
-): Promise<{ code: number; stdout: string; stderr: string }> {
+): Promise<CheckpointExecResult> {
   return new Promise((resolve, reject) => {
     let cmdToRun = cmd;
     let argsToRun = args;
@@ -11714,16 +11742,23 @@ export function runCmd(
       if (timer) clearTimeout(timer);
       reject(e);
     });
-    child.on("close", (code) => {
+    child.on("close", (code, signal) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (code === 0 || opts.allowNonZero)
-        resolve({ code: code ?? 0, stdout, stderr });
+      const result: CheckpointExecResult = {
+        code: code ?? 0,
+        signal,
+        stdout,
+        stderr,
+      };
+      if (commandCompletedSuccessfully(result) || opts.allowNonZero)
+        resolve(result);
       else
         reject(
           new Error(
-            `${cmd} ${args.join(" ")} exited ${code}: ${stderr || stdout}`,
+            `${cmd} ${args.join(" ")} exited ${code ?? "null"}` +
+              `${signal ? ` via ${signal}` : ""}: ${stderr || stdout}`,
           ),
         );
     });

@@ -157,6 +157,9 @@ describe('plugins:fire_event', () => {
     // registry mock only needs the one export fire_event actually calls.
     vi.doMock('../../../events/engine', () => ({ emitSystemEvent: vi.fn() }));
     vi.doMock('../../../harness-registry', () => ({
+      // Defensive transitive export: module reset/mock ordering can still load
+      // the revocation-reaper graph before the events mock is observed.
+      deregisterEphemeralForeignHarness: vi.fn(async () => {}),
       loadHarnessRegistry: vi.fn(async () => ({
         projects: [{ slug: 'sheets', path: '/tmp/sheets' }],
       })),

@@ -4,24 +4,27 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Plan format
-description: Markdown-canonical format for SU-agent plans — frontmatter, ## Now anchor, items with computed status, decisions log. Consumed by the plans:* tool surface.
+title: "Plan format"
+description: "Markdown-canonical format for SU-agent plans — frontmatter, ## Now anchor, items with computed status, decisions log. Consumed by the plans:* tool surface."
+type: Insight
+discovered: 2026-08-21
+status: active
+documents:
+  - "packages/operator-core/lib/agent-tools/plans/lint.ts"
+  - "packages/operator-core/lib/agent-tools/plans/get.ts"
+  - "packages/operator-core/lib/agent-tools/plans/add-decision.ts"
+  - "packages/operator-core/lib/agent-tools/plans/add-item.ts"
+plans:
+  - "agent-plan-tracking-2026-05-20"
+  - "planning-attention-importance-2026-05-31"
+  - "promote-policy-and-waves-2026-05-30"
+  - "promote-spawn-child-harness-2026-05-31"
+  - "plans-pg-canonical-migration-2026-06-03"
+  - "papercusp-systems-abstraction-2026-05-29"
+  - "mug-autonomy-policy-2026-06-13"
+  - "plans-admin-ui-2026-05-20"
 sidebar:
   order: 3
-plans:
-  - agent-plan-tracking-2026-05-20
-  - planning-attention-importance-2026-05-31
-  - promote-policy-and-waves-2026-05-30
-  - promote-spawn-child-harness-2026-05-31
-  - plans-pg-canonical-migration-2026-06-03
-  - papercusp-systems-abstraction-2026-05-29
-  - mug-autonomy-policy-2026-06-13
-  - plans-admin-ui-2026-05-20
-documents:
-  - packages/operator-core/lib/agent-tools/plans/lint.ts
-  - packages/operator-core/lib/agent-tools/plans/get.ts
-  - packages/operator-core/lib/agent-tools/plans/add-decision.ts
-  - packages/operator-core/lib/agent-tools/plans/add-item.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -615,6 +618,8 @@ Plans are read and written through the `plans:*` MCP tools.
 - `plans:set-item-phase \{ slug, itemId, phase \}` — move an item to a
   different phase section.
 - `plans:set-frontmatter \{ slug, … \}` — edit frontmatter fields.
+- `plans:set-title \{ slug, title, rationale? \}` — rename the reserved display title
+  without rewriting the rest of the frontmatter or plan body.
 - `plans:transfer-owner \{ slug, owner \}` — change the plan's human
   owner.
 - `plans:set-content { slug, content, expectedHash }` — replace the
@@ -705,4 +710,3 @@ so concurrent `plans:add-decision` calls produce sequential non-colliding IDs.
 Editor concurrency is additionally guarded by an optimistic `version`-column
 compare-and-swap: a write based on a stale `version` is rejected rather than
 clobbering a concurrent change.
-

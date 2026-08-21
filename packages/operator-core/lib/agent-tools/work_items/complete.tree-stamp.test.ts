@@ -91,12 +91,12 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/refs/heads/staging': `${SHA}\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('reads a detached HEAD directly', () => {
       const { probe } = probeOver({ '/repo/.git/HEAD': `${SHA}\n` });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('falls back to packed-refs when the loose ref has been packed away', () => {
@@ -107,7 +107,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
           `${OTHER_SHA} refs/heads/main\n` +
           `${SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('follows a `.git` FILE to its gitdir (a worktree or submodule checkout)', () => {
@@ -116,13 +116,13 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/elsewhere/worktrees/wt1/HEAD': 'ref: refs/heads/feature\n',
         '/elsewhere/worktrees/wt1/refs/heads/feature': `${SHA}\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('accepts a 64-char sha256 object id', () => {
       const sha256 = 'f'.repeat(64);
       const { probe } = probeOver({ '/repo/.git/HEAD': `${sha256}\n` });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: sha256 });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: sha256 });
     });
   });
 
@@ -200,7 +200,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/repo/.git/packed-refs':
           `${OTHER_SHA} refs/remotes/origin/staging\n` + `${SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('does NOT stamp the remote ref when the local branch is absent entirely', () => {
@@ -218,7 +218,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/repo/.git/refs/heads/staging': `${SHA}\n`,
         '/repo/.git/packed-refs': `${OTHER_SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('ignores the peeled-tag (`^`) continuation lines in packed-refs', () => {
@@ -227,7 +227,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/repo/.git/packed-refs':
           `${OTHER_SHA} refs/tags/v1\n` + `^${'b'.repeat(40)}\n` + `${SHA} refs/heads/staging\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
 
     it('resolves within a tight read budget — the spawn-free contract', () => {
@@ -239,7 +239,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
         '/repo/.git/refs/heads/staging': `${SHA}\n`,
       });
-      expect(completionTreeStamp(probe)).toEqual({ headSha: SHA });
+      expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
       expect(reads).toEqual(['/repo/.git', '/repo/.git/HEAD', '/repo/.git/refs/heads/staging']);
       expect(reads.length).toBeLessThanOrEqual(3);
     });
@@ -276,7 +276,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
         { filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] },
         roots,
       ),
-    ).toEqual({ headSha: SIDESTAGE_SHA });
+    ).toEqual({ repositoryRoot: sidestageRoot, headSha: SIDESTAGE_SHA });
   });
 
   it('stamps the registered sibling checkout that owns the declared changed file', () => {
@@ -289,7 +289,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
           readFile,
         },
       ),
-    ).toEqual({ headSha: SIDESTAGE_SHA });
+    ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
   it('stamps the owning checkout when filesChanged uses an absolute path', () => {
@@ -300,7 +300,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
         [OPERATOR_ROOT, SIDESTAGE_ROOT],
         { exists: (abs) => abs === absolutePath, readFile },
       ),
-    ).toEqual({ headSha: SIDESTAGE_SHA });
+    ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
   it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
@@ -313,7 +313,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
           readFile,
         },
       ),
-    ).toEqual({ headSha: OPERATOR_SHA });
+    ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
 
   it('keeps the primary checkout when the completion declares no resolvable files', () => {
@@ -323,6 +323,6 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
         [OPERATOR_ROOT, SIDESTAGE_ROOT],
         { exists: () => false, readFile },
       ),
-    ).toEqual({ headSha: OPERATOR_SHA });
+    ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
 });

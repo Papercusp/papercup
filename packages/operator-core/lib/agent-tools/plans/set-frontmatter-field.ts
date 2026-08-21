@@ -37,7 +37,7 @@ import { softText, clampText, LIMITS } from '../limits';
  *  routed to the right place. Exported for tests. */
 export const RESERVED_FRONTMATTER_KEYS: Record<string, string> = {
   slug: 'plans:set-frontmatter (slug is the plan identity)',
-  title: 'plans:set-frontmatter',
+  title: 'plans:set-title',
   status: 'plans:set-plan-status',
   created: 'plans:set-frontmatter',
   updated: 'managed automatically (bumped on every write)',
@@ -117,10 +117,11 @@ export default defineTool({
   guidance: {
     when: 'Setting a custom/template frontmatter field that has no dedicated setter (e.g. template:rubric) — the structured alternative to a plans:edit string-replace on the frontmatter.',
     notWhen:
-      'A reserved/managed key — use its dedicated setter (status→plans:set-plan-status, owner/co_owners→plans:transfer-owner, initiative→plans:set-initiative, slug/title/created→plans:set-frontmatter). A whole-document edit — plans:set-content. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter.',
+      'A reserved/managed key — use its dedicated setter (title→plans:set-title, status→plans:set-plan-status, owner/co_owners→plans:transfer-owner, initiative→plans:set-initiative, slug/created→plans:set-frontmatter). A whole-document edit — plans:set-content. Converting a legacy (no-frontmatter) plan — plans:set-frontmatter.',
     chaining: 'plans:get (mode:meta) to see current frontmatter → plans:set-frontmatter-field → plans:get to confirm.',
     seeAlso: [
       'plans:set-frontmatter (rewrite the whole frontmatter block)',
+      'plans:set-title (rename the reserved title field)',
       'plans:get (mode:meta — see current frontmatter)',
     ],
   },

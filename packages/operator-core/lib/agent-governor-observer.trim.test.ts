@@ -23,7 +23,8 @@ const h = vi.hoisted(() => ({
 
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage: h.sendMessage }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate: h.notifySyncInvalidate }));
-vi.mock('drizzle-orm', () => ({
+vi.mock('drizzle-orm', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('drizzle-orm')>()),
   desc: (c: unknown) => c,
   // inArray records the ids it was handed so the test can assert them without a real query builder.
   inArray: (_col: unknown, ids: number[]) => {

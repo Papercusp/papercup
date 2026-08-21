@@ -176,66 +176,130 @@ export function buildAnalyzeArgs(root: string, repoName: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// WI-35532 (a) — the orphan-shadow preflight.
+// CRASH-RESIDUE PREFLIGHT — one policy over the whole (db x shadow x wal) state space.
 //
 // `gitnexus analyze` writes a `.gitnexus/lbug.shadow` (+ `.gitnexus/lbug.wal.checkpoint`)
 // WHILE building, then promotes it to the real `.gitnexus/lbug` database file on success.
-// If the process dies/is killed between those two steps, the shadow is left orphaned —
-// and `analyze` REFUSES to proceed while it exists ("Found shadow file ... but no
-// corresponding database file"), with no recovery path of its own. That is a
-// self-perpetuating wedge: every future tick fails the SAME way forever. Measured
-// 2026-08-08: 66/66 consecutive hourly ticks failed this way, ~4.6 CPU-hours burned,
-// completely silently (see the module header for the alarm half of this fix).
+// A kill anywhere in that sequence leaves residue, and the residue is UNRECOVERABLE BY
+// GITNEXUS ITSELF — which turns one dead process into a permanent, self-perpetuating
+// wedge, because every later tick re-runs the same doomed sequence.
 //
-// The fix is narrow on purpose: only delete the shadow (+ its wal checkpoint) when the
-// real db is ABSENT — a shadow existing ALONGSIDE a real db is a build genuinely in
-// progress (this action's own timeout already protects against that build hanging), and
-// must never be touched.
+// There are TWO such residues, one on each side of the promote, and they fail in
+// OPPOSITE directions:
+//
+//   (a) ORPHAN SHADOW — killed BEFORE the promote: shadow present, db ABSENT.
+//       `analyze` then refuses to start at all ("Found shadow file ... but no
+//       corresponding database file"). Measured 2026-08-08 (WI-35532): 66/66
+//       consecutive hourly ticks failed this way, ~4.6 CPU-hours burned, silently.
+//
+//   (b) ORPHAN WAL — killed AFTER the promote: db present, shadow ABSENT, `lbug.wal`
+//       left holding pending data. `analyze` starts fine, but every READ-ONLY OPEN now
+//       replays that WAL and SEGFAULTS in the native LadybugDB binding. Measured
+//       2026-08-21 (D-016): the 20-minute analyze timeout SIGKILLed the process group
+//       at 04:55:34Z (fire 04:35:33Z + 20m01s), and from that moment BOTH the CLI and
+//       the MCP bridge child died on every call — GitNexus was 100% dead fleet-wide
+//       while still advertising 17 working tools.
+//
+// WHY (b) NEEDED ITS OWN ARM. The original guard's predicate was `shadow && !db`, which
+// is the OPPOSITE CORNER of the same 2x2 — with the shadow absent it no-ops, so the
+// wedge it was written to end recurred verbatim in the direction it did not test. The
+// lesson, recorded as D-016: a crash-consistency guard must cover the whole state space
+// of the artifacts it protects, not the one corner that was observed failing.
+//
+// WHY DELETING THE WAL HERE IS SAFE, precisely. Two measured facts, not assumptions:
+//   1. A healthy index carries NO wal — verified 2026-08-21 by running repeated
+//      successful reads and re-listing `.gitnexus/`: only `lbug` is present, never a
+//      wal. So reads never produce one, and a wal is therefore always a WRITER's
+//      residue rather than ordinary steady state.
+//   2. This preflight runs immediately BEFORE we spawn a full `analyze`, which rebuilds
+//      the index wholesale. Any pending WAL data is about to be superseded by that
+//      rebuild, so discarding it cannot lose information the next step would have used.
+// A wal sitting ALONGSIDE a shadow is a build genuinely in progress and is never
+// touched, which is what keeps (b) from firing on a concurrent analyze.
+//
+// Raising GITNEXUS_ANALYZE_TIMEOUT_MS is deliberately NOT the fix (D-016): it moves the
+// cliff without removing it, and ANY SIGKILL — timeout, OOM, reboot — reproduces the
+// same residue. Recovery has to be unconditional.
 // ---------------------------------------------------------------------------
 
 export interface GitnexusDbPaths {
   db: string;
   shadow: string;
   walCheckpoint: string;
+  /** Pending write-ahead log. Present only while a writer is mid-flight — or as residue. */
+  wal: string;
 }
 
 export function gitnexusDbPaths(root: string): GitnexusDbPaths {
   const dir = path.join(root, '.gitnexus');
-  return { db: path.join(dir, 'lbug'), shadow: path.join(dir, 'lbug.shadow'), walCheckpoint: path.join(dir, 'lbug.wal.checkpoint') };
+  return {
+    db: path.join(dir, 'lbug'),
+    shadow: path.join(dir, 'lbug.shadow'),
+    walCheckpoint: path.join(dir, 'lbug.wal.checkpoint'),
+    wal: path.join(dir, 'lbug.wal'),
+  };
 }
 
-/** PURE — the orphan condition itself: a shadow with no promoted database beside it. */
+/** PURE — killed BEFORE the promote: a shadow with no promoted database beside it. */
 export function isOrphanShadow(dbExists: boolean, shadowExists: boolean): boolean {
   return shadowExists && !dbExists;
+}
+
+/**
+ * PURE — killed AFTER the promote: a pending WAL beside a real database, with no shadow
+ * to say a build is in flight. This is the read-path poison (D-016).
+ *
+ * The `!shadowExists` term is what makes this safe to act on: shadow-present means a
+ * build is genuinely running and its WAL is live data, not residue.
+ */
+export function isOrphanWal(dbExists: boolean, shadowExists: boolean, walExists: boolean): boolean {
+  return walExists && dbExists && !shadowExists;
 }
 
 export interface OrphanShadowCleanup {
   cleaned: boolean;
   removed: string[];
+  /** Which residue was found, for a log line that names the failure mode rather than the files. */
+  kind: 'none' | 'orphan-shadow' | 'orphan-wal';
 }
 
 /**
- * Delete the orphan shadow (+ wal checkpoint, if present) so the next `analyze` can
- * proceed. No-ops — touches nothing — when the db exists (real build) or no shadow
- * exists at all (nothing to clean). Never throws: a missing/racing file during unlink is
+ * Remove whichever crash residue is present so the next `analyze` — and, for the WAL
+ * arm, every read in the meantime — can proceed. No-ops when the tree is healthy or a
+ * build is genuinely in progress. Never throws: a missing/racing file during unlink is
  * exactly the "someone else already cleaned it" case and is swallowed like the rest of
  * this fail-soft action.
  */
-export function cleanOrphanShadow(root: string): OrphanShadowCleanup {
-  const { db, shadow, walCheckpoint } = gitnexusDbPaths(root);
-  if (!isOrphanShadow(existsSync(db), existsSync(shadow))) return { cleaned: false, removed: [] };
+export function cleanCrashResidue(root: string): OrphanShadowCleanup {
+  const { db, shadow, walCheckpoint, wal } = gitnexusDbPaths(root);
+  const dbExists = existsSync(db);
+  const shadowExists = existsSync(shadow);
+  const walExists = existsSync(wal);
+
+  let kind: OrphanShadowCleanup['kind'] = 'none';
+  let targets: string[] = [];
+  if (isOrphanShadow(dbExists, shadowExists)) {
+    kind = 'orphan-shadow';
+    targets = [shadow, walCheckpoint];
+  } else if (isOrphanWal(dbExists, shadowExists, walExists)) {
+    kind = 'orphan-wal';
+    targets = [wal, walCheckpoint];
+  } else {
+    return { cleaned: false, removed: [], kind: 'none' };
+  }
+
   const removed: string[] = [];
-  for (const f of [shadow, walCheckpoint]) {
+  for (const f of targets) {
     if (!existsSync(f)) continue;
     try {
       unlinkSync(f);
       removed.push(f);
     } catch {
       // Racing with another cleanup (or the file vanished between the check and the
-      // unlink) — not our job to report, the orphan-shadow condition is gone either way.
+      // unlink) — not our job to report, the residue condition is gone either way.
     }
   }
-  return { cleaned: removed.length > 0, removed };
+  return { cleaned: removed.length > 0, removed, kind };
 }
 
 // ---------------------------------------------------------------------------
@@ -408,13 +472,17 @@ registerSystemAction('gitnexus-reindex', async (ctx: SystemActionCtx) => {
     return;
   }
 
-  // WI-35532 (a): clean an orphan shadow BEFORE spawning — the exact condition that wedged
-  // this routine 66/66 consecutive times. No-ops when there is no orphan to clean.
-  const orphan = cleanOrphanShadow(root);
-  if (orphan.cleaned) {
-    console.warn(
-      `[gitnexus-reindex] cleaned an ORPHAN shadow (shadow present, no database — a prior analyze died mid-build): ${orphan.removed.join(', ')}`,
-    );
+  // Clean crash residue BEFORE spawning. Two arms, both self-perpetuating wedges left by
+  // a killed writer: orphan-shadow blocks `analyze` from starting (WI-35532), orphan-wal
+  // segfaults every READ while `analyze` still appears fine (D-016). No-ops on a healthy
+  // tree or a build genuinely in progress.
+  const residue = cleanCrashResidue(root);
+  if (residue.cleaned) {
+    const why =
+      residue.kind === 'orphan-shadow'
+        ? 'shadow present, no database — a prior analyze died BEFORE promoting it'
+        : 'pending WAL beside a real database with no shadow — a prior analyze was killed AFTER promoting it; every read-only open was segfaulting on WAL replay';
+    console.warn(`[gitnexus-reindex] cleaned ${residue.kind.toUpperCase()} residue (${why}): ${residue.removed.join(', ')}`);
   }
 
   const timeoutMs = num(cfg, 'timeout_ms', GITNEXUS_ANALYZE_TIMEOUT_MS);

@@ -266,7 +266,7 @@ This is not a paperwork nicety — it changes outcomes.
 
 1. **Finish or intentionally drop every item.** `todo`/`blocked`/`needs-human` refuse shipping. A deliberate departure is `plans:set-status { slug, item, status:'dropped', note:'<why>' }`; silence is what the gate forbids.
 2. **Audit the actual code, per item.** `plans:audit { slug, items:[{ itemId, verdict, citations }] }`. Only `code`/`test` citations count as verification; paths must resolve, optional lines/symbols must exist, and their blob SHAs are stored. `doc`/`none` explicitly mean non-verification and require the tool's reason/note fields. Never treat a work-item, doc, or memory of writing code as code truth. Submit ONLY new/reopened/text-changed/evidence-changed items: earlier entries carry forward automatically with their ORIGINAL per-item sha/time. If `audit_coverage_stale` names items at ship time, re-audit only that list; empty list means no new pass.
-3. **Author the post-implementation rubric.** `rubrics:propose { rubricRef, kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', characteristic, title, criteria:[3–7 OUTCOME criteria tracing to goal + Decisions] }`. It activates immediately. A pure investigation may use `criteria:[]` with its class. Add structured checks for objectively executable outcomes.
+3. **Author the post-implementation rubric.** `rubrics:propose { rubricRef:'<acceptance-rubric-slug>', kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', characteristic:'<measured-outcome>', title:'<rubric-title>', criteria:[3–7 OUTCOME criteria tracing to goal + Decisions] }`. It activates immediately. A pure investigation may use `criteria:[]` with its class. Add structured checks for objectively executable outcomes.
 4. **Vet the rubric's current revision.** Run `consult:get_feedback` (min 1 / max 3), improve the rubric, then attest with `scorecards:emit { rubricRef:'meta-acceptance-rubric', subject:{ kind:'rubric', ref:'<acceptance-rubric>' }, vettingConsult:'<conversation-id>', ratings }`. Any later rubric edit invalidates the attestation.
 5. **Have a NON-implementer grade it.** `scorecards:emit { rubricRef, ratings }`, concrete evidence for every criterion; grader ≠ rubric author. The four class rubrics require the grader to spot-check the implementer's audit citations.
 6. **The implementer records the plan-specific acceptance call.** After reading the independent card, the rubric author re-emits the complete ratings with `acceptance:{ verdict:'accept'|'reject', reasoning:'<why>' }`. The implementer owns the passing bar; there is no universal numeric threshold. A latest `reject` blocks ship until addressed and superseded.
@@ -502,7 +502,7 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
   | what plans exist / the recent ones | `plans:list { updatedSince, createdSince, order, limit }` — `order` is `'updated'\|'created'\|'slug'` (NOT `'recent'` — that value is `invalid_input`; use `order:'updated'` for "the N most-recent plans") | a hand-written `harness_shared.harness_plans` query |
   | plan COUNTS (by status / harness / day) | `plans:list { groupBy, aggregateOnly }` | a hand-written `GROUP BY` over `harness_plans` |
   | pickable plan items across plans | `plans:items { actionable: true }` | unnesting the items jsonb |
-  | prose / full-text | `search:fulltext` · `search:semantic` | `ILIKE '%…%'` |
+  | prose / full-text | exact keyword or phrase → `search:fulltext`; paraphrased concept → `search:semantic` | `ILIKE '%…%'` |
   | code graph / call sites | `gitnexus.query` (dot, not colon — a plugin-namespaced MCP tool, not the usual `server:verb` form) | a hand-walk of the tree, or raw `grep -r`/`rg` over source (grep gives file/line matches; gitnexus.query gives call chains + callers/callees) |
 
 ## Reaching for bash? These reads already have a tool
@@ -632,6 +632,16 @@ the poll command, because the fix is one step earlier:
 > **`capability:bash { run_in_background: true }`** and read it with
 > **`capability:bash_output { bash_id, filter }`**. The `filter` regex means only
 > matching lines enter your context — no `2>&1 | tail -60`.
+
+⚠ **Filter background output at READ TIME, never at LAUNCH TIME.** Let the job
+write its stdout/stderr unfiltered to the durable log, then pass `filter` to
+`capability:bash_output`. A launch pipeline such as `cmd | grep -E '...'` (or
+`| head`) can leave the log empty or truncated if the job is killed before the
+consumer flushes its buffered stdout, losing the evidence you needed to debug
+the failure. Read-time filtering is repeatable with a different pattern and
+also works on the stranded-job recovery path. If launch-time filtering is
+unavoidable, use a line-buffered consumer such as `grep --line-buffered` or
+`stdbuf -oL`, but prefer keeping the durable log unfiltered.
 
 ⚠ **Never wait on a process-table pattern you typed yourself.** `until ! pgrep -f '<pat>'; do sleep 5; done` can NEVER exit from an agent shell: `pgrep -f` matches the FULL command line, and your own `bash -c` argv contains the literal pattern, so the poll matches ITSELF and the condition stays true forever — the same self-match class as the documented `pkill -f` trap. `ps … | grep <pat>` loop conditions share the defect, and `grep -v grep` does NOT save you (the `bash -c` wrapper still matches). The PreToolUse gate now denies the loop form. Wait on the PID instead (`tail --pid=<pid> -f /dev/null`, or `kill -0 <pid>` in the loop) — or, if you genuinely must pattern-poll, bracket the first character so the pattern cannot match its own argv: `pgrep -f '[l]int-tsc'`.
 

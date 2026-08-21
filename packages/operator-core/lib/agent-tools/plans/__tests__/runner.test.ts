@@ -90,6 +90,7 @@ describe('PLAN_AGENT_ALLOWED_TOOLS', () => {
   it('grants the plans:* write surface so plan edits are attributed', () => {
     expect(PLAN_AGENT_ALLOWED_TOOLS).toContain('mcp__agentmcp__plans:set-content');
     expect(PLAN_AGENT_ALLOWED_TOOLS).toContain('mcp__agentmcp__plans:set-status');
+    expect(PLAN_AGENT_ALLOWED_TOOLS).toContain('mcp__agentmcp__plans:set-title');
     expect(PLAN_AGENT_ALLOWED_TOOLS).toContain('mcp__agentmcp__plans:revisions');
   });
 

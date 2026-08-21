@@ -4,17 +4,22 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Marketplace implementation
-description: Ship state of papercuspai.com — what's live, what's planned, what's still missing.
+title: "Marketplace implementation"
+description: "Ship state of papercuspai.com — what's live, what's planned, what's still missing."
+type: Insight
+discovered: 2026-08-21
+status: active
+documents:
+  - "packages/operator-core/lib/endpoint-route/routes/cupboard.ts"
+plans:
+  - "retire-snapshots-instance-spec-2026-06-09"
+  - "harness-blueprint-distribution-2026-06-03"
+  - "learning-packs-2026-06-11"
+  - "revive-cupboard-distribution-2026-06-04"
+  - "official-blueprints-cupboard-publish-2026-06-05"
+  - "tool-distribution-discovery-2026-06-08"
 sidebar:
   order: 2
-plans:
-  - retire-snapshots-instance-spec-2026-06-09
-  - harness-blueprint-distribution-2026-06-03
-  - learning-packs-2026-06-11
-  - revive-cupboard-distribution-2026-06-04
-  - official-blueprints-cupboard-publish-2026-06-05
-  - tool-distribution-discovery-2026-06-08
 ---
 
 > **Webapp retired (2026-05-14).** Any `localhost:3055` or `localhost:3070` URL on this page is only reachable while the **Tauri dev shell** is running. Start it with `cd papercusp-desktop && npm run dev`.

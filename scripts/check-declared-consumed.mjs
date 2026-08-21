@@ -261,13 +261,8 @@ export const DECLARED_FIELDS = [
     name: 'ordered',
     declaredIn: 'packages/operator-core/lib/cell-registry.ts',
     producer: 'a cell registration declaring `ordered: { stages: [...] }`',
-    consumer: 'anything that uses the declared stage order to rank or compare cell values',
-    why: 'Axis 6. The stage order exists so a reader can say which of two positions is FURTHER ALONG. Declared and written but never read, the ordering claim is decorative: a caller comparing stages still has to hardcode the sequence, which is the duplication the axis was added to remove.',
-    // Found BY this sweep on its first correct run, and deliberately not fixed by
-    // it: wiring a consumer to green one's own gate is the very move the gate
-    // exists to detect. Closing WI-6473 must delete this ref so the row returns
-    // to hard-failing.
-    knownUnbuilt: 'WI-6473',
+    consumer: 'cell-read.ts projecting the declared stage order into each value result',
+    why: 'Axis 6. The stage order exists so a reader can say which of two positions is FURTHER ALONG. `readCell` now carries the declared order to callers as a value-result lens, so callers can rank or compare without importing the registry or hardcoding the sequence.',
   },
   {
     id: 'CellSpec.pointers',

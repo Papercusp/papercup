@@ -1202,6 +1202,8 @@ import './plans/transfer-owner';
 import './plans/set-initiative';
 // plan-templates-and-rubric-v2-2026-06-20 P-002 — generic arbitrary-frontmatter-key setter (templates blocker).
 import './plans/set-frontmatter-field';
+// EI-18885998572459652 — the reserved title key has a dedicated surgical setter.
+import './plans/set-title';
 // plan-templates-and-rubric-v2-2026-06-20 P-003 — structured item/decision-edit setters (vs plans:edit string-replace).
 import './plans/set-item-blocked-by';
 import './plans/set-item-phase';

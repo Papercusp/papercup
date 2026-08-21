@@ -14,10 +14,51 @@ import { readCorpus } from './corpus-subject';
 
 const RUBRICS_PROPOSE_EXAMPLE = /`rubrics:propose\s*\{([^`]+)\}`/g;
 
+/**
+ * Read the top-level object keys from the doc example. The mandate deliberately
+ * uses shorthand for caller-supplied values (`rubricRef`, `characteristic`,
+ * `title`), so a `key:`-only regex drops three required fields even though the
+ * example names them. Split only on top-level commas so commas inside criteria
+ * arrays/objects or quoted text cannot manufacture fields.
+ */
+function exampleFields(fragment: string): Set<string> {
+  const entries: string[] = [];
+  let start = 0;
+  let quote: "'" | '"' | null = null;
+  let escaped = false;
+  let depth = 0;
+
+  for (let i = 0; i < fragment.length; i += 1) {
+    const char = fragment[i]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+    if (char === '[' || char === '{' || char === '(') depth += 1;
+    else if (char === ']' || char === '}' || char === ')') depth = Math.max(0, depth - 1);
+    else if (char === ',' && depth === 0) {
+      entries.push(fragment.slice(start, i));
+      start = i + 1;
+    }
+  }
+  entries.push(fragment.slice(start));
+
+  return new Set(
+    entries
+      .map((entry) => entry.trim().match(/^([A-Za-z][A-Za-z0-9]*)\s*(?::|$)/)?.[1])
+      .filter((field): field is string => Boolean(field)),
+  );
+}
+
 function documentedFields(source: string): Set<string> {
-  const candidates = [...source.matchAll(RUBRICS_PROPOSE_EXAMPLE)].map(
-    (match) =>
-      new Set([...match[1]!.matchAll(/\b([A-Za-z][A-Za-z0-9]*)\s*:/g)].map((m) => m[1]!)),
+  const candidates = [...source.matchAll(RUBRICS_PROPOSE_EXAMPLE)].map((match) =>
+    exampleFields(match[1]!),
   );
   const acceptance = candidates
     .filter((fields) => fields.has('kind') && fields.has('subjectPlan') && fields.has('classRef'))
@@ -29,6 +70,12 @@ function documentedFields(source: string): Set<string> {
 }
 
 describe('acceptance-rubric documentation envelope', () => {
+  it('recognizes both explicit and caller-supplied shorthand fields without reading nested criteria', () => {
+    expect(
+      [...exampleFields("rubricRef, kind:'acceptance', criteria:[{ id:'outcome', checks:[1, 2] }], title")],
+    ).toEqual(['rubricRef', 'kind', 'criteria', 'title']);
+  });
+
   it('names every required rubrics:propose field from the live schema', () => {
     const fields = documentedFields(readCorpus());
     const required = Object.entries(rubricsProposeArgs.shape)

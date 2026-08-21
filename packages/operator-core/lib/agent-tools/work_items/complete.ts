@@ -1073,29 +1073,33 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     });
 
   try {
+    // Keep the owning checkout alongside the SHA. A SHA is only meaningful inside
+    // its repository's object database; this disambiguates a nested repo/submodule
+    // from the operator checkout without spawning git or relying on a caller claim.
+    const repositoryRoot = nodePath.resolve(repoRoot);
     // `.git` is a DIRECTORY in the main checkout, but a FILE holding `gitdir: <path>`
     // in a worktree or submodule. This repo has both, so follow the indirection once
     // rather than silently returning nothing in a worktree.
-    let gitDir = nodePath.join(repoRoot, '.git');
+    let gitDir = nodePath.join(repositoryRoot, '.git');
     const dotGit = readFile(gitDir);
     if (dotGit !== undefined) {
       const pointed = /^gitdir:\s*(.+)$/m.exec(dotGit.trim())?.[1]?.trim();
       if (!pointed) return undefined; // a readable `.git` FILE that is not a gitdir pointer
-      gitDir = nodePath.isAbsolute(pointed) ? pointed : nodePath.resolve(repoRoot, pointed);
+      gitDir = nodePath.isAbsolute(pointed) ? pointed : nodePath.resolve(repositoryRoot, pointed);
     }
 
     const head = readFile(nodePath.join(gitDir, 'HEAD'))?.trim();
     if (!head) return undefined;
 
     // Detached HEAD: the sha sits in the file itself.
-    if (SHA_RE.test(head)) return { headSha: head };
+    if (SHA_RE.test(head)) return { repositoryRoot, headSha: head };
 
     const ref = /^ref:\s*(.+)$/.exec(head)?.[1]?.trim();
     if (!ref) return undefined;
 
     // Loose ref first; then packed-refs, where a ref lives once it has been packed.
     const loose = readFile(nodePath.join(gitDir, ref))?.trim();
-    if (loose && SHA_RE.test(loose)) return { headSha: loose };
+    if (loose && SHA_RE.test(loose)) return { repositoryRoot, headSha: loose };
 
     const packed = readFile(nodePath.join(gitDir, 'packed-refs'));
     if (!packed) return undefined;
@@ -1104,7 +1108,7 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
       const [sha, name] = line.trim().split(/\s+/, 2);
       // Exact ref match only — a suffix/`includes` match would happily bind
       // `refs/heads/staging` to `refs/remotes/origin/staging` and stamp the WRONG commit.
-      if (name === ref && sha && SHA_RE.test(sha)) return { headSha: sha };
+      if (name === ref && sha && SHA_RE.test(sha)) return { repositoryRoot, headSha: sha };
     }
     return undefined;
   } catch {

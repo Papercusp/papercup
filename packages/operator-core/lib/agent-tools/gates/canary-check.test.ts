@@ -14,7 +14,10 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-x' }));
 const isRegisteredHiveMock = vi.fn(async () => true);
-vi.mock('../../harness-registry', () => ({ isRegisteredHive: (...a: unknown[]) => isRegisteredHiveMock(...a) }));
+vi.mock('../../harness-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness-registry')>()),
+  isRegisteredHive: (...a: unknown[]) => isRegisteredHiveMock(...a),
+}));
 const insertProbeMock = vi.fn(async () => ({}));
 vi.mock('../../sync/pot-git/federation-probe-store', () => ({ insertProbe: (...a: unknown[]) => insertProbeMock(...a) }));
 

@@ -88,6 +88,13 @@ export type CellRead =
       headline: string;
       resolver: string;
       /**
+       * Axis 6 — the optional total order declared by the cell. This is metadata
+       * about the value, not a second resolver result, so project it from the
+       * registered spec alongside the other read lenses. Omitted means the cell
+       * deliberately has no ordering opinion; never manufacture an empty order.
+       */
+      ordered?: { stages: string[] };
+      /**
        * P-021 — the MATERIAL answer, present only when the spec declares
        * `materiality` AND that path resolved in this same result.
        *
@@ -703,6 +710,7 @@ async function readCellValue(
       value,
       headline: spec.headline,
       resolver: spec.resolver,
+      ...(spec.ordered === undefined ? {} : { ordered: { stages: [...spec.ordered.stages] } }),
       falsifier: falsifierFrom(payload, spec.falsifier),
       ...(spec.unknownHoist === undefined ? {} : { unknownHoist: hoistFrom(payload, spec.unknownHoist) }),
       ...(materialPath !== undefined && materialValue !== undefined

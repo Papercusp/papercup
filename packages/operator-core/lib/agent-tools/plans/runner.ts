@@ -85,6 +85,7 @@ const PLAN_TOOL_NAMES = [
   'plans:add-decision',
   'plans:add-item',
   'plans:set-frontmatter',
+  'plans:set-title',
 ] as const;
 
 /** The `plans:*` surface, as `mcp__agentmcp__`-prefixed allowed-tool names. */

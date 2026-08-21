@@ -87,6 +87,11 @@ export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
  */
 export const CompletionTreeStampSchema = z.object({
   /**
+   * Canonical local checkout root that owns `headSha`. Optional only so pre-fix
+   * persisted SHA-only records remain readable; new server stamps always include it.
+   */
+  repositoryRoot: z.string().min(1).optional(),
+  /**
    * Full HEAD commit sha of the integration checkout at close time, read directly
    * from the git refs (never via a `git` subprocess — see completionTreeStamp()).
    */
