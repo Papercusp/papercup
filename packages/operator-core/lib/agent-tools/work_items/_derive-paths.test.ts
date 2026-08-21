@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { deriveRepoPathsFromText } from './_derive-paths';
+
+const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 describe('deriveRepoPathsFromText (EI-16028)', () => {
   it('extracts a single repo-relative path mentioned in prose', () => {
@@ -37,6 +41,13 @@ describe('deriveRepoPathsFromText (EI-16028)', () => {
 
   it('ignores a bare prefix with nothing meaningful after it', () => {
     expect(deriveRepoPathsFromText('somewhere under src/ we should look')).toEqual([]);
+  });
+
+  it('filters derived paths to existing files contained by the repo root', () => {
+    const existing = 'packages/operator-core/lib/agent-tools/work_items/_derive-paths.ts';
+    const nonexistent = 'apps/packages/libs/scripts';
+    const escaping = `packages/operator-core/${'../'.repeat(6)}etc/passwd`;
+    expect(deriveRepoPathsFromText(`${existing} ${nonexistent} ${escaping}`, { repoRoot })).toEqual([existing]);
   });
 
   it('caps at the configured max (default 12)', () => {
