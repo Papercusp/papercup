@@ -24,6 +24,9 @@
  *   - P-012 RESOLVER: spawn a `merge-resolver` role via the invoke route, deduped on
  *     the open escalation (one resolver per harness). A clean sync clears the escalation.
  *   - Records `{ last_synced_at, last_status, head_sha }` onto the routine's metadata.
+ *   - Records `git_sync_activity` while the local commit stage and every bridged/P2P
+ *     post-leg are still running, so `routines:list` cannot mistake local-stage
+ *     completion for a terminal git-sync fire (EI-21049559233457671).
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
@@ -1062,6 +1065,30 @@ async function patchRoutineMetadata(slug: string, workspaceId: string, patch: Re
   );
 }
 
+type GitSyncActivityPhase = 'local-sync' | 'post-legs' | 'complete' | 'error';
+
+/**
+ * Writer-backed liveness for the whole git-sync action, not just its local commit
+ * stage. `recordOutcome` runs before the GitHub bridge and P2P legs, so
+ * `last_status: 'synced'` alone is deliberately not terminal evidence. Keep every
+ * field in this object on every write: `patchRoutineMetadata` is a top-level JSONB
+ * merge and nested omission would otherwise silently erase the marker's state.
+ */
+async function writeGitSyncActivity(
+  slug: string,
+  workspaceId: string,
+  activity: {
+    active: boolean;
+    phase: GitSyncActivityPhase;
+    started_at: number;
+    updated_at: number;
+    completed_at: number | null;
+    outcome_status: GitSyncOutcome['status'] | null;
+  },
+): Promise<void> {
+  await patchRoutineMetadata(slug, workspaceId, { git_sync_activity: activity });
+}
+
 async function recordOutcome(
   slug: string,
   workspaceId: string,
@@ -1685,6 +1712,15 @@ async function handleGitSync(
       ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
     };
   }
+  const activityStartedAt = Date.now();
+  await writeGitSyncActivity(slug, workspaceId, {
+    active: true,
+    phase: 'local-sync',
+    started_at: activityStartedAt,
+    updated_at: activityStartedAt,
+    completed_at: null,
+    outcome_status: null,
+  });
   // EI-18: previous tick's counters BEFORE this tick overwrites them.
   const prev = await readEscalationCounters(slug, workspaceId);
 
@@ -1736,6 +1772,16 @@ async function handleGitSync(
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
       step: runCheckpointedStep,
     });
+  } catch (error) {
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: false,
+      phase: 'error',
+      started_at: activityStartedAt,
+      updated_at: Date.now(),
+      completed_at: Date.now(),
+      outcome_status: null,
+    }).catch(() => {});
+    throw error;
   } finally {
     await stopLockHeartbeat();
     if (lock.state === 'acquired') await releaseAll(cd, lockOwner, acquired);
@@ -1765,25 +1811,38 @@ async function handleGitSync(
   // EI-438: consecutive ticks with a file still quarantined (drives P-005 escalate-to-human).
   const contentTicks = outcome.contentErrors.length > 0 ? prev.contentTicks + 1 : 0;
 
-  // STEP `git-sync:record` — outcome recording + the whole escalation/dispatch tail as
-  // ONE checkpoint: a resumed fire that already recorded never re-appends the pipeline
-  // event or re-decides escalations (the resolver/fixer dispatches inside are further
-  // deduped by their own in-flight markers).
-  await runCheckpointedStep('git-sync:record', () =>
-    recordAndEscalateTick({
-      slug,
-      workspaceId,
-      outcome,
-      errTicks,
-      contentTicks,
-      prevContentTicks: prev.contentTicks,
-      prevOversizedKeys: prev.oversizedKeys,
-      cfgBranch: cfg.branch,
-      prevHeadSha,
-      repoPath,
-      attributionOn,
-      pushMode: effectivePushMode,
-    }));
+  try {
+    // STEP `git-sync:record` — outcome recording + the whole escalation/dispatch tail as
+    // ONE checkpoint: a resumed fire that already recorded never re-appends the pipeline
+    // event or re-decides escalations (the resolver/fixer dispatches inside are further
+    // deduped by their own in-flight markers).
+    await runCheckpointedStep('git-sync:record', () =>
+      recordAndEscalateTick({
+        slug,
+        workspaceId,
+        outcome,
+        errTicks,
+        contentTicks,
+        prevContentTicks: prev.contentTicks,
+        prevOversizedKeys: prev.oversizedKeys,
+        cfgBranch: cfg.branch,
+        prevHeadSha,
+        repoPath,
+        attributionOn,
+        pushMode: effectivePushMode,
+      }));
+
+    // `recordOutcome` writes the local stage's status before any GitHub bridge or
+    // P2P post-leg runs. Keep that local result visible, but explicitly mark the
+    // whole action non-terminal until every later leg has settled.
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: true,
+      phase: 'post-legs',
+      started_at: activityStartedAt,
+      updated_at: Date.now(),
+      completed_at: null,
+      outcome_status: outcome.status,
+    });
 
   // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
   // edit a local git commit yet". Remote origin/staging egress is a distinct,
@@ -1878,6 +1937,27 @@ async function handleGitSync(
     await runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId));
   }
 
+  } catch (error) {
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: false,
+      phase: 'error',
+      started_at: activityStartedAt,
+      updated_at: Date.now(),
+      completed_at: Date.now(),
+      outcome_status: outcome.status,
+    }).catch(() => {});
+    throw error;
+  }
+
+  const completedAt = Date.now();
+  await writeGitSyncActivity(slug, workspaceId, {
+    active: false,
+    phase: 'complete',
+    started_at: activityStartedAt,
+    updated_at: completedAt,
+    completed_at: completedAt,
+    outcome_status: outcome.status,
+  });
   return outcome;
 }
 

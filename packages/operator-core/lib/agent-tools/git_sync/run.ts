@@ -173,7 +173,9 @@ export default defineTool({
             workspace_id: workspaceId,
             install_slug: slug,
             target_role: 'system:git-sync',
-            fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha'],
+            // `last_status` is written before the GitHub bridge/P2P post-legs;
+            // the activity marker is the writer-backed terminality check.
+            fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha', 'git_sync_activity'],
           },
         }
       : undefined;
