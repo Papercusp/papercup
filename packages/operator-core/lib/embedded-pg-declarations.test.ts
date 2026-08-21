@@ -30,6 +30,7 @@ import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -37,18 +38,26 @@ const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url));
 const PKG_DIR = join(REPO_ROOT, 'libs/papercusp/packages/embedded-postgres-server/');
 const DECLARATIONS = ['index.d.ts', 'migration-runner.d.ts'] as const;
 
-// The repo's own compiler, by absolute path. `npx tsc` would be resolved
-// relative to the temp working directory below — which has no node_modules, so
-// npx would try to FETCH a TypeScript (offline: fail; online: a version that is
-// not the one the repo pins, silently changing the emit).
-const TSC = join(REPO_ROOT, 'node_modules/.bin/tsc');
+// The repo's own compiler, resolved through the `typescript` PACKAGE rather than
+// `npx tsc` OR `node_modules/.bin/tsc` — both of which name a compiler this repo
+// does not control. `npx` resolves relative to the temp working directory below,
+// which has no node_modules, so it would try to FETCH a TypeScript (offline:
+// fail; online: a version the repo does not pin, silently changing the emit).
+// `.bin/tsc` looks like the fix for that but only narrows the hole: the slot is
+// first-come-first-served across every installed package shipping a `tsc` bin, so
+// adding `@typescript/native` (TypeScript 7) silently repointed it and this test
+// began regenerating TS7-shaped declarations to compare against correctly-
+// committed TS6 ones — a red the candidate's own sources could not cause, and
+// symmetrically a false-GREEN waiting to happen (WI-40183). Resolving by
+// SPECIFIER pins the emit to whichever compiler the repo designates `typescript`.
+const TSC_JS = createRequire(import.meta.url).resolve('typescript/lib/tsc.js');
 
 /** Run the package's declaration build, emitting to `outDir` instead of in place.
  *  Surfaces tsc's own output on failure — a bare "Command failed" hides the
  *  diagnostic that says what actually broke. */
 function runTsc(outDir: string): void {
   try {
-    execFileSync(TSC, ['-p', 'tsconfig.types.json', '--outDir', outDir], {
+    execFileSync(process.execPath, [TSC_JS, '-p', 'tsconfig.types.json', '--outDir', outDir], {
       cwd: PKG_DIR,
       encoding: 'utf8',
       stdio: 'pipe',
@@ -62,6 +71,16 @@ function runTsc(outDir: string): void {
 const REGEN = 'npm run gen:types --prefix libs/papercusp/packages/embedded-postgres-server';
 
 describe('@papercusp/embedded-postgres-server generated declarations', () => {
+  it('pins gen:types to the same repository TypeScript compiler used by this drift check', () => {
+    const manifest = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(manifest.scripts?.['gen:types']).toContain(
+      'node ../../../../node_modules/typescript/lib/tsc.js -p tsconfig.types.json',
+    );
+    expect(manifest.scripts?.['gen:types']).not.toMatch(/(?:^|&&\s*)tsc\s+-p/);
+  });
+
   it(`regenerate identically from source — run \`${REGEN}\` if this fails`, () => {
     // Emit to a temp directory, never in place: this repo has ONE working tree
     // shared by the whole fleet, so a test must not write into the package a
@@ -94,7 +113,9 @@ describe('@papercusp/embedded-postgres-server generated declarations', () => {
     const dts = readFileSync(join(PKG_DIR, 'src', 'migration-runner.d.ts'), 'utf8');
 
     // The one symbol every operator-core importer of this package actually uses.
-    expect(dts).toContain('export function applyPendingMigrations');
+    // Declaration emitters may spell an ambient export as either `export function`
+    // or `export declare function`; both preserve the same callable export contract.
+    expect(dts).toMatch(/export\s+(?:declare\s+)?function\s+applyPendingMigrations/);
 
     // Each of these was literally `any` while the JSDoc block sat detached above
     // `MANUAL_ONLY`. Asserting the real types is what makes a re-detachment fail
@@ -106,17 +127,19 @@ describe('@papercusp/embedded-postgres-server generated declarations', () => {
       /sqlDir:\s*string/,
     );
     expect(dts, 'log lost its parameter — it inferred `() => void` (wrong arity) when the JSDoc was inert').toMatch(
-      /log\?:\s*\(\(s:\s*string\)\s*=>\s*void\)/,
+      /log\?:\s*\(?\(s:\s*string\)\s*=>\s*void\)?(?:\s*\|\s*undefined)?;/,
     );
     // Not just typed but OPTIONAL: with the JSDoc inert this was `skipFile: any`,
     // i.e. a required parameter, which every real caller omits.
     expect(dts, 'skipFile must be optional — it was required-`any` while the JSDoc was inert').toMatch(
-      /skipFile\?:\s*\(\(file:\s*string\)\s*=>\s*boolean\)/,
+      /skipFile\?:\s*\(?\(file:\s*string\)\s*=>\s*boolean\)?(?:\s*\|\s*undefined)?;/,
     );
 
     // A blunt backstop for the general case: no parameter of the exported
     // signature should be `any`.
-    const signature = dts.slice(dts.indexOf('export function applyPendingMigrations'));
+    const signatureStart = dts.search(/export\s+(?:declare\s+)?function\s+applyPendingMigrations/);
+    expect(signatureStart, 'applyPendingMigrations declaration was not found').toBeGreaterThanOrEqual(0);
+    const signature = dts.slice(signatureStart);
     expect(signature, 'a parameter regressed to `any` — the JSDoc is no longer being applied').not.toMatch(
       /^\s+\w+\??:\s*any;/m,
     );
