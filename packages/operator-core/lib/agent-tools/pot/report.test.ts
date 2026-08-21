@@ -29,7 +29,8 @@ vi.mock('../../identity/resolve-local-github-identity', () => ({
   resolveLocalGithubIdentity: h.resolveLocalGithubIdentity,
 }));
 vi.mock('../../hive-reports-store', () => ({ fileReport: h.fileReport, countReportsSince: h.countReportsSince }));
-vi.mock('../../hive-membership-store', () => ({ getHiveMember: h.getPotMember }));
+vi.mock('../../hive-membership-store', async (orig) => ({
+  ...(await orig<typeof import('../../hive-membership-store')>()), getHiveMember: h.getPotMember }));
 // WI-5334: resolveHiveWorkspaceId (../../hive-store) — mocked (not left to hit the real DB)
 // so the ambient-vs-resolved-workspace-mismatch class has a fast, deterministic unit test
 // instead of relying solely on the live two-instance smoke witness.
@@ -38,7 +39,8 @@ vi.mock('../../hive-store', () => ({ resolveHiveWorkspaceId: h.resolveHiveWorksp
 // a joiner it is the LOCAL handle, while hive_policy / pot_members / hive_reports are all
 // `hiveScoped` — persisted under the OWNER-authored slug. Mocked (like resolveHiveWorkspaceId)
 // so the divergence has a fast deterministic unit test rather than only a live witness.
-vi.mock('../../federated-pot-scope', () => ({
+vi.mock('../../federated-pot-scope', async (orig) => ({
+  ...(await orig<typeof import('../../federated-pot-scope')>()),
   resolveFederatedPotScope: h.resolveFederatedPotScope,
 }));
 

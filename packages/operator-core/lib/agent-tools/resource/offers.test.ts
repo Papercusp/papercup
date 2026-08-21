@@ -22,7 +22,8 @@ vi.mock('../coordination/federation-scope', async () => {
   );
   return { ...actual, resolveWorkspaceHiveScope: vi.fn() };
 });
-vi.mock('../../p2p/offer-store', () => ({
+vi.mock('../../p2p/offer-store', async (orig) => ({
+  ...(await orig<typeof import('../../p2p/offer-store')>()),
   listOffers: vi.fn(async () => []),
 }));
 
