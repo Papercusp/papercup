@@ -132,6 +132,9 @@ describe('scorecards:emit audit-pending stamp (P-013)', () => {
     const res = await emitScorecard(
       { rubricRef: 'plan-x-acceptance', ratings: RATINGS, terminal: true },
       { createdBy: 'su-grader', ctxHarness: 'papercusp' },
+      // This case exercises audit-stamp exclusion, not the PG-backed coord
+      // identity lineage. Keep the unit test on the existing identity seam.
+      { sameAcceptanceAuthor: async () => false },
     );
     expect(res.ok).toBe(true);
     expect((res as { gradingAuditPending?: boolean }).gradingAuditPending).toBeUndefined();

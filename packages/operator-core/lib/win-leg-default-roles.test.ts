@@ -96,7 +96,9 @@ describe('WI-5600: the spanned Windows Server is normalized to a single publisha
   // every default Windows cut re-hides the Server from the page (the WI-5600
   // symptom) even though the by-default build now produces it.
   it('release-local.sh delegates spanned Server normalization to the shared helper', () => {
-    expect(releaseLocal).toContain('source "$HERE/lib/inno-spanned-server.sh"');
+    // The helper follows the orchestration revision, not the frozen target tree:
+    // exact-source salvage deliberately keeps those roots separate.
+    expect(releaseLocal).toContain('source "$ORCHESTRATOR_HERE/lib/inno-spanned-server.sh"');
     expect(releaseLocal).toContain('papercusp_normalize_spanned_server "$_win_inno_dir" "$VERSION"');
     // The shared implementation stores (no compression: -0) the stub + slices.
     expect(innoSpanHelper).toMatch(
