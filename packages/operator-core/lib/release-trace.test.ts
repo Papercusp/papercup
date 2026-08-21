@@ -467,6 +467,7 @@ describe('buildReleaseTrace', () => {
                 active: true,
                 activeSource: 'run-lock',
                 candidate: 'checkpoint-candidate',
+                startedAtMs: 123,
                 elapsedSec: 213,
                 asOfAgeMs: 0,
               },
