@@ -177,9 +177,10 @@ async function agentChatsMessagesHandler(
   // connection pre-stream (the 2026-06-11 15s-timeout flap under fleet load,
   // and the occasional harness_shared.spawned_agents row leak this WI
   // reported). Its own coverage lives in fleet/chat-spawn-tracking tests.
-  vi.doMock('@papercusp/db-org', async () => {
+  vi.doMock('@papercusp/db-org', async (orig) => {
     const actual = await vi.importActual<Record<string, unknown>>('@papercusp/db-org');
     return {
+      ...(await orig<typeof import('@papercusp/db-org')>()),
       ...actual,
       getLegacyClient: () => ({
         prepare: (sql: string) => ({
