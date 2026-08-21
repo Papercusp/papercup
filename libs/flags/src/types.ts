@@ -2673,6 +2673,47 @@ export const FLAGS = {
   // documented doom-loop attractor on every OMP launch. That unwind is
   // OMP_NATIVE_LSP_BUILTIN below.
   CODE_INTEL_LSP: "papercusp-code-intel-lsp",
+  // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-013: may `lsp.apply`
+  // WRITE a language server's WorkspaceEdit to the tree?
+  //
+  // SEPARATE from CODE_INTEL_LSP on purpose, and the separation is the point of
+  // P-013 rather than tidiness. CODE_INTEL_LSP governs a facade that is
+  // read-only by construction — turning it on cannot change a byte. This one
+  // governs the single module that can. Collapsing them would mean enabling
+  // code intelligence silently enables code MUTATION, which is precisely the
+  // conflation the plan's read-only rail exists to prevent. Both flags must be
+  // on for a write to happen: `lsp.apply` computes its edit through the gated
+  // read facade, so CODE_INTEL_LSP off already denies it.
+  //
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS). It is a WRITE
+  // capability, so the bar is higher than for the read facade, and it is met by
+  // proof rather than by assurance: P-013's condition is "keep production
+  // read-only if any invariant is not proven", and each of the six is pinned by
+  // a falsifiable test in lsp-apply.test.ts (complete target set across both
+  // WorkspaceEdit encodings · fail-CLOSED atomic locking · root confinement
+  // after realpath · content compare-and-swap staleness · overlap/bounds
+  // validation with reverse-order application · all-or-nothing rollback).
+  // Nothing calls it implicitly: it acts only on an explicit cursor + newName
+  // from a caller that asked to rename something.
+  //
+  // OFF is the kill-switch — `lsp.apply` refuses with flag_disabled and the
+  // subsystem is read-only again, byte-identical to pre-P-013.
+  CODE_INTEL_LSP_APPLY: "papercusp-code-intel-lsp-apply",
+  // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-014: the STRUCTURAL leg
+  // (pinned ast-grep) — pattern-shaped search and codemod PREVIEW.
+  //
+  // Its own flag rather than a slice of CODE_INTEL_LSP because it is a
+  // different backend answering a different question (shape, not type truth)
+  // with a different failure mode, and because it can be provisioned
+  // independently: the pinned binary lives under ~/.papercusp/vendor/ast-grep
+  // and its absence must be a refusal from THIS leg, not a reason to think code
+  // intelligence as a whole is down.
+  //
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): the facade never
+  // constructs ast-grep's `--update-all`, so it is read-only by construction
+  // and additive. OFF is the kill-switch — every op refuses and no ast-grep
+  // process is spawned.
+  CODE_INTEL_AST_GREP: "papercusp-code-intel-ast-grep",
   // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may an OMP
   // session KEEP its native `lsp` builtin? Replaces the hard-coded `--no-lsp`
   // that apps/operator/scripts/psu-launcher.mjs passed on both omp branches.
