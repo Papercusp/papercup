@@ -28,7 +28,7 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { stampGreenlitNowBlock } from './greenlit-now-stamp';
-import { stampForcedPastWaiver } from './forced-past-stamp';
+import { stampForcedPastWaiver, type ForcedPastRecord } from './forced-past-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -303,10 +303,17 @@ export default defineTool({
         // Hoisted out of the `shipped` branch: the gate decides the waiver, but
         // the WRITE below is what makes it permanent, so the record has to
         // survive the branch that produced it.
-        let forcedPast: { reason: string; checks: readonly string[] } | undefined;
+        let forcedPast: ForcedPastRecord | undefined;
         if (status === 'shipped') {
           const gate = await evaluatePlanAcceptanceGate(slug, args.force ? { force: args.force } : undefined);
-          forcedPast = gate.forcedPast;
+          if (gate.forcedPast) {
+            const actor = resolveAgentIdentity(ctx);
+            forcedPast = {
+              ...gate.forcedPast,
+              forcedAt: new Date().toISOString(),
+              forcedBy: { ownerId: actor.ownerId, ownerLabel: actor.ownerLabel },
+            };
+          }
           if (!gate.satisfied) {
             const acceptanceGrader = await launchAcceptanceGraderForGate(slug, gate, ctx, args.harness);
             return {

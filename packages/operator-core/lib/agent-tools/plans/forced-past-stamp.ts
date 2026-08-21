@@ -36,10 +36,38 @@
 /** Heading of the append-only waiver log. */
 export const FORCED_PAST_SECTION_HEADING = '## Acceptance waiver';
 
+/** Stable prefix for the machine-readable companion to each human entry. */
+export const FORCED_PAST_MACHINE_PREFIX = 'papercusp:forced-past:v1:';
+
+export interface ForcedPastActor {
+  ownerId: string;
+  ownerLabel: string;
+}
+
 /** Shape returned by the acceptance gate when a force waived checks. */
 export interface ForcedPastRecord {
   reason: string;
   checks: readonly string[];
+  /** ISO timestamp. Older, human-only stamps carry a date string. */
+  forcedAt?: string;
+  /** The attributable caller. Null only for stamps predating the machine record. */
+  forcedBy?: ForcedPastActor | null;
+  /** True only when reconstructed from a pre-v1 human-only entry. */
+  legacy?: boolean;
+}
+
+export interface StoredForcedPastRecord {
+  reason: string;
+  checks: string[];
+  forcedAt: string;
+  forcedBy: ForcedPastActor | null;
+  legacy: boolean;
+}
+
+/** Bounded row projection surfaced by plans:get/list. Full history stays in content. */
+export interface ForcedPastSummary {
+  count: number;
+  latest: StoredForcedPastRecord;
 }
 
 /**
@@ -63,11 +91,122 @@ function flattenReason(reason: string): string {
  * Exported so tests — and any future reader/parser of the log — agree on the
  * shape by construction instead of by a duplicated literal.
  */
+function normalizeRecord(forcedPast: ForcedPastRecord, today: Date): StoredForcedPastRecord {
+  const supplied = typeof forcedPast.forcedAt === 'string' ? forcedPast.forcedAt.trim() : '';
+  const forcedAt = supplied || today.toISOString();
+  const forcedBy = forcedPast.forcedBy;
+  return {
+    reason: flattenReason(forcedPast.reason),
+    checks: [...forcedPast.checks].filter((c): c is string => typeof c === 'string' && c.length > 0).sort(),
+    forcedAt,
+    forcedBy:
+      forcedBy && typeof forcedBy.ownerId === 'string' && typeof forcedBy.ownerLabel === 'string'
+        ? { ownerId: forcedBy.ownerId, ownerLabel: forcedBy.ownerLabel }
+        : null,
+    legacy: forcedPast.legacy === true,
+  };
+}
+
 export function forcedPastEntry(forcedPast: ForcedPastRecord, today: Date = new Date()): string {
-  const iso = today.toISOString().slice(0, 10);
-  const checks = [...forcedPast.checks].sort();
+  const record = normalizeRecord(forcedPast, today);
+  const iso = record.forcedAt.slice(0, 10);
+  const checks = record.checks;
   const rendered = checks.length > 0 ? checks.map((c) => `\`${c}\``).join(', ') : '(none recorded)';
-  return `- **${iso}** — shipped past ${rendered}. Reason: ${flattenReason(forcedPast.reason)}`;
+  const actor = record.forcedBy
+    ? ` Forced by: ${flattenReason(record.forcedBy.ownerLabel)} (\`${flattenReason(record.forcedBy.ownerId)}\`).`
+    : '';
+  return `- **${iso}** — shipped past ${rendered}. Reason: ${record.reason}${actor}`;
+}
+
+function encodeMachineRecord(record: StoredForcedPastRecord): string {
+  return Buffer.from(JSON.stringify(record), 'utf8').toString('base64url');
+}
+
+function decodeMachineRecord(encoded: string): StoredForcedPastRecord | null {
+  try {
+    const value = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (typeof value.reason !== 'string' || typeof value.forcedAt !== 'string') return null;
+    if (!Array.isArray(value.checks) || !value.checks.every((c) => typeof c === 'string')) return null;
+    const actor = value.forcedBy;
+    if (
+      actor !== null &&
+      (typeof actor !== 'object' ||
+        typeof (actor as Record<string, unknown>).ownerId !== 'string' ||
+        typeof (actor as Record<string, unknown>).ownerLabel !== 'string')
+    ) {
+      return null;
+    }
+    return {
+      reason: value.reason,
+      checks: [...(value.checks as string[])].sort(),
+      forcedAt: value.forcedAt,
+      forcedBy: actor as ForcedPastActor | null,
+      legacy: value.legacy === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function machineEntry(record: StoredForcedPastRecord): string {
+  return `<!-- ${FORCED_PAST_MACHINE_PREFIX}${encodeMachineRecord(record)} -->`;
+}
+
+function recordKey(record: StoredForcedPastRecord): string {
+  return JSON.stringify({
+    date: record.forcedAt.slice(0, 10),
+    reason: record.reason,
+    checks: record.checks,
+    forcedBy: record.forcedBy,
+  });
+}
+
+/** Parse v1 machine records plus pre-v1 human-only entries, without double-counting. */
+export function parseForcedPastRecords(body: string): StoredForcedPastRecord[] {
+  const found: Array<{ index: number; record: StoredForcedPastRecord }> = [];
+  const machineHumanLines = new Set<string>();
+  const machineRe = new RegExp(`<!--\\s*${FORCED_PAST_MACHINE_PREFIX}([A-Za-z0-9_-]+)\\s*-->`, 'g');
+  for (const match of body.matchAll(machineRe)) {
+    const record = decodeMachineRecord(match[1] ?? '');
+    if (!record) continue;
+    found.push({ index: match.index ?? 0, record });
+    machineHumanLines.add(forcedPastEntry(record, new Date(record.forcedAt)));
+  }
+
+  const legacyRe = /^- \*\*(\d{4}-\d{2}-\d{2})\*\* — shipped past (.+?)\. Reason: (.*)$/gm;
+  for (const match of body.matchAll(legacyRe)) {
+    const line = match[0] ?? '';
+    if (machineHumanLines.has(line)) continue;
+    const checksText = match[2] ?? '';
+    const checks = [...checksText.matchAll(/`([^`]+)`/g)].map((m) => m[1]!).sort();
+    found.push({
+      index: match.index ?? 0,
+      record: {
+        forcedAt: match[1]!,
+        checks,
+        reason: flattenReason(match[3] ?? ''),
+        forcedBy: null,
+        legacy: true,
+      },
+    });
+  }
+
+  const seen = new Set<string>();
+  return found
+    .sort((a, b) => a.index - b.index)
+    .map((x) => x.record)
+    .filter((record) => {
+      const key = recordKey(record);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+export function summarizeForcedPast(body: string): ForcedPastSummary | null {
+  const records = parseForcedPastRecords(body);
+  const latest = records.at(-1);
+  return latest ? { count: records.length, latest } : null;
 }
 
 /**
@@ -86,17 +225,19 @@ export function stampForcedPastWaiver(
   if (!forcedPast) return null;
   if (!Array.isArray(forcedPast.checks) || forcedPast.checks.length === 0) return null;
 
-  const entry = forcedPastEntry(forcedPast, today);
+  const record = normalizeRecord(forcedPast, today);
+  const entry = forcedPastEntry(record, today);
+  const machine = machineEntry(record);
   // Idempotency is per-ENTRY, not per-section: a second, genuinely different
   // waiver must still append beneath an existing heading.
-  if (body.includes(entry)) return null;
+  if (parseForcedPastRecords(body).some((existing) => recordKey(existing) === recordKey(record))) return null;
 
   const trimmed = body.replace(/\s+$/, '');
   if (trimmed.includes(FORCED_PAST_SECTION_HEADING)) {
     // The section exists — append this entry to the END of the document. The
     // heading is append-only and nothing writes below it, so document-end IS
     // the end of the log.
-    return `${trimmed}\n${entry}\n`;
+    return `${trimmed}\n${entry}\n${machine}\n`;
   }
 
   const preamble =
@@ -104,5 +245,5 @@ export function stampForcedPastWaiver(
     `an explicit, reasoned waiver — what was skipped, and why — so the exception stays visible ` +
     `to anyone who later treats this plan as evidence that the work was verified._`;
 
-  return `${trimmed}\n\n${FORCED_PAST_SECTION_HEADING}\n\n${preamble}\n\n${entry}\n`;
+  return `${trimmed}\n\n${FORCED_PAST_SECTION_HEADING}\n\n${preamble}\n\n${entry}\n${machine}\n`;
 }
