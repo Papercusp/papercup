@@ -159,8 +159,8 @@ describe('recipe recommendation authority (P-008)', () => {
     ).toBe('/tmp/run-1786896331.log');
     for (const path of [
       '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
-      '/home/marsh-office/.papercusp/checkpoint-logs/2026-08-12T19-34-01-974Z-base-8779b1c7f288-cand-53f4676ffa37.log',
-      '/home/marsh-office/.papercusp/checkpoint-logs/2026-08-21T00-03-33-331Z-base-a2d69cef50d5-cand-1bbf7e4fe81c.log',
+      '/home/jdoe/.papercusp/checkpoint-logs/2026-08-12T19-34-01-974Z-base-8779b1c7f288-cand-53f4676ffa37.log',
+      '/home/jdoe/.papercusp/checkpoint-logs/2026-08-21T00-03-33-331Z-base-a2d69cef50d5-cand-1bbf7e4fe81c.log',
     ]) {
       expect(findVolatileRunArtifactLiteral(`const p = '${path}';`)).toBe(path);
     }
