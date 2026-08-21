@@ -1076,7 +1076,10 @@ def _batch_consume(state):
             'paths': repo_relative[:50],
             'batch_id': batch_info['batch_id'],
         })
-        _clear_transient_streak()
+        try:
+            os.remove(os.path.join(cache_dir, owner_marker_name('transient-streak')))
+        except Exception:
+            pass
         allow()
     deny(state.get('reason') or 'locks: the Claude edit batch was denied; retry the complete batch.')
 
@@ -1257,6 +1260,11 @@ def _locks_acquire_once(request):
         print(f'[locks] operator unreachable ({last_exc}); allowing edit (fail-open)',
               file=sys.stderr)
         _recover_ambiguous_acquire(operation_started_at)
+        if batch_info:
+            return {
+                '_hook_fail_open': True,
+                '_detail': f'operator unreachable: {last_exc}',
+            }
         allow()
 
     inner, rpc_error, phase = _parse_mcp_response(raw_resp)
@@ -1269,6 +1277,11 @@ def _locks_acquire_once(request):
             }
         mark_error('parse', 'JSON-RPC error in response')
         _recover_ambiguous_acquire(operation_started_at)
+        if batch_info:
+            return {
+                '_hook_fail_open': True,
+                '_detail': 'JSON-RPC error in response',
+            }
         allow()
     if phase != 'ok':
         detail = {
@@ -1277,6 +1290,11 @@ def _locks_acquire_once(request):
         }.get(phase, 'unparseable operator response')
         mark_error('parse', detail)
         _recover_ambiguous_acquire(operation_started_at)
+        if batch_info:
+            return {
+                '_hook_fail_open': True,
+                '_detail': detail,
+            }
         allow()
     compatibility_error = _coordination_domain_rejection(inner)
     if compatibility_error:
@@ -1410,6 +1428,26 @@ def _grant(granted):
         # Older operators do not send the additive field. Preserve their
         # existing behavior rather than silently allowing an untracked edit.
         release_paths = repo_relative[:50]
+    if batch_info:
+        _batch_terminal_state(
+            'granted',
+            lock_id=lock_id,
+            release_paths=release_paths,
+            coordination_domain=(next(iter(repo_domains)) if len(repo_domains) == 1 else None),
+        )
+        _batch_mark_tool('granted')
+        write_marker('last-decision.json', {
+            'ts': now_iso(),
+            'decision': 'batch-leader-granted',
+            'owner': owner,
+            'tool': tool_name,
+            'paths': repo_relative[:50],
+            'release_paths': release_paths,
+            'lock_id': lock_id,
+            'batch_id': batch_info['batch_id'],
+        })
+        _clear_transient_streak()
+        allow()
     decision = {
         'ts': now_iso(),
         'decision': 'already-held' if isinstance(newly_held, list) and not release_paths else 'granted',
@@ -1435,6 +1473,13 @@ def _grant(granted):
             pass
     _clear_transient_streak()
     allow()
+
+
+def _batch_deny(reason):
+    if batch_info:
+        _batch_terminal_state('denied', reason=reason)
+        _batch_mark_tool('denied')
+    deny(reason)
 
 
 def _is_transient(res):
@@ -1490,11 +1535,25 @@ def _clear_transient_streak():
         pass
 
 
+def _batch_allow_fail_open(result):
+    if not batch_info or not isinstance(result, dict) or not result.get('_hook_fail_open'):
+        return False
+    reason = result.get('_detail') or 'operator response unavailable'
+    _batch_terminal_state('allowed', reason=reason)
+    _batch_mark_tool('allowed')
+    allow()
+    return True
+
+
 request = req
 inner = _locks_acquire_once(request)
+_batch_allow_fail_open(inner)
 if inner.get('_hook_compatibility_error'):
     if req_without_coordination_domain is None:
         mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
+        if batch_info:
+            _batch_terminal_state('allowed', reason=inner.get('_detail'))
+            _batch_mark_tool('allowed')
         allow()
     # The tree hook can update before the operator process reaches main. Keep
     # the edit protected by retrying the same acquire against the older
@@ -1508,6 +1567,7 @@ if inner.get('_hook_compatibility_error'):
     mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
     request = req_without_coordination_domain
     inner = _locks_acquire_once(request)
+    _batch_allow_fail_open(inner)
 # We reached the operator and got a usable answer → enforcement healthy.
 mark_success()
 
@@ -1530,7 +1590,7 @@ if _is_transient(inner):
 if _is_transient(inner):
     _streak = _bump_transient_streak()
     if _streak >= TRANSIENT_STREAK_ESCALATE_AT:
-        deny(
+        _batch_deny(
             f'locks: PERSISTENT transient contention — attempt #{_streak} in a row for '
             'this session. The advisory-lock timeout did not identify a holder; '
             'that is unknown, not evidence that the requested files are unheld. '
@@ -1538,7 +1598,7 @@ if _is_transient(inner):
             'service state or pivot to another task. Do NOT queue wake_on_grant '
             'for a timeout that produced no holder or waiter ticket.'
         )
-    deny(
+    _batch_deny(
         'locks: transient contention — the lock service could not serialize this '
         'acquire in time (advisory-lock timeout; holder identity is unknown). '
         'This does not prove the requested files are unheld. Simply RETRY this '
@@ -1575,5 +1635,5 @@ paths = [b.get('path') for b in busy[:5] if b.get('path')]
 lines.append('If locks:acquire is not on this client surface, use '
              'tools:invoke {name:"locks:acquire", args:{paths:' + json.dumps(paths) +
              ', intent:"<your intent>", wake_on_grant:true}} and end this turn.')
-deny('\n'.join(lines))
+_batch_deny('\n'.join(lines))
 PYEOF
