@@ -103,6 +103,22 @@ export async function recordReleaseFixerNoTurnEscalation(
  * Returns `null` when there's no spawn id to check (a DBOS-durable fire / legacy
  * record), which the decision treats as "presumed covered". Fail-soft: a query
  * error returns null (presumed covered) rather than hammering a re-dispatch.
+ *
+ * EI-21019097008328015: a settled task_ledger row for THIS exact spawn id
+ * (`detail->>'spawnRecordId'`) outranks the raw pid check too — not just a LIVE
+ * one. Every agent-role spawn on this host (bees, system routines, and
+ * release-fixers alike) launches through the identical `invoke-once` binary, so
+ * `isSpawnProcessAlive`'s cmdline substring check only proves "some invoke-once
+ * process is running at this pid", never that it is THIS spawn's own process.
+ * Once a spawn's own recorded child exits, the kernel can — and on a busy fleet
+ * routinely does — reassign that exact pid to an unrelated invoke-once-launched
+ * process (a bee, or the very green-checkpoint routine that dispatched this
+ * fixer) within the ~10-minute heartbeat grace window below, and that unrelated
+ * process reads as "alive" purely because it also matches 'invoke-once'. The
+ * task_ledger row is keyed on the exact spawn id, so it never aliases a
+ * different process: once it settles terminal, THIS spawn's own tracked process
+ * is confirmed gone, and no pid reading (which may now name someone else's
+ * still-running process) may override that.
  */
 export async function releaseFixerSpawnAlive(
   sql: postgres.Sql,
@@ -126,7 +142,16 @@ export async function releaseFixerSpawnAlive(
                    AND tl.detail->>'spawnRecordId' = sa.spawn_id
                    AND tl.last_seen_at IS NOT NULL
                    AND (now() - tl.last_seen_at) < make_interval(secs => $2)
-              ) AS live_task_scope
+              ) AS live_task_scope,
+              EXISTS (
+                SELECT 1
+                  FROM harness_shared.task_ledger tl
+                 WHERE tl.workspace_id = sa.workspace_id
+                   AND tl.class = 'agent-session'
+                   AND tl.launched_by = 'orchestrator:release-fixer'
+                   AND tl.state NOT IN ('pending','running')
+                   AND tl.detail->>'spawnRecordId' = sa.spawn_id
+              ) AS task_scope_ended
          FROM harness_shared.spawned_agents sa
         WHERE sa.spawn_id = $1
         LIMIT 1`,
@@ -137,6 +162,7 @@ export async function releaseFixerSpawnAlive(
       pid?: number | string | null;
       spawn_lease_live?: boolean;
       live_task_scope?: boolean;
+      task_scope_ended?: boolean;
     }>;
     const row = rows[0];
     if (!row) return false;
@@ -145,6 +171,15 @@ export async function releaseFixerSpawnAlive(
     // It outranks a terminal/stale spawn row until the task reconciler proves the
     // scope ended; otherwise a second fixer can mutate the same frozen candidate.
     if (row.live_task_scope) return true;
+
+    // EI-21019097008328015: the task reconciler already proved THIS spawn's own
+    // process ended. That is decisive even though the spawn row itself still
+    // reads `running` with a fresh heartbeat (a `loopbackFetch` heartbeat that
+    // was never refreshed after the fixer died at launch stays inside the grace
+    // window below) — a pid-reuse false-alive can only mislead the checks that
+    // follow, never this one, because it is keyed on the exact spawn id.
+    if (row.task_scope_ended) return false;
+
     if (!row.spawn_lease_live) return false;
 
     // A PID is only meaningful within the launcher boot that recorded it. A

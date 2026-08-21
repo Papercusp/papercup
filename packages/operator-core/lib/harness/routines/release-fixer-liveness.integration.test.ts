@@ -115,6 +115,29 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-scope-ended')).toBe(false);
   });
 
+  it('EI-21019097008328015: a settled task scope overrides a fresh-heartbeat spawn row whose recorded pid was reused by an unrelated invoke-once process', async () => {
+    // Reproduces the incident: the spawn row still reads `running` with a
+    // heartbeat inside the STALE_MS grace window (the launch-only heartbeat that
+    // is never refreshed once the fixer dies before its first turn), and its
+    // recorded pid now belongs to a DIFFERENT, unrelated invoke-once-launched
+    // process — every agent-role spawn (bees, system routines, and
+    // release-fixers alike) shares the identical `invoke-once` binary, so a
+    // reused pid reads as "alive" regardless of which spawn actually owns it
+    // now. `process.pid` stands in for that reused pid: `isSpawnProcessAlive`
+    // treats a pid equal to the running process as alive by construction, the
+    // same false-positive signal a real pid-reuse collision produces. The
+    // task_ledger row for THIS exact spawn id is already terminal, proving the
+    // fixer's own tracked process ended — that must win over the pid reading.
+    await seedSpawn('s-fixer-pid-aliased', 'running', 1, {
+      launcherHost: hostname(),
+      launcherBootId: launcherBootId(),
+      pid: process.pid,
+    });
+    await seedTaskScope('s-fixer-pid-aliased', 'exited');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-pid-aliased')).toBe(false);
+  });
+
   it('a stale correlated task row does not keep a dead fixer covered', async () => {
     await seedSpawn('s-fixer-scope-stale', 'failed', 30);
     await seedTaskScope('s-fixer-scope-stale', 'running', 30);
