@@ -44,7 +44,7 @@ export default defineTool({
   name: 'logs:read',
   profile: 'engineer',
   description:
-    "A systemd unit's journal lines, filtered SERVER-SIDE and distilled — the `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` answer as { entries:[{ts,unit,level,message,repeat}], matched, collapsed, truncated }. `grep` is pushed down to `journalctl --grep` so only matching lines are ever read, and consecutive identical lines collapse to one row + a count. Reads the journal only — it does not follow (`-f`) and does not restart anything.",
+    "A host service's log lines, filtered SERVER-SIDE and distilled — `journalctl --user -u <unit> --since <w> | grep <pat> | tail -n` on Linux, or the equivalent macOS `log show` unified-log query — as { backend, entries:[{ts,unit,level,message,repeat}], matched, collapsed, truncated }. `grep` is pushed into the host logger's predicate so only matching lines are read, and consecutive identical lines collapse to one row + a count. Reads logs only — it does not follow (`-f`) and does not restart anything.",
   capability: 'intel:read',
   guidance: {
     when: 'You need what a service actually logged: diagnosing why a unit failed, restarted, or went quiet; finding a specific marker line in a window; confirming a deploy/tick/job ran. Pass `grep` with the needle you would have piped to grep — that is the point of the tool.',

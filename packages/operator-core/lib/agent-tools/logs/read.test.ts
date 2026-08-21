@@ -26,6 +26,7 @@ const CLEAN = {
   window: { since: '-30 min', until: null },
   units: [],
   journalAvailable: true,
+  backend: 'systemd',
   journalError: null,
   command: 'journalctl …',
 };
@@ -111,6 +112,12 @@ describe('logs:read — ok reflects the READ, not the line count', () => {
     readJournalMock.mockResolvedValue({ ...CLEAN, journalAvailable: false });
     const out = payloadOf(await call({ unit: 'a' }));
     expect(out).toMatchObject({ ok: true, journalAvailable: false, journalError: null });
+  });
+
+  it('projects the selected macOS backend so callers can distinguish native unified logs', async () => {
+    readJournalMock.mockResolvedValue({ ...CLEAN, backend: 'macos-unified' });
+    const out = payloadOf(await call({ unit: 'a' }));
+    expect(out).toMatchObject({ ok: true, backend: 'macos-unified' });
   });
 });
 

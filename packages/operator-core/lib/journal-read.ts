@@ -162,8 +162,10 @@ export interface JournalReadResult {
   truncated: boolean;
   window: { since: string; until: string | null };
   units: string[];
-  /** False ⇒ this host has NO journal (no systemd). Not the same as "no lines". */
+  /** False ⇒ this host has NO readable host-log backend. Not the same as "no lines". */
   journalAvailable: boolean;
+  /** Which host log backend supplied the result (`none` means unsupported/unavailable). */
+  backend: JournalBackend;
   /** Non-null ⇒ the read FAILED and `entries` is meaningless, not empty. */
   journalError: string | null;
   /**
@@ -234,6 +236,18 @@ export interface JournalReadOptions {
   limit?: number;
   /** Which journal to read. Default `user`. */
   scope?: JournalScope;
+  /** Test seam for platform selection; production uses `process.platform`. */
+  platform?: NodeJS.Platform;
+}
+
+/** Host log backend selected for a read. */
+export type JournalBackend = 'systemd' | 'macos-unified' | 'none';
+
+/** Select the host log reader without probing or mutating the host. */
+export function journalBackendForPlatform(platform: NodeJS.Platform = process.platform): JournalBackend {
+  if (platform === 'darwin') return 'macos-unified';
+  if (platform === 'linux') return 'systemd';
+  return 'none';
 }
 
 /** Fields we ask journalctl for. Restricting them is what keeps `-o json`
@@ -256,6 +270,93 @@ export const JOURNAL_OUTPUT_FIELDS = [
   'PRIORITY',
   'MESSAGE',
 ] as const;
+
+/** Escape one value for an NSPredicate string literal. */
+export function escapeMacPredicateString(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n')}"`;
+}
+
+/** Convert a journal-style relative window into `log show --last` grammar. */
+export function macLastWindow(value: string): string | null {
+  const normalized = normalizeJournalWindow(value).trim();
+  const match = normalized.match(/^-?(\d+)\s+(seconds?|minutes?|hours?|days?|weeks?)(?:\s+ago)?$/i);
+  if (!match) return null;
+  const suffix: Record<string, string> = {
+    second: 's',
+    seconds: 's',
+    minute: 'm',
+    minutes: 'm',
+    hour: 'h',
+    hours: 'h',
+    day: 'd',
+    days: 'd',
+    week: 'w',
+    weeks: 'w',
+  };
+  return `${match[1]}${suffix[match[2].toLowerCase()]}`;
+}
+
+/** Build the macOS unified-log predicate without moving filtering client-side. */
+export function buildMacLogPredicate(opts: JournalReadOptions): string | null {
+  const terms: string[] = [];
+  const units = opts.units ?? [];
+  if (units.length) {
+    const processTerms = units.flatMap((unit) => {
+      const bare = unit.replace(/\.service$/, '');
+      return [
+        `process == ${escapeMacPredicateString(bare)}`,
+        `process == ${escapeMacPredicateString(unit)}`,
+        `processImagePath ENDSWITH ${escapeMacPredicateString(`/${bare}`)}`,
+        `senderImagePath ENDSWITH ${escapeMacPredicateString(`/${bare}`)}`,
+      ];
+    });
+    terms.push(`(${processTerms.join(' OR ')})`);
+  }
+  if (opts.identifier) {
+    const identifier = escapeMacPredicateString(opts.identifier);
+    terms.push(`(process == ${identifier} OR sender == ${identifier} OR subsystem == ${identifier})`);
+  }
+  if (opts.grep) {
+    // NSPredicate MATCHES is ICU regex and supports the alternation used by the
+    // existing grep contract. Quoting protects the predicate, while the regex
+    // itself remains server-side in the unified-log process.
+    terms.push(`eventMessage MATCHES[c] ${escapeMacPredicateString(opts.grep)}`);
+  }
+  if (opts.level) {
+    const threshold = JOURNAL_LEVELS.indexOf(opts.level);
+    // Unified logging has no warning/notice/crit/alert/emerg types. Keep the
+    // nearest severity boundary instead of emitting unsupported predicate
+    // values (Apple spells these values lower-case in `log show` output).
+    const allowed = threshold <= 2
+      ? ['fault']
+      : threshold <= 4
+        ? ['fault', 'error']
+        : threshold === 5
+          ? ['fault', 'error', 'default']
+          : threshold === 6
+            ? ['fault', 'error', 'default', 'info']
+            : ['fault', 'error', 'default', 'info', 'debug'];
+    terms.push(`messageType IN {${allowed.map(escapeMacPredicateString).join(', ')}}`);
+  }
+  return terms.length ? terms.join(' AND ') : null;
+}
+
+/** Pure argv construction for Apple's unified log reader. */
+export function buildMacLogArgs(opts: JournalReadOptions): string[] {
+  // `log show` has no row-count flag. The predicate and time window stay
+  // server-side; readJournal applies the same newest-row cap after parsing,
+  // while JOURNAL_MAX_BUFFER keeps an accidentally broad query bounded.
+  const args = ['show', '--no-pager', '--style', 'json', '--info'];
+  if (opts.level === 'debug') args.push('--debug');
+  const since = opts.since ?? JOURNAL_READ_DEFAULT_SINCE;
+  const last = macLastWindow(since);
+  if (last) args.push('--last', last);
+  else args.push('--start', since);
+  if (opts.until) args.push('--end', normalizeJournalWindow(opts.until));
+  const predicate = buildMacLogPredicate(opts);
+  if (predicate) args.push('--predicate', predicate);
+  return args;
+}
 
 /**
  * PURE — build the journalctl argv.
@@ -342,6 +443,81 @@ export function parseJournalJson(stdout: string): RawJournalRecord[] {
     });
   }
   return out;
+}
+
+/** Decode one timestamp emitted by `log show --style json`. */
+export function decodeMacTimestamp(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : '';
+}
+
+/** Map Apple's messageType vocabulary onto the shared journal severity scale. */
+export function decodeMacPriority(value: unknown): JournalLevel | null {
+  if (typeof value !== 'string') return null;
+  const key = value.toLowerCase();
+  if (key === 'fault') return 'crit';
+  if (key === 'error') return 'err';
+  if (key === 'warning') return 'warning';
+  if (key === 'info') return 'info';
+  if (key === 'debug') return 'debug';
+  if (key === 'notice') return 'notice';
+  if (key === 'default') return 'notice';
+  return null;
+}
+
+function macProcessName(value: unknown): string | null {
+  if (typeof value !== 'string' || !value) return null;
+  const slash = value.lastIndexOf('/');
+  return slash >= 0 ? value.slice(slash + 1) || null : value;
+}
+
+/** Parse Apple's JSON event objects (JSON lines or a single JSON array). */
+export function parseMacLogJson(stdout: string): RawJournalRecord[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  let values: unknown[] = [];
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    values = Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    values = trimmed
+      .split('\n')
+      .map((line) => {
+        try {
+          return JSON.parse(line) as unknown;
+        } catch {
+          return null;
+        }
+      });
+  }
+  return values
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
+    .flatMap((rec) => {
+      const messageValue = rec.eventMessage ?? rec.message ?? rec.MESSAGE;
+      const message = typeof messageValue === 'string' ? messageValue : decodeMessage(messageValue);
+      if (!message) return [];
+      const process = rec.process ?? rec.processName;
+      const unit =
+        (typeof process === 'string' && process) ||
+        macProcessName(rec.processImagePath) ||
+        macProcessName(rec.senderImagePath) ||
+        (typeof rec.subsystem === 'string' && rec.subsystem) ||
+        (typeof rec.sender === 'string' && rec.sender) ||
+        null;
+      const timestamp = decodeMacTimestamp(rec.timestamp ?? rec.time ?? rec.__REALTIME_TIMESTAMP);
+      return [{
+        ts: timestamp,
+        unit,
+        level: decodeMacPriority(rec.messageType ?? rec.level),
+        message: message.length > JOURNAL_MESSAGE_MAX_CHARS ? `${message.slice(0, JOURNAL_MESSAGE_MAX_CHARS)}…` : message,
+        clipped: message.length > JOURNAL_MESSAGE_MAX_CHARS,
+      }];
+    })
+    .sort((a, b) => {
+      if (!a.ts || !b.ts) return 0;
+      return a.ts.localeCompare(b.ts);
+    });
 }
 
 /** PURE — `__REALTIME_TIMESTAMP` is microseconds-since-epoch AS A STRING. */
@@ -450,16 +626,16 @@ export type JournalFailureKind = 'no-match' | 'no-systemd' | 'timeout' | 'error'
  * anything unusual happened. Distinguishing it lets the caller report a
  * specific, actionable cause instead of an opaque one.
  */
-export function classifyJournalctlFailure(err: unknown): { kind: JournalFailureKind; message: string } {
+export function classifyJournalctlFailure(err: unknown, command = 'journalctl'): { kind: JournalFailureKind; message: string } {
   const e = err as { code?: unknown; stderr?: unknown; message?: unknown; killed?: unknown; signal?: unknown };
   const stderr = String(e?.stderr ?? '').trim();
-  if (e?.code === 'ENOENT') return { kind: 'no-systemd', message: 'no journalctl binary on this host' };
+  if (e?.code === 'ENOENT') return { kind: 'no-systemd', message: `no ${command} binary on this host` };
   if (e?.code === 1 && !stderr) return { kind: 'no-match', message: '' };
   if (e?.killed === true) {
     return {
       kind: 'timeout',
       message:
-        `journalctl was killed (${String(e?.signal ?? 'timeout')}) after ${JOURNAL_TIMEOUT_MS}ms with no output — ` +
+        `${command} was killed (${String(e?.signal ?? 'timeout')}) after ${JOURNAL_TIMEOUT_MS}ms with no output — ` +
         'the scan did not finish, it is NOT a clean/empty window. Narrow `since`, tighten `grep`, or lower `limit` and retry.',
     };
   }
@@ -471,6 +647,10 @@ export type JournalExec = (args: string[]) => Promise<{ stdout: string }>;
 
 const defaultExec: JournalExec = (args) =>
   execFileAsync('journalctl', args, { timeout: JOURNAL_TIMEOUT_MS, maxBuffer: JOURNAL_MAX_BUFFER });
+
+/** The macOS unified-log command uses the same exec seam and resource bounds. */
+const defaultMacExec: JournalExec = (args) =>
+  execFileAsync('log', args, { timeout: JOURNAL_TIMEOUT_MS, maxBuffer: JOURNAL_MAX_BUFFER });
 
 /** Resolves each requested unit to whether systemd knows it. */
 export type UnitLoadProbe = (units: string[], scope: JournalScope) => Promise<string[]>;
@@ -578,13 +758,19 @@ async function newestJournalEntryMs(
  */
 export async function readJournal(
   opts: JournalReadOptions,
-  exec: JournalExec = defaultExec,
+  exec?: JournalExec,
   probeUnits: UnitLoadProbe = defaultUnitLoadProbe,
   resolveWindow: WindowResolver = defaultWindowResolver,
 ): Promise<JournalReadResult> {
+  const backend = journalBackendForPlatform(opts.platform);
   const limit = clampLimit(opts.limit);
-  const args = buildJournalctlArgs({ ...opts, limit });
+  const args = backend === 'macos-unified'
+    ? buildMacLogArgs({ ...opts, limit })
+    : backend === 'systemd'
+      ? buildJournalctlArgs({ ...opts, limit })
+      : [];
   const units = opts.units ?? [];
+  const commandName = backend === 'macos-unified' ? 'log' : 'journalctl';
   const base = {
     matched: 0,
     collapsed: 0,
@@ -596,12 +782,24 @@ export async function readJournal(
     units,
     unitsUnknown: [] as string[],
     windowOutsideJournal: null as JournalWindowDiagnosis | null,
-    command: `journalctl ${args.join(' ')}`,
+    command: backend === 'none' ? 'no host log backend' : `${commandName} ${args.join(' ')}`,
+    backend,
   };
+
+  if (backend === 'none') {
+    return {
+      ...base,
+      entries: [],
+      journalAvailable: false,
+      journalError: null,
+    };
+  }
+
+  const run = exec ?? (backend === 'macos-unified' ? defaultMacExec : defaultExec);
 
   /** Zero lines from a named unit is ambiguous — resolve it before returning. */
   const withUnknownUnits = async (result: JournalReadResult): Promise<JournalReadResult> => {
-    if (result.entries.length || !units.length || !result.journalAvailable) return result;
+    if (backend !== 'systemd' || result.entries.length || !units.length || !result.journalAvailable) return result;
     return { ...result, unitsUnknown: await probeUnits(units, opts.scope ?? JOURNAL_DEFAULT_SCOPE) };
   };
 
@@ -612,11 +810,11 @@ export async function readJournal(
    * nothing; two short probes, each of which reports nothing when it cannot tell.
    */
   const withWindowDiagnosis = async (result: JournalReadResult): Promise<JournalReadResult> => {
-    if (result.entries.length || !result.journalAvailable || result.journalError) return result;
+    if (backend !== 'systemd' || result.entries.length || !result.journalAvailable || result.journalError) return result;
     const requestedSince = result.window.since;
     const [resolvedMs, newestMs] = await Promise.all([
       resolveWindow(requestedSince),
-      newestJournalEntryMs(opts.scope ?? JOURNAL_DEFAULT_SCOPE, exec),
+      newestJournalEntryMs(opts.scope ?? JOURNAL_DEFAULT_SCOPE, run),
     ]);
     if (resolvedMs === null || newestMs === null || resolvedMs <= newestMs) return result;
     const aheadByMs = resolvedMs - newestMs;
@@ -643,9 +841,9 @@ export async function readJournal(
 
   let stdout: string;
   try {
-    ({ stdout } = await exec(args));
+    ({ stdout } = await run(args));
   } catch (err) {
-    const { kind, message } = classifyJournalctlFailure(err);
+    const { kind, message } = classifyJournalctlFailure(err, commandName);
     if (kind === 'no-match') {
       return withWindowDiagnosis(
         await withUnknownUnits({ ...base, entries: [], journalAvailable: true, journalError: null }),
@@ -660,11 +858,12 @@ export async function readJournal(
       matched: null,
       entries: [],
       journalAvailable: kind !== 'no-systemd',
+      backend: kind === 'no-systemd' ? 'none' : backend,
       journalError: kind === 'no-systemd' ? null : message,
     };
   }
 
-  const records = parseJournalJson(stdout);
+  const records = backend === 'macos-unified' ? parseMacLogJson(stdout) : parseJournalJson(stdout);
   // `-n` gives us the NEWEST lines; we asked for limit+1 so an over-cap read is
   // detectable rather than assumed. Drop from the OLD end — a tail is what every
   // measured `| tail -N` was reaching for.

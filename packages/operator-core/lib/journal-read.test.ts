@@ -15,19 +15,25 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import {
+  buildMacLogArgs,
+  buildMacLogPredicate,
   buildJournalctlArgs,
   clampLimit,
   classifyJournalctlFailure,
   collapseConsecutive,
+  decodeMacPriority,
+  decodeMacTimestamp,
   decodeMessage,
   defaultUnitLoadProbe,
   decodePriority,
   decodeRealtime,
   decodeUnit,
+  journalBackendForPlatform,
   JOURNAL_READ_DEFAULT_LIMIT,
   JOURNAL_READ_DEFAULT_SINCE,
   JOURNAL_READ_MAX_LIMIT,
   normalizeJournalWindow,
+  parseMacLogJson,
   parseJournalJson,
   readJournal,
   type JournalExec,
@@ -122,6 +128,104 @@ describe('buildJournalctlArgs', () => {
   it('passes level through as journalctl -p (this level AND more severe)', () => {
     const args = buildJournalctlArgs({ units: ['a.service'], level: 'err' });
     expect(args[args.indexOf('-p') + 1]).toBe('err');
+  });
+});
+
+describe('macOS unified-log backend', () => {
+  it('selects the native unified log only on Darwin and reports unsupported hosts explicitly', () => {
+    expect(journalBackendForPlatform('darwin')).toBe('macos-unified');
+    expect(journalBackendForPlatform('linux')).toBe('systemd');
+    expect(journalBackendForPlatform('win32')).toBe('none');
+  });
+
+  it('pushes unit, grep, and severity filters into log show predicates', () => {
+    const predicate = buildMacLogPredicate({
+      units: ['papercup-bg-host.service'],
+      identifier: 'papercup',
+      grep: 'oom|killed process',
+      level: 'err',
+    });
+    expect(predicate).toContain('process == "papercup-bg-host"');
+    expect(predicate).toContain('processImagePath ENDSWITH "/papercup-bg-host"');
+    expect(predicate).toContain('eventMessage MATCHES[c] "oom|killed process"');
+    expect(predicate).toContain('messageType IN {"fault", "error"}');
+    expect(predicate).toContain('subsystem == "papercup"');
+  });
+
+  it('builds a bounded-window log show command and translates compact lookbacks', () => {
+    const args = buildMacLogArgs({ units: ['papercup-bg-host.service'], since: '40m', limit: 25 });
+    expect(args.slice(0, 5)).toEqual(['show', '--no-pager', '--style', 'json', '--info']);
+    expect(args[args.indexOf('--last') + 1]).toBe('40m');
+    expect(args).toContain('--predicate');
+    expect(args.join(' ')).not.toContain('journalctl');
+  });
+
+  it('decodes Apple timestamps and messageType values onto the shared result scale', () => {
+    expect(decodeMacTimestamp('2026-08-20 12:34:56.123 -0400')).toBe('2026-08-20T16:34:56.123Z');
+    expect(decodeMacPriority('fault')).toBe('crit');
+    expect(decodeMacPriority('error')).toBe('err');
+    expect(decodeMacPriority('default')).toBe('notice');
+    expect(decodeMacPriority('unknown')).toBeNull();
+  });
+
+  it('parses both event arrays and the terminal finished marker from ndjson-like output', () => {
+    const out = parseMacLogJson(JSON.stringify([
+      {
+        timestamp: '2026-08-20 12:34:56.123 -0400',
+        process: 'papercup-bg-host',
+        messageType: 'error',
+        eventMessage: 'boom',
+      },
+      { finished: true },
+    ]));
+    expect(out).toEqual([{
+      ts: '2026-08-20T16:34:56.123Z',
+      unit: 'papercup-bg-host',
+      level: 'err',
+      message: 'boom',
+      clipped: false,
+    }]);
+  });
+
+  it('reads Darwin logs through `log show`, reports the selected backend, and caps newest rows', async () => {
+    const stdout = [0, 1, 2].map((i) => JSON.stringify({
+      timestamp: `2026-08-20 12:34:5${i}.123 -0400`,
+      process: 'papercup-bg-host',
+      messageType: 'error',
+      eventMessage: `line-${i}`,
+    })).join('\n');
+    const out = await readJournal(
+      { platform: 'darwin', units: ['papercup-bg-host.service'], limit: 2 },
+      execReturning(stdout),
+      vi.fn(async () => ['should-not-run']),
+    );
+    expect(out.backend).toBe('macos-unified');
+    expect(out.journalAvailable).toBe(true);
+    expect(out.journalError).toBeNull();
+    expect(out.truncated).toBe(true);
+    expect(out.matched).toBe(3);
+    expect(out.entries.map((entry) => entry.message)).toEqual(['line-1', 'line-2']);
+    expect(out.command).toMatch(/^log show /);
+  });
+
+  it('falls back to backend:none when the native log binary is absent', async () => {
+    const exec: JournalExec = async () => {
+      throw Object.assign(new Error('spawn log ENOENT'), { code: 'ENOENT' });
+    };
+    const out = await readJournal({ platform: 'darwin', units: ['papercup-bg-host.service'] }, exec);
+    expect(out).toMatchObject({
+      backend: 'none',
+      journalAvailable: false,
+      journalError: null,
+      entries: [],
+    });
+  });
+
+  it('does not invoke a journal command on an unsupported platform', async () => {
+    const exec = vi.fn(async () => ({ stdout: 'should-not-run' }));
+    const out = await readJournal({ platform: 'win32', units: ['papercup-bg-host.service'] }, exec);
+    expect(exec).not.toHaveBeenCalled();
+    expect(out).toMatchObject({ backend: 'none', journalAvailable: false, entries: [] });
   });
 });
 
