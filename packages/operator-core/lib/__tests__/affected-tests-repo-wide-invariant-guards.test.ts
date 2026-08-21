@@ -94,6 +94,15 @@ const NON_SOURCE_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
 const VIMOCK_GUARD_SCRIPT = 'lint:vimock-export-strands';
 const VIMOCK_GUARD_TASK = `${HOST_WORKSPACE} :: ${VIMOCK_GUARD_SCRIPT}`;
 
+const AUTHORED_DOC_SCRIPT = 'gen:authored-docs:check';
+const AUTHORED_DOC_TASK = `${HOST_WORKSPACE} :: ${AUTHORED_DOC_SCRIPT}`;
+const DOCS_ROOT = 'apps/operator-docs/src/content/docs';
+const AUTHORED_DOC_PATH = `${DOCS_ROOT}/agent-insights/a-cheap-repeating-beat-must-not-inherit-a-restart-sized-retry-budget.mdx`;
+const AUTHORED_DOC_ID = AUTHORED_DOC_PATH.slice(`${DOCS_ROOT}/`.length);
+const GENERATOR_OWNED_DOC_PATH = `${DOCS_ROOT}/reference/agent-insights-index.md`;
+const PROJECTOR_PATH = 'scripts/project-authored-docs.ts';
+const DOCS_CONFIG_PATH = '.papercusp/docs.json';
+
 /**
  * Run the real CLI in --dry mode: it resolves the affected set and BUILDS the task
  * list, then exits without executing a suite. Deliberately the same probe shape the
@@ -114,6 +123,12 @@ function dryTasks(changedPaths: string, base?: string): string {
   expect(out, 'probe produced no output — cannot conclude anything about task selection').not.toBe('');
   expect(out).toContain('AFFECTED_TESTS_RESULT');
   return out;
+}
+
+function dryTaskLine(out: string, task: string): string {
+  const line = out.split('\n').find((candidate) => candidate.includes(`:: ${task.split(' :: ')[1]}`));
+  expect(line, `dry probe did not list ${task}:\n${out}`).toBeDefined();
+  return line ?? '';
 }
 
 /**
@@ -186,6 +201,40 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
         'HEAD with itself and reporting NOT_CHECKED',
     ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base})`);
   });
+});
+
+describe('affected-tests: authored-doc guard candidate scope (EI-21079330201572062)', () => {
+  it('passes the exact changed authored doc to the guard', () => {
+    const line = dryTaskLine(dryTasks(AUTHORED_DOC_PATH), AUTHORED_DOC_TASK);
+    expect(line).toContain(`(guard args: --files=${AUTHORED_DOC_ID})`);
+  });
+
+  it('excludes unrelated changed paths from the authored-doc allowlist', () => {
+    const line = dryTaskLine(
+      dryTasks(`${AUTHORED_DOC_PATH},${OUTSIDE_TS_PATH}`),
+      AUTHORED_DOC_TASK,
+    );
+    expect(line).toContain(`(guard args: --files=${AUTHORED_DOC_ID})`);
+    expect(line).not.toContain(OUTSIDE_TS_PATH);
+  });
+
+  it('filters generator-owned docs when an authored doc changes alongside one', () => {
+    const line = dryTaskLine(
+      dryTasks(`${AUTHORED_DOC_PATH},${GENERATOR_OWNED_DOC_PATH}`),
+      AUTHORED_DOC_TASK,
+    );
+    expect(line).toContain(`(guard args: --files=${AUTHORED_DOC_ID})`);
+    expect(line).not.toContain('reference/agent-insights-index.md');
+  });
+
+  it.each([PROJECTOR_PATH, DOCS_CONFIG_PATH])(
+    'keeps the guard full-corpus for projector/config changes: %s',
+    (changedPath) => {
+      const line = dryTaskLine(dryTasks(changedPath), AUTHORED_DOC_TASK);
+      expect(line).not.toContain('(guard args:');
+      expect(line).not.toContain('--files=');
+    },
+  );
 });
 
 /**
