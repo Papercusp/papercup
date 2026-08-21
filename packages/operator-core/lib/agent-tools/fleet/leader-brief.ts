@@ -383,6 +383,11 @@ export function computeBenchSuggestion(
     // above) so pre-existing call sites keep compiling; absent reads as "no pressure
     // signal", never a false suppression.
     contextPressure?: ContextPressureBucket | null;
+    // EI-18833129079136289: a recent real tool call proves the member is actively
+    // working between claims, so do not wake it just because the presence snapshot
+    // has not reflected its next claim yet. Absent/null remains unknown and keeps the
+    // existing fail-open idle diagnosis for callers that have not read liveness.
+    lastToolCallAgeMs?: number | null;
   },
   /**
    * EI-18681259560385029: the fleet's LIVE authoritative claimable count (the same
@@ -545,6 +550,13 @@ export function computeBenchSuggestion(
     // Live 2026-07-26T04:32Z: five members carried this line while claimableCount was 2, and
     // the leader read it and stood the fleet down. Branch on the real number instead.
     if (claimableCount != null && claimableCount > 0) {
+      // EI-18833129079136289: `load === 0`/`doing === null` is a presence snapshot,
+      // not proof that this member is idle. A fresh tool call is the direct liveness
+      // signal for the between-claims window; waking it would interrupt active work
+      // and add another request before the member's current claim is visible here.
+      if (a.lastToolCallAgeMs != null && a.lastToolCallAgeMs <= VERDICT_SPEAKING_FRESH_MS) {
+        return undefined;
+      }
       // WI-37161: the shared inference ACCOUNT POOL can be degraded/exhausted while claim
       // floors and the claim spec are perfectly healthy — an idle member here is most likely
       // QUEUED FOR INFERENCE (an in-flight scheduler:get_next or claim call sitting behind a
@@ -1818,7 +1830,7 @@ export function projectMember(
       : {}),
     ...(() => {
       const suggestion = computeBenchSuggestion(
-        a,
+        { ...a, lastToolCallAgeMs },
         claimableCount,
         laneGating,
         fleetPaused,

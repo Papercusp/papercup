@@ -1067,6 +1067,34 @@ describe('computeBenchSuggestion — idle beside a NONEMPTY queue (EI-1868125956
     expect(m.benchSuggestion?.kind).toBe('idle-with-claimable');
     expect(m.benchSuggestion?.reason).toMatch(/3 item\(s\) ARE claimable/);
   });
+
+  it('does NOT flag an idle-shaped member whose recent tool call proves it is between claims (EI-18833129079136289)', () => {
+    const m = projectMember(
+      baseAgent({
+        verdict: 'waiting',
+        monitorState: 'waiting',
+        lastToolCallAt: new Date(NOW - VERDICT_SPEAKING_FRESH_MS + 1_000).toISOString(),
+      }),
+      NOW,
+      3,
+    );
+    expect(m.lastToolCallAgeMs).toBe(VERDICT_SPEAKING_FRESH_MS - 1_000);
+    expect(m.benchSuggestion).toBeUndefined();
+  });
+
+  it('still flags an idle-shaped member whose last tool call is stale (EI-18833129079136289)', () => {
+    const m = projectMember(
+      baseAgent({
+        verdict: 'waiting',
+        monitorState: 'waiting',
+        lastToolCallAt: new Date(NOW - VERDICT_SPEAKING_FRESH_MS - 1_000).toISOString(),
+      }),
+      NOW,
+      3,
+    );
+    expect(m.lastToolCallAgeMs).toBe(VERDICT_SPEAKING_FRESH_MS + 1_000);
+    expect(m.benchSuggestion?.kind).toBe('idle-with-claimable');
+  });
 });
 
 describe('computeIdleWithClaimableAlert (EI-18681259560385029 — the summary-level alert)', () => {
