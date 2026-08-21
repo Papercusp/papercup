@@ -69,6 +69,7 @@ import { ensurePapercuspTmpdir } from "../libs/test-config/src/tmpdir-guard.ts";
 // This is the gate's own entrypoint, so it is the single highest-value call site.
 ensurePapercuspTmpdir();
 import { classifyTaskExit, isGatingFailure } from "./lib/task-exit-class.mjs";
+import { formatTaskOutcomeFields } from "./lib/task-progress-line.mjs";
 import {
   classifyResidualFailure,
   formatLoadSuspectNotice,
@@ -3265,16 +3266,33 @@ function runCapturedTask(
       detached: true,
     });
     const progressTask = JSON.stringify(taskKey(spawnTask));
-    const emitProgress = (state, status = null, signal = null) => {
+    // EI-21048499991398082: `status`/`signal` are Node's `child.close(code, signal)` pair,
+    // which is MUTUALLY EXCLUSIVE by construction — a normal exit has a numeric `code` and a
+    // `null` signal; a signal-killed process has a `null` code and a signal name. Both are
+    // "known" the moment `close` fires. The two non-terminal call sites below
+    // ("started"/"running"/"watchdog-extended"/"watchdog-firing") pass NEITHER argument, so
+    // their `null` genuinely means "not yet knowable" — that is what `"pending"` is for.
+    // Collapsing BOTH meanings of `null` onto the same `"pending"` string (the bug: a bare
+    // `?? "pending"` with no way to tell the two apart) makes a TERMINAL line — e.g.
+    // `state=finished exitStatus=0 signal=pending` — read as "this task's outcome is still
+    // unresolved" even though `state=finished` already says it settled cleanly. A reader (or a
+    // future log-summarizer) scanning for "which tasks have a fully-known outcome" by requiring
+    // BOTH fields to be non-"pending" would then misclassify every clean pass as still-open —
+    // exactly the false-red shape reported in EI-21048499991398082 ("exit-0 tasks reported as
+    // FAILED"). `settled` distinguishes the two: only true from the `child.once("close", ...)`
+    // call below, where a `null` field is a DEFINITE "not applicable" (`"none"`), never
+    // "pending".
+    const emitProgress = (state, status = null, signal = null, settled = false) => {
       // Deliberately bypass the ordered replay buffer: this tiny, self-identifying marker is
       // the live pulse consumed by green-checkpoint while the child output remains captured.
       // It contains no child bytes, so concurrent tasks cannot misattribute test output.
+      const outcome = formatTaskOutcomeFields({ status, signal, settled });
       rawErrSync(
         `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
           `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes} ` +
           `timeoutMs=${taskTimeoutMs} timeoutSource=${taskTimeoutSource} ` +
           `durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
-          `exitStatus=${status ?? "pending"} signal=${signal ?? "pending"} ` +
+          `exitStatus=${outcome.exitStatus} signal=${outcome.signal} ` +
           // The EFFECTIVE deadline, which a progress-extension moves past taskTimeoutMs.
           // Reported so a log reader is never left computing a kill against a bound that
           // no longer applied. green-checkpoint consumes this line by prefix, so the
@@ -3354,6 +3372,7 @@ function runCapturedTask(
               : "finished",
         status,
         signal,
+        /* settled */ true,
       );
       resolveRun({
         status,
