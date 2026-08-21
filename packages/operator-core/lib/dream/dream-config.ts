@@ -33,6 +33,20 @@ export interface DreamReviewConfig {
   timeoutMs: number;
 }
 
+/** Governance and admission limits for one routine-fired dream cycle. */
+export interface DreamCycleConfig {
+  /** Maximum persisted dream attempts in one cycle. */
+  maxDreamsPerCycle: number;
+  /** Admission cap for the sum of dreamer + reviewer calls in one cycle. */
+  maxCostUsd: number;
+  /** Workspace-wide rolling ceiling over every `dream:*` governor registrant. */
+  rolling24hCostUsd: number;
+  /** Whole-cycle wall-clock deadline. */
+  timeoutMs: number;
+  /** Automatic mode runs only at or above this measured fleet idle ratio. */
+  autoIdleRatioFloor: number;
+}
+
 export const DEFAULT_DREAM_SAMPLER_CONFIG: Readonly<DreamSamplerConfig> = Object.freeze({
   recentWindowMs: 48 * HOUR_MS,
   remoteMinAgeMs: 7 * DAY_MS,
@@ -57,6 +71,22 @@ export const DEFAULT_DREAM_REVIEW_CONFIG: Readonly<DreamReviewConfig> = Object.f
   maxNoteChars: 600,
   maxOutputTokens: 1_024,
   timeoutMs: 180_000,
+});
+
+/**
+ * Conservative ship defaults.  Manual cycles still use these spend limits;
+ * automatic cycles add the separate default-OFF routine switch plus the idle
+ * gate.  `maxCostUsd` is an admission ceiling (checked before each bounded
+ * dream); the just-admitted model response is recorded even if its measured
+ * cost crosses the remaining pennies, matching Scout's existing accounting
+ * semantics while preventing any subsequent call in the cycle.
+ */
+export const DEFAULT_DREAM_CYCLE_CONFIG: Readonly<DreamCycleConfig> = Object.freeze({
+  maxDreamsPerCycle: 3,
+  maxCostUsd: 1,
+  rolling24hCostUsd: 5,
+  timeoutMs: 10 * 60_000,
+  autoIdleRatioFloor: 0.5,
 });
 
 function requirePositiveInteger(name: string, value: number): void {
@@ -127,4 +157,22 @@ export function resolveDreamReviewConfig(override: Partial<DreamReviewConfig> = 
   }
 
   return { ...config, model: config.model.trim() };
+}
+
+export function resolveDreamCycleConfig(override: Partial<DreamCycleConfig> = {}): DreamCycleConfig {
+  const config = { ...DEFAULT_DREAM_CYCLE_CONFIG, ...override };
+
+  requirePositiveInteger('maxDreamsPerCycle', config.maxDreamsPerCycle);
+  requirePositiveInteger('timeoutMs', config.timeoutMs);
+  requireProbability('autoIdleRatioFloor', config.autoIdleRatioFloor);
+  for (const [name, value] of [
+    ['maxCostUsd', config.maxCostUsd],
+    ['rolling24hCostUsd', config.rolling24hCostUsd],
+  ] as const) {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new RangeError(`${name} must be a non-negative finite number`);
+    }
+  }
+
+  return config;
 }
