@@ -242,6 +242,9 @@ beforeAll(async () => {
   // and revision-requested work to the submitter. Approval re-admits the still-open row.
   // Apply the real migration so the queryable SSOT and the existing TS claim fragment must agree.
   await db.sql.unsafe(readMigration('860-agent-review-claim-floor.sql')).simple();
+  // P-005: floor #16 reserves strict credential/device/external-service owner actions while
+  // retaining floor #6 as a separate legacy needsHuman compatibility cohort until P-006.
+  await db.sql.unsafe(readMigration('863-owner-action-claim-floor.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();

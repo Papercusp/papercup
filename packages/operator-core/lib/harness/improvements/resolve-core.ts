@@ -12,15 +12,13 @@
  *                       Records the verification evidence as a comment and marks
  *                       the issue `resolved` → it leaves the open queue for good.
  *   - `could-not-fix` — the worker tried and failed. Releases the claim so a
- *                       later run can retry; when the dispatch-attempt counter
- *                       has hit `maxAttempts`, ALSO routes the item to a human
- *                       (`payload.needsHuman`) so an unfixable bug can't ping-pong
- *                       in the auto lane forever.
- *   - `needs-human`   — the worker judged the fix touches a protected surface
- *                       (operator-core safety / deploy machinery / a migration)
- *                       or genuinely needs human judgment. Releases the claim +
- *                       sets `payload.needsHuman` → the policy forces the human
- *                       tier from then on.
+ *                       later run can retry; exhausted attempts move to leader
+ *                       triage instead of masquerading as owner work.
+ *   - `needs-human`   — a typed route: remote rows stay on peer reconciliation,
+ *                       product decisions enter peer agent review, strict
+ *                       credential/device/external-service capabilities set
+ *                       `payload.needsOwnerAction`, and untyped operational
+ *                       failures move to leader triage.
  *
  * Deps are injectable so every branch is unit-testable without PG.
  */
@@ -43,7 +41,7 @@ import { enterAgentReview } from './agent-review';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
 
-/** Default cap on auto-implement dispatch attempts before an item routes to a human. */
+/** Default cap on auto-implement dispatch attempts before an item routes to leader triage. */
 export const DEFAULT_MAX_ATTEMPTS = 3;
 
 export interface ResolveImprovementInput {
@@ -62,11 +60,11 @@ export interface ResolveImprovementInput {
   /**
    * P-004 (WI-5679): for outcome='needs-human', the TYPED human-capability blocker that makes
    * this genuinely need the OWNER (mirrors work_items:set_blocker's ExternalBlockerCapability).
-   * A capability whose policy `requiresOwnerCapability` (credential / physical-device /
-   * external-service-action / product-decision) routes to the human queue (payload.needsHuman);
-   * an auto-clearable / live-dependency capability, or NO capability at all, is treated as an
-   * OPERATIONAL block and routed to the LEADER-TRIAGE lane (status='blocked') instead — off the
-   * owner's inbox. Ignored for outcomes other than 'needs-human'.
+   * A strict capability whose policy `requiresOwnerCapability` (credential / physical-device /
+   * external-service-action) routes to payload.needsOwnerAction. Product decisions enter peer
+   * agent review. An auto-clearable / live-dependency capability, or NO capability at all, is
+   * treated as an OPERATIONAL block and routed to the LEADER-TRIAGE lane (status='blocked').
+   * Ignored for outcomes other than 'needs-human'.
    */
   blockerCapability?: ExternalBlockerCapability;
 }
@@ -443,7 +441,7 @@ export interface ExhaustedFlipResult {
  * (stale) claim. A silent worker death is an OPERATIONAL failure, not a genuine human need, so it
  * belongs in leader triage, not the owner's inbox — routing it to payload.needsHuman was the
  * over-application this fixes. Idempotent — an item already blocked (state !== 'open'),
- * already-flagged-human, resolved, or missing is a no-op, so the routine can call it every tick for
+ * already owner-routed, resolved, or missing is a no-op, so the routine can call it every tick for
  * whatever planImplementRun reports exhausted.
  */
 export async function routeExhaustedImprovementToLeaderTriage(
@@ -454,7 +452,9 @@ export async function routeExhaustedImprovementToLeaderTriage(
   if (!issue) return { ok: false, id: input.id, flipped: false, reason: `issue ${input.id} not found` };
   if (issue.state !== 'open') return { ok: true, id: input.id, flipped: false, reason: 'not open' };
   const p = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
-  if (p.needsHuman === true) return { ok: true, id: input.id, flipped: false, reason: 'already routed to a human' };
+  if (p.needsHuman === true || p.needsOwnerAction === true) {
+    return { ok: true, id: input.id, flipped: false, reason: 'already routed to owner action' };
+  }
 
   const by = input.by ?? 'improvement-implement';
   const attempts = input.attempts ?? attemptsOf(issue);

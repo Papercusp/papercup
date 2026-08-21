@@ -312,8 +312,11 @@ describe('routeExhaustedImprovementToLeaderTriage — exhausted with no resolve 
     expect(d.rec.states).toHaveLength(0);
   });
 
-  it('idempotent: an item already flagged for a human (genuine, typed earlier) is a no-op', async () => {
-    const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 3, needsHuman: true } }));
+  it.each([
+    ['legacy compatibility', { needsHuman: true }],
+    ['strict owner action', { needsOwnerAction: true }],
+  ])('idempotent: an item already on the %s path is a no-op', async (_label, routeFlag) => {
+    const d = deps(issue({ id: 'EI-9', payload: { implementAttempts: 3, ...routeFlag } }));
     const r = await routeExhaustedImprovementToLeaderTriage({ id: 'EI-9' }, d);
     expect(r).toMatchObject({ ok: true, flipped: false, reason: expect.stringMatching(/already/) });
     expect(d.rec.comments).toHaveLength(0);
