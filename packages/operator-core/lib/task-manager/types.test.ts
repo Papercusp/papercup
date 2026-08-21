@@ -6,6 +6,7 @@ import {
   isLiveOwnedState,
   newTaskId,
   isValidTaskId,
+  serviceUnitForTask,
   scopeUnitForTask,
   taskIdFromScopeUnit,
   sliceForClass,
@@ -39,6 +40,13 @@ describe('task id + scope unit naming', () => {
     }
   });
 
+  it('round-trips taskId -> service unit -> taskId exactly', () => {
+    for (let i = 0; i < 200; i++) {
+      const id = newTaskId();
+      expect(taskIdFromScopeUnit(serviceUnitForTask(id))).toBe(id);
+    }
+  });
+
   it('refuses an id that would produce an illegal unit name', () => {
     expect(() => scopeUnitForTask('has/slash')).toThrow(/invalid taskId/);
     expect(() => scopeUnitForTask('UPPER')).toThrow(/invalid taskId/);
@@ -52,7 +60,7 @@ describe('task id + scope unit naming', () => {
     // here would make us claim (and potentially kill) a stranger's process.
     expect(taskIdFromScopeUnit('session-42.scope')).toBeNull();
     expect(taskIdFromScopeUnit('run-u1234.service')).toBeNull();
-    expect(taskIdFromScopeUnit('pc-abc123.service')).toBeNull(); // right prefix, wrong type
+    expect(taskIdFromScopeUnit('pc-abc123.service')).toBe('abc123');
     expect(taskIdFromScopeUnit('xpc-abc123.scope')).toBeNull(); // prefix must be at the start
     expect(taskIdFromScopeUnit('pc-.scope')).toBeNull(); // empty id
     expect(taskIdFromScopeUnit('pc-ABC123.scope')).toBeNull(); // not a mintable id
@@ -69,6 +77,12 @@ describe('task id + scope unit naming', () => {
     // the id is only meaningful to the reconciler, the label is for humans.
     const unit = scopeUnitForTask('abc123', 'bug-drain-member-3');
     expect(unit).toBe('pc-abc123--bug-drain-member-3.scope');
+    expect(taskIdFromScopeUnit(unit)).toBe('abc123');
+  });
+
+  it('carries a human LABEL on a service unit and still round-trips', () => {
+    const unit = serviceUnitForTask('abc123', 'bug-drain-member-3');
+    expect(unit).toBe('pc-abc123--bug-drain-member-3.service');
     expect(taskIdFromScopeUnit(unit)).toBe('abc123');
   });
 

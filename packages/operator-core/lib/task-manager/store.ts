@@ -21,11 +21,13 @@ import {
   TASK_STATES,
   isTerminalState,
   newTaskId,
+  serviceUnitForTask,
   scopeUnitForTask,
   type TaskMetrics,
   type TaskRow,
   type TaskSpec,
   type TaskState,
+  type TaskUnitKind,
 } from './types';
 
 function sqlOf(inject?: Sql): Sql {
@@ -92,6 +94,8 @@ export interface RegisterTaskOptions {
   /** Reserve the scope unit at register time so the UNIQUE index catches a
    *  double-launch before the fork rather than after. */
   reserveScope?: boolean;
+  /** Unit suffix to reserve. Existing callers default to the legacy `.scope`. */
+  unitKind?: TaskUnitKind;
 }
 
 /**
@@ -107,7 +111,9 @@ export async function registerTask(
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const taskId = opts.taskId ?? newTaskId();
   const rootTaskId = spec.parentTaskId ? await resolveRoot(spec.parentTaskId, taskId, sql) : taskId;
-  const scopeUnit = opts.reserveScope ? scopeUnitForTask(taskId) : null;
+  const scopeUnit = opts.reserveScope
+    ? (opts.unitKind === 'service' ? serviceUnitForTask(taskId) : scopeUnitForTask(taskId))
+    : null;
   const deadlineAt =
     spec.runtimeMaxSec && spec.runtimeMaxSec > 0
       ? new Date(Date.now() + spec.runtimeMaxSec * 1000).toISOString()

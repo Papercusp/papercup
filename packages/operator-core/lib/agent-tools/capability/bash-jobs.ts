@@ -20,7 +20,7 @@
  * holds its shell in the CLI process.
  */
 
-import { spawn as childSpawn, type ChildProcess } from 'node:child_process';
+import { execFile, spawn as childSpawn, type ChildProcess } from 'node:child_process';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -217,7 +217,11 @@ function spawnShell(
   /** task-manager P-008: wrap the resolved argv into this job's cgroup scope.
    *  Applied AFTER the sandbox decision so bwrap still wraps the payload and the
    *  scope wraps bwrap — the confinement layers nest rather than compete. */
-  wrapScope?: (binary: string, argv: string[]) => { binary: string; argv: string[] },
+  wrapScope?: (
+    binary: string,
+    argv: string[],
+    env?: Readonly<Record<string, string | undefined>>,
+  ) => { binary: string; argv: string[] },
 ): ChildProcess {
   const spawnPath = augmentedSpawnPath();
   // EI-1617: scrubExecEnv replaces the old stripHostX-only passthrough — an
@@ -241,7 +245,7 @@ function spawnShell(
     );
   }
   const launch = wrapScope
-    ? wrapScope(decision.binary, decision.argv)
+    ? wrapScope(decision.binary, decision.argv, env)
     : { binary: decision.binary, argv: decision.argv };
   const child = childSpawn(launch.binary, launch.argv, {
     cwd,
@@ -308,6 +312,28 @@ function killProcessTree(child: ChildProcess, sig: NodeJS.Signals): void {
       /* already exited */
     }
   }
+}
+
+/** A transient service is no longer in the systemd-run client's process group.
+ * Signal the service unit as well as the client so in-memory kill/timeout paths
+ * have the same whole-job semantics as the durable task-manager path. */
+function signalServiceUnit(scopeUnit: string | null | undefined, sig: NodeJS.Signals): void {
+  if (!scopeUnit?.endsWith('.service')) return;
+  try {
+    execFile(
+      'systemctl',
+      ['--user', 'kill', `--signal=${sig}`, scopeUnit],
+      { timeout: 15_000 },
+      () => {},
+    );
+  } catch {
+    /* the client process-group signal below remains the best effort fallback */
+  }
+}
+
+function killJobProcessTree(job: BashJob, sig: NodeJS.Signals): void {
+  signalServiceUnit(job.scopeUnit, sig);
+  killProcessTree(job.child, sig);
 }
 
 /** Append a chunk to a job's in-memory tail (trimmed) + spill log + totals. */
@@ -789,6 +815,13 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
   const child = spawnShell(opts.command, opts.cwd, childEnv, opts.sandboxEnabled, true, enrolment.wrap);
+  // A service can finish before the job object and redactor are fully assembled.
+  // Keep stdout/stderr flowing from the instant spawn returns, then replay the
+  // tiny early prefix through the normal redaction/output path below.
+  const earlyOutput: Buffer[] = [];
+  const captureEarly = (b: Buffer): void => earlyOutput.push(Buffer.from(b));
+  child.stdout?.on('data', captureEarly);
+  child.stderr?.on('data', captureEarly);
   const job: BashJob = {
     id,
     command: opts.command,
@@ -820,6 +853,16 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     if (tail) appendOutput(job, tail);
   };
 
+  // Attach before recording/enrolling the job. A transient service can execute
+  // an immediate command and close before the later setup work yields; listeners
+  // attached after that close lose its stdout/stderr entirely.
+  const onData = (b: Buffer): void => appendRawOutput(b.toString('utf8'));
+  child.stdout?.removeListener('data', captureEarly);
+  child.stderr?.removeListener('data', captureEarly);
+  child.stdout?.on('data', onData);
+  child.stderr?.on('data', onData);
+  for (const b of earlyOutput) appendRawOutput(b.toString('utf8'));
+
   completeSyncEnrolment(
     enrolment,
     {
@@ -837,10 +880,6 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     },
     child.pid ?? null,
   );
-
-  const onData = (b: Buffer): void => appendRawOutput(b.toString('utf8'));
-  child.stdout?.on('data', onData);
-  child.stderr?.on('data', onData);
 
   const timer = setTimeout(() => {
     if (job.status !== 'running') return;
@@ -872,7 +911,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
     // checkouts, spawned sidecars). SIGKILL skips all of it, which is how a
     // timed-out job used to leak gigabytes.
     try {
-      killProcessTree(child, 'SIGTERM');
+      killJobProcessTree(job, 'SIGTERM');
     } catch {
       /* fall through to the SIGKILL escalation */
     }
@@ -880,7 +919,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       // Liveness must be judged by `exitCode`, not `job.status` — the status was
       // flipped to 'timed_out' synchronously above, so testing it here would make
       // this escalation dead code. Same reasoning as killJob's grace timer below.
-      if (job.exitCode === null) killProcessTree(child, 'SIGKILL');
+      if (job.exitCode === null) killJobProcessTree(job, 'SIGKILL');
     }, TIMEOUT_SIGTERM_GRACE_MS).unref();
   }, effectiveTimeoutMs);
 
@@ -959,7 +998,7 @@ export function readJobOutput(job: BashJob, peek = false): string {
 export function killJob(job: BashJob): { ok: boolean; alreadyDone: boolean } {
   if (job.status !== 'running') return { ok: true, alreadyDone: true };
   try {
-    killProcessTree(job.child, 'SIGTERM');
+    killJobProcessTree(job, 'SIGTERM');
   } catch {
     /* fallthrough to SIGKILL */
   }
@@ -976,7 +1015,7 @@ export function killJob(job: BashJob): { ok: boolean; alreadyDone: boolean } {
     // that is the correct liveness signal for this guard.
     if (job.exitCode === null) {
       try {
-        killProcessTree(job.child, 'SIGKILL');
+        killJobProcessTree(job, 'SIGKILL');
       } catch {
         /* ignore */
       }

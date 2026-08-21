@@ -128,6 +128,26 @@ describe('upsertUnaccounted scope identity', () => {
   });
 });
 
+describe('registerTask unit identity', () => {
+  it('reserves a transient service unit when the caller selects service mode', async () => {
+    const row = await store.registerTask(
+      {
+        class: 'bash-job',
+        title: 'service reservation',
+        argv: ['echo', 'ok'],
+        launchedBy: 'test',
+      },
+      { workspaceId: WS, taskId: 'abc123', reserveScope: true, unitKind: 'service' },
+    );
+
+    expect(row.scopeUnit).toBe('pc-abc123.service');
+    const [dbRow] = await db.sql`
+      SELECT scope_unit FROM harness_shared.task_ledger WHERE task_id = 'abc123'
+    `;
+    expect(dbRow!.scope_unit).toBe('pc-abc123.service');
+  });
+});
+
 /**
  * D-014 (process-lifecycle-no-orphans-2026-08-02). `markSpawned` stamps the
  * unconfined REASON into `detail`, which is shared jsonb other writers already use —

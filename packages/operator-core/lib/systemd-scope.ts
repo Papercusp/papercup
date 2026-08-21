@@ -90,6 +90,9 @@ export function buildIsolatedScopeArgv(base: string[], memoryMaxG: number): stri
 export interface TaskScopeProperties {
   unit: string;
   slice: string;
+  /** Environment explicitly bound to a transient SERVICE. A service is not a
+   * child of the launching process, so it cannot inherit the caller's env. */
+  env?: Readonly<Record<string, string | undefined>>;
   memoryMaxBytes?: number | null;
   cpuWeight?: number | null;
   tasksMax?: number | null;
@@ -98,19 +101,7 @@ export interface TaskScopeProperties {
   extraProperties?: readonly string[];
 }
 
-export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): string[] {
-  const argv = [
-    'systemd-run',
-    '--user',
-    '--scope',
-    '--quiet',
-    // --collect: a failed transient unit is garbage-collected instead of lingering
-    // in `systemctl --user list-units` as a permanent phantom the scanner would
-    // then have to special-case.
-    '--collect',
-    `--unit=${props.unit}`,
-    `--slice=${props.slice}`,
-  ];
+function appendTaskProperties(argv: string[], props: TaskScopeProperties): void {
   if (props.memoryMaxBytes && props.memoryMaxBytes > 0) {
     argv.push(`--property=MemoryMax=${Math.floor(props.memoryMaxBytes)}`);
     // Swap-thrash IS the event-loop freeze (50-cgroup-memory.conf) — a task allowed
@@ -127,6 +118,52 @@ export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): 
     argv.push(`--property=RuntimeMaxSec=${Math.floor(props.runtimeMaxSec)}`);
   }
   for (const p of props.extraProperties ?? []) argv.push(`--property=${p}`);
+}
+
+function appendTaskEnvironment(argv: string[], env: TaskScopeProperties['env']): void {
+  for (const [name, value] of Object.entries(env ?? {}).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+    if (value !== undefined) argv.push(`--setenv=${name}=${value}`);
+  }
+}
+
+export function buildTaskScopeArgv(base: string[], props: TaskScopeProperties): string[] {
+  const argv = [
+    'systemd-run',
+    '--user',
+    '--scope',
+    '--quiet',
+    // --collect: a failed transient unit is garbage-collected instead of lingering
+    // in `systemctl --user list-units` as a permanent phantom the scanner would
+    // then have to special-case.
+    '--collect',
+    `--unit=${props.unit}`,
+    `--slice=${props.slice}`,
+  ];
+  appendTaskProperties(argv, props);
+  argv.push(...base);
+  return argv;
+}
+
+/**
+ * Build a named transient SERVICE argv. systemd-run uses service mode by
+ * default, so there is intentionally no `--service` flag: on the supported CLI
+ * that token is parsed as the `--service-type` abbreviation and makes launch
+ * fail. `--pipe --wait` preserves the synchronous seam's stdio/exit contract
+ * while the service unit remains owned by the user manager if this client dies.
+ */
+export function buildTaskServiceArgv(base: string[], props: TaskScopeProperties): string[] {
+  const argv = [
+    'systemd-run',
+    '--user',
+    '--pipe',
+    '--wait',
+    '--quiet',
+    '--collect',
+    `--unit=${props.unit}`,
+    `--slice=${props.slice}`,
+  ];
+  appendTaskEnvironment(argv, props.env);
+  appendTaskProperties(argv, props);
   argv.push(...base);
   return argv;
 }

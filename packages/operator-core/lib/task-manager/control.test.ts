@@ -303,6 +303,31 @@ describe('killScopeUnit — explicit orphan-scope teardown', () => {
     expect(empty).toMatchObject({ ok: false, error: 'not_live' });
   });
 
+  it('accepts a validated Papercusp transient service unit', async () => {
+    let alive = true;
+    const calls: string[][] = [];
+    const out = await killScopeUnit('pc-service123.service', {
+      fs: {
+        readFile: () => (alive ? '4242\n' : ''),
+        readDir: () => [],
+        isDir: () => true,
+      },
+      execFileAsync: (async (_f: string, args: string[]) => {
+        calls.push(args);
+        if (args[1] === 'show') {
+          return {
+            stdout: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-service123.service\n',
+            stderr: '',
+          };
+        }
+        alive = false;
+        return { stdout: '', stderr: '' };
+      }) as never,
+    });
+    expect(out).toMatchObject({ ok: true, scopeUnit: 'pc-service123.service' });
+    expect(calls[1]).toEqual(['--user', 'kill', '--signal=SIGTERM', 'pc-service123.service']);
+  });
+
   it('never reports success while an orphan scope survives the verification window', async () => {
     const out = await killScopeUnit('pc-orphan123.scope', {
       sleep: async () => {},

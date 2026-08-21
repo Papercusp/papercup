@@ -23,7 +23,7 @@
  */
 
 import { readProcessIdentity } from '../process-identity';
-import { buildTaskScopeArgv } from '../systemd-scope';
+import { buildTaskScopeArgv, buildTaskServiceArgv } from '../systemd-scope';
 import {
   absCgroupDir,
   nodeCgroupFs,
@@ -38,10 +38,12 @@ import { closeTask, markSpawned, registerTask } from './store';
 import {
   deriveUserManagerRoot,
   newTaskId,
+  serviceUnitForTask,
   scopeCgroupRelPath,
   scopeUnitForTask,
   sliceForClass,
   type TaskSpec,
+  type TaskUnitKind,
 } from './types';
 
 /**
@@ -81,6 +83,8 @@ export interface SyncEnrolment {
   confined: boolean;
   /** Why `confined` is false; null when confined. See {@link UnconfinedReason}. */
   unconfinedReason: UnconfinedReason | null;
+  /** Bash jobs use a transient service; all other sync-enrolled classes use scopes. */
+  unitKind: TaskUnitKind;
   scopeUnit: string | null;
   /** False when the task manager is flag-OFF: no ledger row will be written and
    *  `wrap` is the identity. Carried on the enrolment rather than re-read later so
@@ -88,7 +92,11 @@ export interface SyncEnrolment {
    *  `register`, or a `finish` closing a row that never existed). */
   enrolled: boolean;
   /** Wrap a resolved binary+argv into the task's scope. Identity when unconfined. */
-  wrap: (binary: string, argv: string[]) => { binary: string; argv: string[] };
+  wrap: (
+    binary: string,
+    argv: string[],
+    env?: Readonly<Record<string, string | undefined>>,
+  ) => { binary: string; argv: string[] };
 }
 
 /**
@@ -114,7 +122,10 @@ export function beginSyncEnrolment(
   const enrolled = taskManagerEnabledSync();
   const probe = scopeSupportKnown();
   const confined = enrolled && opts.confine !== false && probe?.ok === true;
-  const scopeUnit = confined ? scopeUnitForTask(taskId) : null;
+  const unitKind: TaskUnitKind = spec.class === 'bash-job' ? 'service' : 'scope';
+  const scopeUnit = confined
+    ? (unitKind === 'service' ? serviceUnitForTask(taskId) : scopeUnitForTask(taskId))
+    : null;
 
   // D-014: report WHICH of the four causes produced an unconfined spawn. Ordered
   // to match the short-circuit above, so the reason names the condition that
@@ -136,15 +147,17 @@ export function beginSyncEnrolment(
     taskId,
     confined,
     unconfinedReason,
+    unitKind,
     scopeUnit,
     enrolled,
-    wrap: (binary, argv) =>
+    wrap: (binary, argv, env) =>
       confined
         ? {
             binary: 'systemd-run',
-            argv: buildTaskScopeArgv([binary, ...argv], {
+            argv: (unitKind === 'service' ? buildTaskServiceArgv : buildTaskScopeArgv)([binary, ...argv], {
               unit: scopeUnit!,
               slice: sliceForClass(spec.class),
+              env,
               memoryMaxBytes: spec.memoryMaxBytes,
               cpuWeight: spec.cpuWeight,
               tasksMax: spec.tasksMax,
@@ -172,6 +185,7 @@ export function completeSyncEnrolment(
       taskId: enrolment.taskId,
       workspaceId: opts.workspaceId,
       reserveScope: enrolment.confined,
+      unitKind: enrolment.unitKind,
     });
     await markSpawned(enrolment.taskId, {
       pid,

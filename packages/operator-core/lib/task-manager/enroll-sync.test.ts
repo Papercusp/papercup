@@ -106,8 +106,65 @@ describe('with the task manager ON', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     expect(e.enrolled).toBe(true);
     expect(e.confined).toBe(true);
+    expect(e.unitKind).toBe('service');
+    expect(e.scopeUnit).toMatch(/\.service$/);
     expect(e.scopeUnit).toContain(e.taskId);
-    expect(e.wrap('/bin/bash', ['-lc', 'x']).binary).toBe('systemd-run');
+    expect(e.wrap('/bin/bash', ['-lc', 'x'])).toEqual({
+      binary: 'systemd-run',
+      argv: [
+        '--user',
+        '--pipe',
+        '--wait',
+        '--quiet',
+        '--collect',
+        `--unit=${e.scopeUnit}`,
+        '--slice=papercusp-bash-job.slice',
+        '/bin/bash',
+        '-lc',
+        'x',
+      ],
+    });
+  });
+
+  it('passes explicit child env to a transient service as sorted setenv flags', () => {
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    expect(e.wrap('/bin/bash', ['-lc', 'printf'], { ZED: 'last', EMPTY: '', OMIT: undefined, FOO: 'bar' })).toEqual({
+      binary: 'systemd-run',
+      argv: [
+        '--user',
+        '--pipe',
+        '--wait',
+        '--quiet',
+        '--collect',
+        `--unit=${e.scopeUnit}`,
+        '--slice=papercusp-bash-job.slice',
+        '--setenv=EMPTY=',
+        '--setenv=FOO=bar',
+        '--setenv=ZED=last',
+        '/bin/bash',
+        '-lc',
+        'printf',
+      ],
+    });
+  });
+
+  it('retains a transient scope for every non-bash sync-enrolled class', () => {
+    const e = beginSyncEnrolment({ class: 'sidecar' });
+    expect(e.unitKind).toBe('scope');
+    expect(e.scopeUnit).toMatch(/\.scope$/);
+    expect(e.wrap('/bin/node', ['child.js'])).toEqual({
+      binary: 'systemd-run',
+      argv: [
+        '--user',
+        '--scope',
+        '--quiet',
+        '--collect',
+        `--unit=${e.scopeUnit}`,
+        '--slice=papercusp-sidecar.slice',
+        '/bin/node',
+        'child.js',
+      ],
+    });
   });
 
   it('still enrols when the host cannot make scopes — unconfined but accounted', () => {
@@ -183,6 +240,10 @@ describe('with the task manager ON', () => {
     completeSyncEnrolment(e, spec as never, 4242);
     await vi.waitFor(() => expect(registerTask).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(markSpawned).toHaveBeenCalledTimes(1));
+    expect(registerTask).toHaveBeenCalledWith(
+      spec,
+      expect.objectContaining({ reserveScope: true, unitKind: 'service' }),
+    );
   });
 
   it('logs a bounded diagnostic when fire-and-forget enrolment fails, while remaining fail-open', async () => {

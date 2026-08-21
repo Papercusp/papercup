@@ -169,6 +169,7 @@ export const TASK_SCOPE_PREFIX = 'pc-';
 /** The root slice everything we own lives under. The scanner walks it recursively,
  *  so class sub-slices may nest arbitrarily deep without the scan changing. */
 export const TASK_ROOT_SLICE = 'papercusp.slice';
+export type TaskUnitKind = 'scope' | 'service';
 
 /**
  * Task ids are restricted to `[0-9a-z]` so they are valid inside a systemd unit
@@ -207,7 +208,7 @@ export const TASK_SCOPE_LABEL_SEP = '--';
  * Throws on an invalid id rather than emitting a unit name systemd will reject at
  * spawn time (a launch-time failure is far harder to read than a call-time one).
  */
-export function scopeUnitForTask(taskId: string, label?: string): string {
+function taskUnitForTask(taskId: string, kind: TaskUnitKind, label?: string): string {
   if (!isValidTaskId(taskId)) {
     throw new Error(
       `task-manager: invalid taskId ${JSON.stringify(taskId)} — must match /^[0-9a-z]{4,64}$/ to be a legal systemd unit name`,
@@ -218,8 +219,16 @@ export function scopeUnitForTask(taskId: string, label?: string): string {
     .replace(/^-+|-+$/g, '')
     .slice(0, 60);
   return safe
-    ? `${TASK_SCOPE_PREFIX}${taskId}${TASK_SCOPE_LABEL_SEP}${safe}.scope`
-    : `${TASK_SCOPE_PREFIX}${taskId}.scope`;
+    ? `${TASK_SCOPE_PREFIX}${taskId}${TASK_SCOPE_LABEL_SEP}${safe}.${kind}`
+    : `${TASK_SCOPE_PREFIX}${taskId}.${kind}`;
+}
+
+export function scopeUnitForTask(taskId: string, label?: string): string {
+  return taskUnitForTask(taskId, 'scope', label);
+}
+
+export function serviceUnitForTask(taskId: string, label?: string): string {
+  return taskUnitForTask(taskId, 'service', label);
 }
 
 /**
@@ -229,8 +238,9 @@ export function scopeUnitForTask(taskId: string, label?: string): string {
  */
 export function taskIdFromScopeUnit(unit: string): string | null {
   const trimmed = unit.trim();
-  if (!trimmed.startsWith(TASK_SCOPE_PREFIX) || !trimmed.endsWith('.scope')) return null;
-  const body = trimmed.slice(TASK_SCOPE_PREFIX.length, -'.scope'.length);
+  const suffix = trimmed.endsWith('.scope') ? '.scope' : trimmed.endsWith('.service') ? '.service' : null;
+  if (!trimmed.startsWith(TASK_SCOPE_PREFIX) || !suffix) return null;
+  const body = trimmed.slice(TASK_SCOPE_PREFIX.length, -suffix.length);
   const sep = body.indexOf(TASK_SCOPE_LABEL_SEP);
   const id = sep >= 0 ? body.slice(0, sep) : body;
   return isValidTaskId(id) ? id : null;

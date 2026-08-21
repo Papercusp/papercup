@@ -171,7 +171,7 @@ export interface KillScopeUnitOptions extends ControlDeps {
   escalateAfterMs?: number;
 }
 
-const MANAGED_SCOPE_UNIT = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.scope$/;
+const MANAGED_SCOPE_UNIT = /^pc-[0-9a-z]{4,64}(?:--[A-Za-z0-9._-]{1,60})?\.(?:scope|service)$/;
 
 function isManagedScopeUnit(scopeUnit: string): boolean {
   return MANAGED_SCOPE_UNIT.test(scopeUnit) && taskIdFromScopeUnit(scopeUnit) !== null;
