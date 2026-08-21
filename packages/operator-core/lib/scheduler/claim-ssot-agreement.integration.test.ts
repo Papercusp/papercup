@@ -292,7 +292,11 @@ describe('work_items_claimable (SSOT view) admits EXACTLY the rows claimNextIssu
     await seed('WI-REMOTE', { origin: 'remote', authorPubkey: 'foreign-peer-key' }); // 3. federated-remote (true peer)
     await seed('WI-HOLD', { payload: { _claimHold: true } }); // 4. claim-hold
     await seed('WI-OBS', { kind: 'change', payload: { lane: 'observation' } }); // 5. observation-lane
-    await seed('WI-NEEDSHUMAN', { payload: { needsHuman: true } }); // 6. needs-human
+    await seed('WI-NEEDSHUMAN', {
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-NEEDSHUMAN', round: 1 },
+      },
+    }); // 15a. post-864 pending-review replacement for the retired needsHuman fixture
     await seed('WI-OWNER-ACTION', { payload: { needsOwnerAction: true } }); // 16. strict owner action
     await seed('WI-EXTBLOCK', { payload: { externalBlockers: [{ status: 'active' }] } }); // 7. external-blocker
     await seed('WI-FEDDET', { payload: { _ei: { created_by: 'system:replication-liveness' } } }); // 8. federation-detector
@@ -617,7 +621,11 @@ describe('work_items:claimable primitives — the survivors COUNT === the row LI
     await seed('WI-C', { kind: 'task' }); // task, claimable
     await seed('WI-TAKEN2', { takenBy: 'peer' }); // taken
     await seed('WI-HOLD2', { payload: { _claimHold: true } }); // claim-hold
-    await seed('WI-NH2', { payload: { needsHuman: true } }); // needs-human
+    await seed('WI-NH2', {
+      payload: {
+        agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-NH2', round: 1 },
+      },
+    }); // pending-review fixture uses the post-864 shape
     await seed('WI-OBS2', { kind: 'change', payload: { lane: 'observation' } }); // observation-lane
     await seed('WI-DONE2', { terminalOwner: 'su-x', terminalCompletionRef: 'commit:z' }); // already-completed
     await seedPlan('active2', 'active');
