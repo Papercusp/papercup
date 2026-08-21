@@ -296,7 +296,9 @@ export async function fetchDirectiveActuations(
              wi.updated_ts,
              (SELECT max(cn.updated_ts)
                 FROM harness_shared.carry_notes cn
-               WHERE cn.scope = 'workitem:' || wi.harness_slug || ':' || wi.feature_id
+               WHERE cn.scope IN (
+                       'workitem:' || wi.harness_slug || ':' || wi.feature_id,
+                       'workitem:*:' || wi.feature_id)
                  AND cn.note IS NOT NULL)                            AS checkpoint_ms
         FROM harness_shared.work_items wi
        WHERE wi.workspace_id = ${ws}

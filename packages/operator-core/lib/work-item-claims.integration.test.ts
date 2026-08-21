@@ -26,6 +26,7 @@ const {
   releaseAllClaimsForOwner,
   getClaim,
   listLiveClaimsForHive,
+  listActiveClaimFreshnessForOwner,
   sweepLapsedClaims,
 } = await import('./work-item-claims');
 const { resetWorkItemClaimAuthority } = await import('./work-item-claim-authority');
@@ -46,6 +47,15 @@ const WORK_ITEM_CLAIMS_DDL = `
     expires_ts timestamptz NOT NULL,
     last_activity_ts timestamptz DEFAULT clock_timestamp() NOT NULL,
     CONSTRAINT work_item_claims_pkey PRIMARY KEY (workspace_id, harness_slug, work_item_id))`;
+const CARRY_NOTES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.carry_notes (
+    workspace_id text NOT NULL,
+    scope text NOT NULL,
+    note text,
+    journal jsonb NOT NULL DEFAULT '[]'::jsonb,
+    updated_ts bigint NOT NULL,
+    deps jsonb,
+    PRIMARY KEY (workspace_id, scope))`;
 
 const WS = 'default';
 const HARNESS = 'h1';
@@ -64,6 +74,7 @@ beforeAll(async () => {
   db = await createFreshPgDb('work-item-claims');
   h.sql = db.sql;
   await db.sql.unsafe(WORK_ITEM_CLAIMS_DDL);
+  await db.sql.unsafe(CARRY_NOTES_DDL);
 });
 
 afterAll(async () => {
@@ -73,6 +84,7 @@ afterAll(async () => {
 beforeEach(async () => {
   resetWorkItemClaimAuthority();
   await db.sql`DELETE FROM harness_shared.work_item_claims`;
+  await db.sql`DELETE FROM harness_shared.carry_notes WHERE scope LIKE 'workitem:%:F-%'`;
 });
 
 describe('work-item claim lease store (real PG)', () => {
@@ -146,6 +158,19 @@ describe('work-item claim lease store (real PG)', () => {
     await db.sql`UPDATE harness_shared.work_item_claims SET expires_ts = clock_timestamp() - interval '1 minute' WHERE work_item_id = 'F-008'`;
     const live = await listLiveClaimsForHive(WS, HIVE);
     expect(live.map((c) => c.workItemId)).toEqual(['F-007']);
+  });
+
+  it('listActiveClaimFreshnessForOwner sees a canonical wildcard checkpoint beside a concrete claim harness', async () => {
+    await acquireClaim(base({ workItemId: 'F-012', owner: 'su-freshness' }));
+    const checkpointMs = Date.now() - 1_000;
+    await db.sql`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, updated_ts)
+      VALUES ('other-workspace', 'workitem:*:F-012', 'written by the canonical wildcard scope', ${checkpointMs})`;
+
+    const freshness = await listActiveClaimFreshnessForOwner(WS, 'su-freshness');
+    expect(freshness).toEqual([
+      expect.objectContaining({ workItemId: 'F-012', checkpointUpdatedMs: checkpointMs }),
+    ]);
   });
 
   it('releaseAllClaimsForOwner clears a session; sweepLapsedClaims GCs expired rows', async () => {

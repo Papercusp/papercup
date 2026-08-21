@@ -3290,7 +3290,9 @@ export async function collectStalledClaimSignals(
        AND (now() - COALESCE(fa.last_progress_at, fa.claim_acquired_ts)) > make_interval(mins => ${minMinutes})
        AND NOT EXISTS (
          SELECT 1 FROM harness_shared.carry_notes cn
-          WHERE cn.scope = 'workitem:' || fa.harness_slug || ':' || fa.work_item_id
+          WHERE cn.scope IN (
+                  'workitem:' || fa.harness_slug || ':' || fa.work_item_id,
+                  'workitem:*:' || fa.work_item_id)
             AND cn.note IS NOT NULL
             AND cn.updated_ts > (extract(epoch from now()) * 1000)::bigint - (${minMinutes}::int * 60000)
        )
