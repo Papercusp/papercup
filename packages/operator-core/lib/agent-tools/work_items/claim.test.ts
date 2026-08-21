@@ -117,6 +117,41 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
   });
 
+  it('P-016 returns the ready await call when the claimed item has an active gate blocker', async () => {
+    const now = '2026-08-21T00:00:00.000Z';
+    claimM.mockResolvedValue({
+      id: 'WI-GATED',
+      assignee: 'me',
+      externalBlockers: [
+        {
+          kind: 'gate',
+          capability: 'live-dependency',
+          capabilitySource: 'explicit',
+          ref: 'release:green:papercusp',
+          summary: 'green checkpoint must pass',
+          status: 'active',
+          createdAt: now,
+          createdBy: 'su-leader',
+          updatedAt: now,
+        },
+      ],
+    } as never);
+
+    const b = await body({ id: 'WI-GATED' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      id: 'WI-GATED',
+      suggestedWatches: [
+        {
+          tool: 'events:await',
+          args: { event: 'release:green:papercusp' },
+        },
+      ],
+    });
+    expect(b.results[0].suggestedWatches[0].why).toMatch(/red gate/i);
+  });
+
   it('passes the claimed id to premise citation hydration and surfaces its advisory', async () => {
     claimM.mockResolvedValue({
       id: 'EI-aged',
