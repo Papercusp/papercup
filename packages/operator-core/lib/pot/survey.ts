@@ -31,7 +31,12 @@ import { activeWorkspaceId } from '../workspace-registry';
 import { withPgRetry } from '../pg-transient-retry';
 import { frontierPlacementKindClause } from '../datatype-frontier-placement';
 import { autoPickableWhereSql } from '../work-items-admission';
-import { claimHoldExclusionSql, needsHumanExclusionSql, crossMachineRigExclusionSql } from '../work-items';
+import {
+  claimHoldExclusionSql,
+  legacyNeedsHumanExclusionSql,
+  needsOwnerActionExclusionSql,
+  crossMachineRigExclusionSql,
+} from '../work-items';
 import { loadHarnessRegistry } from '../harness-registry';
 import { listPlanIndexRows, type PlanIndexRow } from '../agent-tools/plans/source';
 import { reconcileStartStatus, isTerminalPlanStatus } from '../agent-tools/plans/plan-start-state';
@@ -581,8 +586,10 @@ export async function fetchEscalatedIssueFrontierRows(
        -- claim-hold, or last-mile LIVE-rig/VM verification) still counted as a "ready to
        -- place" frontier item, driving recurring false Mug-dark blocker escalations
        -- (live-verified 2026-07-17: 4/10 of the current escalated-issue frontier carried
-       -- payload.needsHuman:true). Mirror the SAME three floors, one source of truth.
-       AND ${needsHumanExclusionSql(sql)}
+       -- payload.needsHuman:true). Mirror the SAME legacy + strict owner-action,
+       -- claim-hold, and rig floors, one source of truth.
+       AND ${legacyNeedsHumanExclusionSql(sql)}
+       AND ${needsOwnerActionExclusionSql(sql)}
        AND ${claimHoldExclusionSql(sql)}
        AND ${crossMachineRigExclusionSql(sql, false)}
        AND NOT EXISTS (

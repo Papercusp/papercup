@@ -333,11 +333,12 @@ describe('EI-13501: cup-forbidden items are excluded from the placement frontier
     expect(placeable).toBe(1);
   });
 
-  it('fetchEscalatedIssueFrontierRows excludes needsHuman, claim-held, AND rig-gated issue rows — mirroring claimNextIssueWorkItem\'s floors so the Mug\'s count never disagrees with what the claim path actually serves', async () => {
+  it('fetchEscalatedIssueFrontierRows excludes legacy needsHuman, strict needsOwnerAction, claim-held, AND rig-gated issue rows — mirroring claimNextIssueWorkItem\'s floors so the Mug\'s count never disagrees with what the claim path actually serves', async () => {
     await seedIssue(MEMBER_A, 'EI-NEEDS-HUMAN', { createdTs: 1, payload: { needsHuman: true } });
-    await seedIssue(MEMBER_A, 'EI-CLAIM-HELD', { createdTs: 2, payload: { _claimHold: true } });
-    await seedIssue(MEMBER_A, 'EI-RIG-GATED', { createdTs: 3, payload: { needs_2_machine_rig: true } });
-    await seedIssue(MEMBER_A, 'EI-GENUINE', { createdTs: 4 });
+    await seedIssue(MEMBER_A, 'EI-NEEDS-OWNER-ACTION', { createdTs: 2, payload: { needsOwnerAction: true } });
+    await seedIssue(MEMBER_A, 'EI-CLAIM-HELD', { createdTs: 3, payload: { _claimHold: true } });
+    await seedIssue(MEMBER_A, 'EI-RIG-GATED', { createdTs: 4, payload: { needs_2_machine_rig: true } });
+    await seedIssue(MEMBER_A, 'EI-GENUINE', { createdTs: 5 });
     const rows = await fetchEscalatedIssueFrontierRows(db.sql as unknown as postgres.Sql, 'default', [MEMBER_A]);
     // Live-verified 2026-07-17: 4 of 10 sampled real escalated-issue-frontier rows carried
     // payload.needsHuman:true and were STILL counted as "ready to place" before this fix.

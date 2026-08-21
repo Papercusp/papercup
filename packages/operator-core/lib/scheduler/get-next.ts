@@ -67,7 +67,8 @@ import {
   ISSUE_FAMILY_CLAIMABLE_STATES,
   releaseCooldownSec,
   claimHoldExclusionSql,
-  needsHumanExclusionSql,
+  legacyNeedsHumanExclusionSql,
+  needsOwnerActionExclusionSql,
   observationLaneExclusionSql,
   externalBlockersExclusionSql,
   depsBlockedExclusionSql,
@@ -813,6 +814,7 @@ export interface IssueClaimExclusionBreakdown {
   excluded: {
     taken: number;
     claimHold: number;
+    /** Legacy needsHuman plus the strict needsOwnerAction floor. */
     needsHuman: number;
     agentReview: number;
     observationLane: number;
@@ -909,7 +911,8 @@ export function issueClaimCandidateSubquery(
       (${compiled})                                                     AS spec_match,
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
-      (${needsHumanExclusionSql(sql)})                                  AS ok_needs_human,
+      (${legacyNeedsHumanExclusionSql(sql)} AND ${needsOwnerActionExclusionSql(sql)})
+                                                                         AS ok_needs_human,
       (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
       (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,

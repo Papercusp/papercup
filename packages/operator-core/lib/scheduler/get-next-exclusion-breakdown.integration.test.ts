@@ -22,9 +22,9 @@ import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import type { FilterNode } from './claim-spec';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
-  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('../workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
@@ -125,6 +125,7 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
 
     // Every-day floors the aggregate must also carry correctly:
     await seedIssue('WI-9405', { needsHuman: true });
+    await seedIssue('WI-9411', { needsOwnerAction: true });
     await seedIssue('WI-9406', { lane: 'observation' });
     await seedIssue('WI-9407', {
       externalBlockers: [{ kind: 'event', ref: 'deploy:green', status: 'active', createdAt: '', updatedAt: '' }],
@@ -141,13 +142,13 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
 
     // matchedByFilter = every row in the claimable-status scope for this harness/workspace,
     // REGARDLESS of floor — WI-9410 (resolved) is the only one excluded from this count.
-    // 9401..9409 = 9 rows (9408 is itself its own row too, though it's the BLOCKER not the
+    // 9401..9409 plus 9411 = 10 rows (9408 is itself its own row too, though it's the BLOCKER not the
     // blocked one under test — it is untaken/unfloored so it is simultaneously admissible).
-    expect(out.matchedByFilter).toBe(9);
+    expect(out.matchedByFilter).toBe(10);
     expect(out.excluded).toMatchObject({
       taken: 1, // WI-9403
       claimHold: 1, // WI-9402
-      needsHuman: 1, // WI-9405
+      needsHuman: 2, // WI-9405 legacy + WI-9411 strict owner-action
       observationLane: 1, // WI-9406
       externalBlocker: 1, // WI-9407
       planLaneReserved: 1, // WI-9404
