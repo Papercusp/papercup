@@ -19,6 +19,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { isActivelyWorked, isReclaimable, type ItemActivity } from '../item-activity';
 import { endedRecordedOwnerIds, recordedLiveOwnerIds } from '../adv-sessions';
+import { STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 export type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
 import type { PlanItemLaneBlock } from '../scheduler/plan-item-lane-guard';
 
@@ -967,6 +968,24 @@ const ORACLE_CONFIRMED_GONE = new Set<HolderActivity['sessionState']>([
 ]);
 
 /**
+ * EI-19918812834215183: a freshly claimed work-item is still in the scheduler's
+ * grace window even when its first heartbeat has not landed yet. Use the newest
+ * claim/progress timestamp as the anchor: a re-claim may retain an older
+ * `lastProgressAt`, which must not consume the fresh claim's grace window.
+ */
+function isWithinClaimGrace(r: FleetAssignmentRow, nowMs: number): boolean {
+  const timestamps = [r.claimAcquiredTs, r.lastProgressAt]
+    .map((value) => (value == null ? NaN : Date.parse(value)))
+    .filter((value): value is number => Number.isFinite(value));
+  if (timestamps.length === 0) return false;
+  const anchorMs = Math.max(...timestamps);
+  const ageMs = nowMs - anchorMs;
+  // Match the existing recent-activity skew tolerance while keeping an
+  // obviously-future timestamp from manufacturing an indefinitely fresh claim.
+  return ageMs <= STALE_CLAIM_GRACE_MS && anchorMs <= nowMs + STALE_CLAIM_GRACE_MS;
+}
+
+/**
  * Summarize one reclaim-candidate claim for a leader surface.
  *
  * WI-5975: `holder` carries the authoritative liveness. Unless the oracle
@@ -1027,6 +1046,7 @@ export function summarizeOrphan(
       residue: { planSlug: residue.planSlug, itemId: residue.itemId, effectiveStatus: residue.effectiveStatus },
     };
   }
+  const freshClaim = isWithinClaimGrace(r, nowMs);
   // EI-18716042694888410: recent REAL work outranks session posture. `lastToolCallAt`
   // was already fetched and documented as the working-vs-wedged discriminator, but the
   // verdict consulted only `sessionState`, so an actively-invoking `parked` holder was
@@ -1051,7 +1071,11 @@ export function summarizeOrphan(
       return isRecentlyActive(holder, nowMs) || r.holderAlive === true;
     }
     if (sessionState === 'ended') return false; // confirmed, permanent — never overridable.
-    if (ORACLE_CONFIRMED_GONE.has(sessionState)) return isRecentlyActive(holder, nowMs);
+    if (ORACLE_CONFIRMED_GONE.has(sessionState)) {
+      return freshClaim || isRecentlyActive(holder, nowMs);
+    }
+    // A just-spawned holder may be recorded as alive before its first presence
+    // heartbeat; the claim itself is the temporary safety signal in that window.
     return true; // live / parked / recorded — documented alive states.
   })();
   return {

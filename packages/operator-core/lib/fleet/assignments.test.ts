@@ -21,6 +21,7 @@ vi.mock('../scheduler/plan-item-lane-guard', () => ({
 
 import {
   ACTIVE_TOOL_CALL_WINDOW_MS,
+  STALE_CLAIM_GRACE_MS,
   deriveActivity,
   downgradeEndedHolders,
   groupByAgent,
@@ -384,6 +385,35 @@ describe('summarizeOrphan — WI-5975', () => {
   describe('recent tool activity outranks a non-live sessionState', () => {
     const NOW = Date.parse('2026-07-26T14:00:00.000Z');
     const agoMs = (ms: number) => new Date(NOW - ms).toISOString();
+
+    it('a fresh claim with no heartbeat is held during the scheduler grace window', () => {
+      const fresh = workClaim({
+        holderAlive: false,
+        claimAcquiredTs: agoMs(2 * 60_000),
+        lastProgressAt: null,
+      });
+      const s = summarizeOrphan(fresh, null, NOW);
+      expect(s.verdict).toBe('held-by-live-agent');
+      expect(s.action).toBe('ask');
+      expect(isReclaimCandidate(s)).toBe(false);
+    });
+
+    it('anchors fresh-claim grace on the newest claim or progress timestamp', () => {
+      const freshReclaim = workClaim({
+        holderAlive: false,
+        claimAcquiredTs: agoMs(2 * 60_000),
+        // A prior holder's progress must not make this re-claim look stale.
+        lastProgressAt: agoMs(4 * 60 * 60_000),
+      });
+      const s = summarizeOrphan(freshReclaim, { sessionState: 'draining' }, NOW);
+      expect(s.verdict).toBe('held-by-live-agent');
+      expect(s.action).toBe('ask');
+
+      const aged = { ...freshReclaim, claimAcquiredTs: agoMs(STALE_CLAIM_GRACE_MS + 1) };
+      const agedSummary = summarizeOrphan(aged, { sessionState: 'draining' }, NOW);
+      expect(agedSummary.verdict).toBe('orphan');
+      expect(agedSummary.action).toBe('reclaim');
+    });
 
     it('a PARKED holder invoking tools right now is never reclaimable', () => {
       const s = summarizeOrphan(
