@@ -26,7 +26,7 @@ const h = vi.hoisted(() => ({
   ws: 'ws-mem-test',
 }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: () => Promise.resolve({ projects: [] }),

@@ -9,7 +9,7 @@ describe('adv-sessions link persistence', () => {
 
   it('returns conflict when the ADV row is already linked to a different OMP session', async () => {
     const sql = vi.fn(async () => [{ omp_thread_id: '019-old' }]);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
     const mod = await import('./adv-sessions');
@@ -21,7 +21,7 @@ describe('adv-sessions link persistence', () => {
     const sql = vi.fn()
       .mockResolvedValueOnce([{ omp_thread_id: null }])
       .mockResolvedValueOnce([]);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
     const mod = await import('./adv-sessions');
@@ -31,7 +31,7 @@ describe('adv-sessions link persistence', () => {
 
   it('stores cwd when recording a session row', async () => {
     const sql = vi.fn(async () => [{ id: 42 }]);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
     const mod = await import('./adv-sessions');

@@ -17,7 +17,8 @@ const upsertRoutineMock = vi.fn(async (_sql: unknown, input: Record<string, unkn
   id: `rt_${input.installSlug}_${input.name}`,
   ...input,
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   upsertRoutine: (...a: unknown[]) => upsertRoutineMock(a[0], a[1] as Record<string, unknown>),
   setRoutineActive: vi.fn(async () => true),
   getOrgPg: () => {

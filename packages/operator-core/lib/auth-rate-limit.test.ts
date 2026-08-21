@@ -25,7 +25,7 @@ const h = vi.hoisted(() => ({ sql: null as any }));
 // Mirrors auth.test.ts / user-preferences.integration.test.ts's mock shape —
 // auth-rate-limit.ts only ever destructures `{ sql }` from getOrgPg() (grep
 // confirms 5/5 call sites), so this is a faithful stand-in.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 
 let db: OrgTestDb | null = null;
 let dbReady = false;

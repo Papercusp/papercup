@@ -40,7 +40,8 @@ const runMock = vi.fn(async (..._args: unknown[]) => undefined);
 let lastSql = '';
 /** Every (sql, boundArgs) pair prepared+executed, in order. */
 const calls: Array<{ sql: string; args: unknown[] }> = [];
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getLegacyClient: () => ({
     prepare: (sql: string) => {
       lastSql = sql;

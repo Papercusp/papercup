@@ -42,7 +42,8 @@ vi.mock('../operator-state-pg', () => ({
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
 // Audit-log writer reaches for the org pool — stub it so the save's best-effort
 // audit doesn't try to open a real connection.
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: Object.assign(async () => [], { unsafe: async () => {} }) }),
 }));
 // saveHarnessRegistry fires a fire-and-forget sync invalidate (notifyRegistryChanged

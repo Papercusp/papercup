@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // the mock just preserves that semantic.
 const store = new Map<string, unknown>();
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   function tagged(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
     if (/SELECT payload FROM harness_shared\.operator_rate_limit/.test(sqlText)) {
@@ -61,6 +61,7 @@ vi.mock('@papercusp/db-org', () => {
     delete: () => ({ where: async () => undefined }),
   };
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql: tagged, db: dbStub }),
     generated: { operatorRateLimitInHarnessShared: { workspace_id: {}, payload: {}, updated_at: {} } },
   };

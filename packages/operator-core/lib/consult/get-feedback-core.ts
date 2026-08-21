@@ -246,7 +246,34 @@ interface ConsultArchiveRow {
   responder_id: string | null;
   outcome: unknown;
   closed_at: string | Date | null;
+  question: string;
   sim: number;
+}
+
+/**
+ * Extract the stable subject identifiers from a consult question. Embedding
+ * similarity is deliberately broad; these exact refs are the safety fence for
+ * archive reuse when a question names a rubric, plan, or other durable object.
+ * A question without named refs remains compatible only with another question
+ * without named refs, so a specific archived answer cannot silently answer a
+ * generic request (or vice versa).
+ */
+export function consultSubjectKeys(question: string): string[] {
+  const keys = new Set<string>();
+  const namedSubject = /\b(rubric|plan|goal|feature|work[\s-]*item)\s*[:#=]?\s*([a-z0-9][a-z0-9._/-]*-[a-z0-9._/-]*)/gi;
+  for (const match of question.matchAll(namedSubject)) {
+    const kind = match[1].toLowerCase().replace(/[\s-]+/g, '-');
+    keys.add(`${kind}:${match[2].toLowerCase()}`);
+  }
+  const explicitIds = /\b((?:WI|EI|F|D)-\d{1,12})\b/gi;
+  for (const match of question.matchAll(explicitIds)) keys.add(`id:${match[1].toUpperCase()}`);
+  return [...keys].sort();
+}
+
+function archiveSubjectsMatch(currentQuestion: string, archivedQuestion: string): boolean {
+  const current = consultSubjectKeys(currentQuestion);
+  const archived = consultSubjectKeys(archivedQuestion);
+  return current.length === archived.length && current.every((key, i) => key === archived[i]);
 }
 
 function consultTitle(question: string): string {
@@ -516,7 +543,7 @@ export async function getFeedbackCore(
   if (qVecStr) {
     try {
       const rows = (await sql`
-        SELECT conversation_id, responder_id, outcome, closed_at,
+      SELECT conversation_id, responder_id, outcome, closed_at, question,
                1 - (query_embedding <=> ${qVecStr}::vector) AS sim
           FROM harness_shared.consult_state
          WHERE workspace_id = ${req.workspaceId}
@@ -527,8 +554,11 @@ export async function getFeedbackCore(
          LIMIT 3
       `) as unknown as ConsultArchiveRow[];
       embeddingColumnOk = true;
-      const top = rows[0];
-      if (top && Number(top.sim) >= archiveFloor) archiveHit = { ...top, sim: Number(top.sim) };
+      const top = rows.find(
+        (candidate) =>
+          Number(candidate.sim) >= archiveFloor && archiveSubjectsMatch(req.question, candidate.question),
+      );
+      if (top) archiveHit = { ...top, sim: Number(top.sim) };
     } catch {
       embeddingColumnOk = false;
     }

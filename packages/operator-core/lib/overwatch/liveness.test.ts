@@ -12,7 +12,8 @@ const deleteRoutine = vi.fn();
 const h = vi.hoisted(() => ({
   isWorkspaceCoordinationOn: vi.fn(async () => false),
 }));
-vi.mock("@papercusp/db-org", () => ({
+vi.mock("@papercusp/db-org", async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   upsertRoutine: (...a: unknown[]) => upsertRoutine(...a),
   deleteRoutine: (...a: unknown[]) => deleteRoutine(...a),
 }));

@@ -13,7 +13,7 @@ const h = vi.hoisted(() => ({
   queries: [] as Array<{ text: string; values: unknown[] }>,
 }));
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const tx = (strings: TemplateStringsArray, ...values: unknown[]) => {
     h.queries.push({ text: strings.join('¿'), values });
     return Promise.resolve([]);
@@ -21,6 +21,7 @@ vi.mock('@papercusp/db-org', () => {
   // tx(<array>) helper form (used for `NOT IN ${tx(slugs)}`)
   const callable = Object.assign(tx, {});
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     withWorkspace: async (_ws: string, fn: (t: unknown) => Promise<unknown>) => fn(callable),
   };
 });

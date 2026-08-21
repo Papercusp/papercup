@@ -37,7 +37,8 @@ const owner = vi.hoisted(() => ({
   })),
   isPausedNow: vi.fn((s: { pauseNewWork: boolean; pausedUntil: number | null }, nowMs: number) => s.pauseNewWork || (s.pausedUntil != null && nowMs < s.pausedUntil)),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: () => Promise.resolve(owner.ownerRows) }),
 }));
 vi.mock('../pot/placement-watchdog', () => ({

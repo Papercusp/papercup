@@ -15,7 +15,8 @@ function makeTx() {
   };
 }
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: vi.fn(async (workspaceId: string, fn: (tx: any) => Promise<unknown>) => {
     (globalThis as any).__lastWorkspaceId = workspaceId;
     return fn(makeTx());

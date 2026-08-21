@@ -39,7 +39,7 @@ async function loadAutoRebase(cfg: GitCfg, opts: { sqlThrows?: boolean } = {}) {
   if (opts.sqlThrows) sqlUnsafe.mockImplementation(async () => { throw new Error('PG down'); });
   else sqlUnsafe.mockImplementation(async () => []);
   vi.doMock('node:child_process', () => ({ execFile: makeExecFile(cfg) }));
-  vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { unsafe: sqlUnsafe } }) }));
+  vi.doMock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: { unsafe: sqlUnsafe } }) }));
   const mod = await import('../auto-rebase');
   return mod.autoRebaseOnPush;
 }

@@ -176,7 +176,8 @@ describe('derived-reads producers: rubrics.list', () => {
 // (ws, harness_slug, key) can only ever hold that one view.
 async function loadCoordTokensProducer() {
   vi.resetModules();
-  vi.doMock('@papercusp/db-org', () => ({
+  vi.doMock('@papercusp/db-org', async (orig) => ({
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     // route the callback with a stub tx; loaders are mocked so tx is untouched.
     withWorkspace: async (_ws: string, fn: (tx: unknown) => Promise<unknown>) => fn({ unsafe: async () => [] }),
   }));

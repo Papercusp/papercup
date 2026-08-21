@@ -406,6 +406,8 @@ export function parseArgs(argv) {
   let pendingFeature = false;
   let pendingHarness = false;
   let pendingPlan = false;
+  let pendingModeSubject = false;
+  let pendingModeInstructions = false;
   for (const a of argv) {
     if (rest) { out.passthrough.push(a); continue; }
     // `--add-dir <dir>` (space form) — the previous token armed this; take the
@@ -417,6 +419,8 @@ export function parseArgs(argv) {
     if (pendingFeature) { pendingFeature = false; out.feature = a; continue; }
     if (pendingHarness) { pendingHarness = false; out.harness = a; continue; }
     if (pendingPlan) { pendingPlan = false; out.plan = a; continue; }
+    if (pendingModeSubject) { pendingModeSubject = false; out.modeSubject = a; continue; }
+    if (pendingModeInstructions) { pendingModeInstructions = false; out.modeInstructions = a; continue; }
     // `--account <id>` (space form) — the previous token armed this; take the
     // value verbatim (an account id never starts with `--`).
     if (pendingAccount) { pendingAccount = false; out.account = a; continue; }
@@ -620,6 +624,14 @@ export function parseArgs(argv) {
       }
       out.mode = rawMode;
     }
+    // drain-mode propagation: these bounded scope fields are emitted by the
+    // shared launch composers. Keep both `=` and space forms so a hand-written
+    // psu invocation has the same semantics as a fleet-generated command.
+    else if (a === '--mode-subject') pendingModeSubject = true;
+    else if (a.startsWith('--mode-subject=')) out.modeSubject = a.slice('--mode-subject='.length);
+    else if (a === '--mode-instructions') pendingModeInstructions = true;
+    else if (a.startsWith('--mode-instructions=')) out.modeInstructions = a.slice('--mode-instructions='.length);
+    else if (a === '--mode-owner-directed') out.modeOwnerDirected = true;
     // Skip the confirm when resuming an UNTRACKED (non-psu) session (for scripts).
     else if (a === '--yes' || a === '-y') out.yes = true;
     // Bare positional id after `--resume` (ergonomic `psu --resume 42` form).
@@ -6656,7 +6668,7 @@ function fmtAge(iso) {
 // EI-12938: async because the resume must be able to re-ensure a non-launch-ready
 // config dir server-side before spawning (ensureInteractiveConfigViaOperator).
 // Every call site is already inside an async function and now awaits it.
-async function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null, kickoff = null } = {}) {
+async function launchResume(session, { brain = false, fork = false, passthrough = [], addDir = [], accountEnv = null, allowSubagents, model = null, kickoff = null, launchMode = null } = {}) {
   // --fork is native for claude/codex — refuse early with a clear message rather than letting
   // resumeArgsFor throw a terse error (or, worse, appending to the original, which
   // is the clobber --fork exists to avoid).
@@ -6722,6 +6734,10 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   // agent-session marker arms the hook-level scheduler guard (bash gate / omp
   // coord-hook) for the brain only — never the owner's own sessions (D-003).
   const env = buildResumeEnv(session, { fork, brain, accountEnv });
+  // In-place resumes have no bootstrap POST. Apply the same bounded mode payload
+  // through the existing admin mode:set seam; forks target the freshly minted SID
+  // from buildResumeEnv rather than mutating the original session.
+  if (launchMode) await syncResumeLaunchMode(env.PAPERCUSP_SID || null, launchMode);
   // OMP's native id is scoped to its data root. A fresh tracked launch writes
   // under session-<adv id>; without restoring that root here, the exact id we
   // read from adv_sessions is looked up in ~/.omp and falsely appears missing.
@@ -6888,7 +6904,7 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
  * MUST run in that same cwd). agent is claude here because tracked forks need a
  * forced native id, and Codex exposes native fork but not caller-chosen fork ids.
  */
-export function forkBootstrapBody(session, account = null) {
+export function forkBootstrapBody(session, account = null, launchMode = null) {
   return {
     agent: 'claude',
     workspace: session.workspaceId || null,
@@ -6899,6 +6915,10 @@ export function forkBootstrapBody(session, account = null) {
     // server-side (resolveAccountPin) into the new launch envelope — the same path
     // a fresh psu launch takes. Omitted → no `account` key (byte-identical).
     ...(account ? { account } : {}),
+    ...(launchMode?.mode === 'drain' ? { mode: 'drain' } : {}),
+    ...(launchMode?.subject ? { mode_subject: launchMode.subject } : {}),
+    ...(launchMode?.instructions ? { mode_instructions: launchMode.instructions } : {}),
+    ...(launchMode?.ownerDirected ? { mode_owner_directed: true } : {}),
   };
 }
 
@@ -6915,6 +6935,62 @@ export function effectiveAutoMode(args) {
   // and this is NOT overridable by --no-auto (a non-auto drain is a contradiction).
   if (args.mode === 'drain') return true;
   return args.auto ?? Boolean(args.fleet);
+}
+
+const LAUNCH_MODE_SUBJECT_MAX_CHARS = 200;
+const LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS = 500;
+
+function boundedLaunchModeText(value, maxChars) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim().slice(0, maxChars);
+  return text || null;
+}
+
+/**
+ * Normalize the launch-mode fields parsed by psu before they cross either the
+ * bootstrap JSON boundary or the resume-mode admin write. This mirrors the
+ * shared TypeScript LaunchMode bounds, while keeping this plain .mjs launcher
+ * independent of the operator-core module graph.
+ */
+export function launchModeFromArgs(args = {}) {
+  if (args.mode !== 'drain') return null;
+  return {
+    mode: 'drain',
+    subject: boundedLaunchModeText(args.modeSubject, LAUNCH_MODE_SUBJECT_MAX_CHARS),
+    instructions: boundedLaunchModeText(args.modeInstructions, LAUNCH_MODE_INSTRUCTIONS_MAX_CHARS),
+    ownerDirected: args.modeOwnerDirected === true,
+  };
+}
+
+/** Apply an explicit launch-mode overlay to an existing or newly forked resume identity. */
+async function syncResumeLaunchMode(ownerId, launchMode) {
+  if (!ownerId || !launchMode) return;
+  try {
+    const result = await api('/api/admin/mode/set', {
+      method: 'POST',
+      body: JSON.stringify({
+        mode: launchMode.mode,
+        enabled: true,
+        agent: ownerId,
+        ownerDirected: launchMode.ownerDirected,
+        subject: launchMode.subject ?? undefined,
+        // An explicit empty value clears a stale child fact; a nonempty value
+        // is asserted by mode:set under mode-instructions:drain.
+        instructions: launchMode.instructions ?? '',
+        reason: 'psu resume: propagated launch mode',
+      }),
+    });
+    if (result?.ok === false || result?.stickyConflict) {
+      throw new Error(result.error ?? 'mode:set refused the propagated launch mode');
+    }
+  } catch (error) {
+    // A resume can still be useful when the control-plane write is unavailable,
+    // but never make the loss of a DRAIN overlay silent.
+    console.error(
+      `psu: launch-mode sync failed for ${ownerId} (resume will continue without the durable overlay): ` +
+        `${error?.message ?? error}`,
+    );
+  }
 }
 
 /**
@@ -6986,7 +7062,13 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   const fleetSlug = args.fleet || (args.fleetName ? fleetSlugFromName(args.fleetName) : null);
   if (fleetSlug) argv.push(`--fleet=${fleetSlug}`);
   if (args.seat) argv.push(`--seat=${args.seat}`);
-  if (args.mode) argv.push(`--mode=${args.mode}`);
+  const launchMode = launchModeFromArgs(args);
+  if (launchMode) {
+    argv.push(`--mode=${launchMode.mode}`);
+    if (launchMode.subject) argv.push(`--mode-subject=${launchMode.subject}`);
+    if (launchMode.instructions) argv.push(`--mode-instructions=${launchMode.instructions}`);
+    if (launchMode.ownerDirected) argv.push('--mode-owner-directed');
+  }
   if (effectiveAutoMode(args)) argv.push('--auto');
   if (args.launchContext) argv.push(`--launch-context=${args.launchContext}`);
   if (args.launchedBy) argv.push(`--launched-by=${args.launchedBy}`);
@@ -7000,6 +7082,7 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
 }
 
 export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
+  const launchMode = launchModeFromArgs(args);
   return {
     agent: selections.agent,
     workspace: selections.workspace,
@@ -7010,9 +7093,13 @@ export function freshSuBootstrapBody(selections, args, { brain = false } = {}) {
     // WI-1356: start fleet/auto launches in AUTO mode — bootstrap-su bakes the durable
     // AUTO directive into the system prompt + prepends it to the seeded kickoff.
     ...(effectiveAutoMode(args) ? { auto: true } : {}),
-    // drain-mode P-003: forward the named mode — bootstrap-su validates it (unknown → 400),
-    // forces autoMode on, and bakes the DRAIN directive into system prompt + kickoff.
-    ...(args.mode ? { mode: args.mode } : {}),
+    // drain-mode P-003: forward the bounded named mode — bootstrap-su validates it
+    // (unknown → 400), forces autoMode on, and syncs the child registry + standing
+    // scope fact before baking the DRAIN directive into prompt + kickoff.
+    ...(launchMode?.mode === 'drain' ? { mode: 'drain' } : {}),
+    ...(launchMode?.subject ? { mode_subject: launchMode.subject } : {}),
+    ...(launchMode?.instructions ? { mode_instructions: launchMode.instructions } : {}),
+    ...(launchMode?.ownerDirected ? { mode_owner_directed: true } : {}),
     ...(args.profile ? { profile: args.profile } : {}),
     // EI-996: the su-tier ROLE NAME (e.g. 'planner'). The server resolves that
     // role's addendum from prompts/su-role-<role>.addendum.md and appends it to
@@ -7153,6 +7240,7 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
     accountEnv: forkFallbackAccountRoute(acct),
     allowSubagents: args.allowSubagents,
     model,
+    launchMode: launchModeFromArgs(args),
     // P-011/D-008: a scripted fork gets its first turn seeded too. It matters MORE
     // here than for an in-place resume: a fork mints a FRESH coord identity, so no
     // external caller can even address it until it boots and registers presence.
@@ -7169,7 +7257,9 @@ async function launchTrackedFork(session, args = {}, acct = { id: null, env: {},
   try {
     res = await api('/api/agent-mcp/console/bootstrap-su', {
       method: 'POST',
-      body: JSON.stringify(forkBootstrapBody(session, acct?.forward ?? acct?.id ?? null)),
+      body: JSON.stringify(
+        forkBootstrapBody(session, acct?.forward ?? acct?.id ?? null, launchModeFromArgs(args)),
+      ),
     });
   } catch (e) {
     console.error(`psu: fork bootstrap failed (${e?.message ?? e}) — falling back to an UNTRACKED fork (resumable only by uuid).`);
@@ -7963,6 +8053,7 @@ async function launchResolvedResume(source, args, { tracked }) {
     allowSubagents: args.allowSubagents,
     model: target.modelSpec,
     kickoff: resumeKickoffText(args),
+    launchMode: launchModeFromArgs(args),
   });
 }
 

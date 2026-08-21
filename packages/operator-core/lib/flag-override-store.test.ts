@@ -20,7 +20,8 @@ vi.mock('./operator-state-pg', () => ({
   writeOperatorState: (...a: unknown[]) => writeOperatorState(...a),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-under-test' }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: (_strings: TemplateStringsArray, ...values: unknown[]) => {
       pgNotifyCalls.push({ values });

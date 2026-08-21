@@ -24,7 +24,7 @@ vi.mock('../blueprint/seed-learning-singletons', () => ({
     healed: [],
   }),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: (() => Promise.resolve([])) as unknown }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: (() => Promise.resolve([])) as unknown }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
 
 const { validateDeclaredSingletons } = await import('./validate-declared-singletons');

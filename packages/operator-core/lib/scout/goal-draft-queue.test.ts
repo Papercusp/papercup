@@ -13,7 +13,8 @@ import { join } from 'node:path';
 /** Every statement the module issues, captured verbatim for the SELECT-only guard. */
 const statements: string[] = [];
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
       statements.push(strings.join('?'));

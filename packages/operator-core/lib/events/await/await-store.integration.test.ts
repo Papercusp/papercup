@@ -13,7 +13,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-await-test' }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 
 const store = await import('./store');

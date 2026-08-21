@@ -29,7 +29,7 @@ vi.mock('../fleet/placement-gather', () => ({ gatherLiveCups: (...a: unknown[]) 
 vi.mock('../agent-tools/coordination/messages', () => ({ readInbox: (...a: unknown[]) => readInbox(...a) }));
 vi.mock('../agent-tools/coordination/slot-parked-store', () => ({ drainSlotMessages: (...a: unknown[]) => drainSlotMessages(...a) }));
 vi.mock('../workspace-als', () => ({ runWithWorkspace: (_ws: string, fn: () => unknown) => fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 // L1d recall fold (memory-delivery-unification-2026-07-12 P-004): mocked so the
 // brief tests stay hermetic; resolveLaunchProfile's REAL behavior is pinned in
 // memory/launch-profile.test.ts — here we pin the WIRING (frontier → resolver).

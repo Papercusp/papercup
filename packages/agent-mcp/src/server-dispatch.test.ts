@@ -17,7 +17,8 @@ const FAKE_TX = { __fakeTx: true } as const;
 
 // withWorkspace records the workspace id it was scoped to and runs the callback
 // with a sentinel tx, so we can assert both the scope and what the handler got.
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: vi.fn(async (_wsId: string, cb: (tx: unknown) => unknown) => cb(FAKE_TX)),
 }));
 

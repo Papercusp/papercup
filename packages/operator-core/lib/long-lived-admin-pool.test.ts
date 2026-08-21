@@ -54,7 +54,7 @@ vi.mock('./embedded-pg-discovery', () => ({
 // the store-identity state machine below: it is pure by design (no postgres import, no
 // I/O), so the real one drops straight in and the wiring is tested against the actual
 // primitive rather than a re-implementation that would agree with itself.
-vi.mock('@papercusp/db-org', async () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   const endStalePool = (client: unknown, builtWith: string | null, url: string) => {
     if (!client || builtWith === url) return false;
     void (client as { end: () => Promise<void> }).end();
@@ -62,6 +62,7 @@ vi.mock('@papercusp/db-org', async () => {
   };
   const identity = await import('../../../libs/papercusp/libs/db/src/store-identity');
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     endStalePool,
     longLivedPoolConnectionOptions: (label: string) => ({ onnotice: () => {}, connection: { application_name: label } }),
     poolIdleTimeoutSec: () => 30,

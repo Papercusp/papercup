@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { mockOrgPgSql } from '../../testing/mock-org-pg';

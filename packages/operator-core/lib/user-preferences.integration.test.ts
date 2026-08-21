@@ -20,7 +20,7 @@ import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as any, ws: 'ws-default' }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 // workspace-data-isolation-leaks F / owner D-001: user prefs are now per
 // (user_id, workspace_id) — control the active workspace per case.
 vi.mock('./workspace-registry', async () => {

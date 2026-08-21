@@ -71,7 +71,7 @@ const sqlMock = vi.fn(async () => {
   if (sqlThrows) throw sqlThrows;
   return [];
 });
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlMock }) }));
 
 import { createOneWorkItem } from './_create-core';
 

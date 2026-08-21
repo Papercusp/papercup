@@ -40,7 +40,8 @@ vi.mock('../../auth/require-principal', () => ({
 // so any table/column ref (`ti.token`, `he.escalation`, …) resolves to a
 // harmless stub the mocked query builder ignores.
 const getOrgPg = vi.fn();
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: (...a: unknown[]) => getOrgPg(...(a as [])),
   generated: new Proxy({}, { get: () => new Proxy({}, { get: () => ({}) }) }),
   // Agent-MCP task tools are imported by the route stack and build this

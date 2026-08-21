@@ -17,7 +17,7 @@ vi.mock('./dev-data', () => ({
   probeProcess: (...a: unknown[]) => probeProcessMock(...a),
 }));
 // Audit writes are best-effort + tangential — stub the DB to a no-op.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: { unsafe: vi.fn() } }) }));
 
 import { killProcess } from './process-kill';
 

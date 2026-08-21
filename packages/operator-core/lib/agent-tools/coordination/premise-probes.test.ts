@@ -24,7 +24,7 @@ vi.mock('../../work-item-dispatch-states', () => ({
 // concurrent legs resolved the MOCKED module rather than the real one.
 const sql = vi.fn(async () => [{ plan_exists: true, decision_exists: true }]);
 const getOrgPg = vi.fn(() => ({ sql }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => getOrgPg() }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => getOrgPg() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 
 beforeEach(() => {

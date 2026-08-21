@@ -24,7 +24,8 @@ import { createOrgTestDb, type OrgTestDb } from './_org-test-db';
 // getOrgPgApp can't build Drizzle under vitest; see _org-test-db.ts). The holder
 // is populated in beforeAll; vi.hoisted keeps it visible to the hoisted factory.
 const H = vi.hoisted(() => ({ appSql: null as null | { begin: (cb: (tx: unknown) => unknown) => Promise<unknown> } }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: async (ws: string, cb: (tx: unknown) => unknown) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (H.appSql as any).begin(async (tx: any) => {

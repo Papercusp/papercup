@@ -26,7 +26,8 @@ import type { SnapshotManifest, SnapshotIndexRow } from '@papercusp/export-state
 // query would blow up — but upsertSnapshotIndexRow is mocked to NOT touch it.
 const upsertCalls: SnapshotIndexRow[] = [];
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: new Proxy({}, { get() { throw new Error('sql should not be called in unit test'); } }) }),
 }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-unit' }));

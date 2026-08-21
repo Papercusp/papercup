@@ -18,7 +18,7 @@ import { setFlagOverridesForTest } from '@papercusp/flags/test';
 import type { OrgTestDb } from '../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 // recordRoutedIdea/gradeRoutedIdea fire-and-forget a learning.scout invalidate
 // via a lazy import — mock the SSE seam so the grade tests can assert it.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));

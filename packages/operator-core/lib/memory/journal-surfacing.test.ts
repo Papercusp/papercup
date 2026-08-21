@@ -25,7 +25,8 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // getOrgPg().sql is a tagged-template fn; route the two queries by their literal SQL.
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray) => {
       const q = Array.from(strings).join('');

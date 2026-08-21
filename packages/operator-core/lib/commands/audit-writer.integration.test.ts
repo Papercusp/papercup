@@ -19,7 +19,8 @@ const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-audit-default' }));
 
 // withWorkspace runs its callback with a workspace-scoped tx; point it at the
 // fixture admin client. activeWorkspaceId is pinned per test via h.ws.
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: async <T>(_ws: string, cb: (tx: unknown) => Promise<T>): Promise<T> => cb(h.sql),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));

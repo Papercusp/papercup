@@ -68,7 +68,8 @@ vi.mock('../agent-tools/coordination/messages', () => ({
 vi.mock('../agent-fleets-store', () => ({
   getFleet: admissionMocks.getFleet,
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: admissionMocks.sql }),
 }));
 

@@ -29,7 +29,8 @@ const h = vi.hoisted(() => ({
   pairRows: [] as Record<string, unknown>[],
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: Object.assign(
       (strings: TemplateStringsArray, ...vals: unknown[]) => {

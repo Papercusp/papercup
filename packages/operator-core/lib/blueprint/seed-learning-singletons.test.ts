@@ -37,7 +37,7 @@ vi.mock('./materialize-triggers', () => ({
   SINGLETON_TRIGGER_HOST_SLUG: '@singleton',
 }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { PLATFORM_IMPROVEMENT_LOOPS: 'platform_improvement_loops' } }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: undefined }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: undefined }) }));
 vi.mock('../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercup' }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 

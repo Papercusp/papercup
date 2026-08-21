@@ -15,7 +15,8 @@ const { sendMessage, insertValues, notifySyncInvalidate } = vi.hoisted(() => ({
 
 vi.mock('./agent-tools/coordination/messages', () => ({ sendMessage }));
 vi.mock('./sync-sse', () => ({ notifySyncInvalidate }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     db: {
       insert: () => ({ values: insertValues }),

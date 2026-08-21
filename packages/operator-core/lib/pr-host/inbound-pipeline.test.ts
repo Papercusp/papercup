@@ -19,7 +19,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: Object.assign(() => Promise.resolve([]), { unsafe: vi.fn().mockResolvedValue([]) }) }),
   upsertRoutine: vi.fn(),
   setRoutineActive: vi.fn(),

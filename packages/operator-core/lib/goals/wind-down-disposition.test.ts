@@ -21,7 +21,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../modes/store', () => ({ getModeSubject: vi.fn() }));
 vi.mock('../agent-tools/coordination/escalations', () => ({ openEscalation: vi.fn(async () => ({})) }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => {
     throw new Error('unit test must inject `sql` explicitly');
   }),

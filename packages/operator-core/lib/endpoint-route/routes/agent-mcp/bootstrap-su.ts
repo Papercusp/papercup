@@ -775,6 +775,47 @@ export async function stampFleetMembershipAtBoot(opts: {
 }
 
 /**
+ * EI-21005277510954647 — make the bootstrap row hive-visible before turn 1.
+ *
+ * The OMP session hook can create coord_presence before the launched agent has
+ * called coord:orient/coord:declare-intent. That hook does not carry the
+ * harness, so a fleet member could be live and fleet-labelled while pot_slug
+ * remained null; hive-scoped coord:presence filtered it out before liveness
+ * enrichment. Bootstrap already owns the resolved harness and stable owner id,
+ * so stamp the same presence row through the canonical writePresence path once
+ * the adv_sessions row exists. The later agent-side declaration remains an
+ * idempotent refresh.
+ *
+ * Presence is recoverable coordination state, unlike the fleet-membership fact,
+ * so a transient write failure is returned to the caller for logging but does
+ * not abort an otherwise valid session launch.
+ */
+export async function stampPresenceAtBoot(opts: {
+  workspaceId: string;
+  ownerId: string;
+  ownerLabel?: string | null;
+  harnessSlug: string;
+}): Promise<string | null> {
+  try {
+    const { writePresence } = await import('../../../agent-tools/coordination/presence');
+    await writePresence(
+      {
+        ownerId: opts.ownerId,
+        ownerLabel: opts.ownerLabel?.trim() || `su · ${opts.ownerId.slice(0, 8)}`,
+        source: 'omp-hook-session',
+        workspaceId: opts.workspaceId,
+        userId: null,
+      },
+      { agentRole: 'su' },
+      opts.harnessSlug,
+    );
+    return null;
+  } catch (e: any) {
+    return e?.message ?? String(e);
+  }
+}
+
+/**
  * EI-11110 / WI-5976 (text-vs-registry authorization contradiction): a fleet/auto
  * launch used to bake "AUTO mode is ON" (and its watermarked, authoritative-
  * looking instructionPrecedence snapshot) into the session PROSE ONLY, computed
@@ -2454,6 +2495,25 @@ const post = defineTool({
           status: 'error',
           error: `session-port target claim raced or failed: ${error instanceof Error ? error.message : String(error)}`,
         }, 409);
+      }
+    }
+
+    // EI-21005277510954647: bootstrap is the first point that simultaneously
+    // knows the stable owner id + concrete harness. Stamp pot_slug now so a
+    // fleet-launched member is visible to hive-scoped coord:presence before its
+    // first agent turn/orient call. The session row exists on both ordinary and
+    // port paths at this point, so this cannot create a launch ghost.
+    if (harnessSlug) {
+      const presenceStampErr = await stampPresenceAtBoot({
+        workspaceId: workspace,
+        ownerId: sid,
+        ownerLabel: body.label?.trim() || null,
+        harnessSlug,
+      });
+      if (presenceStampErr) {
+        process.stderr.write(
+          `[bootstrap-su] presence pot-scope stamp failed (non-fatal; first coord:orient can repair it): ${presenceStampErr}\n`,
+        );
       }
     }
 

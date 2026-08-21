@@ -183,6 +183,45 @@ describe('spawnInvokeOnce', () => {
     expect(r.exitCode).not.toBe(0);
   }, 10_000);
 
+  it('release-fixer first-turn silence guard kills before the full invoke deadline', async () => {
+    // Bootstrap logs are timestamp-prefixed and do not count as an agent turn.
+    // This mirrors the observed shape: prompt assembly succeeds, then the
+    // release-fixer emits no agent stream until the overall timeout.
+    H.cmd = node(
+      'process.stdout.write("[2026-08-20T12:15:34.000Z] prompt-budget role=release-fixer total=63586\\n");' +
+        'setInterval(() => {}, 5000)',
+    );
+    const start = Date.now();
+    const r = await spawnInvokeOnce(
+      process.cwd(),
+      'release-fixer',
+      [],
+      {},
+      { timeoutMs: 1_000, firstTurnTimeoutMs: 200 },
+    );
+    const elapsed = Date.now() - start;
+    expect(r.firstTurnTimedOut).toBe(true);
+    expect(r.timedOut).toBe(true);
+    expect(r.stderr).toContain('release-fixer first-turn timeout');
+    expect(elapsed).toBeLessThan(900);
+  }, 10_000);
+
+  it('release-fixer first-turn silence guard clears when an agent stream starts', async () => {
+    H.cmd = node(
+      'process.stdout.write("{\\"type\\":\\"assistant\\",\\"content\\":\\"turn\\"}\\n");' +
+        'setTimeout(() => process.exit(0), 20)',
+    );
+    const r = await spawnInvokeOnce(
+      process.cwd(),
+      'release-fixer',
+      [],
+      {},
+      { timeoutMs: 1_000, firstTurnTimeoutMs: 200 },
+    );
+    expect(r.exitCode).toBe(0);
+    expect(r.firstTurnTimedOut).toBe(false);
+  });
+
   it('resolves (never rejects) with exitCode 1 on a spawn error (bad command)', async () => {
     H.cmd = { command: 'papercusp-no-such-binary-zzz', args: [], env: process.env };
     const r = await spawnInvokeOnce(process.cwd(), 'worker', [], {});

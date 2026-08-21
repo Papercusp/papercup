@@ -553,6 +553,7 @@ async function seedClosedConsult(opts: {
   conv: string;
   vec: number[];
   responder?: string | null;
+  question?: string;
   outcome?: Record<string, unknown>;
 }): Promise<void> {
   // sql.json, NOT JSON.stringify + ::jsonb: this fixture connection runs
@@ -565,7 +566,7 @@ async function seedClosedConsult(opts: {
        routing, outcome, closed_at, query_embedding)
     VALUES
       (${opts.ws}, ${opts.conv}, 'req-past', ${opts.responder ?? 'resp-arch'},
-       'closed_answered', 'an earlier, similar question',
+       'closed_answered', ${opts.question ?? 'an earlier, similar question'},
        '{}'::jsonb, ${rootSql.json((opts.outcome ?? { answer: 'archived answer', confidence: 'high' }) as never)},
        ${NOW.toISOString()}::timestamptz, ${JSON.stringify(opts.vec)}::vector)
   `;
@@ -608,6 +609,65 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(row.wakes_used).toBe(0);
     expect(row.outcome).toMatchObject({ source: 'archive', source_conversation_id: 'arch-src-1' });
     expect(row.has_query_embedding).toBe(true);
+  });
+
+  it('does not reuse a high-similarity archive answer across incompatible named rubric/plan subjects', async () => {
+    const ws = 'ws-arch-subject-fence';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-wrong-subject',
+      vec: vecAt(0),
+      question:
+        'Vet rubric goal-mode-design-intent-hardening-acceptance for plan goal-mode-design-intent-hardening-2026-08-16 against Decisions D-001..D-006.',
+      outcome: { answer: 'criteria C1 C3 C4 from the unrelated plan', confidence: 'high' },
+    });
+    const { deps, reached } = makeDeps(
+      routeOf([cand('cand-live')], { queryVec: qv }),
+    );
+    const r = asOk(
+      await getFeedbackCore(
+        {
+          ...baseReq,
+          workspaceId: ws,
+          question:
+            'Vet rubric goal-mode-design-intent-hardening-acceptance for plan goal-mode-design-intent-hardening-2026-08-16 against Decision D-010.',
+        },
+        deps,
+      ),
+    );
+
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
+  it('reuses a high-similarity archive answer when all named subjects match exactly', async () => {
+    const ws = 'ws-arch-subject-match';
+    await seedClosedConsult({
+      ws,
+      conv: 'arch-same-subject',
+      vec: vecAt(0),
+      question:
+        'Vet rubric goal-mode-design-intent-hardening-acceptance for plan goal-mode-design-intent-hardening-2026-08-16.',
+    });
+    const { deps, reached } = makeDeps(
+      routeOf([cand('cand-live')], { queryVec: qv }),
+    );
+    const r = asOk(
+      await getFeedbackCore(
+        {
+          ...baseReq,
+          workspaceId: ws,
+          question:
+            'Please review rubric goal-mode-design-intent-hardening-acceptance against plan goal-mode-design-intent-hardening-2026-08-16.',
+        },
+        deps,
+      ),
+    );
+
+    expect(r.verdict).toBe('served_from_archive');
+    expect(r.archive?.source_conversation_id).toBe('arch-same-subject');
+    expect(reached).toHaveLength(0);
   });
 
   it('a dissimilar archive row does not serve — normal routing proceeds, and the new consult forward-fills query_embedding', async () => {

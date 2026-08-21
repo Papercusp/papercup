@@ -56,7 +56,8 @@ const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
 };
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlTag }),
 }));
 

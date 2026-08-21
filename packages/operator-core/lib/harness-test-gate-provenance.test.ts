@@ -48,7 +48,7 @@ const sql: SqlTag = async (strings, ...vals) => {
   throw new Error(`unexpected query in test: ${q}`);
 };
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
 vi.mock('./workspace-registry', () => ({
   activeWorkspaceId: () => 'papercusp-workspace',
   DEFAULT_WORKSPACE_ID: 'papercusp-workspace',

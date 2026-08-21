@@ -51,7 +51,7 @@ vi.mock('./compute-brief', () => ({
 }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { OVERWATCH: 'papercusp-overwatch' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: h.getOrgPg }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: h.getOrgPg }));
 
 import {
   deriveOverwatchLiveness,

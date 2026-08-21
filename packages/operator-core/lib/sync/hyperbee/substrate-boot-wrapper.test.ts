@@ -95,7 +95,8 @@ vi.mock('./substrate-outbox-keepalive', () => ({
 }));
 
 const mockOrgPg = vi.fn(() => ({ sql: { listen: vi.fn(async () => ({ unlisten: vi.fn(async () => {}) })) } }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => mockOrgPg(),
 }));
 

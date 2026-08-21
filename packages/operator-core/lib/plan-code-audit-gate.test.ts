@@ -25,7 +25,7 @@ import {
 } from './plan-audits';
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./rubrics', () => ({
   getAcceptanceRubricForPlan: vi.fn(),

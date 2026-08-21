@@ -13,7 +13,8 @@ import { randomBytes } from 'node:crypto';
 const FIXED_KEY_B64 = randomBytes(32).toString('base64');
 const FIXED_ROTATED_AT = new Date('2026-05-20T00:00:00.000Z');
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   generated: {
     operatorSecretsInHarnessShared: { name: 'name', valueB64: 'value_b64', rotatedAt: 'rotated_at' },
   },

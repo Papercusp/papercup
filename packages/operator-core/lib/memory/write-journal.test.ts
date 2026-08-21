@@ -31,7 +31,7 @@ const sqlTag = async (strings: TemplateStringsArray, ...values: unknown[]) => {
   return [];
 };
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlTag }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 
 const backend = {
   available: vi.fn(async (): Promise<{ ok: boolean; reason?: string }> => ({ ok: true })),

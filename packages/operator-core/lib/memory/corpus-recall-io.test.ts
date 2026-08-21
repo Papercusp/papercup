@@ -16,7 +16,7 @@ const getFlag = vi.fn(async () => true);
 /** The owner→own-session lookup runs through this tagged template. Default: the
  *  caller owns nothing, i.e. no exclusions. */
 const sql = vi.fn(async (..._args: unknown[]) => [] as Array<{ session_id: string }>);
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
 // configureSearchDefaults is inert here, but REQUIRED: an inline factory
 // replaces the module wholesale, and lib/search/configure-search-defaults.ts
 // calls it at module load (P-017), so omitting it fails COLLECTION.

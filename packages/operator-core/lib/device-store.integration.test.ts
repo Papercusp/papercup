@@ -22,7 +22,8 @@ import type { OrgTestDb } from '../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ appSql: null as any, adminSql: null as unknown }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   // RLS-subject path: open a tx on the harness_app client, set the workspace
   // GUC (local to the tx), then run the store's callback against it.
   withWorkspace: async <T>(ws: string, cb: (tx: unknown) => Promise<T>): Promise<T> =>

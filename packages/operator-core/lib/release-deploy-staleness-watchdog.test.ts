@@ -50,7 +50,8 @@ const fakeSql = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unk
   if (/^UPDATE/i.test(text)) return Promise.resolve(Object.assign([], { count: recoveryUpdateCount }));
   return Promise.resolve(Object.assign([], { count: 1 }));
 };
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: (s: TemplateStringsArray, ...v: unknown[]) => fakeSql(s, ...v) }),
 }));
 

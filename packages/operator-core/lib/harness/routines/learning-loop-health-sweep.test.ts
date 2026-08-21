@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn(() => ({ sql: vi.fn() })) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn(() => ({ sql: vi.fn() })) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-test') }));
 vi.mock('../../pot/watchdog', () => ({
   recentWatchdogFires: vi.fn(),

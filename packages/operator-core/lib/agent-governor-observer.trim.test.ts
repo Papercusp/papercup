@@ -31,7 +31,8 @@ vi.mock('drizzle-orm', () => ({
     return { ids };
   },
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     db: {
       insert: () => ({ values: h.insertValues }),

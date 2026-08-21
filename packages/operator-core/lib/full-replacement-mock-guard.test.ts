@@ -169,14 +169,16 @@ describe('full-replacement mock guard: the live tree', () => {
   it('its own PASS verdict is scope-qualified on the real tree (EI-20836231573383362)', () => {
     // The founding incident: this guard printed a clean verdict while a bare
     // `@papercusp/db-org` factory had been breaking collection of a real file for ~3 weeks.
-    // The scan was correct — db-org is unprotected — but the verdict was read as tree-wide
-    // positive evidence. On a tree with ANY unprotected exposure, the pass must say so.
+    // db-org is now protected, but the remaining unprotected population still means the
+    // verdict is not tree-wide positive evidence. On a tree with ANY unprotected exposure,
+    // the pass must say so.
     const exposure = exposureCensus({ files: allFiles, protectedModules: PROTECTED_MODULES });
     expect(exposure.modules).toBeGreaterThan(0);
     expect(printExposureNote(exposure)).toContain('NOT a tree-wide all-clear');
-    // Pin the incident module itself: db-org carried the factory that broke collection, and
-    // it must be visible in the guard's own scope note rather than silently out of frame.
-    expect(exposure.top.some((r: { module: string }) => r.module === '@papercusp/db-org')).toBe(true);
+    // Pin the incident module's new status: it is registered and therefore absent from the
+    // unprotected exposure census that qualifies this run.
+    expect(PROTECTED_MODULES.some((p: { module: string }) => p.module === '@papercusp/db-org')).toBe(true);
+    expect(exposure.top.some((r: { module: string }) => r.module === '@papercusp/db-org')).toBe(false);
   });
 
   it('the CLI pass path actually prints the scope note — not just the helper that builds it', () => {

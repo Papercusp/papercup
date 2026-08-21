@@ -21,7 +21,8 @@ const { calls, throwError } = vi.hoisted(() => ({
 }));
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   // withWorkspace(workspace, cb) invokes cb with a `tx` tagged-template fn.
   // The fn captures the interpolated VALUES (everything after the first
   // template string chunk) so the test can read them by index.

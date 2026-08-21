@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { tryAutoMerge } from './auto-merge';
 import type { PrHost, Pr } from './types';
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: { unsafe: vi.fn().mockResolvedValue([]) } }),
 }));
 

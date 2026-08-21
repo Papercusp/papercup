@@ -39,7 +39,8 @@ vi.mock('../../session-port/cleanup', () => ({
 const sqlUnsafeMock = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMockFn = vi.fn(async (): Promise<Array<Record<string, unknown>>> => []);
 const sqlTagMock = Object.assign(sqlTagMockFn, { unsafe: sqlUnsafeMock }) as unknown as TestSql;
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlTagMock }),
 }));
 

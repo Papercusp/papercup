@@ -56,7 +56,7 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
   return Promise.resolve([]);
 };
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: fakeSql }) }));
 vi.mock('../workspace-registry', async (importActual) => {
   const actual = await importActual<typeof import('../workspace-registry')>();
   return { ...actual, backgroundWorkspaceIds: h.backgroundWorkspaceIds };

@@ -35,7 +35,7 @@ const { mugKettleEnabledMock, loadHarnessRegistryMock, captureImprovementMock, s
 vi.mock('../../pot/started', () => ({ mugKettleSystemEnabled: mugKettleEnabledMock }));
 vi.mock('../../harness-registry', () => ({ loadHarnessRegistry: loadHarnessRegistryMock }));
 vi.mock('../improvements/capture-core', () => ({ captureImprovement: captureImprovementMock }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlMock }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlMock }) }));
 vi.mock('../../owner-steering', () => ({
   getOwnerSteering: vi.fn(async () => ({})),
   isPausedNow: vi.fn(() => false),

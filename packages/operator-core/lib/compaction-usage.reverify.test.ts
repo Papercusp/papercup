@@ -22,7 +22,8 @@ const { sqlMock, findSessionTranscriptMock, newestTranscriptUnderOwnerMock } = v
   newestTranscriptUnderOwnerMock: vi.fn(() => null as string | null),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 

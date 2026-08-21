@@ -43,7 +43,7 @@ const h = vi.hoisted(() => ({ sql: null as any }));
 // Mirrors user-preferences.integration.test.ts's mock shape exactly — auth.ts
 // only ever destructures `{ sql }` from getOrgPg() (grep confirms 9/9 call
 // sites), so this is a faithful stand-in, not a partial mock.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 
 let db: OrgTestDb | null = null;
 let dbReady = false;

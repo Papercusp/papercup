@@ -4,7 +4,7 @@ const messageStatuses = new Map<string, string>();
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   function tagged(strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
     if (/SELECT id, status[\s\S]*FROM papercusp_shared\.messages/.test(sqlText)) {
@@ -21,6 +21,7 @@ vi.mock('@papercusp/db-org', () => {
   (tagged as unknown as (arr: unknown[]) => unknown) = Object.assign(tagged, {});
   function fragmentArr(_arr: unknown[]) { return { _frag: true }; }
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     withWorkspace: async (_ws: string, cb: (tx: typeof tagged & ((arr: unknown[]) => unknown)) => Promise<unknown>) => {
       const tx = Object.assign(tagged, fragmentArr) as typeof tagged & ((arr: unknown[]) => unknown);
       return cb(tx);

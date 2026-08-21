@@ -57,7 +57,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import type { Proposal } from './types';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 
 const { readGoalDraftQueue } = await import('./goal-draft-queue');
 const { DEFAULT_GOAL_BUDGET_CENTS, GOAL_SCALE_MARKERS } = await import('./router');

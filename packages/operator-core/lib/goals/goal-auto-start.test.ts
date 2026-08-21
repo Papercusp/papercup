@@ -33,7 +33,7 @@ const sqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => {
   return Promise.resolve([]);
 };
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlTag }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 vi.mock('../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070' }));

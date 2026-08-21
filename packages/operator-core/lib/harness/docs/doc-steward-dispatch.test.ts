@@ -11,7 +11,7 @@ vi.mock('@papercusp/flags', () => ({ FLAGS: { DOC_STEWARD: 'papercusp-doc-stewar
 vi.mock('../../blueprint/launch-blueprint', () => ({
   fireLaunchBlueprintForEvent: (...a: unknown[]) => mockFire(...a),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: mockSql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: mockSql }) }));
 
 import {
   dispatchDocStewardForDrift,

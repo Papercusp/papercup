@@ -25,7 +25,8 @@ vi.mock('drizzle-orm/postgres-js', () => ({
   }),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: async (_ws: string, cb: (tx: unknown) => Promise<unknown>) => cb({}),
   generated: { auditLogInHarnessShared: { id: {}, ts: {}, actor: {}, action: {}, subject: {}, details: {}, workspace_id: {} } },
 }));

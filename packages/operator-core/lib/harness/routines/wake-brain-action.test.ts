@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@papercusp/flags', () => ({ FLAGS: { POT_AGENT_TABS: 'papercusp-hive-agent-tabs' } }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('../../brain-pin', () => ({ getBrainSession: vi.fn() }));
 vi.mock('../../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients: vi.fn() }));
 

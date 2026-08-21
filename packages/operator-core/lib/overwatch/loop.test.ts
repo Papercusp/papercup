@@ -52,7 +52,7 @@ vi.mock('../autoloop', async () => ({
   classifyFireError: (await vi.importActual<typeof import('../autoloop-classify')>('../autoloop-classify')).classifyFireError,
   recordFire: (...a: unknown[]) => recordFire(...a),
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 const resolvePotHomeSlug = vi.fn();
 vi.mock('../pot/wake', () => ({ resolvePotHomeSlug: (...a: unknown[]) => resolvePotHomeSlug(...a) }));
 const getPotStarted = vi.fn();

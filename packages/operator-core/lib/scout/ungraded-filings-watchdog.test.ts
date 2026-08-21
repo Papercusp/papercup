@@ -10,7 +10,8 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 
 const { dbRows } = vi.hoisted(() => ({ dbRows: { current: [] as unknown[] } }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: () => Promise.resolve(dbRows.current) }),
 }));
 vi.mock('../pot/started', () => ({

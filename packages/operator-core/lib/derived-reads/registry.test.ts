@@ -13,7 +13,8 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 const sqlMock = vi.fn();
 const getFlagMock = vi.fn();
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMock }),
 }));
 vi.mock('@papercusp/flags/server', () => ({

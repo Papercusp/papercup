@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 vi.mock('./wake', () => ({
   declarePotTimeWake: vi.fn(),
   getPotTimeWake: vi.fn(),

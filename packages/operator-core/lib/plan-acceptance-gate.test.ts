@@ -26,7 +26,8 @@ vi.mock('./scorecards', () => ({
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(),
 }));
 vi.mock('./workspace-registry', () => ({

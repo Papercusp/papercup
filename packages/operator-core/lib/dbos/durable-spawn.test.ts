@@ -78,7 +78,7 @@ vi.mock('../deployment/account-pool-store', () => ({
 }));
 vi.mock('../deployment/account-pool', () => ({ recordAccountPenalty: h.recordAccountPenalty }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: h.getFlag }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../owner-steering', () => ({
   getOwnerSteering: vi.fn(async () => h.ownerSteering.value ?? {
     directive: null,

@@ -13,7 +13,8 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/flags/server', () => ({ getFlag: async () => h.flagOn }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: async () => {
       if (h.throwOnQuery) throw new Error('pg down');

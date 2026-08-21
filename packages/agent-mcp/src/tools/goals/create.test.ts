@@ -19,7 +19,7 @@ import tool, { goalId, GOAL_STATUSES } from './create';
 // the consult branch is deterministic (no embedder, no PG, no liveness oracle)
 // and drivable per-test via `goalKickoffConsultMock`.
 const { goalKickoffConsultMock } = vi.hoisted(() => ({ goalKickoffConsultMock: vi.fn() }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} as never }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} as never }) }));
 vi.mock('@papercusp/operator-core/lib/consult/relevance-router', () => ({ routeConsult: vi.fn() }));
 vi.mock('@papercusp/operator-core/lib/agent-tools/search/embedder', () => ({
   buildQueryEmbedder: vi.fn(async () => vi.fn(async () => [0])),

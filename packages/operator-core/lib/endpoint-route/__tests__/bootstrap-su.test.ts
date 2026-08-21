@@ -299,6 +299,18 @@ vi.mock('../../fleet-membership-store', async (orig) => ({
   appendFleetMembershipIfAbsent: appendFleetMembershipIfAbsentMock,
 }));
 
+// EI-21005277510954647: bootstrap now writes the initial presence row through
+// the canonical presence seam so its resolved harness becomes pot_slug before
+// the launched agent's first coord:orient call.
+const writePresenceMock = vi.fn(
+  async (_identity: unknown, _input: unknown, _harness: unknown) => {},
+);
+vi.mock('../../agent-tools/coordination/presence', async (orig) => ({
+  ...((await orig()) as Record<string, unknown>),
+  writePresence: (...args: unknown[]) =>
+    writePresenceMock(...(args as [unknown, unknown, unknown])),
+}));
+
 const CTX: RouteContext = {
   principal: null,
   input: undefined,
@@ -390,6 +402,32 @@ describe('bootstrap-su', () => {
     expect(json.envelopeEnv.CODEX_HOME).toBeUndefined();
     // coord extension resolved for omp's -e (present in this test env).
     expect(json.coordExtPath).toBe(COORD_EXT);
+  });
+
+  it('stamps the resolved harness onto presence before the launched agent takes turn 1', async () => {
+    const json = await (
+      await callPost({
+        agent: 'claude',
+        harness_slug: 'papercup',
+        plan_slug: 'my-plan',
+        label: 'canary member',
+      })
+    ).json();
+    const sid = json.envelopeEnv.PAPERCUSP_SID;
+
+    expect(writePresenceMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerId: sid,
+        ownerLabel: 'canary member',
+        workspaceId: 'default',
+        source: 'omp-hook-session',
+      }),
+      expect.objectContaining({ agentRole: 'su' }),
+      'papercup',
+    );
+    expect(recordAdvSessionMock.mock.invocationCallOrder[0]).toBeLessThan(
+      writePresenceMock.mock.invocationCallOrder[0],
+    );
   });
 
   it('EI-5503: returns the canonical kickoffPrompt for a plan-bound launch, null without a plan', async () => {

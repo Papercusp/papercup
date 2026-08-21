@@ -11,7 +11,8 @@ vi.mock('./bench/recall-canary-read', () => ({
   readRecallCanary: vi.fn(),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: vi.fn(() => ({ sql: {} })),
 }));
 

@@ -26,7 +26,7 @@ vi.mock('../_hive-scope', () => ({
   resolveHiveScope: vi.fn(async () => ({ kind: 'hive', slug: 'papercusp' })),
   HIVE_REQUIRED_DETAIL: 'hive required',
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../datatype-registry-store', () => ({ getGenericKindDatatype: vi.fn(async () => null) }));
 vi.mock('../../datatype-payload-validation', () => ({ validateDatatypePayload: () => ({ ok: true as const }) }));
 vi.mock('../../routing-gate-hints', () => ({ matchRoutingGateHint: () => null }));

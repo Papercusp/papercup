@@ -9,7 +9,8 @@ const upsertRoutine = vi.fn(async (_sql: unknown, input: unknown) => ({ input })
 const setRoutineActive = vi.fn(async () => true);
 const deleteRoutine = vi.fn(async () => true);
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: Object.assign(() => Promise.resolve([]), { unsafe: vi.fn() }) }),
   upsertRoutine: (...a: unknown[]) => upsertRoutine(a[0], a[1]),
   setRoutineActive: (...a: unknown[]) => setRoutineActive(...(a as [])),

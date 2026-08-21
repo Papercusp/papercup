@@ -14,7 +14,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 const FAKE_SQL = Object.assign(() => Promise.resolve([]), { __fake: 'org-sql' });
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: FAKE_SQL }),
 }));
 

@@ -20,7 +20,7 @@ vi.mock('./db-encryption', () => ({
   getDbEncryptionKey: () => 'unused',
 }));
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   function tableFromFragment(s: string): string | null {
     const m = /harness_shared\.([a-zA-Z0-9_]+)/.exec(s);
     return m ? m[1] : null;
@@ -66,6 +66,7 @@ vi.mock('@papercusp/db-org', () => {
     async <T>(cb: (tx: unknown) => Promise<T>) => cb(wrapped);
 
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql: wrapped, db: {} }),
   };
 });

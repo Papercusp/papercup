@@ -52,7 +52,8 @@ const {
     draftRows: { current: [] as Array<{ plan_slug: string; title: string | null; updated_at_ms: number }> },
   }));
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: () => Promise.resolve(draftRows.current) }),
 }));
 vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds }));

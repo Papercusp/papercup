@@ -58,7 +58,7 @@ function deps(overrides: Partial<DreamCycleDeps> = {}): DreamCycleDeps {
       throw new Error('llmCall should be replaced by the injected dream/review seams');
     }) as ScoutLlmCall,
     preflight: vi.fn(async () => ({
-      allow: true,
+      allow: true as const,
       loopId: 'dream:papercusp',
       cycleRemainingUsd: 1,
       rollingSpentUsd: 0,
@@ -124,9 +124,9 @@ describe('runDreamCycle', () => {
     const loadSources = vi.fn();
     const d = deps({
       preflight: vi.fn(async () => ({
-        allow: false,
+        allow: false as const,
         loopId: 'dream:papercusp',
-        reason: 'rolling-cap-exceeded',
+        reason: 'rolling-cap-exceeded' as const,
         cycleRemainingUsd: 1,
         rollingSpentUsd: 5,
         rollingRemainingUsd: 0,
@@ -223,7 +223,11 @@ describe('runDreamCycle', () => {
     const sink = vi.fn();
     const d = deps({
       beginRun: vi.fn(async () => ({ created: false, run: terminal })),
-      recordSpend: vi.fn(async () => ({ recorded: false, costUsd: 0.03, reason: 'already-recorded' })),
+      recordSpend: vi.fn(async () => ({
+        recorded: false,
+        costUsd: 0.03,
+        reason: 'already-recorded' as const,
+      })),
       dream,
       review,
       sink,

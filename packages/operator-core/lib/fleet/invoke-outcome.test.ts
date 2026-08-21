@@ -38,6 +38,25 @@ describe('agentProducedTurn — the shared no-turn rule (docs-audit #1)', () => 
     expect(r.detail).not.toContain('gateway stall/429 storm');
   });
 
+  it('distinguishes a bounded first-turn timeout from the full invoke deadline', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 143,
+        timedOut: true,
+        firstTurnTimedOut: true,
+        agentOutput: '',
+        rawStdoutTail: '[08:15:34 prompt-budget role=release-fixer total=63586',
+      }),
+      'papercusp/release-fixer',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('infra_loss');
+    expect(r.detail).toContain('bounded first-turn silence guard');
+    expect(r.detail).toContain('before producing a turn');
+    expect(r.detail).toContain('full invoke deadline');
+  });
+
   it('includes bounded raw stdout tail when a no-turn child left CLI diagnostics', () => {
     const r = agentProducedTurn(
       JSON.stringify({

@@ -43,7 +43,7 @@ const h = vi.hoisted(() => {
   };
 });
 
-vi.mock('@papercusp/db-org', () => ({ withWorkspace: h.withWorkspace }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), withWorkspace: h.withWorkspace }));
 vi.mock('./operator-preferences', () => ({ loadPreferences: h.loadPreferences }));
 vi.mock('./operator-state-pg', () => ({
   readOperatorState: h.readOperatorState,

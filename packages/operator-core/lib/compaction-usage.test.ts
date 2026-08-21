@@ -10,7 +10,8 @@ import { join } from 'node:path';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const advSessionRowsMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: advSessionRowsMock }),
 }));
 import {

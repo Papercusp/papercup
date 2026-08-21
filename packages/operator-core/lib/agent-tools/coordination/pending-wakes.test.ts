@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 // Mock workspace-registry so the workspace-isolation tests can assert that
 // listAllPendingWakes / countAllPendingWakes scope to the active workspace
 // (F-C3/EI-1426).  Default: 'ws-active'.

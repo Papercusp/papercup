@@ -115,6 +115,20 @@ export const governorMaxWaitMs = (): number =>
   Number(process.env.PAPERCUSP_AGENT_GOVERNOR_MAX_WAIT_MS ?? 1_800_000);
 
 /**
+ * Release-fixers have a long overall budget for diagnosis, but a launch that
+ * never produces its first agent stream must not consume that whole budget.
+ * Five minutes leaves room for a cold boot and a queued gateway request while
+ * bounding the zero-first-turn failure class observed in EI-209751.
+ */
+export const RELEASE_FIXER_FIRST_TURN_TIMEOUT_DEFAULT_MS = 5 * 60_000;
+export const releaseFixerFirstTurnTimeoutMs = (): number => {
+  const configured = Number(
+    process.env.PAPERCUSP_RELEASE_FIXER_FIRST_TURN_TIMEOUT_MS ?? RELEASE_FIXER_FIRST_TURN_TIMEOUT_DEFAULT_MS,
+  );
+  return Number.isFinite(configured) && configured > 0 ? configured : RELEASE_FIXER_FIRST_TURN_TIMEOUT_DEFAULT_MS;
+};
+
+/**
  * Strip the orchestrator's `[2026-…]` timestamp log lines from invoke-once
  * stdout, leaving the agent's actual output (the decision line + body). Mirrors
  * the filter in `routes/harness/spawn.ts`. Exported for unit testing.
@@ -155,6 +169,8 @@ export interface SpawnInvokeOnceResult {
   exitCode: number;
   stderr: string;
   timedOut?: boolean;
+  /** True when the release-fixer's bounded pre-turn silence guard fired. */
+  firstTurnTimedOut?: boolean;
   /**
    * Bounded, unfiltered stdout tail from the child process. `output` strips
    * timestamp/log transport lines for normal action parsing; this keeps the
@@ -254,6 +270,9 @@ export async function spawnInvokeOnce(
      *  spawn engine folds it into the nursery heartbeat tick); this layer
      *  just reports. Best-effort: a throwing callback is ignored. */
     onOutputActivity?: () => void;
+    /** Optional bounded silence guard used by the release-fixer before its first
+     *  agent stream. Ordinary roles retain only their overall invoke timeout. */
+    firstTurnTimeoutMs?: number;
   },
 ): Promise<SpawnInvokeOnceResult> {
   // P-008 (cloud-deployment-layer): deliver the per-install instance config to the
@@ -339,6 +358,16 @@ export async function spawnInvokeOnce(
     /* flag lookup failure ⇒ replace-base stays off (Claude default stands) */
   }
 
+  // A release-fixer has a generous overall timeout for diagnosis, but a
+  // process that never reaches its first agent stream must fail sooner. Keep
+  // the guard at the shared subprocess chokepoint so both the /invoke route
+  // and any direct release-fixer caller get the same behavior.
+  const firstTurnTimeoutMs =
+    opts?.firstTurnTimeoutMs ??
+    (role === 'release-fixer'
+      ? Math.min(releaseFixerFirstTurnTimeoutMs(), opts?.timeoutMs ?? invokeTimeoutMs())
+      : undefined);
+
   try {
     const { command, args, env } = buildInvokeOnce({
       projectDir,
@@ -410,12 +439,12 @@ export async function spawnInvokeOnce(
           return { output: '', exitCode: 1, stderr: 'agent governor: rate-limit pause exceeded max wait', rawStdoutTail: '' };
         }
         console.warn(`[dbos-invoke] role=${role} spawn-governor bucket paced past maxWait → proceeding via inference-gateway failover`);
-        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity);
         feedGovernor(inner);
         return inner;
       }
       try {
-        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+        const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity);
         feedGovernor(inner);
         return inner;
       } finally {
@@ -425,7 +454,7 @@ export async function spawnInvokeOnce(
     // Pacing off (the default): run directly, but STILL feed the child's 429/overload back into
     // the shared governor (EI-86). The await happens here (inside the try) so the display
     // lease's finally releases AFTER the child exits, not when the promise is handed back.
-    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, opts?.onChildPid, opts?.onOutputActivity);
+    const inner = await runChild(command, args, projectDir, env, role, opts?.signal, opts?.timeoutMs, firstTurnTimeoutMs, opts?.onChildPid, opts?.onOutputActivity);
     feedGovernor(inner);
     return inner;
   } catch (err) {
@@ -519,6 +548,7 @@ function runChild(
   role: string,
   signal?: AbortSignal,
   timeoutMs?: number,
+  firstTurnTimeoutMs?: number,
   onChildPid?: (pid: number) => void,
   onOutputActivity?: () => void,
   useScope: boolean = agentSpawnScopeEnabled(),
@@ -537,6 +567,9 @@ function runChild(
       return;
     }
     let timedOut = false;
+    let firstTurnTimedOut = false;
+    let firstTurnStarted = false;
+    let firstTurnTimer: ReturnType<typeof setTimeout> | null = null;
     const launchedAt = Date.now();
     // task-manager-no-escape-2026-07-27 P-009: this is the single biggest subtree
     // on the box — an agent CLI plus everything it goes on to run — so it is the
@@ -641,6 +674,19 @@ function runChild(
       timedOut = true;
       killTree('SIGTERM');
     }, timeoutMs ?? invokeTimeoutMs());
+    const firstTurnGuardMs =
+      typeof firstTurnTimeoutMs === 'number' && Number.isFinite(firstTurnTimeoutMs) && firstTurnTimeoutMs > 0
+        ? Math.min(firstTurnTimeoutMs, timeoutMs ?? invokeTimeoutMs())
+        : null;
+    if (firstTurnGuardMs != null) {
+      firstTurnTimer = setTimeout(() => {
+        if (settled || aborted || timedOut || firstTurnStarted) return;
+        firstTurnTimedOut = true;
+        timedOut = true;
+        stderr += `${stderr ? '\n' : ''}release-fixer first-turn timeout after ${firstTurnGuardMs}ms (no agent stream)`;
+        killTree('SIGTERM');
+      }, firstTurnGuardMs);
+    }
     // Caller-driven abort (EI-40: fleet:cancel of an operator spawn): SIGTERM the
     // tree now, SIGKILL it after a grace period if it ignores the term.
     const onAbort = () => {
@@ -651,13 +697,27 @@ function runChild(
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     const cleanup = () => {
       clearTimeout(timer);
+      if (firstTurnTimer) clearTimeout(firstTurnTimer);
+      firstTurnTimer = null;
       if (killGrace) clearTimeout(killGrace);
       if (signal) signal.removeEventListener('abort', onAbort);
     };
     // P-008: every emitted chunk is the mid-turn signal — stderr counts too
     // (some backends log progress there while stdout buffers).
     const reportActivity = () => { try { onOutputActivity?.(); } catch { /* best-effort */ } };
-    child.stdout?.on('data', (d) => { reportActivity(); stdout += String(d); });
+    child.stdout?.on('data', (d) => {
+      const chunk = String(d);
+      // invoke-once prefixes its own bootstrap/log lines with timestamps. The
+      // first non-log stdout chunk is the agent stream; prompt-budget and PG
+      // bootstrap output therefore cannot falsely satisfy this guard.
+      if (!firstTurnStarted && firstTurnTimer && extractAgentOutput(chunk).trim().length > 0) {
+        firstTurnStarted = true;
+        clearTimeout(firstTurnTimer);
+        firstTurnTimer = null;
+      }
+      reportActivity();
+      stdout += chunk;
+    });
     child.stderr?.on('data', (d) => { reportActivity(); stderr += String(d); });
     // Scope-launch failure (fast systemd-run exit with a launch-shaped stderr, before
     // any real agent turn could plausibly have run) → retry DIRECT once, exactly like
@@ -701,7 +761,7 @@ function runChild(
           exitCode: code,
           exitReason: 'scope launch failed — retried unconfined',
         });
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false, execFailureRetried));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, false, execFailureRetried));
         return;
       }
       if (isExecShapedTransientFailure(code)) {
@@ -715,14 +775,20 @@ function runChild(
           `[dbos-invoke] role=${role} exited ${code} in ${Date.now() - launchedAt}ms with BOTH streams empty — ` +
             `treating as a transient exec failure, retrying once (WI-5601)`,
         );
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, useScope, true));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, useScope, true));
         return;
       }
       settled = true;
       finishSyncEnrolment(enrolment, {
         state: timedOut ? 'timed_out' : aborted ? 'killed' : 'exited',
         exitCode: code,
-        exitReason: timedOut ? 'agent turn timeout' : aborted ? 'aborted (fleet:cancel)' : null,
+        exitReason: firstTurnTimedOut
+          ? 'agent first-turn timeout'
+          : timedOut
+            ? 'agent turn timeout'
+            : aborted
+              ? 'aborted (fleet:cancel)'
+              : null,
       });
       // A child we aborted may exit 0 (it caught SIGTERM and shut down) or via the
       // signal — normalize to a non-zero "aborted" outcome so callers don't read a
@@ -759,7 +825,14 @@ function runChild(
         const stderrHead = stderr.trim().slice(0, 500);
         console.warn(`[dbos-invoke] role=${role} exited 0 with stderr (${stderr.length} chars): ${stderrHead}`);
       }
-      resolve({ output: extractAgentOutput(stdout), exitCode, stderr, timedOut, rawStdoutTail: rawStdoutTail(stdout) });
+      resolve({
+        output: extractAgentOutput(stdout),
+        exitCode,
+        stderr,
+        timedOut,
+        firstTurnTimedOut,
+        rawStdoutTail: rawStdoutTail(stdout),
+      });
     });
     child.on('error', (err) => {
       cleanup();
@@ -771,7 +844,7 @@ function runChild(
           exitCode: null,
           exitReason: `scope spawn error — retried unconfined: ${err instanceof Error ? err.message : String(err)}`,
         });
-        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, onChildPid, onOutputActivity, false));
+        resolve(runChild(command, args, projectDir, env, role, signal, timeoutMs, firstTurnTimeoutMs, onChildPid, onOutputActivity, false));
         return;
       }
       settled = true;

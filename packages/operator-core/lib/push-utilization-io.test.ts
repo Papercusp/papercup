@@ -20,7 +20,7 @@ import {
   runUtilizationReport,
 } from './push-utilization-io';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('./push-delivery-store', () => ({
   recentDeliveries: vi.fn<(filter?: object) => Promise<PushDeliveryRow[]>>(async () => []),
 }));

@@ -62,7 +62,7 @@ describe('preflightDreamCycle', () => {
 
   it('honors a shared-governor refusal even when the rolling window has room', async () => {
     const d = deps({
-      check: vi.fn(async () => ({ allow: false, reason: 'disabled', remainingUsd: 1 })),
+      check: vi.fn(async () => ({ allow: false as const, reason: 'disabled' as const, remainingUsd: 1 })),
     });
 
     await expect(preflightDreamCycle(sql, { workspaceId: 'ws-1', potSlug: 'papercusp' }, d)).resolves.toMatchObject({

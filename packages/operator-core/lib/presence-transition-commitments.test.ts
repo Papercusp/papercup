@@ -14,7 +14,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 const queries: string[] = [];
 let sqlImpl: (text: string) => unknown = () => [];
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray, ..._v: unknown[]) => {
       const text = strings.join('?');

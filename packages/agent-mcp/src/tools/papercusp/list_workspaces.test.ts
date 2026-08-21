@@ -25,7 +25,8 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 const sqlImpl = vi.fn(async () => [] as Array<Record<string, unknown>>);
 const sqlTag = (...args: unknown[]) => sqlImpl(...args);
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlTag }),
 }));
 

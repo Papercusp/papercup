@@ -31,7 +31,7 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
 
   function mockSql(impl: (...a: unknown[]) => Promise<unknown>): ReturnType<typeof vi.fn> {
     const sql = vi.fn(impl);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     return sql;
   }

@@ -51,6 +51,8 @@ import { releaseAllWorkItemLeasesForOwner } from './work-item-lease-release';
 import { probeProcessLiveness } from './agent-tools/coordination/presence';
 import { nodeCgroupFs } from './task-manager/cgroup-read';
 import { cgroupWindowProtects, isPidInLiveWindowScope } from './task-manager/terminal-residue-census';
+import { ensureBootstrap, getTxPool, tryReleaseResource } from './agent-tools/locks/su-lock-store';
+import { inWorkspaceTxn } from './agent-tools/locks/in-workspace-txn';
 
 /** Liveness/grace window. Matches work-items-stale-claims STALE_CLAIM_GRACE_MS
  *  and the fleet_assignment view (10 min): a live psu session's supervisor beat
@@ -446,10 +448,12 @@ export async function runIdleSessionReap(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Slice 1b — WORK-ITEM LEASE reaper (session-death-claim-release-2026-07-11
-// P-001): force-release a work-item lease (`taken_by`/`assignee`) whose owner
-// is DEAD, so a killed agent doesn't poison the item for the full lease TTL
-// (up to 6 days observed — EI-9807, WI-4070).
+// Slice 1b — WORK-ITEM + NAMED-RESOURCE LEASE reaper
+// (session-death-claim-release-2026-07-11 P-001): force-release a work-item
+// lease (`taken_by`/`assignee`) or named-resource lock whose owner is DEAD, so
+// a killed agent doesn't poison either surface for the full lease TTL (up to
+// 6 days observed for work items — EI-9807, WI-4070; EI-20980648124299591 for
+// the resource-only gap).
 //
 // Deliberately DECOUPLED from "the owner's adv_session got marked ended"
 // (slice 1 above): gatherProtectedSessionOwners' default `taken_by` leg treats
@@ -462,7 +466,8 @@ export async function runIdleSessionReap(
 // a claim held by a genuinely-live agent (fresh heartbeat, running bee, mid
 // wake-resume, on-desktop, watched in the PTY panel, or a live psu-host) is
 // never touched. Same master flag as the session reaper (FLAGS.IDLE_SESSION_REAPER,
-// default ON) — no new flag.
+// default ON) — no new flag. The production action opts into the named-resource
+// leg so a missed SessionEnd hook cannot strand a lock-only owner until TTL.
 // ───────────────────────────────────────────────────────────────────────────
 
 /** One currently-held work-item lease (feature or issue family). */
@@ -510,6 +515,208 @@ export function planWorkItemLeaseReap(opts: {
   return plan;
 }
 
+/** One currently-held named-resource lease in the SU-lock side database. */
+export interface ResourceLockLeaseRow {
+  coordinationDomain: string;
+  resource: string;
+  lockId: string;
+  owner: string;
+  acquiredAtMs: number | null;
+}
+
+export interface ResourceLockLeaseReapPlan {
+  /** Dead owner (not protected) AND past the grace floor → release the lock. */
+  reap: ResourceLockLeaseRow[];
+  /** Owner is live/on-desktop/watched/host-protected → keep. */
+  keptLive: ResourceLockLeaseRow[];
+  /** Lock was acquired within the grace floor (too new to judge) → keep. */
+  keptFresh: ResourceLockLeaseRow[];
+}
+
+/**
+ * PURE keep/reap decision for named-resource leases. Resource locks are owned
+ * by the same session identities as work-item leases, but live in the separate
+ * `papercusp_su` database. A lock-only owner therefore needs this parallel
+ * decision instead of being discovered indirectly through a work-item row.
+ */
+export function planResourceLockLeaseReap(opts: {
+  leases: ResourceLockLeaseRow[];
+  liveOwners: ReadonlySet<string>;
+  nowMs: number;
+  graceMs?: number;
+}): ResourceLockLeaseReapPlan {
+  const graceMs = opts.graceMs ?? IDLE_SESSION_GRACE_MS;
+  const plan: ResourceLockLeaseReapPlan = { reap: [], keptLive: [], keptFresh: [] };
+  for (const lease of opts.leases) {
+    if (opts.liveOwners.has(lease.owner)) {
+      plan.keptLive.push(lease);
+    } else if (lease.acquiredAtMs != null && opts.nowMs - lease.acquiredAtMs < graceMs) {
+      plan.keptFresh.push(lease);
+    } else {
+      // A missing acquisition timestamp is anomalous, but treating it as
+      // already past grace matches the work-item lease reaper and avoids
+      // protecting a dead holder forever on malformed legacy rows.
+      plan.reap.push(lease);
+    }
+  }
+  return plan;
+}
+
+export interface ResourceLockLeaseReapResult {
+  scanned: number;
+  reaped: number;
+  reapedIds: string[];
+  keptLive: number;
+  keptFresh: number;
+  failedOwners: number;
+  dryRun: boolean;
+}
+
+const emptyResourceLockLeaseReapResult = (dryRun: boolean): ResourceLockLeaseReapResult => ({
+  scanned: 0,
+  reaped: 0,
+  reapedIds: [],
+  keptLive: 0,
+  keptFresh: 0,
+  failedOwners: 0,
+  dryRun,
+});
+
+/**
+ * Apply the named-resource dead-owner decision to a lock snapshot. The
+ * release callback receives one owner/domain group at a time; production wires
+ * it to owner-checked lock-id deletes, while tests can prove the selection and
+ * grouping without touching either database.
+ */
+export async function reapResourceLockRows(opts: {
+  leases: ResourceLockLeaseRow[];
+  liveOwners: ReadonlySet<string>;
+  dryRun: boolean;
+  graceMs?: number;
+  nowMs: number;
+  releaseGroup?: (leases: ResourceLockLeaseRow[]) => Promise<string[]>;
+}): Promise<ResourceLockLeaseReapResult> {
+  const empty = emptyResourceLockLeaseReapResult(opts.dryRun);
+  const plan = planResourceLockLeaseReap({
+    leases: opts.leases,
+    liveOwners: opts.liveOwners,
+    nowMs: opts.nowMs,
+    graceMs: opts.graceMs,
+  });
+  if (opts.dryRun) {
+    return {
+      scanned: opts.leases.length,
+      reaped: plan.reap.length,
+      reapedIds: plan.reap.map((lease) => lease.lockId),
+      keptLive: plan.keptLive.length,
+      keptFresh: plan.keptFresh.length,
+      failedOwners: 0,
+      dryRun: true,
+    };
+  }
+  if (!opts.releaseGroup) return empty;
+
+  const byOwnerAndDomain = new Map<string, ResourceLockLeaseRow[]>();
+  for (const lease of plan.reap) {
+    const key = `${lease.coordinationDomain}\u0000${lease.owner}`;
+    const group = byOwnerAndDomain.get(key);
+    if (group) group.push(lease);
+    else byOwnerAndDomain.set(key, [lease]);
+  }
+
+  const reapedIds: string[] = [];
+  let failedOwners = 0;
+  for (const leasesForOwner of byOwnerAndDomain.values()) {
+    const coordinationDomain = leasesForOwner[0].coordinationDomain;
+    const owner = leasesForOwner[0].owner;
+    try {
+      reapedIds.push(...(await opts.releaseGroup(leasesForOwner)));
+    } catch (e) {
+      failedOwners += 1;
+      console.warn(
+        `[resource-lock-lease-reap] release failed for ${owner} in ${coordinationDomain} (non-fatal):`,
+        (e as Error)?.message ?? e,
+      );
+    }
+  }
+  return {
+    scanned: opts.leases.length,
+    reaped: reapedIds.length,
+    reapedIds,
+    keptLive: plan.keptLive.length,
+    keptFresh: plan.keptFresh.length,
+    failedOwners,
+    dryRun: false,
+  };
+}
+
+/**
+ * Reap dead owners' named-resource locks using the already-computed shared
+ * liveness set. The query snapshot includes lock ids and each delete is
+ * owner-checked by id, so a lock released and reacquired between the snapshot
+ * and cleanup cannot be mistaken for the old row. The SU side database is a
+ * best-effort efficiency substrate: one failed owner does not prevent other
+ * owners or work-item leases from being reaped.
+ */
+async function reapResourceLocksForDeadOwners(opts: {
+  liveOwners: ReadonlySet<string>;
+  dryRun: boolean;
+  graceMs?: number;
+  nowMs: number;
+}): Promise<ResourceLockLeaseReapResult> {
+  const empty = emptyResourceLockLeaseReapResult(opts.dryRun);
+  try {
+    await ensureBootstrap();
+    const sql = getTxPool();
+    const rows = await sql<
+      Array<{
+        coordination_domain: string;
+        resource: string;
+        lock_id: string;
+        owner: string;
+        acquired_ts: string | Date | null;
+      }>
+    >`
+      SELECT coordination_domain, resource, lock_id::text AS lock_id, owner, acquired_ts
+        FROM agent_resource_locks
+       WHERE expires_ts > clock_timestamp()
+    `;
+    const leases: ResourceLockLeaseRow[] = rows.map((row) => ({
+      coordinationDomain: row.coordination_domain,
+      resource: row.resource,
+      lockId: row.lock_id,
+      owner: row.owner,
+      acquiredAtMs: row.acquired_ts == null ? null : new Date(row.acquired_ts).getTime(),
+    }));
+    return reapResourceLockRows({
+      leases,
+      liveOwners: opts.liveOwners,
+      dryRun: opts.dryRun,
+      graceMs: opts.graceMs,
+      nowMs: opts.nowMs,
+      releaseGroup: async (leasesForOwner) => {
+        const coordinationDomain = leasesForOwner[0].coordinationDomain;
+        const owner = leasesForOwner[0].owner;
+        const reapedIds: string[] = [];
+        await inWorkspaceTxn(coordinationDomain, owner, async (tx) => {
+          for (const lease of leasesForOwner) {
+            const released = await tryReleaseResource(tx, {
+              coordinationDomain,
+              owner,
+              lockId: lease.lockId,
+            });
+            if (released.released > 0) reapedIds.push(lease.lockId);
+          }
+        });
+        return reapedIds;
+      },
+    });
+  } catch (e) {
+    console.warn('[resource-lock-lease-reap] sweep failed (non-fatal):', (e as Error)?.message ?? e);
+    return empty;
+  }
+}
+
 export interface WorkItemLeaseReapResult {
   /** False when the flag is off (a no-op). */
   enabled: boolean;
@@ -523,19 +730,22 @@ export interface WorkItemLeaseReapResult {
   ownersReconciled: number;
   keptLive: number;
   keptFresh: number;
+  /** Named-resource lease backstop results from the same liveness snapshot. */
+  resourceLocks: ResourceLockLeaseReapResult;
   dryRun: boolean;
 }
 
 /**
  * The top-level sweep — reads current leases + judges each holder's true
- * liveness, then (unless dryRun) force-releases every dead-owner lease AND
- * clears that owner's stale `work_item_claims` rows (releaseAllClaimsForOwner
- * — written for exactly this "session-end cleanup" purpose, per its own doc,
- * but never previously wired to a caller). Best-effort: a PG failure returns a
- * zero result rather than throwing (must never wedge the routine engine).
+ * liveness, then (unless dryRun) force-releases every dead-owner work-item
+ * lease AND clears that owner's stale `work_item_claims` rows. When
+ * `includeResourceLocks` is enabled by the production action, it also reads
+ * the separate SU-lock database and releases dead-owner named-resource rows
+ * from the same liveness snapshot. Best-effort: a PG failure returns a zero
+ * result rather than throwing (must never wedge the routine engine).
  */
 export async function runWorkItemLeaseReap(
-  opts: { dryRun?: boolean; graceMs?: number } = {},
+  opts: { dryRun?: boolean; graceMs?: number; includeResourceLocks?: boolean } = {},
 ): Promise<WorkItemLeaseReapResult> {
   const dryRun = !!opts.dryRun;
   const empty: WorkItemLeaseReapResult = {
@@ -546,6 +756,7 @@ export async function runWorkItemLeaseReap(
     ownersReconciled: 0,
     keptLive: 0,
     keptFresh: 0,
+    resourceLocks: emptyResourceLockLeaseReapResult(dryRun),
     dryRun,
   };
   const enabled = await getFlag(FLAGS.IDLE_SESSION_REAPER, 'system').catch(() => false);
@@ -596,7 +807,8 @@ export async function runWorkItemLeaseReap(
       })),
     ];
 
-    const plan = planWorkItemLeaseReap({ leases, liveOwners, nowMs: Date.now(), graceMs: opts.graceMs });
+    const nowMs = Date.now();
+    const plan = planWorkItemLeaseReap({ leases, liveOwners, nowMs, graceMs: opts.graceMs });
     let ownersReconciled = 0;
     if (!dryRun && plan.reap.length) {
       // Per distinct dead owner: force-release every lease it holds + reconcile
@@ -610,6 +822,19 @@ export async function runWorkItemLeaseReap(
         if (rel.claimsCleared) ownersReconciled += 1;
       }
     }
+    // The named-resource leg is opt-in because this function is also used by
+    // isolated work-item lease tests/environments that do not own the SU-lock
+    // side database. The production idle-session action enables it, using this
+    // exact liveness snapshot; callers that only need work-item cleanup keep
+    // the historic single-database behavior.
+    const resourceLocks = opts.includeResourceLocks
+      ? await reapResourceLocksForDeadOwners({
+          liveOwners,
+          dryRun,
+          graceMs: opts.graceMs,
+          nowMs,
+        })
+      : emptyResourceLockLeaseReapResult(dryRun);
     return {
       enabled: true,
       scanned: leases.length,
@@ -618,6 +843,7 @@ export async function runWorkItemLeaseReap(
       ownersReconciled: dryRun ? new Set(plan.reap.map((l) => l.takenBy)).size : ownersReconciled,
       keptLive: plan.keptLive.length,
       keptFresh: plan.keptFresh.length,
+      resourceLocks,
       dryRun,
     };
   } catch (e) {

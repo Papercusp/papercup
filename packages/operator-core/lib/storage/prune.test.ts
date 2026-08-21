@@ -27,7 +27,7 @@ function makeSql() {
   return sql;
 }
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: makeSql() }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: makeSql() }) }));
 vi.mock('../agent-tools/locks/resource-lock-guard', () => ({
   guardResource: async (_spec: unknown, run: (f: unknown) => Promise<unknown>) =>
     h.guardAcquired

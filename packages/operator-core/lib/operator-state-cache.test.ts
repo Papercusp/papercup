@@ -14,7 +14,7 @@ const counters = { selects: 0 };
 
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 vi.mock('./db-encryption', () => ({ ENCRYPTED_TABLES: new Set<string>(), getDbEncryptionKey: () => 'unused' }));
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   function tagged(strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> {
     const sqlText = strings.join('?');
     const tableName = (values[0] as { _table?: string })?._table ?? null;
@@ -40,7 +40,7 @@ vi.mock('@papercusp/db-org', () => {
   (wrapped as unknown as { begin: <T>(cb: (tx: unknown) => Promise<T>) => Promise<T> }).begin = async <T>(
     cb: (tx: unknown) => Promise<T>,
   ) => cb(wrapped);
-  return { getOrgPg: () => ({ sql: wrapped, db: {} }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: wrapped, db: {} }) };
 });
 
 // WI-1383 companion test seam: joinerPotHomeSlug's registry-not-hive fallback would

@@ -25,7 +25,7 @@ const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-pot-guard' }));
 // recordScoutTick routes through getOrgPg().sql + activeWorkspaceId() (it is the
 // PG edge, not an injected-Sql store) — mock them to the fixture, tick-ledger
 // integration-test style. The other writers all take the sql handle directly.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: () => Promise.resolve() }));
 

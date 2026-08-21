@@ -4,7 +4,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
 // dedup test sets it to mark a memory id as recently-surfaced.
 let sqlRows: Array<{ id?: string; ref?: string; epoch?: number }> = [];
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: async () => sqlRows }),
 }));
 

@@ -66,7 +66,8 @@ vi.mock('./pg-listen-hub', () => ({
   listenHubEnabled: () => false,
   hubListen: vi.fn(),
 }));
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: orgSql }),
   // coord-inbox-bus.ts's dedicated LISTEN connection spreads this into its
   // `postgres()` options (mirrors the sync-sse.test.ts EI-18122461766429683 fix) —

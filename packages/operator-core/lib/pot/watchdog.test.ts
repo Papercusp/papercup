@@ -95,7 +95,7 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
   if (/count\(\*\)::int AS n/i.test(text)) return Promise.resolve([{ n: fires.length }]);
   return Promise.resolve([]);
 };
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: fakeSql }) }));
 
 import {
   armFallbackPotWake,

@@ -68,7 +68,8 @@ async function load() {
     }),
   }));
   vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
-  vi.doMock('@papercusp/db-org', () => ({
+  vi.doMock('@papercusp/db-org', async (orig) => ({
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql: notifySql }),
     // sync-sse.ts's dedicated LISTEN connection spreads this into its `postgres()`
     // options (EI-18122461766429683 zombie-safe tagging) — the mock must export it
@@ -314,7 +315,8 @@ describe('sync-sse LISTEN routes onto the shared listen-hub when enabled (EI-192
       },
     }));
     vi.doMock('./embedded-pg-discovery', () => ({ getHarnessAdminUrl: () => 'postgres://test' }));
-    vi.doMock('@papercusp/db-org', () => ({
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig<typeof import('@papercusp/db-org')>()),
       getOrgPg: () => ({ sql: notifySql }),
       longLivedPoolConnectionOptions: (_label: string) => ({ onnotice: () => {}, connection: {} }),
     }));

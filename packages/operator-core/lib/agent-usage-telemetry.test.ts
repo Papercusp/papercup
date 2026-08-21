@@ -22,7 +22,7 @@ const { sqlCalls, costFromTokens, sqlShouldThrow } = vi.hoisted(() => ({
 
 vi.mock('@papercusp/model-pricing', () => ({ costFromTokens }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   // `sql` is used two ways: as a tagged template (the INSERT) and as a plain
   // call `sql(TABLE)` to interpolate the table identifier. We model the latter
   // as a sentinel object that stringifies to the table name inside the captured
@@ -41,7 +41,7 @@ vi.mock('@papercusp/db-org', () => {
     sqlCalls.push({ text, values });
     return Promise.resolve([]);
   }
-  return { getOrgPg: () => ({ sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) };
 });
 
 import {

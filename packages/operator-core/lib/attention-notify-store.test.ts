@@ -17,7 +17,7 @@ function fakeTx(strings: TemplateStringsArray, ...values: unknown[]): Promise<un
 const { withWorkspace } = vi.hoisted(() => ({
   withWorkspace: vi.fn(async (_ws: string, fn: (tx: unknown) => unknown) => fn(fakeTx)),
 }));
-vi.mock('@papercusp/db-org', () => ({ withWorkspace }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), withWorkspace }));
 
 import {
   recordAttentionNotifyIntent,

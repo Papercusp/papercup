@@ -15,7 +15,7 @@ function makeSql() {
   return sql;
 }
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: makeSql() }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: makeSql() }) }));
 vi.mock('./disk', () => ({
   listDiskEntries: () => h.diskEntries,
   // computeStorageUsage now walks disk via the event-loop-cooperative async twin

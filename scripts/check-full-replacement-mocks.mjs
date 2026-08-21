@@ -57,6 +57,10 @@ export const PROTECTED_MODULES = [
     module: '@papercusp/agent-mcp',
     why: 'WI-39707: adding `AGENT_ROLES` to a module-scope deref (agent-tools/testing/run.ts, via rubrics-criterion-checks) stranded 7 hand-listed factories in lib/agent-tools/memory/ and took BOTH operator-core lanes red as a COLLECTION crash. 50 full-replacement mockers converted 2026-08-17.',
   },
+  {
+    module: '@papercusp/db-org',
+    why: 'WI-39886: a collection-breaking gate red exposed this module as the #2 unprotected surface; the live census found 156 affected tracked test files and 379 bare factories. Converted to import-actual spreads before registration on 2026-08-21.',
+  },
 ];
 
 // ---------------------------------------------------------------------------

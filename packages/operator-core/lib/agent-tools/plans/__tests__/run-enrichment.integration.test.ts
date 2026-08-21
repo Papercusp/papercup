@@ -14,7 +14,8 @@ import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 let org: OrgTestDb;
 
 // runs.ts routes its reads through withWorkspace — point it at the admin test client.
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: (_ws: string, cb: (tx: unknown) => unknown) => cb(org.adminSql),
 }));
 

@@ -26,7 +26,7 @@ const sqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => {
   return Promise.resolve(nextRows);
 };
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: sqlTag }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 vi.mock('../../work-items', () => ({ setWorkItemClaimHold: vi.fn() }));
 vi.mock('../../work-item-dispatch-states', () => ({
   ANY_FAMILY_TERMINAL_STATES: ['done', 'dropped', 'resolved'],

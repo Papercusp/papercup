@@ -48,17 +48,17 @@ function deps(): DreamSourceDeps {
     readObservations: vi.fn(async () => [
       {
         id: 'EI-1',
-        kind: 'bug',
+        kind: 'bug' as const,
         scope: 'harness:member',
         title: 'Recent observation',
         body: 'A live sensor reading',
-        severity: 'major',
+        severity: 'major' as const,
         createdAt: new Date(NOW - DAY_MS).toISOString(),
       },
     ]),
     readWorkItems: vi.fn(async () => [
       workItem(),
-      workItem({ id: 'WI-NO-EVIDENCE', terminalCompletionRef: null, terminalCompletionEvidence: false }),
+      workItem({ id: 'WI-NO-EVIDENCE', terminalCompletionRef: null, terminalCompletionEvidence: null }),
       workItem({
         id: 'WI-NEEDS-HUMAN',
         payload: { needsHuman: true, _completionEvidence: { summary: 'parked' } },
@@ -128,7 +128,10 @@ describe('readDreamSources', () => {
     await expect(
       readDreamSources(
         { sql, workspaceId: 'ws-1', potSlug: 'papercusp', now: NOW },
-        { ...deps(), resolveEmbedder: vi.fn(async () => ({ mode: 'disabled', reason: 'provider unavailable' })) },
+        {
+          ...deps(),
+          resolveEmbedder: vi.fn(async () => ({ mode: 'disabled' as const, reason: 'provider unavailable' })),
+        },
       ),
     ).rejects.toThrow('provider unavailable');
 

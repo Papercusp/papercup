@@ -17,7 +17,7 @@ vi.mock('./control-state', () => ({ getOverwatchStarted: (...a: unknown[]) => ge
 const overwatchLivenessCheck = vi.fn();
 vi.mock('./liveness', () => ({ overwatchLivenessCheck: (...a: unknown[]) => overwatchLivenessCheck(...a) }));
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 
 import { isOverwatchAlive, overwatchAliveForQueen, crossMonitorDarkSec } from './cross-monitor';
 

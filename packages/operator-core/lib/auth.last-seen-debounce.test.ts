@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 let sessionRows: Array<Record<string, unknown>> = [];
 let updateCount = 0;
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   // tagged-template: sql`...` → sql(strings, ...values). The UPDATE is the only
   // write getSessionUser issues; everything else is the session SELECT.
   const sql = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
@@ -26,7 +26,7 @@ vi.mock('@papercusp/db-org', () => {
     }
     return Promise.resolve(sessionRows);
   };
-  return { getOrgPg: () => ({ sql }) };
+  return { ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) };
 });
 
 import {

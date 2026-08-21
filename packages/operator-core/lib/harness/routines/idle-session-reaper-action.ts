@@ -128,7 +128,13 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
   // holder is self-protected in slice 1's liveness set — see the module
   // comment on gatherProtectedSessionOwners — so this judges the lease
   // holder's liveness directly rather than piggybacking off slice 1's plan).
-  const lr = await runWorkItemLeaseReap({ dryRun, graceMs: livenessCfg.sessionReaperGraceMs });
+  // The same call opts into the named-resource side-database backstop so a
+  // dead session that held only a resource lock is not left fenced until TTL.
+  const lr = await runWorkItemLeaseReap({
+    dryRun,
+    graceMs: livenessCfg.sessionReaperGraceMs,
+    includeResourceLocks: true,
+  });
   if (lr.enabled) {
     console.log(
       `[idle-session-reaper] work-item lease reap: scanned ${lr.scanned} held lease(s) → ` +
@@ -136,6 +142,12 @@ registerSystemAction('idle-session-reaper', async (ctx: SystemActionCtx) => {
         `(${lr.ownersReconciled} owner(s) claim-ledger-reconciled), kept ${lr.keptLive} live, ${lr.keptFresh} fresh` +
         (lr.reapedIds.length
           ? ` [ids: ${lr.reapedIds.slice(0, 20).join(',')}${lr.reapedIds.length > 20 ? ',…' : ''}]`
+          : '') +
+        `; named-resource lease backstop: scanned ${lr.resourceLocks.scanned} → ` +
+        `${lr.resourceLocks.dryRun ? 'WOULD release' : 'released'} ${lr.resourceLocks.reaped} dead-owner lock(s), ` +
+        `kept ${lr.resourceLocks.keptLive} live, ${lr.resourceLocks.keptFresh} fresh` +
+        (lr.resourceLocks.failedOwners
+          ? `, ${lr.resourceLocks.failedOwners} owner cleanup(s) failed`
           : ''),
     );
   }

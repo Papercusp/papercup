@@ -189,6 +189,7 @@ export function agentProducedTurn(
     stderr?: unknown;
     exitCode?: unknown;
     timedOut?: unknown;
+    firstTurnTimedOut?: unknown;
     rawStdoutTail?: unknown;
   };
   try {
@@ -230,6 +231,15 @@ export function agentProducedTurn(
       ran: false,
       failureClass: 'capacity_shed',
       detail: ` ${label} was SHED mid-turn by an all-accounts gateway throttle (capacity_shed — RETRYABLE, NOT a host fault): exit 1, empty stderr, timedOut=false, and the gateway pool was wholesale-throttled (paused/rejected) at death — the GENUINE all-accounts 429 storm that never surfaces as a 429 (agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5). Retry through the paced gateway when capacity returns; do NOT hunt a host bug.`,
+    };
+  }
+  if (b.timedOut === true && b.firstTurnTimedOut === true) {
+    return {
+      ran: false,
+      failureClass: 'infra_loss',
+      detail: ` ${label} timed out before producing a turn (the bounded first-turn silence guard fired before the full invoke deadline${rawStdoutDetail(
+        b.rawStdoutTail,
+      )}) — the launch was non-progressing; inspect launcher termination, account/gateway telemetry, and the spawn record before attributing the cause; recorded failed, not done`,
     };
   }
   if (b.timedOut === true) {

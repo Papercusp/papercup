@@ -22,7 +22,7 @@ let sqlCalls = 0;
 let listenChannel: string | null = null;
 let listenCallback: ((payload: string) => void) | null = null;
 
-vi.mock('@papercusp/db-org', () => {
+vi.mock('@papercusp/db-org', async (orig) => {
   // tagged-template: sql`...` → sql(strings, ...values)
   const sql = Object.assign((..._args: unknown[]) => {
     sqlCalls++;
@@ -35,6 +35,7 @@ vi.mock('@papercusp/db-org', () => {
     },
   });
   return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({ sql }),
     withWorkspace: (_ws: string, cb: (tx: unknown) => unknown) => {
       withWorkspaceCalls++;

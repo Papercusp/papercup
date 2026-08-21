@@ -50,7 +50,7 @@ vi.mock('./resource-profile', () => ({
   getResourceProfile: () => ({ maxSimultaneousAgents: PROFILE_DEFAULT_MAX }),
 }));
 vi.mock('./pg-notify-bus', () => ({ createNotifyBus: h.createNotifyBus }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sqlTag }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sqlTag }) }));
 
 import {
   clampRateLimitConfig,

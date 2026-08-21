@@ -7,7 +7,8 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: Object.assign(() => Promise.resolve([]), { unsafe: vi.fn().mockResolvedValue([]) }) }),
   // pr-poll-routine.ts imports these at module load; not used in these tests.
   upsertRoutine: vi.fn(),

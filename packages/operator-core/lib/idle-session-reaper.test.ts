@@ -3,6 +3,8 @@ import {
   planIdleSessionReap,
   planWindowUnknownProtection,
   planWorkItemLeaseReap,
+  planResourceLockLeaseReap,
+  reapResourceLockRows,
   classifyLiveIdle,
   terminateIdleLiveSessions,
   planZombieReap,
@@ -18,6 +20,7 @@ import {
   IDLE_ACTIVITY_THRESHOLD_MS,
   type ReapableSession,
   type WorkItemLeaseRow,
+  type ResourceLockLeaseRow,
   type LiveIdleCandidate,
   type IdleLiveSession,
   type TerminateDeps,
@@ -38,6 +41,18 @@ const lease = (id: string, takenBy: string, takenAtMs: number | null, harness: s
   harness,
   takenBy,
   takenAtMs,
+});
+const resourceLease = (
+  lockId: string,
+  owner: string,
+  acquiredAtMs: number | null,
+  coordinationDomain = 'resource-domain',
+): ResourceLockLeaseRow => ({
+  lockId,
+  owner,
+  acquiredAtMs,
+  coordinationDomain,
+  resource: 'dev-server',
 });
 
 describe('planIdleSessionReap (P-011 idle-session reaper — slice 1: dead-process ghosts)', () => {
@@ -197,6 +212,133 @@ describe('planWorkItemLeaseReap (session-death-claim-release-2026-07-11 P-001 �
     expect(plan.reap).toEqual([dead]);
     expect(plan.keptLive).toEqual([live]);
     expect(plan.keptFresh).toEqual([fresh]);
+  });
+});
+
+describe('planResourceLockLeaseReap (EI-20980648124299591 — dead-owner named resources)', () => {
+  it('releases a named-resource lease held by a dead owner past the grace floor', () => {
+    const l = resourceLease('lock-dead', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    const plan = planResourceLockLeaseReap({
+      leases: [l],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toEqual([l]);
+    expect(plan.keptLive).toHaveLength(0);
+  });
+
+  it('never releases a named-resource lease whose owner is live', () => {
+    const l = resourceLease('lock-live', 'su-live', old(100 * IDLE_SESSION_GRACE_MS));
+    const plan = planResourceLockLeaseReap({
+      leases: [l],
+      liveOwners: new Set(['su-live']),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toHaveLength(0);
+    expect(plan.keptLive).toEqual([l]);
+  });
+
+  it('keeps a newly-acquired named-resource lease when the owner has not heartbeated yet', () => {
+    const l = resourceLease('lock-fresh', 'su-brand-new', old(IDLE_SESSION_GRACE_MS - 1));
+    const plan = planResourceLockLeaseReap({
+      leases: [l],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toHaveLength(0);
+    expect(plan.keptFresh).toEqual([l]);
+  });
+
+  it('treats a missing acquisition timestamp as past-grace instead of protecting a dead holder forever', () => {
+    const l = resourceLease('lock-legacy', 'su-dead', null);
+    const plan = planResourceLockLeaseReap({
+      leases: [l],
+      liveOwners: new Set(),
+      nowMs: NOW,
+    });
+    expect(plan.reap).toEqual([l]);
+  });
+});
+
+describe('reapResourceLockRows (EI-20980648124299591 — owner/domain cleanup)', () => {
+  it('releases only old dead-owner rows, grouped by owner and coordination domain', async () => {
+    const deadA = resourceLease('lock-dead-a', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS), 'domain-a');
+    const deadB = resourceLease('lock-dead-b', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS), 'domain-a');
+    const deadOtherDomain = resourceLease('lock-dead-c', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS), 'domain-b');
+    const live = resourceLease('lock-live', 'su-live', old(2 * IDLE_SESSION_GRACE_MS), 'domain-a');
+    const fresh = resourceLease('lock-fresh', 'su-new', old(IDLE_SESSION_GRACE_MS - 1), 'domain-a');
+    const groups: ResourceLockLeaseRow[][] = [];
+    const result = await reapResourceLockRows({
+      leases: [deadA, deadB, deadOtherDomain, live, fresh],
+      liveOwners: new Set(['su-live']),
+      nowMs: NOW,
+      releaseGroup: async (group) => {
+        groups.push(group);
+        return group.map((lease) => lease.lockId);
+      },
+      dryRun: false,
+    });
+
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.map((lease) => lease.lockId))).toEqual([
+      ['lock-dead-a', 'lock-dead-b'],
+      ['lock-dead-c'],
+    ]);
+    expect(result).toMatchObject({
+      scanned: 5,
+      reaped: 3,
+      reapedIds: ['lock-dead-a', 'lock-dead-b', 'lock-dead-c'],
+      keptLive: 1,
+      keptFresh: 1,
+      failedOwners: 0,
+      dryRun: false,
+    });
+  });
+
+  it('dry-run reports dead rows without invoking cleanup', async () => {
+    const dead = resourceLease('lock-dry', 'su-dead', old(2 * IDLE_SESSION_GRACE_MS));
+    let calls = 0;
+    const result = await reapResourceLockRows({
+      leases: [dead],
+      liveOwners: new Set(),
+      nowMs: NOW,
+      dryRun: true,
+      releaseGroup: async () => {
+        calls += 1;
+        return [dead.lockId];
+      },
+    });
+
+    expect(calls).toBe(0);
+    expect(result).toMatchObject({ scanned: 1, reaped: 1, reapedIds: ['lock-dry'], dryRun: true });
+  });
+
+  it('isolates a failed owner/domain cleanup while retaining other owner evidence', async () => {
+    const failed = resourceLease('lock-failed', 'su-failed', old(2 * IDLE_SESSION_GRACE_MS), 'domain-a');
+    const healthy = resourceLease('lock-healthy', 'su-healthy', old(2 * IDLE_SESSION_GRACE_MS), 'domain-b');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await reapResourceLockRows({
+        leases: [failed, healthy],
+        liveOwners: new Set(),
+        nowMs: NOW,
+        releaseGroup: async (group) => {
+          if (group[0].owner === 'su-failed') throw new Error('simulated release failure');
+          return group.map((lease) => lease.lockId);
+        },
+        dryRun: false,
+      });
+
+      expect(result.reapedIds).toEqual(['lock-healthy']);
+      expect(result.reaped).toBe(1);
+      expect(result.failedOwners).toBe(1);
+      expect(warn).toHaveBeenCalledWith(
+        '[resource-lock-lease-reap] release failed for su-failed in domain-a (non-fatal):',
+        'simulated release failure',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

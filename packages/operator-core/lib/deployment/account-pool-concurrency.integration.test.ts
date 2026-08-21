@@ -34,7 +34,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import type { AccountPool } from './account-pool';
 
 const h = vi.hoisted(() => ({ sql: null as unknown, ws: 'ws-account-pool-concurrency' }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: h.sql }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 // The pool write fans out to the sync bus; irrelevant here and it would need a listener.
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: async () => {} }));

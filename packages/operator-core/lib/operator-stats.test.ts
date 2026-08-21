@@ -5,7 +5,8 @@ vi.mock('./workspace-registry', () => ({
 }));
 
 const auditRows: { ts: number; action: string; subject: string; details?: { actor_method?: string } }[] = [];
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   withWorkspace: async (_id: string, fn: (tx: unknown) => Promise<unknown>) =>
     fn(((..._args: unknown[]) => auditRows) as unknown),
 }));

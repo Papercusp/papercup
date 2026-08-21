@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // WI-4632 (GYM-2, generalized across roles): mocks for the impure async sweep tests below —
 // the pure selectChronicFailures/isStaleWatermark/etc. tests above need none of these.
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: vi.fn() }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-test') }));
 vi.mock('../../pot/watchdog', () => ({
   recentWatchdogFires: vi.fn(),

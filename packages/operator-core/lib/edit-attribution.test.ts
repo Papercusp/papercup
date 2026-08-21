@@ -8,7 +8,8 @@ const insertCalls: unknown[][] = [];
 // able to fail), so the stub reads from a mutable holder. Defaults keep every pre-existing
 // recordEditAttribution test byte-identical (they only inspect insertCalls, never the result).
 const sqlStub: { rows: unknown[]; throws: boolean } = { rows: [], throws: false };
-vi.mock('@papercusp/db-org', () => ({
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     sql: Object.assign(
       (_strings: TemplateStringsArray, ...values: unknown[]) => {

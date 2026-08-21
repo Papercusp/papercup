@@ -25,7 +25,7 @@ vi.mock('../search/embedder', () => ({
   interactiveEmbedAcquireBudgetMs: () => 4000,
 }));
 vi.mock('../search/sources', () => ({ SEARCH_SOURCES: [] }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: {} }) }));
 vi.mock('../../memory/backend', () => ({ getMemoryBackend: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: m.activeWorkspaceId }));
 
