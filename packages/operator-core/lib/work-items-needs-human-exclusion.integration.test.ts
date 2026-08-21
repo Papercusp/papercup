@@ -83,7 +83,7 @@ describe('claimNextWorkItem admits a legacy needsHuman:true OPEN issue after mig
     expect(rows[0]?.taken_by).toBe('bee-1');
   });
 
-  it('a needsHuman row is STILL directly claimable by id (the floor only gates self-select)', async () => {
+  it('a needsHuman row is also directly claimable by id', async () => {
     await seedIssue('EI-human-direct', { kind: 'change', createdTs: 100, payload: { needsHuman: true } });
     const claimed = await wi.claimWorkItem('EI-human-direct', 'inspector', { harness: H });
     expect(claimed?.id).toBe('EI-human-direct');

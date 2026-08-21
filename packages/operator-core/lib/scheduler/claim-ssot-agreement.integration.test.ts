@@ -35,7 +35,7 @@
  *
  * Proves against real Postgres (testcontainer; Docker required):
  *   1. AGREEMENT — across every UNCONDITIONAL floor (not-open, taken, federated-remote,
- *      claim-hold, observation-lane, needs-human, external-blocker, federation-detector,
+ *      claim-hold, observation-lane, owner-action, external-blocker, federation-detector,
  *      loop-noise, already-completed, reserved-active-plan, other-owner-lease, blocked-dep,
  *      and their satisfied/admit counterparts) the view's membership set === the set the inline
  *      claim path drains, EXACTLY.
@@ -238,6 +238,14 @@ beforeAll(async () => {
   // EI-20467873456529090: excludes open work-items whose effective normalized plan-item is already
   // terminal, keeping the SSOT view in lockstep with the shared TS claim/diagnostic floor.
   await db.sql.unsafe(readMigration('853-plan-item-terminal-claim-floor.sql')).simple();
+  // Migration 864 guards against moving a live claim and enrolls review-routed rows in the
+  // existing Scout/Blender ledger. This focused fixture does not run the full historical
+  // migration chain, so install both ledgers and the columns 864 writes before applying it.
+  await db.sql.unsafe(readMigration('188-work-item-claims.sql')).simple();
+  await db.sql.unsafe(readMigration('194-scout-routed-ideas.sql')).simple();
+  await db.sql.unsafe(readMigration('333-scout-routed-ideas-source-target-hive.sql')).simple();
+  await db.sql.unsafe(readMigration('471-scout-routed-ideas-origin.sql')).simple();
+  await db.sql.unsafe(readMigration('558-scout-routed-ideas-created-by.sql')).simple();
   // abolish-human-review D-003: floor #15 reserves pending review work to the reviewer lane
   // and revision-requested work to the submitter. Approval re-admits the still-open row.
   // Apply the real migration so the queryable SSOT and the existing TS claim fragment must agree.

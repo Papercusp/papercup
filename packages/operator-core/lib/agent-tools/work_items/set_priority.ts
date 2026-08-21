@@ -84,7 +84,8 @@ type Spec = z.infer<typeof itemSpec>;
 /**
  * EI-19919820196426791 / EI-19932455002723461: an explicit priority write is a silent no-op
  * on claimability when the item sits behind ANY of the claim path's structural floors, not
- * just the original two (payload.lane='observation' / payload.needsHuman=true) — the write
+ * just the original two surfaced classes (payload.lane='observation' /
+ * payload.needsOwnerAction=true) — the write
  * reports ok:true/written:true exactly like a real steer, with nothing flagging the conflict.
  *
  * EI-19932455002723461 (MEASURED 2026-08-09): the original two-floor check missed the far

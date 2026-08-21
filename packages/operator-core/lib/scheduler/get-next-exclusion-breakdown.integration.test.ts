@@ -211,9 +211,9 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
   });
 
   it('an item taken by someone else counts ONLY under `taken`, never double-counted under another floor', async () => {
-    // Taken AND would otherwise also read claim-held / needs-human — but `taken` short-
+    // Taken AND would otherwise also read claim-held / owner-action — but `taken` short-
     // circuits every other bucket (each later floor is scoped to the UNTAKEN subset).
-    await seedIssue('WI-9701', { _claimHold: true, needsHuman: true }, { takenBy: 'su-outside' });
+    await seedIssue('WI-9701', { _claimHold: true, needsOwnerAction: true }, { takenBy: 'su-outside' });
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
     expect(out.matchedByFilter).toBe(1);
@@ -385,7 +385,7 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     expect(breakdownOnly.admitted.total).toBe(2);
   });
 
-  it('keeps the retired legacy-needs-human bucket empty through the materialized snapshot', async () => {
+  it('omits the retired legacy-needs-human bucket from the materialized snapshot', async () => {
     await seedIssue('WI-RC-20', { needsHuman: true });
     await seedIssue('WI-RC-21', null);
 

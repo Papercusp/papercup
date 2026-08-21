@@ -4958,7 +4958,7 @@ export async function readHeldDependencyEscapeContext(args: {
  * Keys on the `_ei` envelope work_items mirrors from engineer_issues — `_ei.created_by` is the
  * detector's stable filer identity ('system:replication-liveness', == RECOVERY_OWNER) — so it
  * covers every already-open detector EI with NO backfill/migration/filer change. Mirrors
- * {@link needsHumanExclusionSql}'s shape/placement exactly (same NULL-safe COALESCE, same
+ * {@link needsOwnerActionExclusionSql}'s shape/placement exactly (same NULL-safe COALESCE, same
  * POOL+READY+claim call sites) so an all-federation-EI backlog also reads `drained:true`
  * instead of idling a generic drainer on unpickable rows. UNCONDITIONAL (no caller bypass):
  * no GENERIC self-select caller legitimately wants one — still directly claimable BY ID, so the
@@ -4980,7 +4980,7 @@ export function federationDetectorExclusionSql(sql: OrgSql) {
  * WI-3078 (filed 2026-07-05, su-40106c58) both sat open 4 days, each independently claimed and
  * resolved as noise, before this floor existed.
  *
- * Title-pattern ILIKE rather than a payload tag (unlike observation-lane/needsHuman/federation-
+ * Title-pattern ILIKE rather than a payload tag (unlike observation-lane/owner-action/federation-
  * detector, above): these rows predate any tagging convention and a new agent can still
  * accidentally recreate the pattern even after `improvements:capture`/`loop:checkpoint` guidance
  * — a durable floor stops the CLASS from recurring regardless of whether every agent's loop
@@ -5014,7 +5014,7 @@ export function loopIterationNoiseExclusionSql(sql: OrgSql) {
  * as a duplicate, re-claimed whole by another via claim_next minutes later because `state`
  * was never flipped off 'open'. A non-null terminal_owner + terminal_completion_ref is
  * itself a strong "already settled, don't re-place" signal independent of `status` — pool-
- * exclude it (like observation/needsHuman/federation-detector/loop-noise above) so an
+ * exclude it (like observation/owner-action/federation-detector/loop-noise above) so an
  * all-already-completed backlog also reads `drained:true` instead of idling a drainer on
  * unpickable rows. Still directly claimable BY ID (e.g. to formally flip its `state`).
  *
@@ -5680,7 +5680,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- drainer on unpickable rows.
          AND ${federationDetectorExclusionSql(sql)}
          -- EI-8802: a stray AUTO-loop-iteration bookkeeping marker is likewise not work-queue
-         -- material AT ALL — pool-exclude it too, same rationale as observation/needsHuman.
+         -- material AT ALL — pool-exclude it too, same rationale as observation/owner-action.
          AND ${loopIterationNoiseExclusionSql(sql)}
          -- EI-8972: a row already carrying a genuine terminal completion (terminal_owner +
          -- terminal_completion_ref both set) is likewise not work-queue material AT ALL, even
@@ -5821,7 +5821,7 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
  * misses, "no claimable work-item matched your spec within the floors" tells the leader
  * nothing: not which id, not which floor. Live cost (bug-drain-nonp2p 2026-07-12): THREE
  * consecutive tranches were 100% floored — by three DIFFERENT floors (observation-lane,
- * plan-lane reservation, _claimHold/needsHuman) — and each took a manual payload
+ * plan-lane reservation, _claimHold/owner-action) — and each took a manual payload
  * archaeology dig to find, while members sat idle. This makes the claim path self-explaining.
  *
  * DRIFT-PROOF BY CONSTRUCTION: every floor below is the SAME exported `sql` fragment the

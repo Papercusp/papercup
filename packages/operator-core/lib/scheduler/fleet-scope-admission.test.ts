@@ -606,7 +606,7 @@ describe('fleet scope assignment admission (P-016)', () => {
   });
 
   // WI-5561: scheduler:get_next's fleet-scoped miss path gave ZERO diagnosis when the
-  // whole issue-family pool was floor-gated (federation-detector / needs-human /
+  // whole issue-family pool was floor-gated (federation-detector / owner-action /
   // claim-hold / observation-lane / …), leaving a fleet member (and the leader they'd
   // report a false "scope/spec bug" to) with nothing but a bare "no claimable
   // work-item matched fleet scope". diagnoseFleetScopeIssueFloorMiss reuses the exact
