@@ -20,7 +20,7 @@
  *   itself writes one fallback row on close. Fail-soft (D-007) — never throws.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
@@ -57,8 +57,8 @@ import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 export interface WorktreeGitSnapshot {
   /** `git rev-parse HEAD`, or null if it couldn't be read. */
   commit: string | null;
-  /** `git status --porcelain -- <tested files>` output, or null if unreadable.
-   *  Empty string means clean; non-empty means the tested files carry
+  /** `git status --porcelain --untracked-files=all` output, or null if unreadable.
+   *  Empty string means clean; non-empty means the shared worktree carries
    *  uncommitted changes at this snapshot. */
   porcelain: string | null;
 }
@@ -70,6 +70,45 @@ export function computeWorktreeDirty(before: WorktreeGitSnapshot, after: Worktre
   if (before.porcelain.trim().length > 0) return true;
   if (after.porcelain.trim().length > 0) return true;
   return false;
+}
+
+/**
+ * Capture the shared worktree's commit and full porcelain status fail-soft.
+ *
+ * This is intentionally synchronous for the pre-run call: `startRun` must
+ * finish the before snapshot before spawning the child, otherwise a fast child
+ * could complete before its "before" probe does. A missing/failed probe is
+ * returned as null and therefore marks the run dirty via computeWorktreeDirty.
+ */
+export function captureWorktreeSnapshot(cwd?: string): WorktreeGitSnapshot {
+  let root = cwd;
+  if (!root) {
+    try {
+      root = resolveAgentWorkspaceRoot({});
+    } catch {
+      return { commit: null, porcelain: null };
+    }
+  }
+
+  const readGit = (args: string[]): string | null => {
+    try {
+      const output = execFileSync('git', args, {
+        cwd: root,
+        encoding: 'utf8',
+        timeout: 2_000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      if (output == null) return null;
+      return (typeof output === 'string' ? output : output.toString('utf8')).trim();
+    } catch {
+      return null;
+    }
+  };
+
+  return {
+    commit: readGit(['rev-parse', 'HEAD']) || null,
+    porcelain: readGit(['status', '--porcelain', '--untracked-files=all']),
+  };
 }
 
 function captureSaturationSnapshot(): { loopLagP95Ms: number | null; rssMb: number | null } {
@@ -127,6 +166,8 @@ export interface RunSnapshot {
 interface RunState {
   snapshot: RunSnapshot;
   proc: ChildProcess | null;
+  cwd: string;
+  worktreeBefore: WorktreeGitSnapshot;
 }
 
 const _runs = new Map<string, RunState>();
@@ -182,6 +223,7 @@ export function startRun(req: SpawnRequest): RunSnapshot {
   // operator may run from the release checkout while the agent edits staging;
   // process.cwd() is therefore not a safe implicit tree for detached runs.
   const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
+  const worktreeBefore = captureWorktreeSnapshot(cwd);
   let proc: ChildProcess;
   try {
     proc = spawn(req.command, req.args, {
@@ -206,11 +248,11 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     snapshot.exitCode = -1;
     snapshot.finishedAt = Date.now();
     snapshot.output = e instanceof Error ? e.message : String(e);
-    _runs.set(runId, { snapshot, proc: null });
+    _runs.set(runId, { snapshot, proc: null, cwd, worktreeBefore });
     return snapshot;
   }
 
-  const state: RunState = { snapshot, proc };
+  const state: RunState = { snapshot, proc, cwd, worktreeBefore };
   _runs.set(runId, state);
 
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
@@ -219,7 +261,7 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     appendOutput(state, `\n[spawn-error] ${e.message}\n`);
     state.snapshot.status = 'error';
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
-    void persistFallbackRow(state.snapshot);
+    void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
   });
   proc.on('close', (code) => {
     state.snapshot.exitCode = code;
@@ -227,7 +269,7 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     if (state.snapshot.status !== 'cancelled') {
       state.snapshot.status = code === 0 ? 'pass' : 'fail';
     }
-    void persistFallbackRow(state.snapshot);
+    void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
   });
 
   return snapshot;
@@ -242,7 +284,11 @@ export function startRun(req: SpawnRequest): RunSnapshot {
  *
  * D-007 fail-soft: every error swallowed, never throws.
  */
-async function persistFallbackRow(s: RunSnapshot): Promise<void> {
+async function persistFallbackRow(
+  s: RunSnapshot,
+  worktreeBefore: WorktreeGitSnapshot,
+  cwd: string,
+): Promise<void> {
   if (s.kind === 'vitest' || s.kind === 'playwright' || s.kind === 'cargo') return;
   if (s.kind === 'admin-suite') return;
   if (s.status === 'running') return;
@@ -258,13 +304,17 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
     const duration = s.finishedAt ? s.finishedAt - s.startedAt : null;
     const outputTail = s.output ? s.output.slice(-4096) : null;
 
+    const worktreeAfter = captureWorktreeSnapshot(cwd);
+    const worktreeDirty = computeWorktreeDirty(worktreeBefore, worktreeAfter);
     let branch: string | null = null;
-    let commit: string | null = null;
     try {
       const ctx = await resolveGitContext();
       branch = ctx.branch;
-      commit = ctx.commit;
     } catch { /* fail-soft */ }
+    // The post-run snapshot is the only commit attribution that corresponds
+    // to the run's close-time tree. resolveGitContext() is cached for display
+    // metadata and must not reintroduce the torn-read hazard here.
+    const commit = worktreeAfter.commit;
 
     // WI-6583: carry the harness scope keys when the spawning context set
     // them. PAPERCUSP_TEST_RUN_HARNESS / PAPERCUSP_WORKSPACE_ID (P-007, a
@@ -287,10 +337,10 @@ async function persistFallbackRow(s: RunSnapshot): Promise<void> {
     await Promise.race([
       sql`
         INSERT INTO harness_shared.test_runs
-          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb)
+          (file_path, framework, status, duration_ms, started_at, finished_at, output_tail, run_group_id, source, branch, commit_sha, harness_slug, workspace_id, loop_lag_p95_ms, rss_mb, worktree_dirty)
         VALUES
           (${filePath}, ${s.kind}, ${s.status}, ${duration}, ${startedAtIso},
-           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb})
+           ${finishedAtIso}, ${outputTail}, ${s.runId}, ${'admin-ui'}, ${branch}, ${commit}, ${harnessSlug}, ${workspaceId}, ${loopLagP95Ms}, ${rssMb}, ${worktreeDirty})
       `,
       new Promise((_, reject) => setTimeout(() => reject(new Error('pg_insert_timeout')), 1000)),
     ]).catch(() => { /* swallow — D-007 */ });
