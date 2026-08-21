@@ -305,4 +305,23 @@ describe('cross-surface liveness parity (P-001)', () => {
     expect(agents[2].sessionState).toBe('ended'); // recent activity cannot outvote a missing host
     expect(agents[2].alive).toBe(false);
   });
+
+  it('positive psu-host evidence rescues an ended non-wakeable su session', () => {
+    const v = deriveVerdict(
+      {
+        ownerId: 'su-pty-live',
+        agentRole: 'su',
+        heartbeatAt: iso(PRESENCE_DEAD_MS + 60_000),
+        stale: true,
+      },
+      { wakeable: false, liveTurn: false },
+      new Set(),
+      NOW,
+      () => null,
+      { enabled: true, negative: false, positive: true, findHostFn: () => ({ ownerId: 'su-pty-live' }) },
+    );
+
+    expect(v.sessionState).toBe('recorded');
+    expect(v.wakeable).toBe(false);
+  });
 });
