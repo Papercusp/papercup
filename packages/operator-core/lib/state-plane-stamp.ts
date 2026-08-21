@@ -220,19 +220,40 @@ function collect(input: StatePlaneStampInput): PlaneStamp[] {
   return out;
 }
 
-function stampFor(spec: CellSpec, path: string, args: Record<string, unknown> | undefined): PlaneStamp {
+/**
+ * The handle half of a stamp: either a complete re-read call, or the reason one could
+ * not be built. Split out from `stampFor` so the OTHER handle-emitting surface — the
+ * coord:orient interest fold (P-011 of state-plane-interest-and-hardening-2026-08-21) —
+ * shares this exact decision instead of growing a second, drifting copy of it.
+ *
+ * The two callers select their cells completely differently (this module by payload
+ * path, the interest fold by the reader's live contexts), but "what does a usable
+ * re-read call look like, and when is it honest to emit one" must not be answered
+ * twice. `path` stays with the caller because only a door-payload stamp has one.
+ */
+export type CellHandle =
+  | { reread: { tool: 'state:read'; args: { cell: string; as?: string } }; unreadable?: undefined }
+  | { unreadable: { needs: string; why: string }; reread?: undefined };
+
+/**
+ * Build the re-read handle for one cell, given the SUBJECT the caller resolved for it.
+ *
+ * Emits `unreadable { needs }` and NO `reread` when a caller-relative cell has no
+ * subject — never a bare unqualified handle. That asymmetry is the point: an
+ * unqualified re-read of a caller-relative cell SUCCEEDS and answers confidently
+ * about a different subject, which is strictly worse than refusing, because nothing
+ * in the reply marks it as the wrong question.
+ */
+export function cellRereadHandle(spec: CellSpec, subject?: unknown): CellHandle {
   const rel = spec.callerRelativity;
   if (rel?.kind !== 'parameter') {
     // Global (or any non-parameter relativity): the handle is complete as-is.
-    return { path, cell: spec.cell, reread: { tool: 'state:read', args: { cell: spec.cell } } };
+    return { reread: { tool: 'state:read', args: { cell: spec.cell } } };
   }
 
   const param = rel.param;
-  const subject = args?.[param];
   if (typeof subject !== 'string' || subject.trim().length === 0) {
     return {
-      path,
-      cell: spec.cell,
       unreadable: {
         needs: param,
         why:
@@ -243,5 +264,11 @@ function stampFor(spec: CellSpec, path: string, args: Record<string, unknown> | 
     };
   }
 
-  return { path, cell: spec.cell, reread: { tool: 'state:read', args: { cell: spec.cell, as: subject } } };
+  return { reread: { tool: 'state:read', args: { cell: spec.cell, as: subject } } };
+}
+
+function stampFor(spec: CellSpec, path: string, args: Record<string, unknown> | undefined): PlaneStamp {
+  const rel = spec.callerRelativity;
+  const subject = rel?.kind === 'parameter' ? args?.[rel.param] : undefined;
+  return { path, cell: spec.cell, ...cellRereadHandle(spec, subject) };
 }
