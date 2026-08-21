@@ -85,6 +85,7 @@ import {
 // mocks './wake-executor' wholesale, which silently undefined-ed it and deleted the
 // park nudge inside a best-effort catch.
 import { payloadIsTimeout, wakeSummaryHeadline } from './timeout-fallback';
+import { prepareCellWakeFold } from './cell-wake-fold';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import {
   findLiveHost,
@@ -476,10 +477,14 @@ export function wakeTurnText(d: DeliveryWork): string {
     `[await-event] ${d.eventKey} fired${timeout}${summary}.${note}${payload} ` +
     `(event-wake delivery #${d.id} — a delivery-log id, not your wake count; you registered this with events:await — continue the work that was waiting on it.)${inboxWakeReconcile}`
   ).replace(/\s*\n\s*/g, ' ');
-  // Ambient-push rail (P-003): a prepared teaser block rides the wake injection.
-  // Appended AFTER the collapse so it keeps its own line formatting; undefined on
-  // the default path ⇒ byte-identical. It then flows through applyInjectionDoor.
-  return d.ambientPushBlock ? `${base}\n\n${d.ambientPushBlock}` : base;
+  // Ambient-push rail (P-003) and the P-022 cell fold: prepared blocks ride the wake
+  // injection. Appended AFTER the collapse so they keep their own line formatting;
+  // both undefined on the default path ⇒ byte-identical. They then flow through
+  // applyInjectionDoor. The cell fold goes FIRST: it re-answers the very value quoted
+  // in `payload` above, so it belongs next to what it corrects, not below unrelated
+  // ambient material.
+  const blocks = [d.cellWakeFoldBlock, d.ambientPushBlock].filter((b): b is string => !!b);
+  return blocks.length ? `${base}\n\n${blocks.join('\n\n')}` : base;
 }
 
 /**
@@ -1560,6 +1565,22 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       } catch {
         /* ambient delivery must never break a wake */
       }
+    }
+
+    /**
+     * P-022 / D-007 — fold the subscribed cell's DELIVERY-TIME reading into this wake.
+     *
+     * Here, and not at the fire site, is the whole point: `payload.observed` is a
+     * fire-time snapshot and the fire→delivery gap is where it goes stale (a parked
+     * session boots, a cold carry respawns, a busy session drains its queue first).
+     * Same fail-soft contract as the ambient block above — the helper is TOTAL and
+     * budget-bounded, so a slow or broken resolver costs this wake nothing.
+     */
+    try {
+      const fold = await prepareCellWakeFold({ eventKey: d.eventKey, workspaceId: d.workspaceId });
+      if (fold) d.cellWakeFoldBlock = fold;
+    } catch {
+      /* a fold must never break a wake */
     }
 
     const handle = d.wakeHandle;

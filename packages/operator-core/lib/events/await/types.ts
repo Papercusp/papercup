@@ -250,6 +250,13 @@ export interface DeliveryWork extends DeliveryRow {
    *  wakeTurnText after its own line-collapse, so it flows through applyInjectionDoor
    *  (the injection-door tally) with the rest of the wake text. */
   ambientPushBlock?: string;
+  /**
+   * P-022 / D-007 — the subscribed cell's reading, resolved at TURN-ASSEMBLY time and
+   * stamped, for a `predicate:<id>` wake. Prepared in the async delivery path (never in
+   * the synchronous `wakeTurnText`) and absent whenever the delivery is not a
+   * cell-backed predicate fire or the reading could not be taken in budget.
+   */
+  cellWakeFoldBlock?: string;
 }
 
 /** The wake executor's verdict for one delivery attempt. */

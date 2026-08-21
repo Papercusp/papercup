@@ -45,12 +45,12 @@ import watchTool from '../events/watch';
 export default defineTool({
   name: 'state:subscribe',
   description:
-    'Wake me when a registered state CELL crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path, you supply `on: {op, value}`. A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.',
+    'Wake me when a registered state CELL changes or crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path. `on` is OPTIONAL — omit it for "wake me when this moves" (op `changed`). A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.',
   guidance: {
-    when: 'You need to proceed only once a value crosses a threshold — a deploy landing, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.',
+    when: 'You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.',
     notWhen: 'You need the value now — that is state:read. The event has an exact key already — that is events:await. A recurring TIME schedule — routines own those.',
     chaining:
-      'state:subscribe { cell, on:{op,value} } → END YOUR TURN. You are woken on the cross; do not poll in the meantime. once:false re-fires on each cross. Cancel via events:cancel with the returned watch id.',
+      'state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value\'s current reading to mean that — it transcribes a volatile value and misses a move landing before the call. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those), and the why-field is `note`. once:false re-fires per change. Cancel via events:cancel.',
   },
   capability: 'coord:write',
   requirePrincipal: false,
@@ -68,10 +68,13 @@ export default defineTool({
     cell: z.string().min(1).max(120).describe('Dotted cell id to watch, e.g. "git.pipelinePosition". state:read (no args) lists the ones you may read.'),
     on: z
       .object({
-        op: z.enum(PREDICATE_OPS).describe('Comparator applied to the cell value.'),
-        value: z.unknown().optional().describe('Operand (omit for `exists`).'),
+        op: z.enum(PREDICATE_OPS).describe('Comparator applied to the cell value. `changed` needs no `value` — it compares each reading to the previous one.'),
+        value: z.unknown().optional().describe('Operand (omit for `exists` and `changed`).'),
       })
-      .describe('The condition on the cell VALUE. Fires on the false→true edge, not on every poll that matches.'),
+      .optional()
+      .describe(
+        'The condition on the cell VALUE. Fires on the false→true edge, not on every poll that matches. OMIT IT to mean `{op:"changed"}` — wake me when this value moves — which is what you want for a deploy sha or a gate verdict. Do NOT hand-write `ne` against the value\'s current reading to express that: it transcribes a volatile value into the watch, and if the value moves between your read and this call the watch is armed against a stale operand and never fires.',
+      ),
     as: z
       .string()
       .max(200)
@@ -88,6 +91,10 @@ export default defineTool({
     note: z.string().max(2000).optional().describe('Why you are watching — echoed into the wake turn.'),
   }),
   async handler(args, ctx) {
+    // P-004 — the default condition. 12 of 50 measured failures passed no `on` at
+    // all, and 11 more invented an operator spelling for it; "wake me when this
+    // moves" is simply what subscribing to a volatile cell usually means.
+    const on = args.on ?? { op: 'changed' as const, value: undefined };
     const identity = resolveAgentIdentity(ctx);
     const reader = {
       ownerId: identity.ownerId,
@@ -108,7 +115,13 @@ export default defineTool({
               ok: false,
               status: 'absent',
               cell: args.cell,
-              error: `No cell "${args.cell}" is subscribable by you. It may not exist, or it may be outside your audience — deliberately indistinguishable. Do not watch a substitute surface instead.`,
+              // P-004: `error` is lifted VERBATIM into tool_invocations.error_code by
+              // the dispatcher's extractRefusalCode (truncated at 80 chars), so a prose
+              // sentence here becomes an unqueryable code — which is exactly why this
+              // tool's whole refusal taxonomy had to be reconstructed from error_message
+              // and args_json. The code goes in `error`; the prose goes in `reason`.
+              error: 'cell_absent',
+              reason: `No cell "${args.cell}" is subscribable by you. It may not exist, or it may be outside your audience — deliberately indistinguishable. Do not watch a substitute surface instead.`,
             }),
           },
         ],
@@ -127,7 +140,8 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               cell: args.cell,
-              error: `cell "${args.cell}" is event-signalled, not polled — subscribe to its key directly with events:await { key: "${spec.changeSignal.key}" } rather than polling for it.`,
+              error: 'cell_event_signalled',
+              reason: `cell "${args.cell}" is event-signalled, not polled — subscribe to its key directly with events:await { key: "${spec.changeSignal.key}" } rather than polling for it.`,
               eventKey: spec.changeSignal.key,
             }),
           },
@@ -153,7 +167,8 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               cell: args.cell,
-              error: `cell "${args.cell}" is relative to "${rel.param}" — pass \`as\` to say WHAT you are watching.`,
+              error: 'subject_required',
+              reason: `cell "${args.cell}" is relative to "${rel.param}" — pass \`as\` to say WHAT you are watching.`,
               missingParam: rel.param,
             }),
           },
@@ -191,7 +206,8 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               cell: args.cell,
-              error: `cell "${args.cell}" declares no materiality path, so there is no coarser answer to watch. Either its every change is material (the registry's default), or it should declare one. Re-subscribe without \`of\` to watch "${spec.changeSignal.path}" — and expect a wake on every change to it.`,
+              error: 'no_materiality',
+              reason: `cell "${args.cell}" declares no materiality path, so there is no coarser answer to watch. Either its every change is material (the registry's default), or it should declare one. Re-subscribe without \`of\` to watch "${spec.changeSignal.path}" — and expect a wake on every change to it.`,
               watchedPath: spec.changeSignal.path,
             }),
           },
@@ -212,13 +228,13 @@ export default defineTool({
       interval_sec: args.interval_sec,
       note:
         args.note ??
-        `cell ${args.cell}${wantsMaterial ? ' (material)' : ''} ${args.on.op}${args.on.value === undefined ? '' : ` ${JSON.stringify(args.on.value)}`}`,
+        `cell ${args.cell}${wantsMaterial ? ' (material)' : ''} ${on.op}${on.value === undefined ? '' : ` ${JSON.stringify(on.value)}`}`,
       predicate: {
         tool: spec.changeSignal.tool,
         args: resolverArgs,
         path: watchedPath,
-        op: args.on.op,
-        ...(args.on.value === undefined ? {} : { value: args.on.value }),
+        op: on.op,
+        ...(on.value === undefined ? {} : { value: on.value }),
       },
     });
     return watchTool.handler(watchArgs as never, ctx);
