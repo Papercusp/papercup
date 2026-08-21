@@ -465,6 +465,43 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
                             stats[key] = int(value)
             except Exception:
                 pass
+            # EI-21025158485847408 (WI-5471 recurrence class): every field above
+            # measures a LEVEL, but the memory alarm fires on PSI — which measures
+            # STALLS. Size does not say whether a cgroup is being reclaimed, so a
+            # size-ranked capture structurally cannot attribute a reclaim stall,
+            # and 13 consecutive investigations of this class closed "offender
+            # unresolved" while hunting per-process swap deltas during rare live
+            # windows. `memory.events` is the kernel's own monotonic per-cgroup
+            # record of exactly that: `high` counts MemoryHigh throttle/reclaim
+            # events, `max` counts hard-ceiling hits. Being CUMULATIVE, it
+            # attributes an episode even when nobody sampled during it.
+            #
+            # BOTH scopes are captured, and the difference is load-bearing:
+            #   * `memory.events` is HIERARCHICAL (includes descendants). It is the
+            #     ONLY surviving record of a short-lived child that has already
+            #     exited — measured here: papercusp.slice reports 553,837 max-hits
+            #     and 140 oom-kills whose owning agent scopes are long gone. That is
+            #     precisely why per-PID forensics kept concluding "offender
+            #     unresolved": the offenders were already dead.
+            #   * `memory.events.local` counts only THIS cgroup's own events, so an
+            #     ancestor is not credited with its children's stalls. Without it a
+            #     throttle ranking is topped by /user.slice — the same useless
+            #     coarse-ancestor answer that inclusive memory.current already gives.
+            # Rank by local (true ownership); keep hierarchical (retained history).
+            def read_events(name):
+                out = {}
+                try:
+                    with open(os.path.join(dirpath, name)) as f:
+                        for line in f:
+                            key, value = line.split(None, 1)
+                            if key in ("high", "max", "oom", "oom_kill"):
+                                out[key] = int(value)
+                except Exception:
+                    pass
+                return out
+
+            events = read_events("memory.events")
+            events_local = read_events("memory.events.local")
             try:
                 with open(os.path.join(dirpath, "cgroup.procs")) as f:
                     pids = [int(line.strip()) for line in f if line.strip().isdigit()]
@@ -495,14 +532,59 @@ def cgroup_memory(budget_sec=5.0, max_scanned=4096, top_n=40, root=None,
                 "directProcesses": direct_processes,
                 "unresolvedSampledPids": unresolved_sampled_pids,
                 "directProcessSampleTruncated": len(pids) > max_processes_per_cgroup,
+                "throttledHighEvents": events_local.get("high"),
+                "throttledMaxEvents": events_local.get("max"),
+                "oomEvents": events_local.get("oom"),
+                "oomKillEvents": events_local.get("oom_kill"),
+                "throttledHighEventsSubtree": events.get("high"),
+                "throttledMaxEventsSubtree": events.get("max"),
+                "oomKillEventsSubtree": events.get("oom_kill"),
             })
     except Exception:
         partial = True
 
     rows.sort(key=lambda row: (-row["memoryBytes"], row["path"]))
+
+    # `top` is ranked by SIZE, so truncating it at top_n can discard a
+    # small-but-thrashing cgroup entirely — the stall signal would be dropped
+    # before any responder ever read it. Rank the throttled cgroups separately
+    # so "who is stalling" survives the size cap independently of "who is
+    # biggest". These are two different questions; answering the second and
+    # labelling it the first is the defect this list exists to close.
+    def _events(row, key):
+        return row.get(key) or 0
+
+    def _local_total(row):
+        return _events(row, "throttledHighEvents") + _events(row, "throttledMaxEvents")
+
+    def _subtree_total(row):
+        return _events(row, "throttledHighEventsSubtree") + _events(row, "throttledMaxEventsSubtree")
+
+    throttled = [
+        row
+        for row in rows
+        if _local_total(row)
+        or _subtree_total(row)
+        or _events(row, "oomKillEvents")
+        or _events(row, "oomKillEventsSubtree")
+    ]
+    # Local events rank FIRST, so a cgroup that actually owns its stalls outranks
+    # every ancestor that merely contains one. Subtree-only rows still follow
+    # (never lead), because for an exited child they are the only record left.
+    throttled.sort(
+        key=lambda row: (
+            -_local_total(row),
+            -_events(row, "oomKillEvents"),
+            -_subtree_total(row),
+            row["path"],
+        )
+    )
+
     return {
         "accounting": "cgroup-v2-inclusive-descendants",
         "top": rows[:top_n],
+        "throttled": throttled[:top_n],
+        "throttledCgroups": len(throttled),
         "scannedCgroups": scanned,
         "candidateCgroups": len(rows),
         "maxScanned": max_scanned,

@@ -17,6 +17,42 @@ import { readdir, readFile, stat, copyFile, unlink } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { homedir } from 'node:os';
 
+/**
+ * One captured cgroup-v2 memory row.
+ *
+ * The byte fields measure a LEVEL; the event fields measure STALLS. Keeping both
+ * on one row is the point: the memory alarm fires on PSI, which is a stall signal,
+ * so attributing it from size alone names the biggest cgroup rather than the
+ * responsible one (EI-21025158485847408 — 13 consecutive investigations of the
+ * WI-5471 recurrence class closed "offender unresolved" on exactly that gap).
+ *
+ * `*Events` come from `memory.events.local` (this cgroup's OWN events) and
+ * `*EventsSubtree` from `memory.events` (INCLUSIVE of descendants). The pair is
+ * not redundant: local is what attributes a stall to its true owner instead of
+ * smearing it onto every ancestor, while the subtree counter is the only record
+ * that survives a short-lived child's exit — which is why per-PID forensics kept
+ * finding nothing to blame.
+ */
+export interface PerfSignalsCgroupRow {
+  path: string;
+  memoryBytes: number;
+  swapBytes: number | null;
+  anonBytes?: number | null;
+  fileBytes?: number | null;
+  shmemBytes?: number | null;
+  kernelBytes?: number | null;
+  slabBytes?: number | null;
+  sockBytes?: number | null;
+  directPids: number | null;
+  throttledHighEvents?: number | null;
+  throttledMaxEvents?: number | null;
+  oomEvents?: number | null;
+  oomKillEvents?: number | null;
+  throttledHighEventsSubtree?: number | null;
+  throttledMaxEventsSubtree?: number | null;
+  oomKillEventsSubtree?: number | null;
+}
+
 /** The subset of Lane E's perf-signals-v1 record the budgets read. The MCP-merged
  *  signals (eventLoopLag, tool p95, pgConns) are null until an agent run keyed to
  *  capturedAt fills them, so they are optional — host-side signals alone yield a
@@ -50,21 +86,17 @@ export interface PerfSignalsV1 {
     } | null;
     /** Bounded cgroup-v2 memory attribution captured alongside PSI. `memoryBytes`
      *  is inclusive of descendants, so rows identify ownership hierarchies and
-     *  must not be summed. This is forensic context, not presently a budget. */
+     *  must not be summed. This is forensic context, not presently a budget.
+     *  Reclaim-event fields: see {@link PerfSignalsCgroupRow}. */
     cgroupMemory?: {
       accounting: 'cgroup-v2-inclusive-descendants' | string;
-      top: Array<{
-        path: string;
-        memoryBytes: number;
-        swapBytes: number | null;
-        anonBytes: number | null;
-        fileBytes: number | null;
-        shmemBytes: number | null;
-        kernelBytes: number | null;
-        slabBytes: number | null;
-        sockBytes: number | null;
-        directPids: number | null;
-      }>;
+      top: PerfSignalsCgroupRow[];
+      /** EI-21025158485847408: cgroups ranked by RECLAIM EVENTS rather than size.
+       *  `top` is size-ranked, so it answers "who is biggest" — never "who is
+       *  stalling", which is the question PSI actually asks. Truncating a
+       *  size-ranked list also discards a small-but-thrashing cgroup outright. */
+      throttled?: PerfSignalsCgroupRow[];
+      throttledCgroups?: number;
       scannedCgroups: number;
       candidateCgroups: number;
       maxScanned: number;
@@ -115,6 +147,27 @@ export interface MemoryPressureCgroupAttribution {
     swapBytes: number | null;
     directPids: number | null;
   }>;
+  /**
+   * Cgroups that actually took reclaim events, ranked by events rather than size
+   * — the causal counterpart to size-ranked `top`.
+   *
+   * `null` means the capture predates the reclaim-event fields, which is NOT the
+   * same as "nothing was throttled" and must never be rendered as an all-clear.
+   */
+  throttled: Array<{
+    path: string;
+    memoryBytes: number;
+    /** Own events (`memory.events.local`). */
+    highEvents: number;
+    maxEvents: number;
+    oomKillEvents: number;
+    /** Inclusive of descendants — retains an exited child's history. */
+    subtreeMaxEvents: number;
+    subtreeOomKillEvents: number;
+    /** True when this row has no own events and is evidence only about
+     *  descendants, at least one of which may no longer exist. */
+    subtreeOnly: boolean;
+  }> | null;
 }
 
 export interface PerfBudgets {
