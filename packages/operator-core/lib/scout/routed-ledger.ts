@@ -38,6 +38,15 @@ import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
 import { trackDetached } from '../detached-imports';
 
+/**
+ * Routing-only provenance used by the agent-review lifecycle. It is deliberately
+ * outside {@link SuIdeationLens}: review enrollment is queue plumbing, not an
+ * ideation pass, and must never enlarge either learning roster.
+ */
+export const AGENT_REVIEW_LEDGER_ORIGIN = 'agent-review' as const;
+export type RoutedIdeaLens = SuIdeationLens | 'su-ideate' | typeof AGENT_REVIEW_LEDGER_ORIGIN;
+export type RoutedIdeaOrigin = 'scout' | 'su-ideate' | 'drill' | ShadowVariantOrigin | typeof AGENT_REVIEW_LEDGER_ORIGIN;
+
 /** Input to {@link recordRoutedIdea} — the provenance P-007 persists at routing time. */
 export interface RecordRoutedIdeaInput {
   ideaId: string;
@@ -49,7 +58,7 @@ export interface RecordRoutedIdeaInput {
    * reach Scout's lens-weight learning (those readers filter origin='scout' — D-002), so
    * they cannot skew the diversity floor; the column is text, so this is type-only.
    */
-  lens: SuIdeationLens | 'su-ideate';
+  lens: RoutedIdeaLens;
   rail: RoutedRail;
   /** The Change Feed ref of the artifact created: "plan:<slug>" | "gym:<id>" | "wi:<id>". */
   routedRef: string;
@@ -86,7 +95,7 @@ export interface RecordRoutedIdeaInput {
    * records the `revises` lineage edge back to the immutable source, and a
    * variant row without its edge is an orphan no pair-reader can find.
    */
-  origin?: 'scout' | 'su-ideate' | 'drill' | ShadowVariantOrigin;
+  origin?: RoutedIdeaOrigin;
   /**
    * The ORIGINATING AGENT's ownerId (migration 558, su-ideate-learning-substrate P-001) —
    * persisted as `created_by`. Stamped by the su capture bridge for origin='su-ideate'
@@ -121,15 +130,15 @@ export interface ScoutLedgerOpts {
    * deliberately EXCLUDES 'shadow-variant' rows, which are reachable only by
    * naming that origin explicitly (counterfactual-critique-lab D-001).
    */
-  origin?: 'scout' | 'su-ideate' | 'drill' | 'all' | ShadowVariantOrigin;
+  origin?: RoutedIdeaOrigin | 'all';
 }
 
 /**
  * The origin WHERE fragment for a ledger read (default 'scout' — D-009 lens-learning isolation).
  *
- * `'all'` means every ORDINARY origin, NOT literally every row: shadow trial
- * variants are excluded from it (counterfactual-critique-lab D-001 — variants
- * consume no ordinary routing quota and feed no production signal). Before this,
+ * `'all'` means every ORDINARY learning origin, NOT literally every row: shadow
+ * trial variants and agent-review enrollment rows are excluded from it. Neither
+ * consumes ordinary routing quota nor feeds production learning. Before this,
  * `'all'` emitted an empty clause, so the one caller that uses it
  * (`curation-signal-lanes.ts#readCurationSignalLanes`, which feeds the Mug's
  * meta-pattern digest) would have absorbed the trial's synthetic rows into
@@ -138,7 +147,9 @@ export interface ScoutLedgerOpts {
  */
 function originClause(sql: ReturnType<typeof getOrgPg>['sql'], origin: ScoutLedgerOpts['origin']) {
   const o = origin ?? 'scout';
-  return o === 'all' ? sql`AND origin <> ${SHADOW_VARIANT_ORIGIN}` : sql`AND origin = ${o}`;
+  return o === 'all'
+    ? sql`AND origin <> ${SHADOW_VARIANT_ORIGIN} AND origin <> ${AGENT_REVIEW_LEDGER_ORIGIN}`
+    : sql`AND origin = ${o}`;
 }
 
 interface LedgerRow {
