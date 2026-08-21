@@ -121,6 +121,21 @@ import { promotePlanItems } from '../../../plan-workitem-promotion-run';
 
 const promotePlanItemsMock = vi.mocked(promotePlanItems);
 
+/**
+ * The six `blocks`-edge counters every `PromotePlanResult` carries — mirroring the runner's
+ * own `NO_EDGES`, for a promotion that wrote no edges. Spelled out so these fixtures stay
+ * TYPED: an `as never` cast here would hide a newly-required field from tsc and fail at
+ * runtime in some unrelated peer's checkpoint run instead (EI-19282401068515102).
+ */
+const NO_EDGES = {
+  edgesWritten: 0,
+  edgeFailures: 0,
+  edgesRejectedCyclic: 0,
+  blockersDangling: 0,
+  blockersUnresolved: 0,
+  edgesPreserved: 0,
+} as const;
+
 const MAKE_CTX = () =>
   ({
     log: vi.fn(),
@@ -156,7 +171,7 @@ beforeEach(() => {
     wouldBlock: ['no-first-class-spec-clauses'],
   };
   promotePlanItemsMock.mockReset();
-  promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false } as never);
+  promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 0, flagOff: false, ...NO_EDGES });
 });
 
 /**
@@ -310,7 +325,8 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
       specTriadBlocked: true,
       specTriadMissing: ['requirements', 'design'],
       specTriadWorkItem: 'WI-TRIAD-1',
-    } as never);
+      ...NO_EDGES,
+    });
 
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
