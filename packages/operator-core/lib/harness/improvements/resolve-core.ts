@@ -39,6 +39,7 @@ import { initializeIdeaLifecycle, updateIdeaLifecycle, type IdeaLifecyclePayload
 import { closeDispatchesForItem } from './dispatch-ledger';
 import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
 import { externalBlockerCapabilityPolicy, type ExternalBlockerCapability } from '../../external-blockers';
+import { enterAgentReview } from './agent-review';
 
 export type ResolveOutcome = 'fixed' | 'could-not-fix' | 'needs-human';
 
@@ -76,9 +77,12 @@ export interface ResolveImprovementResult {
   outcome?: ResolveOutcome;
   /** The issue's lifecycle state after the resolve. */
   state?: IssueState;
-  /** True when this resolve routed the item to the human (owner) queue — a genuine, TYPED
-   *  human-capability blocker, or the federated-remote-unresolvable-locally case. */
-  routedToHuman?: boolean;
+  /** Strict credential/device/external-service capability routed to the owner. */
+  routedToOwnerAction?: boolean;
+  /** Product-decision routed through the existing peer agent-review lifecycle. */
+  routedToAgentReview?: boolean;
+  /** Remote-owned row left for reconciliation on its authoring peer. */
+  routedToPeerReconciliation?: boolean;
   /** P-004 (WI-5679): true when this resolve routed the item to the LEADER-TRIAGE lane
    *  (status='blocked') for an OPERATIONAL failure — out of the auto loop, NOT the owner's inbox. */
   routedToLeaderTriage?: boolean;
@@ -97,7 +101,12 @@ export interface ResolveDeps {
   ) => Promise<EngineerIssue | null>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<ThreadPostRow | null>;
   releaseIssue: (id: string) => Promise<EngineerIssue | null>;
-  mergeIssuePayload: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
+  mergeIssuePayload: (
+    id: string,
+    patch: Record<string, unknown>,
+    opts?: { unset?: string[] },
+  ) => Promise<EngineerIssue | null>;
+  enterAgentReview: typeof enterAgentReview;
   /** Dispatch-ledger back-edge (consume-edges P-010 / B-04): drive the item's
    *  open improvement_dispatches rows terminal. REQUIRED (not defaulted per-call)
    *  so a unit test can never silently fall through to the PG-backed default —
@@ -111,6 +120,7 @@ const defaultDeps: ResolveDeps = {
   commentIssue,
   releaseIssue,
   mergeIssuePayload,
+  enterAgentReview,
   closeDispatches: closeDispatchesForItem,
 };
 
@@ -134,8 +144,8 @@ function lifecycleOf(issue: EngineerIssue): IdeaLifecyclePayload | null {
  * external-service-action / product-decision. An ABSENT capability is NOT genuine (the default
  * operational read); approval-auto-clearable / live-dependency are leader-clearable, not owner work.
  */
-function isGenuineHumanCapability(cap: ExternalBlockerCapability | undefined): boolean {
-  return cap ? externalBlockerCapabilityPolicy(cap).requiresOwnerCapability : false;
+function isStrictOwnerActionCapability(cap: ExternalBlockerCapability | undefined): boolean {
+  return cap !== 'product-decision' && Boolean(cap && externalBlockerCapabilityPolicy(cap).requiresOwnerCapability);
 }
 
 /**
@@ -229,20 +239,25 @@ export async function resolveImprovement(
       // genuinely fixed, but harness_shared.work_items never changed — the issue
       // stayed open with its stale remote snapshot and re-dispatched on every
       // subsequent cadence tick FOREVER (each retry hitting this exact same
-      // no-op). Route it to the human tier instead: no amount of retrying this
-      // path can ever resolve a remote-owned issue locally.
+      // no-op). This is peer reconciliation, neither review nor owner action: no
+      // local agent or owner decision can mutate the authoring peer's row.
       await deps.commentIssue(
         input.id,
         `⤴ Verified above, but could NOT mark this issue resolved locally: it is federated ` +
           `(origin='remote', owned by its authoring peer's core) and the local engineer_issues ` +
-          `view refuses to mutate a remote-owned row. Routing to a human — retrying this path ` +
-          `will never succeed; it needs to resolve on the owning peer, or a human must reconcile it.`,
+          `view refuses to mutate a remote-owned row. Leaving it for PEER RECONCILIATION — ` +
+          `retrying locally will never succeed; the owning peer must publish the terminal state.`,
         by,
       );
-      await deps.mergeIssuePayload(input.id, { needsHuman: true });
       await deps.releaseIssue(input.id);
-      await closeLedger('needs-human');
-      return { ok: true, id: input.id, outcome: 'needs-human', state: issue.state, routedToHuman: true };
+      await closeLedger('could-not-fix');
+      return {
+        ok: true,
+        id: input.id,
+        outcome: 'could-not-fix',
+        state: issue.state,
+        routedToPeerReconciliation: true,
+      };
     }
     // Advance the idea lifecycle to 'applied' (self-learning P-031) — the decay
     // sweep then grades it verified/recurred from signature recurrence (P-013).
@@ -256,15 +271,57 @@ export async function resolveImprovement(
   }
 
   if (input.outcome === 'needs-human') {
-    // P-004 (WI-5679): only a TYPED, genuinely owner-gated capability reaches the OWNER's inbox
-    // (payload.needsHuman → policy.ts tier:'human'). An untyped "needs-human" from a worker was
+    if (issue.origin === 'remote') {
+      await deps.commentIssue(
+        input.id,
+        `⤴ Local routing cannot mutate this remote-owned row. Leaving it for PEER RECONCILIATION ` +
+          `on the authoring node; it is neither agent review nor owner action.\n${input.summary}`,
+        by,
+      );
+      await deps.releaseIssue(input.id);
+      await closeLedger('could-not-fix');
+      return {
+        ok: true,
+        id: input.id,
+        outcome: 'could-not-fix',
+        state: issue.state,
+        routedToPeerReconciliation: true,
+      };
+    }
+
+    if (input.blockerCapability === 'product-decision') {
+      await deps.commentIssue(
+        input.id,
+        `⇄ Routed to peer AGENT REVIEW (product-decision) by the implement worker:\n${input.summary}`,
+        by,
+      );
+      const review = await deps.enterAgentReview({ id: input.id, submittedBy: by });
+      if (!review.entered && !review.state) {
+        return {
+          ok: false,
+          id: input.id,
+          error: `product-decision could not enter agent review: ${review.reason ?? 'unknown reason'}`,
+        };
+      }
+      await closeLedger();
+      return {
+        ok: true,
+        id: input.id,
+        outcome: 'needs-human',
+        state: issue.state,
+        routedToAgentReview: true,
+      };
+    }
+
+    // Only a strict typed capability reaches the owner-action path. An untyped
+    // "needs-human" from a worker was
     // the DOMINANT (209×) over-application — usually an operational give-up, not a real human need
     // — so it now routes to the LEADER-TRIAGE lane (status='blocked') instead: out of the
     // auto-dispatch loop, but a leader (not the owner) triages + re-opens/escalates it.
-    if (isGenuineHumanCapability(input.blockerCapability)) {
+    if (isStrictOwnerActionCapability(input.blockerCapability)) {
       await deps.commentIssue(
         input.id,
-        `⤴ Routed to a human (${input.blockerCapability}) by the implement worker:\n${input.summary}`,
+        `⤴ Routed to OWNER ACTION (${input.blockerCapability}) by the implement worker:\n${input.summary}`,
         by,
       );
       // EI-18210987268765837: this branch used to ONLY merge payload.needsHuman and never
@@ -278,21 +335,31 @@ export async function resolveImprovement(
       // branches (fixed → 'resolved', leader-triage → 'blocked') by ALSO moving state here —
       // 'needs-human' is a first-class, non-terminal IssueState that the claim floor excludes.
       const updated = await deps.setIssueState(input.id, 'needs-human', by);
-      await deps.mergeIssuePayload(input.id, { needsHuman: true, humanCapability: input.blockerCapability });
+      await deps.mergeIssuePayload(
+        input.id,
+        { needsOwnerAction: true, humanCapability: input.blockerCapability },
+        { unset: ['needsHuman'] },
+      );
       await deps.releaseIssue(input.id);
       await closeLedger();
       // A null `updated` (e.g. a federated/remote-owned issue whose view UPDATE no-ops, same
-      // class as the 'fixed' path above) still leaves payload.needsHuman set as a fallback —
+      // class as the 'fixed' path above) still leaves payload.needsOwnerAction as a fallback —
       // report the state we could actually confirm rather than claiming a state that may not
       // have persisted.
-      return { ok: true, id: input.id, outcome: 'needs-human', state: updated?.state ?? 'open', routedToHuman: true };
+      return {
+        ok: true,
+        id: input.id,
+        outcome: 'needs-human',
+        state: updated?.state ?? 'open',
+        routedToOwnerAction: true,
+      };
     }
     await deps.commentIssue(
       input.id,
       `⤷ Routed to LEADER TRIAGE (status=blocked) by the implement worker — no typed human-capability ` +
         `blocker was given, so this is treated as an operational block, not an owner-inbox item:\n${input.summary}\n\n` +
         `(If this genuinely needs the owner, resolve again with a typed blockerCapability: ` +
-        `credential | physical-device | external-service-action | product-decision.)`,
+        `credential | physical-device | external-service-action; product-decision uses agent review.)`,
       by,
     );
     const blocked = await routeToLeaderTriage(deps, input.id, 'implement-worker:needs-human-untyped', by);
