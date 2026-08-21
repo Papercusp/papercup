@@ -105,6 +105,44 @@ describe('evaluateLivenessAlarm (pure)', () => {
     expect(dr?.summary).toContain('git-sync');
   });
 
+  it('complete D-026 cut + restore evidence reframes overdue routines as a distinct advisory', () => {
+    const h = mkHealth({
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 2,
+            deadRoutinesInScope: 151,
+            deadRoutinesDistinct: 1,
+            deadRoutineNames: ['git-sync'],
+          },
+        },
+      },
+    });
+    const signal = evaluateLivenessAlarm(h, null, {
+      d026Quiescence: { cutActive: true, restoreActive: true },
+    }).find((s) => s.key === 'dead-routines-quiesced');
+
+    expect(signal?.severity).toBe('advisory');
+    expect(signal?.summary).toContain('expected D-026 quiescence');
+    expect(signal?.summary).toContain('2 of 151 overdue routine(s)');
+    expect(signal?.summary).toContain('Do NOT start or restart bg-host');
+    expect(signal?.summary).not.toContain('dead routine(s)');
+    expect(signal?.summary).toBeDefined();
+    expect(deriveSignatureFromSummary(signal?.summary ?? '')).toBe('dead-routines-quiesced');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['cut only', { cutActive: true, restoreActive: false }],
+    ['restore only', { cutActive: false, restoreActive: true }],
+  ])('incomplete D-026 evidence (%s) preserves the dead-routines blocker', (_label, d026Quiescence) => {
+    const h = mkHealth({ panels: { workFeed: { data: { deadRoutines: 1, deadRoutineNames: ['git-sync'] } } } });
+    const signals = evaluateLivenessAlarm(h, null, { d026Quiescence });
+
+    expect(signals.find((s) => s.key === 'dead-routines')?.severity).toBe('blocker');
+    expect(signals.map((s) => s.key)).not.toContain('dead-routines-quiesced');
+  });
+
   // WI-5839 / EI-18654017982759582 items 2+3: stale-paused routines.
   it('a stale-paused release-critical routine → stale-paused-routines BLOCKER', () => {
     const h = mkHealth({
@@ -1325,6 +1363,67 @@ describe('deriveSignatureFromSummary (legacy classifier)', () => {
   });
 });
 
+describe('EI-20517935014246192 — D-026 dead-routine alarm reclassification', () => {
+  beforeEach(() => _resetLivenessAlarmDebounce());
+
+  it('threads complete cut + restore evidence through the tick and reclassifies a legacy blocker', async () => {
+    const health = mkHealth({
+      evaluatedAt: 100 * 60_000,
+      panels: {
+        workFeed: {
+          data: {
+            deadRoutines: 2,
+            deadRoutinesInScope: 151,
+            deadRoutinesDistinct: 1,
+            deadRoutineNames: ['git-sync'],
+          },
+        },
+      },
+    });
+    const legacy = {
+      msg_id: 'legacy-dead-routines',
+      severity: 'blocker',
+      summary: '[infra-liveness] 2 dead routine(s) overdue >10m: git-sync',
+      from: INFRA_LIVENESS_IDENTITY.ownerId,
+      livenessSignature: 'dead-routines',
+      resolved: null,
+    } as unknown as EscalationRecord;
+    const resolvedNotes: string[] = [];
+    const escalated: Array<{ severity: string; summary: string }> = [];
+    let readerCalls = 0;
+
+    const result = await runLivenessAlarmTick('ws', {
+      readLast: () => health,
+      computeHealth: async () => health,
+      d026Quiescence: async () => {
+        readerCalls += 1;
+        return { cutActive: true, restoreActive: true };
+      },
+      listOpen: async () => [legacy],
+      resolve: async (_msgId: string, _choice: string, note: string) => {
+        resolvedNotes.push(note);
+      },
+      escalate: async (input: { severity: string; summary: string }) => {
+        escalated.push(input);
+      },
+      page: async () => {},
+      pageResolved: async () => {},
+      now: () => 100 * 60_000 + 60_000,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    });
+
+    expect(readerCalls).toBe(1);
+    expect(result.signals.map((s) => s.key)).toContain('dead-routines-quiesced');
+    expect(result.fired.map((s) => s.key)).toEqual(['dead-routines-quiesced']);
+    expect(result.resolved).toEqual(['legacy-dead-routines']);
+    expect(resolvedNotes[0]).toContain('reclassified as expected D-026 quiescence');
+    expect(resolvedNotes[0]).toContain('condition is STILL TRUE (NOT recovered)');
+    expect(escalated[0]?.severity).toBe('advisory');
+    expect(escalated[0]?.summary).toContain('expected D-026 quiescence');
+  });
+});
+
 describe('runLivenessAlarmTick — durable dedup + auto-resolve (EI-2146)', () => {
   beforeEach(() => _resetLivenessAlarmDebounce());
 
@@ -1874,7 +1973,7 @@ describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as 
       panels: { workFeed: { status: 'unknown', data: null, error: 'connect-phase deadline' } },
     });
     const out = unobservableLivenessSignatures(h);
-    expect([...out].sort()).toEqual(['dead-routines', 'stale-paused-routines']);
+    expect([...out].sort()).toEqual(['dead-routines', 'dead-routines-quiesced', 'stale-paused-routines']);
   });
 
   it('a SUCCEEDING panel whose stale-paused sub-read failed marks only that signature', () => {
