@@ -491,6 +491,86 @@ describe('evaluateMemoryPressure (host.memoryPressure shared writer)', () => {
       { code: 'capture-absent', detail: 'no perf-signals-v1 capture was available' },
     ]);
   });
+
+  // ── EI-21006730273601832: a live P2P-gate PSI-full page carried nothing beyond the
+  // raw host number, so it read as "the box is low on memory" even while ~51 GiB was
+  // available — the exact false attribution CLAUDE.md forbids. The crit/warn reason
+  // must NAME the responsible cgroup when the capture attributed one, and say so
+  // explicitly when it did not, rather than leaving a bare PSI reading to imply cause.
+  describe('names the responsible cgroup in the reason, rather than only paging on host PSI', () => {
+    const DEEP_PATH = '/user.slice/user@1000.service/app.slice/papercup-dev-api.service';
+    const cgroupMemory = (): NonNullable<PerfSignalsV1['signals']['cgroupMemory']> => ({
+      accounting: 'cgroup-v2-inclusive-descendants',
+      partial: false,
+      // `/user.slice` is an ANCESTOR of the deeper row below and therefore always the
+      // larger of the two (cgroup-v2 accounting is inclusive of descendants) — pinning
+      // it first proves the detector picks the more SPECIFIC row, not merely the
+      // largest one, which would just re-name the same uninformative ancestor.
+      top: [
+        {
+          path: '/user.slice',
+          memoryBytes: 100 * 1024 ** 3,
+          swapBytes: 20 * 1024 ** 3,
+          anonBytes: null, fileBytes: null, shmemBytes: null, kernelBytes: null,
+          slabBytes: null, sockBytes: null, directPids: 0,
+        },
+        {
+          path: DEEP_PATH,
+          memoryBytes: 40 * 1024 ** 3,
+          swapBytes: 5 * 1024 ** 3,
+          anonBytes: null, fileBytes: null, shmemBytes: null, kernelBytes: null,
+          slabBytes: null, sockBytes: null, directPids: 17,
+        },
+      ],
+      scannedCgroups: 2,
+      candidateCgroups: 2,
+      maxScanned: 4096,
+      maxRows: 40,
+      budgetSec: 5,
+    });
+
+    it('crit reason names the deepest attributed cgroup, not its coarser ancestor', () => {
+      const memory = evaluateMemoryPressure(
+        sig({ psi: { memory: { full: { avg60: 8.17 } } }, cgroupMemory: cgroupMemory() }),
+        NOW,
+      );
+      expect(memory.pressure).toBe('crit');
+      const reason = memory.reasons.join(' ');
+      expect(reason).toContain(DEEP_PATH);
+      expect(reason).not.toContain('100.00GB'); // the ancestor's size — it must lose to the leaf
+      expect(reason).toMatch(/40\.00GB/);
+      expect(reason).toMatch(/17 direct pid/);
+    });
+
+    it('warn reason also names the deepest attributed cgroup', () => {
+      const memory = evaluateMemoryPressure(
+        sig({ psi: { memory: { some: { avg60: 15 } } }, cgroupMemory: cgroupMemory() }),
+        NOW,
+      );
+      expect(memory.pressure).toBe('warn');
+      expect(memory.reasons.join(' ')).toContain(DEEP_PATH);
+    });
+
+    it('says explicitly that mechanism is unconfirmed when no cgroup attribution was captured', () => {
+      const memory = evaluateMemoryPressure(
+        sig({ psi: { memory: { full: { avg60: 8.17 } } } }),
+        NOW,
+      );
+      expect(memory.pressure).toBe('crit');
+      expect(memory.cgroupAttribution).toBeNull();
+      expect(memory.reasons.join(' ')).toContain('mechanism unconfirmed');
+      expect(memory.reasons.join(' ')).toContain('do not attribute to low free RAM');
+    });
+
+    it('the enriched cgroup-naming reason still flows through evaluatePerfSignals (the infra alarm)', () => {
+      const v = evaluatePerfSignals(
+        sig({ psi: { memory: { full: { avg60: 8.17 } } }, cgroupMemory: cgroupMemory() }),
+        NOW,
+      );
+      expect(v.status).toBe('crit');
+      expect(v.reasons.join(' ')).toContain(DEEP_PATH);
+    });
+  });
 });
 
 describe('worstOwnedInotifyHolder (WI-6538 — scope the per-proc budget to OUR processes)', () => {
