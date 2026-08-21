@@ -41,13 +41,19 @@ export function renderContextUsageLine(
   contextTokens: number | null | undefined,
   compactionLimit: number | null | undefined,
   selfCompactionAvailable: boolean | null = null,
+  fleetWindDownLoopEndAuthorized: boolean | null = null,
 ): string | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
   if (pct == null) return null;
   let line = `context: ${contextTokens}/${compactionLimit} (${pct}%)`;
   if (pct >= COMPACTION_HINT_PCT) {
-    line +=
-      selfCompactionAvailable === false
+    const windDownLoopEnd =
+      pct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+      selfCompactionAvailable === false &&
+      fleetWindDownLoopEndAuthorized === true;
+    line += windDownLoopEnd
+      ? ' — near limit: FLUSH durable conclusions NOW; the typed fleet wind-down authorizes loop:end after the checkpoint. Preserve this session; do not call session:end or respawn.'
+      : selfCompactionAvailable === false
         ? ' — near limit: FLUSH durable conclusions NOW; self-compaction is unavailable to this session (no supported live psu-pty host), so keep the loop armed and end at a clean stopping point for the next wake.'
         : ' — near limit: CALL session:request-compaction with a focus NOW at a clean stopping point; do not merely describe ending the turn.';
   }
@@ -89,6 +95,7 @@ export function renderBandedContextGauge(
   contextTokens: number | null | undefined,
   compactionLimit: number | null | undefined,
   selfCompactionAvailable: boolean | null = null,
+  fleetWindDownLoopEndAuthorized: boolean | null = null,
 ): string | null {
   const pct = contextUsagePct(contextTokens, compactionLimit);
   const band = contextGaugeBand(pct);
@@ -101,14 +108,21 @@ export function renderBandedContextGauge(
       return (
         `⚠ ${fact} — approaching your soft compaction limit; FLUSH durable conclusions NOW ` +
         `(facts:assert / work_items:checkpoint / loop:checkpoint), then reach a clean stopping ` +
-        (selfCompactionAvailable === false
+        (selfCompactionAvailable === false &&
+        pct != null &&
+        pct >= CONTEXT_GAUGE_CRITICAL_PCT &&
+        fleetWindDownLoopEndAuthorized === true
+          ? `point and call loop:end under the typed fleet wind-down authorization; preserve the session and do not call session:end or respawn.`
+          : selfCompactionAvailable === false
           ? `point soon; self-compaction is unavailable to this session (no supported live psu-pty host), so keep the loop armed and end for the next wake.`
           : `point soon and call session:request-compaction with a focus.`)
       );
     case 'critical':
       return (
         `⚠ ${fact} — CRITICAL: at your soft compaction limit. Flush checkpoints/facts if not yet done, ` +
-        (selfCompactionAvailable === false
+        (selfCompactionAvailable === false && fleetWindDownLoopEndAuthorized === true
+          ? `then call loop:end under the typed fleet wind-down authorization; preserve the session and do not call session:end or respawn.`
+          : selfCompactionAvailable === false
           ? `then keep the loop armed and end at the nearest stopping point for the next wake; self-compaction is unavailable to this session (no supported live psu-pty host).`
           : `then call session:request-compaction with a focus NOW, at the nearest stopping ` +
             `point — do not merely narrate ending the turn.`)
