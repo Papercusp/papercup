@@ -47,6 +47,25 @@ export function isStructuredPayloadArg(arg: string): boolean;
  */
 export function getOperationalArgv(argv: string[]): string[];
 /**
+ * Match a literal command sequence at argv-token boundaries.
+ *
+ * The first sequence token is compared by basename, so an installed binary
+ * such as `/repo/node_modules/.bin/gitnexus` is equivalent to `gitnexus`.
+ * Every following token is compared literally and must be immediately
+ * adjacent. The argv[0] basename must also be an interpreter that could
+ * execute the command. This prevents prose in a JSON/tool payload or a
+ * `node -e 'gitnexus analyze'` script from becoming a process match.
+ *
+ * @param {string[]} argv
+ * @param {string[]} sequence - e.g. ['gitnexus', 'analyze']
+ * @param {{ interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
+ * @returns {boolean}
+ */
+export function matchesAdjacentArgvSequence(argv: string[], sequence: string[], opts?: {
+    interpreterBasenames?: string[];
+    commandBasenames?: string[];
+}): boolean;
+/**
  * Parse the ppid out of a /proc/<pid>/stat line. The comm field (2nd field) is
  * parenthesized and may itself contain spaces/parens, so field-splitting must
  * resume from the LAST `)` rather than naively splitting on whitespace — the
@@ -85,7 +104,7 @@ export function getAncestryChain(pid: number, byPid: Map<number, number | null>,
  * external process with the same pattern in a real argument still matches.
  *
  * @param {string} pattern - A RegExp source, matched against operational argv.
- * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
  * For the known `green-checkpoint` workload, gate-owned environment/cgroup
  * identity is also accepted so argv-blind descendants are not missed.
  * @returns {ProcRow[]}
@@ -93,6 +112,9 @@ export function getAncestryChain(pid: number, byPid: Map<number, number | null>,
 export function matchExternalProcesses(pattern: string, opts?: {
     procRoot?: string;
     selfPid?: number;
+    argvSequence?: string[];
+    interpreterBasenames?: string[];
+    commandBasenames?: string[];
 }): ProcRow[];
 /**
  * Return both the liveness-safe matches and the raw-argv matches for audit.
@@ -102,12 +124,15 @@ export function matchExternalProcesses(pattern: string, opts?: {
  * audit what was ignored — nothing is silently dropped.
  *
  * @param {string} pattern - A RegExp source.
- * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @param {{ procRoot?: string; selfPid?: number; argvSequence?: string[]; interpreterBasenames?: string[]; commandBasenames?: string[] }} [opts]
  * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[]; identityMatches: ProcRow[] }}
  */
 export function matchExternalProcessesDetailed(pattern: string, opts?: {
     procRoot?: string;
     selfPid?: number;
+    argvSequence?: string[];
+    interpreterBasenames?: string[];
+    commandBasenames?: string[];
 }): {
     matches: ProcRow[];
     fullMatches: ProcRow[];
