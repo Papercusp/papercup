@@ -15,7 +15,7 @@
  */
 
 import { exec } from 'node:child_process';
-import { inferWorkspaceRoot } from './testing-domain-glob';
+import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 
 export interface GitContext {
   branch: string | null;
@@ -42,7 +42,9 @@ export async function resolveGitContext(): Promise<GitContext> {
   const now = Date.now();
   if (_cached && _cached.expiresAt > now) return _cached.value;
 
-  const root = inferWorkspaceRoot();
+  // Keep git metadata aligned with the tree the agent edits, not the
+  // operator's release-checkout cwd.
+  const root = resolveAgentWorkspaceRoot({});
   const [branchRaw, commitRaw] = await Promise.all([
     runWithTimeout('git rev-parse --abbrev-ref HEAD', root, 200),
     runWithTimeout('git rev-parse HEAD', root, 200),

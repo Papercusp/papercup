@@ -22,7 +22,7 @@
 
 import type { Reporter, TestCase, TestResult } from '@playwright/test/reporter';
 import { resolveGitContext } from '@papercusp/operator-core/lib/testing-branch-resolve';
-import { inferWorkspaceRoot } from '@papercusp/operator-core/lib/testing-domain-glob';
+import { resolveAgentWorkspaceRoot } from '@papercusp/operator-core/lib/agent-tools/capability/base-dir';
 import { resolveTestRunSource } from '@papercusp/operator-core/lib/testing-run-source';
 import { posix, relative } from 'node:path';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
@@ -71,8 +71,7 @@ function captureReporterSaturationSnapshot(): { loopLagP95Ms: number | null; rss
 }
 
 function toWorkspaceRel(absPath: string): string {
-  const root = inferWorkspaceRoot();
-  const rel = relative(root, absPath);
+  const rel = relative(resolveAgentWorkspaceRoot({}), absPath);
   return rel.split(/[/\\]/).join(posix.sep);
 }
 

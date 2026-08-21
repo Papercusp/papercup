@@ -38,7 +38,7 @@ vi.mock('node:child_process', () => ({
     return mockProcInstance;
   }),
 }));
-vi.mock('../testing-domain-glob', () => ({ inferWorkspaceRoot: () => '/tmp' }));
+vi.mock('../agent-tools/capability/base-dir', () => ({ resolveAgentWorkspaceRoot: () => '/tmp' }));
 vi.mock('../testing-branch-resolve', () => ({
   resolveGitContext: async () => ({ branch: 'main', commit: 'abc' }),
 }));

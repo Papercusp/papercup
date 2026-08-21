@@ -23,7 +23,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { relative as pathRelative, posix } from 'node:path';
-import { inferWorkspaceRoot } from './testing-domain-glob';
+import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 
@@ -178,7 +178,10 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     truncated: false,
   };
 
-  const cwd = req.cwd ?? inferWorkspaceRoot();
+  // Use the same integration-root resolver as agent capability tools. The
+  // operator may run from the release checkout while the agent edits staging;
+  // process.cwd() is therefore not a safe implicit tree for detached runs.
+  const cwd = req.cwd ?? resolveAgentWorkspaceRoot({});
   let proc: ChildProcess;
   try {
     proc = spawn(req.command, req.args, {

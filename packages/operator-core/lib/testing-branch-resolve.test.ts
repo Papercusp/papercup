@@ -11,7 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // The resolver shells `git` via node:child_process exec; mock it so no real git runs.
 const execMock = vi.fn();
 vi.mock('node:child_process', () => ({ exec: (...a: unknown[]) => execMock(...a) }));
-vi.mock('./testing-domain-glob', () => ({ inferWorkspaceRoot: () => '/fake/root' }));
+vi.mock('./agent-tools/capability/base-dir', () => ({ resolveAgentWorkspaceRoot: () => '/fake/root' }));
 
 import { resolveGitContext, _resetGitContextCache } from './testing-branch-resolve';
 
