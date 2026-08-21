@@ -247,7 +247,43 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * until the MCP-under-sandbox path has a fresh live smoke on the current CLI
  * (mirrors the codex-su wrapper).
  */
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model }?: {}): {
+/**
+ * The omp `lsp`-builtin argv fragment — `['--no-lsp']` to STRIP the builtin, or
+ * `[]` to leave it in place. P-021 (D-013) replaced two hard-coded `'--no-lsp'`
+ * literals (the role and su omp branches) with this one helper.
+ *
+ * WHAT `--no-lsp` ACTUALLY DOES — read this before changing the default. It
+ * strips OMP's OWN `lsp` BUILTIN as weak-model tool-attractor suppression. A
+ * weak ornith model reaches for lsp/read to try to INVOKE MCP tools (session
+ * 9885 abused `lsp` as a tools:call wrapper before recovering). The other
+ * attractor, `eval`, is a REAL omp shell builtin and the WORST offender —
+ * ornith DOOM-LOOPED on it 56-80× (sessions 10234/10239) despite the coord-hook
+ * block + an escalating steer; message-based fixes can't break the reflex, so
+ * it is disabled at the omp-config layer instead (eval.py/eval.js=false,
+ * ensureOmpAgentToolTierConfig in ensure-omp-su.ts / WI-2382) and never reaches
+ * the surface. The kickoff tools:invoke escape hatch remains the positive
+ * redirect.
+ *
+ * ⚠ THIS IS NOT ABOUT PAPERCUSP'S `lsp.*` FACADE. That is a separate surface
+ * behind a separate flag (FLAGS.CODE_INTEL_LSP). Conflating the two would mean
+ * enabling our facade silently re-arms the attractor above on every omp launch
+ * — the hazard D-013 exists to record.
+ *
+ * `allowNativeLsp` is NOT read here. It is resolved server-side in
+ * bootstrap-{su,role}.ts as `FLAGS.OMP_NATIVE_LSP_BUILTIN && !isLocalModelSpec(model)`
+ * and threaded in via `envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP` — the same
+ * resolve-server-side-thread-through-envelopeEnv shape P-014 uses for
+ * REPLACE_CLAUDE_BASE, and the reason this bare-node script needs no flag read
+ * (and so no launch-time network dependency) of its own. Absent/false ⇒ strip,
+ * byte-identical to the pre-P-021 hard-coded behaviour.
+ *
+ * Pure — exported for tests.
+ *
+ * @param {boolean} [allowNativeLsp]
+ * @returns {string[]}
+ */
+export function ompLspArgs(allowNativeLsp?: boolean): string[];
+export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model, allowNativeLsp }?: {}): {
     bin: string;
     args: any[];
 };
@@ -276,7 +312,7 @@ export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExt
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents }?: {}): {
+export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, allowNativeLsp }?: {}): {
     bin: string;
     args: any[];
 };
