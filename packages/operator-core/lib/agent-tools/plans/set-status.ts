@@ -78,6 +78,7 @@ const itemSpec = z.object({
     .optional()
     .describe('per-item revision rationale (else the batch `rationale`); satisfies the required reason for status `dropped`'),
   onlyIfNotTerminal: z.boolean().optional(),
+  onlyIfNotBlocked: z.boolean().optional(),
   onlyIfNoOtherOpenCoverage: z.boolean().optional(),
   onlyIfNotCompleted: z.boolean().optional(),
 });
@@ -113,6 +114,12 @@ const argsSchema = z
       .describe(
         'Non-destructive flip: SKIP any item that is already done/dropped instead of moving it off terminal (reported `skipped:"terminal_guard"`, ok:true). For AUTOMATED reflections that must never un-finish shipped work; a human reopening an item deliberately just omits it.',
       ),
+    onlyIfNotBlocked: z
+      .boolean()
+      .optional()
+      .describe(
+        'Non-destructive flip: SKIP an item already `blocked`/`needs-human` instead of weakening its explicit gate (reported `skipped:"blocked_guard"`, ok:true). For AUTOMATED ownership reflections; a human reopening or completing the gate deliberately omits it.',
+      ),
     onlyIfNoOtherOpenCoverage: z
       .boolean()
       .optional()
@@ -144,6 +151,9 @@ interface StatusItem {
    *  for automated reflections that must never un-finish shipped work. See the guard
    *  inside the plan lock. */
   onlyIfNotTerminal?: boolean;
+  /** Skip (don't flip) when the item is already blocked/needs-human and this
+   *  automated reflection would weaken its explicit gate. */
+  onlyIfNotBlocked?: boolean;
   /** Skip (don't flip) a →done/→dropped flip when another non-terminal work-item still
    *  covers this plan item — for automated reflections cascading a single work-item's
    *  terminal state (WI-38908 widened this from drop-only). See the coverage guard below. */
@@ -176,6 +186,10 @@ type SetStatusValue =
    *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
    *  report what it left alone. Not an error — see the `terminal_guard` branch below. */
   | { ok: false; code: 'terminal_guard'; currentStatus: string | null }
+  /** `onlyIfNotBlocked` tripped: the item is already blocked/needs-human and the caller
+   *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
+   *  report what it left alone. Not an error — see the `blocked_guard` branch below. */
+  | { ok: false; code: 'blocked_guard'; currentStatus: string | null }
   /** `onlyIfNotCompleted` tripped: the item is `done` and an automated cascade tried to
    *  drop it. Not an error — see the `completed_guard` branch below. */
   | { ok: false; code: 'completed_guard'; currentStatus: string | null };
@@ -325,6 +339,25 @@ export function terminalGuardTrips(opts: {
   if (!opts.onlyIfNotTerminal) return false;
   if (opts.currentStatus === null) return false;
   return isTerminalStatus(opts.currentStatus) && !isTerminalStatus(opts.nextStatus);
+}
+
+/**
+ * Should a non-destructive flip be SKIPPED because the item is already explicitly
+ * blocked or waiting for a human decision?
+ *
+ * Pure + exported so it is unit-tested without the PG/lock path. True means leave
+ * the item exactly as it is. A blocked→needs-human or needs-human→blocked transition
+ * keeps the item gated and is therefore allowed; only a transition out of the
+ * blocked/needs-human family trips the guard.
+ */
+export function blockedGuardTrips(opts: {
+  onlyIfNotBlocked: boolean | undefined;
+  currentStatus: string | null;
+  nextStatus: string;
+}): boolean {
+  if (!opts.onlyIfNotBlocked) return false;
+  if (opts.currentStatus === null) return false;
+  return PLAN_BLOCKED_STATUSES.has(opts.currentStatus) && !PLAN_BLOCKED_STATUSES.has(opts.nextStatus);
 }
 
 /**
@@ -827,6 +860,18 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       ) {
         return { newBody: null, value: { ok: false, code: 'terminal_guard', currentStatus: oldStatus } };
       }
+      // Non-destructive flip: refuse to weaken an explicit blocked/needs-human gate.
+      // Read INSIDE the lock (like the terminal/completed guards above) so a concurrent
+      // gate or reopen cannot make this decision from a stale pre-lock status.
+      if (
+        blockedGuardTrips({
+          onlyIfNotBlocked: it.onlyIfNotBlocked,
+          currentStatus: oldStatus,
+          nextStatus: it.status,
+        })
+      ) {
+        return { newBody: null, value: { ok: false, code: 'blocked_guard', currentStatus: oldStatus } };
+      }
       // EI-20129670928216719: an automated cascade must never downgrade FINISHED work.
       // Checked here, inside the lock, because it reads the PLAN ITEM's current status —
       // the coverage guard's pre-lock read would race a concurrent flip. See
@@ -903,6 +948,20 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         skipped: 'terminal_guard',
         currentStatus: result.value.currentStatus,
         reason: `left at \`${result.value.currentStatus}\` — already terminal, and this flip (\`${it.status}\`) would have un-finished it`,
+      };
+    }
+    // Same posture as the terminal guard: a deliberate NO-OP, reported ok:true with
+    // `skipped` so an automated reflection neither reads as broken nor gets retried.
+    if (result.value.code === 'blocked_guard') {
+      return {
+        ok: true,
+        slug: it.slug,
+        itemId: it.itemId,
+        skipped: 'blocked_guard',
+        currentStatus: result.value.currentStatus,
+        reason:
+          `left at \`${result.value.currentStatus}\` — this explicit gate was preserved; ` +
+          `the automated flip (\`${it.status}\`) would have weakened it`,
       };
     }
     // Same posture as the terminal guard: a deliberate NO-OP, reported ok:true with
@@ -1175,6 +1234,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           rationale: it.rationale ?? args.rationale,
           onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
+          onlyIfNotBlocked: it.onlyIfNotBlocked ?? args.onlyIfNotBlocked,
           onlyIfNoOtherOpenCoverage: it.onlyIfNoOtherOpenCoverage ?? args.onlyIfNoOtherOpenCoverage,
           onlyIfNotCompleted: it.onlyIfNotCompleted ?? args.onlyIfNotCompleted,
         }))
@@ -1187,6 +1247,7 @@ export default defineTool({
             harness: args.harness,
             rationale: args.rationale,
             onlyIfNotTerminal: args.onlyIfNotTerminal,
+            onlyIfNotBlocked: args.onlyIfNotBlocked,
             onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
             onlyIfNotCompleted: args.onlyIfNotCompleted,
           }))
@@ -1199,6 +1260,7 @@ export default defineTool({
               harness: args.harness,
               rationale: args.rationale,
               onlyIfNotTerminal: args.onlyIfNotTerminal,
+              onlyIfNotBlocked: args.onlyIfNotBlocked,
               onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
               onlyIfNotCompleted: args.onlyIfNotCompleted,
             },
