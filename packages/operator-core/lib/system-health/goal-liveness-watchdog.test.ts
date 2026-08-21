@@ -504,3 +504,289 @@ describe('runGoalLivenessSweepOnce — the readiness leg (P-005)', () => {
     expect(r.readinessEscalated).toBe(0);
   });
 });
+
+// ── goal-live-holder-guarantee-2026-08-18 P-009: bounded recovery ──────────
+
+function respawnGoal(overrides: Partial<GoalRowLike> = {}): GoalRowLike {
+  return goal({
+    status: 'active',
+    installSlug: 'papercusp',
+    launchSettings: { holder: { requireLive: true, onLoss: 'respawn' } },
+    ...overrides,
+  });
+}
+
+function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolderRespawnDeps {
+  const target = respawnGoal();
+  return {
+    readGoals: async () => ({ goals: [target], holders: [holder()] }),
+    resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+    flagEnabled: async () => true,
+    launch: async (g) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }),
+    attach: async () => {},
+    escalateGiveUp: async () => {},
+    now: () => NOW,
+    states: new Map(),
+    ...overrides,
+  };
+}
+
+describe('goal holder respawn eligibility (P-009)', () => {
+  it('requires an ACTIVE goal that explicitly earns respawn', () => {
+    expect(goalEligibleForHolderRespawn(respawnGoal())).toBe(true);
+    // requireLive inherits true, but onLoss never inherits respawn.
+    expect(goalEligibleForHolderRespawn(respawnGoal({ launchSettings: { holder: { onLoss: 'respawn' } } }))).toBe(true);
+
+    expect(goalEligibleForHolderRespawn(goal({ status: 'active' }))).toBe(false);
+    expect(goalEligibleForHolderRespawn(respawnGoal({ launchSettings: { holder: { onLoss: 'deactivate' } } }))).toBe(
+      false,
+    );
+    expect(
+      goalEligibleForHolderRespawn(
+        respawnGoal({
+          launchSettings: { holder: { requireLive: false, onLoss: 'respawn' } },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it('never respawns a paused or terminal goal', () => {
+    for (const status of ['paused', 'achieved', 'killed']) {
+      expect(goalEligibleForHolderRespawn(respawnGoal({ status }))).toBe(false);
+    }
+  });
+
+  it('pins the recovery flag as a separate owner-authority dark flag', () => {
+    expect(FLAGS.GOAL_HOLDER_RESPAWN).toBe('papercusp-goal-holder-respawn');
+    expect(FLAG_DEFAULTS[FLAGS.GOAL_HOLDER_RESPAWN]).toBe(false);
+    expect(DARK_FLAGS.get(FLAGS.GOAL_HOLDER_RESPAWN)?.case).toBe('owner-authority');
+  });
+});
+
+describe('runGoalHolderRespawnOnce (P-009)', () => {
+  const sql = {} as never;
+
+  it('launches first and attaches the returned identity for a lost holder', async () => {
+    const target = respawnGoal();
+    const operations: string[] = [];
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        readGoals: async () => ({ goals: [target], holders: [holder()] }),
+        launch: async () => {
+          operations.push('launch');
+          return { ownerId: 'su-replacement', warnings: [] };
+        },
+        attach: async (g, ownerId) => {
+          operations.push(`attach:${g.goalId}:${ownerId}`);
+        },
+      }),
+    );
+
+    expect(operations).toEqual(['launch', `attach:${target.goalId}:su-replacement`]);
+    expect(result).toEqual({
+      scanned: 1,
+      eligible: 1,
+      attempted: 1,
+      respawned: 1,
+      launchFailed: 0,
+      attachFailed: 0,
+      gaveUp: 0,
+      skipped: false,
+    });
+  });
+
+  it('does no read or launch when its independent flag is off', async () => {
+    const readGoals = vi.fn(async () => ({ goals: [], holders: [] }));
+    const launch = vi.fn(async () => ({ ownerId: 'must-not-launch', warnings: [] }));
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        flagEnabled: async () => false,
+        readGoals,
+        launch,
+      }),
+    );
+
+    expect(result.skipped).toBe(true);
+    expect(readGoals).not.toHaveBeenCalled();
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-start an unheld goal or infer loss from unknown liveness', async () => {
+    const unheld = respawnGoal({ goalId: 'unheld' });
+    const unknown = respawnGoal({ goalId: 'unknown' });
+    const launch = vi.fn(async () => ({ ownerId: 'must-not-launch', warnings: [] }));
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        readGoals: async () => ({
+          goals: [unheld, unknown],
+          holders: [holder({ goalId: unknown.goalId, ownerId: 'unresolved-holder' })],
+        }),
+        resolveLiveness: async () => new Map(),
+        launch,
+      }),
+    );
+
+    expect(result).toMatchObject({ scanned: 2, eligible: 2, attempted: 0, respawned: 0 });
+    expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('never attaches a phantom holder when launch fails', async () => {
+    const attach = vi.fn(async () => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          launch: async () => {
+            throw new Error('launcher refused');
+          },
+          attach,
+        }),
+      );
+
+      expect(result).toMatchObject({ attempted: 1, launchFailed: 1, attachFailed: 0, respawned: 0 });
+      expect(attach).not.toHaveBeenCalled();
+      expect(warn.mock.calls[0]?.[0]).toContain('launch failed');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('contains one attach failure and continues recovering the rest of the batch', async () => {
+    const a = respawnGoal({ goalId: 'goal-a' });
+    const b = respawnGoal({ goalId: 'goal-b' });
+    const attached: string[] = [];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const result = await runGoalHolderRespawnOnce(
+        sql,
+        respawnDeps({
+          readGoals: async () => ({
+            goals: [a, b],
+            holders: [holder({ goalId: a.goalId, ownerId: 'dead-a' }), holder({ goalId: b.goalId, ownerId: 'dead-b' })],
+          }),
+          resolveLiveness: async (ownerIds) => vmap(...ownerIds.map((ownerId) => verdict(ownerId, 'ended'))),
+          launch: async (g) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }),
+          attach: async (g) => {
+            attached.push(g.goalId);
+            if (g.goalId === a.goalId) throw new Error('mode store unavailable');
+          },
+        }),
+      );
+
+      expect(attached).toEqual(['goal-a', 'goal-b']);
+      expect(result).toMatchObject({ attempted: 2, respawned: 1, attachFailed: 1 });
+      expect(warn.mock.calls[0]?.[0]).toContain('attach failed for goal-a');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('uses shared backoff, gives up after six attempts, and latches the escalation', async () => {
+    const states: GoalHolderRespawnDeps['states'] = new Map();
+    let nowMs = 0;
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const attach = vi.fn(async () => {});
+    const escalateGiveUp = vi.fn(async () => {});
+    const deps = respawnDeps({ states, now: () => nowMs, launch, attach, escalateGiveUp });
+
+    for (const attemptAt of [0, 1_000, 6_000, 21_000, 81_000, 141_000]) {
+      nowMs = attemptAt;
+      const result = await runGoalHolderRespawnOnce(sql, deps);
+      expect(result.attempted).toBe(1);
+    }
+    nowMs = 201_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, gaveUp: 1 });
+    nowMs = 261_000;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 0, gaveUp: 0 });
+
+    expect(launch).toHaveBeenCalledTimes(6);
+    expect(attach).toHaveBeenCalledTimes(6);
+    expect(escalateGiveUp).toHaveBeenCalledOnce();
+    expect(escalateGiveUp).toHaveBeenCalledWith(expect.anything(), 6);
+  });
+
+  it('retries a failed give-up escalation instead of silently keeping its latch', async () => {
+    const target = respawnGoal();
+    const key = goalHolderRespawnKey(target);
+    const states: GoalHolderRespawnDeps['states'] = new Map([
+      [
+        key,
+        {
+          restarts: [1, 2, 3, 4, 5, 6],
+          backoffIndex: 3,
+          lastRestartAt: 6,
+          healthySince: null,
+          gaveUp: false,
+        },
+      ],
+    ]);
+    let escalationCalls = 0;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const deps = respawnDeps({
+      readGoals: async () => ({ goals: [target], holders: [holder()] }),
+      states,
+      now: () => 60_006,
+      escalateGiveUp: async () => {
+        escalationCalls += 1;
+        if (escalationCalls === 1) throw new Error('escalation store unavailable');
+      },
+    });
+    try {
+      expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ gaveUp: 0 });
+      expect(states.get(key)?.gaveUp).toBe(false);
+      expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ gaveUp: 1 });
+      expect(states.get(key)?.gaveUp).toBe(true);
+      expect(escalationCalls).toBe(2);
+      expect(warn.mock.calls[0]?.[0]).toContain('give-up escalation failed');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('clears give-up only after five continuous healthy minutes, then may recover again', async () => {
+    const target = respawnGoal();
+    const key = goalHolderRespawnKey(target);
+    const states: GoalHolderRespawnDeps['states'] = new Map([
+      [
+        key,
+        {
+          restarts: [1, 2, 3, 4, 5, 6],
+          backoffIndex: 3,
+          lastRestartAt: 6,
+          healthySince: null,
+          gaveUp: true,
+        },
+      ],
+    ]);
+    let nowMs = 1_000;
+    let holderState: SessionState = 'live';
+    const launch = vi.fn(async () => ({ ownerId: 'replacement', warnings: [] }));
+    const deps = respawnDeps({
+      readGoals: async () => ({ goals: [target], holders: [holder()] }),
+      resolveLiveness: async () => vmap(verdict('su-2c130be1', holderState)),
+      states,
+      now: () => nowMs,
+      launch,
+    });
+
+    await runGoalHolderRespawnOnce(sql, deps);
+    expect(states.get(key)?.gaveUp).toBe(true);
+    nowMs += 5 * 60_000;
+    await runGoalHolderRespawnOnce(sql, deps);
+    expect(states.get(key)).toMatchObject({
+      gaveUp: false,
+      restarts: [],
+      backoffIndex: 0,
+      lastRestartAt: null,
+    });
+
+    holderState = 'ended';
+    nowMs += 1;
+    expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, respawned: 1 });
+    expect(launch).toHaveBeenCalledOnce();
+  });
+});

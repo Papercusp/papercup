@@ -318,7 +318,7 @@ describe('recovery-dependency-audit — holder-loss dispositions (falsifiable co
   /** CONTROL: a disposition claiming a real actor that is not in RECOVERY_MECHANISMS. */
   const phantomMechanismControl: Record<string, HolderLossDisposition> = {
     deactivate: HOLDER_LOSS_DISPOSITIONS.deactivate,
-    respawn: { kind: 'recovery-mechanism', mechanism: 'goal-holder-respawner', why: 'control' },
+    respawn: { kind: 'recovery-mechanism', mechanism: 'not-a-real-holder-respawner', why: 'control' },
   };
 
   /** CONTROL: an IOU with nobody on the hook for it. */
@@ -339,7 +339,7 @@ describe('recovery-dependency-audit — holder-loss dispositions (falsifiable co
     // recovery that is declared and does not exist.
     const gaps = findHolderLossGaps(['deactivate', 'respawn'], phantomMechanismControl);
     expect(gaps.unresolvedMechanism).toEqual([
-      { onLoss: 'respawn', mechanism: 'goal-holder-respawner' },
+      { onLoss: 'respawn', mechanism: 'not-a-real-holder-respawner' },
     ]);
   });
 
@@ -401,6 +401,20 @@ describe('recovery-dependency-audit — holder-loss coverage of the REAL closed 
     // became the accepted answer.
     expect(HOLDER_LOSS_DISPOSITIONS.deactivate.kind).toBe('derived-at-read');
     expect(HOLDER_LOSS_DISPOSITIONS.deactivate.mechanism).toBeUndefined();
+  });
+
+  it("respawn is backed by P-009's sound operator-host recovery mechanism", () => {
+    expect(HOLDER_LOSS_DISPOSITIONS.respawn).toMatchObject({
+      kind: 'recovery-mechanism',
+      mechanism: 'goal-holder-respawner',
+    });
+    const mechanism = RECOVERY_MECHANISMS.find((row) => row.name === 'goal-holder-respawner');
+    expect(mechanism).toMatchObject({
+      executor: 'operator-in-process-timer',
+      recovers: [],
+    });
+    if (!mechanism) throw new Error('goal-holder-respawner declaration missing');
+    expect(verdictFor(mechanism)).toBe('sound');
   });
 
   it('every disposition carries a reason — an unexplained one is just a label', () => {
