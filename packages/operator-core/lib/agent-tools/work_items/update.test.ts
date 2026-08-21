@@ -240,7 +240,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   it('severity:critical on a needs-human item surfaces claimabilityWarning', async () => {
     updM.mockResolvedValue({ ok: true, item: { id: 'WI-1', harness: 'papercusp' } } as never);
     floorsM.mockResolvedValue([
-      { id: 'WI-1', admissible: false, refusedBy: 'needs-human', detail: 'payload.needsHuman = true — routed to a human for ratification (EI-7776)' },
+      { id: 'WI-1', admissible: false, refusedBy: 'legacy-needs-human', detail: 'legacy payload.needsHuman = true — awaiting P-006 re-triage' },
     ] as never);
     const b = await body({ id: 'WI-1', severity: 'critical' });
     expect(b.results[0].claimabilityWarning).toMatch(/needs a human|needs-human|human/i);
@@ -400,24 +400,32 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   // still returned ok:true (confirmed live via direct Postgres read on EI-12519 — a
   // genuine write-side no-op, not a stale-read artifact). Mirrors the needsTwoMachineRig
   // contract above exactly.
-  describe('needsHuman → payload.needsHuman (WI-5689)', () => {
-    it('true: calls mergeWorkItemPayload with needsHuman:true and returns the merged item', async () => {
+  describe('needsHuman compatibility input → split owner-action payload (P-005)', () => {
+    it('true: writes needsOwnerAction and removes the legacy needsHuman key', async () => {
       updM.mockResolvedValue({ ok: true, item: { id: 'EI-12519', title: 'human item' } } as never);
-      mergeM.mockResolvedValue({ id: 'EI-12519', title: 'human item', payload: { needsHuman: true } } as never);
+      mergeM.mockResolvedValue({ id: 'EI-12519', title: 'human item', payload: { needsOwnerAction: true } } as never);
       const b = await body({ id: 'EI-12519', needsHuman: true });
-      expect(mergeM).toHaveBeenCalledWith('EI-12519', { needsHuman: true }, { harness: undefined });
+      expect(mergeM).toHaveBeenCalledWith(
+        'EI-12519',
+        { needsOwnerAction: true },
+        { harness: undefined, unset: ['needsHuman'] },
+      );
       expect(b.results[0]).toMatchObject({
         ok: true,
         id: 'EI-12519',
-        item: { payload: { needsHuman: true } },
+        item: { payload: { needsOwnerAction: true } },
       });
     });
 
-    it('false: re-admits (clears) via mergeWorkItemPayload with needsHuman:false', async () => {
+    it('false: re-admits by removing both legacy and strict keys', async () => {
       updM.mockResolvedValue({ ok: true, item: { id: 'EI-12519' } } as never);
-      mergeM.mockResolvedValue({ id: 'EI-12519', payload: { needsHuman: false } } as never);
+      mergeM.mockResolvedValue({ id: 'EI-12519', payload: {} } as never);
       await body({ id: 'EI-12519', needsHuman: false });
-      expect(mergeM).toHaveBeenCalledWith('EI-12519', { needsHuman: false }, { harness: undefined });
+      expect(mergeM).toHaveBeenCalledWith(
+        'EI-12519',
+        {},
+        { harness: undefined, unset: ['needsHuman', 'needsOwnerAction'] },
+      );
     });
 
     it('omitted: never calls mergeWorkItemPayload (no spurious payload write)', async () => {
@@ -431,7 +439,11 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
       await body({ items: [{ id: 'WI-1', needsHuman: true }, { id: 'WI-2' }] });
       expect(mergeM).toHaveBeenCalledTimes(1);
-      expect(mergeM).toHaveBeenCalledWith('WI-1', { needsHuman: true }, expect.any(Object));
+      expect(mergeM).toHaveBeenCalledWith(
+        'WI-1',
+        { needsOwnerAction: true },
+        expect.objectContaining({ unset: ['needsHuman'] }),
+      );
     });
 
     it('a top-level needsHuman applies as the batch default (mirrors EI-7639)', async () => {
@@ -439,8 +451,8 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       mergeM.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, payload: patch }) as never);
       await body({ needsHuman: true, items: [{ id: 'WI-1' }, { id: 'WI-2' }] });
       expect(mergeM).toHaveBeenCalledTimes(2);
-      expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-1', { needsHuman: true }, expect.any(Object));
-      expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-2', { needsHuman: true }, expect.any(Object));
+      expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-1', { needsOwnerAction: true }, expect.objectContaining({ unset: ['needsHuman'] }));
+      expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-2', { needsOwnerAction: true }, expect.objectContaining({ unset: ['needsHuman'] }));
     });
 
     // EI-18707466248332421: the rig-gate WRITE path for the FEATURE family. The READ floor has
@@ -479,9 +491,13 @@ describe('work_items:update handler (bulk keyed-array)', () => {
 
       it('needsHuman — the sibling family-agnostic flag — is likewise applied on a FEATURE-family item', async () => {
         updM.mockResolvedValue(FEATURE_FAMILY as never);
-        mergeM.mockResolvedValue({ id: 'WI-3496', payload: { needsHuman: true } } as never);
+        mergeM.mockResolvedValue({ id: 'WI-3496', payload: { needsOwnerAction: true } } as never);
         const b = await body({ id: 'WI-3496', needsHuman: true });
-        expect(mergeM).toHaveBeenCalledWith('WI-3496', { needsHuman: true }, { harness: undefined });
+        expect(mergeM).toHaveBeenCalledWith(
+          'WI-3496',
+          { needsOwnerAction: true },
+          { harness: undefined, unset: ['needsHuman'] },
+        );
         expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3496' });
       });
 
@@ -492,8 +508,8 @@ describe('work_items:update handler (bulk keyed-array)', () => {
         expect(mergeM).toHaveBeenCalledTimes(1);
         expect(mergeM).toHaveBeenCalledWith(
           'WI-3500',
-          { needs_2_machine_rig: true, needsHuman: true },
-          { harness: undefined },
+          { needs_2_machine_rig: true, needsOwnerAction: true },
+          { harness: undefined, unset: ['needsHuman'] },
         );
         expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-3500' });
       });
@@ -542,10 +558,15 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       const b = await body({ id: 'WI-1', needsHuman: true, needsTwoMachineRig: true });
       expect(mergeM).toHaveBeenCalledTimes(2);
       expect(mergeM).toHaveBeenNthCalledWith(1, 'WI-1', { needs_2_machine_rig: true }, expect.any(Object));
-      expect(mergeM).toHaveBeenNthCalledWith(2, 'WI-1', { needsHuman: true }, expect.any(Object));
+      expect(mergeM).toHaveBeenNthCalledWith(
+        2,
+        'WI-1',
+        { needsOwnerAction: true },
+        expect.objectContaining({ unset: ['needsHuman'] }),
+      );
       // the second merge's return value wins as the final echoed item (last-write, matches
       // needsTwoMachineRig's own existing item-reassignment pattern above)
-      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', item: { payload: { needsHuman: true } } });
+      expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', item: { payload: { needsOwnerAction: true } } });
     });
   });
 });

@@ -64,6 +64,10 @@ function deps(current: EngineerIssue | null): ResolveDeps & { rec: Recorded } {
       rec.payloads.push({ id, patch });
       return current;
     },
+    enterAgentReview: async ({ id, submittedBy }) => ({
+      entered: true,
+      state: { status: 'pending', submittedBy, ledgerIdeaId: id, round: 1 },
+    }),
     closeDispatches: async (id, opts) => {
       rec.closes.push({ id, outcome: opts.outcome, by: opts.by });
       return 1;
@@ -106,7 +110,7 @@ describe('resolveImprovement — fixed (the verify-and-mark-done back-edge, clos
     expect(r.error).toMatch(/not found/);
   });
 
-  it('setIssueState returning null (federated/remote-owned issue, EI-7833 view lockout) routes to a human instead of a FALSE "fixed" success', async () => {
+  it('setIssueState returning null (federated/remote-owned issue, EI-7833 view lockout) routes to peer reconciliation instead of a FALSE "fixed" success', async () => {
     // Root cause of the auto-implement dispatch storm: a federated (origin='remote')
     // issue's engineer_issues view UPDATE is silently no-op'd (setIssueState → null),
     // which the old code swallowed via `state: updated?.state ?? 'resolved'` and
@@ -117,10 +121,15 @@ describe('resolveImprovement — fixed (the verify-and-mark-done back-edge, clos
       { id: 'EI-remote', outcome: 'fixed', summary: 'fixed it', testsRun: 'vitest green', by: 'worker-1' },
       d,
     );
-    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
-    expect(d.rec.payloads).toEqual([{ id: 'EI-remote', patch: { needsHuman: true } }]);
+    expect(r).toMatchObject({
+      ok: true,
+      outcome: 'could-not-fix',
+      state: 'open',
+      routedToPeerReconciliation: true,
+    });
+    expect(d.rec.payloads).toEqual([]);
     expect(d.rec.released).toEqual(['EI-remote']);
-    expect(d.rec.closes).toEqual([{ id: 'EI-remote', outcome: 'needs-human', by: 'worker-1' }]);
+    expect(d.rec.closes).toEqual([{ id: 'EI-remote', outcome: 'could-not-fix', by: 'worker-1' }]);
     // the verification evidence comment still landed, plus the routing explanation
     expect(d.rec.comments[0].body).toMatch(/vitest green/);
     expect(d.rec.comments[1].body).toMatch(/federated/);
@@ -209,15 +218,15 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     expect(d.rec.comments[0].body).toMatch(/LEADER TRIAGE/);
   });
 
-  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER inbox (payload.needsHuman) AND state moves to needs-human (EI-18210987268765837)', async () => {
+  it('a genuine OWNER-gated blockerCapability (credential) → the OWNER ACTION path (payload.needsOwnerAction) AND state moves to needs-human (EI-18210987268765837)', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(
       { id: 'EI-3', outcome: 'needs-human', summary: 'needs a prod DB credential only the owner holds', blockerCapability: 'credential' },
       d,
     );
-    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'needs-human', routedToHuman: true });
+    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'needs-human', routedToOwnerAction: true });
     expect(r.routedToLeaderTriage).toBeUndefined();
-    expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsHuman: true, humanCapability: 'credential' } }]);
+    expect(d.rec.payloads).toEqual([{ id: 'EI-3', patch: { needsOwnerAction: true, humanCapability: 'credential' } }]);
     // EI-18210987268765837 regression: a comment-only handoff (payload flag with NO state
     // transition) left the item in 'open' — every claim path gates on state='open', so it
     // stayed claimable and resurfaced days later as if freshly auto-eligible (root-caused on
@@ -227,26 +236,34 @@ describe('resolveImprovement — needs-human (P-004/WI-5679: leader-triage by de
     expect(d.rec.comments[0].body).toMatch(/credential/);
   });
 
-  it('EI-18210987268765837: setIssueState no-op (federated/remote-owned issue) still sets payload.needsHuman as a fallback and reports the state it could confirm', async () => {
+  it('a remote-owned needs-human outcome routes to peer reconciliation before owner-capability classification', async () => {
     const d = deps(issue({ id: 'EI-remote', origin: 'remote' }));
     d.setIssueState = async () => null;
     const r = await resolveImprovement(
       { id: 'EI-remote', outcome: 'needs-human', summary: 'needs a credential, and this issue is federated', blockerCapability: 'credential' },
       d,
     );
-    expect(r).toMatchObject({ ok: true, outcome: 'needs-human', state: 'open', routedToHuman: true });
-    expect(d.rec.payloads).toEqual([{ id: 'EI-remote', patch: { needsHuman: true, humanCapability: 'credential' } }]);
+    expect(r).toMatchObject({
+      ok: true,
+      outcome: 'could-not-fix',
+      state: 'open',
+      routedToPeerReconciliation: true,
+    });
+    expect(d.rec.payloads).toEqual([]);
     expect(d.rec.released).toEqual(['EI-remote']);
+    expect(d.rec.closes).toEqual([{ id: 'EI-remote', outcome: 'could-not-fix', by: 'improvement-runner' }]);
   });
 
-  it('product-decision is genuinely owner-gated → the OWNER inbox', async () => {
+  it('product-decision enters peer agent review instead of the owner-action path', async () => {
     const d = deps(issue({ id: 'EI-3' }));
     const r = await resolveImprovement(
       { id: 'EI-3', outcome: 'needs-human', summary: 'needs a product direction call', blockerCapability: 'product-decision' },
       d,
     );
-    expect(r.routedToHuman).toBe(true);
-    expect(d.rec.payloads[0].patch).toMatchObject({ needsHuman: true, humanCapability: 'product-decision' });
+    expect(r.routedToAgentReview).toBe(true);
+    expect(r.routedToOwnerAction).toBeUndefined();
+    expect(d.rec.payloads).toEqual([]);
+    expect(d.rec.comments[0].body).toMatch(/AGENT REVIEW/);
   });
 
   it('an AUTO-CLEARABLE capability is NOT genuine owner work → LEADER TRIAGE', async () => {

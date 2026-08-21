@@ -62,7 +62,7 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
     expect(c.paths).toEqual(['packages/operator-core/lib/release/deploy.ts']); // non-strings dropped
   });
 
-  it('maps payload.implementAttempts + payload.needsHuman + assignedAt (the close-loop lifecycle)', () => {
+  it('maps payload.implementAttempts + split owner/legacy flags + assignedAt (the close-loop lifecycle)', () => {
     const c = issueToCandidate(
       issue({
         id: 'EI-5',
@@ -70,11 +70,12 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
         kind: 'bug',
         assignee: 'improvement-runner',
         assignedAt: '2026-06-05T01:00:00Z',
-        payload: { implementAttempts: 2, needsHuman: true },
+        payload: { implementAttempts: 2, needsHuman: true, needsOwnerAction: true },
       }),
     );
     expect(c.attempts).toBe(2);
     expect(c.needsHuman).toBe(true);
+    expect(c.needsOwnerAction).toBe(true);
     expect(c.assignedAt).toBe('2026-06-05T01:00:00Z');
   });
 
@@ -82,6 +83,7 @@ describe('issueToCandidate — native kind column (close-loop D-002, deriveKind 
     const c = issueToCandidate(issue({ id: 'EI-6', title: 'x', kind: 'bug' }));
     expect(c.attempts).toBeUndefined();
     expect(c.needsHuman).toBeUndefined();
+    expect(c.needsOwnerAction).toBeUndefined();
     expect(c.paths).toBeUndefined();
   });
 

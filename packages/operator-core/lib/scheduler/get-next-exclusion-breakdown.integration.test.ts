@@ -148,7 +148,8 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     expect(out.excluded).toMatchObject({
       taken: 1, // WI-9403
       claimHold: 1, // WI-9402
-      needsHuman: 2, // WI-9405 legacy + WI-9411 strict owner-action
+      legacyNeedsHuman: 1, // WI-9405
+      needsOwnerAction: 1, // WI-9411
       observationLane: 1, // WI-9406
       externalBlocker: 1, // WI-9407
       planLaneReserved: 1, // WI-9404
@@ -215,7 +216,12 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
 
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H });
     expect(out.matchedByFilter).toBe(1);
-    expect(out.excluded).toMatchObject({ taken: 1, claimHold: 0, needsHuman: 0 });
+    expect(out.excluded).toMatchObject({
+      taken: 1,
+      claimHold: 0,
+      legacyNeedsHuman: 0,
+      needsOwnerAction: 0,
+    });
   });
 });
 
@@ -327,8 +333,8 @@ describe('EI-18802055183255275 — readIssueClaimability (materialized temp-tabl
     await seedIssue('WI-RC-21', null);
 
     const out = await readIssueClaimability(undefined, { harness: H }, { limit: 20, sampleLimit: 5 });
-    expect(out.breakdown.excluded.needsHuman).toBe(1);
-    expect(out.sample?.needsHuman).toEqual(['WI-RC-20']);
+    expect(out.breakdown.excluded.legacyNeedsHuman).toBe(1);
+    expect(out.sample?.legacyNeedsHuman).toEqual(['WI-RC-20']);
   });
 });
 
