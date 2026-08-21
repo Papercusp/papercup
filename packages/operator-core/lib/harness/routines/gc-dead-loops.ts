@@ -78,40 +78,62 @@ export async function gcDeadLoops(opts: GcDeadLoopsOptions = {}): Promise<GcDead
       : DEAD_LOOP_MAX_PER_RUN_DEFAULT;
   const dryRun = opts.dryRun === true;
 
-  // One statement, so there is no window between selecting and deleting in which a
-  // session could come back to life. The `NOT EXISTS`/`last_active_at` pair is the
-  // "owner is gone" test; the `last_fired_at` clause is the guard that keeps a
-  // freshly-armed loop with no presence row yet from matching.
+  // Keep candidate selection, routine deletion, and matching fire-state cleanup in one
+  // transaction. The owner can re-arm while a sweep is running; locking the selected
+  // routine rows makes the inactive decision and its cleanup one atomic lifecycle cut.
   const cutoff = `${retentionDays} days`;
-  const candidates = await sql<Array<{ id: string; name: string }>>`
-    SELECT r.id, r.name
-      FROM harness_shared.routines r
-      LEFT JOIN harness_shared.coord_presence p
-             ON p.owner_id = r.target_owner_id
-            AND p.workspace_id = r.workspace_id
-     WHERE r.workspace_id = ${ws}
-       AND r.name LIKE 'loop-%'
-       AND r.target_owner_id IS NOT NULL
-       AND r.active = false
-       AND (p.last_active_at IS NULL OR p.last_active_at < now() - ${cutoff}::interval)
-       AND (r.last_fired_at IS NULL OR r.last_fired_at < now() - ${cutoff}::interval)
-       AND r.created_at < now() - ${cutoff}::interval
-     ORDER BY r.last_fired_at ASC NULLS FIRST
-     LIMIT ${maxPerRun}`;
+  return await sql.begin(async (tx) => {
+    const candidates = await tx<Array<{ id: string; name: string }>>`
+      SELECT r.id, r.name
+        FROM harness_shared.routines r
+        LEFT JOIN harness_shared.coord_presence p
+               ON p.owner_id = r.target_owner_id
+              AND p.workspace_id = r.workspace_id
+       WHERE r.workspace_id = ${ws}
+         AND r.name LIKE 'loop-%'
+         AND r.target_owner_id IS NOT NULL
+         AND r.active = false
+         AND (p.last_active_at IS NULL OR p.last_active_at < now() - ${cutoff}::interval)
+         AND (r.last_fired_at IS NULL OR r.last_fired_at < now() - ${cutoff}::interval)
+         AND r.created_at < now() - ${cutoff}::interval
+       ORDER BY r.last_fired_at ASC NULLS FIRST
+       LIMIT ${maxPerRun}
+       FOR UPDATE OF r`;
 
-  const sample = candidates.slice(0, 5).map((c) => c.name);
-  if (dryRun || candidates.length === 0) {
-    return { reaped: candidates.length, sample, dryRun, retentionDays };
-  }
+    const sample = candidates.slice(0, 5).map((c) => c.name);
+    if (dryRun || candidates.length === 0) {
+      return { reaped: candidates.length, sample, dryRun, retentionDays };
+    }
 
-  const ids = candidates.map((c) => c.id);
-  const deleted = await sql<Array<{ id: string }>>`
-    DELETE FROM harness_shared.routines
-     WHERE workspace_id = ${ws}
-       AND id = ANY(${ids})
-       AND name LIKE 'loop-%'
-       AND active = false
-    RETURNING id`;
+    const ids = candidates.map((c) => c.id);
+    const names = [...new Set(candidates.map((c) => c.name))];
 
-  return { reaped: deleted.length, sample, dryRun: false, retentionDays };
+    // recordFire keys state by install slug + loop name, but older loop materialisation
+    // wrote '*' (and re-homing left prior slugs) in harness_slug. Match by workspace and
+    // loop name so every historical residue is cleared. A same-name active routine wins:
+    // it may have been re-armed under a new install slug while this stale row was being
+    // swept, so preserve its fire-state for the live loop.
+    await tx`
+      DELETE FROM harness_shared.autoloop_state s
+       WHERE s.workspace_id = ${ws}
+         AND s.role = ANY(${names})
+         AND s.role LIKE 'loop-%'
+         AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.routines live
+            WHERE live.workspace_id = s.workspace_id
+              AND live.name = s.role
+              AND live.active = true
+         )`;
+
+    const deleted = await tx<Array<{ id: string }>>`
+      DELETE FROM harness_shared.routines
+       WHERE workspace_id = ${ws}
+         AND id = ANY(${ids})
+         AND name LIKE 'loop-%'
+         AND active = false
+      RETURNING id`;
+
+    return { reaped: deleted.length, sample, dryRun: false, retentionDays };
+  });
 }

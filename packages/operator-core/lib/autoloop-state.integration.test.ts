@@ -311,4 +311,33 @@ describe('pruneStaleFireState hygiene (autonomous-loop-hardening F6)', () => {
       expect(left.length).toBe(1);
     });
   });
+
+  describe('loop-owner orphan cleanup', () => {
+    it('retires an age-bounded nonzero loop watermark even when its harness slug is historical', async () => {
+      const PW = 'ws-prune-loop-orphan';
+      await rootSql`INSERT INTO harness_shared.autoloop_state
+          (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+          ('*', 'loop-su-orphan', now() - interval '30 days', 'error: dead', 8, ${PW})`;
+
+      const n = await pruneStaleFireState({ maxAgeDays: 7 });
+      expect(n).toBeGreaterThanOrEqual(1);
+      const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state
+          WHERE workspace_id = ${PW} AND role = 'loop-su-orphan'`;
+      expect(left.length).toBe(0);
+    });
+
+    it('preserves an age-bounded loop watermark while its inactive human-paused routine remains', async () => {
+      const PW = 'ws-prune-loop-human-old';
+      await rootSql`INSERT INTO harness_shared.routines (id, install_slug, name, active, workspace_id)
+          VALUES ('r-paused-old', 'concrete-install', 'loop-su-paused-old', false, ${PW})`;
+      await rootSql`INSERT INTO harness_shared.autoloop_state
+          (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id) VALUES
+          ('*', 'loop-su-paused-old', now() - interval '30 days', 'error: mid-investigation', 5, ${PW})`;
+
+      await pruneStaleFireState({ maxAgeDays: 7 });
+      const left = await rootSql`SELECT 1 FROM harness_shared.autoloop_state
+          WHERE workspace_id = ${PW} AND role = 'loop-su-paused-old'`;
+      expect(left.length).toBe(1);
+    });
+  });
 });

@@ -32,6 +32,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
 });
 
@@ -66,6 +67,21 @@ async function seedPresence(ownerId: string, lastActiveDaysAgo: number): Promise
     INSERT INTO harness_shared.coord_presence (workspace_id, owner_id, last_active_at)
     VALUES (${WS}, ${ownerId}, ${daysAgo(lastActiveDaysAgo)})
     ON CONFLICT DO NOTHING`;
+}
+
+async function seedFireState(over: {
+  harnessSlug: string;
+  role: string;
+  consecutiveErrors?: number;
+  lastFiredDaysAgo?: number;
+  lastStatus?: string;
+}): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.autoloop_state
+      (harness_slug, role, last_fired_at, last_status, consecutive_errors, workspace_id)
+    VALUES
+      (${over.harnessSlug}, ${over.role}, ${daysAgo(over.lastFiredDaysAgo ?? 30)},
+       ${over.lastStatus ?? 'error: dead loop'}, ${over.consecutiveErrors ?? 7}, ${WS})`;
 }
 
 const names = async (): Promise<string[]> => {
@@ -110,6 +126,40 @@ describe('gcDeadLoops — what it reaps', () => {
     const res = await gcDeadLoops({ sql, workspaceId: WS, maxPerRun: 2 });
     expect(res.reaped).toBe(2);
     expect(await names()).toHaveLength(3);
+  });
+
+  it('atomically reaps matching fire-state, including wildcard and prior-slug residue', async () => {
+    await seedRoutine({ name: 'loop-su-dead', targetOwnerId: 'su-dead', lastFiredDaysAgo: 30 });
+    await seedFireState({ harnessSlug: '*', role: 'loop-su-dead' });
+    await seedFireState({ harnessSlug: HARNESS, role: 'loop-su-dead', lastStatus: 'error: prior install' });
+
+    const res = await gcDeadLoops({ sql, workspaceId: WS });
+    expect(res.reaped).toBe(1);
+    expect(
+      await sql`SELECT 1 FROM harness_shared.autoloop_state
+                 WHERE workspace_id = ${WS} AND role = 'loop-su-dead'`,
+    ).toEqual([]);
+    expect(await names()).toEqual([]);
+  });
+
+  it('preserves fire-state when a same-name loop is active under another install slug', async () => {
+    await seedRoutine({ name: 'loop-su-rehomed', targetOwnerId: 'su-dead', lastFiredDaysAgo: 30 });
+    const liveId = `rt_${WS}_rehomed_live`;
+    await sql`
+      INSERT INTO harness_shared.routines
+        (id, install_slug, workspace_id, name, trigger_kind, trigger_config, target_role,
+         target_owner_id, concurrency, catchup, active, last_fired_at, created_at)
+      VALUES (${liveId}, 'new-install', ${WS}, 'loop-su-rehomed', 'cron', '{}'::jsonb,
+              'system:loop-wake', 'su-live', 'skip', 'skip-old', true, now(), now())`;
+    await seedFireState({ harnessSlug: '*', role: 'loop-su-rehomed' });
+
+    const res = await gcDeadLoops({ sql, workspaceId: WS });
+    expect(res.reaped).toBe(1);
+    expect(
+      await sql`SELECT harness_slug, role FROM harness_shared.autoloop_state
+                 WHERE workspace_id = ${WS} AND role = 'loop-su-rehomed'`,
+    ).toEqual([{ harness_slug: '*', role: 'loop-su-rehomed' }]);
+    expect(await names()).toEqual(['loop-su-rehomed']);
   });
 });
 

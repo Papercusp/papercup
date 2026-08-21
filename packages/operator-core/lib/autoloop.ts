@@ -298,6 +298,13 @@ export function pruneMaxAgeDays(): number {
  *     routine) so a routine a HUMAN paused mid-investigation (any other `last_status`) keeps
  *     its error trail intact — this class never touches it.
  *
+ *  3. Loop-owner orphan rows: a stale, non-zero `loop-%` watermark whose workspace has no
+ *     routine with the same name. Loop fire-state historically used both concrete install
+ *     slugs and `*`, so this intentionally matches by workspace + role rather than
+ *     `harness_slug`. The age bound avoids deleting a newly re-homed row while its routine
+ *     materialisation is still settling; any matching routine (including an inactive human
+ *     pause) preserves the row for investigation.
+ *
  * Returns the number of rows retired (both classes combined).
  */
 export async function pruneStaleFireState(opts: { maxAgeDays?: number } = {}): Promise<number> {
@@ -320,6 +327,17 @@ export async function pruneStaleFireState(opts: { maxAgeDays?: number } = {}): P
                AND r.install_slug = ${at.harnessSlug}
                AND r.name = ${at.role}
                AND r.active = false
+          )`,
+        ),
+        and(
+          dsql`${at.role} LIKE 'loop-%'`,
+          dsql`${at.lastFiredAt} IS NOT NULL`,
+          dsql`${at.lastFiredAt} < now() - (${maxAgeDays}::int * interval '1 day')`,
+          dsql`${at.consecutiveErrors} > 0`,
+          dsql`NOT EXISTS (
+            SELECT 1 FROM harness_shared.routines r
+             WHERE r.workspace_id = ${at.workspaceId}
+               AND r.name = ${at.role}
           )`,
         ),
       ),
