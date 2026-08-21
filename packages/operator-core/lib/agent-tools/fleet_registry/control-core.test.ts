@@ -102,7 +102,18 @@ beforeEach(() => {
   markReleasedM.mockResolvedValue(true);
   clearReleasedM.mockResolvedValue(0);
   retireLeaderWatchesM.mockResolvedValue(0);
-  ensureLeaderControlM.mockResolvedValue({ healthy: true, repaired: true } as never);
+  // A fully-typed healthy outcome. Spelled out rather than cast `as never` so that a new
+  // REQUIRED field on LeaderControlOutcome is a tsc error here, not a runtime surprise
+  // in a file the change never touched (EI-19282401068515102).
+  ensureLeaderControlM.mockResolvedValue({
+    healthy: true,
+    repaired: true,
+    mode: { healthy: true, changed: false },
+    loop: { healthy: true, changed: false, harness: null, intervalSec: null, mode: null },
+    watches: { healthy: true, expected: [], active: [], added: [], repaired: [], wakeReachable: true, handleNote: null },
+    inboxWake: { healthy: true },
+    errors: [],
+  });
   // setFleetControlState echoes the applied state back (the RETURNING row).
   setControlM.mockImplementation(async (_ws, slug, control) =>
     fleet({ fleetSlug: slug, controlState: control.state, controlReason: control.reason ?? null, controlBy: control.by ?? null, controlAt: 99 }),
