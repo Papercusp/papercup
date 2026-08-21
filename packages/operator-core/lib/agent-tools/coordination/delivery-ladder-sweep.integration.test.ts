@@ -227,7 +227,8 @@ describe('findLadderCandidates — recipient replies clear the original candidat
       extra: { related_msg_id: 'original-ask' },
     });
 
-    expect(await findLadderCandidates(NOW, TTL)).toEqual([]);
+    const rows = await findLadderCandidates(NOW, TTL);
+    expect(rows.map((row) => row.recipient)).toEqual(['su-peer']);
   });
 });
 

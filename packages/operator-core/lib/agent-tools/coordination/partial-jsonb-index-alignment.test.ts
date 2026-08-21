@@ -59,6 +59,7 @@ const INDEX = 'coord_event_log_related_msg_id_idx';
 const GUARDED_SWEEPS = [
   'packages/operator-core/lib/agent-tools/coordination/reply-deadline-sweep.ts',
   'packages/operator-core/lib/agent-tools/coordination/allhive-broadcast-sweep.ts',
+  'packages/operator-core/lib/agent-tools/coordination/delivery-ladder-sweep.ts',
 ];
 
 /** Strip SQL (`--`) and JS (`//`, block) comments so a comment ABOUT the clause never satisfies the check. */

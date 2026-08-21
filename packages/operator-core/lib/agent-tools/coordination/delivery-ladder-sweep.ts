@@ -399,6 +399,22 @@ export async function findLadderCandidates(
          AND (e.body->>'auto') IS DISTINCT FROM 'true'
          AND r NOT IN ('*', 'human', '')
          AND r NOT LIKE '@%'
+         -- EI-19307165753805742: the recipient's exact threaded reply is a
+         -- discharge signal, not another unread obligation. Match the same
+         -- recipient-authored related_msg_id predicate used by unanswered-directed's
+         -- open_asks query. There is deliberately no time bound: the canonical
+         -- predicate treats the explicit thread link as authoritative.
+         -- The presence clause is required for the partial related_msg_id index;
+         -- without it this anti-join falls back to scanning every message row.
+         AND NOT EXISTS (
+           SELECT 1
+             FROM harness_shared.coord_event_log reply
+            WHERE reply.workspace_id = e.workspace_id
+              AND reply.surface = 'messages'
+              AND reply.body ? 'related_msg_id'
+              AND reply.body->>'related_msg_id' = e.body->>'msg_id'
+              AND reply.body->>'from' = r
+         )
          -- WINDOW ON THE ts COLUMN, NEVER ON body->>'ts' (EI-19325333358401288).
          -- coord_event_log_messages_ts_idx is (workspace_id, ts, id) WHERE
          -- surface='messages', so a predicate over the JSONB EXTRACTION + CAST
