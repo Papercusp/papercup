@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 755,
+  "count": 756,
   "tools": [
     {
       "name": "ablation:report",
@@ -3501,6 +3501,80 @@
         "when": "MANY tool calls with control flow — loop/branch/filter, fan-out reads, retry-until: orchestrate them in ONE call. Pass title+description so the run saves as a reusable RECIPE other agents in your hive can find.",
         "notWhen": "A single call; a few independent calls in one turn; a step needing YOUR judgment mid-flow — call tools directly. OR importing repo modules/a DB client directly: only tools.ns.verb(args) is exposed (no require/process/import) — use capability:bash + npx tsx.",
         "chaining": "script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool's `returns` (tools:find), or return one raw result before mapping a batch. ORDERING: a rejected/thrown call aborts every LATER call in the same script — put durable writes (checkpoint, facts:assert) FIRST, never last."
+      }
+    },
+    {
+      "name": "code:structural",
+      "http": {
+        "path": "/api/agent-tools/code/structural",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Find code by SHAPE using pinned ast-grep: `pattern` is code with metavariables (`foo($X)`, `if ($C) { $$$BODY }`), matched against the syntax tree — so it ignores formatting and line breaks, and does NOT match the same characters inside a string or comment. op:\"search\" lists matches; op:\"rewrite_preview\" additionally reports what each site WOULD become. NEVER writes: ast-grep applies only with --update-all, which this tool cannot emit. Returns { sites:[{path,line1,detail}], truncation, freshness, error }; line1 is ONE-indexed (ast-grep reports zero-indexed — this converts). Knows nothing about types: two identically-shaped calls from different modules are indistinguishable here.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.",
+        "notWhen": "The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is ripgrep.",
+        "chaining": "code:structural to find candidate sites by shape → lsp:query op:\"symbol\" on one to confirm it resolves where you think. A structural match set is a SUPERSET of the type-correct one."
       }
     },
     {
