@@ -625,6 +625,50 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
   });
 
+  it('expected lifecycle ack marker preserves the ack reply but suppresses only its reply-wake', async () => {
+    mockResolvedOnceTyped(
+      getByIdM,
+      envelope({
+        msg_id: 'wind-down-cue',
+        from: 'peer',
+        to: ['me'],
+        wakeOnReply: true,
+        expectedLifecycleAck: { kind: 'fleet-wind-down', fleet: 'backend' },
+      }),
+    );
+    const b = await body({ to: ['peer'], summary: 'standing down', related_msg_id: 'wind-down-cue' });
+    expect(b.results[0].ok).toBe(true);
+    expect(sendM).toHaveBeenCalledTimes(1); // the ack/reply row is still persisted
+    expect(wakeM).not.toHaveBeenCalled();
+    expect(b.results[0].replyWake).toEqual({
+      target: 'peer',
+      woken: 0,
+      suppressed: true,
+      suppressionReason: 'expected_lifecycle_ack',
+    });
+  });
+
+  it('a malformed lifecycle marker does not suppress an ordinary opted-in reply-wake', async () => {
+    mockResolvedOnceTyped(
+      getByIdM,
+      envelope({
+        msg_id: 'malformed-cue',
+        from: 'peer',
+        to: ['me'],
+        wakeOnReply: true,
+        expectedLifecycleAck: { kind: 'fleet-wind-down', fleet: '' },
+      }),
+    );
+    wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
+    const b = await body({ to: ['peer'], summary: 'ordinary reply', related_msg_id: 'malformed-cue' });
+    expect(wakeM).toHaveBeenCalledExactlyOnceWith(
+      ['peer'],
+      expect.objectContaining({ payload: { msg_id: 'm1' } }),
+    );
+    expect(b.results[0].replyWake).toMatchObject({ target: 'peer', woken: 1 });
+    expect(b.results[0].replyWake?.suppressed).toBeUndefined();
+  });
+
   it('a reply whose sender IS the original sender does NOT self-wake', async () => {
     // original was sent BY 'me' (the current identity) → never self-wake
     mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'me', to: ['peer'], wakeOnReply: true }));

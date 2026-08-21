@@ -36,7 +36,11 @@ import {
 import { fetchPresenceFleet, resolvePresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience, ALLHIVE_BROADCAST_FIELD } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
-import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
+import {
+  CUE_AUTHORITY_FIELD,
+  readExpectedLifecycleAck,
+  type CueAuthorityStamp,
+} from '../cue-authority';
 import { RELAY_PROVENANCE_FIELD, type RelayProvenanceStamp } from '../relay-provenance';
 import { resolveRelayProvenance } from '../relay-provenance-resolve';
 import { BODY_REFS_OPT_OUT_FIELD, GATE_REFS_FIELD } from '../ref-hydrate';
@@ -1085,7 +1089,15 @@ async function sendOne(
   // error (lookup miss, sql hiccup, wake failure) is swallowed and NEVER fails
   // or blocks this send (the reply already persisted above). Never self-wakes and
   // never wakes '*'/'human'. Skipped entirely when the flag is OFF.
-  let replyWake: { target: string; woken: number; foldedIntoDirectedWake?: boolean } | undefined;
+  let replyWake:
+    | {
+        target: string;
+        woken: number;
+        foldedIntoDirectedWake?: boolean;
+        suppressed?: boolean;
+        suppressionReason?: string;
+      }
+    | undefined;
   if (wakeOnReplyFlag && msg.related_msg_id) {
     try {
       // WI-5072: the send-time validation above already fetched the original;
@@ -1094,6 +1106,7 @@ async function sendOne(
       const originalFrom = original?.from;
       const optedIn =
         original != null && (original as { wakeOnReply?: unknown }).wakeOnReply === true;
+      const expectedLifecycleAck = readExpectedLifecycleAck(original as Record<string, unknown> | null);
       if (
         optedIn &&
         typeof originalFrom === 'string' &&
@@ -1101,30 +1114,43 @@ async function sendOne(
         originalFrom !== identity.ownerId &&
         !isSelectorOrWildcard(originalFrom)
       ) {
-        // EI-14760: the deliver-and-wake fan below (env.to, when wake:true) is the
-        // AUTHORITATIVE wake for a directed recipient. When the wake-on-reply target is
-        // ALSO a directed-wake recipient — the common A→B, then B replies-to-A-with-wake
-        // back-and-forth — firing HERE too fans the SAME recipient's inbox-wake key a
-        // second time, queuing a duplicate wake delivery for ONE message and burning a
-        // redundant wake-pump turn on content already delivered (EI-14760: two
-        // deliveries #22831/#22832 on the same await, ~31ms apart, for one send). Skip
-        // the redundant fire when originalFrom is already in env.to (still reported,
-        // folded, so the dedup stays observable); fire normally otherwise — an
-        // inject-only send (wakeMode null), or a reply whose original sender is NOT a
-        // recipient of this message, still needs the reply-wake.
-        if (wakeMode != null && env.to.includes(originalFrom)) {
-          replyWake = { target: originalFrom, woken: 0, foldedIntoDirectedWake: true };
+        if (expectedLifecycleAck) {
+          // A wind-down cue deliberately asks members to leave a durable ack.
+          // Preserve that ack row/thread, but do not re-invoke the leader whose
+          // loop was just ended. The marker is validated and narrowly scoped;
+          // malformed/unknown markers follow the ordinary reply-wake path.
+          replyWake = {
+            target: originalFrom,
+            woken: 0,
+            suppressed: true,
+            suppressionReason: 'expected_lifecycle_ack',
+          };
         } else {
-          const fan = await wakeRecipients([originalFrom], {
-            summary: msg.summary,
-            source: identity.ownerId,
-            // EI-18663224517726594: carry THIS message's own msg_id in the wake
-            // payload so a woken agent can thread a further reply
-            // (related_msg_id) without a separate coord:inbox round-trip just to
-            // recover an id they were already delivered the content of.
-            payload: { msg_id: env.msg_id },
-          });
-          replyWake = { target: originalFrom, woken: fan.woken };
+          // EI-14760: the deliver-and-wake fan below (env.to, when wake:true) is the
+          // AUTHORITATIVE wake for a directed recipient. When the wake-on-reply target is
+          // ALSO a directed-wake recipient — the common A→B, then B replies-to-A-with-wake
+          // back-and-forth — firing HERE too fans the SAME recipient's inbox-wake key a
+          // second time, queuing a duplicate wake delivery for ONE message and burning a
+          // redundant wake-pump turn on content already delivered (EI-14760: two
+          // deliveries #22831/#22832 on the same await, ~31ms apart, for one send). Skip
+          // the redundant fire when originalFrom is already in env.to (still reported,
+          // folded, so the dedup stays observable); fire normally otherwise — an
+          // inject-only send (wakeMode null), or a reply whose original sender is NOT a
+          // recipient of this message, still needs the reply-wake.
+          if (wakeMode != null && env.to.includes(originalFrom)) {
+            replyWake = { target: originalFrom, woken: 0, foldedIntoDirectedWake: true };
+          } else {
+            const fan = await wakeRecipients([originalFrom], {
+              summary: msg.summary,
+              source: identity.ownerId,
+              // EI-18663224517726594: carry THIS message's own msg_id in the wake
+              // payload so a woken agent can thread a further reply
+              // (related_msg_id) without a separate coord:inbox round-trip just to
+              // recover an id they were already delivered the content of.
+              payload: { msg_id: env.msg_id },
+            });
+            replyWake = { target: originalFrom, woken: fan.woken };
+          }
         }
       }
     } catch {

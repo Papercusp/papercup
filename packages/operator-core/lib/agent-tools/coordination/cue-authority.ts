@@ -46,6 +46,51 @@ export interface CueAuthorityStamp {
 export const CUE_AUTHORITY_FIELD = 'cueAuthority';
 
 /**
+ * A typed marker for control cues whose acknowledgement is a lifecycle
+ * disposition, not a request that should re-invoke the sender. The marker is
+ * deliberately separate from cue authority: authority answers who may command
+ * the action, while this answers how the expected ack should be delivered.
+ */
+export type ExpectedLifecycleAckKind = 'fleet-wind-down';
+
+export interface ExpectedLifecycleAckMarker {
+  kind: ExpectedLifecycleAckKind;
+  fleet: string;
+}
+
+/** Reserved envelope field for expected lifecycle acknowledgements. */
+export const EXPECTED_LIFECYCLE_ACK_FIELD = 'expectedLifecycleAck';
+
+/** Stamp the expected acknowledgement semantics for a fleet wind-down cue. */
+export function expectedFleetWindDownAck(fleetSlug: string): ExpectedLifecycleAckMarker {
+  return {
+    kind: 'fleet-wind-down',
+    fleet: fleetSlug.trim() || '(fleet)',
+  };
+}
+
+/**
+ * Read + validate an expected lifecycle-ack marker from a coord envelope.
+ * Malformed/forged values are ignored defensively, just like cue authority
+ * stamps, so ordinary replies retain their normal wake semantics.
+ */
+export function readExpectedLifecycleAck(
+  env: Record<string, unknown> | null | undefined,
+): ExpectedLifecycleAckMarker | null {
+  const raw = env?.[EXPECTED_LIFECYCLE_ACK_FIELD];
+  if (!raw || typeof raw !== 'object') return null;
+  const marker = raw as Record<string, unknown>;
+  if (
+    marker.kind === 'fleet-wind-down' &&
+    typeof marker.fleet === 'string' &&
+    marker.fleet.length > 0
+  ) {
+    return { kind: 'fleet-wind-down', fleet: marker.fleet };
+  }
+  return null;
+}
+
+/**
  * Derive the cue-authority stamp for a SENDER from its resolved role inputs. Pure.
  *   - queen / overwatch      → hive-queen(<hive>), hive-wide
  *   - fleet leader (+ slug)  → fleet-leader(<slug>), fleet-members(<slug>)

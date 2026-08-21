@@ -31,7 +31,12 @@ import {
 } from '../../agent-fleets-store';
 import { sendMessage } from '../coordination/messages';
 import { getPresence } from '../coordination/presence';
-import { CUE_AUTHORITY_FIELD, fleetScopedCueAuthority } from '../coordination/cue-authority';
+import {
+  CUE_AUTHORITY_FIELD,
+  EXPECTED_LIFECYCLE_ACK_FIELD,
+  expectedFleetWindDownAck,
+  fleetScopedCueAuthority,
+} from '../coordination/cue-authority';
 import { listFleetControlMembers } from '../coordination/audience-host';
 import { resolveFleetCaller } from './_shared';
 import { classifyFleetControlInvoker } from './fleet-auth';
@@ -88,16 +93,21 @@ export function fleetControlCueText(
   fleet: string,
   reason: string | null,
   byHandle: string,
+  cueMsgId?: string,
 ): { summary: string; body: string } {
   if (action === 'wind-down') {
+    const ackInstruction = cueMsgId
+      ? `ack this exact cue with coord:ack { msg_id: '${cueMsgId}' }`
+      : 'ack this exact cue with coord:ack { msg_id }';
     return {
       summary: `Fleet ${fleet} WIND-DOWN (typed control cue, by ${byHandle})${reason ? `: ${reason}` : ''}`,
       body:
         `Fleet ${fleet} is WINDING DOWN${reason ? ` — reason: ${reason}` : ''}. ` +
         'This is a TYPED, BINDING control cue (registry control_state=winding-down). ' +
         'Finish only the atomic step in hand, then: work_items:checkpoint + release your claims ' +
-        '(or complete with evidence), release your file locks, loop:end any armed loop, and ack ' +
-        'your leader with a one-line disposition. Do NOT pull new work from this fleet\'s lanes ' +
+        `(or complete with evidence), release your file locks, loop:end any armed loop, and ${ackInstruction} ` +
+        'to send your one-line disposition to the leader. This lifecycle ack is recorded without ' +
+        're-invoking the wound-down leader. Do NOT pull new work from this fleet\'s lanes ' +
         'until a fleet:resume cue (control_state=active) lands.',
     };
   }
@@ -297,17 +307,21 @@ export async function applyFleetControl(
         liveMembers ??
         (await listFleetControlMembers(slug)).filter((id) => id !== ownerId);
       if (members.length > 0) {
-        const { summary, body } = fleetControlCueText(
-          action,
-          slug,
-          effectiveReason,
-          shortHandle(ownerId),
-        );
+        const { summary } = fleetControlCueText(action, slug, effectiveReason, shortHandle(ownerId));
         const env = await sendMessage(identity, {
           to: members,
           summary,
-          body,
-          extra: { [CUE_AUTHORITY_FIELD]: fleetScopedCueAuthority(slug) },
+          bodyWithMsgId: (cueMsgId) =>
+            fleetControlCueText(action, slug, effectiveReason, shortHandle(ownerId), cueMsgId).body,
+          extra: {
+            [CUE_AUTHORITY_FIELD]: fleetScopedCueAuthority(slug),
+            ...(action === 'wind-down'
+              ? {
+                  [EXPECTED_LIFECYCLE_ACK_FIELD]: expectedFleetWindDownAck(slug),
+                  wakeOnReply: true,
+                }
+              : {}),
+          },
         });
         notified = members;
         cueMsgId = (env as { msg_id?: string })?.msg_id ?? null;

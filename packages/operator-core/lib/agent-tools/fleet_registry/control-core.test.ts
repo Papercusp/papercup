@@ -50,7 +50,11 @@ import { getFleet, setFleetControlState, type AgentFleetRecord } from '../../age
 import { sendMessage } from '../coordination/messages';
 import { getPresence } from '../coordination/presence';
 import { hostAudienceResolvers, listFleetControlMembers } from '../coordination/audience-host';
-import { CUE_AUTHORITY_FIELD } from '../coordination/cue-authority';
+import {
+  CUE_AUTHORITY_FIELD,
+  EXPECTED_LIFECYCLE_ACK_FIELD,
+  expectedFleetWindDownAck,
+} from '../coordination/cue-authority';
 import { buildFleetDrainStamp } from './drain-stamp';
 import { clearSessionBriefReleasedForFleet, markSessionBriefReleased } from '../../session-brief';
 import { ensureFleetLeaderControl, retireFleetLeaderWatches } from './leader-control';
@@ -124,7 +128,11 @@ describe('fleetControlCueText (pure)', () => {
     expect(summary).toContain('release cut');
     expect(body).toContain('BINDING');
     expect(body).toContain('work_items:checkpoint');
+    expect(body).toContain('coord:ack { msg_id }');
     expect(body).toContain('fleet:resume');
+    expect(fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue').body).toContain(
+      "coord:ack { msg_id: 'm-cue' }",
+    );
   });
   it('resume: lifts the wind-down, resume the pull cadence', () => {
     const { summary, body } = fleetControlCueText('resume', 'backend', null, '4c85f');
@@ -160,7 +168,11 @@ describe('applyFleetControl', () => {
         scope: 'fleet-members',
         scopeRef: 'backend',
       },
+      [EXPECTED_LIFECYCLE_ACK_FIELD]: expectedFleetWindDownAck('backend'),
+      wakeOnReply: true,
     });
+    const bodyWithMsgId = sendOpts.bodyWithMsgId as (msgId: string) => string;
+    expect(bodyWithMsgId('m-cue')).toContain("coord:ack { msg_id: 'm-cue' }");
     expect(markReleasedM).toHaveBeenCalledTimes(2);
     expect(markReleasedM).toHaveBeenCalledWith(
       'm-1',
@@ -249,6 +261,9 @@ describe('applyFleetControl', () => {
       by: callerRef.ownerId,
     }, undefined, callerRef.ownerId);
     expect((sendM.mock.calls[0][1] as { summary: string }).summary).toContain('RESUMED');
+    const resumeExtra = (sendM.mock.calls[0][1] as { extra?: Record<string, unknown> }).extra;
+    expect(resumeExtra?.[EXPECTED_LIFECYCLE_ACK_FIELD]).toBeUndefined();
+    expect(resumeExtra?.wakeOnReply).toBeUndefined();
     expect(clearReleasedM).toHaveBeenCalledWith('ws-1', 'backend');
     expect(ensureLeaderControlM).toHaveBeenCalledWith(expect.objectContaining({
       workspaceId: 'ws-1',
@@ -314,7 +329,8 @@ describe('applyFleetControl', () => {
       // structured stamp rides the result for the immediate caller.
       expect(r.drainStamp).toEqual(STAMP);
       // the member cue body carries the augmented reason (successor sees it at orient too).
-      const cueBody = (sendM.mock.calls[0][1] as { body: string }).body;
+      const cueOpts = sendM.mock.calls[0][1] as { bodyWithMsgId: (msgId: string) => string };
+      const cueBody = cueOpts.bodyWithMsgId('m-cue');
       expect(cueBody).toContain(STAMP.reVerifyCommand);
       // the helper was fed the caller's harness first, then the session harness as fallback.
       expect(drainStampM).toHaveBeenCalledWith(
