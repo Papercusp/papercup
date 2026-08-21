@@ -301,7 +301,9 @@ const SCHEDULER_WORKER_BUDGET = resolveGlobalWorkerBudget({
 // tell "no measurement" apart from "no memory".
 function readMemAvailableMb() {
   try {
-    const line = readFileSync("/proc/meminfo", "utf8").match(/^MemAvailable:\s+(\d+)\s+kB$/m);
+    const line = readFileSync("/proc/meminfo", "utf8").match(
+      /^MemAvailable:\s+(\d+)\s+kB$/m,
+    );
     return line ? Math.floor(Number(line[1]) / 1024) : null;
   } catch {
     return null; // non-Linux, or /proc not mounted — fall back to the ceiling.
@@ -1119,7 +1121,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) =>
       /\.(ts|mjs|cjs)$/.test(f) &&
       !/\.(test|spec)\.[cm]?tsx?$/.test(f) &&
-      !/(^|\/)(dist|build|node_modules|_retired|db-sql|env-sidecars)\//.test(f) &&
+      !/(^|\/)(dist|build|node_modules|_retired|db-sql|env-sidecars)\//.test(
+        f,
+      ) &&
       !f.startsWith("papercup-release/") &&
       !f.startsWith("papercup-checkpoint/"),
   },
@@ -1158,7 +1162,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === "scripts/mutation-probe.sh" ||
       f === "scripts/verify-tauri-headless.sh" ||
       f === "apps/operator/lib/verify-tauri-headless-bind-retry.test.ts" ||
-      f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
+      f ===
+        "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
   },
   {
     // EI-20687080717457981 — the guard that keeps CLAUDE.md's "which commit carries your
@@ -1187,7 +1192,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // projected doc) is selected by a DISJOINT change, and that disjointness is the hole.
     appliesTo: (f) =>
       f === "CLAUDE.md" ||
-      f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
+      f ===
+        "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md",
   },
   {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
@@ -1278,7 +1284,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) =>
       f === "CLAUDE.md" ||
       f === "AGENTS.md" ||
-      f === "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md" ||
+      f ===
+        "packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md" ||
       // A change to HOW projection is computed can drift every projected file at once
       // without any of them being edited.
       f === "scripts/project-doc-parts.mjs",
@@ -2566,10 +2573,10 @@ function tsconfigAliasesFor(wsRoot) {
     // everything". Safe direction, but it disables narrowing INVISIBLY, which is
     // the failure mode this file can least afford to hide. Trailing commas are
     // stripped AFTER masking, so a comma inside a string is never touched either.
-    const raw = stripCommentsOnly(readFileSync(tsconfigPath, "utf8"), tsconfigPath).replace(
-      /,(\s*[}\]])/g,
-      "$1",
-    );
+    const raw = stripCommentsOnly(
+      readFileSync(tsconfigPath, "utf8"),
+      tsconfigPath,
+    ).replace(/,(\s*[}\]])/g, "$1");
     const cfg = JSON.parse(raw);
     const opts = cfg.compilerOptions ?? {};
     const baseUrl = join(wsRoot, opts.baseUrl ?? ".");
@@ -2604,7 +2611,8 @@ if (relatedOnly && !printAffected) {
   // preserved. Integration, el-suite and the invariant guards are NOT narrowable:
   // each means something specific by "run" that a positional filter would quietly
   // change.
-  const narrowable = (script) => script === "test" || LANE_SCRIPTS.includes(script);
+  const narrowable = (script) =>
+    script === "test" || LANE_SCRIPTS.includes(script);
   const byWorkspace = new Map();
 
   for (const t of tasks) {
@@ -2754,7 +2762,12 @@ outSync(
 plannedTaskCount = tasks.length;
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
-outSync(formatTaskBudgetMarker({ ...SCHEDULER_CONFIG, memAvailableMb: MEM_AVAILABLE_MB }));
+outSync(
+  formatTaskBudgetMarker({
+    ...SCHEDULER_CONFIG,
+    memAvailableMb: MEM_AVAILABLE_MB,
+  }),
+);
 // EI-15802: printed EARLY (before any suite runs) and again in the final
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
@@ -3122,13 +3135,14 @@ function runCapturedTask(
     quantumMs: BATCH_TIMEOUT_QUANTUM_MS,
     maxMs: BATCH_TIMEOUT_MAX_MS,
   });
-  const taskTimeoutSource = BATCH_TIMEOUT_OVERRIDE_MS != null
-    ? "override"
-    : taskDurationMs == null || taskTimeoutMs === BATCH_TIMEOUT_FLOOR_MS
-      ? "floor"
-      : taskTimeoutMs === BATCH_TIMEOUT_MAX_MS
-        ? "history-capped"
-        : "history";
+  const taskTimeoutSource =
+    BATCH_TIMEOUT_OVERRIDE_MS != null
+      ? "override"
+      : taskDurationMs == null || taskTimeoutMs === BATCH_TIMEOUT_FLOOR_MS
+        ? "floor"
+        : taskTimeoutMs === BATCH_TIMEOUT_MAX_MS
+          ? "history-capped"
+          : "history";
   const {
     cmd,
     argv,

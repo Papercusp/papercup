@@ -47,8 +47,7 @@ export function stableJson(value) {
  */
 export function passingTaskVerdictIdentityEnvironment(environment) {
   const identityEnvironment = { ...(environment ?? {}) };
-  const rawProofGroup =
-    identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
+  const rawProofGroup = identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
   const proofGroup =
     typeof rawProofGroup === "string" && rawProofGroup.trim() !== ""
       ? rawProofGroup
@@ -223,8 +222,7 @@ export function hashDependencyFileSet({
   return { ok: true, hash: hash.digest("hex"), fileCount: unique.length };
 }
 
-const pathInsideDir = (file, dir) =>
-  file === dir || file.startsWith(`${dir}/`);
+const pathInsideDir = (file, dir) => file === dir || file.startsWith(`${dir}/`);
 
 /**
  * Resolve the complete content proof for one affected-test task.
@@ -295,8 +293,7 @@ export function passingTaskVerdictDependencyProvenance({
     (submodule) =>
       wholeTree ||
       sortedClosureDirs.some(
-        (dir) =>
-          pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
+        (dir) => pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
       ),
   );
   return hashDependencyFileSet({
