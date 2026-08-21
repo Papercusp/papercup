@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import * as nodePty from '@lydell/node-pty';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildConsoleOneliner,
@@ -63,6 +64,13 @@ function fakeChild(pid = 4242) {
 }
 
 const APPEARANCE: AppearanceOpts = { mode: 'console', planSlug: null, label: null };
+
+/** Decode the shell-escaped rcfile payload from buildConsoleOneliner. */
+function interactiveRcScript(oneliner: string): string {
+  const match = /--rcfile <\(printf '%s\\n' (.*)\) -i$/.exec(oneliner);
+  expect(match).not.toBeNull();
+  return execFileSync('bash', ['-c', `printf '%s' ${match![1]}`], { encoding: 'utf8' });
+}
 
 // WI-3114: HERMETIC desktop-env probes. The stubbed DISPLAY=:99 alone is NOT
 // deterministic — resolveLinuxDesktopEnv validates the display's X socket
@@ -349,10 +357,12 @@ describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
   it('a supplied bootReceiptPath tees the failure banner into it, without changing the printed text', () => {
     const withReceipt = buildConsoleOneliner('/x', {}, 'false', APPEARANCE, '/tmp/receipt.log');
     const without = buildConsoleOneliner('/x', {}, 'false', APPEARANCE, null);
-    expect(withReceipt).toContain("| tee -a '/tmp/receipt.log'");
-    expect(withReceipt).toContain('initial terminal command exited with status %s');
+    const withReceiptScript = interactiveRcScript(withReceipt);
+    const withoutScript = interactiveRcScript(without);
+    expect(withReceiptScript).toContain("| tee -a '/tmp/receipt.log'");
+    expect(withReceiptScript).toContain('initial terminal command exited with status %s');
     // Stripping the tee clause should recover the exact unmodified banner.
-    expect(withReceipt.replace(" | tee -a '/tmp/receipt.log'", '')).toBe(without);
+    expect(withReceiptScript.replace(" | tee -a '/tmp/receipt.log'", '')).toBe(withoutScript);
   });
 });
 
@@ -790,36 +800,100 @@ describe('wrapHeadlessSigtermDiagnostic (EI-9748)', () => {
 });
 
 describe('buildConsoleOneliner', () => {
-  it('cds, evals the greeting in a subshell, then execs an interactive login shell', () => {
+  it('cds, starts an interactive supervisor, evals the greeting, then execs a login shell', () => {
     const out = buildConsoleOneliner('/proj', {}, 'npm run dev', APPEARANCE);
+    const script = interactiveRcScript(out);
     expect(out).toContain("cd '/proj'");
-    expect(out).toContain("(eval 'npm run dev'); __papercusp_greeting_rc=$?");
-    expect(out).toContain('exec "${SHELL:-/bin/bash}" -l');
+    expect(out).toContain("exec bash --noprofile --rcfile <(printf '%s\\n'");
+    expect(script).toContain("(eval 'npm run dev'); __papercusp_greeting_rc=$?");
+    expect(script).toContain('exec "${SHELL:-/bin/bash}" -l');
   });
 
   it('always drops to the shell after the greeting and prints a failure banner for non-zero greetings', () => {
     const out = buildConsoleOneliner('/x', {}, 'false', APPEARANCE);
+    const script = interactiveRcScript(out);
     // The post-greeting separator must be ';' so exit-non-zero
     // does not short-circuit the interactive shell (matches native_console.rs).
-    expect(out).toContain('); __papercusp_greeting_rc=$?');
-    expect(out).toContain('initial terminal command exited with status %s');
-    expect(out).toContain('; exec "${SHELL:-/bin/bash}" -l');
-    expect(out).not.toContain(') && exec');
+    expect(script).toContain('); __papercusp_greeting_rc=$?');
+    expect(script).toContain('initial terminal command exited with status %s');
+    expect(script).toContain('; exec "${SHELL:-/bin/bash}" -l');
+    expect(script).not.toContain(') && exec');
   });
 
   it('drops the sentinel + EXIT trap so the desktop side can detect shell exit', () => {
     const out = buildConsoleOneliner('/x', {}, 'true', APPEARANCE);
-    expect(out).toContain('touch .papercup-console-active.$$');
-    expect(out).toContain("trap 'rm -f .papercup-console-active.$$' EXIT");
+    const script = interactiveRcScript(out);
+    expect(script).toContain('touch .papercup-console-active.$$');
+    expect(script).toContain("trap 'rm -f .papercup-console-active.$$' EXIT");
   });
+
+  it(
+    'keeps the interactive supervisor alive when Ctrl+C interrupts the greeting',
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'papercup-console-sigint-'));
+      const out = buildConsoleOneliner(
+        dir,
+        { SHELL: '/bin/bash', PS1: 'PAPERCUSP-SURVIVED> ' },
+        "printf 'GREETING_STARTED\\n'; sleep 30",
+        APPEARANCE,
+      );
+      const terminal = nodePty.spawn('bash', ['--noprofile', '--norc', '-lc', out], {
+        cwd: dir,
+        env: { ...process.env, TERM: 'xterm-256color' },
+        cols: 100,
+        rows: 30,
+      });
+      let captured = '';
+      terminal.onData((data) => {
+        captured += data;
+      });
+      const exited = new Promise<void>((resolve) => terminal.onExit(() => resolve()));
+      const waitForOutput = async (needle: string) => {
+        const deadline = Date.now() + 3_000;
+        while (!captured.includes(needle)) {
+          if (Date.now() >= deadline) {
+            throw new Error(`timed out waiting for ${needle}; output=${JSON.stringify(captured)}`);
+          }
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+      };
+
+      try {
+        await waitForOutput('GREETING_STARTED');
+        terminal.write('\x03');
+        await waitForOutput('^C');
+        terminal.write('echo TERMINAL_SURVIVED_SIGINT\n');
+        await waitForOutput('TERMINAL_SURVIVED_SIGINT');
+        terminal.write('exit\n');
+        await Promise.race([
+          exited,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`terminal did not exit; output=${JSON.stringify(captured)}`)), 3_000),
+          ),
+        ]);
+
+        expect(captured).toContain('^C');
+        expect(captured).toContain('TERMINAL_SURVIVED_SIGINT');
+      } finally {
+        try {
+          terminal.kill();
+        } catch {
+          // Already exited after the explicit `exit` above.
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+    8_000,
+  );
 
   it('carries a command containing quotes as an escaped eval literal (no breakout, no mangle)', () => {
     const out = buildConsoleOneliner('/x', {}, "echo 'hi there'", APPEARANCE);
+    const script = interactiveRcScript(out);
     // The greeting is shellEscape'd as ONE literal the subshell evals — the
     // pre-fix bare `'` → `'\''` replace (an escape for a single-quoted context
     // the greeting was never inside) made any quoted greeting unparseable
     // (macOS Terminal: `unexpected EOF while looking for matching "'"`).
-    expect(out).toContain("(eval 'echo '\\''hi there'\\''')");
+    expect(script).toContain("(eval 'echo '\\''hi there'\\''')");
   });
 
   it('a quote-bearing greeting yields a one-liner bash can actually parse (bash -n)', () => {
@@ -868,7 +942,7 @@ describe('buildConsoleOneliner', () => {
   it('preserves pipes / redirects / && in the arbitrary command', () => {
     const cmd = 'grep -r foo . | tee out.log && echo done';
     const out = buildConsoleOneliner('/x', {}, cmd, APPEARANCE);
-    expect(out).toContain(`(eval '${cmd}')`);
+    expect(interactiveRcScript(out)).toContain(`(eval '${cmd}')`);
   });
 
   it('exports env vars with valid bash names and skips invalid ones', () => {

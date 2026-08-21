@@ -369,8 +369,6 @@ export function buildConsoleOneliner(
     buildAppearancePrelude(appearance),
     `cd ${escapedCwd}`,
     ...envExports,
-    `touch .papercup-console-active.$$`,
-    `trap 'rm -f .papercup-console-active.$$' EXIT`,
   ].join(' && ');
   // Run the greeting in a subshell, then ALWAYS exec an interactive login shell
   // — `;` (not `&&`) on BOTH sides of the greeting, so a command that exits
@@ -395,7 +393,12 @@ export function buildConsoleOneliner(
   // receipt path when one was supplied, so a poller outside the terminal can
   // observe the failure — the printf itself is unchanged (the window still
   // shows it), this just ALSO persists it to disk.
-  return `${prelude} ; ${keepWindowOpenOnFailure(greeting, { receiptPath: bootReceiptPath })}`;
+  return `${prelude} ; ${keepWindowOpenOnFailure(greeting, {
+    receiptPath: bootReceiptPath,
+    interactivePrelude:
+      `touch .papercup-console-active.$$; ` +
+      `trap 'rm -f .papercup-console-active.$$' EXIT`,
+  })}`;
 }
 
 /**
@@ -425,7 +428,7 @@ export function buildConsoleOneliner(
  */
 export function keepWindowOpenOnFailure(
   command: string,
-  opts?: { receiptPath?: string | null },
+  opts?: { receiptPath?: string | null; interactivePrelude?: string | null },
 ): string {
   // EI-19330040718883562: also persist the failure line to a receipt file when
   // one was supplied, so a poller OUTSIDE the terminal can observe it. The
@@ -436,7 +439,30 @@ export function keepWindowOpenOnFailure(
     `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
     `printf '\\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\\n' "$__papercusp_greeting_rc"${receiptTee}; ` +
     `fi`;
-  return `(eval ${shellEscape(command)}); ${banner} ; exec "\${SHELL:-/bin/bash}" -l`;
+  const interactiveScript = [
+    opts?.interactivePrelude,
+    `(eval ${shellEscape(command)})`,
+    banner,
+    `exec "\${SHELL:-/bin/bash}" -l`,
+  ]
+    .filter(Boolean)
+    .join('; ');
+
+  // WI-40182: the terminal emulator starts this whole string beneath a
+  // non-interactive `bash -lc`. Running the command directly in that shell
+  // leaves the wrapper and its child in the SAME foreground process group, so
+  // a terminal-generated Ctrl+C can SIGINT both of them. The wrapper then dies
+  // before it can reach the trailing login shell and the desktop window closes.
+  //
+  // Make a genuinely interactive bash the terminal-holding supervisor BEFORE
+  // the command starts. Interactive bash enables job control, gives the command
+  // its own foreground process group, and survives Ctrl+C itself. `--rcfile`
+  // lets the command run on that shell's first turn without stealing stdin from
+  // the terminal. On an ordinary command exit the script still prints the
+  // failure banner when needed and hands off to the user's login shell. If
+  // Ctrl+C aborts rcfile execution, bash simply presents its prompt — which is
+  // precisely the terminal-survival behavior the owner expects.
+  return `exec bash --noprofile --rcfile <(printf '%s\\n' ${shellEscape(interactiveScript)}) -i`;
 }
 
 // ─── Desktop-env resolution + spawn verification (WI-1886) ───────────
