@@ -588,7 +588,7 @@ export const CANARY_PROBE_TIMEOUT_MS = 90_000;
 export async function runCanary(root: string, registryFiles: number | null, embeddings: number | null): Promise<CanaryVerdict> {
   const bin = canaryBin();
   if (!existsSync(bin)) {
-    return judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, roundTripOk: null, embeddings });
+    return judgeCanary({ fileCount: null, symbolCount: null, callEdgeCount: null, defEdgeCount: null, roundTripOk: null, embeddings });
   }
   const t = CANARY_PROBE_TIMEOUT_MS;
   const fileCount = await cypherScalar(bin, root, 'MATCH (f:File) RETURN count(f) AS n', t);
