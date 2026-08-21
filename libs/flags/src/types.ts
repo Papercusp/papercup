@@ -2662,11 +2662,35 @@ export const FLAGS = {
   // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS): the facade is
   // strictly read-only and additive, so nothing else changes behavior when it
   // is on. OFF is the kill-switch — every lsp.* verb refuses with
-  // flag_disabled and no language-server child is spawned, which is also the
-  // unwind path D-007 requires instead of the hard-coded `--no-lsp` that
-  // apps/operator/scripts/psu-launcher.mjs carries today (P-021 replaces it
-  // with a read of THIS flag).
+  // flag_disabled and no language-server child is spawned.
+  //
+  // ⚠ THIS FLAG IS NOT THE `--no-lsp` UNWIND. An earlier revision of this
+  // comment said P-021 would replace psu-launcher.mjs's hard-coded `--no-lsp`
+  // "with a read of THIS flag" — that was WRONG and is corrected by D-013.
+  // `--no-lsp` strips OMP's OWN `lsp` BUILTIN as weak-model tool-attractor
+  // suppression, a different subject from "may agents call our lsp.* facade".
+  // Reusing this key would mean enabling the facade silently re-arms a
+  // documented doom-loop attractor on every OMP launch. That unwind is
+  // OMP_NATIVE_LSP_BUILTIN below.
   CODE_INTEL_LSP: "papercusp-code-intel-lsp",
+  // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may an OMP
+  // session KEEP its native `lsp` builtin? Replaces the hard-coded `--no-lsp`
+  // that apps/operator/scripts/psu-launcher.mjs passed on both omp branches.
+  //
+  // ORTHOGONAL to CODE_INTEL_LSP above: that one governs OUR read-only lsp.*
+  // facade; this one governs OMP's own in-process builtin. Two behaviours, two
+  // switches — collapsing them is exactly the hazard D-013 records.
+  //
+  // Default ON (derived FLAG_DEFAULTS — not in DARK_FLAGS), and safe to default
+  // ON because the weak-model hazard is excluded by CODE, not by this default:
+  // the resolution in bootstrap-su/bootstrap-role ANDs this flag with a
+  // `!isLocalModelSpec(model)` tier gate, so a local/ornith model is stripped
+  // regardless of how this flag is set. The documented incidents (session 9885
+  // abusing `lsp` as a tools:call wrapper; `eval` doom-looping ornith 56-80× in
+  // 10234/10239) are all weak local models, i.e. the population the tier gate
+  // permanently excludes. OFF is the kill-switch: every omp launch strips the
+  // builtin again, byte-identical to the pre-P-021 hard-coded behaviour.
+  OMP_NATIVE_LSP_BUILTIN: "papercusp-omp-native-lsp-builtin",
 } as const;
 
 export type FlagKey = (typeof FLAGS)[keyof typeof FLAGS];
