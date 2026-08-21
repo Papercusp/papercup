@@ -103,4 +103,33 @@ describe('EI-124 — updateFeatureProvenance keys by PK, not workspace', () => {
     `;
     expect(row.wave).toBe('tier1');
   });
+
+  it('merges the phase-derived rig floor without clobbering existing payload keys', async () => {
+    await sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET payload = ${sql.json({ existing_key: 'keep-me', needs_2_machine_rig: true })}
+       WHERE harness_slug = ${SLUG} AND feature_id = ${FID}
+    `;
+
+    const n = await updateFeatureProvenance(
+      sql,
+      {
+        id: FID,
+        source_plan_slug: 'universal-schema-2026-05-30',
+        source_plan_item_ids: ['P-001'],
+        wave: 'tier1',
+        // A moved item must converge a stale true value to false.
+        needs_2_machine_rig: false,
+      },
+      SLUG,
+    );
+    expect(n).toBe(1);
+
+    const [row] = await sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = ${SLUG} AND feature_id = ${FID}
+    `;
+    expect(row.payload).toEqual({ existing_key: 'keep-me', needs_2_machine_rig: false });
+  });
 });

@@ -73,13 +73,16 @@ status: draft
 
 **Next:** Drive the apply path.
 
-## Phase 1
+## Phase 3 — Live 2-machine hive-git drill (LIVE-G gate — in-process green != live green)
 
 - **P-001** \`todo\` Foundation work.
   - **[VAL-foundation-001]**
     - **Verify:** \`npm run build\` passes
     - **Evidence:** \`tests/build.test.ts\`
     - **Status:** \`todo\`
+
+## Phase 2 — Preparation
+
 - **P-002** \`todo\` Builds on the foundation.
 
 ## Promote
@@ -108,6 +111,7 @@ interface CapturedImport {
     claims?: string[];
     source_plan_slug?: string;
     source_plan_item_ids?: string[];
+    needs_2_machine_rig?: boolean;
   }>;
 }
 
@@ -228,6 +232,12 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
     expect(foundation.source_plan_slug).toBe(SLUG);
     expect(foundation.source_plan_item_ids).toEqual(['P-001']);
     expect(dependent.source_plan_item_ids).toEqual(['P-002']);
+
+    // Phase-derived admission floor: the live Phase 3 2-machine leg is tagged,
+    // while the Phase 2 item is explicitly untagged. This is the payload seam
+    // consumed by POST /features/import, not merely a parser-level assertion.
+    expect(foundation.needs_2_machine_rig).toBe(true);
+    expect(dependent.needs_2_machine_rig).toBe(false);
   });
 
   it('upserts the inline VAL-* assertion into harness_plan_assertions (real PG)', async () => {
