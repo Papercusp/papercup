@@ -270,7 +270,21 @@ describe('volatile measurement validation (EI-20191740437408337)', () => {
     ).rejects.toThrow(/requires measuredAt/);
   });
 
-  it('refuses a long TTL instead of leaving a moving snapshot durable', async () => {
+  /**
+   * P-006 / D-011 — the boundary MOVED for two of the three volatility rules.
+   *
+   * This suite is a VALIDATION-BOUNDARY suite: `failSql` throws a distinctive sentinel if
+   * a write is attempted, so "rejects with the sentinel" is how a case proves it PASSED
+   * validation. What is written (the clamped ttl, the `normalized` receipt) is asserted in
+   * store.integration.test.ts against a real row, which is the only place those mean
+   * anything.
+   *
+   * WHY THESE TWO CHANGED: a volatile snapshot is one intent spread over three co-varying
+   * fields, and any two-of-three used to be a hard refusal that stored NOTHING. Measured:
+   * 41.0% of 7,639 calls rejected across 576 distinct agents in 14 days, with 149 distinct
+   * agents hitting the TTL rule alone and five separate work-items filed about it.
+   */
+  it('CLAMPS a long TTL rather than refusing the write (D-011)', async () => {
     await expect(
       assertFact(
         {
@@ -284,7 +298,55 @@ describe('volatile measurement validation (EI-20191740437408337)', () => {
         },
         failSql,
       ),
-    ).rejects.toThrow(/15 minutes/);
+      // Reaching SQL is the assertion: validation let it through. Clamping only ever
+      // SHORTENS a TTL, so it enforces the same ceiling the refusal did — while storing
+      // the caller's fact instead of discarding it.
+    ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
+  });
+
+  it('INFERS subjectVolatile from a supplied measuredAt rather than refusing (D-011)', async () => {
+    // 385 rejections from 192 DISTINCT agents. You do not stamp a sample time for a
+    // non-sample, so the intent is unambiguous and deterministically repairable.
+    await expect(
+      assertFact(
+        {
+          scope: 'workspace',
+          key: 'moving',
+          body: 'currently 4 open',
+          createdBy: 'su-test',
+          measuredAt: '2026-08-11T20:50:00.000Z',
+        },
+        failSql,
+      ),
+    ).rejects.toThrow(/SQL SHOULD NOT BE REACHED/);
+  });
+
+  it('STILL refuses subjectVolatile:true with no measuredAt — the one repair that would lie', async () => {
+    // Deliberately NOT normalized. The only available repair is measuredAt = now(), which
+    // would stamp a sample of unknown age as fresh — the exact misreading the field exists
+    // to prevent. Correct to refuse even though it costs ~44 agents.
+    await expect(
+      assertFact(
+        { scope: 'workspace', key: 'moving', body: 'currently 4 open', createdBy: 'su-test', subjectVolatile: true },
+        failSql,
+      ),
+    ).rejects.toThrow(/requires measuredAt/);
+  });
+
+  it('STILL refuses a future measuredAt — clock skew is signal, not noise', async () => {
+    await expect(
+      assertFact(
+        {
+          scope: 'workspace',
+          key: 'moving',
+          body: 'currently 4 open',
+          createdBy: 'su-test',
+          subjectVolatile: true,
+          measuredAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+        },
+        failSql,
+      ),
+    ).rejects.toThrow(/future/);
   });
 
   it('parses only the complete, marked measurement shape', () => {
