@@ -627,6 +627,36 @@ You must ALSO recreate `~/.config/kopia/db-backup.sh`, `snapshot-all.sh`, `healt
 directory's units will load but the timers will fail with "No such file or directory" until
 those scripts exist at their expected paths.
 
+## Mandatory post-restore recovery sweep
+
+Restoring `/home` or `/etc` restores unit files on disk, but it does not repair the systemd
+manager's in-memory state. A timer can therefore remain failed/inactive with `Result=resources`
+(`Unit to trigger vanished`) even after its file is back, and `Persistent=true` cannot catch up
+until the timer is started again. After every restore that touched `/home`, run the versioned
+sweep below before declaring the host recovered:
+
+```bash
+cd "$(git rev-parse --show-toplevel)/apps/operator/scripts/systemd"
+bash ./papercusp-systemd-restore-recovery.sh --scope user
+```
+
+The sweep runs `systemctl --user daemon-reload`, `systemctl --user reset-failed`, then starts
+every `enabled` or `enabled-runtime` timer that is not active. Disabled timers and already-active
+timers are left alone. It exits non-zero if the manager cannot be reloaded or any enabled timer
+cannot be started, so a failed recovery cannot be mistaken for a successful restore.
+
+If `/etc` was restored, recover the system manager too (root may be required):
+
+```bash
+sudo bash ./papercusp-systemd-restore-recovery.sh --scope system
+```
+
+If both trees were restored, one invocation covers both managers:
+
+```bash
+bash ./papercusp-systemd-restore-recovery.sh --scope both
+```
+
 ## Verify
 
 ```bash
