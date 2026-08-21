@@ -79,6 +79,57 @@ export interface ScoutDraftCandidate {
   title: string | null;
   /** Epoch ms of the draft row's last write (harness_plans.updated_at). */
   updatedAtMs: number;
+  /** Durable review evidence derived from the plan index/content. */
+  reviewEvidence?: ScoutDraftReviewEvidence;
+}
+
+/**
+ * Review evidence is deliberately separate from the plan's operational status.
+ * A steward's revision hold and an owner's needs-human gate both leave a plan in
+ * `draft` by design, so `status + age` cannot answer whether the plan was seen.
+ */
+export interface ScoutDraftReviewEvidence {
+  hasDecision: boolean;
+  hasNeedsHumanItem: boolean;
+  hasRevisionHold: boolean;
+}
+
+const DECLARED_DECISION_RE =
+  /^\s*(?:>\s*)?(?:(?:[-*+]\s+|\d+\.\s+)?(?:#{1,6}\s+D-\d{3,}\b|(?:\*\*|__)D-\d{3,}(?:\*\*|__)))/im;
+const NEEDS_HUMAN_ITEM_RE =
+  /^\s*(?:[-*+]\s+|\d+\.\s+)?\*\*P-\d{3,}\*\*\s+`needs[-_]human`(?:\s|$)/im;
+
+function jsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function hasNeedsHumanItem(items: unknown): boolean {
+  return jsonArray(items).some((item) => {
+    if (!item || typeof item !== 'object') return false;
+    const status = (item as { status?: unknown }).status;
+    return typeof status === 'string' && status.trim().toLowerCase().replace('_', '-') === 'needs-human';
+  });
+}
+
+/**
+ * PURE: whether a Scout draft carries a durable review/hold signal. Structured
+ * index rows are preferred, while the content fallbacks keep legacy/unindexed
+ * plans safe. Ordinary draft boilerplate mentions "review" but does not trip
+ * this guard; only an actual decision declaration, needs-human item, or explicit
+ * revision hold does.
+ */
+export function hasDurableScoutReviewEvidence(candidate: ScoutDraftCandidate): boolean {
+  const evidence = candidate.reviewEvidence;
+  return Boolean(
+    evidence?.hasDecision || evidence?.hasNeedsHumanItem || evidence?.hasRevisionHold,
+  );
 }
 
 /**
@@ -92,7 +143,12 @@ export function selectStaleDrafts(
 ): ScoutDraftCandidate[] {
   if (opts.thresholdMs <= 0) return []; // kill switch
   return candidates
-    .filter((c) => Number.isFinite(c.updatedAtMs) && opts.now - c.updatedAtMs >= opts.thresholdMs)
+    .filter(
+      (c) =>
+        !hasDurableScoutReviewEvidence(c) &&
+        Number.isFinite(c.updatedAtMs) &&
+        opts.now - c.updatedAtMs >= opts.thresholdMs,
+    )
     .sort((a, b) => a.updatedAtMs - b.updatedAtMs);
 }
 
@@ -126,6 +182,14 @@ interface DraftRow {
   plan_slug: string;
   title: string | null;
   updated_at_ms: string | number | null;
+  items?: unknown;
+  decisions?: unknown;
+  content?: string | null;
+}
+
+interface ScoutDraftScopeRow {
+  workspace_id: string | null;
+  harness_slug: string | null;
 }
 
 interface DraftBacklogCountRow {
@@ -164,7 +228,43 @@ export async function readScoutDraftCandidates(
     planSlug: r.plan_slug,
     title: r.title,
     updatedAtMs: Number(r.updated_at_ms ?? 0),
+    reviewEvidence: {
+      hasDecision:
+        jsonArray(r.decisions).length > 0 || DECLARED_DECISION_RE.test(r.content ?? ''),
+      hasNeedsHumanItem:
+        hasNeedsHumanItem(r.items) || NEEDS_HUMAN_ITEM_RE.test(r.content ?? ''),
+      hasRevisionHold: /\brev(?:ision)?\s+hold\b/i.test(r.content ?? ''),
+    },
   }));
+}
+
+/**
+ * Discover Scout draft scopes directly from the plan store. The registry-backed
+ * maintenance population is intentionally narrower than the retained plan
+ * corpus, and legacy/default workspace rows can exist without a current Hive
+ * registration. Keeping this read at plan-row grain makes the backstop cover
+ * every workspace that actually has live Scout drafts.
+ */
+async function readScoutDraftScopes(sql: Sql): Promise<Array<{ workspaceId: string; planStorageSlug: string }>> {
+  const rows = await sql<ScoutDraftScopeRow[]>`
+    SELECT DISTINCT workspace_id, harness_slug
+      FROM harness_shared.harness_plans
+     WHERE status = 'draft'
+       AND archived = false
+       AND content LIKE ${'%\norigin: scout\n%'}
+  `;
+  const seen = new Set<string>();
+  const scopes: Array<{ workspaceId: string; planStorageSlug: string }> = [];
+  for (const row of rows) {
+    const workspaceId = row.workspace_id?.trim();
+    const planStorageSlug = row.harness_slug?.trim();
+    if (!workspaceId || !planStorageSlug) continue;
+    const key = `${workspaceId}\u0000${planStorageSlug}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    scopes.push({ workspaceId, planStorageSlug });
+  }
+  return scopes;
 }
 
 /** Count stale Scout-originated drafts across a workspace when no registered
