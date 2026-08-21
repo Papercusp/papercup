@@ -368,7 +368,7 @@ describe('release:cut — prepare-tag (explicit create-only remote ref)', () => 
   });
 
   it('runs the release-owned helper with exact source + explicit confirmation', async () => {
-    execFileSyncM.mockReturnValue('created exact tag\n' as never);
+    execFileSyncM.mockReturnValue('created exact tag\n');
 
     const b = body(await tool.handler({ ...args, confirm: true } as never, { role: 'operator' } as never));
 
