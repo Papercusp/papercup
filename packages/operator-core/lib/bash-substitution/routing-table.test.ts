@@ -376,20 +376,54 @@ describe('the hand-written storage-policy table is not contradicted by an audite
 
   /**
    * A KNOWN IMPRECISION, pinned rather than papered over: verb extraction is a
-   * best-effort read of prose, so the `gitnexus.query` row yields the literal
-   * placeholder `server:verb` from its own explanatory text. It is inert — the
-   * check only consults `verbs` for a row that names a pair-covered relation, and
-   * that row names none. It is recorded here so a future reader meets it as a
-   * known property rather than rediscovering it as a bug. The residual risk is
-   * one-directional and narrow: since a row passes when ANY named verb matches
-   * (correct — a cell may legitimately name two, as the prose/full-text row does),
-   * a spurious verb can only ever mask a contradiction, never invent one.
+   * best-effort read of the `use` cell, so a cell that MENTIONS a colon-form
+   * token in explanatory text (rather than as a routing target) yields that
+   * token as a verb. It is inert — `contradiction()` only consults `verbs` for a
+   * row that names a pair-covered relation, and such a row need not name one.
+   * The residual risk is one-directional and narrow: since a row passes when ANY
+   * named verb matches (correct — a cell may legitimately name two, as the
+   * prose/full-text row does), a spurious verb can only ever MASK a
+   * contradiction, never invent one.
+   *
+   * Driven through a FIXTURE, deliberately — this is a property of the PARSER.
+   * It was previously pinned to the live gitnexus row, whose explanatory text
+   * happened to contain the literal `server:verb`, and was found by matching the
+   * prose `want` cell for "code graph". D-042 later reworded that row to
+   * "(dot, not colon)", which REMOVED the imprecision entirely; the `find()`
+   * then returned undefined and the non-null assertion crashed with a TypeError,
+   * holding the green-checkpoint gate red (WI-40232). A parser property must not
+   * depend on doc prose the doc is free to improve.
    */
-  it('extracts verbs best-effort from prose, and the known false positive is inert', () => {
-    const gitnexus = rows().find((r) => r.want.includes('code graph'))!;
-    expect(gitnexus.verbs).toContain('server:verb'); // from "not the usual `server:verb` form"
-    expect(gitnexus.relations).toEqual([]);
-    expect(contradiction(gitnexus)).toBeNull();
+  it('a spurious verb extracted from explanatory prose is inert', () => {
+    const doc =
+      `${STORAGE_POLICY_HEADING}\n\n| you want | use | not |\n|---|---|---|\n` +
+      '| topology | `gitnexus.context` — not the usual `server:verb` form | `gitnexus.query` |\n';
+    const [row] = parseStoragePolicyRoutingTable(doc, relations);
+    expect(row!.verbs, 'the parser reads a colon-form token out of explanatory prose').toContain(
+      'server:verb',
+    );
+    expect(row!.relations, 'this row names no pair-covered relation').toEqual([]);
+    expect(
+      contradiction(row!),
+      'a spurious verb on a row naming no covered relation cannot invent a contradiction',
+    ).toBeNull();
+  });
+
+  /**
+   * The LIVE gitnexus row, addressed by a STABLE identity — the `use` cell names
+   * `gitnexus.context` — rather than by prose in the `want` cell, which is what
+   * broke before. D-042 routes topology questions to `gitnexus.context`/`.impact`
+   * and warns OFF the raw `gitnexus.query` backend. Because those are dot-form,
+   * the cell yields no colon-form verb at all, so the row routes nothing and
+   * cannot contradict a pair. Asserting `verbs` is empty is what would notice if
+   * the imprecision ever came BACK into this row.
+   */
+  it('the live gitnexus row routes nothing extractable and contradicts nothing', () => {
+    const gitnexus = rows().find((r) => r.use.includes('gitnexus.context'));
+    expect(gitnexus, 'CLAUDE.md no longer has a storage-policy row naming gitnexus.context').toBeDefined();
+    expect(gitnexus!.verbs, 'dot-form tool names must not parse as colon-form verbs').toEqual([]);
+    expect(gitnexus!.relations).toEqual([]);
+    expect(contradiction(gitnexus!)).toBeNull();
   });
 
   // The view `work_items_claimable` is NOT the relation `work_items`. A substring

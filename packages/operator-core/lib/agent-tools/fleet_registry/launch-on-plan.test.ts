@@ -331,24 +331,37 @@ describe('resolveFleetAgent (backend + model inheritance — fleet-launch-agent-
 
 // WI-1993: the `model` arg rejects a malformed CLOUD spec at the TOOL BOUNDARY (before opening
 // any desktop windows), not just per-member at psu boot. Exercises the real zod schema via
-// `.args.parse` — the fuzzyEnum(local) leg fails open (empty local registry in the test env),
-// so this isolates the chained validateCloudModelSpec superRefine.
+// `.args.parseAsync` — the fuzzyEnumAsync(local) leg fails open (empty local registry in the test
+// env), so this isolates the chained validateCloudModelSpec superRefine.
+//
+// ASYNC ON PURPOSE — do not "simplify" this back to `.parse`. The `model` arg chains
+// `fuzzyEnumAsync`, whose superRefine awaits the local-model-id cache, so the schema can ONLY be
+// driven with `.parseAsync`. A synchronous `.parse` throws zod's "Encountered Promise during
+// synchronous parse" *before* any of our own validation runs — so the block stops testing what it
+// claims to test and instead fails on plumbing. That is exactly how candidate a30c867e reddened the
+// gate (WI-40233): `launch-on-plan.ts` moved fuzzyEnum -> fuzzyEnumAsync and this helper was left
+// behind. Awaiting here also mirrors the real boundary, which awaits it too:
+// `agent-mcp/src/server.ts` -> `await runWithValidationWorkspace(..., () => standardValidate(tool.args, ...))`.
 describe('model arg — cloud model-spec validation at the tool boundary (WI-1993)', () => {
   const parseModel = (model: string) =>
-    (launchOnPlan.args as { parse: (x: unknown) => unknown }).parse({ name: 'atlas', plan: 'p-plan', model });
-  it('rejects a hand-typed [1m] marker on a non-family alias (the fabel5[1m] incident)', () => {
-    expect(() => parseModel('fabel5[1m]')).toThrow(/fable/);
+    (launchOnPlan.args as { parseAsync: (x: unknown) => Promise<unknown> }).parseAsync({
+      name: 'atlas',
+      plan: 'p-plan',
+      model,
+    });
+  it('rejects a hand-typed [1m] marker on a non-family alias (the fabel5[1m] incident)', async () => {
+    await expect(parseModel('fabel5[1m]')).rejects.toThrow(/fable/);
   });
-  it('rejects a close-typo alias with a corrective suggestion', () => {
-    expect(() => parseModel('opuss')).toThrow(/opus/);
-    expect(() => parseModel('sonet')).toThrow(/sonnet/);
+  it('rejects a close-typo alias with a corrective suggestion', async () => {
+    await expect(parseModel('opuss')).rejects.toThrow(/opus/);
+    await expect(parseModel('sonet')).rejects.toThrow(/sonnet/);
   });
-  it('accepts valid cloud specs, full ids, plausible-unknown short ids, and local ornith ids', () => {
+  it('accepts valid cloud specs, full ids, plausible-unknown short ids, and local ornith ids', async () => {
     for (const m of [
       'opus:high', 'fable:xhigh', 'sonnet', 'haiku', 'opus[1m]:max', 'claude-fable-5',
       'o3', 'gpt4', 'ollama-cc/maxwell1500/ornith-35b:IQ3_M',
     ]) {
-      expect(() => parseModel(m), m).not.toThrow();
+      await expect(parseModel(m), m).resolves.toBeDefined();
     }
   });
 });
