@@ -21,6 +21,8 @@ import { MemoryTimeoutError, withMemoryToolTimeout } from '../../memory/op-deadl
 import { mergeIds, runBulk, bulkContent } from '../_bulk';
 import { trackDetached } from '../../detached-imports';
 import { AGENT_TOOL_ACTOR_ID } from '../../memory/feedback';
+import { purgeJournalForMemory } from '../../memory/write-journal';
+import { getOperatorCache } from '../../cache/instance';
 
 export default defineTool({
   name: 'memory:forget',
@@ -100,6 +102,26 @@ export default defineTool({
       ids,
       async (id) => {
         try {
+          // Snapshot + journal purge happen BEFORE either removal. A timed-out
+          // write can have landed canonically while its journal row remained
+          // pending without a committed_memory_id; matching the pre-delete
+          // scope/text is the only way to stop that row replaying the fact.
+          // This purge is load-bearing (not best-effort): on failure, preserve
+          // the canonical row so the whole privacy operation remains retryable.
+          const before = await withMemoryToolTimeout(
+            backend.get(id),
+            'memory:forget preflight',
+          );
+          await withMemoryToolTimeout(
+            purgeJournalForMemory({
+              id,
+              mode: invalidateEntry ? 'soft' : 'hard',
+              ...(before?.scope && before.text
+                ? { snapshot: { scope: before.scope, text: before.text } }
+                : {}),
+            }),
+            'memory:forget journal purge',
+          );
           if (invalidateEntry) {
             const closed = await withMemoryToolTimeout(invalidateEntry(id), 'memory:forget soft');
             if (!closed) {
@@ -134,6 +156,11 @@ export default defineTool({
     // fire-and-forget, never load-bearing (memory-settings-page-refresh P-008).
     // One invalidate covers the whole batch.
     if (env.counts.ok > 0) {
+      // The pre-turn injection cache deliberately serves one-turn-stale blocks.
+      // That latency trade-off is never acceptable after a hard privacy delete
+      // (and would also make a soft-forgotten fact appear current once more).
+      // Cold-bust the process-wide L1 synchronously before reporting success.
+      getOperatorCache().clearL1();
       void trackDetached(import('../../memory/invalidate-user-memory-views'))
         .then(({ invalidateUserMemoryViews }) => invalidateUserMemoryViews())
         .catch(() => { /* best-effort */ });

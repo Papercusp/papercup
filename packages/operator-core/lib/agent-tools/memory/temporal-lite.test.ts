@@ -65,6 +65,7 @@ vi.mock('../../memory/configure', () => ({
 vi.mock('../../memory/write-journal', () => ({
   journalPendingWrite: vi.fn(async () => null),
   markJournalCommitted: vi.fn(async () => undefined),
+  purgeJournalForMemory: vi.fn(async () => 0),
 }));
 
 import search from './search';

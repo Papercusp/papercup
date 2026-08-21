@@ -118,6 +118,70 @@ export async function markJournalCommitted(id: string, memoryId?: string | null)
   }
 }
 
+export interface PurgeJournalForMemoryArgs {
+  id: string;
+  /** Hard privacy deletion removes retained history too; soft removal keeps
+   * committed history but cancels every replay that could make the row current
+   * again. */
+  mode: 'hard' | 'soft';
+  /** The pre-delete canonical value. This closes the timeout-before-id-known
+   * hole: a remember may have landed in the store while its journal row stayed
+   * pending without committed_memory_id. */
+  snapshot?: { scope: string; text: string };
+}
+
+type JournalSql = ReturnType<typeof getOrgPg>['sql'];
+
+/**
+ * Remove write-ahead rows that can retain or replay a forgotten memory.
+ *
+ * This is intentionally STRICT, unlike the journal's best-effort write path:
+ * a privacy delete must not report success while a pending replay can restore
+ * the fact, or while the journal still retains the supposedly deleted content.
+ * Callers run this before changing the canonical row, so a failure preserves a
+ * retryable source of truth instead of producing a half-delete.
+ *
+ * `deps.sql` is the real-Postgres test seam; production always uses getOrgPg().
+ */
+export async function purgeJournalForMemory(
+  args: PurgeJournalForMemoryArgs,
+  deps: { sql?: JournalSql } = {},
+): Promise<number> {
+  const sql = deps.sql ?? getOrgPg().sql;
+  const hard = args.mode === 'hard';
+  const hasSnapshot = Boolean(args.snapshot?.scope && args.snapshot.text);
+  const rows = await sql<{ id: string }[]>`
+    DELETE FROM harness_shared.memory_write_journal
+     WHERE (
+       ${hard}
+       AND (
+         committed_memory_id::text = ${args.id}
+         OR metadata->>'__journal_update_of' = ${args.id}
+         OR metadata->>'__journal_supersede_of' = ${args.id}
+         OR (
+           ${hasSnapshot}
+           AND scope = ${args.snapshot?.scope ?? ''}
+           AND content = ${args.snapshot?.text ?? ''}
+         )
+       )
+     )
+     OR (
+       ${!hard}
+       AND status <> 'committed'
+       AND (
+         metadata->>'__journal_update_of' = ${args.id}
+         OR metadata->>'__journal_supersede_of' = ${args.id}
+         OR (
+           ${hasSnapshot}
+           AND scope = ${args.snapshot?.scope ?? ''}
+           AND content = ${args.snapshot?.text ?? ''}
+         )
+       )
+     )
+    RETURNING id`;
+  return rows.length;
+}
+
 /** Live pending count — the Memory settings page "N memories pending
  *  embedding" badge (P-006a). */
 export async function pendingJournalCount(): Promise<number> {
