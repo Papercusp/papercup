@@ -105,4 +105,101 @@ describe('checkpoint eligibility waiter', () => {
     expect(emit).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'launched', result: { launched: true, unit: 'checkpoint-unit' } });
   });
+
+  it('rechecks required ancestor lineage after the quiet-cut delay and fails closed before launch', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const assess = vi.fn(async () => ({
+      ...REFUSAL,
+      refuse: false,
+      proceedReason: 'declared-paths-in-candidate' as const,
+      blockedPaths: [],
+      waitSec: null,
+    }));
+    const assessRequiredAncestor = vi.fn(async () => ({
+      ok: false,
+      reason: 'not-ancestor' as const,
+      requiredAncestor: 'repair-sha',
+      candidate: 'new-candidate',
+      candidateSource: 'current-quiet-cut' as const,
+      repairQueue: null,
+      queueDecision: 'run-normal-gate' as const,
+      fixerAlive: null,
+    }));
+    const launch = vi.fn(async () => ({
+      launched: true,
+      unit: 'should-not-launch',
+      argv: [],
+      logPath: '/tmp/checkpoint.log',
+    }));
+    const emit = vi.fn(async () => ({ ok: true }));
+
+    const result = await runCheckpointEligibilityWait(
+      {
+        pendingId: 'pending-lineage-miss',
+        paths: ['mine.ts'],
+        waitSec: 120,
+        root: '/tmp/papercusp',
+        requiredAncestorSha: 'repair-sha',
+      },
+      { sleep, assess, assessRequiredAncestor, launch, emit },
+    );
+
+    expect(assessRequiredAncestor).toHaveBeenCalledWith({
+      requiredAncestor: 'repair-sha',
+      predictedCandidate: 'aaaaaaaaaaaa',
+      root: '/tmp/papercusp',
+    });
+    expect(launch).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        key: 'green-checkpoint:inconclusive:papercusp',
+        source: 'checkpoint-eligibility-wait',
+        payload: expect.objectContaining({ reason: 'required-ancestor-missing', requiredAncestorSha: 'repair-sha' }),
+      }),
+    );
+    expect(result).toEqual({ status: 'not-launched', reason: 'required-ancestor-missing' });
+  });
+
+  it('launches after the deferred lineage guard passes', async () => {
+    const sleep = vi.fn(async (_ms: number) => {});
+    const assess = vi.fn(async () => ({
+      ...REFUSAL,
+      refuse: false,
+      proceedReason: 'declared-paths-in-candidate' as const,
+      blockedPaths: [],
+      waitSec: null,
+    }));
+    const assessRequiredAncestor = vi.fn(async () => ({
+      ok: true,
+      reason: 'contained' as const,
+      requiredAncestor: 'repair-sha',
+      candidate: 'new-candidate',
+      candidateSource: 'current-quiet-cut' as const,
+      repairQueue: null,
+      queueDecision: 'run-normal-gate' as const,
+      fixerAlive: null,
+    }));
+    const launch = vi.fn(async () => ({
+      launched: true,
+      unit: 'checkpoint-unit',
+      argv: ['systemd-run'],
+      logPath: '/tmp/checkpoint.log',
+    }));
+    const emit = vi.fn(async () => ({ ok: true }));
+
+    const result = await runCheckpointEligibilityWait(
+      {
+        pendingId: 'pending-lineage-pass',
+        paths: ['mine.ts'],
+        waitSec: 0,
+        root: '/tmp/papercusp',
+        requiredAncestorSha: 'repair-sha',
+      },
+      { sleep, assess, assessRequiredAncestor, launch, emit },
+    );
+
+    expect(assessRequiredAncestor).toHaveBeenCalledTimes(1);
+    expect(launch).toHaveBeenCalledWith({ root: '/tmp/papercusp', force: undefined, replaceStale: undefined });
+    expect(result).toMatchObject({ status: 'launched', result: { unit: 'checkpoint-unit' } });
+  });
 });

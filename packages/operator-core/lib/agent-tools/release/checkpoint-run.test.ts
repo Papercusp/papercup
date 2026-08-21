@@ -1666,6 +1666,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
   });
 
   it('waitForEligibility returns a durable receipt without sleeping or spawning in the request', async () => {
+    const requiredAncestorSha = '65b369adb8a9eb3fd7a2e3a93ab4eaedcad7c35e';
     const scheduleSpy = vi.fn(async () => ({
       pendingId: 'pending-1',
       workflowId: 'checkpoint-eligibility:pending-1',
@@ -1681,7 +1682,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     });
     const { default: tool } = await import('./checkpoint-run');
     const started = Date.now();
-    const b = parse((await tool.handler({ paths: [MINE], waitForEligibility: true }, MAKE_CTX())) as never);
+    const b = parse((await tool.handler({ paths: [MINE], waitForEligibility: true, requiredAncestorSha }, MAKE_CTX())) as never);
 
     expect(Date.now() - started).toBeLessThan(1000);
     expect(scheduleSpy).toHaveBeenCalledWith(
@@ -1689,6 +1690,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
         paths: [MINE],
         waitSec: 120,
         pendingId: expect.any(String),
+        requiredAncestorSha,
       }),
     );
     expect(launchSpy).not.toHaveBeenCalled();

@@ -52,7 +52,6 @@ import {
   type PathContainment,
   type TestImplSplitRisk,
 } from './candidate-contains';
-
 /**
  * WI-4494: the harness whose gate a MANUAL checkpoint run judges — stamped into the detached unit's
  * env so the run RECORDS ITS OWN VERDICT instead of discarding it.
@@ -1401,6 +1400,8 @@ export interface CheckpointEligibilityWaitRequest {
   root?: string;
   force?: boolean;
   replaceStale?: boolean;
+  /** Re-check this lineage after the quiet-cut delay before the deferred launch. */
+  requiredAncestorSha?: string;
 }
 
 /** The immediate receipt returned while the durable waiter sleeps/rechecks. */
@@ -1446,12 +1447,14 @@ export function checkpointEligibilityPendingId(input: {
   candidate: string | null;
   tip: string | null;
   paths: string[];
+  requiredAncestorSha?: string;
 }): string {
   const canonical = JSON.stringify({
     root: input.root ?? null,
     candidate: input.candidate ?? null,
     tip: input.tip ?? null,
     paths: [...new Set(input.paths.map((p) => String(p).trim()).filter(Boolean))].sort(),
+    requiredAncestorSha: input.requiredAncestorSha ?? null,
   });
   return createHash('sha256').update(canonical).digest('hex').slice(0, 24);
 }

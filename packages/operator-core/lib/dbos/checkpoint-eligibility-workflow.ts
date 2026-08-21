@@ -18,6 +18,10 @@ import {
   type PreLaunchExclusion,
   setCheckpointEligibilityWaitRunner,
 } from '../release-checkpoint-launch';
+import {
+  assessRequiredAncestorPreflight,
+  type RequiredAncestorPreflight,
+} from '../release/checkpoint-required-ancestor';
 import { integrationRoot } from '../release-deploy-launch';
 import { emitAwaitedEvent, type EmitAwaitedEventOpts } from '../events/await/engine';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
@@ -32,6 +36,11 @@ export interface CheckpointEligibilityWaitOutcome {
 export interface CheckpointEligibilityWaitDeps {
   sleep: (ms: number) => Promise<void>;
   assess: (args: { paths: string[]; force?: boolean; root?: string }) => Promise<PreLaunchExclusion>;
+  assessRequiredAncestor?: (args: {
+    requiredAncestor: string;
+    predictedCandidate: string | null;
+    root?: string;
+  }) => Promise<RequiredAncestorPreflight>;
   launch: (opts: { force?: boolean; replaceStale?: boolean; root?: string }) => Promise<LaunchCheckpointResult>;
   emit: (opts: EmitAwaitedEventOpts) => Promise<unknown>;
 }
@@ -74,6 +83,36 @@ export async function runCheckpointEligibilityWait(
       source: 'checkpoint-eligibility-wait',
     });
     return { status: 'not-launched', reason };
+  }
+
+  if (input.requiredAncestorSha) {
+    const requiredAncestor = await (deps.assessRequiredAncestor ?? ((args) =>
+      assessRequiredAncestorPreflight(args.requiredAncestor, args.predictedCandidate, args.root)))({
+      requiredAncestor: input.requiredAncestorSha,
+      predictedCandidate: recheck.candidate,
+      root: input.root,
+    });
+    if (!requiredAncestor.ok) {
+      const reason =
+        requiredAncestor.reason === 'not-ancestor'
+          ? 'required-ancestor-missing'
+          : 'required-ancestor-unverifiable';
+      await deps.emit({
+        key: `green-checkpoint:inconclusive:${checkpointPipelineName(input.root ?? integrationRoot())}`,
+        summary: `checkpoint eligibility wait ${input.pendingId} did not launch: ${reason}`,
+        payload: {
+          pendingId: input.pendingId,
+          reason,
+          requiredAncestorSha: input.requiredAncestorSha,
+          candidate: requiredAncestor.candidate,
+          candidateSource: requiredAncestor.candidateSource,
+          queueDecision: requiredAncestor.queueDecision,
+          fixerAlive: requiredAncestor.fixerAlive,
+        },
+        source: 'checkpoint-eligibility-wait',
+      });
+      return { status: 'not-launched', reason };
+    }
   }
 
   const result = await deps.launch({

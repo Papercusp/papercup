@@ -26,22 +26,20 @@
  * must not be presented as time to verdict.
  */
 import { z } from 'zod';
-import { spawnSync } from 'node:child_process';
 import { defineTool, SU_ROLES, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
 import {
   assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
-  checkpointCandidateContainsAncestor,
   checkpointCandidateContainment,
   checkpointEligibilityPendingId,
   classifyReplaceRequest,
-  currentCheckpointCandidate,
   launchDetachedCheckpoint,
   renderPreLaunchRefusal,
   REPLACE_STALE_MIN_AGE_SEC,
   scheduleCheckpointEligibilityWait,
   type CheckpointEligibilityWaitReceipt,
 } from '../../release-checkpoint-launch';
+import { assessRequiredAncestorPreflight } from '../../release/checkpoint-required-ancestor';
 import { integrationRoot } from '../../release-deploy-launch';
 import {
   attributeRetriageToRun,
@@ -51,11 +49,6 @@ import {
   readRunnerCodeCommittedAtMs,
 } from '../../release/in-flight-retriage';
 import { readInFlightCandidate } from '../../release/in-flight-candidate';
-import {
-  decideFrozenCandidateRepairQueue,
-  type FrozenCandidateRepairQueue,
-  type FrozenRepairQueueDecision,
-} from '../../release/frozen-candidate-repair-queue';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 import {
@@ -67,129 +60,6 @@ import {
 import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { clampText, LIMITS, softText } from '../limits';
-
-type RequiredAncestorPreflight = {
-  ok: boolean;
-  reason: 'contained' | 'not-ancestor' | 'unverifiable' | 'queue-unreadable' | 'queue-not-runnable';
-  requiredAncestor: string | null;
-  candidate: string | null;
-  candidateSource: 'frozen-repair-queue' | 'current-quiet-cut' | 'unresolved';
-  repairQueue: FrozenCandidateRepairQueue | null;
-  queueDecision: FrozenRepairQueueDecision['kind'] | null;
-  fixerAlive: boolean | null;
-  detail?: string;
-};
-
-/**
- * EI-21047439235631660 — resolve the candidate the detached runner's policy will
- * consult BEFORE a D-005-style required-ancestor launch.
- *
- * A persisted frozen-repair queue does not unconditionally outrank the moving integration
- * tip: the writer first applies decideFrozenCandidateRepairQueue. A ready repair is verified
- * at repairHead, but an attempts-exhausted queue whose fixer is confirmed gone is abandoned
- * and the same invocation continues with a fresh candidate. Predict that shared policy here
- * rather than treating stale cleanup state as a runnable repair forever. Live/unknown fixer
- * state and every other non-suite decision fail closed because no exact judged candidate can
- * be promised yet. Ordinary calls without requiredAncestorSha keep the historical behavior.
- */
-async function assessRequiredAncestorPreflight(
-  requiredAncestor: string,
-  predictedCandidate: string | null,
-): Promise<RequiredAncestorPreflight> {
-  const root = integrationRoot();
-  let repairQueue: FrozenCandidateRepairQueue | null = null;
-  let fixerAlive: boolean | null = null;
-  let queueDecision: FrozenRepairQueueDecision;
-  try {
-    const [
-      { activeWorkspaceId },
-      { operatorHomeHarnessSlug },
-      { readFrozenCandidateRepairQueue, releaseFixerSpawnAlive },
-    ] = await Promise.all([
-      import('../../workspace-registry'),
-      import('../../harness/operator-home-harness'),
-      import('../../harness/routines/release-actions'),
-    ]);
-    repairQueue = await readFrozenCandidateRepairQueue({
-      workspaceId: activeWorkspaceId(),
-      installSlug: operatorHomeHarnessSlug(),
-    });
-
-    if (repairQueue?.phase === 'awaiting-fixer' && repairQueue.fixerSpawnId) {
-      try {
-        const { getOrgPg } = await import('@papercusp/db-org');
-        fixerAlive = await releaseFixerSpawnAlive(getOrgPg().sql, repairQueue.fixerSpawnId);
-      } catch {
-        // Liveness UNKNOWN must preserve the queue and refuse this exact-lineage launch.
-        fixerAlive = null;
-      }
-    }
-    queueDecision = decideFrozenCandidateRepairQueue(repairQueue, { nowMs: Date.now(), fixerAlive });
-  } catch (error) {
-    return {
-      ok: false,
-      reason: 'queue-unreadable',
-      requiredAncestor: null,
-      candidate: null,
-      candidateSource: 'unresolved',
-      repairQueue,
-      queueDecision: null,
-      fixerAlive,
-      detail: clampText(error instanceof Error ? error.message : String(error), LIMITS.SHORT_TITLE),
-    };
-  }
-
-  const execFn = (cmd: string, argv: string[]) => {
-    const result = spawnSync(cmd, argv, { encoding: 'utf8' });
-    return {
-      status: result.status,
-      stdout: result.stdout ?? '',
-      stderr: result.stderr ?? '',
-    };
-  };
-  const current = predictedCandidate ?? currentCheckpointCandidate(root, execFn).current_candidate;
-  const runnableCandidate =
-    queueDecision.kind === 'verify-repair'
-      ? { candidate: queueDecision.candidate, source: 'frozen-repair-queue' as const }
-      : queueDecision.kind === 'run-normal-gate' || queueDecision.kind === 'abandon-repair'
-        ? { candidate: current, source: current ? 'current-quiet-cut' as const : 'unresolved' as const }
-        : null;
-  if (!runnableCandidate) {
-    return {
-      ok: false,
-      reason: 'queue-not-runnable',
-      requiredAncestor: null,
-      candidate: null,
-      candidateSource: 'unresolved',
-      repairQueue,
-      queueDecision: queueDecision.kind,
-      fixerAlive,
-      detail: `frozen repair policy chose ${queueDecision.kind}`,
-    };
-  }
-  const { candidate, source: candidateSource } = runnableCandidate;
-  if (!candidate) {
-    return {
-      ok: false,
-      reason: 'unverifiable',
-      requiredAncestor: null,
-      candidate: null,
-      candidateSource,
-      repairQueue,
-      queueDecision: queueDecision.kind,
-      fixerAlive,
-    };
-  }
-
-  const check = checkpointCandidateContainsAncestor(root, requiredAncestor, candidate, execFn);
-  return {
-    ...check,
-    candidateSource,
-    repairQueue,
-    queueDecision: queueDecision.kind,
-    fixerAlive,
-  };
-}
 
 export default defineTool({
   name: 'release:checkpoint-run',
@@ -637,10 +507,12 @@ export default defineTool({
             candidate: preflight.candidate,
             tip: preflight.tip,
             paths: args.paths ?? [],
+            requiredAncestorSha: args.requiredAncestorSha,
           }),
           root,
           force: args.force,
           replaceStale: args.replaceStale,
+          ...(args.requiredAncestorSha ? { requiredAncestorSha: args.requiredAncestorSha } : {}),
         });
       } catch (error) {
         // DBOS is deliberately fail-closed here. A request-side fallback to setTimeout would
