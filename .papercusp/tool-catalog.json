@@ -26081,7 +26081,7 @@
           "POST"
         ]
       },
-      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. Refuses a peer-held item (`not_holder`). `rowsMode:\"merge\"` is the default additive check-row form when the body should still replace; use `rowsMode:\"replace\"` to retire rows.",
+      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. Refuses a peer-held item (`not_holder`) and active writes to terminal items (`terminal_item`); explicit clears remain allowed for finish cleanup. `rowsMode:\"merge\"` is the default additive check-row form when the body should still replace; use `rowsMode:\"replace\"` to retire rows.",
       "capabilities": [
         "work_items:write"
       ],
