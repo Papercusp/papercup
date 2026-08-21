@@ -25,7 +25,41 @@ vi.mock('../../work-item-redundancy', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 
 import { claimReplicaSlot } from '../../work-item-redundancy';
+import type { WorkItemReplica } from '../../work-item-redundancy';
 const claimM = vi.mocked(claimReplicaSlot);
+
+/**
+ * A complete, TYPED `WorkItemReplica`. These fixtures used to be cast `as never`, which
+ * defeats the whole point of `vi.mocked()` — a newly-required field on `WorkItemReplica`
+ * became invisible to tsc and failed at runtime in an unrelated peer's checkpoint run
+ * (EI-19282401068515102). Overriding only what a test asserts keeps that check live in
+ * exactly one place.
+ */
+const replica = (over: Partial<WorkItemReplica> = {}): WorkItemReplica => ({
+  workspaceId: 'default',
+  harnessSlug: 'web',
+  workItemId: 'F-1',
+  replicaIndex: 0,
+  redundancy: 2,
+  claimId: 'c1',
+  owner: 'me',
+  ownerLabel: null,
+  holderPubkey: null,
+  ttlSec: 900,
+  acquiredTs: 't0',
+  expiresTs: 't1',
+  lastActivityTs: 't0',
+  status: 'claimed',
+  result: null,
+  judgeComposite: null,
+  judgeRationale: null,
+  judgeModel: null,
+  rubricHash: null,
+  judgeCostUsd: null,
+  judgedTs: null,
+  expired: false,
+  ...over,
+});
 const tool = (await import('./claim_replica')).default;
 
 type Out = { data: unknown };
@@ -57,19 +91,13 @@ describe('work_items:claim_replica reason mapping', () => {
 
 describe('work_items:claim_replica success', () => {
   it('resolves owner self to the calling owner id', async () => {
-    claimM.mockResolvedValue({
-      ok: true, reused: false,
-      replica: { workItemId: 'F-1', harnessSlug: 'web', replicaIndex: 0, redundancy: 2, claimId: 'c1', owner: 'me', expiresTs: 't1' },
-    } as never);
+    claimM.mockResolvedValue({ ok: true, reused: false, replica: replica() });
     await tool.handler({ id: 'F-1', harness: 'web', owner: 'self' } as never, {} as never);
     expect((claimM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('me');
   });
 
   it('projects the claimed slot fields', async () => {
-    claimM.mockResolvedValue({
-      ok: true, reused: false,
-      replica: { workItemId: 'F-1', harnessSlug: 'web', replicaIndex: 0, redundancy: 2, claimId: 'c1', owner: 'me', expiresTs: 't1' },
-    } as never);
+    claimM.mockResolvedValue({ ok: true, reused: false, replica: replica() });
     const b = body(await call());
     expect(b).toMatchObject({
       ok: true, reused: false,

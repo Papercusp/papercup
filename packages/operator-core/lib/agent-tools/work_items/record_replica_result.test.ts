@@ -22,7 +22,41 @@ vi.mock('../../work-item-redundancy', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 
 import { recordReplicaResult } from '../../work-item-redundancy';
+import type { WorkItemReplica } from '../../work-item-redundancy';
 const recordM = vi.mocked(recordReplicaResult);
+
+/**
+ * A complete, TYPED `WorkItemReplica`. These fixtures used to be cast `as never`, which
+ * defeats the whole point of `vi.mocked()` — a newly-required field on `WorkItemReplica`
+ * became invisible to tsc and failed at runtime in an unrelated peer's checkpoint run
+ * (EI-19282401068515102). Overriding only what a test asserts keeps that check live in
+ * exactly one place.
+ */
+const replica = (over: Partial<WorkItemReplica> = {}): WorkItemReplica => ({
+  workspaceId: 'default',
+  harnessSlug: 'web',
+  workItemId: 'F-1',
+  replicaIndex: 0,
+  redundancy: 2,
+  claimId: 'c1',
+  owner: 'me',
+  ownerLabel: null,
+  holderPubkey: null,
+  ttlSec: 900,
+  acquiredTs: 't0',
+  expiresTs: 't1',
+  lastActivityTs: 't0',
+  status: 'complete',
+  result: null,
+  judgeComposite: null,
+  judgeRationale: null,
+  judgeModel: null,
+  rubricHash: null,
+  judgeCostUsd: null,
+  judgedTs: null,
+  expired: false,
+  ...over,
+});
 const tool = (await import('./record_replica_result')).default;
 
 type Out = { data: unknown };
@@ -34,14 +68,14 @@ beforeEach(() => vi.clearAllMocks());
 
 describe('work_items:record_replica_result handler', () => {
   it('maps a falsy result (slot not held / already recorded / stolen) to an error', async () => {
-    recordM.mockResolvedValue(null as never);
+    recordM.mockResolvedValue(null);
     const b = body(await call());
     expect(b.ok).toBe(false);
     expect(String(b.error)).toMatch(/no claimed replica slot/i);
   });
 
   it('defaults owner to the caller and passes the distilled result through', async () => {
-    recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 0, status: 'complete', redundancy: 2 } as never);
+    recordM.mockResolvedValue(replica({ replicaIndex: 0 }));
     const b = body(await call({ meta: { k: 1 } }));
     expect(b).toMatchObject({ ok: true, replica: { workItemId: 'F-1', replicaIndex: 0, status: 'complete', redundancy: 2 } });
     const arg = recordM.mock.calls[0]![0] as unknown as Record<string, unknown>;
@@ -50,13 +84,13 @@ describe('work_items:record_replica_result handler', () => {
   });
 
   it('honors an explicit owner override', async () => {
-    recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 1, status: 'complete', redundancy: 2 } as never);
+    recordM.mockResolvedValue(replica({ replicaIndex: 1 }));
     await call({ owner: 'other-swarm', replicaIndex: 1 });
     expect((recordM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('other-swarm');
   });
 
   it('resolves owner self to the calling owner id', async () => {
-    recordM.mockResolvedValue({ workItemId: 'F-1', replicaIndex: 0, status: 'complete', redundancy: 2 } as never);
+    recordM.mockResolvedValue(replica({ replicaIndex: 0 }));
     await call({ owner: 'self' });
     expect((recordM.mock.calls[0]![0] as unknown as Record<string, unknown>).owner).toBe('me');
   });
