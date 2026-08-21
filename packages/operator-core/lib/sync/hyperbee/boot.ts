@@ -56,6 +56,8 @@ import {
   dropReplicationLiveness,
   setDhtUniverseAssertion,
   setReplicationRepairHandler,
+  // EI-20453145044075727: intra-pass heartbeat — see onCursorAdvance below.
+  touchReplicationLivenessSamples,
   type ReplicationStallEpisode,
 } from './replication-liveness';
 import { stampOpHlc } from './hlc-stamp';
@@ -3556,13 +3558,31 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // WI-2105 REV fix (flag-gated, default ON): persist the cursor's per-log
         // positions to PG as the fold advances (persist-after-apply — fired
         // intra-pass so a large-backlog pass that outlasts the 240s watchdog
-        // still checkpoints progress). OFF ⇒ undefined ⇒ no persist, cursor stays
-        // in-memory only (byte-identical to today). Best-effort: persistCursor's
-        // throw is swallowed inside the merge so a failed save can't abort a pass.
-        onCursorAdvance: pgMergeCursorStore
-          ? (positions: ReadonlyMap<string, number>) =>
-              persistCursor(positions, pgMergeCursorStore, currentApplyBinding())
-          : undefined,
+        // still checkpoints progress). Best-effort: persistCursor's throw is
+        // swallowed inside the merge so a failed save can't abort a pass.
+        //
+        // EI-20453145044075727: ALSO — unconditionally, not gated on
+        // pgMergeCursorStore — feed the replication-liveness dead-man sampler
+        // an intra-pass heartbeat here. `sampleReplicationLiveness` only runs
+        // once per pass, at the top, so a large-backlog pass that legitimately
+        // outlasts SAMPLING_STALE_AFTER_MS (60s, far shorter than the 240s
+        // watchdog this hook already accounts for above) left both the
+        // actively-folding log AND any log merely queued behind it reading
+        // sampling_stale for the whole pass, even with the handle healthy and
+        // booted. Touching lastSampleMs only (never the replication axes
+        // themselves) proves exactly what's needed: the merge loop is still
+        // alive and making progress. Best-effort — a touch failure must never
+        // abort the merge pass.
+        onCursorAdvance: (positions: ReadonlyMap<string, number>) => {
+          try {
+            touchReplicationLivenessSamples(opts.workspaceId, opts.harnessSlug, positions.keys());
+          } catch {
+            // diagnostic-only
+          }
+          return pgMergeCursorStore
+            ? persistCursor(positions, pgMergeCursorStore, currentApplyBinding())
+            : undefined;
+        },
       };
       // WI-2105 REV acceleration (17c98): fold the log with the SMALLEST remaining
       // backlog first, so a nearly-caught-up REV carrier (the VM member log
