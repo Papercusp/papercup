@@ -16,10 +16,9 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
   getOrgPg: vi.fn(),
 }));
 vi.mock('../fleet/spawn-tree', () => ({ recordSpawn: vi.fn(), finishSpawn: vi.fn() }));
-// Heartbeat the long-lived launch row (P-011 liveness fix) — the SPAWN_HEARTBEAT_INTERVAL_MS
+// Heartbeat the launch row (P-011 liveness fix) — the SPAWN_HEARTBEAT_INTERVAL_MS
 // is kept SMALL here so the interval fires within the test (the real 60s never would).
-// recordSpawnPid stamps the firing process's pid on the launch row so the P-033 reclaim
-// liveness gate keeps the Queen alive without relying on this heartbeat (durable primary).
+// The /invoke route, not this firing process, stamps the actual child PID.
 vi.mock('../fleet/spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(),
   recordSpawnPid: vi.fn(() => Promise.resolve()),
@@ -36,7 +35,7 @@ vi.mock('../inference-gateway/observability', () => ({ gatewayWholesaleThrottled
 
 import { getOrgPg } from '@papercusp/db-org';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
-import { heartbeatSpawns } from '../fleet/spawn-reclaim';
+import { heartbeatSpawns, recordSpawnPid } from '../fleet/spawn-reclaim';
 import { loopbackFetch } from '../loopback-fetch';
 import {
   fireLaunchBlueprint,
@@ -94,6 +93,16 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     expect(input.spawnId).toMatch(/^s-\d+-[0-9a-f]{8}$/);
     expect(typeof input.runId).toBe('string');
     expect(input.runId).toMatch(/^launch-\d+-[0-9a-f]{6}$/);
+  });
+
+  it('hands the recorded row id to /invoke for actual child PID stamping', async () => {
+    await fireLaunchBlueprint('release-fix', opts);
+
+    const recordedSpawnId = vi.mocked(recordSpawn).mock.calls[0]![1].spawnId;
+    const [, init] = vi.mocked(loopbackFetch).mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string);
+    expect(body.spawnRecordId).toBe(recordedSpawnId);
+    expect(recordSpawnPid).not.toHaveBeenCalled();
   });
 
   it('records the launching parent lineage when the launch carries one', async () => {

@@ -542,9 +542,8 @@ async function recordDurableSpawnAdmission(
   spawnId: string,
   initialSpawnModel: string | null,
 ): Promise<QueenSingletonAdmission> {
-  const [{ recordSpawn }, { recordSpawnPid }, { getOrgPg }] = await Promise.all([
+  const [{ recordSpawn }, { getOrgPg }] = await Promise.all([
     import('../fleet/spawn-tree'),
-    import('../fleet/spawn-reclaim'),
     import('@papercusp/db-org'),
   ]);
   const { sql } = getOrgPg();
@@ -561,11 +560,11 @@ async function recordDurableSpawnAdmission(
       modelSpec: initialSpawnModel,
       status: 'running',
     });
-    // EI-85/P-033 false-reclaim fix: stamp the FIRING process's pid (THIS long-lived
-    // operator host, which holds the loopback /invoke connection for the agent's whole run)
-    // so the reclaim sweep can /proc-liveness-check this row (kind='launch' for durable-spawn
-    // rows — see spawn-reclaim.ts).
-    await recordSpawnPid(db, spawnId, process.pid);
+    // The /invoke route owns the actual invoke-once child and may run in a
+    // different operator/cluster process from this DBOS worker. Its child PID
+    // and launcher boot are stamped after admission by the route handoff below;
+    // recording this process's identity here makes a healthy fixer look like a
+    // prior-boot orphan (EI-20981156698708733).
   };
 
   if (rec.childRole !== 'mug') {
@@ -732,7 +731,12 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
   try {
     fireResult = await DBOS.runStep(
       async () => {
-        const fireBody = await refreshControlPlaneSpawnModel(input);
+        const fireBody: Record<string, unknown> = {
+          ...(await refreshControlPlaneSpawnModel(input)),
+          // Internal route bookkeeping. The route does not forward this field
+          // to the child; it uses it to stamp the actual invoke-once PID.
+          spawnRecordId: spawnId,
+        };
         const r = await loopbackFetch(input.url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },

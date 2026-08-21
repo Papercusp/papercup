@@ -28,6 +28,7 @@ import {
   releaseClaimsOfDeadSpawns,
   sweepStaleSpawnClaims,
   reclaimCeilingJamDebits,
+  spawnRowKind,
 } from './spawn-reclaim';
 
 const SPAWNED_AGENTS_DDL = `
@@ -412,6 +413,20 @@ describe('reclaimOrphanedSpawns: spawn-kind PID-reuse (Gap 12, real /proc cmdlin
     expect(livePid).not.toBe(process.pid);
     expect(isSpawnProcessAlive(livePid, 'spawn')).toBe(false); // cmdline lacks invoke-once
     expect(isSpawnProcessAlive(livePid, 'launch')).toBe(true); // any live process
+  });
+});
+
+describe('spawnRowKind: launch-row handoff provenance (EI-20981156698708733)', () => {
+  it('keeps an unhanded durable row as launch-owned while it has no pid', () => {
+    expect(spawnRowKind({ spawnId: 'durable-spawn:release-fix:1', runId: 'launch:key', pid: null }, 700)).toBe('launch');
+  });
+
+  it('treats a durable row stamped with the route child pid as a supervised spawn', () => {
+    expect(spawnRowKind({ spawnId: 'durable-spawn:release-fix:1', runId: 'invoke-launch:key', pid: 701 })).toBe('spawn');
+  });
+
+  it('preserves legacy in-process launch semantics for the firing process pid', () => {
+    expect(spawnRowKind({ spawnId: 's-legacy', runId: 'launch-legacy', pid: 700 }, 700)).toBe('launch');
   });
 });
 

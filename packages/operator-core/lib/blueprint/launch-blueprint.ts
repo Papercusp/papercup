@@ -44,7 +44,7 @@ import {
   isReleaseFixerNoTurnFailure,
   recordReleaseFixerNoTurnEscalation,
 } from '../release/fixer-liveness';
-import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
+import { heartbeatSpawns, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
 import type { Db } from '../fleet/pg-stores';
@@ -486,18 +486,11 @@ const defaultFire: LaunchFireFn = async ({
         runId,
         status: 'running',
       });
-      // DURABLE QUEEN-LIVENESS (P-033, the real-Queen-reclaim fix). This launch is an
-      // IN-PROCESS `/invoke` handler (loopbackFetch below), not a spawned invoke-once
-      // child — so stamp the launch row with THIS operator process's pid + host. The
-      // P-011 reclaim sweep's liveness gate (isSpawnProcessAlive) treats a row whose
-      // pid === process.pid as alive-by-construction, so a long-running Queen wake is
-      // NEVER reaped while the operator host is up — independent of the heartbeat
-      // setInterval below, whose 60s beat starves past RECLAIM_STALE_MS(300s) under
-      // multi-task bench load (the 7-reclaim symptom). The setInterval stays as a
-      // belt-and-suspenders freshener; the pid match is the durable primary.
-      await recordSpawnPid(db, spawnId, process.pid).catch(() => {
-        /* best-effort — the heartbeat loop below still covers liveness if this misses */
-      });
+      // The /invoke route owns the actual invoke-once child, and may run in a
+      // different operator/cluster process from this firing process.
+      // Do not stamp this row with the firing process's pid/launcher_boot_id: that
+      // provenance makes a healthy child look like a prior-boot orphan to reclaim.
+      // The route receives spawnRecordId below and stamps the actual child pid.
     };
     if (role === 'mug') {
       const admission = await sql.begin(
@@ -581,12 +574,17 @@ const defaultFire: LaunchFireFn = async ({
     }
   };
 
+  // Keep the row identity out of the child prompt/args while handing it to the
+  // /invoke route. The route uses this internal field only to stamp the actual
+  // invoke-once child pid + launcher boot after admission.
+  const invokeBody = { ...body, spawnRecordId: spawnId };
+
   void loopbackFetch(
     url,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
+      body: JSON.stringify(invokeBody),
     },
     // P-033: this fire holds the connection for the WHOLE worker run (a kind:'hive'
     // Queen wake runs up to the route's 45-min ceiling). Opt into the raised-timeout

@@ -107,11 +107,45 @@ export function __setLauncherBootIdForTests(id: string): void {
  * launching host was only briefly paused, not dead) is not reclaimed out from
  * under itself, and a dead one is reclaimed with an accurate reason. Best-effort.
  */
-export async function recordSpawnPid(sql: Db, spawnId: string, pid: number): Promise<void> {
+export async function recordSpawnPid(
+  sql: Db,
+  spawnId: string,
+  pid: number,
+  opts: { handoff?: boolean } = {},
+): Promise<void> {
   await sql`
     UPDATE harness_shared.spawned_agents
-       SET pid = ${pid}, launcher_host = ${hostname()}, launcher_boot_id = ${LAUNCHER_BOOT_ID}
+       SET pid = ${pid},
+           launcher_host = ${hostname()},
+           launcher_boot_id = ${LAUNCHER_BOOT_ID},
+           run_id = CASE
+             WHEN ${opts.handoff === true}
+              AND (run_id LIKE 'launch-%' OR spawn_id LIKE 'durable-spawn:%')
+             THEN 'invoke-' || run_id
+             ELSE run_id
+           END
      WHERE spawn_id = ${spawnId} AND status IN ('running', 'restarting')`;
+}
+
+export type SpawnRowKind = 'spawn' | 'launch';
+
+/**
+ * Classify a nursery row by the process whose liveness its pid represents.
+ *
+ * Legacy `launch-*` and durable-spawn rows begin life before the /invoke route
+ * has started its child. The route's handoff marks the run id `invoke-*` while
+ * recording the actual child pid; only then does the same row use the strict
+ * child-process probe. Treating every durable/launch row as an in-process launch
+ * made a cross-process firing boot id look like a stale launcher and killed fresh
+ * release-fixer work before its first turn (EI-20981156698708733).
+ */
+export function spawnRowKind(
+  row: { spawnId: string; runId: string | null; pid?: number | null },
+): SpawnRowKind {
+  if ((row.runId ?? '').startsWith('invoke-')) return 'spawn';
+  const launchIdentity = (row.runId ?? '').startsWith('launch-') || row.spawnId.startsWith('durable-spawn:');
+  if (!launchIdentity) return 'spawn';
+  return 'launch';
 }
 
 /**
@@ -597,14 +631,11 @@ export async function reclaimOrphanedSpawns(
   const completedArtifacts: SpawnArtifactCandidate[] = [];
   for (const c of candidates) {
     const sameHost = c.launcher_host != null && c.launcher_host === me;
-    // A `launch-%` run_id OR a `durable-spawn:%` spawn_id is an in-process loopback launch (the
-    // firing operator holds the /invoke connection for the agent's run) → liveness = the firing
-    // process exists. Otherwise it is an invoke-once bee child → strict invoke-once-cmdline check.
-    // (durable-spawn rows stamp the firing process's pid in durableSpawnFireImpl; without the
-    // launch-kind here that operator pid would fail the cmdline check and the row would still be
-    // false-reclaimed — D-011.)
-    const kind: 'spawn' | 'launch' =
-      (c.run_id ?? '').startsWith('launch-') || c.spawn_id.startsWith('durable-spawn:') ? 'launch' : 'spawn';
+    // A legacy/durable row is a loopback launch only until the /invoke route
+    // hands off the actual child pid. After that handoff use the strict
+    // invoke-once probe; the firing process and route may be different
+    // operator/cluster processes.
+    const kind = spawnRowKind({ spawnId: c.spawn_id, runId: c.run_id, pid: c.pid });
     // WI-4894: the durable artifact outranks a now-dead PID. A scoped Cup can
     // finish after its launching operator restarted; classifying the dead PID
     // first manufactured a failure even though invoke-once exited cleanly.
@@ -752,16 +783,17 @@ export const CEILING_JAM_MIN_AGE_MS = 15 * 60_000;
 export const CEILING_JAM_SILENT_MS = 15 * 60_000;
 
 /**
- * Is this nursery row a supervised (invoke-once) BEE/queen spawn — as opposed to
- * an in-process loopback launch (a durable-spawn worker, a `launch-*` blueprint,
- * a Queen/overwatch wake)? Duplicates watchdog.ts's `isInProcessLaunchRow`
- * DELIBERATELY (that module's own doc comment: "mirrors spawn-reclaim.ts's
- * `kind` classifier — the single source of truth for this distinction") so this
- * file stays the dependency-light pure-sql unit it already is; this is the
- * canonical definition the other module mirrors.
+ * Is this nursery row a supervised invoke-once child? Legacy `launch-*` and
+ * durable-spawn rows remain in-process-launch rows only until the /invoke route
+ * records the actual child pid; after that handoff they use the same strict
+ * liveness/ceiling rules as other supervised children.
  */
-function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null }): boolean {
-  return !((row.run_id ?? '').startsWith('launch-') || row.spawn_id.startsWith('durable-spawn:'));
+function isSupervisedBeeRow(row: { spawn_id: string; run_id: string | null; pid?: number | null }): boolean {
+  return spawnRowKind({
+    spawnId: row.spawn_id,
+    runId: row.run_id,
+    pid: row.pid ?? null,
+  }) === 'spawn';
 }
 
 /**
@@ -800,7 +832,7 @@ export function classifyCeilingJamRow(
     isAlive: (pid: number, kind?: 'spawn' | 'launch') => boolean;
   },
 ): CeilingJamVerdict {
-  if (!isSupervisedBeeRow({ spawn_id: row.spawnId, run_id: row.runId })) return 'skip';
+  if (!isSupervisedBeeRow({ spawn_id: row.spawnId, run_id: row.runId, pid: row.pid })) return 'skip';
   const getMs = (v: Date | string | null): number => {
     if (v instanceof Date) return v.getTime();
     if (typeof v === 'string') return new Date(v).getTime();
@@ -1353,7 +1385,7 @@ export async function reclaimFirstOutputStalledSpawns(
   // on without this filter, this reaper would SIGTERM essentially every non-opspawn spawn in
   // the fleet within minutes of it starting. Filter to the supervised-bee population BEFORE
   // classifying, exactly as the sibling reclaimers already do.
-  const candidates = rawCandidates.filter((c) => isSupervisedBeeRow({ spawn_id: c.spawn_id, run_id: c.run_id }));
+  const candidates = rawCandidates.filter((c) => isSupervisedBeeRow(c));
   if (candidates.length === 0) {
     return { reclaimed: 0, spawnIds: [], workspaces: [] };
   }
@@ -1510,7 +1542,7 @@ export async function reconcileSpawnAdmissionOnBoot(
   const deadIds: string[] = [];
   const completedArtifacts: SpawnArtifactCandidate[] = [];
   for (const c of candidates) {
-    const kind: 'spawn' | 'launch' = (c.run_id ?? '').startsWith('launch-') ? 'launch' : 'spawn';
+    const kind = spawnRowKind({ spawnId: c.spawn_id, runId: c.run_id, pid: c.pid });
     if (kind === 'spawn' && readCompletedSpawnArtifact(c.result_path)) {
       completedArtifacts.push(c);
     } else if (kind === 'spawn' && c.pid != null && isAlive(c.pid, kind)) {
