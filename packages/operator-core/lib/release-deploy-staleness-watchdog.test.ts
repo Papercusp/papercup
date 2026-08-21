@@ -29,7 +29,7 @@ const sqlStatements: string[] = [];
 let greenSinceValue: string | null = null;
 let settingsFail = false;
 const settingsWrites: unknown[][] = [];
-const fakeSql = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown> => {
+const fakeSql = Object.assign((strings: TemplateStringsArray, ...vals: unknown[]): Promise<unknown> => {
   const text = strings.join('?').trim();
   sqlStatements.push(text);
   if (/operator_settings/.test(text)) {
@@ -49,10 +49,10 @@ const fakeSql = (strings: TemplateStringsArray, ...vals: unknown[]): Promise<unk
   if (/^SELECT/i.test(text)) return Promise.resolve(escalationRows);
   if (/^UPDATE/i.test(text)) return Promise.resolve(Object.assign([], { count: recoveryUpdateCount }));
   return Promise.resolve(Object.assign([], { count: 1 }));
-};
+}, { begin: vi.fn() });
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: (s: TemplateStringsArray, ...v: unknown[]) => fakeSql(s, ...v) }),
+  getOrgPg: () => ({ sql: fakeSql }),
 }));
 
 const notifyAttention = vi.fn().mockResolvedValue(undefined);

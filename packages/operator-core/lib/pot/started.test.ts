@@ -30,6 +30,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         }
         return Promise.resolve([]);
       },
+      { begin: vi.fn() },
       {},
     ),
   }),

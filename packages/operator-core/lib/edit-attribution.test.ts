@@ -17,7 +17,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         if (sqlStub.throws) return Promise.reject(new Error('pg unreachable'));
         return Promise.resolve(sqlStub.rows);
       },
-      { unsafe: () => Promise.resolve([]) },
+      { begin: vi.fn(), unsafe: () => Promise.resolve([]) },
     ),
   }),
 }));

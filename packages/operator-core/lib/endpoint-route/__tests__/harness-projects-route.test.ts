@@ -33,10 +33,13 @@ vi.mock('@papercusp/db-org', async (importActual) => ({
   ...(await importActual<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
     // tagged template: capture interpolated values, return work_items rows
-    sql: (_strings: TemplateStringsArray, ...values: unknown[]) => {
-      batchedQueryCalls.push(values);
-      return Promise.resolve(workItemSlugs.map((s) => ({ harness_slug: s })));
-    },
+    sql: Object.assign(
+      (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        batchedQueryCalls.push(values);
+        return Promise.resolve(workItemSlugs.map((s) => ({ harness_slug: s })));
+      },
+      { begin: vi.fn() },
+    ),
   }),
 }));
 

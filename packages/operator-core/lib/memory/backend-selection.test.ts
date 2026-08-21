@@ -9,11 +9,14 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 const store = new Map<string, string>();
 
 vi.mock('@papercusp/db-org', async (orig) => {
-  const sql = (_strings: TemplateStringsArray, ...vals: unknown[]) => {
-    // writeSetting upsert: VALUES (key, value, description, updated_at)
-    store.set(String(vals[0]), String(vals[1]));
-    return Promise.resolve([]);
-  };
+  const sql = Object.assign(
+    (_strings: TemplateStringsArray, ...vals: unknown[]) => {
+      // writeSetting upsert: VALUES (key, value, description, updated_at)
+      store.set(String(vals[0]), String(vals[1]));
+      return Promise.resolve([]);
+    },
+    { begin: vi.fn() },
+  );
   return {
     ...(await orig<typeof import('@papercusp/db-org')>()),
     getOrgPg: () => ({

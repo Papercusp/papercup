@@ -47,7 +47,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         if (text.includes('supersede-check')) return Promise.resolve(h.supersedeRows);
         return Promise.resolve(h.rows);
       },
-      { unsafe: vi.fn() },
+      { begin: vi.fn(), unsafe: vi.fn() },
     ),
   }),
 }));

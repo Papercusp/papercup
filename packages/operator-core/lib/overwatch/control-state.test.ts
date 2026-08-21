@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // In-memory KV standing in for harness_shared.operator_settings: a tagged-template
 // `sql` that resolves SELECTs from `store` and applies the INSERT…ON CONFLICT upsert.
 let store: Record<string, string> = {};
-const fakeSql = (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> => {
+const fakeSql = Object.assign((strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> => {
   const text = strings.join('?');
   if (/SELECT value FROM/i.test(text)) {
     const key = values[0] as string;
@@ -29,7 +29,7 @@ const fakeSql = (strings: TemplateStringsArray, ...values: unknown[]): Promise<u
     return Promise.resolve([]);
   }
   return Promise.resolve([]);
-};
+}, { begin: vi.fn() });
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, getOrgPg: () => ({ sql: fakeSql }) };

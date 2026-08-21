@@ -23,10 +23,13 @@ vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-under-test
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (_strings: TemplateStringsArray, ...values: unknown[]) => {
-      pgNotifyCalls.push({ values });
-      return Promise.resolve([]);
-    },
+    sql: Object.assign(
+      (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        pgNotifyCalls.push({ values });
+        return Promise.resolve([]);
+      },
+      { begin: vi.fn() },
+    ),
   }),
 }));
 

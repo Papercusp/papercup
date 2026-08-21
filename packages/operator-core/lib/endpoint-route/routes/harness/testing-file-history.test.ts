@@ -23,7 +23,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
   return {
     ...actual,
     getOrgPg: () => ({
-      sql: (strings: TemplateStringsArray, ...values: unknown[]) => sqlImpl(strings, ...values),
+      sql: Object.assign(
+        (strings: TemplateStringsArray, ...values: unknown[]) => sqlImpl(strings, ...values),
+        { begin: vi.fn() },
+      ),
     }),
   };
 });

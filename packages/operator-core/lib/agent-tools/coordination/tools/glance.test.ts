@@ -44,13 +44,16 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   // (agent-mcp's bootstrap reads them at module load).
   ...(await importOriginal<object>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ..._vals: unknown[]) => {
-      const text = strings.join('?');
-      sqlCalls.push(text);
-      if (text.includes('spawned_agents')) return Promise.resolve([{ n: beeCount, working: beeWorkingCount }]);
-      if (text.includes('agent_activity')) return Promise.resolve(activityRows);
-      return Promise.resolve([]);
-    },
+    sql: Object.assign(
+      (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+        const text = strings.join('?');
+        sqlCalls.push(text);
+        if (text.includes('spawned_agents')) return Promise.resolve([{ n: beeCount, working: beeWorkingCount }]);
+        if (text.includes('agent_activity')) return Promise.resolve(activityRows);
+        return Promise.resolve([]);
+      },
+      { begin: vi.fn() },
+    ),
   }),
 }));
 vi.mock('../../../harness/routines/loop', () => ({

@@ -25,12 +25,12 @@ const h = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ..._values: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ..._values: unknown[]) => {
       const q = strings.join(' ').replace(/\s+/g, ' ').trim();
       h.queries.push(q);
       if (/SELECT\s+ts/i.test(q)) return Promise.resolve(h.rows);
       return Promise.resolve([]); // INSERT and anything else
-    },
+    }, { begin: vi.fn() }),
   }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));

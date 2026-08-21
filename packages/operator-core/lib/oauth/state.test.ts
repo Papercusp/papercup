@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // deterministically without a live PG.
 const __nonces = new Map<string, boolean>(); // nonce → consumed
 vi.mock('@papercusp/db-org', async (orig) => {
-  const sql: any = (strings: TemplateStringsArray, ...values: unknown[]) => {
+  const sql: any = Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
     if (q.includes('INSERT INTO harness_shared.oauth_nonces')) {
       const n = values[0] as string;
@@ -27,7 +27,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
       return Promise.resolve([]);
     }
     return Promise.resolve([]);
-  };
+  }, { begin: vi.fn() });
   return { ...((await orig()) as object), getOrgPg: () => ({ sql, db: {} }) };
 });
 

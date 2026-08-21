@@ -28,11 +28,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray) => {
-      const q = Array.from(strings).join('');
-      mocks.state.calls.push(q);
-      return Promise.resolve(q.includes("status = 'committed'") ? mocks.state.rec : mocks.state.counts);
-    },
+    sql: Object.assign(
+      (strings: TemplateStringsArray) => {
+        const q = Array.from(strings).join('');
+        mocks.state.calls.push(q);
+        return Promise.resolve(q.includes("status = 'committed'") ? mocks.state.rec : mocks.state.counts);
+      },
+      { begin: vi.fn() },
+    ),
   }),
 }));
 // The dynamic import('../sync-sse') inside notifyJournalRecovery resolves to this.

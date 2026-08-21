@@ -19,13 +19,16 @@ let updateCount = 0;
 vi.mock('@papercusp/db-org', async (orig) => {
   // tagged-template: sql`...` → sql(strings, ...values). The UPDATE is the only
   // write getSessionUser issues; everything else is the session SELECT.
-  const sql = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
-    if (strings.join(' ').includes('UPDATE')) {
-      updateCount++;
-      return Promise.resolve([]);
-    }
-    return Promise.resolve(sessionRows);
-  };
+  const sql = Object.assign(
+    (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+      if (strings.join(' ').includes('UPDATE')) {
+        updateCount++;
+        return Promise.resolve([]);
+      }
+      return Promise.resolve(sessionRows);
+    },
+    { begin: vi.fn() },
+  );
   return { ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) };
 });
 

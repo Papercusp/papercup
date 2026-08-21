@@ -83,7 +83,7 @@ const fires: Array<unknown[]> = [];
 let demandRow = { todo_items: 0, started_plans: 0 };
 let midTurnRows: unknown[] = [];
 let pendingWakeRows: unknown[] = []; // EI-312 leg 1: pre-staged watchdog wakes
-const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]): Promise<unknown[]> => {
+const fakeSql = Object.assign((strings: TemplateStringsArray | string[], ...values: unknown[]): Promise<unknown[]> => {
   const text = Array.isArray(strings) ? strings.join('?') : String(strings);
   if (/INSERT INTO harness_shared\.pot_watchdog_fires/i.test(text)) {
     fires.push(values);
@@ -94,7 +94,7 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
   if (/FROM harness_shared\.pending_wakes/i.test(text)) return Promise.resolve(pendingWakeRows);
   if (/count\(\*\)::int AS n/i.test(text)) return Promise.resolve([{ n: fires.length }]);
   return Promise.resolve([]);
-};
+}, { begin: vi.fn() });
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: fakeSql }) }));
 
 import {

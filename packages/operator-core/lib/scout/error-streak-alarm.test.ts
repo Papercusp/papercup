@@ -24,10 +24,10 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   // package's non-I/O exports while replacing only this suite's PG edge.
   ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
       h.calls.push({ text: strings.join('?'), values });
       return Promise.resolve(h.rows);
-    },
+    }, { begin: vi.fn() }),
   }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));

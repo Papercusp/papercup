@@ -21,13 +21,13 @@ const h = vi.hoisted(() => ({
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
       const text = strings.join(' ');
       h.queries.push(text);
       if (text.includes('UPDATE harness_shared.scout_routed_ideas')) return Promise.resolve(h.updateRows);
       if (text.includes('SELECT idea_id')) return Promise.resolve(h.selectRows);
       return Promise.resolve([]);
-    },
+    }, { begin: vi.fn() }),
   }),
 }));
 

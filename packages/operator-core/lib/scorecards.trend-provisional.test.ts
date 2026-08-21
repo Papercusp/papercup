@@ -48,13 +48,13 @@ const DB_ROWS = [
   },
 ];
 
-const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
     return Promise.resolve(DB_ROWS) as unknown as Promise<unknown[]>;
   }
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
-};
+}, { begin: vi.fn() });
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),

@@ -26,12 +26,15 @@ import type { SpawnConsoleResult } from '../console-spawn';
 const order: string[] = [];
 /** SQL the rail actually issued through the mocked org tag, as (text, values) pairs. */
 const sqlLog: Array<{ text: string; values: unknown[] }> = [];
-const sqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => {
-  const text = strings.join(' ? ');
-  sqlLog.push({ text, values });
-  order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
-  return Promise.resolve([]);
-};
+const sqlTag = Object.assign(
+  (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join(' ? ');
+    sqlLog.push({ text, values });
+    order.push(/INSERT/i.test(text) ? 'insert' : /DELETE/i.test(text) ? 'delete' : 'sql');
+    return Promise.resolve([]);
+  },
+  { begin: vi.fn() },
+);
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));

@@ -18,18 +18,21 @@ let insertFails = false;
 // it — a regression back to sql.json fails here as "sql.json is not a function"
 // instead of silently passing against a fake that models behavior production
 // doesn't have (the WI-4021 zero-rows-ever-journaled incident).
-const sqlTag = async (strings: TemplateStringsArray, ...values: unknown[]) => {
-  const text = strings.join('?').replace(/\s+/g, ' ').trim();
-  executed.push({ text, values });
-  if (insertFails) throw new Error('relation does not exist');
-  if (text.startsWith('INSERT INTO harness_shared.memory_write_journal')) {
-    return [{ id: 'journal-row-1' }];
-  }
-  if (text.includes('FROM harness_shared.memory_write_journal') && text.includes("status = 'pending'") && text.includes('FOR UPDATE')) {
-    return pendingRows;
-  }
-  return [];
-};
+const sqlTag = Object.assign(
+  async (strings: TemplateStringsArray, ...values: unknown[]) => {
+    const text = strings.join('?').replace(/\s+/g, ' ').trim();
+    executed.push({ text, values });
+    if (insertFails) throw new Error('relation does not exist');
+    if (text.startsWith('INSERT INTO harness_shared.memory_write_journal')) {
+      return [{ id: 'journal-row-1' }];
+    }
+    if (text.includes('FROM harness_shared.memory_write_journal') && text.includes("status = 'pending'") && text.includes('FOR UPDATE')) {
+      return pendingRows;
+    }
+    return [];
+  },
+  { begin: vi.fn() },
+);
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 

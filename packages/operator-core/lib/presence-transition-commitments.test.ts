@@ -17,11 +17,11 @@ let sqlImpl: (text: string) => unknown = () => [];
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ..._v: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ..._v: unknown[]) => {
       const text = strings.join('?');
       queries.push(text);
       return sqlImpl(text);
-    },
+    }, { begin: vi.fn() }),
   }),
 }));
 

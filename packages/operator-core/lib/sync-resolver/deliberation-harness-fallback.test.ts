@@ -32,7 +32,7 @@ const sql = Object.assign(
     emitted.push(strings.join('?'));
     return Promise.resolve([]);
   },
-  { unsafe: () => Promise.resolve([]) },
+  { begin: vi.fn(), unsafe: () => Promise.resolve([]) },
 );
 
 // FULL-REPLACEMENT MOCK HAZARD (WI-39843 class): a bare factory replaces the WHOLE

@@ -16,11 +16,11 @@ const statements: string[] = [];
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({
-    sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
+    sql: Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
       statements.push(strings.join('?'));
       void values;
       return Promise.resolve(rows.current);
-    },
+    }, { begin: vi.fn() }),
   }),
 }));
 

@@ -33,20 +33,23 @@ let testRows: unknown[] = [];
 let throwOnProvenance = false;
 let assertionQueryValues: unknown[] = [];
 
-const sql: SqlTag = async (strings, ...vals) => {
-  const q = strings.join(' ');
-  if (q.includes('harness_features_consolidated')) {
-    if (throwOnProvenance) throw new Error('pg down');
-    return provenanceRows;
-  }
-  if (q.includes('harness_plan_assertions')) {
-    assertionQueryValues = vals;
-    if (!q.includes('plan_slug =')) return assertionRows;
-    return assertionRows.filter((row) => row.plan_slug === vals[2]);
-  }
-  if (q.includes('harness_tests')) return testRows;
-  throw new Error(`unexpected query in test: ${q}`);
-};
+const sql: SqlTag = Object.assign(
+  async (strings: TemplateStringsArray, ...vals: unknown[]) => {
+    const q = strings.join(' ');
+    if (q.includes('harness_features_consolidated')) {
+      if (throwOnProvenance) throw new Error('pg down');
+      return provenanceRows;
+    }
+    if (q.includes('harness_plan_assertions')) {
+      assertionQueryValues = vals;
+      if (!q.includes('plan_slug =')) return assertionRows;
+      return assertionRows.filter((row) => row.plan_slug === vals[2]);
+    }
+    if (q.includes('harness_tests')) return testRows;
+    throw new Error(`unexpected query in test: ${q}`);
+  },
+  { begin: vi.fn() },
+);
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql }) }));
 vi.mock('./workspace-registry', () => ({

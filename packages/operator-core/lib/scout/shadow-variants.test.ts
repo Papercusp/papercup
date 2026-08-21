@@ -45,7 +45,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
       },
       // postgres-js exposes the tag itself as the fragment builder; nested
       // sql`` fragments in the pair query call it with no args in the else-branch.
-      {},
+      { begin: vi.fn() },
     ),
   }),
 }));

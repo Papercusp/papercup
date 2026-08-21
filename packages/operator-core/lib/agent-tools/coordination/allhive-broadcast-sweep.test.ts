@@ -32,7 +32,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         }
         return Promise.resolve(h.rows);
       },
-      { unsafe: vi.fn(), json: (v: unknown) => v },
+      { begin: vi.fn(), unsafe: vi.fn(), json: (v: unknown) => v },
     ),
   }),
 }));

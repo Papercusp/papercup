@@ -32,7 +32,7 @@ const h = vi.hoisted(() => ({
 }));
 
 // A fake tagged-template SQL that reads/writes h.kv by statement text + bound key.
-const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[]): Promise<unknown[]> => {
+const fakeSql = Object.assign((strings: TemplateStringsArray | string[], ...values: unknown[]): Promise<unknown[]> => {
   const text = Array.isArray(strings) ? strings.join('?') : String(strings);
   if (/INSERT INTO harness_shared\.operator_settings/i.test(text)) {
     const [key, value] = values as [string, string];
@@ -54,7 +54,7 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
     return Promise.resolve(out);
   }
   return Promise.resolve([]);
-};
+}, { begin: vi.fn() });
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: fakeSql }) }));
 vi.mock('../workspace-registry', async (importActual) => {

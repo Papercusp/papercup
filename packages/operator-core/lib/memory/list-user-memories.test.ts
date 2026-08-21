@@ -30,7 +30,15 @@ const h: { sql: (strings: TemplateStringsArray, ...v: unknown[]) => Promise<Row[
   entries: [],
 };
 
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: (s: TemplateStringsArray, ...v: unknown[]) => h.sql(s, ...v) }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({
+    sql: Object.assign(
+      (s: TemplateStringsArray, ...v: unknown[]) => h.sql(s, ...v),
+      { begin: vi.fn() },
+    ),
+  }),
+}));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({ projects: h.harnesses.map((slug) => ({ slug })) })),

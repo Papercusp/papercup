@@ -77,6 +77,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
         return Promise.resolve([]);
       },
       {
+        begin: vi.fn(),
         // `sql.unsafe` is a real seam on this client (scout/corpus-digest.ts
         // reaches for it). Counted like any other call so the "performed NO
         // write" assertion cannot be dodged through it.

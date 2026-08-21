@@ -20,11 +20,14 @@ let nextRows: { feature_id: string; harness_slug: string | null }[] = [];
 let sqlThrows = false;
 
 /** Minimal tagged-template stand-in for postgres.js: records the SQL, returns nextRows. */
-const sqlTag = (strings: TemplateStringsArray, ...values: unknown[]) => {
-  sqlCalls.push({ text: strings.join('?'), values });
-  if (sqlThrows) throw new Error('pg down');
-  return Promise.resolve(nextRows);
-};
+const sqlTag = Object.assign(
+  (strings: TemplateStringsArray, ...values: unknown[]) => {
+    sqlCalls.push({ text: strings.join('?'), values });
+    if (sqlThrows) throw new Error('pg down');
+    return Promise.resolve(nextRows);
+  },
+  { begin: vi.fn() },
+);
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
 vi.mock('../../work-items', () => ({ setWorkItemClaimHold: vi.fn() }));

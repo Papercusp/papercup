@@ -15,7 +15,12 @@ let fakeSql: (strings: TemplateStringsArray, ...vals: unknown[]) => unknown = ()
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<object>()),
-  getOrgPg: () => ({ sql: (s: TemplateStringsArray, ...v: unknown[]) => fakeSql(s, ...v) }),
+  getOrgPg: () => ({
+    sql: Object.assign(
+      (s: TemplateStringsArray, ...v: unknown[]) => fakeSql(s, ...v),
+      { begin: vi.fn() },
+    ),
+  }),
 }));
 
 import {

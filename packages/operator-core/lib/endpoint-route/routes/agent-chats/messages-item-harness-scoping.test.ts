@@ -71,14 +71,17 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   // by UUID SHAPE, not argument position, so reordering the query's
   // interpolations cannot quietly turn this back into a 409.
   getOrgPg: () => ({
-    sql: async (_strings: TemplateStringsArray, ...values: unknown[]) => {
-      const token = values.find(
-        (v): v is string =>
-          typeof v === 'string' &&
-          /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
-      );
-      return token ? [{ token }] : [];
-    },
+    sql: Object.assign(
+      async (_strings: TemplateStringsArray, ...values: unknown[]) => {
+        const token = values.find(
+          (v): v is string =>
+            typeof v === 'string' &&
+            /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v),
+        );
+        return token ? [{ token }] : [];
+      },
+      { begin: vi.fn() },
+    ),
   }),
   getLegacyClient: () => ({
     prepare: (sql: string) => ({

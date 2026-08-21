@@ -66,13 +66,13 @@ const DB_ROWS = [
  * mock discriminates on the template text: the real SELECT resolves rows, a fragment
  * returns an opaque marker.
  */
-const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
     return Promise.resolve(DB_ROWS) as unknown as Promise<unknown[]>;
   }
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
-};
+}, { begin: vi.fn() });
 
 // FULL-REPLACEMENT MOCK HAZARD (WI-39843 class, and the reason this file red-pinned the
 // gate at red #28): a bare factory replaces the WHOLE module, so every export this file's
