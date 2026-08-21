@@ -1781,8 +1781,22 @@ export async function readClaimSpecDelta(
     // compiled as a second column over the same rows. Compiled filters reference item
     // columns UNQUALIFIED (see FIELD_MAP), so they evaluate correctly against the derived
     // table below, whose `c.*` carries every base `work_items` column.
+    // The candidate population must cover BOTH sides of the delta. Restricting it to the
+    // current filter makes a widening revision look like a no-op when it adds a fixed ID cohort
+    // alongside an existing plan/property filter: proposed-only rows never reach the
+    // `proposed_match` projection, so the preview reports 0 newly admitted even though
+    // scheduler:set_claim_spec's whole-pool preview sees and admits them (EI-20414245235902773).
+    const candidateFilter: FilterNode | undefined =
+      current.filter && proposed.filter
+        ? { any: [current.filter, proposed.filter] }
+        : (current.filter ?? proposed.filter);
+    const currentMatch = compileFilter(client, current.filter);
+    const candidateMatch = compileFilter(client, candidateFilter);
     const sub = issueClaimCandidateSubquery(client, {
-      compiled: compileFilter(client, current.filter),
+      // Keep the subquery's spec_match tied to the stored side. candidateMatch below only
+      // bounds which rows enter the snapshot; conflating the two would make currentClaimable
+      // include proposed-only rows.
+      compiled: currentMatch,
       assignee,
       cooldown: releaseCooldownSec(),
       harness: opts.harness,
@@ -1796,6 +1810,7 @@ export async function readClaimSpecDelta(
     await client`
       CREATE TEMP TABLE ${client.unsafe(table)} ON COMMIT DROP AS
       SELECT c.*, (${proposedMatch}) AS proposed_match FROM (${sub}) c
+      WHERE ${candidateMatch}
     `;
 
     // in_current / in_proposed are the FULL claimability predicate per side: that side's
@@ -1815,8 +1830,12 @@ export async function readClaimSpecDelta(
         COALESCE(item_kind, kind) AS delta_kind,
         COALESCE(payload->'_ei'->>'severity', payload->>'severity') AS delta_severity,
         source_plan_slug          AS delta_plan,
-        (spec_match     AND ${floors} AND status = ANY(${currentStates}::text[]))  AS in_current,
-        (proposed_match AND ${floors} AND status = ANY(${proposedStates}::text[])) AS in_proposed,
+        -- Positive comparisons on nullable fields (e.g. plan = '<slug>') evaluate to SQL NULL,
+        -- which WHERE correctly treats as a non-match but which NOT in_current would also turn
+        -- into NULL and silently omit from newly-admitted counts. Normalize both match columns
+        -- before composing the per-side membership predicates (EI-20414245235902773).
+        (COALESCE(spec_match, false)     AND ${floors} AND status = ANY(${currentStates}::text[]))  AS in_current,
+        (COALESCE(proposed_match, false) AND ${floors} AND status = ANY(${proposedStates}::text[])) AS in_proposed,
         (status = ANY(${currentStates}::text[]))  AS status_in_current,
         (status = ANY(${proposedStates}::text[])) AS status_in_proposed
       FROM ${client.unsafe(table)}

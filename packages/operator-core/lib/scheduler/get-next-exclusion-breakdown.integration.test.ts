@@ -472,6 +472,38 @@ describe('P-005 — readClaimSpecDelta: which items a proposed spec revision dro
     expect(delta.newlyAdmitted[0]!.cause).toBe('filter');
   });
 
+  it('includes proposed-only fixed-cohort rows when widening an existing plan filter', async () => {
+    // This is the live EI-20414245235902773 shape: the current plan lane is empty, while the
+    // proposal widens it with a fixed ID cohort. The candidate snapshot must be the UNION of
+    // both filters; seeding only the proposed IDs makes the old current-filter-only snapshot
+    // report a false 0 → 0 / newlyAdmitted=0.
+    const currentFilter: FilterNode = {
+      field: 'plan',
+      op: '=',
+      value: 'sidestage-iphone-app-2026-08-13',
+    };
+    const ids = ['WI-38727', 'WI-38728', 'WI-38729', 'WI-38732', 'WI-38733'];
+    for (const id of ids) await seedIssue(id, null);
+
+    const delta = await readClaimSpecDelta(
+      { filter: currentFilter },
+      {
+        filter: {
+          any: [currentFilter, { field: 'id', op: 'in', value: ids }],
+        },
+      },
+      { harness: H },
+      { limit: 20 },
+    );
+
+    expect(delta.currentClaimable).toBe(0);
+    expect(delta.proposedClaimable).toBe(ids.length);
+    expect(delta.retained).toBe(0);
+    expect(delta.newlyExcludedCount).toBe(0);
+    expect(delta.newlyAdmittedCount).toBe(ids.length);
+    expect(delta.newlyAdmitted.map((r) => r.id).sort()).toEqual([...ids].sort());
+  });
+
   it('treats a states-only revision as a first-class delta and attributes it to `states`', async () => {
     // The starvation shape this fleet has actually hit: an issue-family lane re-steered onto a
     // status token its rows do not carry. The filter is IDENTICAL on both sides, so a
