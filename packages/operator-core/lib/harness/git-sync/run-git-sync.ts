@@ -820,6 +820,78 @@ const remoteDefaultBranch = async (runGit: RunGit, repo: string, remote: string)
   return ref.startsWith(`${remote}/`) ? ref.slice(remote.length + 1) : ref;
 };
 
+type BranchAttachmentResult = { branch: string } | { error: string };
+
+/**
+ * Attach a detached repo before its first auto-commit. A submodule freshly checked
+ * out by `git submodule update` is normally detached, but committing there without a
+ * branch leaves the new commit reachable only through the worktree's detached HEAD.
+ * Create the repo's own default branch when it is absent, or attach it only when an
+ * existing local branch already points at the exact same HEAD. Never move or overwrite
+ * a divergent local branch: that is evidence of work git-sync must not destroy.
+ */
+const ensureBranchAttachedForCommit = async (
+  runGit: RunGit,
+  repo: string,
+  remote: string,
+  defaultBranch: string,
+  log: (m: string) => void,
+): Promise<BranchAttachmentResult> => {
+  const attached = await currentBranch(runGit, repo);
+  if (attached) return { branch: attached };
+
+  const branch = (await remoteDefaultBranch(runGit, repo, remote)) ?? defaultBranch;
+  if (!branch) {
+    return { error: `${repo}: detached HEAD has no branch target to attach before commit` };
+  }
+
+  const head = await runGit(['rev-parse', 'HEAD'], repo);
+  const headSha = head.stdout.trim();
+  if (head.code !== 0 || !headSha) {
+    return {
+      error: `${repo}: cannot resolve detached HEAD before attaching '${branch}': ${(head.stderr || head.stdout).trim()}`,
+    };
+  }
+
+  const localRef = await runGit(['show-ref', '--verify', '--quiet', `refs/heads/${branch}`], repo);
+  if (localRef.code === 0) {
+    const localTip = await runGit(['rev-parse', `refs/heads/${branch}`], repo);
+    const localSha = localTip.stdout.trim();
+    if (localTip.code !== 0 || !localSha) {
+      return { error: `${repo}: cannot resolve existing local branch '${branch}' before attaching` };
+    }
+    if (localSha !== headSha) {
+      return {
+        error:
+          `${repo}: refusing to attach detached HEAD to divergent local branch '${branch}' ` +
+          `(local ${localSha.slice(0, 12)} != HEAD ${headSha.slice(0, 12)})`,
+      };
+    }
+    const attach = await runGit(['switch', branch], repo);
+    if (attach.code !== 0) {
+      return {
+        error: `${repo}: failed to attach detached HEAD to existing '${branch}': ${(attach.stderr || attach.stdout).trim()}`,
+      };
+    }
+    log(`[git-sync] ${repo}: attached detached HEAD to existing '${branch}' at the same tip`);
+    return { branch };
+  }
+  if (localRef.code !== 1) {
+    return {
+      error: `${repo}: could not determine whether local branch '${branch}' exists: ${(localRef.stderr || localRef.stdout).trim()}`,
+    };
+  }
+
+  const create = await runGit(['switch', '--create', branch], repo);
+  if (create.code !== 0) {
+    return {
+      error: `${repo}: failed to create '${branch}' from detached HEAD: ${(create.stderr || create.stdout).trim()}`,
+    };
+  }
+  log(`[git-sync] ${repo}: created and attached '${branch}' at detached HEAD`);
+  return { branch };
+};
+
 const headSha = async (runGit: RunGit, repo: string): Promise<string> => {
   const r = await runGit(['rev-parse', 'HEAD'], repo);
   return r.stdout.trim();
@@ -1932,6 +2004,8 @@ export async function commitAttributedGroups(
 
 /** The knobs the COMMIT half of one repo's sync needs (stage + content-guard + commit). */
 interface CommitRepoOpts {
+  remote: string;
+  defaultBranch: string;
   message: string;
   maxBlobBytes: number;
   maxCommitTotalBytes: number;
@@ -1975,6 +2049,15 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
   let oversized: OversizedFile[] = [];
   let contentErrors: ContentOffender[] = [];
   if (await isDirty(runGit, repoPath)) {
+    const attachment = await ensureBranchAttachedForCommit(runGit, repoPath, o.remote, o.defaultBranch, o.log);
+    if ('error' in attachment) {
+      return {
+        committedLocal: false,
+        error: attachment.error,
+        oversized,
+        contentErrors,
+      };
+    }
     // EI-18 guard: never bake an unpushable blob into the range. Oversized dirty
     // files are excluded from the commit (`:(exclude,literal)` pathspecs) and
     // reported; everything else still syncs this tick.
@@ -2662,6 +2745,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const protectedPaths = [...new Set((opts.excludePaths ?? []).map((path) => path.trim()).filter(Boolean))];
   const repoO = {
     remote,
+    defaultBranch: branch,
     message,
     doPush,
     maxBlobBytes,

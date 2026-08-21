@@ -23,7 +23,7 @@
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -118,6 +118,17 @@ async function pidsTaggedWithRun(runId: string): Promise<number[]> {
 }
 
 describe('testing:run (integration)', () => {
+  it('applies the shared tmpdir guard before creating its report directory', () => {
+    const source = readFileSync(new URL('../run.ts', import.meta.url), 'utf8');
+    const coreStart = source.indexOf('export async function runTestFilesCore');
+    const guardCall = source.indexOf('ensurePapercuspTmpdir();', coreStart);
+    const reportDirCall = source.indexOf('mkdtemp(join(tmpdir(),', coreStart);
+
+    expect(coreStart).toBeGreaterThan(-1);
+    expect(guardCall).toBeGreaterThan(coreStart);
+    expect(reportDirCall).toBeGreaterThan(guardCall);
+  });
+
   it.skipIf(!SIDESTAGE_HIVE_ROOT)('routes an absolute test path through its external Hive Vitest checkout', async () => {
     const out = await body(
       call({ files: [join(SIDESTAGE_HIVE_ROOT as string, 'apps/web/src/auction.test.tsx')] }),

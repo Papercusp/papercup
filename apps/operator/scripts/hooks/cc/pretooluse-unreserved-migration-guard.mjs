@@ -145,16 +145,21 @@ async function main() {
       inert = 'lint-migrations.mjs exported no numeric ENFORCED_FROM';
       return done(inert);
     }
-    if (target.num < ENFORCED_FROM) return done();
-
     const state = await lookupNumber(target);
     if (!state.ok) {
       inert = `could not read harness_shared.migration_reservations (${state.error})`;
       return done(inert);
     }
-    if (state.reserved) return done();
 
-    return deny(target, tool, ENFORCED_FROM, state.applied);
+    // Filename-keyed history is immutable regardless of whether the allocator
+    // recorded a reservation. The runner skips an applied filename, so an edit
+    // here would help fresh installs only while silently leaving live databases
+    // on the old bytes. This check must precede the reservation/baseline branch:
+    // both allocated and grandfathered applied migrations are frozen.
+    if (state.applied) return deny(target, tool, ENFORCED_FROM, true, state.reserved);
+    if (target.num < ENFORCED_FROM || state.reserved) return done();
+
+    return deny(target, tool, ENFORCED_FROM, false, false);
   } catch (e) {
     inert = `internal error (${e?.code ?? e?.message ?? e})`;
   }
@@ -226,26 +231,40 @@ async function lookupNumber({ num, repoRoot, sqlName }) {
 }
 
 /** The refusal, tailored to whether the number is still repairable. */
-export function denyReason({ num, sqlName, draft }, tool, enforcedFrom, applied) {
+export function denyReason({ num, sqlName, draft }, tool, enforcedFrom, applied, reserved = false) {
   const slug = sqlName.replace(/^\d+-/, '').replace(/\.sql$/, '') || 'your-migration';
-  const head =
-    `🛑 unreserved-migration-guard (WI-38352): migration number ${num} has no row in ` +
-    `harness_shared.migration_reservations, so it was hand-picked rather than allocated. ` +
-    `Every number ≥${enforcedFrom} must be allocated.\n\n` +
-    `This is not a style rule. lint:migrations check 5 fails on an unreserved number, and ` +
-    `lint:migrations is a RELEASE-CUT PREFLIGHT — so this one file red-pins the gate for ` +
-    `EVERY agent on the fleet, not just you. It has happened three times in ~24h; the last ` +
-    `one cost ~2h of fleet-wide release block.\n\n`;
+  const head = applied
+    ? `🛑 migration-immutability-guard (WI-38352): ${sqlName} is already recorded in ` +
+      `harness_shared.schema_migrations. The migration runner keys its ledger by filename and ` +
+      `will skip edits to this file, so its applied history is immutable.\n\n` +
+      `This is not a style rule: editing it creates a fresh-install/live-database split that ` +
+      `can survive every restart. Write the correction as a new allocated migration instead.\n\n` +
+      (reserved ? '' :
+        `Additionally, migration number ${num} has no row in harness_shared.migration_reservations, ` +
+        `so it was hand-picked rather than allocated. lint:migrations check 5 is a RELEASE-CUT ` +
+        `PREFLIGHT, and this unreserved history can red-pin the gate for every agent.\n\n`)
+    : `🛑 unreserved-migration-guard (WI-38352): migration number ${num} has no row in ` +
+      `harness_shared.migration_reservations, so it was hand-picked rather than allocated. ` +
+      `Every number ≥${enforcedFrom} must be allocated.\n\n` +
+      `This is not a style rule. lint:migrations check 5 fails on an unreserved number, and ` +
+      `lint:migrations is a RELEASE-CUT PREFLIGHT — so this one file red-pins the gate for ` +
+      `EVERY agent on the fleet, not just you. It has happened three times in ~24h; the last ` +
+      `one cost ~2h of fleet-wide release block.\n\n`;
   const remedy = applied
-    ? `⚠ ${sqlName} is ALREADY APPLIED, so this number can no longer be repaired by renaming — ` +
-      `the runner keys on filename and applied history is frozen. The remedy is a fresh ` +
-      `allocated number plus an INSERT-only backfill of the missing reservation row ` +
-      `(precedent: 807-backfill-migration-reservations-*.sql, and use ON CONFLICT (num) DO ` +
-      `NOTHING — peers race this repair). Fix the reservation, not this file:\n\n` +
-      `    node scripts/next-migration.mjs --name backfill-migration-reservation-${num} ` +
-      `--intent "backfill the missing reservation row for ${num}"\n\n` +
-      `Check first that no peer has already landed that backfill — a fleet-wide red attracts ` +
-      `everyone at once, and four agents applied the SAME repair within 96s on 2026-08-13.\n\n`
+    ? reserved
+      ? `⚠ Do not edit ${sqlName}. Allocate a fresh number for the correction:\n\n` +
+        `    node scripts/next-migration.mjs --name ${slug}-followup --intent "apply the correction for ${sqlName}"\n\n` +
+        `Then put the corrective DDL in that new migration. The old filename remains ` +
+        `unchanged; the runner cannot replay edited bytes for an applied filename.\n\n`
+      : `⚠ ${sqlName} is ALREADY APPLIED, so this number can no longer be repaired by renaming — ` +
+        `the runner keys on filename and applied history is frozen. The remedy is a fresh ` +
+        `allocated number plus an INSERT-only backfill of the missing reservation row ` +
+        `(precedent: 807-backfill-migration-reservations-*.sql, and use ON CONFLICT (num) DO ` +
+        `NOTHING — peers race this repair). Fix the reservation, not this file:\n\n` +
+        `    node scripts/next-migration.mjs --name backfill-migration-reservation-${num} ` +
+        `--intent "backfill the missing reservation row for ${num}"\n\n` +
+        `Check first that no peer has already landed that backfill — a fleet-wide red attracts ` +
+        `everyone at once, and four agents applied the SAME repair within 96s on 2026-08-13.\n\n`
     : `✅ Right now this is a ONE-COMMAND fix, because the file is not applied yet:\n\n` +
       `    node scripts/next-migration.mjs --name ${slug} --intent "<what it does>"\n\n` +
       `It reserves the next number atomically under an advisory lock and prints the exact ` +
@@ -261,8 +280,8 @@ export function denyReason({ num, sqlName, draft }, tool, enforcedFrom, applied)
   return head + remedy + tail;
 }
 
-function deny(target, tool, enforcedFrom, applied) {
-  const reason = denyReason(target, tool, enforcedFrom, applied);
+function deny(target, tool, enforcedFrom, applied, reserved) {
+  const reason = denyReason(target, tool, enforcedFrom, applied, reserved);
   try {
     process.stdout.write(
       JSON.stringify({
@@ -372,6 +391,7 @@ function selfTest() {
   const t = { num: 815, sqlName: '815-expose-claim.sql', draft: false };
   const unapplied = denyReason(t, 'Write', 494, false);
   const appliedMsg = denyReason(t, 'Edit', 494, true);
+  const appliedReservedMsg = denyReason(t, 'Edit', 494, true, true);
   const msgCases = [
     ['unapplied refusal hands back the allocator command', unapplied.includes('node scripts/next-migration.mjs --name expose-claim')],
     ['unapplied refusal offers the cheap fix, not the ceremony', unapplied.includes('ONE-COMMAND fix') && !unapplied.includes('ALREADY APPLIED')],
@@ -381,6 +401,8 @@ function selfTest() {
     ['applied refusal allocates for the BACKFILL, never renames this file', appliedMsg.includes('--name backfill-migration-reservation-815') && !appliedMsg.includes('mv ')],
     ['applied refusal warns about the repair race', appliedMsg.includes('96s')],
     ['both name the fleet-wide consequence', unapplied.includes('RELEASE-CUT PREFLIGHT') && appliedMsg.includes('RELEASE-CUT PREFLIGHT')],
+    ['allocated applied refusal names the immutable ledger', appliedReservedMsg.includes('already recorded in harness_shared.schema_migrations') && !appliedReservedMsg.includes('has no row in harness_shared.migration_reservations')],
+    ['allocated applied refusal sends the correction to a new migration', appliedReservedMsg.includes('--name expose-claim-followup') && appliedReservedMsg.includes('Do not edit')],
   ];
   for (const [name, ok] of msgCases) {
     if (!ok) failed = true;

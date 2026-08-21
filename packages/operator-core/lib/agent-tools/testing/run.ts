@@ -62,6 +62,7 @@ import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
 } from '../capability/foreground-transport-cap';
+import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -450,6 +451,11 @@ export async function runTestFilesCore(opts: {
   }
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
+  // EI-21051590601555185: this tool runs inside the long-lived operator process, so it does not
+  // pass through scripts/test-files.mjs before creating its private report directory. Apply the
+  // same headroom-aware, papercusp-owned TMPDIR policy here; otherwise an exhausted/shared /tmp
+  // fails at this mkdtemp call before the router can report a structured result.
+  ensurePapercuspTmpdir();
   const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
   const reportPath = join(dir, 'report.json');
   try {

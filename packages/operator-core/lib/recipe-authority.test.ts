@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildRecipeAuthorityRecommendation,
   deriveRecipeAuthority,
+  findVolatileCoordinationOwnerId,
   findVolatileRunArtifactLiteral,
   recipeRevision,
   recipeAuthorityMatches,
@@ -77,6 +78,48 @@ describe('recipe recommendation authority (P-008)', () => {
       error: 'authority_unresolved',
       reason: expect.stringContaining('volatile coordination sender/cursor'),
     });
+  });
+
+  it('fails closed for literal coordination owner ids', async () => {
+    const staleOwnerScript = `
+      const rr = await tools.coord.presence({ scope: 'workspace', include_detail: true });
+      const owners = new Set([
+        'su-b0dec57d-3d81-44ee-8c8b-5a5ffaa4cae3',
+        'su-a79eb6a4-c513-4c40-8641-c2255811d326',
+      ]);
+      return (rr?.active || []).filter((row) => owners.has(row.ownerId));
+    `;
+    expect(findVolatileCoordinationOwnerId(staleOwnerScript)).toBe('su-b0dec57d-3d81-44ee-8c8b-5a5ffaa4cae3');
+    await expect(deriveRecipeAuthority(staleOwnerScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-owner-id',
+        ownerId: 'su-b0dec57d-3d81-44ee-8c8b-5a5ffaa4cae3',
+      },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: staleOwnerScript,
+      updatedAt: '2026-08-21T11:26:33.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+    await expect(validateRecipeAuthorityProof({
+      script: staleOwnerScript,
+      updatedAt: '2026-08-21T11:26:33.000Z',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'authority_unresolved',
+      reason: expect.stringContaining('concrete agent owner id'),
+    });
+
+    // Dynamic owner resolution is the reusable shape: the recipe contains no
+    // stale identity for the authority analyzer to freeze.
+    const liveOwnerScript = `
+      const rr = await tools.coord.presence({ scope: 'workspace', include_detail: true });
+      const owners = new Set((await tools.coord.presence({ scope: 'workspace' })).active.map((row) => row.ownerId));
+      return (rr?.active || []).filter((row) => owners.has(row.ownerId));
+    `;
+    expect(findVolatileCoordinationOwnerId(liveOwnerScript)).toBeNull();
+    await expect(deriveRecipeAuthority(liveOwnerScript)).resolves.toMatchObject({ unresolved: false });
   });
 
   // EI-20480226881133232 — the recurrence guard. The real `distill-exact-active-checkpoint-log`

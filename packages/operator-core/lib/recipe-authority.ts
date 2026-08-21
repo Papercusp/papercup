@@ -49,6 +49,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'dynamic-scope-args'; tool: string }
   /** A coordination call embeds a sender/cursor that can be stale outside its original wake. */
   | { kind: 'volatile-coordination-args'; tool: string; keys: string[] }
+  /** A recipe embeds a concrete agent owner id that can be retired or replaced between wakes. */
+  | { kind: 'volatile-coordination-owner-id'; ownerId: string }
   /** A loop call writes caller-scoped session state whose values cannot be proved reusable. */
   | { kind: 'volatile-session-state'; tool: string }
   /**
@@ -144,6 +146,18 @@ const VOLATILE_COORDINATION_ARG_KEYS = new Set([
   'before',
   'beforets',
 ]);
+
+// Agent owner ids are session identities, not durable lane authority. A saved
+// coordination recipe that filters or targets a literal su UUID can silently
+// report an old owner as absent (or address the wrong owner) after a respawn or
+// fleet rotation. Keep this deliberately narrow: ordinary UUIDs in a recipe
+// may be durable domain data, while the `su-` owner prefix is the coordination
+// identity shape that must be resolved from the current live context.
+const VOLATILE_COORDINATION_OWNER_ID = /\bsu-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i;
+
+export function findVolatileCoordinationOwnerId(script: string): string | null {
+  return script.match(VOLATILE_COORDINATION_OWNER_ID)?.[0] ?? null;
+}
 
 /**
  * Filesystem roots whose contents belong to ONE process/run, never to a lane.
@@ -341,6 +355,16 @@ export async function deriveRecipeAuthority(script: string): Promise<RecipeAutho
     const artifactPath = findVolatileRunArtifactLiteral(script);
     if (artifactPath) {
       unresolvedCause = { kind: 'volatile-run-artifact-path', tool: null, path: artifactPath };
+    }
+  }
+
+  // A coordination recipe must resolve its target owner from the current
+  // session/fleet state. A literal su UUID is a momentary identity and remains
+  // stale even when the surrounding coord call has no cursor-like argument.
+  if (!unresolvedCause) {
+    const ownerId = findVolatileCoordinationOwnerId(script);
+    if (ownerId) {
+      unresolvedCause = { kind: 'volatile-coordination-owner-id', ownerId };
     }
   }
 
@@ -577,6 +601,14 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'the current path from the live authority (the active run-lock / systemd unit / the owning tool\'s own ' +
         'status read) and assert that the run identity it returns matches that live authority, or run the script ' +
         'directly via code:run against a path you resolved this turn.'
+      );
+    case 'volatile-coordination-owner-id':
+      return (
+        `the recipe script embeds the concrete agent owner id \`${cause.ownerId}\`, which is a volatile ` +
+        'coordination identity that can be retired or replaced after a respawn/fleet rotation — a saved ' +
+        'presence check or owner-targeted action can therefore report the wrong lane. Resolve the current ' +
+        'owner from live coordination state, or run the script directly via code:run; until then it is not ' +
+        'safely reusable through recipes:run.'
       );
     case 'fixed-claim-assignee':
       return (

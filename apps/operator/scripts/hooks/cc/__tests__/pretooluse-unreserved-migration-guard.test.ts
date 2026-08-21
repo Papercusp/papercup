@@ -75,15 +75,35 @@ describe.skipIf(!PG_READY)('pretooluse-unreserved-migration-guard — falsifiabi
     expect(reason).toContain('RELEASE-CUT PREFLIGHT');
   });
 
-  it('ALLOWS an allocated migration — silently, with no protocol output', () => {
-    // 818 was allocated through the allocator, so it has a reservation row.
+  it('DENIES an already-applied migration even when its number was allocated', () => {
+    // 818 was allocated through the allocator and is already applied. The old guard
+    // returned early on `reserved`, allowing edits that only affected fresh installs.
     const { denied, reason } = runHook(write(join(SQL_DIR, '818-backfill-migration-reservation-815.sql'), 'Edit'));
+    expect(denied).toBe(true);
+    expect(reason).toContain('already recorded in harness_shared.schema_migrations');
+    expect(reason).toContain('Do not edit');
+    expect(reason).toContain('node scripts/next-migration.mjs --name backfill-migration-reservation-815-followup');
+    expect(reason).not.toContain('has no row in harness_shared.migration_reservations');
+  });
+
+  it('ALLOWS an allocated migration that is not applied yet — silently', () => {
+    // 848 has an allocator reservation but is still pending on the shared DB.
+    const { denied, reason } = runHook(write(join(SQL_DIR, '848-widen-consult-and-interest-watch-embeddings-to-768.sql'), 'Edit'));
     expect(denied).toBe(false);
     expect(reason).toBe('');
   });
 
   it('ALLOWS a number below ENFORCED_FROM (grandfathered legacy)', () => {
     expect(runHook(write(join(SQL_DIR, `${BELOW_ENFORCED}-legacy.sql`), 'Edit')).denied).toBe(false);
+  });
+
+  it('DENIES an applied grandfathered migration below ENFORCED_FROM', () => {
+    // 000-baseline is intentionally below the reservation-enforcement boundary, but
+    // applied filenames are immutable independently of that newer allocator policy.
+    const { denied, reason } = runHook(write(join(SQL_DIR, '000-baseline.sql'), 'Edit'));
+    expect(denied).toBe(true);
+    expect(reason).toContain('already recorded in harness_shared.schema_migrations');
+    expect(reason).toContain('Do not edit');
   });
 });
 

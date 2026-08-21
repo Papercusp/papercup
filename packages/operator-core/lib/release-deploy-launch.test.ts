@@ -104,12 +104,25 @@ describe('computeDeployStatus — decision tree', () => {
 
   it('gate-red: reds present → NOT triggerable, recommendation says fix the reds', () => {
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 2, lastFixerStatus: 'spawned' }, { deployedBehindGreenPin: 0 }),
+      mkSnap(
+        { consecutiveReds: 2, lastFixerStatus: 'spawned', failingTests: ['lib/red.test.ts'] },
+        { deployedBehindGreenPin: 0 },
+      ),
     );
     expect(s.state).toBe('gate-red');
     expect(s.canTriggerGreen).toBe(false);
     expect(s.recommendation).toMatch(/FIX the reds/);
     expect(s.recommendation).toMatch(/owner/i); // force only with owner sign-off
+  });
+
+  it('gate-red with no attributable failures does not send responders hunting for tests', () => {
+    const s = computeDeployStatus(
+      mkSnap({ consecutiveReds: 1, failingTests: [] }, { deployedBehindGreenPin: 0 }),
+    );
+    expect(s.state).toBe('gate-red');
+    expect(s.recommendation).toMatch(/names no failing tests/);
+    expect(s.recommendation).toMatch(/do NOT go hunting for tests/i);
+    expect(s.recommendation).not.toMatch(/FIX the reds/);
   });
 
   it('a green PIN ahead is triggerable even when the gate is currently RED (the pin is green by construction)', () => {
@@ -416,7 +429,10 @@ describe('WI-4489: gate verdict staleness', () => {
 
   it('⭐ a LIVE red still reports gate-red — the fix must not blind the gate (the EI-10609 lesson)', () => {
     const s = computeDeployStatus(
-      mkSnap({ consecutiveReds: 4, verdictStale: false }, { deployedBehindGreenPin: 0 }),
+      mkSnap(
+        { consecutiveReds: 4, verdictStale: false, failingTests: ['lib/red.test.ts'] },
+        { deployedBehindGreenPin: 0 },
+      ),
     );
     expect(s.state).toBe('gate-red');
     expect(s.recommendation).toMatch(/FIX the reds/);

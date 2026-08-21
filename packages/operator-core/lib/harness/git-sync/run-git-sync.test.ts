@@ -1217,6 +1217,8 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
 
       // submodule origin received the sub commit (pushed to main from detached HEAD)
       expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
+      // The commit is now anchored to a local branch before it is pushed.
+      expect(git(join(repo, 'libs/sub'), 'branch', '--show-current')).toBe('main');
       // superproject origin received the super commit
       expect(git(superOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
 
@@ -1227,6 +1229,44 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // and that submodule commit exists on the submodule's origin (pin is reachable remotely)
       expect(() => git(subOrigin, 'cat-file', '-e', `${subHead}^{commit}`)).not.toThrow();
     });
+  });
+
+  it('EI-20611320499473924: attaches a detached submodule to an existing same-tip default branch before committing', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    // `git submodule update` leaves HEAD detached. Pre-create the default branch at
+    // that exact tip, then leave HEAD detached so the attach-only-if-same-tip path runs.
+    git(subRepo, 'branch', '-f', 'main', 'HEAD');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('');
+    writeFileSync(join(subRepo, 'sub-same-tip.txt'), 'same-tip\n');
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status).toBe('synced');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('main');
+    expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
+  });
+
+  it('EI-20611320499473924: refuses a detached submodule whose local default branch diverges', async () => {
+    const subRepo = join(repo, 'libs/sub');
+    git(subRepo, 'branch', '-f', 'main', 'HEAD');
+    // Advance the local main branch, then return to the old tip detached. Git-sync
+    // must refuse to move/overwrite that divergent branch rather than strand work.
+    git(subRepo, 'switch', 'main');
+    writeFileSync(join(subRepo, 'sub-branch-only.txt'), 'branch-only\n');
+    git(subRepo, 'add', '-A');
+    git(subRepo, 'commit', '--no-verify', '-m', 'branch-only local work');
+    git(subRepo, 'switch', '--detach', 'HEAD~1');
+    writeFileSync(join(subRepo, 'sub-divergent.txt'), 'divergent\n');
+    expect(git(subRepo, 'branch', '--show-current')).toBe('');
+
+    const out = await runGitSync('test', { repoPath: repo });
+
+    expect(out.status).toBe('error');
+    if (out.status === 'error') {
+      expect(out.errors.map((e) => e.message).join('\n')).toMatch(/divergent local branch 'main'/i);
+    }
+    expect(git(subRepo, 'branch', '--show-current')).toBe('');
+    expect(git(subOrigin, 'log', '--format=%B', 'main')).not.toMatch(/auto-commit test/);
   });
 
   it('EI-20329530284626235: restores a drifted initialized-submodule origin from canonical .gitmodules before push', async () => {

@@ -44,22 +44,22 @@ const {
   vi.hoisted(() => ({
     listBlenderMaintenanceScopes: vi.fn(),
     listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
-  deliverScoutNudge: vi.fn().mockResolvedValue(undefined),
-  resolveMugOwner: vi.fn(),
-  claimWatchdogFire: vi.fn(),
-  routineStorageSlug: vi.fn(),
-  draftRows: {
-    current: [] as Array<{
-      plan_slug: string;
-      title: string | null;
-      updated_at_ms: number;
-      workspace_id?: string;
-      harness_slug?: string;
-      items?: unknown;
-      decisions?: unknown;
-      content?: string;
-    }>,
-  },
+    deliverScoutNudge: vi.fn().mockResolvedValue(undefined),
+    resolveMugOwner: vi.fn(),
+    claimWatchdogFire: vi.fn(),
+    routineStorageSlug: vi.fn(),
+    draftRows: {
+      current: [] as Array<{
+        plan_slug: string;
+        title: string | null;
+        updated_at_ms: number;
+        workspace_id?: string;
+        harness_slug?: string;
+        items?: unknown;
+        decisions?: unknown;
+        content?: string;
+      }>,
+    },
   }));
 
 vi.mock('@papercusp/db-org', async (orig) => ({
