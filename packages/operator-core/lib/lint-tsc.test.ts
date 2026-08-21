@@ -3,7 +3,7 @@
  *   - per-file baseline: a file above ITS baseline is a NEW, ATTRIBUTED regression,
  *   - --mine scopes the failure to files the caller changed (peer drift is reported, not gated),
  *   - ratchet-only-down per file on --update,
- *   - hard-fail on syntax-broken files (TS1xxx) regardless of counts,
+ *   - hard-fail on TS1xxx diagnostics regardless of counts,
  *   - per-file error attribution from raw tsc output.
  *
  * The script's pure functions are imported directly (same pattern as apps/operator's
@@ -601,7 +601,7 @@ describe('parseTscErrors', () => {
 });
 
 describe('syntaxBrokenFiles', () => {
-  it('flags only files with TS1xxx parse errors', () => {
+  it('flags only files with TS1xxx hard-fail diagnostics', () => {
     expect(syntaxBrokenFiles(parseTscErrors(SAMPLE))).toEqual(['lib/broken.ts']);
   });
 
@@ -837,10 +837,10 @@ describe('parseExplicitFiles feeding decidePerFile (EI-18731016038876755)', () =
 // (224) — it could not attribute a regression and flapped ±N under concurrent edits. These pin the
 // per-file replacement: a file above ITS baseline is a named regression; a flap in file A never
 // reds an agent editing file B; --mine scopes the failure to the caller's changed files.
-describe('decidePerFile — per-file attribution + --update-only ratchet + syntax hard-fail', () => {
+describe('decidePerFile — per-file attribution + --update-only ratchet + TS1xxx hard-fail', () => {
   const brokenFree: string[] = [];
 
-  it('syntax-broken files hard-fail regardless of counts (unscoped / bare run)', () => {
+  it('files with TS1xxx diagnostics hard-fail regardless of counts (unscoped / bare run)', () => {
     const r = decidePerFile({
       currentByFile: { 'a.ts': 1 },
       baselineByFile: { 'a.ts': 500 },
@@ -851,11 +851,11 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
   });
 
   // EI-19321179234197157 — the live failure this pins: `--files=b.ts` hard-failed on a TS1xxx
-  // parse error in `lib/peer-broken.ts`, a file the caller never named and — on this shared
-  // single-worktree box — was simply a peer's in-flight edit. The syntax hard-fail must be scoped
+  // TS1xxx diagnostic in `lib/peer-broken.ts`, a file the caller never named and — on this shared
+  // single-worktree box — was simply a peer's in-flight edit. The TS1xxx hard-fail must be scoped
   // the same way a type-error regression already is: unattributed under `--mine`/`--files`, still
   // reported (never silently dropped), never gating.
-  it('--files: a syntax-broken file OUTSIDE the named set does NOT gate — reported as unattributedBrokenFiles', () => {
+  it('--files: a TS1xxx diagnostic OUTSIDE the named set does NOT gate — reported as unattributedBrokenFiles', () => {
     const r = decidePerFile({
       currentByFile: { 'b.ts': 0 },
       baselineByFile: { 'b.ts': 0 },
@@ -866,7 +866,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
     expect(r.unattributedBrokenFiles).toEqual(['lib/peer-broken.ts']);
   });
 
-  it('--files: a syntax-broken file INSIDE the named set still hard-fails, unconditionally', () => {
+  it('--files: a TS1xxx diagnostic INSIDE the named set still hard-fails, unconditionally', () => {
     const r = decidePerFile({
       currentByFile: { 'b.ts': 0 },
       baselineByFile: { 'b.ts': 500 },
@@ -878,7 +878,7 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
     expect(r.unattributedBrokenFiles).toEqual(['lib/peer-broken.ts']);
   });
 
-  it('--mine (inferred changedFiles) scopes the syntax hard-fail identically to --files', () => {
+  it('--mine (inferred changedFiles) scopes the TS1xxx hard-fail identically to --files', () => {
     const r = decidePerFile({
       currentByFile: { 'b.ts': 0 },
       baselineByFile: { 'b.ts': 0 },
@@ -1641,7 +1641,8 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     'lib/a.ts(11,3): error TS2339: Property x does not exist.',
   ].join('\n');
 
-  const SYNTAX_TSC_LINES = "lib/a.ts(834,18): error TS1005: ';' expected.";
+  const TS1XXX_HARD_FAIL_TSC_LINES =
+    "lib/a.ts(597,60): error TS1320: Type of 'await' operand must either be a valid promise or must not contain a callable 'then' member.";
 
   /** Run the real gate over canned compiler output; returns its combined output. */
   function runGate(baseline: Record<string, number>): string {
@@ -1681,7 +1682,7 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
   function runSyntaxGate(): string {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-syntax-wiring-'));
     try {
-      writeFileSync(join(root, 'tsc-output.txt'), `${SYNTAX_TSC_LINES}\n`);
+      writeFileSync(join(root, 'tsc-output.txt'), `${TS1XXX_HARD_FAIL_TSC_LINES}\n`);
       writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'lib/a.ts': 0 } }));
       writeFileSync(
         join(root, 'run.mjs'),
@@ -1697,7 +1698,7 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
       try {
         return execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
       } catch (e: any) {
-        // The gate exits 1 on a syntax failure — that IS the path under test, not a test failure.
+        // The gate exits 1 on a TS1xxx hard failure — that IS the path under test, not a test failure.
         return `${e.stdout ?? ''}${e.stderr ?? ''}`;
       }
     } finally {
@@ -1721,10 +1722,12 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).not.toContain('every error above is new');
   });
 
-  it('a syntax failure prints the compiler location and message, not just the filename', () => {
+  it('a TS1xxx hard failure prints the compiler message without calling it a parse error', () => {
     const out = runSyntaxGate();
     expect(out).toContain('lib/a.ts');
-    expect(out).toContain(SYNTAX_TSC_LINES);
+    expect(out).toContain(TS1XXX_HARD_FAIL_TSC_LINES);
+    expect(out).toContain('hard-failing TS1xxx diagnostics');
+    expect(out).not.toContain('parse errors');
   });
 
   it('forwards pc-heavy stderr while preserving captured compiler output', () => {

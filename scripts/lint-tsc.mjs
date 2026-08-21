@@ -28,8 +28,9 @@
  *      rewrites the baseline. Per-file makes this safe where the global count could not be:
  *      auto-ratcheting a global count locked in a transient tree-wide low and then false-red the
  *      fleet when it reappeared; a per-file ratchet only ever lowers a file that genuinely improved.
- *   2. SYNTAX HARD-FAIL: any file with a parse-level error (TS1xxx — the file fails to compile at
- *      all, so tsc under-reports everything behind it) fails the lint regardless of the counts.
+ *   2. TS1xxx HARD-FAIL: any file with a TS1xxx diagnostic fails the lint regardless of the
+ *      counts. Most TS1xxx diagnostics are parser errors, but some are semantic/type errors;
+ *      the compiler diagnostic text is the authoritative explanation.
  *
  * Usage:
  *   npm run lint:tsc              # CI gate: any file above its baseline fails, and is NAMED
@@ -45,7 +46,7 @@
  *
  * Exit codes:
  *   0 — OK (every file at/under its baseline; or --mine and your files are clean; or ratcheted down)
- *   1 — a file regressed above its baseline, a syntax-broken file, or a script/toolchain error
+ *   1 — a file regressed above its baseline, a TS1xxx hard-fail diagnostic, or a script/toolchain error
  *
  * ## EI-847 — this is now a THIN per-project CLI over a shared gate
  *

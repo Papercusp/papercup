@@ -7,7 +7,8 @@
  * that carry to EVERY consumer of this module:
  *
  *   1. RATCHET-ONLY-DOWN, on an EXPLICIT `--update` only.
- *   2. SYNTAX HARD-FAIL: any TS1xxx parse error fails regardless of the counts.
+ *   2. TS1xxx HARD-FAIL: any TS1xxx diagnostic fails regardless of the counts. Most are parser
+ *      errors, but the range also contains semantic/type errors such as TS1320.
  *
  * This module is the reusable core so a SECOND project (or a third, a fourth, …) gets the
  * same baseline-gated, `--mine`-scoped, ratchet-only-down typecheck WITHOUT forking the
@@ -124,10 +125,10 @@ import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observat
  *   mutually-exclusive verdict is what let `ok-peer-drift` silently swallow it. Carried on any
  *   non-failing verdict, so restoring the write costs the existing reporting nothing.
  * @property {string[]} [brokenFiles]
- * @property {string[]} [unattributedBrokenFiles] - TS1xxx-broken files OUTSIDE the caller's
+ * @property {string[]} [unattributedBrokenFiles] - Files with TS1xxx hard-fail diagnostics OUTSIDE the caller's
  *   `changedFiles` set (EI-19321179234197157). Never gates the verdict — reported so the caller
  *   knows tsc's counts for other files may be under/over-reported while these stay broken — but a
- *   parse error in a file the caller did not name must not fail a `--mine`/`--files`-scoped run,
+ *   TS1xxx diagnostic in a file the caller did not name must not fail a `--mine`/`--files`-scoped run,
  *   mirroring how an unattributed TYPE-error regression is `peerDrift`, not a gate failure.
  */
 
@@ -161,7 +162,9 @@ export function parseTscErrors(tscOutput) {
 }
 
 /**
- * Files carrying parse-level (TS1xxx) errors — they fail to compile at all.
+ * Files carrying TS1xxx hard-fail diagnostics. Most TS1xxx diagnostics are parser errors, but
+ * the range also contains semantic/type errors such as TS1320; keep the legacy helper name and
+ * hard-fail policy while letting the compiler message explain the actual problem.
  *
  * @param {TscErrorEntry[]} errors
  * @returns {string[]}
@@ -475,10 +478,10 @@ export function decidePerFile({
   const total = sumValues(currentByFile);
   const baselineTotal = sumValues(baselineByFile);
 
-  // EI-19321179234197157: SCOPE the syntax hard-fail the same way a type-error regression is
+  // EI-19321179234197157: SCOPE the TS1xxx hard-fail the same way a type-error regression is
   // scoped. Bare/unscoped (changedFiles === null) keeps the original behaviour — ANY broken file
   // fails, because there is no "yours vs a peer's" distinction to make. Under `--mine`/`--files`,
-  // a TS1xxx parse error OUTSIDE the caller's own changed-file set is a peer's in-flight edit on
+  // a TS1xxx hard-fail diagnostic OUTSIDE the caller's own changed-file set is a peer's in-flight edit on
   // this shared checkout (the same population `peerDrift`/`newFiles` already cover for type
   // errors) — it must not fail a run that named a specific, unrelated file set. A broken file the
   // caller DID name still hard-fails unconditionally, same as before.
@@ -771,9 +774,9 @@ export function partitionNewFilesByLiveEdit(newFiles) {
 }
 
 /**
- * Split unattributed TS1xxx-broken files (outside the caller's `--mine`/`--files` set — see
+ * Split files with unattributed TS1xxx hard-fail diagnostics (outside the caller's `--mine`/`--files` set — see
  * `decidePerFile`'s `unattributedBrokenFiles`) into a peer's LIVE EDIT (uncommitted right now)
- * vs a COMMITTED standing red — the parse-error analog of `partitionNewFilesByLiveEdit` above
+ * vs a COMMITTED standing red — the hard-fail analog of `partitionNewFilesByLiveEdit` above
  * (EI-19321397364088260).
  *
  * Before this split, every unattributed broken file was reported with one blanket "a peer is
@@ -2006,7 +2009,7 @@ export async function runTscBaselineGate({
   // CURRENT per-file counts as the starting baseline — a debt SNAPSHOT, not a clean bill of health.
   // Refuses when the baseline already has entries, so it can never be used to silently wipe out a
   // real, populated ratchet (that would erase tracked debt/regressions) — use --update for every
-  // subsequent run once a project has a real baseline. Still hard-fails on a TS1xxx parse error,
+  // subsequent run once a project has a real baseline. Still hard-fails on a TS1xxx diagnostic,
   // same as every other path, so a broken file can never be seeded in as "0 errors elsewhere, ignore
   // me" debt.
   if (argv.includes('--seed')) {
@@ -2020,7 +2023,7 @@ export async function runTscBaselineGate({
     }
     if (brokenFiles.length > 0) {
       console.error(
-        `❌ ${brokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) — fix these before seeding a baseline:`,
+        `❌ ${brokenFiles.length} file(s) have hard-failing TS1xxx diagnostics — fix these before seeding a baseline:`,
       );
       for (const f of brokenFiles) console.error(`   - ${f}`);
       process.exit(1);
@@ -2126,7 +2129,7 @@ export async function runTscBaselineGate({
     for (const r of entries) console.log(formatRow(r));
   };
 
-  // EI-19321179234197157: a TS1xxx-broken file OUTSIDE the caller's own --mine/--files set never
+  // EI-19321179234197157: a file with a TS1xxx hard-fail diagnostic OUTSIDE the caller's own --mine/--files set never
   // gates the verdict (see decidePerFile), but it is still surfaced here — unconditionally, ahead
   // of the verdict switch, so it is never lost whichever branch below returns. tsc's diagnostics
   // for OTHER files can be incomplete while a file fails to parse, so this doubles as a caveat on
@@ -2152,7 +2155,7 @@ export async function runTscBaselineGate({
       dirtyFiles,
     );
     console.error(
-      `   ⚠ ${result.unattributedBrokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) but are NOT in ` +
+      `   ⚠ ${result.unattributedBrokenFiles.length} file(s) have hard-failing TS1xxx diagnostics but are NOT in ` +
         `the set you named — not gating this run, but tsc's counts for other files may be incomplete while these ` +
         `stay broken:`,
     );
@@ -2186,10 +2189,10 @@ export async function runTscBaselineGate({
 
   switch (result.verdict) {
     case 'fail-syntax': {
-      console.error(`❌ ${result.brokenFiles.length} file(s) fail to COMPILE (TS1xxx parse errors) — hard fail regardless of baseline:`);
-      // The compiler output already contains the location and message that explain why the
-      // file cannot parse. Keep the file-only headline, but quote those diagnostics here so a
-      // reader does not need a second full compile just to learn what the syntax error is.
+      console.error(`❌ ${result.brokenFiles.length} file(s) have hard-failing TS1xxx diagnostics — hard fail regardless of baseline:`);
+      // The compiler output already contains the location and message for each hard-failing
+      // TS1xxx diagnostic. Quote those diagnostics here so a reader does not need a second full
+      // compile to learn the actual problem (which is not necessarily a syntax error).
       const diagnostics = diagnosticLinesForFiles(tscOutput, result.brokenFiles);
       for (const f of result.brokenFiles) {
         console.error(`   - ${f}`);
