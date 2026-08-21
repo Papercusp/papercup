@@ -35,6 +35,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join, dirname, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -223,6 +224,317 @@ export function checkFile({ path, text, protectedModules }) {
     if (hit) violations.push({ path, line: call.line, spec: call.spec, module: hit.module, why: hit.why });
   }
   return violations;
+}
+
+// ---------------------------------------------------------------------------
+// @papercusp/db-org sql-shape guard (WI-40234)
+// ---------------------------------------------------------------------------
+
+/** The production getOrgPg().sql surface is a tagged-template client with `.begin`. */
+export const ORG_PG_MODULE = '@papercusp/db-org';
+
+function orgUnwrap(node) {
+  while (
+    node &&
+    (ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isTypeAssertionExpression(node) ||
+      ts.isNonNullExpression(node) ||
+      (typeof ts.isSatisfiesExpression === 'function' && ts.isSatisfiesExpression(node)))
+  ) {
+    node = node.expression;
+  }
+  return node;
+}
+
+function orgPropertyName(node) {
+  node = orgUnwrap(node);
+  if (!node) return null;
+  if (ts.isIdentifier(node) || ts.isStringLiteral(node) || ts.isNumericLiteral(node)) return node.text;
+  if (ts.isComputedPropertyName(node)) return orgPropertyName(node.expression);
+  return null;
+}
+
+function orgObjectProperty(object, name) {
+  if (!object || !ts.isObjectLiteralExpression(object)) return null;
+  return object.properties.find((property) => orgPropertyName(property.name) === name) ?? null;
+}
+
+function orgIsCall(node, objectName, methodName, sourceFile) {
+  node = orgUnwrap(node);
+  return (
+    !!node &&
+    ts.isCallExpression(node) &&
+    ts.isPropertyAccessExpression(node.expression) &&
+    node.expression.expression.getText(sourceFile) === objectName &&
+    node.expression.name.text === methodName
+  );
+}
+
+function orgFunctionValue(node) {
+  node = orgUnwrap(node);
+  if (!node) return null;
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) return node;
+  if (orgIsCall(node, 'vi', 'fn', node.getSourceFile())) return orgFunctionValue(node.arguments[0]);
+  return null;
+}
+
+function orgReturnedObject(functionNode) {
+  if (!functionNode) return null;
+  const body = orgUnwrap(functionNode.body);
+  if (body && ts.isObjectLiteralExpression(body)) return body;
+  if (body && ts.isBlock(body)) {
+    for (const statement of body.statements) {
+      if (ts.isReturnStatement(statement) && statement.expression) {
+        const returned = orgUnwrap(statement.expression);
+        if (ts.isObjectLiteralExpression(returned)) return returned;
+      }
+    }
+  }
+  return null;
+}
+
+function orgScriptKind(fileName) {
+  if (/\.tsx$/i.test(fileName ?? '')) return ts.ScriptKind.TSX;
+  if (/\.jsx$/i.test(fileName ?? '')) return ts.ScriptKind.JSX;
+  if (/\.ts$/i.test(fileName ?? '')) return ts.ScriptKind.TS;
+  if (/\.js$/i.test(fileName ?? '')) return ts.ScriptKind.JS;
+  return ts.ScriptKind.TS;
+}
+
+function orgSourceFile(text, fileName) {
+  return ts.createSourceFile(
+    fileName || 'org-pg-double.fixture.ts',
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    orgScriptKind(fileName),
+  );
+}
+
+/**
+ * Collect only the local declarations/assignments needed to resolve a fake sql identifier.
+ * Ambiguous identifiers remain unknown; a false negative is safer than declaring a real
+ * fixture incomplete from a same-named value in another scope.
+ */
+function orgStaticShapeIndex(sourceFile) {
+  const declarations = new Map();
+  const beginAssignments = new Set();
+
+  function addDeclaration(name, initializer) {
+    if (!initializer) return;
+    const rows = declarations.get(name) ?? [];
+    rows.push(initializer);
+    declarations.set(name, rows);
+  }
+
+  function assignmentTarget(node) {
+    node = orgUnwrap(node);
+    if (ts.isPropertyAccessExpression(node) && node.name.text === 'begin' && ts.isIdentifier(node.expression)) {
+      return node.expression.text;
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.argumentExpression &&
+      ts.isStringLiteral(node.argumentExpression) &&
+      node.argumentExpression.text === 'begin'
+    ) {
+      return node.expression.text;
+    }
+    return null;
+  }
+
+  function hasExplicitBegin(object) {
+    return !!(object && ts.isObjectLiteralExpression(object) && orgObjectProperty(object, 'begin'));
+  }
+
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      addDeclaration(node.name.text, node.initializer);
+    }
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const target = assignmentTarget(node.left);
+      if (target) beginAssignments.add(target);
+    }
+    if (orgIsCall(node, 'Object', 'assign', sourceFile) && node.arguments.length > 1) {
+      const target = orgUnwrap(node.arguments[0]);
+      if (ts.isIdentifier(target) && node.arguments.slice(1).some((argument) => hasExplicitBegin(orgUnwrap(argument)))) {
+        beginAssignments.add(target.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return { declarations, beginAssignments };
+}
+
+function orgResolveIdentifier(node, index, seen = new Set()) {
+  node = orgUnwrap(node);
+  if (!node || !ts.isIdentifier(node) || seen.has(node.text)) return node;
+  const initializers = index.declarations.get(node.text) ?? [];
+  if (initializers.length !== 1) return node;
+  const nextSeen = new Set(seen);
+  nextSeen.add(node.text);
+  return orgResolveIdentifier(initializers[0], index, nextSeen);
+}
+
+function orgIsTemplateStringsArray(type) {
+  type = orgUnwrap(type);
+  return !!type && ts.isTypeReferenceNode(type) && type.typeName.getText() === 'TemplateStringsArray';
+}
+
+/**
+ * A tagged-template fake has either the real first-parameter annotation or the unambiguous
+ * `(strings, ...values)` parameter shape. A plain `async () => rows` mock is intentionally
+ * outside this guard: it is a narrow seam, not evidence that a postgres.js-shaped client lost
+ * its transaction method.
+ */
+function orgIsTaggedTemplateFunction(functionNode) {
+  if (!functionNode || functionNode.parameters.length === 0) return false;
+  const first = functionNode.parameters[0];
+  if (orgIsTemplateStringsArray(first.type)) return true;
+  return (
+    !first.dotDotDotToken &&
+    functionNode.parameters.length > 1 &&
+    !!functionNode.parameters[1].dotDotDotToken
+  );
+}
+
+function orgHasUnknownObjectSpread(object) {
+  return !!(object && ts.isObjectLiteralExpression(object) && object.properties.some((p) => ts.isSpreadAssignment(p)));
+}
+
+function orgObjectAssignParts(node, sourceFile) {
+  node = orgUnwrap(node);
+  if (!orgIsCall(node, 'Object', 'assign', sourceFile)) return null;
+  return { target: node.arguments[0], additions: node.arguments.slice(1) };
+}
+
+/**
+ * Classify the statically visible sql expression. `unknown` is deliberate: identifiers such as
+ * `h.sql`, `makeSql()`, or a spread-backed object are not enough evidence to call a test wrong.
+ */
+function orgSqlShape(node, index, sourceFile, seen = new Set()) {
+  node = orgUnwrap(node);
+  if (!node) return { kind: 'unknown' };
+
+  if (ts.isIdentifier(node)) {
+    if (index.beginAssignments.has(node.text)) return { kind: 'tagged-template', begin: 'present' };
+    if (seen.has(node.text)) return { kind: 'unknown' };
+    const initializers = index.declarations.get(node.text) ?? [];
+    if (initializers.length !== 1) return { kind: 'unknown' };
+    const nextSeen = new Set(seen);
+    nextSeen.add(node.text);
+    return orgSqlShape(initializers[0], index, sourceFile, nextSeen);
+  }
+
+  if (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+    return orgIsTaggedTemplateFunction(node)
+      ? { kind: 'tagged-template', begin: 'missing' }
+      : { kind: 'unknown' };
+  }
+
+  const assign = orgObjectAssignParts(node, sourceFile);
+  if (assign) {
+    const target = orgSqlShape(assign.target, index, sourceFile, seen);
+    if (target.kind !== 'tagged-template') return target;
+    if (assign.additions.some((addition) => orgHasUnknownObjectSpread(orgUnwrap(addition)))) {
+      return { kind: 'tagged-template', begin: 'unknown' };
+    }
+    if (assign.additions.some((addition) => orgObjectProperty(orgUnwrap(addition), 'begin'))) {
+      return { kind: 'tagged-template', begin: 'present' };
+    }
+    return target.begin === 'present'
+      ? target
+      : { kind: 'tagged-template', begin: 'missing' };
+  }
+
+  if (orgIsCall(node, 'vi', 'fn', sourceFile)) {
+    const wrapped = node.arguments[0];
+    if (!wrapped) return { kind: 'unknown' };
+    const target = orgSqlShape(wrapped, index, sourceFile, seen);
+    return target.kind === 'tagged-template' ? target : { kind: 'unknown' };
+  }
+
+  return { kind: 'unknown' };
+}
+
+function orgFactoryUsesImportActual(factory, sourceFile) {
+  const functionNode = orgFunctionValue(factory);
+  if (!functionNode) return false;
+  if (functionNode.parameters.length > 0) return true;
+  let found = false;
+  function visit(node) {
+    if (orgIsCall(node, 'vi', 'importActual', sourceFile)) found = true;
+    if (ts.isIdentifier(node) && node.text === 'importActual') found = true;
+    ts.forEachChild(node, visit);
+  }
+  visit(functionNode.body);
+  return found;
+}
+
+function orgMockCall(node, sourceFile) {
+  if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return false;
+  return (
+    node.expression.expression.getText(sourceFile) === 'vi' &&
+    (node.expression.name.text === 'mock' || node.expression.name.text === 'doMock')
+  );
+}
+
+/** Find statically identifiable tagged-template getOrgPg doubles and report their shape. */
+export function analyzeOrgPgSqlDoubles(text, fileName) {
+  const sourceFile = orgSourceFile(text, fileName);
+  const index = orgStaticShapeIndex(sourceFile);
+  const out = [];
+
+  function visit(node) {
+    if (orgMockCall(node, sourceFile)) {
+      const specifier = node.arguments[0];
+      const factory = node.arguments[1];
+      if (specifier && ts.isStringLiteral(specifier) && specifier.text === ORG_PG_MODULE && factory) {
+        // Bare full-replacement factories are already covered by checkFile(). This second
+        // guard owns the safe import-actual form, where a partial getOrgPg override can still
+        // hide a missing transaction method.
+        if (orgFactoryUsesImportActual(factory, sourceFile)) {
+          const factoryObject = orgReturnedObject(orgFunctionValue(factory));
+          const getOrgPg = orgObjectProperty(factoryObject, 'getOrgPg');
+          const getOrgPgObject = orgReturnedObject(orgFunctionValue(getOrgPg?.initializer));
+          const sql = orgObjectProperty(getOrgPgObject, 'sql');
+          if (sql) {
+            const shape = orgSqlShape(sql.initializer, index, sourceFile);
+            if (shape.kind === 'tagged-template') {
+              out.push({
+                line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+                spec: ORG_PG_MODULE,
+                shape: shape.kind,
+                begin: shape.begin,
+              });
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(sourceFile);
+  return out;
+}
+
+/** Pure check of one file for a definitely missing `.begin` on a tagged-template org fake. */
+export function checkOrgPgSqlDoubles({ path, text }) {
+  return analyzeOrgPgSqlDoubles(text, path)
+    .filter((finding) => finding.begin === 'missing')
+    .map((finding) => ({
+      path,
+      line: finding.line,
+      spec: finding.spec,
+      module: ORG_PG_MODULE,
+      why:
+        'WI-40234: a tagged-template getOrgPg().sql fake must expose .begin because production org clients support transactions; add a begin stub or use a transaction-capable fixture.',
+    }));
 }
 
 /**
