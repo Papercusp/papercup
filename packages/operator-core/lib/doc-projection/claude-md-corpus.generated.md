@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 287
-  corpus-blocks: 252
+  corpus-parts: 288
+  corpus-blocks: 253
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -1573,6 +1573,20 @@ mirror with file primary". Helpers: `apps/operator/lib/operator-state-pg.ts`.
 Full guide (acceptable file uses, two-axes model, topology):
 `/internal/docs/system/storage-policy` +
 [repo-conventions § database topology](/internal/docs/system/repo-conventions).
+
+## Code-describing metadata: derive, pin, or attest — never hand-maintain
+
+## Code-describing metadata: derive, pin, or attest — never hand-maintain
+
+**A value that DESCRIBES code — a path, a tool/event/flag/table name, an `exists`/`enabled`/`retired` boolean, a count, a list of emitters/call-sites — is a second copy of a truth the code owns, and it WILL drift** (EVENT_CATALOG's hand-authored `emitter`/`exists`: the system's most-fired key sat unregistered; 14 awaits parked on a key with no emitter anywhere). Take the FIRST rung that fits; hand-maintained prose is the last resort and needs a stated reason, exactly like file-over-Postgres:
+
+1. **DERIVE** — generate from the single source: `buildKey`, `gen:agent-env` + `doctor`, `gen:tool-routing`, allowlists re-seeded from a measuring `--list` run — never a hand-run grep.
+2. **PIN** — prose that must remain gets a build-time divergence check: doc-claims (`packages/operator-core/lib/doc-claims/`), drift-tracked docs.
+3. **ATTEST** — what static analysis can't see (dynamic keys, installed packs): reconcile against a runtime ledger (audited fires, `tool_invocations`) on a standing sweep that files findings.
+4. **CURATED** — only genuine judgment (meaning/guidance/rationale), stating why 1–3 don't apply.
+
+Review smell: a new registry/config field restating what code already knows. Long form + audit method: [derived-truth-ladder](/internal/docs/agent-insights/derived-truth-ladder); worked plan: `event-system-drift-to-derived-2026-08-21`.
+
 
 ## Reaching for bash? These reads already have a tool
 
