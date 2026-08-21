@@ -5,7 +5,11 @@
  * the recall-drop baseline read + escalation wiring on top of it.
  */
 import { describe, it, expect } from 'vitest';
-import { runMemoryPrecisionMonitor } from './precision-monitor';
+import {
+  parsePrecisionBenchWorkerOutput,
+  PRECISION_BENCH_RESULT_MARKER,
+  runMemoryPrecisionMonitor,
+} from './precision-monitor';
 import type { MemoryPrecisionMetrics } from './precision-read';
 import type { RecallDropEvaluation } from './precision-alert';
 
@@ -43,6 +47,27 @@ const noEscalate = async () => {};
 const noInvalidate = () => {};
 
 describe('runMemoryPrecisionMonitor', () => {
+  it('uses the isolated worker route by default while keeping the direct bench seam explicit', async () => {
+    let workerRuns = 0;
+    const out = await runMemoryPrecisionMonitor(
+      { workspaceId: 'ws-worker', installSlug: 'op' },
+      {
+        flag: async () => true,
+        runBenchWorker: async () => {
+          workerRuns += 1;
+          return METRICS;
+        },
+        record: async () => 11,
+        history: noHistory,
+        escalateRecall: noEscalate,
+        invalidate: noInvalidate,
+        log: silent,
+      },
+    );
+    expect(out).toMatchObject({ ran: true, rowId: 11 });
+    expect(workerRuns).toBe(1);
+  });
+
   it('skips with flag-off and never benches when the flag is OFF', async () => {
     let benched = 0;
     const out = await runMemoryPrecisionMonitor(
@@ -253,5 +278,18 @@ describe('runMemoryPrecisionMonitor', () => {
     // getOrgPg()-backed defaults (mirroring `record`'s own existing default,
     // which is likewise never exercised without an override in this suite —
     // this file stays fully dep-injected/PG-free by convention).
+  });
+});
+
+describe('precision bench worker protocol', () => {
+  it('parses the marked result while ignoring unrelated child logs', () => {
+    const parsed = parsePrecisionBenchWorkerOutput(
+      `startup log\n${PRECISION_BENCH_RESULT_MARKER}${JSON.stringify(METRICS)}\n`,
+    );
+    expect(parsed).toEqual(METRICS);
+  });
+
+  it('fails loudly when the child exits without a result marker', () => {
+    expect(() => parsePrecisionBenchWorkerOutput('seed failed\n')).toThrow(/no result marker/);
   });
 });

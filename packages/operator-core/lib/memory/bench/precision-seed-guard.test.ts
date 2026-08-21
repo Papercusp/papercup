@@ -155,6 +155,10 @@ describe('benchMemoryPrecision — WI-7179: admission shape must come from pushS
 describe('runMemoryPrecisionMonitor — a failed seed writes NO row and fires NO alarm', () => {
   const deps = () => ({
     flag: async () => true,
+    // This suite deliberately exercises the in-process core so its seed guard
+    // is reached; the scheduled default worker route is covered separately in
+    // precision-monitor.test.ts.
+    runBench: benchMemoryPrecision,
     record: vi.fn(async () => 99),
     escalateRecall: vi.fn(async () => {}),
     history: async () => [],

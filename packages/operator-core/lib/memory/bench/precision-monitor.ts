@@ -20,6 +20,9 @@
  * embedder). Flag-only gating (no governor — like change-ledger): the routine is
  * cheap bookkeeping, not a budgeted frontier loop.
  */
+import { spawn, type ChildProcess } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { runGoldSet, seedCorpus, type SeedManifest } from '@papercusp/memory/bench';
@@ -31,12 +34,19 @@ import { BENCH_SCOPE, makeBackendCtx } from './run-bench';
 import { recordMemoryPrecisionRun, readMemoryPrecision, type MemoryPrecisionMetrics } from './precision-read';
 import { evaluateRecallDrop, BASELINE_HISTORY_WINDOW, type PriorRun, type RecallDropEvaluation } from './precision-alert';
 import { fileRecallDropEi, resolveRecallDropEi } from './precision-alert-ei';
+import { tsxBin } from '../../harness-paths';
+
+const PRECISION_BENCH_WORKER_PATH = fileURLToPath(new URL('./precision-bench-worker.ts', import.meta.url));
+export const PRECISION_BENCH_RESULT_MARKER = 'PAPERCUSP_MEMORY_PRECISION_BENCH_RESULT:';
+const DEFAULT_WORKER_TIMEOUT_MS = 30 * 60 * 1_000;
 
 /** Test/seam injection — swap the bench, the DB write, the flag, the invalidation. */
 export interface MemoryPrecisionBenchDeps {
   flag?: (installSlug: string) => Promise<boolean>;
   /** Override the actual bench run (tests inject fixed metrics — no embedder, no PG). */
   runBench?: () => Promise<MemoryPrecisionMetrics>;
+  /** Override the isolated worker path (tests prove the monitor's default route without PG). */
+  runBenchWorker?: () => Promise<MemoryPrecisionMetrics>;
   /** Override the DB write (tests capture without a live pool). */
   record?: (workspaceId: string, m: MemoryPrecisionMetrics) => Promise<number>;
   /** Override the sync invalidation (tests assert it fired). */
@@ -59,6 +69,101 @@ export type MemoryPrecisionOutcome =
 
 function fmt(v: number | null): string {
   return v == null ? '—' : v.toFixed(3);
+}
+
+/** Parse the one-line result emitted by precision-bench-worker.ts. */
+export function parsePrecisionBenchWorkerOutput(stdout: string): MemoryPrecisionMetrics {
+  const line = stdout
+    .split(/\r?\n/)
+    .reverse()
+    .find((candidate) => candidate.startsWith(PRECISION_BENCH_RESULT_MARKER));
+  if (!line) {
+    throw new Error(`precision bench worker returned no result marker (stdout=${stdout.slice(-500)})`);
+  }
+  try {
+    return JSON.parse(line.slice(PRECISION_BENCH_RESULT_MARKER.length)) as MemoryPrecisionMetrics;
+  } catch (error) {
+    throw new Error(
+      `precision bench worker returned invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+/**
+ * Run the precision bench in a fresh process. The memory package's configure/client
+ * state is process-global, so scheduled inline execution can retarget the operator;
+ * this boundary keeps the bench's pid-scoped schema and client out of that process.
+ */
+export async function runBenchInWorker(opts: {
+  spawnProcess?: typeof spawn;
+  timeoutMs?: number;
+} = {}): Promise<MemoryPrecisionMetrics> {
+  const spawnProcess = opts.spawnProcess ?? spawn;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS;
+  let child: ChildProcess;
+  try {
+    child = spawnProcess(process.execPath, [tsxBin(), PRECISION_BENCH_WORKER_PATH], {
+      cwd: process.cwd(),
+      env: { ...process.env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    throw error;
+  }
+
+  return new Promise<MemoryPrecisionMetrics>((resolve, reject) => {
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* the child may already have exited */
+      }
+      reject(new Error(`precision bench worker timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', (chunk: string | Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk: string | Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    };
+
+    child.once('error', (error) => fail(error instanceof Error ? error : new Error(String(error))));
+    child.once('close', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code !== 0) {
+        reject(
+          new Error(
+            `precision bench worker exited with code ${code ?? 'null'}${signal ? ` (${signal})` : ''}` +
+              (stderr.trim() ? `: ${stderr.trim().slice(-1_000)}` : ''),
+          ),
+        );
+        return;
+      }
+      try {
+        resolve(parsePrecisionBenchWorkerOutput(stdout));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
 }
 
 /**
@@ -102,7 +207,7 @@ export function assertCorpusSeeded(manifest: SeedManifest, expected: number): vo
 
 /**
  * Run the floored hybrid gold-set ONCE and return the metrics (no DB write).
- * Exported for a CLI / one-off seeding run and for the op's default path.
+ * Exported for a CLI / one-off seeding run and for the isolated worker's core.
  */
 export async function benchMemoryPrecision(): Promise<MemoryPrecisionMetrics> {
   const corpus = loadCorpusFixture('v1');
@@ -177,7 +282,7 @@ async function defaultInvalidate(): Promise<void> {
 }
 
 /**
- * The orchestration the `memory-precision:bench` op runs: flag gate → bench →
+ * The orchestration the `memory-precision:bench` op runs: flag gate → isolated bench →
  * record → invalidate. Every failure is non-fatal (a `failed` outcome, never a
  * throw that wedges the routine tick) — monitoring must never break the loop.
  */
@@ -191,7 +296,7 @@ export async function runMemoryPrecisionMonitor(
 
   let metrics: MemoryPrecisionMetrics;
   try {
-    metrics = await (deps.runBench ?? benchMemoryPrecision)();
+    metrics = await (deps.runBench ?? deps.runBenchWorker ?? runBenchInWorker)();
   } catch (e) {
     const error = e instanceof Error ? e.message : String(e);
     log(`bench failed (non-fatal): ${error}`);
