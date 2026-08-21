@@ -36,6 +36,8 @@ const BELOW_GATE_TOKENS = 60_000;
 const M = vi.hoisted(() => ({
   readPriorRespawnOutcome: vi.fn(async () => ({ outcome: "none" }) as unknown),
   getPresence: vi.fn(async () => null as unknown),
+  selfCompactionAvailability: vi.fn(() => ({ available: false })),
+  readFleetWindDownLoopEndAuthorization: vi.fn(async () => null as boolean | null),
 }));
 
 vi.mock("../identity", () => ({
@@ -79,6 +81,14 @@ vi.mock("../../../cache", () => ({
 vi.mock("../../../compaction-usage", () => ({
   currentContextTokensForOwner: vi.fn(async () => null),
 }));
+vi.mock("../../../events/await/psu-pty-discovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../../events/await/psu-pty-discovery")>();
+  return { ...actual, selfCompactionAvailability: M.selfCompactionAvailability };
+});
+vi.mock("./continuation-gate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./continuation-gate")>();
+  return { ...actual, readFleetWindDownLoopEndAuthorization: M.readFleetWindDownLoopEndAuthorization };
+});
 // PARTIAL mock: only the IO leg is stubbed. `lostRespawnAmbientLine` stays
 // REAL so the assertions below pin the production wording, not a fixture.
 vi.mock("../../../carry-respawn-outcome", async (importOriginal) => {
@@ -118,6 +128,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   atPct(ABOVE_GATE_TOKENS);
   prior({ outcome: "none" });
+  M.selfCompactionAvailability.mockReturnValue({ available: false });
+  M.readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
 });
 
 describe("coord:inbox — dropped carry-respawn ambient line (EI-19326331501849713)", () => {
@@ -129,6 +141,25 @@ describe("coord:inbox — dropped carry-respawn ambient line (EI-193263315018497
     expect(injection).toContain("(reason: carry-stale)");
     expect(injection).toContain("NEVER CUT");
     expect(injection).toContain("session:request-compaction");
+  });
+
+  it("runtime wiring: critical no-PTY authorization reaches both coord:inbox renderers", async () => {
+    atPct(95_000);
+    M.readFleetWindDownLoopEndAuthorization.mockResolvedValue(true);
+
+    const out = await callInbox();
+    const injection = String(out.injection ?? "");
+    const gauge = String(out.context_gauge ?? "");
+
+    expect(M.selfCompactionAvailability).toHaveBeenCalledWith("owner-a");
+    expect(M.readFleetWindDownLoopEndAuthorization).toHaveBeenCalledWith({
+      ownerId: "owner-a",
+      workspaceId: "ws",
+    });
+    expect(injection).toContain("typed fleet wind-down authorizes loop:end");
+    expect(injection).toContain("do not call session:end or respawn");
+    expect(gauge).toContain("call loop:end under the typed fleet wind-down authorization");
+    expect(gauge).toContain("do not call session:end or respawn");
   });
 
   it("places the warning FIRST — it reframes every line below it", async () => {

@@ -12,6 +12,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
 const getLoopStatus = vi.fn();
+const getPresence = vi.fn();
+const readInbox = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const readWatermark = vi.fn(async (..._a: unknown[]) => ({ messages_since_ts: '' }));
+const orgSql = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const currentContextTokensForOwner = vi.fn(async (..._a: unknown[]) => null as number | null);
+const defaultCompactionLimitForSpec = vi.fn(() => 100);
+const listActiveAwaits = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const getModes = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
+const selfCompactionAvailability = vi.fn(() => ({ available: false }));
+const readFleetWindDownLoopEndAuthorization = vi.fn(async (..._a: unknown[]) => null as boolean | null);
 const withBoundedTimeout = vi.fn(
   async (..._a: unknown[]): Promise<{ value: unknown; degraded: boolean; elapsedMs: number }> =>
     ({ value: undefined, degraded: false, elapsedMs: 0 }),
@@ -82,6 +92,42 @@ vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller', workspaceId: 'ws-1' })),
 }));
+vi.mock('../coordination/presence', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getPresence: (...a: unknown[]) => getPresence(...a),
+}));
+vi.mock('../coordination/messages', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readInbox: (...a: unknown[]) => readInbox(...a),
+}));
+vi.mock('../coordination/watermarks', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readWatermark: (...a: unknown[]) => readWatermark(...a),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: orgSql }),
+}));
+vi.mock('../../compaction-usage', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  currentContextTokensForOwner: (...a: unknown[]) => currentContextTokensForOwner(...a),
+}));
+vi.mock('../../agent-config-constants', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  defaultCompactionLimitForSpec: (...a: unknown[]) => defaultCompactionLimitForSpec(...a),
+}));
+vi.mock('../../modes/store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getModes: (...a: unknown[]) => getModes(...a),
+}));
+vi.mock('../../events/await/psu-pty-discovery', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  selfCompactionAvailability: (...a: unknown[]) => selfCompactionAvailability(...a),
+}));
+vi.mock('../coordination/tools/continuation-gate', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readFleetWindDownLoopEndAuthorization: (...a: unknown[]) => readFleetWindDownLoopEndAuthorization(...a),
+}));
 // EI-7734 fallout: checkpoint.ts now routes EVERY no-armed-routine fallback through this
 // mock (previously a raw ctx.harnessSlug check short-circuited before ever calling it), so
 // a static `() => 'home-hive'` that ignores its args broke every test asserting an explicit
@@ -107,6 +153,7 @@ vi.mock('../../events/await/store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   listVerifiedWaitTakeoversForSubscribers: (...a: unknown[]) =>
     listVerifiedWaitTakeoversForSubscribers(...a),
+  listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
 }));
 
 const tool = (await import('./checkpoint')).default;
@@ -133,6 +180,16 @@ beforeEach(() => {
   setLoopCarryNote.mockResolvedValue('stored-note');
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
+  getPresence.mockResolvedValue(null);
+  readInbox.mockResolvedValue([]);
+  readWatermark.mockResolvedValue({ messages_since_ts: '' });
+  orgSql.mockResolvedValue([]);
+  currentContextTokensForOwner.mockResolvedValue(null);
+  defaultCompactionLimitForSpec.mockReturnValue(100);
+  listActiveAwaits.mockResolvedValue([]);
+  getModes.mockResolvedValue([]);
+  selfCompactionAvailability.mockReturnValue({ available: false });
+  readFleetWindDownLoopEndAuthorization.mockResolvedValue(null);
   withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
   listVerifiedWaitTakeoversForSubscribers.mockResolvedValue([]);
 });
@@ -381,6 +438,54 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
         label: 'loop:checkpoint continuation reads',
       }),
     );
+  });
+
+  it('runtime wiring: feeds live context, inbox, re-wake, and typed wind-down reads into the gate', async () => {
+    // Execute the bounded callback instead of returning its default fallback. This is
+    // deliberately handler-level coverage: the pure gate tests cannot catch a dropped
+    // dynamic import, stale presence-only token source, or an unread cursor that never
+    // reaches the continuation verdict.
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value:
+        typeof work === 'function'
+          ? await (work as () => Promise<unknown>)()
+          : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue({ harnessSlug: 'papercusp', active: true, carry: 'warm' });
+    getPresence.mockResolvedValue({ contextTokens: 1, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(95);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-21T05:00:00.000Z' });
+    readInbox.mockResolvedValue([]);
+    selfCompactionAvailability.mockReturnValue({ available: false });
+    readFleetWindDownLoopEndAuthorization.mockResolvedValue(true);
+
+    const b = body(await call({ next: 'wire the gate' }));
+
+    expect(b.continuation).toMatchObject({
+      contextPct: 95,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      selfCompactionAvailable: false,
+      fleetWindDownLoopEndAuthorized: true,
+    });
+    expect(b.continuation.guidance).toContain('AUTHORIZED FLEET WIND-DOWN');
+    expect(b.continuation.guidance).toContain('loop:end');
+    expect(b.continuation.guidance).toContain('do not call session:end or respawn');
+    expect(currentContextTokensForOwner).toHaveBeenCalledWith('su-caller');
+    expect(readWatermark).toHaveBeenCalledWith('su-caller');
+    expect(orgSql).toHaveBeenCalled();
+    expect(readInbox).toHaveBeenCalledWith(
+      'su-caller',
+      { since_ts: '2026-08-21T05:00:00.000Z', excludeOwn: true },
+    );
+    expect(selfCompactionAvailability).toHaveBeenCalledWith('su-caller');
+    expect(readFleetWindDownLoopEndAuthorization).toHaveBeenCalledWith({
+      ownerId: 'su-caller',
+      workspaceId: 'ws-1',
+    });
   });
 });
 
