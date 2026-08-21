@@ -24,8 +24,19 @@ vi.mock('@excalidraw/excalidraw/index.css', () => ({}));
 // Heavy whiteboard — stub the dynamic import target to a marker that echoes the
 // background-color override CanvasView injects via initialData.appState.
 vi.mock('@excalidraw/excalidraw', () => ({
-  Excalidraw: ({ initialData }: { initialData: { appState?: { viewBackgroundColor?: string } } }) => (
-    <div data-testid="excalidraw" data-bg={initialData?.appState?.viewBackgroundColor} />
+  Excalidraw: ({
+    initialData,
+    validateEmbeddable,
+  }: {
+    initialData: { appState?: { viewBackgroundColor?: string } };
+    validateEmbeddable?: (link: string) => boolean | undefined;
+  }) => (
+    <div
+      data-testid="excalidraw"
+      data-bg={initialData?.appState?.viewBackgroundColor}
+      data-twitter-policy={String(validateEmbeddable?.('https://platform.twitter.com/widgets.js'))}
+      data-default-policy={String(validateEmbeddable?.('https://example.com/article'))}
+    />
   ),
 }));
 
@@ -68,5 +79,15 @@ describe('CanvasView (brainstorm canvas layer)', () => {
     syncResult = { data: [] };
     render(<CanvasView slug="h" />);
     await waitFor(() => expect(screen.getByTestId('excalidraw')).toBeTruthy());
+  });
+
+  it('passes the fail-closed third-party embed policy to Excalidraw', async () => {
+    syncResult = { data: [row()] };
+    render(<CanvasView slug="h" />);
+    await waitFor(() => expect(screen.getByTestId('excalidraw')).toBeTruthy());
+
+    const canvas = screen.getByTestId('excalidraw');
+    expect(canvas.getAttribute('data-twitter-policy')).toBe('false');
+    expect(canvas.getAttribute('data-default-policy')).toBe('undefined');
   });
 });

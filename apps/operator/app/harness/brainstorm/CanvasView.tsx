@@ -8,6 +8,7 @@ import '@excalidraw/excalidraw/index.css';
 // pulls ~14MB of fonts from esm.sh (cdn-egress-fixes-2026-08-02 P-004).
 import '@/app/_components/excalidraw-runtime';
 import { useSyncQuery } from '@papercusp/sync';
+import { validateEmbeddableLink } from './embeddable-policy';
 
 type BrainstormRow = { harnessSlug: string; phase: string; content: string; canvas: unknown; mindmap: unknown; updatedAt: number };
 
@@ -88,6 +89,7 @@ export function CanvasView({ slug }: Props) {
         UIOptions={{
           canvasActions: { export: false, saveAsImage: true, loadScene: false },
         }}
+        validateEmbeddable={validateEmbeddableLink}
         onChange={(elements: readonly any[], appState: any, files: any) => {
           // Strip volatile appState fields that don't need persisting
           const trimmedAppState = {
