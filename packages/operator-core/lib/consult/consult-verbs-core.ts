@@ -88,6 +88,16 @@ export interface ConsultVerbDeps {
     mentions?: string[];
     via_consult_verb: true;
   }) => Promise<PostResult | { error: string }>;
+  /** Keep the coarse coord_conversations lifecycle in sync with the consult's
+   * fine-grained terminal state. Bound by consult:close; optional so the
+   * lower-level verb tests and non-production callers can focus on consult_state. */
+  settleConversation?: (input: {
+    conversationId: string;
+    outcome: ConsultCloseRequest['outcome'];
+    answer?: string;
+    postId: number;
+    now: string;
+  }) => Promise<void>;
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent; best-effort there (never breaks the verb). */
   emitReplyEvent: (input: {
@@ -715,6 +725,21 @@ export async function consultCloseCore(
            updated_at = ${now}::timestamptz
      WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
   `;
+
+  // consult_state is the fine-grained consult authority, while
+  // coord_conversations owns the coarse lifecycle consumed by
+  // conversations:get/list. Keep both projections coherent at the close
+  // boundary; the callback is bound by the production consult:close tool so
+  // this core remains injectable and independently testable.
+  if (deps.settleConversation) {
+    await deps.settleConversation({
+      conversationId: req.conversationId,
+      outcome: req.outcome,
+      answer,
+      postId,
+      now,
+    });
+  }
 
   // A responder close is the terminal reply — wake the parked requester. A
   // requester closing their own consult has nobody parked on the key.

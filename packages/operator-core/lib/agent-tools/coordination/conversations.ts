@@ -133,6 +133,7 @@ import {
   postReplyCore,
   answerQuestionCore,
   resolveConversationCore,
+  settleConsultConversationCore,
   supersedeConversationCore,
   promoteConversationCore,
   type AppendPostError,
@@ -234,6 +235,34 @@ export function answerQuestion(
   input: { conversation_id: string; body: string; mentions?: string[]; via_consult_verb?: boolean },
 ): Promise<PostResult | AppendPostError> {
   return withConversationsIdentityScope(identity, undefined, () => answerQuestionCore(deps, identity, input));
+}
+
+/**
+ * Settle the coarse conversation projection for a terminal consult close.
+ * consult_state carries the consult-specific lifecycle; coord_conversations is
+ * what conversations:get/list reads, so a consult close must update both.
+ * The terminal post is written by consultCloseCore before this callback and is
+ * deliberately not duplicated here.
+ */
+export async function settleConsultConversation(
+  identity: AgentIdentity,
+  input: {
+    conversationId: string;
+    outcome: 'answered' | 'cant_help' | 'graduate';
+    answer?: string;
+    postId: number;
+    now: string;
+  },
+): Promise<void> {
+  await withConversationsIdentityScope(identity, undefined, () =>
+    settleConsultConversationCore(deps, {
+      conversation_id: input.conversationId,
+      outcome: input.outcome,
+      answer: input.answer,
+      post_id: input.postId,
+      now_ts: input.now,
+    }),
+  );
 }
 
 export async function resolveConversation(

@@ -111,12 +111,15 @@ async function seedConsult(opts: SeedOpts = {}): Promise<string> {
   return id;
 }
 
-function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: boolean; mintError?: string } = {}) {
+function makeDeps(
+  opts: { postError?: string; withReach?: boolean; withMint?: boolean; mintError?: string; withSettlement?: boolean } = {},
+) {
   const posts: Array<{ conversation_id: string; body: string; via_consult_verb: true }> = [];
   const emits: Array<{ key: string; summary: string; payload: Record<string, unknown>; to: string[] }> = [];
   const reached: Array<{ responder: string; conversationId: string }> = [];
   const reachCalls: Array<{ responder: string; conversationId: string; summary: string; body: string }> = [];
   const minted: Array<Parameters<NonNullable<ConsultVerbDeps['mintGraduationWorkItem']>>[0]> = [];
+  const settlements: Array<Parameters<NonNullable<ConsultVerbDeps['settleConversation']>>[0]> = [];
   const deps: ConsultVerbDeps = {
     getSql: () => rootSql,
     post: async (input) => {
@@ -135,6 +138,13 @@ function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: bo
     emitReplyEvent: async (e) => {
       emits.push(e);
     },
+    ...(opts.withSettlement
+      ? {
+          settleConversation: async (input: Parameters<NonNullable<ConsultVerbDeps['settleConversation']>>[0]) => {
+            settlements.push(input);
+          },
+        }
+      : {}),
     ...(opts.withReach === false
       ? {}
       : {
@@ -155,7 +165,7 @@ function makeDeps(opts: { postError?: string; withReach?: boolean; withMint?: bo
       : {}),
     now: () => NOW,
   };
-  return { deps, posts, emits, reached, reachCalls, minted };
+  return { deps, posts, emits, reached, reachCalls, minted, settlements };
 }
 
 async function stateRow(conversationId: string) {
@@ -449,7 +459,7 @@ describe('consultDeclineCore', () => {
 describe('consultCloseCore', () => {
   it('answered: structured outcome {answer, confidence, evidence}, closed_answered, close meta, responder emit', async () => {
     const id = await seedConsult({ state: 'active' });
-    const { deps, emits } = makeDeps();
+    const { deps, emits, posts, settlements } = makeDeps({ withSettlement: true });
     const r = await consultCloseCore(
       {
         workspaceId: WS,
@@ -475,6 +485,20 @@ describe('consultCloseCore', () => {
     expect(meta[0].kind).toBe('close');
     expect(meta[0].evidence).toEqual(EVIDENCE);
     expect(await evidenceJsonbType(id)).toBe('array');
+
+    // The terminal post is still written exactly once, and the coarse
+    // conversations:get projection receives the same answer/post/time rather
+    // than requiring a second terminal post or a caller-side repair.
+    expect(posts).toHaveLength(1);
+    expect(settlements).toEqual([
+      {
+        conversationId: id,
+        outcome: 'answered',
+        answer: 'the pool starves under POLLING',
+        postId: r.post_id,
+        now: NOW.toISOString(),
+      },
+    ]);
 
     expect(emits).toHaveLength(1);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
