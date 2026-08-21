@@ -26,12 +26,60 @@ import {
   resolveCitation,
   repoCitationDeps,
   type AuditCitation,
+  type CitationDeps,
+  type CitationFailureReason,
+  type CitationResolution,
 } from './plan-audits';
 
 let workspaceRoot: string;
 let repoRoot: string;
 
 const code = (p: string): AuditCitation => ({ kind: 'code', path: p });
+
+type CitationResolver = (citation: AuditCitation, deps: CitationDeps) => CitationResolution;
+
+const deliberatelyWrongCitationResolver: CitationResolver = () => ({ ok: true });
+
+function citationResolverContractFailures(resolve: CitationResolver, deps: CitationDeps): string[] {
+  const cases: Array<{
+    name: string;
+    citation: AuditCitation;
+    expected: { ok: true } | { ok: false; reason: CitationFailureReason };
+  }> = [
+    {
+      name: 'existing code path',
+      citation: code('apps/operator/in-repo.ts'),
+      expected: { ok: true },
+    },
+    {
+      name: 'missing code path',
+      citation: code('apps/operator/does-not-exist.ts'),
+      expected: { ok: false, reason: 'file_not_found' },
+    },
+    {
+      name: 'line beyond the cited file',
+      citation: { ...code('apps/operator/in-repo.ts'), line: 9999 },
+      expected: { ok: false, reason: 'line_out_of_range' },
+    },
+    {
+      name: 'symbol absent from the cited file',
+      citation: { ...code('apps/operator/in-repo.ts'), symbol: 'notInThisFile' },
+      expected: { ok: false, reason: 'symbol_not_found' },
+    },
+    {
+      name: 'none citation without a reason',
+      citation: { kind: 'none' },
+      expected: { ok: false, reason: 'reason_missing' },
+    },
+  ];
+
+  return cases.flatMap(({ name, citation, expected }) => {
+    const actual = resolve(citation, deps);
+    if (actual.ok !== expected.ok) return [name];
+    if (!actual.ok && !expected.ok && actual.reason !== expected.reason) return [name];
+    return [];
+  });
+}
 
 beforeAll(() => {
   workspaceRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'plan-audits-roots-'));
@@ -78,6 +126,21 @@ describe('repoCitationDeps — in-repo citations (unchanged behaviour)', () => {
     const res = resolveCitation(code('apps/operator/does-not-exist.ts'), deps);
     expect(res.ok).toBe(false);
     expect(res).toMatchObject({ reason: 'file_not_found' });
+  });
+});
+
+describe('resolveCitation — falsifiability control (plan P-011)', () => {
+  it('satisfies the resolver contract against temp-tree evidence', () => {
+    expect(citationResolverContractFailures(resolveCitation, repoCitationDeps(repoRoot))).toEqual([]);
+  });
+
+  it('catches a permanently wrong resolver without mutating production code', () => {
+    expect(citationResolverContractFailures(deliberatelyWrongCitationResolver, repoCitationDeps(repoRoot))).toEqual([
+      'missing code path',
+      'line beyond the cited file',
+      'symbol absent from the cited file',
+      'none citation without a reason',
+    ]);
   });
 });
 
