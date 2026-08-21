@@ -50,6 +50,8 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_unvetted'
   | 'acceptance_ungraded'
   | 'self_graded_only'
+  | 'acceptance_not_recorded'
+  | 'acceptance_rejected'
   // plan-completion-audit-and-acceptance-verdict-2026-08-13 — the code-truth family.
   | 'plan_items_unfinished'
   | 'acceptance_unaudited'
@@ -93,6 +95,14 @@ export interface PlanAcceptanceGateOpts {
    */
   force?: { reason: string };
 }
+
+/**
+ * D-001's one-time compatibility boundary. Scorecards created before the verdict
+ * write surface existed had no way to carry `acceptance`; a qualifying legacy
+ * independent grading therefore counts as accepted. Newer gradings must complete
+ * the explicit implementer-verdict leg.
+ */
+export const ACCEPTANCE_VERDICT_REQUIRED_AFTER = '2026-08-21T00:00:00.000Z';
 
 /**
  * Evaluate the acceptance gate for a plan about to be marked shipped/complete.
@@ -404,7 +414,10 @@ export async function evaluatePlanAcceptanceGate(
         `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005).`,
     };
   }
-  const independent = complete.find((s) => !implementer || (s.createdBy != null && s.createdBy !== implementer));
+  const independent = complete
+    .filter((s) => !implementer || (s.createdBy != null && s.createdBy !== implementer))
+    .slice()
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
   if (!independent) {
     return {
       satisfied: false,
@@ -414,6 +427,45 @@ export async function evaluatePlanAcceptanceGate(
         `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' is only graded by its ` +
         `own author ('${implementer}') — grader ≠ implementer (plan D-005, the self-graded-homework guard). A ` +
         `different agent or the owner must file the grading scorecard.`,
+    };
+  }
+  const explicitVerdicts = implementer
+    ? complete.filter((s) => s.createdBy === implementer && s.acceptance)
+    : [];
+  // listScorecards is newest-first, but sort defensively because tests/injected
+  // readers are not required to preserve the storage ordering contract.
+  const latestVerdict = explicitVerdicts
+    .slice()
+    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  const verdictFollowsLatestIndependent = latestVerdict
+    ? Date.parse(independent.createdAt) <= Date.parse(latestVerdict.createdAt)
+    : false;
+  const latestIndependentIsLegacy =
+    Date.parse(independent.createdAt) < Date.parse(ACCEPTANCE_VERDICT_REQUIRED_AFTER);
+  if (!verdictFollowsLatestIndependent && !latestIndependentIsLegacy) {
+    return {
+      satisfied: false,
+      code: 'acceptance_not_recorded',
+      rubricId: rubric.rubricId,
+      gradedBy: independent.createdBy ?? null,
+      message:
+        `plan '${planSlug}' has a complete independent grading by '${independent.createdBy ?? 'unknown'}', but ` +
+        `its implementer${implementer ? ` ('${implementer}')` : ''} has not recorded the post-grading acceptance ` +
+        `call. After reading that grading, the rubric author must run scorecards:emit ` +
+        `{ rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> }, ` +
+        `acceptance:{ verdict:'accept'|'reject', reasoning:'<why this grading is acceptable or not>' } }.`,
+    };
+  }
+  if (verdictFollowsLatestIndependent && latestVerdict?.acceptance?.verdict === 'reject') {
+    return {
+      satisfied: false,
+      code: 'acceptance_rejected',
+      rubricId: rubric.rubricId,
+      gradedBy: independent.createdBy ?? null,
+      message:
+        `plan '${planSlug}' cannot be marked shipped: implementer '${implementer}' recorded REJECT — ` +
+        `${latestVerdict.acceptance.reasoning}. Address the grading, then record a newer acceptance verdict with ` +
+        `scorecards:emit; the latest implementer verdict is authoritative.`,
     };
   }
   return {

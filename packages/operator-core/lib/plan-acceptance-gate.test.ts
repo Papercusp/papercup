@@ -7,7 +7,7 @@
  * teaching message), and the independent-grader satisfaction path.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
+import { ACCEPTANCE_VERDICT_REQUIRED_AFTER, evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { getAcceptanceRubricForPlan, getRubric, getRubricPlanRevision, type Rubric } from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
@@ -162,6 +162,105 @@ describe('evaluatePlanAcceptanceGate', () => {
     ]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: true, rubricId: 'ar-some-plan', gradedBy: 'su-grader' });
+  });
+
+  it('a new independent grading without an implementer verdict refuses acceptance_not_recorded', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_not_recorded',
+      rubricId: 'ar-some-plan',
+      gradedBy: 'su-grader',
+    });
+    expect(v.message).toContain("acceptance:{ verdict:'accept'|'reject'");
+  });
+
+  it('a post-grading implementer accept satisfies and a newer reject refuses', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    const independent = scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' });
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-accept',
+        createdAt: '2026-08-21T02:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'The independent evidence meets the plan.' },
+      }),
+      independent,
+    ]);
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-grader',
+    });
+
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-reject',
+        createdAt: '2026-08-21T03:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'reject', reasoning: 'The regression evidence remains unresolved.' },
+      }),
+      independent,
+    ]);
+    const rejected = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(rejected).toMatchObject({ satisfied: false, code: 'acceptance_rejected' });
+    expect(rejected.message).toContain('regression evidence remains unresolved');
+  });
+
+  it('an implementer verdict filed before independent grading does not count', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({ createdAt: '2026-08-21T03:00:00Z', createdBy: 'su-grader' }),
+      scorecard({
+        issueId: 'EI-early-accept',
+        createdAt: '2026-08-21T02:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'Filed before the independent card.' },
+      }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_not_recorded' });
+  });
+
+  it('a newer independent grading invalidates an older accept and legacy grading', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([
+      scorecard({
+        issueId: 'EI-new-grading',
+        createdAt: '2026-08-21T03:00:00Z',
+        createdBy: 'su-new-grader',
+      }),
+      scorecard({
+        issueId: 'EI-old-accept',
+        createdAt: '2026-08-21T02:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'The earlier grading met the plan.' },
+      }),
+      scorecard({
+        issueId: 'EI-legacy-grading',
+        createdAt: '2026-08-11T01:00:00Z',
+        createdBy: 'su-old-grader',
+      }),
+    ]);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({
+      satisfied: false,
+      code: 'acceptance_not_recorded',
+      gradedBy: 'su-new-grader',
+    });
+  });
+
+  it('grandfathers complete independent gradings created before the rollout boundary', async () => {
+    expect(Date.parse(scorecard().createdAt)).toBeLessThan(Date.parse(ACCEPTANCE_VERDICT_REQUIRED_AFTER));
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockScorecards.mockResolvedValue([scorecard({ createdBy: 'su-grader', acceptance: undefined })]);
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-grader',
+    });
   });
 
   it('flag read failure degrades toward ON (the gate still applies)', async () => {

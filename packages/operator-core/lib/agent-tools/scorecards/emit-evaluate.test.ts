@@ -16,7 +16,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Rubric } from '../../rubrics';
-import type { ScorecardRow } from '../../scorecards';
+import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -62,6 +62,14 @@ const RUBRIC: Rubric = {
   proposedBy: null,
   ratifiedBy: null,
 } as unknown as Rubric;
+
+const ACCEPTANCE_RUBRIC: Rubric = {
+  ...RUBRIC,
+  rubricId: 'acceptance-rubric',
+  kind: 'acceptance',
+  proposedBy: 'su-implementer',
+  createdBy: 'su-implementer',
+} as Rubric;
 
 const RATINGS = {
   'crit-a': { rating: 'pass', evidence: 'observed A working' },
@@ -224,6 +232,98 @@ describe('emitScorecard', () => {
     expect(r.ok).toBe(false);
     expect((r as { instrumentContract?: unknown }).instrumentContract).toBeDefined();
     expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('refuses acceptance on a standard rubric', async () => {
+    const r = await emitScorecard(
+      {
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        acceptance: { verdict: 'accept', reasoning: 'The independent evidence satisfies this plan.' },
+      },
+      { createdBy: 'su-1' },
+    );
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining("only for kind:'acceptance'") });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('an independent acceptance grader emits ratings without an implementer verdict', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    const r = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-grader' },
+    );
+    expect(r).toMatchObject({ ok: true, created: true });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rubricRef: 'acceptance-rubric', ratings: RATINGS } },
+    });
+    expect(captureM.mock.calls[0][0].payloadExtra?.observation).not.toHaveProperty('acceptance');
+  });
+
+  it('refuses a verdict from the independent grader', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    const r = await emitScorecard(
+      {
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        acceptance: { verdict: 'accept', reasoning: 'I am not the rubric author.' },
+      },
+      { createdBy: 'su-grader' },
+    );
+    expect(r).toMatchObject({ ok: false, error: expect.stringContaining('must be recorded by') });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('requires the implementer verdict and a prior complete independent grading', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    const missing = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
+      { createdBy: 'su-implementer' },
+    );
+    expect(missing).toMatchObject({ ok: false, error: expect.stringContaining('must record acceptance') });
+
+    const tooEarly = await emitScorecard(
+      {
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        acceptance: { verdict: 'accept', reasoning: 'No independent card exists yet.' },
+      },
+      { createdBy: 'su-implementer' },
+    );
+    expect(tooEarly).toMatchObject({ ok: false, error: expect.stringContaining('must follow') });
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('stores an implementer verdict after independent grading and includes it in evidence identity', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+    const acceptance = { verdict: 'accept' as const, reasoning: 'The independent evidence meets this plan.' };
+    const r = await emitScorecard(
+      { rubricRef: 'acceptance-rubric', ratings: RATINGS, acceptance },
+      { createdBy: 'su-implementer' },
+    );
+    expect(r).toMatchObject({ ok: true, created: true, acceptance });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: { observation: { rubricRef: 'acceptance-rubric', acceptance } },
+    });
+    expect((r as { evidenceFingerprint: string }).evidenceFingerprint).not.toBe(
+      scorecardEvidenceFingerprint({ rubricRef: 'acceptance-rubric', ratings: RATINGS }),
+    );
   });
 });
 
