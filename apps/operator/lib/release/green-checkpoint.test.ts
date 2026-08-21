@@ -191,6 +191,56 @@ function stubDeps(
   return { deps, calls };
 }
 
+describe("EI-210512: green-checkpoint disk-headroom preflight", () => {
+  it("refuses before setupTree or runGreen when /tmp cannot absorb the suite", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps, calls } = stubDeps(true);
+    deps.checkDiskHeadroom = async () => ({
+      ok: false,
+      summary: "/tmp 5.7 GiB free; low-bytes breaches the gate floor",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      from: ready,
+      green: null,
+      reason: "disk-headroom",
+    });
+    expect(result.summary).toContain("5.7 GiB free");
+    expect(calls).not.toContain("runGreen");
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
+    expect(calls).not.toContain("advance");
+  });
+
+  it("continues normally when the same preflight reports safe headroom", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    const { deps, calls } = stubDeps(true);
+    deps.checkDiskHeadroom = async () => ({
+      ok: true,
+      summary: "/tmp 356.0 GiB free",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(true);
+    expect(calls).toContain("runGreen");
+  });
+});
+
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
   it("freezes the first red candidate and does not run or dispatch again while its fixer is live", async () => {
     const ready = await commit("a", "1", "ready");

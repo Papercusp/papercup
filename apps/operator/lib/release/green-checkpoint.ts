@@ -583,6 +583,10 @@ export interface CheckpointDeps {
     skipped: boolean;
     error?: string;
   } | null>;
+  /** EI-21051243455875854: fail closed before setupTree/runGreen when the temp
+   * filesystem cannot safely absorb a full verdict. Real wiring reuses the
+   * standing disk alarm's statfs sampling and critical thresholds. */
+  checkDiskHeadroom?(): Promise<{ ok: boolean; summary: string }>;
   /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
@@ -645,6 +649,7 @@ export interface CheckpointResult {
     | "migrations-pending"
     | "repair-in-progress"
     | "repair-staging-mismatch"
+    | "disk-headroom"
     /** EI-20767792192323374: the run's own module cache vanished mid-suite, so its failures
      *  are a HOST fault, not a verdict about the code. `green: null` (never `false`) — see
      *  {@link classifyInfraFault}. Treated as a no-op by `classifyGateStallStatus`, exactly
@@ -6316,6 +6321,33 @@ export async function runGreenCheckpoint(
     };
   }
 
+  // EI-21051243455875854: the exact 09f2 run spent the singleton on 21 zero-duration
+  // false reds after /tmp's bind-mounted filesystem reached ENOSPC. Refuse BEFORE
+  // setupTree (which itself copies node_modules) and before any suite work. This is an
+  // inconclusive infrastructure result, never evidence that the candidate is broken.
+  if (deps.checkDiskHeadroom) {
+    let headroom: { ok: boolean; summary: string };
+    try {
+      headroom = await deps.checkDiskHeadroom();
+    } catch (e) {
+      headroom = {
+        ok: false,
+        summary: `disk headroom probe failed: ${e instanceof Error ? e.message : e}`,
+      };
+    }
+    deps.log(`disk-headroom preflight: ${headroom.summary}`);
+    if (!headroom.ok) {
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: null,
+        reason: "disk-headroom",
+        summary: headroom.summary,
+      };
+    }
+  }
+
   deps.log(
     `checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? "none"})`,
   );
@@ -10046,6 +10078,39 @@ export function realCheckpointDeps(
     concurrentRun,
     workspaceRerun,
     runId,
+    async checkDiskHeadroom() {
+      const {
+        detectCriticalWriteHeadroom,
+        diskPolicyFromEnv,
+        sampleDiskSnapshots,
+      } = await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
+      const tempPath = os.tmpdir();
+      const snapshots = await sampleDiskSnapshots([tempPath]);
+      const snapshot = snapshots[0];
+      if (!snapshot) {
+        return {
+          ok: false,
+          summary: `${tempPath} statfs produced no readable snapshot; refusing a full-suite write workload`,
+        };
+      }
+      const policy = diskPolicyFromEnv();
+      const breaches = detectCriticalWriteHeadroom([snapshot], policy);
+      const gib = 1024 ** 3;
+      const measured =
+        `${tempPath} ${(snapshot.freeBytes / gib).toFixed(1)} GiB free ` +
+        `(${(snapshot.freePct * 100).toFixed(2)}%), ` +
+        `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`;
+      if (breaches.length === 0) return { ok: true, summary: measured };
+      const kinds = breaches[0].kinds.join("+");
+      return {
+        ok: false,
+        summary:
+          `${measured}; ${kinds} breaches the gate floor ` +
+          `(${(policy.criticalFreeBytesMin / gib).toFixed(1)} GiB and ` +
+          `${(policy.criticalFreePctMin * 100).toFixed(2)}% bytes, ` +
+          `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes)`,
+      };
+    },
     ...(repairTarget
       ? {
           async readFrozenRepairQueue() {
