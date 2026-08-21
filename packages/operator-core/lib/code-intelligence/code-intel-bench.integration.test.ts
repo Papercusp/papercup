@@ -75,6 +75,22 @@ describe.skipIf(missing.length > 0)(
       },
     );
 
+    it('never claims healthy-and-EMPTY and then fills in later (WI-40224)', () => {
+      // THE recurrence guard for the false-empty class, and deliberately the
+      // strong form: `emptyThenFilledMs` is non-null only when the SAME cursor
+      // answered empty-with-health and later answered with sites. That is
+      // proof, not suspicion.
+      //
+      // Note what this does NOT assert: that REQUIRES_PROGRESS_SIGNAL contains
+      // 'rust'. Such a test passes while the bug is live — it checks the
+      // configuration rather than the behaviour — and D-031 calls it out as
+      // the trap. This one fails while the window exists.
+      const lied = report.measurements
+        .filter((m) => m.emptyThenFilledMs !== null)
+        .map((m) => `${m.caseId}: claimed healthy+empty, filled ${m.emptyThenFilledMs}ms later`);
+      expect(lied).toEqual([]);
+    });
+
     it('never returns an untrustworthy empty answer', () => {
       // A false-empty is the disqualifying failure: it is indistinguishable
       // from a true "no results" and silently ends an agent's search.

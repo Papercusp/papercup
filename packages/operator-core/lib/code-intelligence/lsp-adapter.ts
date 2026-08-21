@@ -137,8 +137,29 @@ interface LspClient {
    * see `awaitProjectReady`.
    */
   pendingProgress: Set<string | number>;
-  /** True once at least one progress cycle has completed. */
+  /**
+   * True once at least one progress cycle has completed.
+   *
+   * ⚠ "HAS SETTLED ONCE" IS STRICTLY WEAKER THAN "IS DONE" (WI-40224). A server
+   * that loads in several phases — rust-analyzer does cargo metadata, then
+   * proc-macro build, then indexing — has a legitimately EMPTY pending set
+   * between phases, with this flag already true. Gating readiness on it alone
+   * answered from a half-loaded server for ~8-10s. Use `quiescent` for any
+   * language in REQUIRES_PROGRESS_SIGNAL.
+   */
   everSettled: boolean;
+  /**
+   * The server's OWN readiness verdict, from rust-analyzer's
+   * `experimental/serverStatus` notification. `null` means the server has not
+   * reported (or does not implement it).
+   *
+   * This is the difference between asking "is the server idle right now?" —
+   * which our progress bookkeeping answers, and which is true between loading
+   * phases — and "does the server consider itself ready?", which only it can
+   * answer. Everything else is an inference from a signal designed for
+   * progress bars.
+   */
+  quiescent: boolean | null;
   /**
    * Latest `textDocument/publishDiagnostics` payload per document URI.
    *
@@ -174,6 +195,20 @@ const PROJECT_READY_TIMEOUT_MS = 60_000;
  * For these, "no progress token" means "has not started yet", never "done".
  */
 const REQUIRES_PROGRESS_SIGNAL: ReadonlySet<LspLanguage> = new Set<LspLanguage>(['rust']);
+
+/**
+ * How long the progress set must stay CONTINUOUSLY empty before a
+ * REQUIRES_PROGRESS_SIGNAL server is treated as loaded — used only as the
+ * FALLBACK when the server never sends `experimental/serverStatus` (WI-40224).
+ *
+ * An instantaneous "nothing pending" reading cannot distinguish the gap
+ * between two of rust-analyzer's loading phases from the end of the last one.
+ * A sustained one can. This is strictly weaker evidence than the server's own
+ * `quiescent` verdict, which is why it is the fallback and not the primary
+ * gate — and why an empty answer produced under it is NOT blessed as
+ * trustworthy (see `lspQuery`'s freshness handling).
+ */
+const PROGRESS_SETTLE_WINDOW_MS = 2_000;
 
 /**
  * How long a language may take to load its project before we call it degraded.
@@ -329,6 +364,7 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
     coldStartMs: 0,
     pendingProgress: new Set(),
     everSettled: false,
+    quiescent: null,
     diagnostics: new Map(),
   };
 
@@ -350,6 +386,26 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       if (params?.value?.kind === 'end') {
         client.pendingProgress.delete(params.token);
         if (client.pendingProgress.size === 0) client.everSettled = true;
+      }
+    },
+  );
+
+  // WI-40224: rust-analyzer's own readiness verdict. `quiescent` means the
+  // server has finished its work — as distinct from our progress bookkeeping,
+  // which can only observe that nothing is in flight AT THIS INSTANT, and is
+  // therefore true between two loading phases as well as after the last one.
+  //
+  // `health` here is the SERVER's self-report and is deliberately NOT mapped
+  // onto our BackendHealth: a rust-analyzer 'warning' (e.g. a build-script it
+  // declined to run) still answers correctly, so treating it as unhealthy
+  // would suppress good answers. Only 'error' is escalated.
+  connection.onNotification(
+    'experimental/serverStatus',
+    (params: { health?: string; quiescent?: boolean; message?: string }) => {
+      if (typeof params?.quiescent === 'boolean') client.quiescent = params.quiescent;
+      if (params?.health === 'error') {
+        client.health = 'degraded';
+        client.lastError = params.message ?? 'server reported health=error';
       }
     },
   );
@@ -404,6 +460,12 @@ async function startClient(language: LspLanguage, rootPath: string): Promise<Lsp
       // server never sends workDoneProgress, we can never tell "still loading"
       // from "done", and every early query silently returns the wrong answer.
       window: { workDoneProgress: true },
+      // WI-40224: opt IN to rust-analyzer's `experimental/serverStatus`. It is
+      // the only signal that means "ready" rather than "not currently busy",
+      // and the server sends it ONLY if the client advertises this capability —
+      // so omitting it is what left us inferring readiness from progress-token
+      // bookkeeping that was never designed to answer the question.
+      experimental: { serverStatusNotification: true },
     },
   });
   client.coldStartMs = Date.now() - t0;
@@ -454,10 +516,43 @@ async function awaitProjectReady(
   // query issued microseconds after didOpen sees an empty pending set and
   // concludes — wrongly — that loading already finished.
   const graceUntil = Date.now() + 1_000;
+  let idleSince: number | null = null;
   for (;;) {
     if (client.health === 'unhealthy') return false;
     const idle = client.pendingProgress.size === 0;
-    if (idle && client.everSettled) return true;
+    // Track how long the pending set has been CONTINUOUSLY empty. A single
+    // instantaneous reading cannot tell the gap between two loading phases
+    // from the end of the last one; a sustained one can.
+    if (idle) idleSince ??= Date.now();
+    else idleSince = null;
+
+    // WI-40224 — a server that reports its OWN readiness is authoritative, and
+    // OUTRANKS our progress bookkeeping in BOTH directions:
+    //
+    //   quiescent === true  -> ready, even with a progress token open (a
+    //                          background task is not a half-loaded project).
+    //   quiescent === false -> NOT ready, even though `idle && everSettled`.
+    //                          This is the false-empty window: between
+    //                          rust-analyzer's phases the pending set is empty
+    //                          and everSettled is already true, so the old gate
+    //                          green-lit a query against a partially-loaded
+    //                          index and returned a healthy EMPTY answer that
+    //                          isTrustworthyEmpty() blessed as "nothing
+    //                          implements this trait".
+    if (client.quiescent === true) return true;
+    if (client.quiescent !== false) {
+      // quiescent === null: the server has never reported. Do NOT hang waiting
+      // for a signal that may never come (an older rust-analyzer, or one that
+      // ignored our capability) — but do not accept a bare instantaneous idle
+      // either, which is the defect. Require the idle to have been SUSTAINED,
+      // which closes the inter-phase gap without depending on the notification.
+      const settled =
+        idle &&
+        client.everSettled &&
+        (!REQUIRES_PROGRESS_SIGNAL.has(client.language) ||
+          (idleSince !== null && Date.now() - idleSince >= PROGRESS_SETTLE_WINDOW_MS));
+      if (settled) return true;
+    }
     if (idle && Date.now() > graceUntil && !REQUIRES_PROGRESS_SIGNAL.has(client.language)) {
       // No progress was ever reported. Either the server does not implement
       // workDoneProgress or it had nothing to load. Treat as ready, but only
@@ -478,6 +573,36 @@ async function awaitProjectReady(
     if (Date.now() > deadline) return false;
     await new Promise((r) => setTimeout(r, 50));
   }
+}
+
+/**
+ * The health an ANSWER may claim — which is not always the health the client
+ * has. WI-40224's class fix, and the durable half of it.
+ *
+ * `awaitProjectReady` decides WHEN to answer; this decides whether an answer
+ * is entitled to be BELIEVED. They are different questions, and conflating
+ * them is what let a bounded readiness bug become an authoritative lie:
+ * `isTrustworthyEmpty()` blesses any empty whose health is 'healthy', so the
+ * moment readiness was wrong, absence became "proof" of absence.
+ *
+ * The rule: an EMPTY answer from a server that announces its indexing
+ * (REQUIRES_PROGRESS_SIGNAL) but has never told us it is `quiescent` is
+ * reported DEGRADED. We got there via the settle-window fallback, which is
+ * strictly weaker evidence than the server's own verdict — good enough to
+ * answer on, not good enough to certify an absence.
+ *
+ * Deliberately asymmetric: a NON-EMPTY answer keeps the client's health. Sites
+ * are positive evidence and cannot be a false-empty, so withholding trust
+ * there would suppress good answers for no safety gain.
+ */
+export function healthForAnswer(
+  client: Pick<LspClient, 'health' | 'language' | 'quiescent'>,
+  siteCount: number,
+): BackendHealth {
+  if (siteCount > 0) return client.health;
+  if (!REQUIRES_PROGRESS_SIGNAL.has(client.language)) return client.health;
+  if (client.quiescent === true) return client.health;
+  return client.health === 'healthy' ? 'degraded' : client.health;
 }
 
 /** Open a document if the server has not seen it yet (LSP requires didOpen). */
@@ -631,7 +756,11 @@ export async function lspQuery(
       sites,
       truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
       freshness: {
-        health: client.health,
+        // NOT client.health directly (WI-40224): an EMPTY answer from a server
+        // that has never reported itself quiescent must not be certifiable as
+        // absence — "no results", "file is clean" and "nothing to rename" are
+        // all read as facts by callers via isTrustworthyEmpty().
+        health: healthForAnswer(client, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
         // The server reads from disk on didOpen, so an opened document is
         // never stale against disk. We do NOT claim to know about files the
@@ -742,7 +871,11 @@ export async function lspDiagnostics(query: {
       sites,
       truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
       freshness: {
-        health: client.health,
+        // NOT client.health directly (WI-40224): an EMPTY answer from a server
+        // that has never reported itself quiescent must not be certifiable as
+        // absence — "no results", "file is clean" and "nothing to rename" are
+        // all read as facts by callers via isTrustworthyEmpty().
+        health: healthForAnswer(client, sites.length),
         indexedAt: new Date(entry.receivedAt).toISOString(),
         staleVsDisk: false,
         indexedCommit: null,
@@ -901,7 +1034,11 @@ export async function lspRenamePreview(query: LspQuery & { newName: string }): P
       sites,
       truncation: { truncated: false, totalAvailable: sites.length, continuation: null },
       freshness: {
-        health: client.health,
+        // NOT client.health directly (WI-40224): an EMPTY answer from a server
+        // that has never reported itself quiescent must not be certifiable as
+        // absence — "no results", "file is clean" and "nothing to rename" are
+        // all read as facts by callers via isTrustworthyEmpty().
+        health: healthForAnswer(client, sites.length),
         indexedAt: new Date(client.startedAt).toISOString(),
         staleVsDisk: false,
         indexedCommit: null,
