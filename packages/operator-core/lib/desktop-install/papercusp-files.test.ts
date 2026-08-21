@@ -209,8 +209,24 @@ describe('ensureGhLinked', () => {
     const home = path.join(tmp, 'home');
     const binDir = path.join(home, '.papercusp', 'bin');
 
-    expect(await ensureGhLinked(home, binDir)).toBe(false);
+    expect(await ensureGhLinked(home, binDir, [])).toBe(false);
     await expect(fs.access(path.join(binDir, 'gh'))).rejects.toThrow();
+  });
+
+  it('repairs a dangling stable shim from a canonical system gh when no bundle is visible', async () => {
+    disableBundledAnchors();
+    vi.spyOn(process, 'cwd').mockReturnValue(path.join(tmp, 'no-bundle-cwd'));
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    const dest = path.join(binDir, 'gh');
+    const systemBin = path.join(tmp, 'usr', 'bin');
+    const systemGh = path.join(systemBin, 'gh');
+    await touch(systemGh);
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.symlink(path.join(tmp, 'retired-bundle', 'sidecar', 'bin', 'gh'), dest);
+
+    expect(await ensureGhLinked(home, binDir, [binDir, systemBin])).toBe(true);
+    expect(await fs.realpath(dest)).toBe(await fs.realpath(systemGh));
   });
 
   it('is idempotent (false, no write) once already pointed at the current bundle', async () => {

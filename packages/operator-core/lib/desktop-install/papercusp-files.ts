@@ -24,6 +24,7 @@ import { filterInstallSources, describeRefusals } from './install-source-guard';
 // Single definition, shared with the pot-git ext:: transport (EI-20078551747038927).
 // Re-exported below so existing importers of this module keep resolving it here.
 import { resolveBundledNode } from '../bundled-node';
+import { standardToolDirs } from '../tool-path';
 // WI-37920 / P-006: the ONE list of where a backend CLI can live, shared with
 // psu's own detection and the operator's spawn-PATH injection.
 import { BACKEND_AGENTS, backendSearchDirs } from '../backend-bin-resolve.mjs';
@@ -2060,22 +2061,46 @@ export async function ensureAgentClisLinked(home: string, binDir: string): Promi
  * with no bundled gh in this run leaves any prior link untouched — never
  * removes a working link just because THIS run can't resolve a source).
  */
-export async function ensureGhLinked(home: string, binDir: string): Promise<boolean> {
+export async function ensureGhLinked(
+  home: string,
+  binDir: string,
+  fallbackDirs: string[] = standardToolDirs(),
+): Promise<boolean> {
   const dest = path.join(binDir, 'gh');
   const sidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
-  const candidates = [
+  const bundledCandidates = [
     sidecarBin ? path.join(sidecarBin, 'gh') : '',
     path.join(process.cwd(), 'bin', 'gh'),
     path.join(process.cwd(), '..', 'bin', 'gh'),
   ].filter(Boolean);
   let resolved: string | null = null;
-  for (const c of candidates) {
+  for (const c of bundledCandidates) {
     if (await pathExists(c)) {
       resolved = c;
       break;
     }
   }
-  if (!resolved) return false; // no bundled gh visible this run — leave any prior link alone
+  if (!resolved) {
+    // A working stable shim is deliberately sticky on dev boxes: a system gh
+    // appearing later must not silently replace the known-good bundled binary.
+    // A BROKEN shim is different. It makes every GitHub credential lookup fail,
+    // even when the canonical tool-path surface can resolve a healthy gh (live
+    // Linux repro: the old extracted desktop bundle disappeared while
+    // /usr/bin/gh remained installed). Heal only that broken/missing case.
+    if (await pathExists(dest)) return false;
+    const destResolved = path.resolve(dest);
+    for (const dir of fallbackDirs) {
+      const candidate = path.join(dir, 'gh');
+      // ~/.papercusp/bin may itself be present in a caller-supplied search list;
+      // never make the stable shim point to itself.
+      if (path.resolve(candidate) === destResolved) continue;
+      if (await pathExists(candidate)) {
+        resolved = candidate;
+        break;
+      }
+    }
+  }
+  if (!resolved) return false; // no healthy bundled or canonical-system gh visible this run
   try {
     const current = await fs.readlink(dest);
     if (current === resolved) return false; // already correct — no-op
