@@ -67,9 +67,12 @@ export interface ImprovementCandidate {
   /** How many times the auto-implement loop has dispatched this item
    *  (payload.implementAttempts — the anti-re-dispatch counter, D-001). */
   attempts?: number;
-  /** Explicitly routed to a human (improvements:resolve outcome 'needs-human',
-   *  or auto-set when implement retries exhaust). Forces the human tier. */
+  /** Legacy compatibility cohort awaiting P-006 classification. Forces the human
+   * tier only so pre-split rows remain safely excluded. */
   needsHuman?: boolean;
+  /** A strict owner-capability escalation: credential, physical device, or an
+   * external-service action no agent can perform. Forces the human tier. */
+  needsOwnerAction?: boolean;
   /** Source role that filed this improvement (P-010 source-tag): Queen, bee, system, or human.
    *  Tracked for per-Hive analytics and topic lens. */
   sourceRole?: 'Queen' | 'cup' | 'system' | 'Scout' | 'human';
@@ -445,8 +448,13 @@ export function classifyImprovement(
 ): TierDecision {
   const reasons: string[] = [];
 
+  if (c.needsOwnerAction) {
+    reasons.push('strict owner action required (credential, physical device, or external-service action) → human');
+    return { tier: 'human', reasons };
+  }
+
   if (c.needsHuman) {
-    reasons.push('explicitly routed to a human (needs-human — set via improvements:resolve) → human');
+    reasons.push('legacy needsHuman compatibility flag (awaiting P-006 re-triage) → human');
     return { tier: 'human', reasons };
   }
 
