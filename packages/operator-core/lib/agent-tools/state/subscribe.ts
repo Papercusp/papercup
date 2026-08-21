@@ -76,7 +76,7 @@ export default defineTool({
       .string()
       .max(200)
       .optional()
-      .describe('SUBJECT for a caller-relative cell (see state:read `as`). Not an identity override — your audience is always what is checked.'),
+      .describe('SUBJECT for a caller-relative cell (see state:read `as`). Where the cell\'s parameter is an agent identity, the literal "self" means you. Not an identity override — your audience is always what is checked.'),
     of: z
       .enum(['value', 'material'])
       .optional()
@@ -136,10 +136,16 @@ export default defineTool({
       };
     }
 
+    // P-003 — `as:"self"` resolves to the caller's own ownerId for an IDENTITY-keyed
+    // cell, kept in LOCKSTEP with state:read: a subject shorthand you may read with
+    // but not wait on is the same half-open door the role allowlist comment warns
+    // about. Resolved BEFORE the missing-subject check below so `self` satisfies it.
+    const asSubject = resolveSelfSubject(args.as, spec, identity.ownerId);
+
     // Axis 3 — a caller-relative cell cannot be watched without its subject, for the
     // same reason it cannot be read without one: there is no question yet.
     const rel = spec.callerRelativity;
-    if (rel.kind === 'parameter' && (args.as === undefined || args.as.trim() === '')) {
+    if (rel.kind === 'parameter' && (asSubject === undefined || asSubject.trim() === '')) {
       return {
         content: [
           {
@@ -155,7 +161,7 @@ export default defineTool({
         isError: true,
       };
     }
-    const resolverArgs = rel.kind === 'parameter' ? { [rel.param]: args.as as string } : {};
+    const resolverArgs = rel.kind === 'parameter' ? { [rel.param]: asSubject as string } : {};
 
     /**
      * P-021 — WHICH path the predicate watches.

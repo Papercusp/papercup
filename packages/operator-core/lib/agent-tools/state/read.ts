@@ -106,7 +106,7 @@ export default defineTool({
       .max(200)
       .optional()
       .describe(
-        'The SUBJECT for a caller-relative cell — WHAT you are asking about (an ownerId for an agent-scoped cell, a repo path for a per-path one). NOT an identity override: your own audience is always what is checked, so naming a subject can never widen what you may see. Required only when the cell declares callerRelativity.kind="parameter"; the read tells you the parameter name if it is missing.',
+        'The SUBJECT for a caller-relative cell — WHAT you are asking about (an ownerId for an agent-scoped cell, a repo path for a per-path one). Where the cell\'s parameter is an agent identity, the literal "self" means you. NOT an identity override: your own audience is always what is checked, so naming a subject can never widen what you may see. Required only when the cell declares callerRelativity.kind="parameter"; the read tells you the parameter name if it is missing.',
       ),
   }),
   async handler(args, ctx) {
