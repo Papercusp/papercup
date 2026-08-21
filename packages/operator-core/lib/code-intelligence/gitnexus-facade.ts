@@ -124,6 +124,19 @@ export const GITNEXUS_NOT_ROUTABLE: Readonly<
     reason: 'Not implemented by GitNexus.',
     useInstead: 'ast-grep for structural/AST patterns.',
   },
+  implementations: {
+    reason:
+      'GitNexus exposes no implementations/trait-impl tool (the 1.6.9 catalog ' +
+      'is list_repos, query, cypher, context, detect_changes, check, impact, ' +
+      'explain, pdg_query, route_map, tool_map, shape_check, api_impact, ' +
+      'group_list, trace), and nothing here has been MEASURED answering it. ' +
+      'Per D-021 an intent is not routed to this backend on the strength of a ' +
+      'plausible-looking tool name — only on a measurement carrying a ' +
+      'nonsense-input control.',
+    useInstead:
+      'lsp:query { op:"implementations" } — rust-analyzer for Rust traits, ' +
+      'tsserver for TS interfaces.',
+  },
 });
 
 /**
