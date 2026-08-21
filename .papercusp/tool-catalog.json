@@ -24636,7 +24636,7 @@
           "POST"
         ]
       },
-      "description": "Wake me when a registered state CELL crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path, you supply `on: {op, value}`. A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.",
+      "description": "Wake me when a registered state CELL changes or crosses a condition — instead of burning turns re-reading it. Names a cell (state:read lists them); the cell supplies the resolver + path. `on` is OPTIONAL — omit it for \"wake me when this moves\" (op `changed`). A PRESET over watch:create, so it inherits its dedupe (an identical watch joins the existing poller), its inline first eval (a broken condition fails NOW; an already-true one fires immediately), and its wake floors. Fires on the false→true EDGE. A cell outside your audience is absent, not subscribable.",
       "capabilities": [
         "coord:write"
       ],
@@ -24654,9 +24654,9 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "You need to proceed only once a value crosses a threshold — a deploy landing, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.",
+        "when": "You need to proceed only once a value MOVES or crosses a threshold — a deploy landing, a gate verdict flipping, a queue draining, a holder releasing. Use it INSTEAD of a sleep/poll loop; that loop is what this exists to kill.",
         "notWhen": "You need the value now — that is state:read. The event has an exact key already — that is events:await. A recurring TIME schedule — routines own those.",
-        "chaining": "state:subscribe { cell, on:{op,value} } → END YOUR TURN. You are woken on the cross; do not poll in the meantime. once:false re-fires on each cross. Cancel via events:cancel with the returned watch id."
+        "chaining": "state:subscribe { cell } → END YOUR TURN. Omitting `on` means `changed`; never write `ne` against the value's current reading to mean that — it transcribes a volatile value and misses a move landing before the call. Standing watch: no `timeout_sec`/`on_timeout`/`wake` (events:await owns those), and the why-field is `note`. once:false re-fires per change. Cancel via events:cancel."
       }
     },
     {
