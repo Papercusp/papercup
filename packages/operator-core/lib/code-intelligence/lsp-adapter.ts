@@ -836,10 +836,44 @@ export async function shutdownAllLspClients(): Promise<number> {
       } catch {
         /* already disposed */
       }
-      if (c.child.exitCode === null && !c.child.killed) c.child.kill('SIGTERM');
+
+      // GIVE THE PROTOCOL SHUTDOWN TIME TO LAND before reaching for a signal.
+      // Measured defect: this used to SIGTERM immediately after `exit`, when
+      // `exitCode` is of course still null because the server has had
+      // microseconds to react. Under managedSpawn the child we hold is the
+      // `systemd-run` CLIENT, not the server itself — so that signal killed the
+      // wrapper while its scope still held the real process, and managed-spawn
+      // logged exactly that, leaving the ledger row live for the reconciler.
+      // A protocol `exit` makes the SERVER terminate itself inside the scope,
+      // which is the only clean way out from here; killing a subtree by hand is
+      // `processes:kill { taskId }`'s job, never a bare signal.
+      if (!(await waitForChildExit(c.child, GRACEFUL_EXIT_WAIT_MS))) {
+        if (c.child.exitCode === null && !c.child.killed) c.child.kill('SIGTERM');
+      }
     }),
   );
   return clients.length;
+}
+
+/** How long a server gets to honour a protocol `exit` before we signal it. */
+const GRACEFUL_EXIT_WAIT_MS = 5_000;
+
+/** Resolve true when the child has exited, false on timeout. Never throws. */
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.off('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    // Do not hold the event loop open purely to watch a shutdown.
+    if (typeof timer.unref === 'function') timer.unref();
+    child.once('exit', onExit);
+  });
 }
 
 /** Live server inventory — for health surfaces and the corpus runner. */

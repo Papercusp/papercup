@@ -351,7 +351,28 @@ describe(`concurrent-start budget ${skipReason}`, () => {
       // both callers had already missed it. Every individual answer still
       // looked correct, so only the ledger showed it — which is why this
       // asserts the INVENTORY, not the answers.
-      await shutdownAllLspClients();
+      // A clean slate is required to count servers — but shutting a sidecar
+      // down inside a test body surfaces managed-spawn's KNOWN WI-37509 warn:
+      // `typescript-language-server` spawns `tsserver` as a grandchild, so at
+      // the instant the systemd-run client exits the scope is briefly still
+      // non-empty and the row is left for the reconciler. That is expected
+      // behaviour, not our defect (the client now exits code 0, i.e. via the
+      // protocol, not a signal). Capture warns and assert they are ONLY that —
+      // a blanket console.warn mock here would also swallow a real one.
+      const warnings: string[] = [];
+      const warnSpy = vi
+        .spyOn(console, 'warn')
+        .mockImplementation((...a: unknown[]) => void warnings.push(a.join(' ')));
+      try {
+        await shutdownAllLspClients();
+      } finally {
+        warnSpy.mockRestore();
+      }
+      for (const w of warnings) {
+        expect(w, `unexpected warning during shutdown: ${w}`).toMatch(
+          /scope still holds processes|WI-37509/,
+        );
+      }
       expect(lspClientInventory()).toHaveLength(0);
 
       const shared = { file: IMPORT_SITE, line1: 41, character: 11, rootPath: REPO_ROOT };
