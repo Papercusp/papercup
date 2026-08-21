@@ -23,8 +23,10 @@ import {
   harnessCitationRepoRoot,
   planItemTextHash,
   prepareAuditPassEntries,
+  recordPlanAudit,
   resolveCitation,
   repoCitationDeps,
+  validatePersistedAuditEntries,
   type AuditCitation,
   type CitationDeps,
   type CitationFailureReason,
@@ -364,6 +366,52 @@ describe('per-item audit provenance (plan D-006/D-007)', () => {
       auditedAt: '2026-08-20T12:00:00.000Z',
       itemTextHash: planItemTextHash('fresh requirement'),
     });
+    expect(validatePersistedAuditEntries(result)).toEqual([]);
     expect(result.some((entry) => entry.itemId === 'P-003')).toBe(false);
+  });
+
+  it('rejects a newly-created legacy-shaped entry at the write boundary', async () => {
+    const item = { itemId: 'P-001', verdict: 'implemented' as const, citations: [] };
+    expect(validatePersistedAuditEntries([item])).toEqual([
+      expect.objectContaining({ itemId: 'P-001', code: 'missing_audited_sha' }),
+      expect.objectContaining({ itemId: 'P-001', code: 'missing_audited_at' }),
+      expect.objectContaining({ itemId: 'P-001', code: 'missing_item_text_hash' }),
+    ]);
+    await expect(
+      recordPlanAudit({
+        planSlug: 'test-plan',
+        harnessSlug: 'papercusp',
+        createdBy: 'test-agent',
+        items: [item],
+      }),
+    ).rejects.toThrow(/plan audit provenance invalid/);
+  });
+
+  it('rejects a fresh code citation without its blob hash', () => {
+    expect(
+      validatePersistedAuditEntries([
+        {
+          itemId: 'P-001',
+          verdict: 'implemented',
+          citations: [{ kind: 'code', path: 'src/a.ts' }],
+          auditedSha: 'abcdef1234567',
+          auditedAt: '2026-08-20T12:00:00.000Z',
+          itemTextHash: planItemTextHash('requirement'),
+        },
+      ]),
+    ).toEqual([expect.objectContaining({ itemId: 'P-001', code: 'missing_blob_sha' })]);
+  });
+
+  it('allows a legacy entry only when it is explicitly carried forward', () => {
+    expect(
+      validatePersistedAuditEntries([
+        {
+          itemId: 'P-001',
+          verdict: 'implemented',
+          citations: [{ kind: 'code', path: 'old.ts' }],
+          carriedFrom: 4,
+        },
+      ]),
+    ).toEqual([]);
   });
 });

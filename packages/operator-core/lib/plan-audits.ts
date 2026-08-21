@@ -688,6 +688,101 @@ export interface RecordAuditInput {
   summary?: string | null;
 }
 
+export interface AuditEntryValidationProblem {
+  itemId: string;
+  code:
+    | 'missing_audited_sha'
+    | 'invalid_audited_sha'
+    | 'missing_audited_at'
+    | 'invalid_audited_at'
+    | 'missing_item_text_hash'
+    | 'invalid_item_text_hash'
+    | 'missing_blob_sha'
+    | 'invalid_blob_sha';
+  detail: string;
+}
+
+/**
+ * Validate the shape that is about to be persisted.
+ *
+ * `plans:audit` is the normal producer and stamps these fields before calling the
+ * store, but `recordPlanAudit` is also an internal write boundary. Keeping the
+ * invariant here prevents another caller (or a stale deployed writer) from creating
+ * a fresh row that looks current while carrying legacy-shaped entries. Existing
+ * legacy entries are allowed only when `prepareAuditPassEntries` marks them with
+ * `carriedFrom`; they retain their original, intentionally incomplete provenance.
+ */
+export function validatePersistedAuditEntries(items: AuditItemEntry[]): AuditEntryValidationProblem[] {
+  const problems: AuditEntryValidationProblem[] = [];
+  const hasOwn = (entry: AuditItemEntry, key: keyof AuditItemEntry): boolean =>
+    Object.prototype.hasOwnProperty.call(entry, key);
+
+  for (const item of items) {
+    const hasProvenance = hasOwn(item, 'auditedSha') || hasOwn(item, 'auditedAt') || hasOwn(item, 'itemTextHash');
+    const isLegacyCarry = !hasProvenance && Number.isInteger(item.carriedFrom) && (item.carriedFrom ?? 0) > 0;
+    if (!isLegacyCarry) {
+      if (!hasOwn(item, 'auditedSha')) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'missing_audited_sha',
+          detail: `item '${item.itemId}' has no auditedSha provenance`,
+        });
+      } else if (item.auditedSha !== null && (typeof item.auditedSha !== 'string' || item.auditedSha.length < 7)) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'invalid_audited_sha',
+          detail: `item '${item.itemId}' has an invalid auditedSha provenance value`,
+        });
+      }
+      if (!hasOwn(item, 'auditedAt')) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'missing_audited_at',
+          detail: `item '${item.itemId}' has no auditedAt provenance`,
+        });
+      } else if (typeof item.auditedAt !== 'string' || Number.isNaN(Date.parse(item.auditedAt))) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'invalid_audited_at',
+          detail: `item '${item.itemId}' has an invalid auditedAt provenance value`,
+        });
+      }
+      if (!hasOwn(item, 'itemTextHash')) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'missing_item_text_hash',
+          detail: `item '${item.itemId}' has no itemTextHash provenance`,
+        });
+      } else if (typeof item.itemTextHash !== 'string' || !/^[0-9a-f]{64}$/i.test(item.itemTextHash)) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'invalid_item_text_hash',
+          detail: `item '${item.itemId}' has an invalid itemTextHash provenance value`,
+        });
+      }
+    }
+
+    if (isLegacyCarry) continue;
+    for (const citation of item.citations) {
+      if (!isVerifyingCitation(citation)) continue;
+      if (!citation.blobSha) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'missing_blob_sha',
+          detail: `item '${item.itemId}' has a ${citation.kind} citation without blobSha`,
+        });
+      } else if (!/^[0-9a-f]{40}$/i.test(citation.blobSha)) {
+        problems.push({
+          itemId: item.itemId,
+          code: 'invalid_blob_sha',
+          detail: `item '${item.itemId}' has a ${citation.kind} citation with an invalid blobSha`,
+        });
+      }
+    }
+  }
+  return problems;
+}
+
 /**
  * Append an audit pass. `audit_seq` is allocated in the INSERT itself
  * (`MAX(audit_seq)+1` over the same plan) rather than read-then-written, so two
@@ -696,6 +791,12 @@ export interface RecordAuditInput {
  * rather than a silently overwritten audit.
  */
 export async function recordPlanAudit(input: RecordAuditInput): Promise<PlanAudit> {
+  const provenanceProblems = validatePersistedAuditEntries(input.items);
+  if (provenanceProblems.length > 0) {
+    throw new Error(
+      `plan audit provenance invalid: ${provenanceProblems.map((problem) => problem.detail).join('; ')}`,
+    );
+  }
   const { sql } = getOrgPg();
   const rows = await sql<PlanAuditRow[]>`
     INSERT INTO harness_shared.plan_audits
