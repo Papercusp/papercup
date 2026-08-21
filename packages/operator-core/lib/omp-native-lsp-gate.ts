@@ -39,7 +39,7 @@
  * them would mean enabling our facade silently re-arms the attractor above on
  * every OMP launch — precisely the hazard D-013 records.
  */
-import { isLocalModelSpec } from './local-model-spec.mjs';
+import { ompModelTierAllowsNativeLsp } from './omp-native-lsp-tier.mjs';
 
 /**
  * @param agent      the launch backend ('omp' | 'claude' | 'codex' | …). The
@@ -62,10 +62,11 @@ export function mayKeepOmpNativeLsp({
   // folded into the flag read, so that no future edit to the flag half can
   // accidentally short-circuit past it.
   //
-  // An unknown/blank model FAILS CLOSED: absent a spec, omp launches on its own
-  // configured default, which is local here. "We were not told" is not evidence
-  // that the model is safe.
-  if (!model || !String(model).trim()) return false;
-  if (isLocalModelSpec(model)) return false;
+  // The term itself now lives in omp-native-lsp-tier.mjs (P-023/D-015) because
+  // the RESUME path needs the identical rule and is bare `node` that cannot
+  // import TypeScript. It fails closed on an unknown/blank model: absent a
+  // spec, omp launches on its own configured default, which is local here.
+  // "We were not told" is not evidence that the model is safe.
+  if (!ompModelTierAllowsNativeLsp(model)) return false;
   return flagEnabled === true;
 }

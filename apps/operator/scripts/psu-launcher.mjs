@@ -53,6 +53,9 @@ import { SU_TIER_ROLES } from '../../../packages/operator-core/lib/su-tier-roles
 // carry two byte-identical copies of its regex pair (cloudModelBackendHint,
 // validateModelSpec); both now call it, so the gate cannot drift from them.
 import { isLocalModelSpec } from '../../../packages/operator-core/lib/local-model-spec.mjs';
+// P-023 (D-015): the TIER half of the omp native-lsp gate, shared with the
+// server-side `mayKeepOmpNativeLsp` so the resume path cannot drift from it.
+import { ompModelTierAllowsNativeLsp } from '../../../packages/operator-core/lib/omp-native-lsp-tier.mjs';
 // WI-37920: ONE definition of where a backend CLI can live + how to reach it,
 // shared with the operator's spawn-env injection (console-launcher). See that
 // file's header for why detection and execution are two separate layers.
@@ -1366,6 +1369,33 @@ export function resumeArgsFor(session, { coordExtPath, injectHookPath, fork = fa
     // turn-start/mid-turn context while a fresh one has it.
     if (injectHookPath) args.push('--hook', injectHookPath);
     if (model) args.push(...modelArgsFor('omp', model));
+    // P-023 (D-015): the native-`lsp` gate has to be re-applied on EVERY resume,
+    // for the same reason as the two flags above — omp CLI flags do not persist
+    // into a resume. Until now this branch simply never emitted `--no-lsp`, so a
+    // resumed session kept the builtin unconditionally. That is FAIL-OPEN in the
+    // one direction that matters: it handed the tool-attractor back to weak
+    // LOCAL models (session 9885 abused `lsp` as a tools:call wrapper), which is
+    // the exact population the tier gate exists to exclude. The bug predates
+    // P-021 — P-021 replaced two hard-coded literals on the FRESH paths and this
+    // third site had no literal to replace, which is why it was missed.
+    //
+    // WHICH HALF OF THE GATE THIS APPLIES, and why only that half. The full
+    // decision is `mayKeepOmpNativeLsp` = TIER && FLAGS.OMP_NATIVE_LSP_BUILTIN,
+    // resolved server-side and threaded via envelopeEnv.PAPERCUSP_OMP_NATIVE_LSP.
+    // A plain resume has no envelopeEnv and makes no bootstrap POST, so the flag
+    // half is genuinely unreachable here — and reading it would give this
+    // bare-node launcher the launch-time network dependency the whole design
+    // avoids. So resume applies the TIER term alone, from the shared module the
+    // server gate uses, against the account-route-resolved resume model.
+    //
+    // The residual gap, stated rather than hidden: a session whose model is a
+    // known CLOUD spec keeps the builtin on resume even if someone has since
+    // flipped FLAGS.OMP_NATIVE_LSP_BUILTIN off. Bounded on purpose — the flag
+    // ships default-ON precisely because the tier term, not the flag, is the
+    // safety gate (see omp-native-lsp-gate.ts), so the unreachable half is the
+    // permissive one and the half that fails closed is the one enforced here.
+    const allowNativeLsp = ompModelTierAllowsNativeLsp(model);
+    args.push(...ompLspArgs(allowNativeLsp));
     return { bin: 'omp', args };
   }
   if (session.agent === 'codex') {
