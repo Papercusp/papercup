@@ -46,6 +46,50 @@ export const GITNEXUS_REPO_NAME = 'papercusp';
  *  a genuinely wedged indexer hang the tick forever. */
 export const GITNEXUS_ANALYZE_TIMEOUT_MS = 20 * 60_000;
 
+// ---------------------------------------------------------------------------
+// P-004 — ANALYZE RESOURCE CAP (heap / semi-space / stack).
+//
+// THE HAZARD, measured live 2026-08-21 rather than assumed:
+//
+// gitnexus sizes its OWN V8 heap and re-execs itself with the result
+// (`dist/cli/analyze.js`: `computeHeapCapMb` -> `ensureHeap`). The formula is
+// `0.75 * effective`, where `effective` is `process.constrainedMemory()` when set --
+// i.e. THIS PROCESS'S CGROUP LIMIT. We run inside `papercup-bg-host.service`, whose
+// `memory.max` is 40 GiB, so it grants itself 0.75 * 40960 = 30720 MB. Observed on
+// the live worker's own /proc environ, exactly: `--max-old-space-size=30720`. The
+// prediction matching the observation to the megabyte is what confirms this
+// derivation rather than a plausible story about it.
+//
+// That heuristic is sound for a dedicated container and WRONG here, for one reason:
+// it assumes gitnexus is the SOLE TENANT of that cgroup. It is not. bg-host runs
+// every operator routine, and held ~11.6 GiB of OTHER work while analyze ran. A
+// gitnexus that actually used its self-granted 30 GiB would put the cgroup at
+// ~41.6 GiB against a 40 GiB cap -- and the cgroup OOM killer does not kill "the
+// process that asked for too much", it kills WITHIN THE WHOLE CGROUP. So a runaway
+// analyze can take down the background host and every routine sharing it, which is
+// a far larger blast radius than the failed index it started as.
+//
+// THE CAP IS SET FROM MEASUREMENT, NOT A GUESS. Sampled externally from /proc every
+// 3s across a full run (an in-process beat cannot report on main-thread saturation --
+// a saturated Node main thread stops its own timers exactly when you need them):
+//   peak worker RSS (VmHWM) 10.42 GiB; peak whole-tree RSS 10.59 GiB
+//   over 19,479 files / 191,008 nodes / 381,064 edges.
+// RSS >= heap, so ~10.4 GiB bounds the heap the run actually used. 16 GiB therefore
+// clears real usage by ~1.5x while bounding worst case (16 GiB heap + native
+// tree-sitter/LadybugDB overhead, ~20 GiB) so that even a saturated analyze plus
+// observed co-tenants stays under the 40 GiB cgroup cap.
+export const GITNEXUS_ANALYZE_HEAP_MB = 16_384;
+
+/** Young-gen sizing gitnexus applies for itself; preserved verbatim so capping the
+ *  heap does not silently regress its GC tuning. Legal in NODE_OPTIONS. */
+export const GITNEXUS_ANALYZE_SEMI_SPACE_MB = 128;
+
+/** gitnexus raises the stack "to prevent stack overflow on deep class hierarchies".
+ *  ILLEGAL in NODE_OPTIONS on Node 24+ (verified on node v25.9.0: the process exits 9
+ *  with "--stack-size= is not allowed in NODE_OPTIONS"), so it MUST travel as a real
+ *  argv flag. See analyzeNodeArgs. */
+export const GITNEXUS_ANALYZE_STACK_KB = 4_096;
+
 /** Skip when the box is genuinely oversubscribed — load ABOVE 1.5x cores means real run-queue
  *  queueing, and a 4-minute CPU-heavy index is exactly the wrong thing to pile on. (This box
  *  is 128 cores and idles around 0.5/core, so this defers only during a real storm.) */
