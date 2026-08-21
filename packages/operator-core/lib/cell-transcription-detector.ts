@@ -243,3 +243,81 @@ export function formatCellTranscriptionHint(hits: CellTranscription[]): string |
 export function cellTranscriptionHint(text: unknown): string | null {
   return formatCellTranscriptionHint(detectCellTranscriptions(text));
 }
+
+/**
+ * One suggested `dependsOn` cell, plus the evidence that produced it (P-007).
+ *
+ * The evidence travels WITH the suggestion on purpose: a bare "depend on X" is an
+ * assertion the caller has to take on faith, while "you wrote '<value>', which cell X
+ * answers" is a claim they can check in the text they just typed. That difference is
+ * what makes an unwanted suggestion cheap to dismiss instead of confusing.
+ */
+export interface DependsOnSuggestion {
+  /** The registered cell to depend on. */
+  cell: string;
+  /** The exact text in the body that a cell answers authoritatively. */
+  value: string;
+  /** What kind of transcription it is, for the advisory. */
+  what: string;
+}
+
+/** Never suggest more than this many cells — see the rationale in {@link suggestDependsOnCells}. */
+export const MAX_DEPENDS_ON_SUGGESTIONS = 3;
+
+/**
+ * PURE. Which cells a fact body transcribes and therefore ought to DEPEND ON (P-007).
+ *
+ * A fact whose body states a live value silently rots: the value was true when written
+ * and nothing re-checks it. Declaring `dependsOn` for the cell that answers that value
+ * is what arms staleness detection, so the body itself is decent evidence of which
+ * dependency was meant.
+ *
+ * PRECISION-FIRST (EI-10949) — this is the whole design constraint, not a footnote.
+ * EI-10949 is a detector that fired on the bare word "duplicate" with no work-item id
+ * near it; its lesson is that a heuristic must not state a derived conclusion with more
+ * confidence than its evidence supports, and its cost model is that every false positive
+ * is "a small tax on trusting the REAL warnings from the same tool". `facts:assert`
+ * already emits several genuinely load-bearing disclosures (truncation, unresolved
+ * dependencies, eviction/survival, the P-006 normalization receipt), so a chatty
+ * suggestion here does not merely annoy — it devalues those. Four guards, in order:
+ *
+ *  1. Reuse {@link detectCellTranscriptions} rather than matching loosely here. It already
+ *     requires a state-claim CONTEXT word within {@link CONTEXT_WINDOW} (60) chars of the
+ *     value — that proximity requirement IS the corroborating token EI-10949 prescribes —
+ *     and it already rejects the "a citation, not a claim" and unlinked-source-HEAD cases.
+ *  2. Never suggest a cell the caller ALREADY declared. Restating a caller's own input as
+ *     advice is the purest form of the tax above.
+ *  3. Collapse to ONE suggestion per cell. The detector dedupes by cell+value because it is
+ *     reporting transcriptions; a dependency is per-CELL, so three sha mentions are one
+ *     dependency, not three.
+ *  4. Cap the list. A suggestion list long enough to skim is one nobody reads.
+ *
+ * Deliberately NOT done here: attaching the dependency. The spec is suggestion-only until
+ * precision is MEASURED in production — auto-attaching would write a caller-visible field
+ * off a regex, and a wrong dependency is worse than none because it reports a fact stale
+ * (or fresh) on the wrong subject's account.
+ *
+ * Fail-soft like its detector: returns [] for anything unparseable rather than throwing.
+ */
+export function suggestDependsOnCells(
+  body: unknown,
+  declaredCells: readonly string[] = [],
+): DependsOnSuggestion[] {
+  const declared = new Set(
+    declaredCells.map((c) => (typeof c === 'string' ? c.trim().toLowerCase() : '')).filter(Boolean),
+  );
+
+  const out: DependsOnSuggestion[] = [];
+  const seenCells = new Set<string>();
+
+  for (const hit of detectCellTranscriptions(body)) {
+    const cellKey = hit.cell.toLowerCase();
+    if (declared.has(cellKey)) continue; // guard 2
+    if (seenCells.has(cellKey)) continue; // guard 3
+    seenCells.add(cellKey);
+    out.push({ cell: hit.cell, value: hit.value, what: hit.what });
+    if (out.length >= MAX_DEPENDS_ON_SUGGESTIONS) break; // guard 4
+  }
+
+  return out;
+}
