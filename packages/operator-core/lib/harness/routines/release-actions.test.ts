@@ -311,6 +311,11 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('infra-inconclusive', true)).toBe('reset');
   });
 
+  it('EI-210512: disk-headroom is a pre-suite NON-VERDICT, not a red', () => {
+    expect(classifyGateStallStatus('disk-headroom', false)).toBe('noop');
+    expect(classifyGateStallStatus('disk-headroom', true)).toBe('reset');
+  });
+
   // WI-39841 (Defect 2): the discriminator itself. A crash and a deadline-kill are BYTE-
   // IDENTICAL downstream — non-zero exit, no parseable marker — so the whole fix rests on
   // `RunResult.timedOut` being carried out of the timer that does the killing. If this
@@ -510,6 +515,15 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     expect(msg).not.toContain('an active peer run holds the lock');
     expect(msg).toContain('migration preflight');
     expect(msg).toContain('NO peer run is in flight');
+  });
+
+  it('EI-210512: disk-headroom names the real unblock and never claims a peer lock', () => {
+    const msg = gateStallNoopLogMessage('disk-headroom');
+    expect(msg).not.toContain('an active peer run holds the lock');
+    expect(msg).toContain('before checkout setup or tests');
+    expect(msg).toContain('do not re-fire until space is reclaimed');
+    expect(msg).toContain('No peer run is in flight');
+    expect(msg).toContain('checkMainBehindStaging');
   });
 
   it('names the detector that DOES cover the freeze, so the reader is not left thinking nothing watches it', () => {
