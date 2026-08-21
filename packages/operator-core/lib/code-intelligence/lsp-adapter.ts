@@ -718,8 +718,11 @@ export function healthForAnswer(
  * Cost is one `stat` per query on an already-open document. mtime+size is
  * deliberate: it catches every writer here (git checkouts and normal writes all
  * move mtime) without hashing file contents on the hot path.
+ *
+ * Exported for the WI-40251 recurrence guard in lsp-adapter.test.ts, which
+ * asserts the re-open actually happens; production callers stay in this file.
  */
-async function ensureOpen(client: LspClient, absPath: string): Promise<string> {
+export async function ensureOpen(client: LspClient, absPath: string): Promise<string> {
   const uri = pathToFileURL(absPath).href;
   const seen = client.openDocs.get(uri);
 

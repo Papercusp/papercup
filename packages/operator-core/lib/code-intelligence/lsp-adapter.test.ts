@@ -8,9 +8,13 @@
  * output as trustworthy turns a temporary gap into an authoritative lie.
  */
 
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { healthForAnswer, specForLanguage, resolveServerBin } from './lsp-adapter.ts';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { ensureOpen, healthForAnswer, specForLanguage, resolveServerBin } from './lsp-adapter.ts';
 import { isTrustworthyEmpty, type BackendHealth } from './contracts.ts';
 
 type Client = { health: BackendHealth; language: 'typescript' | 'rust'; quiescent: boolean | null };
@@ -136,5 +140,111 @@ describe('WI-40250 — an unknown language refuses instead of falling through to
     const unknown = 'python' as unknown as Parameters<typeof specForLanguage>[0];
     expect(() => specForLanguage(unknown)).toThrow(/typescript/);
     expect(() => specForLanguage(unknown)).toThrow(/rust/);
+  });
+});
+
+/**
+ * WI-40251 — the recurrence guard for the stale-open-document class.
+ *
+ * Per the LSP spec an OPEN document's client copy is authoritative and the
+ * server MUST ignore disk. The original defect: `ensureOpen` was
+ * `if (openDocs.has(uri)) return` — open once, frozen forever — so any write
+ * that did not go through `lsp.apply` (Edit/Write via the lock hook, git-sync,
+ * the merge-resolver, a human's editor) left the SHARED server answering about
+ * text that no longer exists, fleet-wide, while certifying it healthy.
+ *
+ * The fix is a pull-based stat (mtime+size) on every call. These tests fail if
+ * anyone restores the open-once shape: the important assertion is that a
+ * mutated file forces didClose + didOpen carrying the NEW text — not a no-op.
+ */
+describe('WI-40251 — ensureOpen re-opens when disk changed under an open document', () => {
+  type Sent = { method: string; params: { textDocument: { uri: string; text?: string; version?: number } } };
+
+  let dir: string;
+  let file: string;
+  let sent: Sent[];
+  let client: Parameters<typeof ensureOpen>[0];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'wi-40251-ensure-open-'));
+    file = join(dir, 'subject.ts');
+    await writeFile(file, 'export const a = 1;\n');
+    sent = [];
+    // A minimal fake: ensureOpen touches only language, openDocs, and
+    // connection.sendNotification. The cast is deliberate (same style as the
+    // WI-40250 suite) — a real LspClient carries a live child process.
+    client = {
+      language: 'typescript',
+      openDocs: new Map<string, { mtimeMs: number; size: number }>(),
+      connection: {
+        sendNotification: (method: string, params: unknown) => {
+          sent.push({ method, params } as Sent);
+        },
+      },
+    } as unknown as Parameters<typeof ensureOpen>[0];
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('first call opens the document with the disk text and stamps it', async () => {
+    const uri = await ensureOpen(client, file);
+
+    expect(sent.map((s) => s.method)).toEqual(['textDocument/didOpen']);
+    expect(sent[0].params.textDocument.text).toBe('export const a = 1;\n');
+    const stamp = (client as unknown as { openDocs: Map<string, { mtimeMs: number; size: number }> }).openDocs.get(uri);
+    expect(stamp).toBeDefined();
+    expect(stamp!.size).toBe('export const a = 1;\n'.length);
+  });
+
+  it('an UNCHANGED file is a no-op — no didClose/didOpen thrash on the hot path', async () => {
+    await ensureOpen(client, file);
+    sent.length = 0;
+
+    await ensureOpen(client, file);
+
+    expect(sent).toEqual([]);
+  });
+
+  it('a file mutated on disk forces didClose + didOpen carrying the NEW text — never a silent stale serve', async () => {
+    await ensureOpen(client, file);
+    sent.length = 0;
+
+    // Longer content: the size delta makes the staleness detection
+    // deterministic even when both writes land in the same mtime millisecond.
+    await writeFile(file, 'export const a = 2; // rewritten by a peer\n');
+    const uri = await ensureOpen(client, file);
+
+    // The regression signature: before the fix this was [] — open-once, serve
+    // stale forever.
+    expect(sent.map((s) => s.method)).toEqual(['textDocument/didClose', 'textDocument/didOpen']);
+    expect(sent[0].params.textDocument.uri).toBe(uri);
+    expect(sent[1].params.textDocument.text).toBe('export const a = 2; // rewritten by a peer\n');
+    // Re-open restores the version-1 invariant the rest of the adapter assumes
+    // (no incremental sync was ever established).
+    expect(sent[1].params.textDocument.version).toBe(1);
+  });
+
+  it('re-opening RE-STAMPS, so the next unchanged read is again a no-op (no perpetual thrash)', async () => {
+    await ensureOpen(client, file);
+    await writeFile(file, 'export const a = 3; // second disk write\n');
+    await ensureOpen(client, file);
+    sent.length = 0;
+
+    await ensureOpen(client, file);
+
+    expect(sent).toEqual([]);
+  });
+
+  it('an unstattable file keeps the copy we hold rather than dropping it', async () => {
+    const uri = await ensureOpen(client, file);
+    sent.length = 0;
+
+    await rm(file);
+    const again = await ensureOpen(client, file);
+
+    expect(again).toBe(uri);
+    expect(sent).toEqual([]);
   });
 });
