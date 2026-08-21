@@ -18,10 +18,19 @@ import {
 // execFileSync throws on a non-zero exit but still captures stdout on the thrown error —
 // exactly what happens for a real `deactivating` unit (systemctl exits non-zero but prints
 // the state). Modeled here instead of hitting a real systemd user session in CI.
-vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }));
+//
+// Spread the REAL module (`...actual`) rather than replacing it wholesale — a bare
+// `vi.mock('node:child_process', () => ({ execFileSync: vi.fn() }))` nukes every other
+// export (spawn/execFile/fork/...) for the whole file's transitive import graph, which can
+// crash an unrelated module at import time (see check-no-eager-execfile-promisify.mjs).
+const childProcessMocks = vi.hoisted(() => ({ execFileSync: vi.fn() }));
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return { ...actual, execFileSync: childProcessMocks.execFileSync };
+});
 
 function mockIsActiveOutput(state: 'active' | 'activating' | 'deactivating' | 'inactive' | 'failed'): void {
-  vi.mocked(execFileSync).mockImplementation(() => {
+  childProcessMocks.execFileSync.mockImplementation(() => {
     if (state === 'active' || state === 'activating') return `${state}\n`;
     // real systemctl: non-zero exit, but stdout still carries the printed state.
     const err = new Error(`Command failed`) as Error & { stdout?: string };
