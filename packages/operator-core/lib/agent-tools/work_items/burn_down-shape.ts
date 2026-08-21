@@ -10,6 +10,8 @@
  * hard ceiling has a chance to run.
  */
 
+import { fleetMetricsResultSchema } from '../fleet/fleet-metrics-contract';
+
 type JsonObject = Record<string, unknown>;
 export type BurnDownPayloadTier = 'trimmed' | 'standard';
 
@@ -365,6 +367,8 @@ export function shapeBurnDown(
   if (drainFlow) out.drainFlow = drainFlow;
   const issueOccurrences = projectIssueOccurrences(source.issueOccurrences);
   if (issueOccurrences) out.issueOccurrences = issueOccurrences;
+  const fleetMetrics = fleetMetricsResultSchema.safeParse(source.fleetMetrics);
+  if (fleetMetrics.success) out.fleetMetrics = fleetMetrics.data;
   const cohortAudit = projectCohortAudit(source.cohortAudit, caps.cohortRows, caps.title, caps.reason);
   if (cohortAudit) out.cohortAudit = cohortAudit;
   return out;

@@ -11,10 +11,12 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { listPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import {
+  explainIssueClaimFloors,
   listWorkItems,
   getWorkItem,
   readWorkItemClaimHoldProvenance,
   WORK_ITEMS_MAX_LIMIT,
+  type ClaimFloorAttribution,
   type WorkItem,
   type WorkItemKind,
 } from '../../work-items';
@@ -29,6 +31,24 @@ import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
+import {
+  FLEET_METRIC_ADMISSION_PARITY,
+  FLEET_METRIC_REMAINING_PRECEDENCE,
+  FLEET_METRIC_UNITS,
+  FLEET_METRIC_WRITERS,
+  FLEET_METRICS_SCHEMA_VERSION,
+  fleetMetricsResultSchema,
+  parseFleetMetricsResult,
+  type FleetMetricsResult,
+} from '../fleet/fleet-metrics-contract';
+import {
+  resolveFleetMetricScope,
+  selectFleetMetricCurrentItems,
+  selectFleetMetricFlowEvents,
+  type FleetMetricFlowMode,
+  type FleetMetricScopeResolution,
+  type ResolvedFleetMetricScope,
+} from '../fleet/fleet-metrics-scope';
 
 /**
  * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
@@ -260,6 +280,9 @@ export interface BurnDownResult {
   /** P-004: canonical stock and raw report flow are different units. This
    * exact ledger census is never derived from the capped work-item fetch. */
   issueOccurrences?: IssueOccurrenceCounts;
+  /** P-003 (fleet-spec-scoped-metrics-2026-08-21) — canonical, spec-scoped
+   * fleet-lifetime snapshot. Present only with window:'fleet-lifetime'. */
+  fleetMetrics?: FleetMetricsResult;
 }
 
 export type CohortBucket = 'terminal' | 'parked' | 'in-flight' | 'unclaimed' | 'missing';
@@ -457,6 +480,249 @@ export function liveOwnersFromPresence(
   return live;
 }
 
+type FleetActorPartition = {
+  fleet: number;
+  otherAgents: number;
+  system: number;
+  unattributed: number;
+  partitions: true;
+  membershipBasis: 'ever-members';
+};
+
+function isObservationLane(item: WorkItem): boolean {
+  const payload = item.payload;
+  return Boolean(
+    payload &&
+    typeof payload === 'object' &&
+    !Array.isArray(payload) &&
+    (payload as Record<string, unknown>).lane === 'observation',
+  );
+}
+
+function partitionActors(
+  items: readonly WorkItem[],
+  actor: (item: WorkItem) => string | null,
+  members: Set<string>,
+): FleetActorPartition {
+  const out: FleetActorPartition = {
+    fleet: 0,
+    otherAgents: 0,
+    system: 0,
+    unattributed: 0,
+    partitions: true,
+    membershipBasis: 'ever-members',
+  };
+  for (const item of items) {
+    const owner = actor(item);
+    const classification = classifyTerminalOwner(owner);
+    if (classification === 'unattributed') out.unattributed += 1;
+    else if (classification === 'system') out.system += 1;
+    else if (owner && members.has(owner)) out.fleet += 1;
+    else out.otherAgents += 1;
+  }
+  return out;
+}
+
+function authorityPartition(items: readonly WorkItem[]) {
+  const authority = {
+    lifecycleTerminal: items.length,
+    counted: 0,
+    committed: 0,
+    validated: 0,
+    proposed: 0,
+    pendingHuman: 0,
+    invalid: 0,
+    legacy: 0,
+    partitionsLifecycleTerminal: true as const,
+    countedRule: 'committed + validated + legacy' as const,
+  };
+  for (const item of items) {
+    const value = item.completionAuthority;
+    if (countsTowardBurnDown(value, true)) authority.counted += 1;
+    if (value === null) authority.legacy += 1;
+    else if (value === 'pending_human') authority.pendingHuman += 1;
+    else authority[value] += 1;
+  }
+  return authority;
+}
+
+function fleetMetricsUnavailable(args: {
+  fleet: string;
+  harness: string;
+  flowMode: FleetMetricFlowMode;
+  reason: string;
+  recoverVia: string;
+}): Extract<FleetMetricsResult, { ok: false }> {
+  const parsed = parseFleetMetricsResult({
+    ok: false,
+    schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+    error: 'fleet_metrics_unavailable',
+    reason: args.reason,
+    recoverVia: args.recoverVia,
+    requested: {
+      fleet: args.fleet,
+      harness: args.harness,
+      flowMode: args.flowMode,
+      window: 'fleet-lifetime',
+    },
+  });
+  if (parsed.ok) throw new Error('fleet-metrics unavailable envelope parsed as a snapshot');
+  return parsed;
+}
+
+/** Build the canonical snapshot after the shared resolver has fixed the fleet/spec/window. */
+export async function buildFleetMetricsResult(
+  resolution: FleetMetricScopeResolution,
+  items: readonly WorkItem[],
+  opts: {
+    issueOccurrences: IssueOccurrenceCounts;
+    sourceCapExhausted: boolean;
+    assignee?: string;
+    explainFloors?: typeof explainIssueClaimFloors;
+  },
+): Promise<FleetMetricsResult> {
+  if (!resolution.ok) return parseFleetMetricsResult(resolution);
+
+  const currentMatched = selectFleetMetricCurrentItems(resolution, items);
+  const observations = currentMatched.filter(isObservationLane);
+  const currentCanonical = currentMatched.filter((item) => item.family === 'issue' && !isObservationLane(item));
+  const windowStart = Date.parse(resolution.scope.window.startAt);
+  const windowEnd = Date.parse(resolution.scope.window.endAt);
+  const inWindow = (value: string | null): value is string => {
+    if (!value) return false;
+    const time = Date.parse(value);
+    return Number.isFinite(time) && time >= windowStart && time < windowEnd;
+  };
+  const flowCandidates = items.filter((item) => item.family === 'issue' && !isObservationLane(item));
+  const openedSelection = selectFleetMetricFlowEvents(
+    resolution,
+    flowCandidates
+      .filter((item) => inWindow(item.createdAt))
+      .map((item) => ({ item, at: item.createdAt, value: item.createdBy })),
+  );
+  if (!openedSelection.ok) return parseFleetMetricsResult(openedSelection);
+  const terminalSelection = selectFleetMetricFlowEvents(
+    resolution,
+    flowCandidates
+      .filter((item) => TERMINAL_STATES.has(item.state) && inWindow(item.closedAt))
+      .map((item) => ({ item, at: item.closedAt!, value: item.terminalOwner })),
+  );
+  if (!terminalSelection.ok) return parseFleetMetricsResult(terminalSelection);
+
+  const openedItems = openedSelection.events.map((event) => event.item);
+  const terminalItems = terminalSelection.events.map((event) => event.item);
+  const remainingItems = currentCanonical.filter((item) => !TERMINAL_STATES.has(item.state));
+  const explainFloors = opts.explainFloors ?? explainIssueClaimFloors;
+  const floorRows = await explainFloors(
+    resolution.scope.harness,
+    remainingItems.map((item) => item.id),
+    { assignee: opts.assignee },
+  );
+  const floorById = new Map(floorRows.map((row: ClaimFloorAttribution) => [row.id, row]));
+  const buckets = {
+    needsHuman: 0,
+    blocked: 0,
+    claimHeld: 0,
+    inFlight: 0,
+    claimable: 0,
+    otherUnclaimable: 0,
+  };
+  for (const item of remainingItems) {
+    const floor = floorById.get(item.id);
+    if (
+      hasNeedsHuman(item) ||
+      item.state === 'needs-human' ||
+      item.state === 'needs_human' ||
+      floor?.refusedBy === 'needs-owner-action'
+    ) {
+      buckets.needsHuman += 1;
+    } else if (
+      item.state === 'blocked' ||
+      hasActiveExternalBlocker(item) ||
+      floor?.refusedBy === 'blocked-dep' ||
+      floor?.refusedBy === 'external-blocker'
+    ) {
+      buckets.blocked += 1;
+    } else if (hasClaimHold(item) || floor?.refusedBy === 'claim-hold') {
+      buckets.claimHeld += 1;
+    } else if (item.assignee) {
+      buckets.inFlight += 1;
+    } else if (floor?.admissible === true) {
+      buckets.claimable += 1;
+    } else {
+      buckets.otherUnclaimable += 1;
+    }
+  }
+
+  const members = new Set(resolution.everMemberIds);
+  const authority = authorityPartition(terminalItems);
+  const priorExactness = resolution.quality.exactness;
+  const quality = {
+    ...resolution.quality,
+    exactness: opts.sourceCapExhausted
+      ? {
+          status: 'truncated' as const,
+          sourceCap: WORK_ITEMS_MAX_LIMIT,
+          fetched: items.length,
+          reason:
+            `work-item source hit the ${WORK_ITEMS_MAX_LIMIT}-row cap before fleet-spec filtering` +
+            (priorExactness.status === 'truncated' ? `; ${priorExactness.reason}` : ''),
+          recoverVia:
+            priorExactness.status === 'truncated'
+              ? `narrow the work-item source reads; ${priorExactness.recoverVia}`
+              : 'narrow the work-item source into complete, non-overlapping reads',
+        }
+      : priorExactness,
+  };
+
+  return parseFleetMetricsResult({
+    ok: true,
+    snapshot: {
+      schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+      generatedAt: resolution.generatedAt,
+      scope: resolution.scope,
+      quality,
+      flow: {
+        opened: openedItems.length,
+        terminalLifecycle: terminalItems.length,
+        terminalCounted: authority.counted,
+        netLifecycle: openedItems.length - terminalItems.length,
+        netCounted: openedItems.length - authority.counted,
+        unit: FLEET_METRIC_UNITS.workItems,
+        openedBy: partitionActors(openedItems, (item) => item.createdBy, members),
+        terminalBy: partitionActors(terminalItems, (item) => item.terminalOwner, members),
+      },
+      remaining: {
+        total: remainingItems.length,
+        unit: FLEET_METRIC_UNITS.workItems,
+        buckets,
+        mutuallyExclusive: true,
+        precedence: [...FLEET_METRIC_REMAINING_PRECEDENCE],
+      },
+      authority,
+      issueUnits: {
+        canonicalBugs: currentCanonical.filter((item) => item.kind === 'bug').length,
+        observations: observations.length,
+        occurrences: opts.issueOccurrences.rawOccurrences,
+        duplicateOccurrences: opts.issueOccurrences.duplicateOccurrences,
+        separateUnits: true,
+        units: {
+          canonicalBugs: FLEET_METRIC_UNITS.canonicalBugs,
+          observations: FLEET_METRIC_UNITS.observations,
+          occurrences: FLEET_METRIC_UNITS.occurrences,
+          duplicateOccurrences: FLEET_METRIC_UNITS.duplicateOccurrences,
+        },
+        writers: {
+          canonicalBugs: FLEET_METRIC_WRITERS.workItems,
+          observations: FLEET_METRIC_WRITERS.workItems,
+          occurrences: FLEET_METRIC_WRITERS.occurrences,
+        },
+      },
+      admissionParity: FLEET_METRIC_ADMISSION_PARITY,
+    },
+  });
+}
+
 export function buildBurnDownResult(
   items: WorkItem[],
   liveOwners: Set<string>,
@@ -485,6 +751,8 @@ export function buildBurnDownResult(
      * must never zero out the aggregate census.
      */
     rowLimit?: number;
+    /** Captured on the raw source before a fence/spec filter can shrink it. */
+    sourceCapExhausted?: boolean;
   },
 ): BurnDownResult {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
@@ -497,7 +765,7 @@ export function buildBurnDownResult(
   // is indistinguishable from one the fetch capped. No `censusLimit` passed (the fixed
   // `ids`-cohort path) means the fetch was exact, never truncated.
   const censusLimit = opts.censusLimit ?? items.length;
-  const truncatedByLimit = opts.censusLimit != null && items.length >= opts.censusLimit;
+  const truncatedByLimit = opts.sourceCapExhausted ?? (opts.censusLimit != null && items.length >= opts.censusLimit);
   const terminal = {
     total: 0,
     done: 0,
@@ -752,7 +1020,7 @@ export default defineTool({
   name: 'work_items:burn_down',
   profile: 'engineer',
   description:
-    'One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID: terminal bucket, closure kind, structured-evidence verdict, completion ref, and reopen recommendation. Pass `since` for itemized closed/opened deltas; an active DRAIN caller also receives exact canonical bug-flow economics and breaker state for its DRAIN window. Replaces hand-joining work_items:list with coord:presence for drain/fleet leader wakes.',
+    "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID. Pass `since` for itemized closed/opened deltas. Pass `fleet` plus `window:'fleet-lifetime'` for the canonical stored-spec fleet snapshot (current-spec or at-event-spec flow), including explicit population, unit, exactness, and attribution metadata.",
   guidance: {
     when:
       'You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
@@ -822,6 +1090,29 @@ export default defineTool({
       .describe(
         'Scope the WHOLE census to a lane macro before counting — the same fence a claim spec composes, so a drain fleet measures burn-down over exactly the lane it may claim from. Never hand-roll a title regex for this.',
       ),
+    window: z
+      .literal('fleet-lifetime')
+      .optional()
+      .describe("Build the canonical stored-spec fleet snapshot over the fleet's creation-to-snapshot window."),
+    flowMode: z
+      .enum(['current-spec', 'at-event-spec'])
+      .optional()
+      .describe('How opened/terminal flow is filtered; defaults to current-spec. Remaining stock is always current-spec.'),
+  }).superRefine((args, ctx) => {
+    if (args.window && !args.fleet) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['fleet'],
+        message: "fleet is required with window:'fleet-lifetime'",
+      });
+    }
+    if (args.flowMode && !args.window) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['window'],
+        message: "window:'fleet-lifetime' is required with flowMode",
+      });
+    }
   }),
   result: z.object({
     ok: z.literal(true),
@@ -934,17 +1225,20 @@ export default defineTool({
       })
       .optional(),
     drainFlow: drainFlowSchema.optional(),
-    issueOccurrences: z.object({
-      canonicalClusters: z.number(),
-      rawOccurrences: z.number(),
-      duplicateOccurrences: z.number(),
-      units: z.object({
-        canonicalClusters: z.literal('distinct canonical work-item ids with occurrences'),
-        rawOccurrences: z.literal('append-only report rows'),
-        duplicateOccurrences: z.literal('report rows not creating a canonical item'),
-      }),
-      writer: z.literal('harness_shared.work_item_occurrences'),
-    }).optional(),
+    issueOccurrences: z
+      .object({
+        canonicalClusters: z.number(),
+        rawOccurrences: z.number(),
+        duplicateOccurrences: z.number(),
+        units: z.object({
+          canonicalClusters: z.literal('distinct canonical work-item ids with occurrences'),
+          rawOccurrences: z.literal('append-only report rows'),
+          duplicateOccurrences: z.literal('report rows not creating a canonical item'),
+        }),
+        writer: z.literal('harness_shared.work_item_occurrences'),
+      })
+      .optional(),
+    fleetMetrics: fleetMetricsResultSchema.optional(),
     cohortAudit: z
       .object({
         requested: z.number(),
@@ -973,7 +1267,14 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const requestedIds = args.ids ? [...new Set(args.ids)] : null;
-    const [items, presence] = await Promise.all([
+    const wantsFleetMetrics = args.window === 'fleet-lifetime';
+    const workspaceId = (ctx as { workspaceId?: string | null }).workspaceId ?? undefined;
+    const occurrenceWorkspaceId = resolveConcreteWorkspaceId(
+      workspaceId,
+      (ctx as { principal?: { workspaceId?: string | null } }).principal?.workspaceId,
+    );
+    const self = args.since || wantsFleetMetrics ? resolveSelfRef(ctx) : undefined;
+    const [items, presence, fleetMetricSourceItems] = await Promise.all([
       requestedIds
         ? Promise.all(requestedIds.map((id) => getWorkItem(id, args.harness))).then(
             (rows) => rows.filter((row): row is WorkItem => row != null),
@@ -991,17 +1292,18 @@ export default defineTool({
             // arrays only.
             limit: WORK_ITEMS_MAX_LIMIT,
           }),
-      listPresence({ workspaceId: (ctx as { workspaceId?: string | null }).workspaceId ?? undefined }).catch(() => []),
+      listPresence({ workspaceId }).catch(() => []),
+      wantsFleetMetrics
+        ? listWorkItems({
+            harness: args.harness,
+            includeObservations: true,
+            limit: WORK_ITEMS_MAX_LIMIT,
+          })
+        : Promise.resolve(null),
     ]);
     // EI-19313376980892266 fix B: resolve the fleet whose closes count as "ours".
     // Only worth a round-trip when `since` was passed (no `since` ⇒ no delta to split).
     // Best-effort throughout: an attribution read must never cost a leader the census.
-    const workspaceId = (ctx as { workspaceId?: string | null }).workspaceId ?? undefined;
-    const occurrenceWorkspaceId = resolveConcreteWorkspaceId(
-      workspaceId,
-      (ctx as { principal?: { workspaceId?: string | null } }).principal?.workspaceId,
-    );
-    const self = args.since ? resolveSelfRef(ctx) : undefined;
     const fleetScope = await (async () => {
       if (!args.since) return null;
       try {
@@ -1057,6 +1359,39 @@ export default defineTool({
       harnessSlug: args.harness,
       since: args.since ?? null,
     });
+    const fleetMetricResolution = await (async (): Promise<FleetMetricScopeResolution | null> => {
+      if (!wantsFleetMetrics) return null;
+      const flowMode = args.flowMode ?? 'current-spec';
+      if (!workspaceId) {
+        return fleetMetricsUnavailable({
+          fleet: args.fleet!,
+          harness: args.harness,
+          flowMode,
+          reason: 'workspace identity is unavailable',
+          recoverVia: 'retry from a workspace-scoped session',
+        });
+      }
+      return resolveFleetMetricScope({
+        workspaceId,
+        harness: args.harness,
+        fleet: args.fleet!,
+        flowMode,
+      });
+    })();
+    const fleetMetrics = await (async (): Promise<FleetMetricsResult | null> => {
+      if (!fleetMetricResolution || !fleetMetricSourceItems) return null;
+      if (!fleetMetricResolution.ok) return parseFleetMetricsResult(fleetMetricResolution);
+      const metricOccurrences = await readIssueOccurrenceCounts({
+        workspaceId: occurrenceWorkspaceId,
+        harnessSlug: args.harness,
+        since: fleetMetricResolution.scope.window.startAt,
+      });
+      return buildFleetMetricsResult(fleetMetricResolution, fleetMetricSourceItems, {
+        issueOccurrences: metricOccurrences,
+        sourceCapExhausted: fleetMetricSourceItems.length >= WORK_ITEMS_MAX_LIMIT,
+        assignee: self?.ownerId,
+      });
+    })();
     // P-011: apply the lane fence BEFORE the census is built, so every count in the
     // response (terminal.*/counts.*/deltaBy.*) describes the same population — a
     // fence applied to the row lists alone would leave the aggregates harness-wide
@@ -1075,6 +1410,7 @@ export default defineTool({
       // `limit` actually takes effect — bounding only the returned row lists.
       censusLimit: requestedIds ? undefined : WORK_ITEMS_MAX_LIMIT,
       rowLimit: args.limit,
+      sourceCapExhausted: requestedIds ? false : items.length >= WORK_ITEMS_MAX_LIMIT,
     });
     // The cohort audit deliberately reads the UNFENCED rows: it answers "what
     // happened to the exact IDs you named", and silently dropping a named ID because
@@ -1083,6 +1419,7 @@ export default defineTool({
     if (fenced) result.fence = fenced.report;
     if (drainFlow) result.drainFlow = drainFlow;
     result.issueOccurrences = issueOccurrences;
+    if (fleetMetrics) result.fleetMetrics = fleetMetrics;
     return {
       data: result,
     };

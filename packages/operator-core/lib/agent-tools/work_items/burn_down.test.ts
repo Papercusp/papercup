@@ -8,6 +8,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   listWorkItems: vi.fn(),
   getWorkItem: vi.fn(),
+  explainIssueClaimFloors: vi.fn(),
 }));
 
 vi.mock('../coordination/presence', async (importOriginal) => ({
@@ -19,13 +20,18 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 vi.mock('../../modes/store', () => ({ getModes: vi.fn() }));
 vi.mock('./drain-flow', () => ({ readDrainFlow: vi.fn() }));
 vi.mock('../../issue-occurrence-ledger', () => ({ readIssueOccurrenceCounts: vi.fn() }));
+vi.mock('../fleet/fleet-metrics-scope', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  resolveFleetMetricScope: vi.fn(),
+}));
 
-import { getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
+import { explainIssueClaimFloors, getWorkItem, listWorkItems, WORK_ITEMS_MAX_LIMIT } from '../../work-items';
 import { listPresence } from '../coordination/presence';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
 import {
+  buildFleetMetricsResult,
   buildBurnDownResult,
   buildCohortAudit,
   liveOwnersFromPresence,
@@ -33,14 +39,31 @@ import {
 } from './burn_down';
 import { shapeBurnDown } from './burn_down-shape';
 import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
+import { DEFAULT_CLAIM_SPEC, type ClaimSpec } from '../../scheduler/claim-spec';
+import {
+  FLEET_METRIC_COMPARISON_RULE,
+  FLEET_METRIC_POPULATIONS,
+  FLEET_METRICS_SCHEMA_VERSION,
+} from '../fleet/fleet-metrics-contract';
+import {
+  resolveFleetMetricScope,
+  type FleetMetricFlowMode,
+  type ResolvedFleetMetricScope,
+} from '../fleet/fleet-metrics-scope';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
 const mockGetWorkItem = vi.mocked(getWorkItem);
+const mockExplainIssueClaimFloors = vi.mocked(explainIssueClaimFloors);
 const mockListPresence = vi.mocked(listPresence);
 const mockGetModes = vi.mocked(getModes);
 const mockReadDrainFlow = vi.mocked(readDrainFlow);
 const mockReadIssueOccurrenceCounts = vi.mocked(readIssueOccurrenceCounts);
+const mockResolveFleetMetricScope = vi.mocked(resolveFleetMetricScope);
 const tool = (await import('./burn_down')).default;
+
+const FLEET_START = '2026-08-20T12:00:00.000Z';
+const FLEET_REVISION_AT = '2026-08-21T00:00:00.000Z';
+const FLEET_END = '2026-08-21T12:00:00.000Z';
 
 const drainFlowReport: DrainFlowReport = {
   exact: true,
@@ -111,6 +134,162 @@ function item(overrides: Partial<WorkItem>): WorkItem {
   };
 }
 
+function fleetSpec(revision: number, ids: string[]): ClaimSpec {
+  return {
+    ...DEFAULT_CLAIM_SPEC,
+    specId: 'fleet-lane',
+    revision,
+    view: {
+      ...DEFAULT_CLAIM_SPEC.view,
+      filter: { field: 'id', op: 'in', value: ids },
+    },
+  };
+}
+
+function fleetResolution(flowMode: FleetMetricFlowMode): ResolvedFleetMetricScope {
+  const current = fleetSpec(2, ['WI-new', 'WI-remaining', 'OBS-new']);
+  const currentSegment = {
+    revision: 2,
+    spec: current,
+    startAt: FLEET_REVISION_AT,
+    endAt: FLEET_END,
+    source: 'current' as const,
+    cause: 'current' as const,
+  };
+  return {
+    ok: true,
+    schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+    generatedAt: FLEET_END,
+    scope: {
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      window: {
+        kind: 'fleet-lifetime',
+        startAt: FLEET_START,
+        endAt: FLEET_END,
+        startInclusive: true,
+        endExclusive: true,
+        startSource: 'fleet-created-at',
+        endSource: 'snapshot-generated-at',
+      },
+      stock: {
+        mode: 'current-spec',
+        specId: 'fleet-lane',
+        revision: 2,
+        source: 'fleet',
+        appliedTo: 'all-counted-items',
+      },
+      flow:
+        flowMode === 'current-spec'
+          ? {
+              mode: 'current-spec',
+              specId: 'fleet-lane',
+              revision: 2,
+              source: 'fleet',
+              appliedTo: 'all-counted-items',
+            }
+          : {
+              mode: 'at-event-spec',
+              specId: 'fleet-lane',
+              currentRevision: 2,
+              revision: 'effective-at-event',
+              historyWriter: 'harness_shared.cup_claim_spec_revisions',
+              appliedTo: 'each-event-at-its-event-time',
+              missingRevision: 'unavailable-never-current-fallback',
+            },
+      attribution: {
+        membership: FLEET_METRIC_POPULATIONS.everMembers,
+        writer: 'harness_shared.fleet_membership_events',
+        memberCount: 2,
+        rule: 'actor owner id is in the fleet append-only ever-member cohort',
+      },
+      population: {
+        currentRunnableRoster: FLEET_METRIC_POPULATIONS.currentRunnableRoster,
+        relevantRoster: FLEET_METRIC_POPULATIONS.relevantRoster,
+        attribution: FLEET_METRIC_POPULATIONS.everMembers,
+        stock: FLEET_METRIC_POPULATIONS.currentSpecWorkItems,
+        flow:
+          flowMode === 'current-spec'
+            ? FLEET_METRIC_POPULATIONS.currentSpecWorkItems
+            : FLEET_METRIC_POPULATIONS.atEventSpecWorkItemEvents,
+        canonicalBugs: FLEET_METRIC_POPULATIONS.canonicalBugs,
+        observations: FLEET_METRIC_POPULATIONS.observations,
+        occurrences: FLEET_METRIC_POPULATIONS.occurrences,
+        terminalAuthority: FLEET_METRIC_POPULATIONS.terminalAuthority,
+        comparisonRule: FLEET_METRIC_COMPARISON_RULE,
+      },
+    },
+    quality: {
+      exactness: { status: 'exact', sourceCap: null },
+      freshness: { status: 'fresh', measuredAt: FLEET_END, staleAfterMs: 60_000 },
+    },
+    claimSpec: {
+      current,
+      segments:
+        flowMode === 'current-spec'
+          ? [currentSegment]
+          : [
+              {
+                revision: 1,
+                spec: fleetSpec(1, ['WI-old']),
+                startAt: FLEET_START,
+                endAt: FLEET_REVISION_AT,
+                source: 'history',
+                cause: 'update',
+              },
+              currentSegment,
+            ],
+      historyReturned: flowMode === 'current-spec' ? 0 : 1,
+      historyMore: false,
+    },
+    currentRoster: { ownerIds: ['member-live'], writer: 'fleet-roster' },
+    everMemberIds: ['member-dead', 'member-live'],
+  };
+}
+
+function fleetMetricItems(): WorkItem[] {
+  return [
+    item({
+      id: 'WI-old',
+      kind: 'bug',
+      state: 'done',
+      createdBy: 'member-dead',
+      terminalOwner: 'member-dead',
+      completionAuthority: null,
+      createdAt: '2026-08-20T18:00:00.000Z',
+      updatedAt: '2026-08-20T20:00:00.000Z',
+      closedAt: '2026-08-20T20:00:00.000Z',
+    }),
+    item({
+      id: 'WI-new',
+      kind: 'bug',
+      state: 'done',
+      createdBy: 'member-live',
+      terminalOwner: 'member-live',
+      completionAuthority: 'committed',
+      createdAt: '2026-08-21T06:00:00.000Z',
+      updatedAt: '2026-08-21T08:00:00.000Z',
+      closedAt: '2026-08-21T08:00:00.000Z',
+    }),
+    item({
+      id: 'WI-remaining',
+      kind: 'bug',
+      assignee: 'su-other',
+      createdBy: 'su-other',
+      createdAt: '2026-08-21T07:00:00.000Z',
+      updatedAt: '2026-08-21T07:00:00.000Z',
+    }),
+    item({
+      id: 'OBS-new',
+      kind: 'bug',
+      payload: { lane: 'observation' },
+      createdBy: 'member-live',
+      createdAt: '2026-08-21T07:30:00.000Z',
+      updatedAt: '2026-08-21T07:30:00.000Z',
+    }),
+  ];
+}
+
 function callTool(args: Record<string, unknown>, ctx: Record<string, unknown> = {}) {
   return (
     tool as unknown as { handler: (a: unknown, c: unknown) => Promise<{ data: unknown }> }
@@ -121,6 +300,7 @@ describe('work_items:burn_down', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetWorkItem.mockResolvedValue(null);
+    mockExplainIssueClaimFloors.mockResolvedValue([]);
     mockGetModes.mockResolvedValue([]);
     mockReadDrainFlow.mockResolvedValue(drainFlowReport);
     mockReadIssueOccurrenceCounts.mockResolvedValue(issueOccurrenceCounts);
@@ -550,6 +730,142 @@ describe('work_items:burn_down', () => {
         inFlight: { shown: 10, total: 2000, truncated: true },
       }),
     }));
+  });
+
+  it('builds an exact current-spec fleet snapshot and keeps observations, occurrences, and canonical bugs separate', async () => {
+    const result = await buildFleetMetricsResult(fleetResolution('current-spec'), fleetMetricItems(), {
+      issueOccurrences: issueOccurrenceCounts,
+      sourceCapExhausted: false,
+      explainFloors: async (_harness, ids) =>
+        ids.map((id) => ({ id, admissible: true, refusedBy: null, detail: null })),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.scope.flow).toMatchObject({ mode: 'current-spec', revision: 2 });
+    expect(result.snapshot.quality.exactness).toEqual({ status: 'exact', sourceCap: null });
+    expect(result.snapshot.flow).toMatchObject({
+      opened: 2,
+      terminalLifecycle: 1,
+      terminalCounted: 1,
+      netLifecycle: 1,
+      netCounted: 1,
+      openedBy: { fleet: 1, otherAgents: 1, system: 0, unattributed: 0 },
+      terminalBy: { fleet: 1, otherAgents: 0, system: 0, unattributed: 0 },
+    });
+    expect(result.snapshot.remaining).toMatchObject({
+      total: 1,
+      buckets: { needsHuman: 0, blocked: 0, claimHeld: 0, inFlight: 1, claimable: 0, otherUnclaimable: 0 },
+    });
+    expect(result.snapshot.authority).toMatchObject({
+      lifecycleTerminal: 1,
+      counted: 1,
+      committed: 1,
+      legacy: 0,
+    });
+    expect(result.snapshot.issueUnits).toMatchObject({
+      canonicalBugs: 2,
+      observations: 1,
+      occurrences: 5,
+      duplicateOccurrences: 3,
+      separateUnits: true,
+    });
+  });
+
+  it('builds exact at-event-spec flow from the revision effective at each lifecycle event while stock stays current-spec', async () => {
+    const result = await buildFleetMetricsResult(fleetResolution('at-event-spec'), fleetMetricItems(), {
+      issueOccurrences: issueOccurrenceCounts,
+      sourceCapExhausted: false,
+      explainFloors: async (_harness, ids) =>
+        ids.map((id) => ({ id, admissible: true, refusedBy: null, detail: null })),
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.scope.flow).toMatchObject({
+      mode: 'at-event-spec',
+      revision: 'effective-at-event',
+      missingRevision: 'unavailable-never-current-fallback',
+    });
+    expect(result.snapshot.flow).toMatchObject({
+      opened: 3,
+      terminalLifecycle: 2,
+      terminalCounted: 2,
+      netLifecycle: 1,
+      netCounted: 1,
+      openedBy: { fleet: 2, otherAgents: 1, system: 0, unattributed: 0 },
+      terminalBy: { fleet: 2, otherAgents: 0, system: 0, unattributed: 0 },
+    });
+    expect(result.snapshot.remaining).toMatchObject({ total: 1, buckets: { inFlight: 1 } });
+    expect(result.snapshot.authority).toMatchObject({
+      lifecycleTerminal: 2,
+      counted: 2,
+      committed: 1,
+      legacy: 1,
+    });
+    expect(result.snapshot.issueUnits).toMatchObject({ canonicalBugs: 2, observations: 1 });
+  });
+
+  it('detects the raw work-item source cap before current-spec filtering can shrink the measured population', async () => {
+    const sourceRows = [
+      ...Array.from({ length: WORK_ITEMS_MAX_LIMIT - 1 }, (_, index) =>
+        item({
+          id: `WI-excluded-${index}`,
+          kind: 'bug',
+          createdAt: '2026-08-21T06:00:00.000Z',
+          updatedAt: '2026-08-21T06:00:00.000Z',
+        }),
+      ),
+      item({
+        id: 'WI-new',
+        kind: 'bug',
+        state: 'done',
+        createdBy: 'member-live',
+        terminalOwner: 'member-live',
+        completionAuthority: 'committed',
+        createdAt: '2026-08-21T06:00:00.000Z',
+        updatedAt: '2026-08-21T08:00:00.000Z',
+        closedAt: '2026-08-21T08:00:00.000Z',
+      }),
+    ];
+    mockListWorkItems.mockImplementation(async (args) => (args?.includeObservations ? sourceRows : []));
+    mockListPresence.mockResolvedValue([]);
+    mockResolveFleetMetricScope.mockResolvedValue(fleetResolution('current-spec'));
+
+    const res = await callTool(
+      { harness: 'papercusp', fleet: 'fleet-a', window: 'fleet-lifetime' },
+      { workspaceId: 'ws-test', isSuperuser: true, uiClientId: 'su-leader' },
+    );
+    const data = res.data as {
+      fleetMetrics: Awaited<ReturnType<typeof buildFleetMetricsResult>>;
+    };
+
+    expect(mockResolveFleetMetricScope).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      harness: 'papercusp',
+      fleet: 'fleet-a',
+      flowMode: 'current-spec',
+    });
+    expect(mockListWorkItems).toHaveBeenCalledWith({
+      harness: 'papercusp',
+      includeObservations: true,
+      limit: WORK_ITEMS_MAX_LIMIT,
+    });
+    expect(data.fleetMetrics.ok).toBe(true);
+    if (!data.fleetMetrics.ok) return;
+    expect(data.fleetMetrics.snapshot.flow).toMatchObject({ opened: 1, terminalLifecycle: 1 });
+    expect(data.fleetMetrics.snapshot.quality.exactness).toMatchObject({
+      status: 'truncated',
+      sourceCap: WORK_ITEMS_MAX_LIMIT,
+      fetched: WORK_ITEMS_MAX_LIMIT,
+      reason: expect.stringContaining('before fleet-spec filtering'),
+    });
+    expect(shapeBurnDown(res.data, 'trimmed')).toMatchObject({
+      fleetMetrics: {
+        ok: true,
+        snapshot: { quality: { exactness: { status: 'truncated' } } },
+      },
+    });
   });
 
   // ---------------------------------------------------------------------------
