@@ -227,6 +227,10 @@ function projectWorkItem(
     state: w.state ?? null,
     title: clip(w.title, caps.title),
     severity: w.severity ?? null,
+    // P-004 / EI-21045022565500932: lifecycle terminality and completion authority are
+    // orthogonal. Keep the authority verdict in the reduced identity projection so a
+    // trimmed read cannot turn a verified terminal close into an apparent evidence gap.
+    completionAuthority: w.completionAuthority ?? null,
     assignee: w.assignee ?? null,
     takenAt: w.takenAt ?? null,
     lastProgressAt: w.lastProgressAt ?? null,

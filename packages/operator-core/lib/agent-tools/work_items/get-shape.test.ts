@@ -117,6 +117,26 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(r.holder).toMatchObject({ agreement: "divergent" });
   });
 
+  it("keeps the terminal completion-authority verdict in the reduced item identity", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          workItem: {
+            id: "WI-1",
+            kind: "bug",
+            state: "done",
+            title: "a completed item",
+            completionAuthority: "committed",
+          },
+          checkpoint: null,
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+
+    expect((out.results[0].workItem as Record<string, unknown>).completionAuthority).toBe("committed");
+  });
+
   it("caps lifecycle events but NEVER drops the coverage/flags that qualify them", () => {
     const events = Array.from({ length: 30 }, (_, i) => ({ at: `t${i}`, kind: "blocked" }));
     const out = shapeWorkItemsGet(
