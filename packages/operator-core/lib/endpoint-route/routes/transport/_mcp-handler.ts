@@ -2797,7 +2797,43 @@ const handler = createMcpHandler(
           // (EI-6982). See dispatchWithSynthesizedTx for the P-062 crossWorkspace
           // rationale (admin handle, checked before needsTx, covers the '*'
           // discovery case).
-          const dispatched = await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, runDispatch);
+          // Principal synthesis and workspace acquisition happen outside
+          // runDispatchStack. If either fails, the generic dispatcher never
+          // initializes its telemetry execution state, so preserve one row for
+          // the pre-dispatch failure without duplicating rows after dispatch
+          // has started.
+          let dispatchStarted = false;
+          const dispatched = await (async (): Promise<McpCallResult> => {
+            try {
+              return await dispatchWithSynthesizedTx(projected, dispatchSpawnCtx, baseCtx, async (ctx) => {
+                dispatchStarted = true;
+                return runDispatch(ctx);
+              });
+            } catch (error) {
+              if (!dispatchStarted) {
+                try {
+                  const roleQuota = baseCtx.role ? projected.rolesQuota?.[baseCtx.role] : undefined;
+                  await PROJECTED_DEPS.recordInvocation?.({
+                    toolName,
+                    pluginName: projected.pluginName,
+                    ctx: baseCtx,
+                    windowKey:
+                      PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
+                    durationMs: Date.now() - callStartedAt,
+                    status: 'error',
+                    errorMessage: error instanceof Error ? error.message : String(error),
+                    args: dispatchArgs,
+                  });
+                } catch (telemetryError) {
+                  console.warn(
+                    `[mcp-handler] pre-dispatch telemetry failed for ${toolName}: ` +
+                      (telemetryError instanceof Error ? telemetryError.message : String(telemetryError)),
+                  );
+                }
+              }
+              throw error;
+            }
+          })();
           // EI-19301511582594101: persist the replay receipt HERE — after
           // dispatchWithSynthesizedTx has resolved, which is after the tool's
           // `withWorkspace` transaction has COMMITTED, and still before this result is

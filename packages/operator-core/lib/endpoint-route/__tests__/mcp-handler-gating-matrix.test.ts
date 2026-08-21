@@ -72,6 +72,8 @@ const h = vi.hoisted(() => {
     withWorkspaceCalls: [] as string[],
     /** Make the next workspace acquisition fail before the callback starts. */
     failNextWorkspaceAcquire: false,
+    /** Inject a non-retryable acquisition failure before the callback starts. */
+    workspaceAcquireError: null as Error | null,
     /**
      * EI-19301511582594101 seam. postgres-js `sql.begin` COMMITs when its callback
      * resolves, so a failing COMMIT surfaces as a rejection from withWorkspace
@@ -104,6 +106,7 @@ const h = vi.hoisted(() => {
       ctx: { role?: string; runId?: string | null; spawnId?: string; harnessSlug?: string };
       args?: unknown;
       metadataJson?: Record<string, unknown> | null;
+      errorMessage?: string | null;
     }>,
     handlers: new Map<string, (req: unknown, extra: unknown) => Promise<unknown>>(),
     verifySpawnParams: vi.fn(
@@ -155,6 +158,11 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     getOrgPg: () => ({ sql: h.fakeSql }),
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
+      if (h.workspaceAcquireError) {
+        const error = h.workspaceAcquireError;
+        h.workspaceAcquireError = null;
+        throw error;
+      }
       if (h.failNextWorkspaceAcquire) {
         h.failNextWorkspaceAcquire = false;
         const Deadline = actual.DbCallDeadlineError as new (
@@ -568,6 +576,7 @@ beforeEach(() => {
   seen.length = 0;
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
+  h.workspaceAcquireError = null;
   h.commitFailure = null;
   h.txEvents.length = 0;
   h.replayStores.length = 0;
@@ -1769,6 +1778,25 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(h.withWorkspaceCalls).toEqual(['ws-test', 'ws-test']);
     expect(seen).toHaveLength(1);
     expect(seen[0]?.args).toEqual({ a: 1 });
+  });
+
+  it('records a non-retryable pre-dispatch acquisition deadline without running the handler', async () => {
+    const { DbCallDeadlineError } = await import('@papercusp/db-org');
+    const deadline = new DbCallDeadlineError('withWorkspace:acquire(app)', 45_000, 45_000);
+    h.workspaceAcquireError = deadline;
+
+    await expect(
+      callTool('gatingtest:scoped', { a: 1 }, extraFor(signedUrl({ spawn: 'spawn-pre-dispatch' }))),
+    ).rejects.toBe(deadline);
+
+    expect(seen).toEqual([]);
+    expect(h.invocations).toHaveLength(1);
+    expect(h.invocations[0]).toMatchObject({
+      toolName: 'gatingtest:scoped',
+      status: 'error',
+      args: { a: 1 },
+      errorMessage: deadline.message,
+    });
   });
 
   it('delta proxy: a generic repeated MCP read sends an internal cursor and reconstructs a full result', async () => {
