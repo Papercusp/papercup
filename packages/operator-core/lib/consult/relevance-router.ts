@@ -325,23 +325,23 @@ export async function routeConsult(
       lexicalRows = (await sql`
         SELECT owner, session_id, turn_idx,
                COALESCE(ts, ingested_at) AS ts,
-               ts_rank_cd(text_tsv, plainto_tsquery('english', ${params.question})) AS lexical_rank
+               ts_rank_cd(text_tsv, plainto_tsquery('english', ${params.question})) AS "lexicalRank"
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${params.workspaceId} OR workspace_id = 'default')
            AND owner IS NOT NULL
            AND owner <> ALL(${[params.requesterId, ...(params.excludeOwners ?? [])]}::text[])
            AND (turn_origin_verdict IS NULL OR turn_origin_verdict <> 'machine-surface')
            AND text_tsv @@ plainto_tsquery('english', ${params.question})
-      ORDER BY lexical_rank DESC, COALESCE(ts, ingested_at) DESC
+      ORDER BY "lexicalRank" DESC, COALESCE(ts, ingested_at) DESC
          LIMIT ${turnLimit}
       `) as unknown as Array<{
         owner: string;
         session_id: string;
         turn_idx: number;
         ts: string | Date | null;
-        lexical_rank: number;
+        lexicalRank: number;
       }>;
-      lexicalRows = lexicalRows.map((r) => ({ ...r, lexicalRank: Number(r.lexical_rank) }));
+      lexicalRows = lexicalRows.map((r) => ({ ...r, lexicalRank: Number(r.lexicalRank) }));
     } catch {
       // A partially migrated host may not have text_tsv yet. The semantic
       // instrument is already degraded, so preserve an honest empty result and
