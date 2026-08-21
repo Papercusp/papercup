@@ -40,7 +40,8 @@ vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
 vi.mock('../../projected-tool-deps', () => ({ PROJECTED_DEPS: {} }));
 vi.mock('@papercusp/scheduled-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/scheduled-registry')>()),
-  managedSetInterval: () => ({ unref: () => {} }) }));
+  managedSetInterval: () => ({ unref: () => {} }),
+}));
 vi.mock('./engine', () => ({
   emitAwaitedEvent: async (opts: { key: string; payload?: unknown; summary?: string }) => {
     h.emits.push({ key: opts.key, payload: opts.payload, summary: opts.summary });
@@ -55,13 +56,8 @@ const store = await import('./store');
 const { createOrgTestDb } = await import('../../../test/_org-test-db');
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const MIGRATION_871_ARMED = resolve(
-  HERE,
-  '../../../../../libs/papercusp/libs/db/sql/871-lifecycle-bound-watches.sql',
-);
-const MIGRATION_871 = existsSync(MIGRATION_871_ARMED)
-  ? MIGRATION_871_ARMED
-  : `${MIGRATION_871_ARMED}.DRAFT`;
+const MIGRATION_871_ARMED = resolve(HERE, '../../../../../libs/papercusp/libs/db/sql/871-lifecycle-bound-watches.sql');
+const MIGRATION_871 = existsSync(MIGRATION_871_ARMED) ? MIGRATION_871_ARMED : `${MIGRATION_871_ARMED}.DRAFT`;
 
 let seq = 0;
 /** Register the paired await FIRST (the GC invariant), then the watch row. */
@@ -161,9 +157,10 @@ describe('predicate watches (real PG)', () => {
     pw.configurePredicateDispatch(async () => {
       throw new Error('resolver unavailable');
     });
-    await expect(
-      pw.evalPredicateWatch((await pw.getPredicateWatch(errored.row.id))!),
-    ).resolves.toMatchObject({ fired: true, deactivated: true });
+    await expect(pw.evalPredicateWatch((await pw.getPredicateWatch(errored.row.id))!)).resolves.toMatchObject({
+      fired: true,
+      deactivated: true,
+    });
     expect(h.emits.at(-1)?.payload).toMatchObject({
       predicateError: 'resolver unavailable',
       bound_to: binding,
@@ -176,13 +173,11 @@ describe('predicate watches (real PG)', () => {
     await expect(h.sql`
       UPDATE harness_shared.predicate_watches
          SET bound_to = ${{ kind: 'fleet-leadership', ref: '   ' }}
-       WHERE id = ${row.id}`
-    ).rejects.toThrow(/predicate_watches_bound_to_shape/);
+       WHERE id = ${row.id}`).rejects.toThrow(/predicate_watches_bound_to_shape/);
     await expect(h.sql`
       UPDATE harness_shared.event_awaits
          SET bound_to = ${{ kind: 'work-item', ref: 'WI-1', extra: true }}
-       WHERE id = ${awaitRow.id}`
-    ).rejects.toThrow(/event_awaits_bound_to_shape/);
+       WHERE id = ${awaitRow.id}`).rejects.toThrow(/event_awaits_bound_to_shape/);
   });
 
   it('claim-by-stamp: a backdated row is claimed exactly once per window', async () => {
@@ -301,44 +296,106 @@ describe('predicate watches (real PG)', () => {
     // path here would spuriously match a STALE row left over from an earlier test
     // rather than proving this test's own dedup logic.
     let dedupSeq = 0;
-    const scopeFor = (path: string) => ({ workspaceId: 'ws-pw-test', role: 'su', harnessSlug: null, tool: 'fake:read', args: {}, path });
+    const scopeFor = (path: string) => ({
+      workspaceId: 'ws-pw-test',
+      role: 'su',
+      harnessSlug: null,
+      tool: 'fake:read',
+      args: {},
+      path,
+    });
 
     it('matches an existing ACTIVE row with the identical scope + predicate + cardinality', async () => {
       const path = `dedup-probe-${++dedupSeq}`;
       const { row } = await seedWatch({ once: true, op: 'gt', value: 127, intervalSec: 30, path });
-      const match = await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gt', value: 127, intervalSec: 30, once: true });
+      const match = await pw.findMatchingActivePredicateWatch({
+        ...scopeFor(path),
+        op: 'gt',
+        value: 127,
+        intervalSec: 30,
+        once: true,
+      });
       expect(match?.id).toBe(row.id);
     });
 
-    it('does NOT match a different role — the poll dispatches under the registrant\'s authority envelope', async () => {
+    it("does NOT match a different role — the poll dispatches under the registrant's authority envelope", async () => {
       const path = `dedup-probe-${++dedupSeq}`;
       await seedWatch({ once: true, op: 'gt', value: 127, intervalSec: 30, path });
-      const match = await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), role: 'worker', op: 'gt', value: 127, intervalSec: 30, once: true });
+      const match = await pw.findMatchingActivePredicateWatch({
+        ...scopeFor(path),
+        role: 'worker',
+        op: 'gt',
+        value: 127,
+        intervalSec: 30,
+        once: true,
+      });
       expect(match).toBeNull();
     });
 
-    it('does NOT match a different `once` cardinality (the shared row\'s `once` governs deactivate-on-fire for everyone on it)', async () => {
+    it("does NOT match a different `once` cardinality (the shared row's `once` governs deactivate-on-fire for everyone on it)", async () => {
       const path = `dedup-probe-${++dedupSeq}`;
       await seedWatch({ once: true, op: 'gt', value: 127, intervalSec: 30, path });
-      const match = await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gt', value: 127, intervalSec: 30, once: false });
+      const match = await pw.findMatchingActivePredicateWatch({
+        ...scopeFor(path),
+        op: 'gt',
+        value: 127,
+        intervalSec: 30,
+        once: false,
+      });
       expect(match).toBeNull();
     });
 
     it('does NOT match a different interval_sec, op, or value', async () => {
       const path = `dedup-probe-${++dedupSeq}`;
       await seedWatch({ once: true, op: 'gt', value: 127, intervalSec: 30, path });
-      expect(await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gt', value: 127, intervalSec: 60, once: true })).toBeNull();
-      expect(await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gte', value: 127, intervalSec: 30, once: true })).toBeNull();
-      expect(await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gt', value: 999, intervalSec: 30, once: true })).toBeNull();
+      expect(
+        await pw.findMatchingActivePredicateWatch({
+          ...scopeFor(path),
+          op: 'gt',
+          value: 127,
+          intervalSec: 60,
+          once: true,
+        }),
+      ).toBeNull();
+      expect(
+        await pw.findMatchingActivePredicateWatch({
+          ...scopeFor(path),
+          op: 'gte',
+          value: 127,
+          intervalSec: 30,
+          once: true,
+        }),
+      ).toBeNull();
+      expect(
+        await pw.findMatchingActivePredicateWatch({
+          ...scopeFor(path),
+          op: 'gt',
+          value: 999,
+          intervalSec: 30,
+          once: true,
+        }),
+      ).toBeNull();
     });
 
     it('does NOT match a DEACTIVATED row (a GC/error/fired row is not joinable)', async () => {
       const path = `dedup-probe-${++dedupSeq}`;
-      const { row, awaitRow, subscriber } = await seedWatch({ once: true, op: 'gt', value: 127, intervalSec: 30, path });
+      const { row, awaitRow, subscriber } = await seedWatch({
+        once: true,
+        op: 'gt',
+        value: 127,
+        intervalSec: 30,
+        path,
+      });
       await store.cancelAwait({ awaitId: awaitRow.id, subscriberId: subscriber });
       await pw.gcOrphanedPredicateWatches();
       expect((await pw.getPredicateWatch(row.id))!.active).toBe(false);
-      const match = await pw.findMatchingActivePredicateWatch({ ...scopeFor(path), op: 'gt', value: 127, intervalSec: 30, once: true });
+      const match = await pw.findMatchingActivePredicateWatch({
+        ...scopeFor(path),
+        op: 'gt',
+        value: 127,
+        intervalSec: 30,
+        once: true,
+      });
       expect(match).toBeNull();
     });
   });
@@ -387,10 +444,7 @@ describe('predicate watches (real PG)', () => {
       opts: { of?: 'value' | 'material'; op?: PredicateOp; value?: unknown; once?: boolean },
     ) {
       if (spec.changeSignal.kind !== 'poll') throw new Error('P-005 fixture needs a poll cell');
-      const path =
-        opts.of === 'material'
-          ? (spec.materiality as { path: string }).path
-          : spec.changeSignal.path;
+      const path = opts.of === 'material' ? (spec.materiality as { path: string }).path : spec.changeSignal.path;
       const id = globalThis.crypto.randomUUID();
       const eventKey = `predicate:${id}`;
       const subscriber = `su-cell-${++seq}`;
@@ -491,9 +545,7 @@ describe('predicate watches (real PG)', () => {
       const spec = GATE_CANDIDATE_CELL;
       const materialPath = (spec.materiality as { path: string }).path;
       const headlinePath = (spec.changeSignal as { path: string }).path;
-      expect(materialPath, 'the fixture needs two DIFFERENT paths to say anything').not.toBe(
-        headlinePath,
-      );
+      expect(materialPath, 'the fixture needs two DIFFERENT paths to say anything').not.toBe(headlinePath);
 
       const { row } = await seedCellWatch(spec, { of: 'material', op: 'eq', value: true });
 

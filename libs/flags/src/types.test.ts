@@ -68,6 +68,13 @@ describe('flag registry invariants', () => {
       FLAGS.GATEWAY_MAINTENANCE_CARRY
     ]).toBe(false);
   });
+
+  it('fleet-leader profile auto-arm defaults ON with an explicit false kill-switch', () => {
+    expect(FLAG_DEFAULTS[FLAGS.FLEET_LEADER_PROFILE_AUTO_ARM]).toBe(true);
+    expect(resolveWithDefaults({ [FLAGS.FLEET_LEADER_PROFILE_AUTO_ARM]: false })[
+      FLAGS.FLEET_LEADER_PROFILE_AUTO_ARM
+    ]).toBe(false);
+  });
 });
 
 describe('resolveWithDefaults', () => {

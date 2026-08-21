@@ -870,6 +870,13 @@ export const FLAGS = {
   // consume-edges live proof. The decider's default deps fail-DARK on a flag-IO
   // error so a hiccup can never arm autonomy. Surfaced loudly as the pending P-092 flip.
   MUG_AUTONOMY_ARMED: "papercusp-queen-autonomy-armed",
+  // state-plane-interest-and-hardening-2026-08-21 P-014: mechanize the
+  // transition watches the fleet-leader persona already mandates. Default ON
+  // (derived FLAG_DEFAULTS — not in DARK_FLAGS): OFF is the reversible
+  // kill-switch for profile-driven auto-arm only; AUTO mode, the leader monitor
+  // loop, and inbox wake remain unchanged. A flag-read error fails SAFE to ON so
+  // a transient flag backend miss cannot silently leave a leader monitoring blind.
+  FLEET_LEADER_PROFILE_AUTO_ARM: "papercusp-fleet-leader-profile-auto-arm",
   // queen-autonomy-and-selffeed-fix-2026-06-15 Phase 2 (P-001/P-002): the OWNER
   // FULL-AUTONOMY grant — the reversible knob the owner flips to let the Queen
   // auto-decide the ENTIRE residue the per-category ceilings can't reach. When ON,

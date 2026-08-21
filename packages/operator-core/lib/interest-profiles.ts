@@ -151,14 +151,14 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
   {
     context: 'fleet-leader',
     watch: { kind: 'event', family: 'fleet-context-critical' },
-    tier: 'suggest',
+    tier: 'auto-arm',
     of: ['fleet.slug'],
     why: 'A member near its context ceiling is about to lose state. The leader can have it checkpoint before that happens rather than after.',
   },
   {
     context: 'fleet-leader',
     watch: { kind: 'event', family: 'fleet-claim-released' },
-    tier: 'fold',
+    tier: 'auto-arm',
     of: ['fleet.slug'],
     why: 'A released claim is work that just became re-placeable; folding it into the leader brief is what makes reclaiming orphans a read rather than a sweep.',
   },

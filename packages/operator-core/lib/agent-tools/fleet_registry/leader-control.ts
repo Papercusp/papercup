@@ -12,17 +12,135 @@ import { buildLoopWakePrompt, getLoopStatus, materializeLoop, type LoopStatus } 
 import { cancelAwait, listActiveAwaits, registerAwait, retireLifecycleBoundWatches } from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
+import {
+  findMatchingActivePredicateWatch,
+  registerPredicateWatch,
+  startPredicateWatchPoller,
+} from '../../events/await/predicate-watch';
+import { buildKey, catalogEntry } from '../../events/await/catalog';
+import { getCell, type CellReader } from '../../cell-registry';
+import { interestProfilesFor, type InterestProfileRow } from '../../interest-profiles';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { getPresence } from '../coordination/presence';
 
 export const LEADER_MONITOR_INTERVAL_SEC = 60;
+/** One leader/profile may never manufacture an unbounded interrupt fan-out. */
+export const LEADER_PROFILE_AUTO_ARM_CAP = 16;
 
-export const LEADER_TRANSITION_EVENTS = [
-  'member-dead',
-  'claim-released',
-  'item-completed',
-  'context-critical',
-  'drained',
-] as const;
+export type LeaderAutoArmTarget =
+  | {
+      kind: 'event';
+      label: string;
+      eventKey: string;
+      row: InterestProfileRow;
+    }
+  | {
+      kind: 'cell';
+      label: string;
+      cell: string;
+      predicate: {
+        tool: string;
+        args: Record<string, unknown>;
+        path: string;
+        op: NonNullable<InterestProfileRow['on']>['op'];
+        value?: unknown;
+      };
+      row: InterestProfileRow;
+    };
+
+export interface LeaderAutoArmResolution {
+  targets: LeaderAutoArmTarget[];
+  omitted: LeaderAutoArmTarget[];
+}
+
+/** Pure, reusable bound used by the resolver and directly falsifiable in tests. */
+export function capLeaderProfileTargets<T>(targets: readonly T[], cap = LEADER_PROFILE_AUTO_ARM_CAP): {
+  selected: T[];
+  omitted: T[];
+} {
+  if (!Number.isSafeInteger(cap) || cap < 1) throw new Error(`leader profile auto-arm cap must be a positive integer, got ${cap}`);
+  return { selected: targets.slice(0, cap), omitted: targets.slice(cap) };
+}
+
+function profileSubject(field: string, fleetSlug: string): string {
+  if (field === 'fleet.slug') return fleetSlug;
+  throw new Error(`fleet-leader auto-arm cannot resolve profile subject '${field}'`);
+}
+
+/**
+ * Resolve the fleet-leader profile into concrete event keys / predicate polls.
+ * The profile is the source of truth: no event family is repeated in this module.
+ */
+export function resolveFleetLeaderAutoArmTargets(input: {
+  fleetSlug: string;
+  reader: CellReader;
+  rows?: readonly InterestProfileRow[];
+  cap?: number;
+}): LeaderAutoArmResolution {
+  const rows = (input.rows ?? interestProfilesFor('fleet-leader')).filter(
+    (row) => row.context === 'fleet-leader' && row.tier === 'auto-arm',
+  );
+  const candidates: LeaderAutoArmTarget[] = rows.map((row) => {
+    if (row.watch.kind === 'event') {
+      const entry = catalogEntry(row.watch.family);
+      if (!entry) throw new Error(`fleet-leader auto-arm references unknown event family '${row.watch.family}'`);
+      const fields = row.of ?? [];
+      const params: Record<string, string | undefined> = {};
+      entry.params.forEach((param, index) => {
+        const field = fields[index];
+        params[param.name] = field == null ? undefined : profileSubject(field, input.fleetSlug);
+      });
+      const eventKey = buildKey(row.watch.family, params);
+      return { kind: 'event', label: eventKey, eventKey, row };
+    }
+
+    const spec = getCell(row.watch.cell, input.reader);
+    if (!spec) {
+      throw new Error(
+        `fleet-leader auto-arm cell '${row.watch.cell}' is absent for this leader (unregistered or outside its audience)`,
+      );
+    }
+    if (spec.changeSignal.kind !== 'poll') {
+      throw new Error(`fleet-leader auto-arm cell '${row.watch.cell}' is event-signalled, not poll-signalled`);
+    }
+    if (!row.on) throw new Error(`fleet-leader auto-arm cell '${row.watch.cell}' has no predicate`);
+
+    const args: Record<string, unknown> = {};
+    if (spec.callerRelativity.kind === 'parameter') {
+      const field = row.of?.[0];
+      if (!field) {
+        throw new Error(
+          `fleet-leader auto-arm cell '${row.watch.cell}' requires profile subject '${spec.callerRelativity.param}'`,
+        );
+      }
+      args[spec.callerRelativity.param] = profileSubject(field, input.fleetSlug);
+    } else if ((row.of?.length ?? 0) > 0) {
+      throw new Error(
+        `fleet-leader auto-arm cell '${row.watch.cell}' declares a subject but its cell is ${spec.callerRelativity.kind}`,
+      );
+    }
+
+    return {
+      kind: 'cell',
+      label: `cell:${row.watch.cell}`,
+      cell: row.watch.cell,
+      predicate: {
+        tool: spec.changeSignal.tool,
+        args,
+        path: spec.changeSignal.path,
+        op: row.on.op,
+        ...(row.on.value === undefined ? {} : { value: row.on.value }),
+      },
+      row,
+    };
+  });
+
+  // A duplicate declaration should not spend two cap slots or create two awaits.
+  const unique = [...new Map(candidates.map((target) => [target.label, target])).values()];
+  const { selected, omitted } = capLeaderProfileTargets(unique, input.cap);
+  return { targets: selected, omitted };
+}
 
 export interface LeaderControlOutcome {
   healthy: boolean;
@@ -37,13 +155,21 @@ export interface LeaderControlOutcome {
     error?: string;
   };
   watches: {
+    enabled: boolean;
     healthy: boolean;
     expected: string[];
     active: string[];
     added: string[];
     repaired: string[];
+    removed: number;
+    awaitIds: number[];
+    cap: number;
+    capped: boolean;
+    omitted: string[];
     wakeReachable: boolean;
     handleNote: string | null;
+    cancel: { tool: 'events:cancel'; args: { await_ids: number[] } } | null;
+    flag: { fallback: boolean; error?: string };
     error?: string;
   };
   inboxWake: { healthy: boolean; error?: string };
@@ -57,6 +183,7 @@ export interface EnsureFleetLeaderControlInput {
   harnessSlug?: string | null;
   planSlug?: string | null;
   carry?: 'warm' | 'cold';
+  agentRole?: string | null;
 }
 
 function concrete(value?: string | null): string | null {
@@ -68,10 +195,6 @@ function monitorGoal(fleetSlug: string, planSlug?: string | null): string {
   return planSlug
     ? `Continuously lead and monitor fleet ${fleetSlug} until plan ${planSlug} is terminal; repair unhealthy lanes and preserve completion evidence.`
     : `Continuously lead and monitor fleet ${fleetSlug}; repair dead, stalled, blocked, or evidence-deficient lanes until its active work is terminal.`;
-}
-
-function watchKeys(fleetSlug: string): string[] {
-  return LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:${fleetSlug}`);
 }
 
 /**
@@ -135,14 +258,13 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
   } catch (error) {
     errors.push(`loop-read: ${error instanceof Error ? error.message : String(error)}`);
   }
-  let harness = concrete(input.harnessSlug) ?? concrete(priorLoop?.harnessSlug);
-  if (!harness) {
-    try {
-      harness = concrete((await getPresence(input.ownerId))?.potSlug);
-    } catch {
-      harness = null;
-    }
+  let presence: Awaited<ReturnType<typeof getPresence>> = null;
+  try {
+    presence = await getPresence(input.ownerId);
+  } catch {
+    presence = null;
   }
+  const harness = concrete(input.harnessSlug) ?? concrete(priorLoop?.harnessSlug) ?? concrete(presence?.potSlug);
   const loop = {
     healthy: false,
     changed: false,
@@ -208,23 +330,95 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
     errors.push(`inbox-wake: ${inboxWake.error}`);
   }
 
-  const expected = watchKeys(input.fleetSlug);
   const watches = {
+    enabled: true,
     healthy: false,
-    expected,
+    expected: [] as string[],
     active: [] as string[],
     added: [] as string[],
     repaired: [] as string[],
+    removed: 0,
+    awaitIds: [] as number[],
+    cap: LEADER_PROFILE_AUTO_ARM_CAP,
+    capped: false,
+    omitted: [] as string[],
     wakeReachable: false,
     handleNote: null as string | null,
+    cancel: null,
+    flag: { fallback: false } as { fallback: boolean; error?: string },
   } as LeaderControlOutcome['watches'];
+
   try {
+    watches.enabled = await getFlag(FLAGS.FLEET_LEADER_PROFILE_AUTO_ARM, `fleet-leader:${input.ownerId}`);
+  } catch (error) {
+    // Existing behaviour is auto-arm ON. A flag-backend miss must not silently
+    // turn a leader blind, so preserve that state and disclose the fallback.
+    watches.enabled = true;
+    watches.flag.fallback = true;
+    watches.flag.error = error instanceof Error ? error.message : String(error);
+  }
+
+  const binding = { kind: 'fleet-leadership', ref: input.fleetSlug } as const;
+  try {
+    if (!watches.enabled) {
+      const retired = await retireLifecycleBoundWatches(binding, { ownerIds: [input.ownerId] });
+      watches.removed = retired.awaits + retired.predicateWatches;
+      repaired ||= watches.removed > 0;
+      watches.healthy = true;
+      return {
+        healthy: mode.healthy && loop.healthy && inboxWake.healthy,
+        repaired,
+        mode,
+        loop,
+        watches,
+        inboxWake,
+        errors,
+      };
+    }
+
+    const role = concrete(input.agentRole) ?? concrete(presence?.agentRole) ?? 'su';
+    const resolution = resolveFleetLeaderAutoArmTargets({
+      fleetSlug: input.fleetSlug,
+      reader: {
+        ownerId: input.ownerId,
+        roles: [role],
+        ...(harness ? { harnessSlug: harness } : {}),
+      },
+      cap: LEADER_PROFILE_AUTO_ARM_CAP,
+    });
+    watches.expected = resolution.targets.map((target) => target.label);
+    watches.capped = resolution.omitted.length > 0;
+    watches.omitted = resolution.omitted.map((target) => target.label);
+
     const current = await listActiveAwaits(input.ownerId);
     const { handle, note } = await captureWakeHandleForOwner(input.ownerId);
     watches.handleNote = note;
     watches.wakeReachable = handle != null;
+    const retainedAwaitIds = new Set<number>();
+    const cancelledAwaitIds = new Set<number>();
 
-    for (const eventKey of expected) {
+    for (const target of resolution.targets) {
+      let eventKey: string;
+      let predicateExists = true;
+      if (target.kind === 'event') {
+        eventKey = target.eventKey;
+      } else {
+        const existing = await findMatchingActivePredicateWatch({
+          workspaceId: input.workspaceId,
+          role,
+          harnessSlug: harness,
+          tool: target.predicate.tool,
+          args: target.predicate.args,
+          path: target.predicate.path,
+          op: target.predicate.op,
+          value: target.predicate.value,
+          intervalSec: LEADER_MONITOR_INTERVAL_SEC,
+          once: false,
+        });
+        predicateExists = existing != null;
+        eventKey = existing?.eventKey ?? `predicate:${globalThis.crypto.randomUUID()}`;
+      }
+
       const rows = current.filter((row) => row.eventKey === eventKey);
       const payloadFilter = selfExcludingPayloadFilter(eventKey, input.fleetSlug, input.ownerId);
       const healthy = rows.find(
@@ -237,30 +431,82 @@ export async function ensureFleetLeaderControl(input: EnsureFleetLeaderControlIn
           row.boundTo.ref === input.fleetSlug,
       );
       if (healthy) {
-        watches.active.push(eventKey);
+        watches.active.push(target.label);
+        watches.awaitIds.push(healthy.id);
+        retainedAwaitIds.add(healthy.id);
         continue;
       }
-      for (const row of rows) await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId });
+      const staleBoundRows = rows.filter(
+        (row) => row.boundTo?.kind === binding.kind && row.boundTo.ref === binding.ref,
+      );
+      for (const row of staleBoundRows) {
+        await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId });
+        cancelledAwaitIds.add(row.id);
+      }
       const row = await registerAwait({
         subscriberId: input.ownerId,
         eventKey,
         policy: 'wake',
-        note: `standing fleet leader transition watch (${input.fleetSlug})`,
+        note: `fleet-leader auto-arm (${target.label}): ${target.row.why}`,
         wakeHandle: handle,
         timeoutBehavior: 'wake',
         timeoutSec: null,
         once: false,
         minSleepSec: LEADER_MONITOR_INTERVAL_SEC,
         ...(payloadFilter == null ? {} : { payloadFilter }),
-        boundTo: { kind: 'fleet-leadership', ref: input.fleetSlug },
+        boundTo: binding,
       });
-      watches.active.push(eventKey);
-      if (rows.length > 0) watches.repaired.push(eventKey);
-      else watches.added.push(eventKey);
+      try {
+        if (target.kind === 'cell' && !predicateExists) {
+          startPredicateWatchPoller();
+          await registerPredicateWatch({
+            id: eventKey.slice('predicate:'.length),
+            workspaceId: input.workspaceId,
+            ownerId: input.ownerId,
+            role,
+            harnessSlug: harness,
+            eventKey,
+            tool: target.predicate.tool,
+            args: target.predicate.args,
+            path: target.predicate.path,
+            op: target.predicate.op,
+            value: target.predicate.value,
+            intervalSec: LEADER_MONITOR_INTERVAL_SEC,
+            once: false,
+            boundTo: binding,
+          });
+        }
+      } catch (error) {
+        await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId });
+        throw error;
+      }
+      watches.active.push(target.label);
+      watches.awaitIds.push(row.id);
+      retainedAwaitIds.add(row.id);
+      if (staleBoundRows.length > 0) watches.repaired.push(target.label);
+      else watches.added.push(target.label);
       repaired = true;
       if (row.wakeHandle == null) watches.wakeReachable = false;
     }
-    watches.healthy = watches.active.length === expected.length && watches.wakeReachable;
+
+    // Reconcile profile removals as well as additions. This is what retires the old
+    // hard-coded fleet:item-completed await without touching manual awaits on that key.
+    for (const row of current) {
+      if (
+        row.boundTo?.kind === binding.kind &&
+        row.boundTo.ref === binding.ref &&
+        !retainedAwaitIds.has(row.id) &&
+        !cancelledAwaitIds.has(row.id)
+      ) {
+        if (await cancelAwait({ awaitId: row.id, subscriberId: input.ownerId })) watches.removed += 1;
+      }
+    }
+    repaired ||= watches.removed > 0;
+    watches.cancel =
+      watches.awaitIds.length > 0
+        ? { tool: 'events:cancel', args: { await_ids: [...watches.awaitIds] } }
+        : null;
+    watches.healthy = watches.active.length === watches.expected.length && watches.wakeReachable;
     if (!watches.wakeReachable) {
       watches.error = 'transition watches are registered but no resumable wake handle is available yet';
       errors.push(`watches: ${watches.error}`);
