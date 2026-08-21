@@ -20,6 +20,7 @@ function read(over: Partial<JournalReadResult> = {}): JournalReadResult {
     window: { since: '-1h', until: null },
     units: [UNIT],
     journalAvailable: true,
+    backend: 'systemd',
     journalError: null,
     unitsUnknown: [],
     windowOutsideJournal: null,
