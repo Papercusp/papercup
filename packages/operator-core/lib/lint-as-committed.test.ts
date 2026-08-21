@@ -338,3 +338,47 @@ describe('the npm script is registered', () => {
     expect(pkg.scripts['lint:as-committed']).toBe('node scripts/lint-as-committed.mjs');
   });
 });
+
+describe('end-to-end — submodule content is materialised, not silently empty (EI-21033860565861795)', () => {
+  // WI-40086's exact repro: an isolated-tree run fabricated TS2307 for
+  // `libs/papercusp/libs/db/src/connection` because `git clone --no-checkout` +
+  // `checkout --detach` leaves a submodule as an EMPTY gitlink directory — the real
+  // checkpoint writer, and current-tree lint, both resolve the module fine. This is
+  // deliberately NOT unit-tested against a mock (see the file header): the bug lives
+  // in the extraction mechanism itself, so the only faithful regression is running
+  // the real CLI against this real, submodule-carrying repo and reading back what it
+  // actually materialised.
+  it('extracts REAL, committed content for a git-submodule path, not an empty gitlink dir', () => {
+    const subFile = 'libs/papercusp/libs/db/src/connection.ts';
+    // Sanity first: if this checkout itself doesn't have the submodule (or the file
+    // the bug's repro depends on), the assertions below would pass for the wrong
+    // reason — every path missing, not just the extracted one.
+    expect(existsSync(join(repoRoot, 'libs/papercusp', '.git'))).toBe(true);
+    expect(existsSync(join(repoRoot, subFile))).toBe(true);
+
+    const run = spawnSync('node', [scriptPath, '--', 'lint:no-owner-name-tags', '--keep'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    });
+    expect(run.status).toBe(0);
+    // Proof the new step actually engaged, not just that nothing crashed — a future
+    // edit that silently skips submodule init would still exit 0 on this lint (it
+    // never touches libs/papercusp), so this line is load-bearing, not decorative.
+    expect(run.stdout).toMatch(/initialised \d+ submodule\(s\) from local checkouts/);
+
+    const kept = run.stdout.match(/--keep: extracted tree left at (\S+)/);
+    expect(kept).not.toBeNull();
+    const workRoot = kept![1];
+    try {
+      const extracted = readFileSync(join(workRoot, subFile), 'utf8');
+      expect(extracted.length).toBeGreaterThan(0);
+      // Not just "some content" — the COMMITTED content: `--ref` defaults to HEAD, so
+      // this must byte-match `git show HEAD:<path>`, the exact bytes the release gate
+      // itself would see. That equality is the whole point of this tool.
+      const committed = execFileSync('git', ['show', `HEAD:${subFile}`], { cwd: repoRoot, encoding: 'utf8' });
+      expect(extracted).toBe(committed);
+    } finally {
+      rmSync(workRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
