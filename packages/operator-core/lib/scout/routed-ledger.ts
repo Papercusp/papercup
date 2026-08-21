@@ -95,6 +95,13 @@ export interface RecordRoutedIdeaInput {
    * scope:'mine' feedback reads (D-014), and per-agent ideation analytics (P-013).
    */
   createdBy?: string;
+  /**
+   * Insert the provenance only when `ideaId` has no ledger row yet. Agent-review
+   * enrollment uses this because an SU capture may already have recorded richer
+   * `origin:'su-ideate'` provenance for the same work item; enrolling that artifact
+   * for review must not rewrite the row into reviewer-owned provenance.
+   */
+  preserveExisting?: boolean;
 }
 
 /** Read/scope options shared by the ledger read paths. */
@@ -199,7 +206,8 @@ export function hiveFromPatternRefs(refs?: readonly string[]): string | undefine
 /**
  * Persist (upsert by idea_id) one routed idea's provenance. Called by P-007 once
  * it knows the created artifact's change-feed ref. Idempotent — re-routing the
- * same idea overwrites its row.
+ * same idea overwrites its row unless `preserveExisting` requests insert-only
+ * enrollment.
  */
 export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<void> {
   const { sql } = getOrgPg();
@@ -251,7 +259,8 @@ export async function recordRoutedIdea(input: RecordRoutedIdeaInput): Promise<vo
       addresses_pattern_refs = COALESCE(EXCLUDED.addresses_pattern_refs, scout_routed_ideas.addresses_pattern_refs),
       routed_at = EXCLUDED.routed_at,
       origin = EXCLUDED.origin,
-      created_by = COALESCE(EXCLUDED.created_by, scout_routed_ideas.created_by)`;
+      created_by = COALESCE(EXCLUDED.created_by, scout_routed_ideas.created_by)
+    WHERE ${!input.preserveExisting}`;
   // Push the Learning tab's Scout view (learning.scout reads this ledger).
   // Fire-and-forget via a lazy import so the PG seam (+ its tests) never
   // statically depends on the SSE layer; a missing SSE bus is a no-op.
