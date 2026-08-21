@@ -135,6 +135,7 @@ import {
   RELEASE_FIXER_DEDUP_MS,
   recordCheckpointVerdict,
   recordPendingCheckpointVerdict,
+  trackGateStall,
   buildCheckpointDetail,
   readFrozenCandidateRepairQueue,
   writeFrozenCandidateRepairQueue,
@@ -172,9 +173,7 @@ describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   });
 
   it('omits the age + failing-test clauses when there is no green history / no tests', () => {
-    const body = JSON.parse(
-      gateStallEscalationBody({ installSlug: 'x', consecutiveReds: 3, heldHrs: null, nowMs: 1 }),
-    );
+    const body = JSON.parse(gateStallEscalationBody({ installSlug: 'x', consecutiveReds: 3, heldHrs: null, nowMs: 1 }));
     expect(body.heldHrs).toBeNull();
     expect(body.candidate).toBeNull();
     expect(body.failingTests).toEqual([]);
@@ -232,9 +231,7 @@ describe('gateStallEscalationBody (P-003 silent-stall escalation)', () => {
   });
 
   it('renders ownership as null (and identically to before) when no owner was resolved', () => {
-    const body = JSON.parse(
-      gateStallEscalationBody({ installSlug: 'x', consecutiveReds: 3, heldHrs: null, nowMs: 1 }),
-    );
+    const body = JSON.parse(gateStallEscalationBody({ installSlug: 'x', consecutiveReds: 3, heldHrs: null, nowMs: 1 }));
     expect(body.ownership).toBeNull();
     expect(body.detail).not.toContain('OWNED');
     expect(body.detail).not.toContain('UNOWNED');
@@ -383,9 +380,7 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     // the deadline-blocked shape it excluded is precisely the one that froze `main` for ~40h.
 
     it('stale-candidate is record-only on the CLASSIFICATION alone — no refire required', () => {
-      expect(
-        classifyGateStallStatus('not-green', false, { classification: 'stale-candidate' }),
-      ).toBe('record-only');
+      expect(classifyGateStallStatus('not-green', false, { classification: 'stale-candidate' })).toBe('record-only');
       expect(
         classifyGateStallStatus('not-green', false, {
           classification: 'stale-candidate',
@@ -450,9 +445,7 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
 
     it('a REAL red still counts, refire or not — only a STALE candidate is a non-verdict', () => {
       for (const classification of ['real-red', 'unknown'] as const) {
-        expect(
-          classifyGateStallStatus('not-green', false, { classification, autoRefire: true }),
-        ).toBe('red');
+        expect(classifyGateStallStatus('not-green', false, { classification, autoRefire: true })).toBe('red');
         expect(classifyGateStallStatus('not-green', false, { classification })).toBe('red');
       }
     });
@@ -474,10 +467,41 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
   });
 });
 
+describe('EI-210830: serialized repair holds are visible without incrementing the red streak', () => {
+  it.each(['repair-in-progress', 'repair-staging-mismatch'])(
+    'records %s under gate_health.inconclusive only',
+    async (status) => {
+      fakeSql.unsafe.mockClear();
+
+      await trackGateStall(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        status,
+        'abc123def456789',
+        [],
+        '28a3a3d50258',
+        undefined,
+        `${status} detail`,
+      );
+
+      const update = fakeSql.unsafe.mock.calls.find(([query]) =>
+        String(query).includes("'{gate_health,inconclusive}'"),
+      );
+      expect(update).toBeDefined();
+      const payload = JSON.parse(String((update![1] as unknown[])[1]));
+      expect(payload).toMatchObject({
+        status,
+        candidate: 'abc123def456',
+        detail: `${status} detail`,
+      });
+      expect(fakeSql.unsafe.mock.calls.some(([query]) => String(query).includes("'{gate_health}'"))).toBe(false);
+    },
+  );
+});
+
 describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite operator advices)', () => {
-  // Both statuses classify as 'noop' and both leave gate_health untouched — that part
-  // is correct and deliberate. What differs is what the READER should do next, and the
-  // single shared message used to give the wrong answer for one of them.
+  // These statuses all classify as 'noop', so none moves the red-streak counters. Some also
+  // publish a path-scoped gate_health.inconclusive observation. What differs is what the READER
+  // should do next, and the single shared message used to give the wrong answer for one of them.
 
   it('skipped-locked keeps the peer-lock wording — a peer run IS in flight', () => {
     const msg = gateStallNoopLogMessage('skipped-locked');
@@ -551,9 +575,7 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
     // The regression this whole describe exists to prevent is a SHARED message across
     // conditions whose correct operator response differs. Assert the property directly rather
     // than only per-message, so a future fourth condition cannot quietly reuse an existing arm.
-    const msgs = ['skipped-locked', 'migrations-pending', 'infra-inconclusive'].map((s) =>
-      gateStallNoopLogMessage(s),
-    );
+    const msgs = ['skipped-locked', 'migrations-pending', 'infra-inconclusive'].map((s) => gateStallNoopLogMessage(s));
     expect(new Set(msgs).size).toBe(3);
   });
 
@@ -563,9 +585,11 @@ describe('gateStallNoopLogMessage (EI-19321275470651356: one class, two opposite
 
     expect(inProgress).toContain('serialized frozen-candidate repair queue');
     expect(inProgress).toContain('ran no suite');
+    expect(inProgress).toContain('gate_health.inconclusive');
     expect(inProgress).not.toContain('an active peer run holds the lock');
     expect(stagingMismatch).toContain('not yet observable on canonical staging');
     expect(stagingMismatch).toContain('spent no suite');
+    expect(stagingMismatch).toContain('gate_health.inconclusive');
     expect(stagingMismatch).not.toContain('an active peer run holds the lock');
     expect(inProgress).not.toBe(stagingMismatch);
   });
@@ -583,7 +607,10 @@ const DEPLOY_PLAN_MARKER = '__DEPLOY_PLAN__';
  * `code`. The release-actions runScript subscribes to stdout/stderr 'data' and the
  * 'close' event; emit on the next tick so the subscriptions are in place first.
  */
-function fakeSpawn(stdout: string, code = 0): EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: () => void } {
+function fakeSpawn(
+  stdout: string,
+  code = 0,
+): EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: () => void } {
   const child = new EventEmitter() as EventEmitter & { stdout: EventEmitter; stderr: EventEmitter; kill: () => void };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
@@ -987,12 +1014,22 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
   });
 
   it('FRESH: a DIFFERENT signature within the window → dispatch + notify (a new red)', () => {
-    const d = decideReleaseFixerDispatch({ lf: rec({ signature: 'other.test.ts' }), signature: SIG, now, fixerAlive: true });
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ signature: 'other.test.ts' }),
+      signature: SIG,
+      now,
+      fixerAlive: true,
+    });
     expect(d).toMatchObject({ dispatch: true, reason: 'fresh' });
   });
 
   it('FRESH: same signature but the record AGED OUT past the window → dispatch + notify', () => {
-    const d = decideReleaseFixerDispatch({ lf: rec({ at: now - 3 * 60 * 60_000 }), signature: SIG, now, fixerAlive: false });
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ at: now - 3 * 60 * 60_000 }),
+      signature: SIG,
+      now,
+      fixerAlive: false,
+    });
     expect(d).toMatchObject({ dispatch: true, reason: 'fresh' });
   });
 
@@ -1007,13 +1044,23 @@ describe('decideReleaseFixerDispatch — liveness-aware dedup (P-014 / D-009)', 
   });
 
   it('SELF-HEAL: same signature, fixer DEAD → re-dispatch (the incident fix — was a 2h gap)', () => {
-    const d = decideReleaseFixerDispatch({ lf: rec({ notifiedAt: now - 30 * 60_000 }), signature: SIG, now, fixerAlive: false });
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ notifiedAt: now - 30 * 60_000 }),
+      signature: SIG,
+      now,
+      fixerAlive: false,
+    });
     expect(d.dispatch).toBe(true);
     expect(d.reason).toBe('self-heal');
   });
 
   it('SELF-HEAL: re-dispatch NOTIFY is rate-limited — notified recently → re-dispatch but suppress notify', () => {
-    const d = decideReleaseFixerDispatch({ lf: rec({ notifiedAt: now - 10 * 60_000 }), signature: SIG, now, fixerAlive: false });
+    const d = decideReleaseFixerDispatch({
+      lf: rec({ notifiedAt: now - 10 * 60_000 }),
+      signature: SIG,
+      now,
+      fixerAlive: false,
+    });
     expect(d.dispatch).toBe(true);
     expect(d.notify).toBe(false); // last notify 10 min ago < 2h cooldown
   });
@@ -1039,7 +1086,7 @@ describe('isStaleReleaseFixerCandidate (EI-8718: no fixer for a superseded/self-
     expect(isStaleReleaseFixerCandidate({ candidateExists: true, candidatePromoted: false })).toBe(false);
   });
 
-  it('a candidate whose object no longer exists (superseded + GC\'d) IS stale', () => {
+  it("a candidate whose object no longer exists (superseded + GC'd) IS stale", () => {
     expect(isStaleReleaseFixerCandidate({ candidateExists: false, candidatePromoted: false })).toBe(true);
   });
 
@@ -1286,7 +1333,7 @@ describe('green-checkpoint child env — subject-hive DSN isolation (EI-20709645
     expect(childEnv().DATABASE_URL).toBe('postgres://pot-own/db');
   });
 
-  it('operator-home (clearEnv []) keeps its inherited DSN — papercusp\'s own pipeline is byte-identical (D-007)', async () => {
+  it("operator-home (clearEnv []) keeps its inherited DSN — papercusp's own pipeline is byte-identical (D-007)", async () => {
     routingPatch = null; // the real resolver: ctx.installSlug IS the mocked operator home
     spawnMock.mockImplementationOnce(() => fakeSpawn(okStdout, 0));
     await getSystemAction('green-checkpoint')!(ctx);
@@ -1318,19 +1365,26 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     // This is the fix's load-bearing asymmetry. A colliding run must stay silent (it observed
     // nothing), while the run that WON the lock records. If a `skipped-locked` could record, it
     // would clobber a real verdict with a non-observation — the same bug, mirrored.
-    return recordCheckpointVerdict({ workspaceId: 'ws-42', installSlug: 'my-harness' }, { reason: 'skipped-locked' }).then(
-      (recorded) => {
-        expect(recorded).toBe(false);
-        expect(appendPipelineEvent).not.toHaveBeenCalled();
-        expect(fakeSql.unsafe).not.toHaveBeenCalled(); // gate_health untouched
-      },
-    );
+    return recordCheckpointVerdict(
+      { workspaceId: 'ws-42', installSlug: 'my-harness' },
+      { reason: 'skipped-locked' },
+    ).then((recorded) => {
+      expect(recorded).toBe(false);
+      expect(appendPipelineEvent).not.toHaveBeenCalled();
+      expect(fakeSql.unsafe).not.toHaveBeenCalled(); // gate_health untouched
+    });
   });
 
   it('⭐ a RED from ANY runner lands in gate_health + the pipeline history', async () => {
     const recorded = await recordCheckpointVerdict(
       { workspaceId: 'ws-42', installSlug: 'my-harness' },
-      { reason: 'not-green', green: false, candidate: 'abc123def456789', from: '28a3a3d50258', failingTests: ['lib/x.test.ts'] },
+      {
+        reason: 'not-green',
+        green: false,
+        candidate: 'abc123def456789',
+        from: '28a3a3d50258',
+        failingTests: ['lib/x.test.ts'],
+      },
     );
     expect(recorded).toBe(true);
     expect(appendPipelineEvent).toHaveBeenCalledWith(
@@ -1384,7 +1438,9 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
 
     // Feed the early write back into the final recorder. The same run must finalize
     // the marker while preserving the already-counted streak.
-    fakeSql.unsafe.mockResolvedValueOnce(Object.assign([{ gh: pendingPayload.gate_health, lf: null }] as unknown[], { count: 1 }));
+    fakeSql.unsafe.mockResolvedValueOnce(
+      Object.assign([{ gh: pendingPayload.gate_health, lf: null }] as unknown[], { count: 1 }),
+    );
     const finalRecorded = await recordCheckpointVerdict(target, {
       reason: 'not-green',
       green: false,
@@ -1410,7 +1466,10 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
 
   it('a GREEN from any runner records too — that is what resets a frozen streak', async () => {
     expect(
-      await recordCheckpointVerdict({ workspaceId: 'ws-42', installSlug: 'my-harness' }, { reason: 'advanced', green: true, candidate: 'deadbeefcafe' }),
+      await recordCheckpointVerdict(
+        { workspaceId: 'ws-42', installSlug: 'my-harness' },
+        { reason: 'advanced', green: true, candidate: 'deadbeefcafe' },
+      ),
     ).toBe(true);
     expect(appendPipelineEvent).toHaveBeenCalledWith(expect.objectContaining({ status: 'advanced' }));
   });
@@ -1542,7 +1601,7 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     expect(d.repairQueue).toMatchObject({ phase: 'awaiting-fixer', fixerSpawnId: 'fixer-1' });
   });
 
-  it('EI-15849: buildCheckpointDetail persists isolationNote even when the gate is NOT absorbed (red) — the absorber\'s reasoning must survive past the truncated console log', () => {
+  it("EI-15849: buildCheckpointDetail persists isolationNote even when the gate is NOT absorbed (red) — the absorber's reasoning must survive past the truncated console log", () => {
     const d = buildCheckpointDetail({
       reason: 'not-green',
       green: false,
@@ -1564,7 +1623,9 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
       green: true,
       candidate: 'a'.repeat(40),
       cleanGreen: false,
-      retriedTests: [{ name: '@p/core::flaky.test.ts', attempts: 3, outcome: 'passed-on-rerun', via: 'load-flake-isolation' }],
+      retriedTests: [
+        { name: '@p/core::flaky.test.ts', attempts: 3, outcome: 'passed-on-rerun', via: 'load-flake-isolation' },
+      ],
     });
     // `if (v.cleanGreen)` would drop this and leave a retry-absorbed green recorded exactly
     // like a clean one. Asserting the FALSE case is the whole point of the test.
@@ -1962,10 +2023,10 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
       schemaVersion: 1,
       phase: 'awaiting-fixer',
       candidate: 'a'.repeat(40),
-        base: 'b'.repeat(40),
-        repairHead: 'c'.repeat(40),
-        affectedTestProofGroup: 'initial-proof-run',
-        worktreePath: '/tmp/frozen-repair',
+      base: 'b'.repeat(40),
+      repairHead: 'c'.repeat(40),
+      affectedTestProofGroup: 'initial-proof-run',
+      worktreePath: '/tmp/frozen-repair',
       attempts: 1,
       openedAtMs: 1,
       updatedAtMs: 2,
@@ -2034,7 +2095,7 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
     );
   });
 
-  it('REFUSES the gate\'s own checkpoint test tree', () => {
+  it("REFUSES the gate's own checkpoint test tree", () => {
     expect(() => resolveIntegrationRoot({}, `${WS}/papercusp-checkpoint/apps/operator`)).toThrow(
       /refusing to gate .*papercusp-checkpoint/,
     );
@@ -2057,10 +2118,7 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
 
   it('an EXPLICIT env root always wins — even when cwd sits inside the release checkout', () => {
     expect(
-      resolveIntegrationRoot(
-        { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` },
-        `${WS}/papercup-release/apps/operator`,
-      ),
+      resolveIntegrationRoot({ PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` }, `${WS}/papercup-release/apps/operator`),
     ).toBe(`${WS}/papercusp`);
   });
 
@@ -2089,9 +2147,7 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
   });
 
   it('propagates the refusal rather than logging a well-formed line about a bad tree', () => {
-    expect(() => integrationRootEvidence({}, `${WS}/papercup-release/apps/operator`)).toThrow(
-      /refusing to gate/,
-    );
+    expect(() => integrationRootEvidence({}, `${WS}/papercup-release/apps/operator`)).toThrow(/refusing to gate/);
   });
 
   /* WI-38250 — the SIBLING half of the emitter pin. apps/operator/lib/release/release-config.ts
@@ -2120,10 +2176,7 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
     expect(untagged(`${WS}/papercusp`, 'PAPERCUSP_INTEGRATION_ROOT')).not.toContain('emitter=');
     // calibration — a control is only a control if the REAL subject passes the same check
     expect(
-      integrationRootEvidence(
-        { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` },
-        `${WS}/papercusp/apps/operator`,
-      ),
+      integrationRootEvidence({ PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` }, `${WS}/papercusp/apps/operator`),
     ).toContain('emitter=');
   });
 
@@ -2147,10 +2200,7 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
 
   it('is actually invoked by the green-checkpoint action (evidence must reach the run log)', async () => {
     const { readFile } = await import('node:fs/promises');
-    const src = await readFile(
-      fileURLToPath(new URL('./release-actions.ts', import.meta.url)),
-      'utf8',
-    );
+    const src = await readFile(fileURLToPath(new URL('./release-actions.ts', import.meta.url)), 'utf8');
     expect(
       logsRootBeforeRouting(src),
       'integrationRootEvidence() must be CALLED before routing — not merely exported',
@@ -2161,21 +2211,15 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
     // exported but never called: the silent-no-evidence regression. This control is the
     // one that caught the first draft of the pin, which matched the declaration itself.
     expect(
-      logsRootBeforeRouting(
-        'export function integrationRootEvidence() {}\nawait resolveCheckpointRouting(ctx, x);',
-      ),
+      logsRootBeforeRouting('export function integrationRootEvidence() {}\nawait resolveCheckpointRouting(ctx, x);'),
     ).toBe(false);
     // called, but AFTER routing: missing from exactly the runs that fail early
     expect(
-      logsRootBeforeRouting(
-        'await resolveCheckpointRouting(ctx, x);\nconsole.log(integrationRootEvidence());',
-      ),
+      logsRootBeforeRouting('await resolveCheckpointRouting(ctx, x);\nconsole.log(integrationRootEvidence());'),
     ).toBe(false);
     // computed but never logged: evidence that never reaches the run log is no evidence
     expect(
-      logsRootBeforeRouting(
-        'const line = integrationRootEvidence();\nawait resolveCheckpointRouting(ctx, x);',
-      ),
+      logsRootBeforeRouting('const line = integrationRootEvidence();\nawait resolveCheckpointRouting(ctx, x);'),
     ).toBe(false);
     // routing site renamed away: the pin must not silently pass on a moved target
     expect(logsRootBeforeRouting('console.log(integrationRootEvidence());')).toBe(false);

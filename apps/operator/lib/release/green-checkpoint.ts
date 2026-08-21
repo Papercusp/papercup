@@ -65,6 +65,7 @@ import {
   type GitRead,
 } from "@papercusp/operator-core/lib/candidate-contains";
 import {
+  FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
   markFrozenRepairFixerDispatched,
@@ -916,9 +917,7 @@ export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
 export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 
 /** The two ways a progress-aware self-watchdog can terminate a run. */
-export type SelfWatchdogFireReason =
-  | "idle-timeout"
-  | "absolute-hard-ceiling";
+export type SelfWatchdogFireReason = "idle-timeout" | "absolute-hard-ceiling";
 
 /** Internal transport used only by release-checkpoint-launch.ts's detached MANUAL unit.
  * Scheduled runs omit it and retain SELF_WATCHDOG_MS as their independent parent-death
@@ -1282,10 +1281,7 @@ export function armSelfWatchdog(
   } = {},
 ): { cancel: () => void; progress: () => void } {
   const ms = Math.max(1, opts.ms ?? SELF_WATCHDOG_MS);
-  const hardCeilingMs = Math.max(
-    1,
-    opts.hardCeilingMs ?? SELF_WATCHDOG_MS,
-  );
+  const hardCeilingMs = Math.max(1, opts.hardCeilingMs ?? SELF_WATCHDOG_MS);
   const pid = opts.pid ?? process.pid;
   const kill =
     opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
@@ -1565,9 +1561,7 @@ export function writeFailingFilesMarker(
 
 /** EI-20669541349219660: read {@link writeFailingFilesMarker}'s marker. Null on any miss
  *  or garble — the caller degrades to the empty failingTests it carried before. */
-export function readFailingFilesMarker(
-  lockDir: string,
-): {
+export function readFailingFilesMarker(lockDir: string): {
   runId?: string;
   files?: string[];
   absorbed?: boolean;
@@ -3253,8 +3247,9 @@ export function inferFailingFilesFromEntries(
     ...new Set(
       entries
         .map((entry) => entry.trim())
-        .filter((entry) =>
-          entry.startsWith("lib/") && FAILING_TEST_FILE_SHAPE.test(entry),
+        .filter(
+          (entry) =>
+            entry.startsWith("lib/") && FAILING_TEST_FILE_SHAPE.test(entry),
         ),
     ),
   ];
@@ -3300,6 +3295,96 @@ export function rescueGateIdsFrom(
   return nonTestGateIdsFrom(
     (failingTests ?? []).filter((e) => !fileRescueCovers(e, failingFiles)),
   );
+}
+
+type FrozenRepairOutcomeProof =
+  | { kind: "proved"; tip: string; summary: string }
+  | {
+      kind: "unavailable" | "failed" | "tip-moved";
+      summary: string;
+    };
+
+/** EI-210830: determine whether canonical staging already resolves EVERY failure that
+ * opened the frozen-repair queue, even when its fix has different patch identity.
+ *
+ * This is deliberately all-or-nothing. A flat queue signature is admitted only when every
+ * entry maps to the existing file or deterministic-gate re-run seams; a missing runner, an
+ * execution error, a failing arm, or a staging-tip movement leaves the exact-patch alignment
+ * path in charge. Passing a subset must never clear the serialized repair queue. */
+async function proveFrozenRepairOutcomeAtStableTip(
+  deps: Pick<CheckpointDeps, "resolveTip" | "runTestsAtRef" | "runGateAtRef">,
+  queue: FrozenCandidateRepairQueue,
+): Promise<FrozenRepairOutcomeProof> {
+  const failures = queue.failingTests.filter(
+    (failure) => failure !== FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE,
+  );
+  if (failures.length === 0 || !deps.resolveTip) {
+    return {
+      kind: "unavailable",
+      summary:
+        "no original failure signature or canonical-tip resolver is available",
+    };
+  }
+
+  const failingFiles = inferFailingFilesFromEntries(failures);
+  const uncovered = failures.filter(
+    (failure) => !fileRescueCovers(failure, failingFiles),
+  );
+  const gateIds = rescueGateIdsFrom(failures, failingFiles);
+  if (
+    (uncovered.length > 0 && gateIds.length === 0) ||
+    (failingFiles.length > 0 && !deps.runTestsAtRef) ||
+    (gateIds.length > 0 && !deps.runGateAtRef) ||
+    (failingFiles.length === 0 && gateIds.length === 0)
+  ) {
+    return {
+      kind: "unavailable",
+      summary: `failure signature is not fully re-runnable (${failingFiles.length} file(s), ${gateIds.length} gate(s), ${uncovered.length} non-file entry/entries)`,
+    };
+  }
+
+  const tipBefore = (await deps.resolveTip().catch(() => null)) ?? null;
+  if (!tipBefore) {
+    return {
+      kind: "unavailable",
+      summary:
+        "canonical staging tip could not be resolved before outcome proof",
+    };
+  }
+
+  const [fileRun, gateRun] = await Promise.all([
+    failingFiles.length > 0
+      ? deps.runTestsAtRef!(tipBefore, failingFiles).catch(() => null)
+      : Promise.resolve(undefined),
+    gateIds.length > 0
+      ? deps.runGateAtRef!(tipBefore, gateIds).catch(() => null)
+      : Promise.resolve(undefined),
+  ]);
+  const tipAfter = (await deps.resolveTip().catch(() => null)) ?? null;
+  if (tipAfter !== tipBefore) {
+    return {
+      kind: "tip-moved",
+      summary: `canonical staging moved during outcome proof (${tipBefore.slice(0, 8)} -> ${tipAfter?.slice(0, 8) ?? "unknown"})`,
+    };
+  }
+  if (fileRun === null || gateRun === null) {
+    return {
+      kind: "unavailable",
+      summary: "at least one outcome-proof runner failed to execute",
+    };
+  }
+  if ((fileRun?.pass ?? true) !== true || (gateRun?.pass ?? true) !== true) {
+    return {
+      kind: "failed",
+      summary: `queued failure still reproduces at ${tipBefore.slice(0, 8)}`,
+    };
+  }
+
+  return {
+    kind: "proved",
+    tip: tipBefore,
+    summary: `all ${failures.length} queued failure signature(s) passed on stable staging ${tipBefore.slice(0, 8)} (${failingFiles.length} file(s), ${gateIds.length} gate(s))`,
+  };
 }
 
 /** Is this `failingTests` entry something the tip rescue can re-run on its own?
@@ -6108,6 +6193,7 @@ export async function runGreenCheckpoint(
   // than silently discarding a queue whose state we could not read.
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
+  let repairOutcomeReconciled = false;
   if (deps.readFrozenRepairQueue) {
     try {
       repairQueue = await deps.readFrozenRepairQueue();
@@ -6135,9 +6221,8 @@ export async function runGreenCheckpoint(
         let reconciledHead: string | null = null;
         let reconciliationError: unknown = null;
         try {
-          reconciledHead = await deps.reconcileFrozenRepairIntoStaging(
-            repairQueue,
-          );
+          reconciledHead =
+            await deps.reconcileFrozenRepairIntoStaging(repairQueue);
         } catch (error) {
           reconciliationError = error;
         }
@@ -6269,33 +6354,59 @@ export async function runGreenCheckpoint(
         .stagingContainsFrozenRepair?.(repairQueue)
         .catch(() => null);
       if (onStaging !== true) {
-        const canRequeue = Boolean(deps.writeFrozenRepairQueue);
-        const requeued = canRequeue
-          ? markFrozenRepairStagingMismatch(repairQueue, {
-              repairHead: candidate,
-              nowMs: Date.now(),
-            })
-          : repairQueue;
-        if (canRequeue) {
-          await deps.writeFrozenRepairQueue?.(requeued);
-          repairQueue = requeued;
-        }
-        const summary =
-          `frozen repair ${candidate.slice(0, 8)} is ready to verify, but its exact ` +
-          `${repairQueue.candidate.slice(0, 8)}..${candidate.slice(0, 8)} patch is not yet observable on staging; ` +
-          (canRequeue
-            ? `re-queued the isolated head for a queue-authorized alignment fixer without spending a suite`
-            : `holding without spending a suite because no queue writer is available`);
-        deps.log(summary);
-        return {
-          advanced: false,
-          candidate,
-          from: lastReady,
-          green: null,
-          reason: "repair-staging-mismatch",
-          summary,
+        const outcomeProof = await proveFrozenRepairOutcomeAtStableTip(
+          deps,
           repairQueue,
-        };
+        );
+        if (outcomeProof.kind === "proved") {
+          const reconciledQueue = repairQueue;
+          await deps.writeFrozenRepairQueue?.(null);
+          await deps
+            .cleanupFrozenRepairWorktree?.(reconciledQueue)
+            .catch((e) =>
+              deps.log(
+                `warn: outcome-reconciled repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+          repairQueue = null;
+          repairVerification = false;
+          repairOutcomeReconciled = true;
+          candidate = await revParse(cfg.integrationRoot, outcomeProof.tip);
+          deps.log(
+            `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`,
+          );
+        } else {
+          deps.log(
+            `frozen repair outcome reconciliation did not prove canonical staging green (${outcomeProof.summary}); falling back to exact-patch alignment`,
+          );
+          const canRequeue = Boolean(deps.writeFrozenRepairQueue);
+          const requeued = canRequeue
+            ? markFrozenRepairStagingMismatch(repairQueue, {
+                repairHead: candidate,
+                nowMs: Date.now(),
+              })
+            : repairQueue;
+          if (canRequeue) {
+            await deps.writeFrozenRepairQueue?.(requeued);
+            repairQueue = requeued;
+          }
+          const summary =
+            `frozen repair ${candidate.slice(0, 8)} is ready to verify, but its exact ` +
+            `${repairQueue.candidate.slice(0, 8)}..${candidate.slice(0, 8)} patch is not yet observable on staging; ` +
+            (canRequeue
+              ? `re-queued the isolated head for a queue-authorized alignment fixer without spending a suite`
+              : `holding without spending a suite because no queue writer is available`);
+          deps.log(summary);
+          return {
+            advanced: false,
+            candidate,
+            from: lastReady,
+            green: null,
+            reason: "repair-staging-mismatch",
+            summary,
+            repairQueue,
+          };
+        }
       }
     }
   }
@@ -6315,7 +6426,12 @@ export async function runGreenCheckpoint(
   // that is silently wrong rather than erroring when you get it subtly right-looking.
   const candidateBeforeQuietCut = candidate;
   let quietCutApplied = false;
-  if (!opts.candidate && !repairVerification && quietCutSecFromEnv() > 0) {
+  if (
+    !opts.candidate &&
+    !repairVerification &&
+    !repairOutcomeReconciled &&
+    quietCutSecFromEnv() > 0
+  ) {
     try {
       const quietSec = quietCutSecFromEnv();
       const tipTime = await commitUnixTime(cfg.integrationRoot, candidate);
@@ -7882,7 +7998,8 @@ export async function runGreenCheckpoint(
       let reconciledHead: string | null = null;
       let reconciliationError: unknown = null;
       try {
-        reconciledHead = await deps.reconcileFrozenRepairIntoStaging(repairQueue);
+        reconciledHead =
+          await deps.reconcileFrozenRepairIntoStaging(repairQueue);
       } catch (error) {
         reconciliationError = error;
       }
@@ -8612,7 +8729,11 @@ export interface PostSuiteLegRecord extends LegOutcome {
     cwd: string;
     headAtStart: string;
     dependencies: {
-      nodeModules: { hash: string | null; inode: number | null; source: string };
+      nodeModules: {
+        hash: string | null;
+        inode: number | null;
+        source: string;
+      };
     };
     setup: { identity: string; output: string };
     result: {
@@ -8816,7 +8937,13 @@ export async function runPostSuiteLegs(
   >();
   const executionResults = new Map<
     string,
-    Array<{ code: number | null; stdout: string; stderr: string; cwd: string; errored: boolean }>
+    Array<{
+      code: number | null;
+      stdout: string;
+      stderr: string;
+      cwd: string;
+      errored: boolean;
+    }>
   >();
   const exec: CheckpointExec = async (cmd, args, opts) => {
     const id = postSuiteCommandId(cmd, args);
@@ -8838,7 +8965,13 @@ export async function runPostSuiteLegs(
       results.push({
         code: result?.code ?? null,
         stdout: result?.stdout ?? "",
-        stderr: result?.stderr ?? (thrown instanceof Error ? thrown.message : thrown ? String(thrown) : ""),
+        stderr:
+          result?.stderr ??
+          (thrown instanceof Error
+            ? thrown.message
+            : thrown
+              ? String(thrown)
+              : ""),
         cwd: opts?.cwd ?? treeDir,
         errored: thrown !== undefined,
       });
@@ -9773,7 +9906,8 @@ export async function runPostSuiteLegs(
       .map((command) => command.stdout + command.stderr)
       .join("\n")
       .slice(-2000);
-    const exitCode = commands.find((command) => command.code !== 0)?.code ??
+    const exitCode =
+      commands.find((command) => command.code !== 0)?.code ??
       commands.at(-1)?.code ??
       null;
     return {
@@ -9788,21 +9922,35 @@ export async function runPostSuiteLegs(
               candidate: (identity.candidate ?? "unknown").slice(0, 64),
               treeDir: treeDir.slice(0, 1000),
               cwd: (commands.at(-1)?.cwd ?? treeDir).slice(0, 1000),
-              headAtStart: (identity.headAtStart ?? identity.candidate ?? "unknown").slice(0, 64),
+              headAtStart: (
+                identity.headAtStart ??
+                identity.candidate ??
+                "unknown"
+              ).slice(0, 64),
               dependencies: {
                 nodeModules: {
                   hash: dependencyHash,
                   inode: dependencyInode,
-                  source: (existsSync(nodeModulesPath) ? nodeModulesPath : "missing").slice(0, 1000),
+                  source: (existsSync(nodeModulesPath)
+                    ? nodeModulesPath
+                    : "missing"
+                  ).slice(0, 1000),
                 },
               },
               setup: {
-                identity: (identity.setup?.identity ?? "setup-release-checkout").slice(0, 200),
+                identity: (
+                  identity.setup?.identity ?? "setup-release-checkout"
+                ).slice(0, 200),
                 output: (identity.setup?.output ?? "").slice(-1000),
               },
               result: {
                 status: outcome.status,
-                exit: outcome.status === "skipped" ? "skipped" : commands.some((c) => c.errored) ? "errored" : "completed",
+                exit:
+                  outcome.status === "skipped"
+                    ? "skipped"
+                    : commands.some((c) => c.errored)
+                      ? "errored"
+                      : "completed",
                 exitCode,
                 output,
               },
@@ -10325,9 +10473,8 @@ export function realCheckpointDeps(
           async reconcileFrozenRepairIntoStaging(
             queue: FrozenCandidateRepairQueue,
           ) {
-            const { bridgeContainedCommitIntoCurrentBranch } = await import(
-              "@papercusp/operator-core/lib/harness/git-sync/run-git-sync"
-            );
+            const { bridgeContainedCommitIntoCurrentBranch } =
+              await import("@papercusp/operator-core/lib/harness/git-sync/run-git-sync");
             const runGit = async (args: string[], cwd: string) =>
               exec("git", ["-C", cwd, ...args], { allowNonZero: true });
             const bridge = await bridgeContainedCommitIntoCurrentBranch(
@@ -10707,8 +10854,7 @@ export function realCheckpointDeps(
       const resolvedHeadAtStart = resolveCandidateSha(treeDir);
       const postSuiteIdentity: NonNullable<PostSuiteRunOptions["identity"]> = {
         runId,
-        candidate:
-          execution?.candidate ?? resolvedHeadAtStart ?? "unknown",
+        candidate: execution?.candidate ?? resolvedHeadAtStart ?? "unknown",
         headAtStart:
           resolvedHeadAtStart ??
           execution?.headAtStart ??
@@ -10743,18 +10889,13 @@ export function realCheckpointDeps(
       // `*Ok` flag defaulting to `true`, so a red suite skipped every one and they all still
       // read as "passed"; absorption then set green without ever running them. See
       // runPostSuiteLegs' doc for the incident this cost us.
-      let legs =
-        suiteCompleted
-          ? await runPostSuiteLegs(
-              treeDir,
-              env,
-              exec,
-              cfg.spaBuildWorkspace,
-              { identity: postSuiteIdentity },
-            )
-          : legsNotRun(
-              "suite red — post-suite legs deferred until the suite is considered passing",
-            );
+      let legs = suiteCompleted
+        ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace, {
+            identity: postSuiteIdentity,
+          })
+        : legsNotRun(
+            "suite red — post-suite legs deferred until the suite is considered passing",
+          );
       let green = suiteCompleted && legs.ok;
       let fullOutput = r.stdout + r.stderr + signalNote + legs.output;
 
@@ -11088,9 +11229,7 @@ export function realCheckpointDeps(
         summary,
         failingTests,
         postSuiteMeasured: legs.ran,
-        ...(legs.ran
-          ? { postSuiteLegs: legs.records.slice(0, 32) }
-          : {}),
+        ...(legs.ran ? { postSuiteLegs: legs.records.slice(0, 32) } : {}),
         ...(flakeSuspects?.length ? { flakeSuspects } : {}),
         ...(failingFiles.length ? { failingFiles } : {}),
         ...(logPath ? { logPath } : {}),

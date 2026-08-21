@@ -439,6 +439,133 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(cleanupCount).toBe(1);
   });
 
+  it("clears a patch-mismatched queue only after every original failure passes on one stable staging tip", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+
+    await git(repo, ["reset", "--hard", ready]);
+    await commit("b", "fixed independently", "canonical independent fix");
+    const stagingTip = await commit("c", "3", "later staging work");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 2,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: [
+        "@papercusp/web",
+        "lib/broken.test.ts",
+        "lint:identity-leak",
+      ],
+    };
+    const { deps, calls } = stubDeps(true);
+    const retestedRefs: string[] = [];
+    let cleanupCount = 0;
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.runTestsAtRef = async (ref, files) => {
+      retestedRefs.push(ref);
+      expect(files).toEqual([
+        { workspace: "@papercusp/web", file: "lib/broken.test.ts" },
+      ]);
+      return { pass: true, summary: "file failure resolved" };
+    };
+    deps.runGateAtRef = async (ref, gateIds) => {
+      retestedRefs.push(ref);
+      expect(gateIds).toEqual(["lint:identity-leak"]);
+      return { pass: true, summary: "gate failure resolved" };
+    };
+    deps.cleanupFrozenRepairWorktree = async () => {
+      cleanupCount += 1;
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: true,
+      green: true,
+      reason: "advanced",
+      candidate: stagingTip,
+      from: ready,
+    });
+    expect(retestedRefs).toEqual([stagingTip, stagingTip]);
+    expect(queue).toBeNull();
+    expect(cleanupCount).toBe(1);
+    expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
+    expect(await revParse(repo, "ready")).toBe(stagingTip);
+  });
+
+  it("keeps EI-210831 alignment retry in charge when any queued failure still reproduces", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "broken", "frozen candidate");
+    const repaired = await commit("b", "fixed", "isolated repair");
+
+    await git(repo, ["reset", "--hard", ready]);
+    const stagingTip = await commit("b", "different", "canonical staging tip");
+    const now = Date.now();
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 2,
+      phase: "ready-to-verify",
+      candidate: frozen,
+      base: ready,
+      repairHead: repaired,
+      affectedTestProofGroup: "initial-proof-run",
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: "fixer-1",
+      failingTests: ["@papercusp/web", "lib/broken.test.ts"],
+    };
+    const { deps, calls } = stubDeps(true);
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.frozenRepairFixerAlive = async () => false;
+    deps.stagingContainsFrozenRepair = async () => false;
+    deps.resolveTip = async () => stagingTip;
+    deps.runTestsAtRef = async () => ({
+      pass: false,
+      summary: "file failure still reproduces",
+    });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      green: null,
+      reason: "repair-staging-mismatch",
+      candidate: repaired,
+      repairQueue: {
+        phase: "awaiting-fixer",
+        repairHead: repaired,
+        fixerSpawnId: null,
+      },
+    });
+    expect(queue).toMatchObject({
+      phase: "awaiting-fixer",
+      repairHead: repaired,
+    });
+    expect(calls).not.toContain("runGreen");
+    expect(await revParse(repo, "ready")).toBe(ready);
+  });
+
   it("joins a verified patch-equivalent repair into staging history, then requires a normal fast-forward gate", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -484,10 +611,7 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       ) => {
         if (!reconciliationAvailable) return null;
         const currentStaging = await revParse(repo, "main");
-        const tree = await git(repo, [
-          "rev-parse",
-          `${currentStaging}^{tree}`,
-        ]);
+        const tree = await git(repo, ["rev-parse", `${currentStaging}^{tree}`]);
         const joined = await git(repo, [
           "commit-tree",
           tree,
@@ -1172,7 +1296,11 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
   ];
 
   it("reaps a survivor that reparented away but kept our pgid", () => {
-    const targets = checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT);
+    const targets = checkpointSweepTargets(
+      measuredTable,
+      CHECKPOINT,
+      CHECKPOINT,
+    );
     expect(targets).toContain(253520);
     expect(targets).toContain(213099);
   });
@@ -1181,7 +1309,10 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
     // Deliberately-wrong implementation kept in the test file as a control (never a
     // mutation of the real source). If this ever starts finding 253520, the control has
     // stopped being wrong and the assertion above proves nothing.
-    const descendantsOnly = (table: typeof measuredTable, root: number): number[] => {
+    const descendantsOnly = (
+      table: typeof measuredTable,
+      root: number,
+    ): number[] => {
       const out: number[] = [];
       const stack = [root];
       while (stack.length > 0) {
@@ -1198,11 +1329,17 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
     expect(descendantsOnly(measuredTable, CHECKPOINT)).not.toContain(253520);
     // ...and the real implementation does find it. Calibration: without this the control
     // would also "pass" if checkpointSweepTargets returned nothing at all.
-    expect(checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT)).toContain(253520);
+    expect(
+      checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT),
+    ).toContain(253520);
   });
 
   it("never signals itself, its ancestors, or an unrelated group", () => {
-    const targets = checkpointSweepTargets(measuredTable, CHECKPOINT, CHECKPOINT);
+    const targets = checkpointSweepTargets(
+      measuredTable,
+      CHECKPOINT,
+      CHECKPOINT,
+    );
     expect(targets).not.toContain(CHECKPOINT); // self — process.exit() still has to run
     expect(targets).not.toContain(SYSTEMD); // ancestor
     expect(targets).not.toContain(1);
@@ -1234,7 +1371,9 @@ describe("WI-39607: a normally-exiting run sweeps its own survivors", () => {
       { pid: CHECKPOINT, ppid: SYSTEMD, pgid: CHECKPOINT },
       { pid: 700001, ppid: CHECKPOINT, pgid: 700001 }, // detached: its own group
     ];
-    expect(checkpointSweepTargets(detachedTable, CHECKPOINT, CHECKPOINT)).toContain(700001);
+    expect(
+      checkpointSweepTargets(detachedTable, CHECKPOINT, CHECKPOINT),
+    ).toContain(700001);
   });
 
   it("an UNREADABLE process table sweeps nothing rather than reporting a clean run", () => {
@@ -3828,7 +3967,9 @@ describe("runGreenCheckpoint", () => {
         isRerunnableGateEntry("@papercusp/operator-core :: gen:tool-catalog"),
       ).toBe(false);
       expect(
-        isRerunnableGateEntry("@papercusp/operator-core :: gen:tool-catalog:write"),
+        isRerunnableGateEntry(
+          "@papercusp/operator-core :: gen:tool-catalog:write",
+        ),
       ).toBe(false);
       expect(isRerunnableGateEntry("@papercusp/web :: build")).toBe(false);
       expect(isRerunnableGateEntry("@papercusp/web")).toBe(false);
@@ -5645,9 +5786,7 @@ describe("buildGreenCheckpointEnv (the gate measures COMMITTED defaults)", () =>
     expect(env.USER).toBe("gate-user");
     expect(env.LANG).toBe("C.UTF-8");
     expect(env.XDG_RUNTIME_DIR).toBe("/run/user/1000");
-    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe(
-      "unix:path=/run/user/1000/bus",
-    );
+    expect(env.DBUS_SESSION_BUS_ADDRESS).toBe("unix:path=/run/user/1000/bus");
     expect(env.SPAWN_SU_BEARER).toBeUndefined();
     expect(env.INVOCATION_ID).toBeUndefined();
     expect(env.JOURNAL_STREAM).toBeUndefined();
@@ -5991,10 +6130,13 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
       spaBuildWorkspace: "",
     });
 
-    await realCheckpointDeps(cfg, exec, "run-progress", undefined, progress).runGreen(
-      tree,
-      "base",
-    );
+    await realCheckpointDeps(
+      cfg,
+      exec,
+      "run-progress",
+      undefined,
+      progress,
+    ).runGreen(tree, "base");
 
     expect(progress).toHaveBeenCalledWith("command:start:npm");
     expect(progress).toHaveBeenCalledWith("command:output:npm");
@@ -6040,9 +6182,7 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
     );
     expect(result.logPath).toBeDefined();
     const body = readFileSync(result.logPath!, "utf8");
-    expect(body).toContain(
-      "CHECKPOINT CHILD TERMINATED BY SIGNAL (SIGTERM)",
-    );
+    expect(body).toContain("CHECKPOINT CHILD TERMINATED BY SIGNAL (SIGTERM)");
     expect(body).toMatch(
       /GATE_HELD_BY count=0 attribution=unattributed truncated=false postSuite=not-measured/,
     );
@@ -6652,21 +6792,30 @@ describe("EI-20669541349219660: isolation phase budget — a wide red yields a v
       };
     };
     const concurrentCalls: string[] = [];
-    const out = await attemptFlakeAbsorption(INCIDENT_OUTPUT, isolationRun, undefined, {
-      now: () => t,
-      sleep: async () => {},
-      phaseDeadlineMs: 50, // passes during the FIRST attempt
-      concurrentRun: async ({ workspace }) => {
-        concurrentCalls.push(workspace);
-        return { workspace, passed: true };
+    const out = await attemptFlakeAbsorption(
+      INCIDENT_OUTPUT,
+      isolationRun,
+      undefined,
+      {
+        now: () => t,
+        sleep: async () => {},
+        phaseDeadlineMs: 50, // passes during the FIRST attempt
+        concurrentRun: async ({ workspace }) => {
+          concurrentCalls.push(workspace);
+          return { workspace, passed: true };
+        },
       },
-    });
+    );
     expect(out.absorbedToGreen).toBe(false);
     // exactly one first attempt ran; the deadline then blocked file 2 AND file 1's retry
     expect(ran).toEqual([files.first]);
     expect(out.note).toContain("PHASE BUDGET EXHAUSTED");
-    expect(out.note).toContain(`UNCONFIRMED: @papercusp/operator-core::${files.second}`);
-    expect(out.note).toContain(`CONFIRMED still-failing: @papercusp/operator-core::${files.first}`);
+    expect(out.note).toContain(
+      `UNCONFIRMED: @papercusp/operator-core::${files.second}`,
+    );
+    expect(out.note).toContain(
+      `CONFIRMED still-failing: @papercusp/operator-core::${files.first}`,
+    );
     expect(concurrentCalls).toEqual([]);
     // the re-run accounting still reports what actually ran
     expect(out.retriedTests).toEqual([
@@ -6804,13 +6953,18 @@ describe("failing-files marker + emergency-red enrichment (EI-20669541349219660)
       files: ["@papercusp/x::lib/a.test.ts"],
       absorbed: true,
     });
-    const carried = emergencyRedFailingTests(readFailingFilesMarker(dir), "run-1");
+    const carried = emergencyRedFailingTests(
+      readFailingFilesMarker(dir),
+      "run-1",
+    );
     expect(carried.failingTests).toEqual([]);
     expect(carried.note).toContain("ABSORBED");
   });
 
   it("missing or garbled marker degrades to the pre-marker empty list, never a crash", () => {
-    expect(readFailingFilesMarker(join(tmpdir(), "gc-no-such-dir-xyz"))).toBeNull();
+    expect(
+      readFailingFilesMarker(join(tmpdir(), "gc-no-such-dir-xyz")),
+    ).toBeNull();
     expect(emergencyRedFailingTests(null, "run-1")).toEqual({
       failingTests: [],
       note: null,
@@ -8314,8 +8468,9 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       expect(
         lines.some(
           (line) =>
-            line.includes(`prefix ${c2.slice(0, 8)} unbuildable during setup/build`) &&
-            line.includes("bounded forward/bisect recovery"),
+            line.includes(
+              `prefix ${c2.slice(0, 8)} unbuildable during setup/build`,
+            ) && line.includes("bounded forward/bisect recovery"),
         ),
       ).toBe(true);
       expect(
@@ -8452,7 +8607,11 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
 
         // Without this case the test above would also pass for a guard that simply always
         // declines, which would re-break WI-38218.
-        expect(r).toMatchObject({ advanced: true, reason: "advanced-prefix", advancedTo: c3 });
+        expect(r).toMatchObject({
+          advanced: true,
+          reason: "advanced-prefix",
+          advancedTo: c3,
+        });
         expect(await revParse(repo, "ready")).toBe(c3);
         expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(1);
       });
@@ -8461,7 +8620,11 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
         const { c1, c2, c3, c4 } = await chain();
         const { deps, calls } = partialDeps({
           candidateFailingTests: [FAILING], // no workspace entry ⇒ failingWs is empty
-          affected: { [c2]: ["@ws/other"], [c3]: ["@ws/other"], [c4]: ["@ws/other"] },
+          affected: {
+            [c2]: ["@ws/other"],
+            [c3]: ["@ws/other"],
+            [c4]: ["@ws/other"],
+          },
           changedFiles: {
             [c2]: ["x/a.ts"],
             [c3]: ["x/b.ts"],
@@ -8517,7 +8680,9 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
         await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
         const body = readFileSync(logPath, "utf8");
-        expect(body).toContain("partial-green-gate: NO SIGNAL at file granularity");
+        expect(body).toContain(
+          "partial-green-gate: NO SIGNAL at file granularity",
+        );
         expect(body).toContain("MAXIMAL prefix by vacuous truth");
         expect(body).toContain("Falling back to workspace granularity");
         // WI-38218's decline line must name the scan that actually produced the verdict —
@@ -8689,7 +8854,9 @@ describe("runGreenCheckpoint — longest-green-prefix (P-016)", () => {
       expect(calls.filter((c) => c === "runGreen:confirm")).toHaveLength(1);
       // ...and it said so, rather than stopping silently (WI-38207's rule for this path).
       const body = readFileSync(logPath, "utf8");
-      expect(body).toContain("partial-green-gate: recovery STOPPED after 0 of 4");
+      expect(body).toContain(
+        "partial-green-gate: recovery STOPPED after 0 of 4",
+      );
       // The whole point: the verdict still lands intact. This is what the SIGTERM destroyed.
       expect(r.green).toBe(false);
       expect(r.candidate).toBe(c5);
@@ -9695,7 +9862,9 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     const logPath = join(repo, "push-failed.log");
     const deps = withLog(stubDeps(true).deps, true, logPath);
     deps.push = async () => {
-      throw new Error("fatal: could not read Username for 'https://github.com'");
+      throw new Error(
+        "fatal: could not read Username for 'https://github.com'",
+      );
     };
 
     await expect(runGreenCheckpoint(cfg(), deps)).rejects.toThrow(

@@ -135,7 +135,9 @@ async function emitLegacyRedVerdictEvent(root: string, verdict: CheckpointVerdic
       cancelSiblingKeysFor,
     });
   } catch (e) {
-    console.warn(`${orchestratorStdoutTag()} legacy green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`);
+    console.warn(
+      `${orchestratorStdoutTag()} legacy green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -1481,16 +1483,18 @@ export function gateStallNoopLogMessage(status: string): string {
     return (
       `${orchestratorStdoutTag()} 'repair-in-progress' — the serialized frozen-candidate repair queue ` +
       `owns this candidate and either dispatched or is waiting on its one targeted fixer; this tick ran no ` +
-      `suite and rendered no code verdict. Leaving gate_health untouched (not a red; the queue's bounded ` +
-      `attempt/wall-clock policy and the green-stall watchdog remain the progress backstops)`
+      `suite and rendered no code verdict. Leaving the red-streak counters untouched while recording this ` +
+      `hold under gate_health.inconclusive (the queue's bounded attempt/wall-clock policy and the ` +
+      `green-stall watchdog remain the progress backstops)`
     );
   }
   if (status === 'repair-staging-mismatch') {
     return (
       `${orchestratorStdoutTag()} 'repair-staging-mismatch' — the frozen repair head is ready, but its exact ` +
       `candidate-to-repair patch is not yet observable on canonical staging; this tick deliberately spent no ` +
-      `suite and rendered no code verdict. Leaving gate_health untouched (not a red; repair reconciliation ` +
-      `and the green-stall watchdog remain the progress backstops)`
+      `suite and rendered no code verdict. Leaving the red-streak counters untouched while recording this ` +
+      `hold under gate_health.inconclusive (repair reconciliation and the green-stall watchdog remain the ` +
+      `progress backstops)`
     );
   }
   // EI-20767792192323374: the THIRD noop condition, and its correct operator response differs
@@ -1564,8 +1568,7 @@ export async function trackGateStall(
   // a full advance — the red tip is tracked separately via the release-fixer dispatch.
   const promotionPending = options.promotionPending === true;
   const isGreen =
-    !promotionPending &&
-    (status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix');
+    !promotionPending && (status === 'advanced' || status === 'up-to-date' || status === 'advanced-prefix');
   // P-006: every non-green verdict OTHER than 'skipped-locked' counts toward the stall
   // streak — INCLUDING 'error' (a green-checkpoint script crash or unparseable JSON).
   // WI-39841 CARVED THE TIMEOUT BACK OUT of that set: a run killed at its own suite budget
@@ -1666,17 +1669,23 @@ export async function trackGateStall(
     //   · cleared by the next REAL verdict for free: that write replaces the whole
     //     `gate_health` key, and `next` sets `inconclusive: null` explicitly (same
     //     recovery-clear convention as `failingTests` / `retriageStaleTip`).
-    // Scoped to the two ABORT conditions — 'migrations-pending' and (EI-20767792192323374)
-    // 'infra-inconclusive'. 'skipped-locked' stays a total no-op on purpose: there a peer run IS
-    // in flight and about to write the real verdict, which is precisely the write EI-2615 proved
-    // must not be raced. An infra fault has no such peer, and leaving the previous red standing
-    // is the exact 2.5h "the reds are yours to fix" failure described above — worse here, because
-    // the stale red it keeps rendering names up to 4,789 innocent files.
+    // Scoped to abort/serialized-hold conditions where NO peer gate verdict is coming.
+    // 'skipped-locked' stays a total no-op on purpose: there a peer run IS in flight and about to
+    // write the real verdict, which is precisely the write EI-2615 proved must not be raced. The
+    // frozen-repair statuses join this path because their queue owner is progressing outside the
+    // full-suite verdict path; leaving the previous red standing makes that bounded, intentional
+    // hold look like an unchanged broken build and hides which repair phase owns progress.
     // WI-39841 (Defect 2): 'deadline-exceeded' joins them for the same reason, one phase later
     // still — the suite ran and may even have REACHED a verdict, but the process was killed
     // before it could record one, so nothing about the code was established. Recording it here
     // is what stops the abort going silent once it no longer counts as a red.
-    if (status === 'migrations-pending' || status === 'infra-inconclusive' || status === 'deadline-exceeded') {
+    if (
+      status === 'migrations-pending' ||
+      status === 'infra-inconclusive' ||
+      status === 'deadline-exceeded' ||
+      status === 'repair-in-progress' ||
+      status === 'repair-staging-mismatch'
+    ) {
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
@@ -1924,10 +1933,7 @@ export async function trackGateStall(
     // `firstRedAt` is left alone for the same reason — a non-verdict must not START a streak,
     // or a `stalledByAge` escalation could be dated from a tick that judged nothing current.
     const recordOnly = gateClass === 'record-only';
-    const alreadyCountedPending =
-      !promotionPending &&
-      !!options.runId &&
-      gh.pendingRunId === options.runId;
+    const alreadyCountedPending = !promotionPending && !!options.runId && gh.pendingRunId === options.runId;
     if (recordOnly) {
       console.log(
         promotionPending
@@ -2094,7 +2100,7 @@ export async function trackGateStall(
       lastFrom: fromPin ?? gh.lastFrom ?? null,
       // EI-20706962612084953: a red leaves `main` exactly where it found it.
       lastMainPin: mainPinAfterRun,
-      pendingRunId: promotionPending ? options.runId ?? null : null,
+      pendingRunId: promotionPending ? (options.runId ?? null) : null,
       // EI-20571364274022293 — the PROVENANCE of the line above, and the only ordering evidence
       // this blob carries about the pin. `fromPin ?? gh.lastFrom` silently carries the PREVIOUS
       // pin forward whenever this run could not resolve the live one (a broken/orphaned release
