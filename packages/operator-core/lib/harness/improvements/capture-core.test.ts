@@ -1795,7 +1795,7 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
     expect(d.created).toHaveLength(2);
   });
 
-  it('CONTROL: an open OBSERVATION-lane row with the same key is NOT a coalesce target for a non-observation filing (pre-existing exact-key block stands)', async () => {
+  it('CONTROL: an open OBSERVATION-lane row with the same key has a distinct identity from an improvement filing', async () => {
     const d = keyDeps();
     await captureImprovement(
       { title: 'sensor reading', kind: 'change', lane: 'observation', watchdogKey: 'shared:key' },
@@ -1805,7 +1805,143 @@ describe('captureImprovement — NON-observation coalescing by watchdogKey (WI-3
       { title: 'real improvement filing', kind: 'change', watchdogKey: 'shared:key' },
       d,
     );
+    expect(second.created).toBe(true);
     expect(second.reason).not.toBe('coalesced');
-    expect(d.created).toHaveLength(1); // blocked as likely-duplicate — never merged INTO the observation row
+    expect(d.created).toHaveLength(2); // migration 865 keeps observation/improvement identities separate
+  });
+
+  it('migration 865 recovers a concurrent same-identity INSERT conflict by coalescing the winner', async () => {
+    const attempts: CreateIssueInput[] = [];
+    const occurrences: RecordIssueOccurrenceInput[] = [];
+    const KEY = 'catalog-registration:prompt-weight';
+    let lookupCount = 0;
+    let releaseInitialLookups!: () => void;
+    const initialLookups = new Promise<void>((resolve) => {
+      releaseInitialLookups = resolve;
+    });
+    let winner: EngineerIssue | undefined;
+    const d: CaptureDeps & { store: EngineerIssue[]; occurrences: RecordIssueOccurrenceInput[] } = {
+      store: [],
+      searchIssues: async () => [],
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      recordIssueOccurrence: async (input) => {
+        occurrences.push(input);
+        return null;
+      },
+      findIssuesByWatchdogKeys: async () => {
+        lookupCount += 1;
+        if (lookupCount <= 2) {
+          if (lookupCount === 2) releaseInitialLookups();
+          await initialLookups;
+          return [];
+        }
+        return winner ? [winner] : [];
+      },
+      createIssue: async (input) => {
+        attempts.push(input);
+        if (attempts.length > 1) {
+          throw {
+            code: '23505',
+            constraint_name: 'work_items_watchdog_identity_uq',
+            message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+          };
+        }
+        winner = existing({
+          id: 'EI-RACE-WINNER',
+          title: input.title,
+          scope: input.scope ?? 'operator',
+          signalOrigin: input.signalOrigin ?? 'organic',
+          payload: input.payload as Record<string, unknown>,
+        });
+        d.store.push(winner);
+        return winner;
+      },
+      mergeIssuePayload: async (_id, patch) => {
+        if (!winner) return null;
+        winner.payload = { ...(winner.payload as Record<string, unknown> | null), ...patch };
+        return winner;
+      },
+      updateIssuePatch: async (_id, patch) => {
+        if (!winner) return null;
+        if (patch.title !== undefined) winner.title = patch.title;
+        if (patch.body !== undefined) winner.body = patch.body;
+        return winner;
+      },
+      occurrences,
+    };
+
+    const input = {
+      title: 'prompt weight catalog registration is red',
+      kind: 'bug' as const,
+      watchdogKey: KEY,
+      scope: 'harness:papercusp',
+    };
+    const [left, right] = await Promise.all([captureImprovement(input, d), captureImprovement(input, d)]);
+    const results = [left, right];
+    expect(results.filter((result) => result.created)).toHaveLength(1);
+    expect(results.filter((result) => result.reason === 'coalesced')).toHaveLength(1);
+    expect(attempts).toHaveLength(2);
+    expect(d.store).toHaveLength(1);
+    expect((winner?.payload as Record<string, unknown>).repeatCount).toBe(2);
+    expect(occurrences.map((row) => row.reportKind).sort()).toEqual(['canonical-created', 'coalesced']);
+  });
+
+  it.each([
+    ['origin', { signalOrigin: 'drill', scope: 'harness:papercusp', payload: { watchdogKey: 'k' } }],
+    ['lane', { signalOrigin: 'organic', scope: 'harness:papercusp', payload: { watchdogKey: 'k', lane: 'observation' } }],
+    ['scope', { signalOrigin: 'organic', scope: 'harness:other-pot', payload: { watchdogKey: 'k' } }],
+  ] as const)('does not coalesce a unique-conflict winner with a mismatched %s identity component', async (_dimension, mismatch) => {
+    let lookupCount = 0;
+    const winner = existing({
+      id: `EI-MISMATCH-${_dimension}`,
+      title: 'winner from another identity partition',
+      signalOrigin: mismatch.signalOrigin,
+      scope: mismatch.scope,
+      payload: mismatch.payload,
+    });
+    const d: CaptureDeps = {
+      searchIssues: async () => [],
+      findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } }),
+      findIssuesByWatchdogKeys: async () => {
+        lookupCount += 1;
+        return lookupCount === 1 ? [] : [winner];
+      },
+      createIssue: async () => {
+        throw {
+          code: '23505',
+          constraint_name: 'work_items_watchdog_identity_uq',
+          message: 'duplicate key value violates unique constraint "work_items_watchdog_identity_uq"',
+        };
+      },
+      mergeIssuePayload: async () => {
+        throw new Error('must not merge a mismatched identity winner');
+      },
+    };
+
+    await expect(
+      captureImprovement(
+        {
+          title: 'same key from the requested partition',
+          kind: 'bug',
+          watchdogKey: 'k',
+          scope: 'harness:papercusp',
+        },
+        d,
+      ),
+    ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_watchdog_identity_uq' });
+  });
+
+  it('does not swallow a different unique violation as a watchdog race', async () => {
+    const d = deps();
+    d.createIssue = async () => {
+      throw {
+        code: '23505',
+        constraint_name: 'work_items_condition_key_uq',
+        message: 'duplicate key value violates unique constraint "work_items_condition_key_uq"',
+      };
+    };
+    await expect(
+      captureImprovement({ title: 'unrelated unique failure', kind: 'bug', watchdogKey: 'condition:k' }, d),
+    ).rejects.toMatchObject({ code: '23505', constraint_name: 'work_items_condition_key_uq' });
   });
 });

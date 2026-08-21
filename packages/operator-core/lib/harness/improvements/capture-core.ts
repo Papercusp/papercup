@@ -60,6 +60,8 @@ import {
 import { initializeIdeaLifecycle } from './lifecycle';
 import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { canonicalPotSlug, PLATFORM_POT_SLUG } from '../../platform-pot-slug';
 import { isFlakeKey } from '../../calibration/types';
 import {
   decideIssueAdmissionCircuit,
@@ -447,6 +449,69 @@ function harnessFromScope(scope: string | undefined): string | null {
   return scope?.startsWith('harness:') ? scope.slice('harness:'.length) || null : null;
 }
 
+const WATCHDOG_IDENTITY_INDEX = 'work_items_watchdog_identity_uq';
+
+/** The lane component of the durable watchdog identity. */
+function effectiveWatchdogLane(input: Pick<CaptureImprovementInput, 'lane'>): string {
+  return input.lane === 'observation' ? 'observation' : 'improvement';
+}
+
+/** Read the lane component from an issue row exactly as migration 865 does. */
+function issueWatchdogLane(issue: EngineerIssue): string {
+  const payload = (issue.payload as Record<string, unknown> | null) ?? {};
+  return typeof payload.lane === 'string' ? payload.lane : 'improvement';
+}
+
+/**
+ * Resolve the scope grain used by the migration-865 identity.
+ *
+ * Capture callers name Pots as `harness:<slug>`; workspace-global / omitted
+ * scopes are auto-homed to the platform Pot by createIssue. The operator form
+ * remains valid for un-potted test tenants, so both effective homes are
+ * accepted for a global request. A concrete Pot never matches another Pot.
+ */
+function issueScopeMatchesCapture(issue: EngineerIssue, inputScope: string | undefined): boolean {
+  const actual = issue.scope?.trim() || 'operator';
+  const requested = inputScope?.trim();
+  if (requested?.startsWith('harness:')) {
+    const slug = canonicalPotSlug(requested.slice('harness:'.length).trim());
+    return actual === `harness:${slug}`;
+  }
+  return actual === 'operator' || actual === `harness:${PLATFORM_POT_SLUG}`;
+}
+
+/** Exact watchdog identity check used after the database arbiter wins a race. */
+function sameWatchdogIdentity(
+  issue: EngineerIssue,
+  input: Pick<CaptureImprovementInput, 'watchdogKey' | 'origin' | 'lane' | 'scope'>,
+  origin: string,
+): boolean {
+  const payload = (issue.payload as Record<string, unknown> | null) ?? {};
+  return (
+    typeof input.watchdogKey === 'string' &&
+    payload.watchdogKey === input.watchdogKey &&
+    effectiveOrigin(issue.signalOrigin) === origin &&
+    issueWatchdogLane(issue) === effectiveWatchdogLane(input) &&
+    issueScopeMatchesCapture(issue, input.scope)
+  );
+}
+
+/** A row covered by migration 865 is still live until it enters any family terminal state. */
+function isWatchdogNonTerminal(issue: EngineerIssue): boolean {
+  return !ANY_FAMILY_TERMINAL_STATES.includes(issue.state);
+}
+
+/** Only the watchdog identity arbiter is recoverable; never swallow another 23505. */
+function isWatchdogIdentityConflict(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const candidate = error as Record<string, unknown>;
+  if (String(candidate.code ?? '') !== '23505') return false;
+  const evidence = [candidate.constraint, candidate.constraint_name, candidate.message, candidate.detail]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ');
+  return evidence.includes(WATCHDOG_IDENTITY_INDEX);
+}
+
 function captureOccurrenceEvidence(
   input: CaptureImprovementInput,
   possibleDuplicates: readonly PossibleDuplicate[],
@@ -650,7 +715,7 @@ function buildCoalesceEffect(args: {
     priorAuthor,
     crossAuthor,
     note:
-      `No new row was created: this reading COALESCED onto still-open ${finalIssue.id} ` +
+      `No new row was created: this reading COALESCED onto still-live ${finalIssue.id} ` +
       `(conditionKey \`${input.watchdogKey}\`), now at repeatCount ${repeatCount}. ` +
       (bodyPersisted
         ? `Your title/body REPLACED the text that row previously carried`
@@ -663,6 +728,117 @@ function buildCoalesceEffect(args: {
           `rows), and every occurrence is retained, but the row's visible text is now the latest ` +
           `writer's, so do not read it as that author's own account.`
         : `.`),
+  };
+}
+
+/**
+ * Recover a migration-865 unique-index race by applying the same coalesce
+ * semantics as the pre-insert exact-key path. The caller has already proved
+ * the winner's key, origin, lane, Pot scope, and non-terminal state; this
+ * helper intentionally performs no fuzzy matching.
+ */
+async function coalesceWatchdogWinner(args: {
+  prior: EngineerIssue;
+  input: CaptureImprovementInput;
+  deps: CaptureDeps;
+  identity: AdmissionIdentity;
+  possibleDuplicates: PossibleDuplicate[];
+  dedupCoverage: DedupCoverage;
+  topics: string[];
+  alreadyDecided?: AlreadyDecidedRecall[];
+  queueAdmission?: IssueAdmissionPressure;
+}): Promise<CaptureImprovementResult> {
+  const { prior, input, deps, identity, possibleDuplicates, dedupCoverage, topics, alreadyDecided, queueAdmission } = args;
+  const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
+  const priorProbation = toolFailureProbationOf(priorPayload);
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
+  const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
+  const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
+  const reporters = [...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+  const independentReporter = reporters.some((reporter) => !priorReporters.includes(reporter));
+
+  // Preserve the probation→promoted transition if two observation captures
+  // raced before either could observe the other's newly-created row.
+  if (issueWatchdogLane(prior) === 'observation' && priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
+    const promoted = await promoteToolFailureProbation(prior, input, deps);
+    if (promoted) {
+      await appendCaptureOccurrence(
+        deps,
+        input,
+        identity,
+        'promoted',
+        promoted.id,
+        possibleDuplicates,
+        dedupCoverage,
+        harnessFromScope(promoted.scope) ?? harnessFromScope(input.scope),
+        queueAdmission,
+      );
+      return {
+        ok: true,
+        created: false,
+        reason: 'promoted',
+        kind: promoted.kind as 'bug' | 'change',
+        improvementKind: input.kind,
+        issue: promoted,
+        topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
+        possibleDuplicates,
+        dedupCoverage,
+        ...(alreadyDecided?.length ? { alreadyDecided } : {}),
+        ...(queueAdmission ? { queueAdmission } : {}),
+      };
+    }
+  }
+
+  const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
+  const mergePatch: Record<string, unknown> = {
+    watchdogKey: input.watchdogKey,
+    repeatCount,
+    lastSeenAt: new Date().toISOString(),
+  };
+  if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+  if (priorProbation && incomingProbation) {
+    mergePatch.toolFailureProbation = {
+      ...priorProbation,
+      ...incomingProbation,
+      reporters,
+      lastSeenAt: new Date().toISOString(),
+    };
+  }
+  if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
+  if ((input.sourceRole ?? 'human') !== 'human') mergePatch.sourceRole = input.sourceRole;
+  const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);
+  const refreshed = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
+    title: input.title,
+    body: input.body,
+    silent: true,
+    confirmShrink: true,
+  }).catch(() => null);
+  const finalIssue = (refreshed && 'id' in refreshed ? refreshed : merged) ?? prior;
+  await appendCaptureOccurrence(
+    deps,
+    input,
+    identity,
+    'coalesced',
+    finalIssue.id,
+    possibleDuplicates,
+    dedupCoverage,
+    harnessFromScope(finalIssue.scope) ?? harnessFromScope(input.scope),
+    queueAdmission,
+  );
+  const bodyPersisted = refreshed !== null && 'id' in (refreshed as object);
+  return {
+    ok: true,
+    created: false,
+    reason: 'coalesced',
+    coalescedOnto: buildCoalesceEffect({ finalIssue, prior, input, repeatCount, bodyPersisted }),
+    kind: finalIssue.kind as 'bug' | 'change',
+    improvementKind: input.kind,
+    issue: finalIssue,
+    topics,
+    possibleDuplicates,
+    dedupCoverage,
+    ...(alreadyDecided?.length ? { alreadyDecided } : {}),
+    ...(queueAdmission ? { queueAdmission } : {}),
   };
 }
 
@@ -743,9 +919,21 @@ export async function captureImprovement(
         return [] as EngineerIssue[];
       },
     );
+    // The database lookup is intentionally broad (it spans legacy workspace
+    // homes for read-side recovery).  The one deliberate cross-lane exception
+    // is probation promotion: the invocation-ledger watchdog promotes an
+    // observation row into an improvement when independent direct evidence
+    // arrives.  Ordinary exact-key blocking/coalescing remains migration-865
+    // identity-exact (origin + lane + Pot scope).
     const probation = exactKeyIssues.find((i) => {
       const payload = (i.payload as Record<string, unknown> | null) ?? {};
-      return i.state === 'open' && payload.lane === 'observation' && toolFailureProbationOf(payload)?.state === 'probation';
+      return (
+        i.state === 'open' &&
+        payload.lane === 'observation' &&
+        toolFailureProbationOf(payload)?.state === 'probation' &&
+        effectiveOrigin(i.signalOrigin) === origin &&
+        issueScopeMatchesCapture(i, input.scope)
+      );
     });
     if (probation) {
       const promoted = await promoteToolFailureProbation(probation, input, deps);
@@ -773,6 +961,7 @@ export async function captureImprovement(
         };
       }
     }
+    exactKeyIssues = exactKeyIssues.filter((issue) => sameWatchdogIdentity(issue, input, origin));
     // WI-39594: an OPEN same-lane exact-key row COALESCES — a keyed detector
     // re-fire refreshes the standing row (repeatCount bump, latest title/body)
     // instead of forking a sibling. Runs BEFORE the fuzzy nets and BEFORE the
@@ -791,14 +980,7 @@ export async function captureImprovement(
       const payload = (i.payload as Record<string, unknown> | null) ?? {};
       return (
         i.state === 'open' &&
-        payload.lane !== 'observation' &&
-        // Trust the row's own stored key, not the lookup that returned it — a
-        // sloppy/canned findIssuesByWatchdogKeys must not turn a different
-        // condition's row into a merge target.
-        payload.watchdogKey === input.watchdogKey &&
-        // Same origin gate as every other dedup net: a DRILL row must never
-        // capture (and thereby suppress) a real organic filing, nor vice versa.
-        effectiveOrigin(i.signalOrigin) === origin
+        payload.lane !== 'observation'
       );
     });
     if (openKeyPrior) {
@@ -1181,7 +1363,10 @@ export async function captureImprovement(
       () => [] as EngineerIssue[],
     );
     const prior = priorHits.find(
-      (i) => i.state === 'open' && (i.payload as Record<string, unknown> | undefined)?.lane === 'observation',
+      (i) =>
+        i.state === 'open' &&
+        (i.payload as Record<string, unknown> | undefined)?.lane === 'observation' &&
+        sameWatchdogIdentity(i, input, origin),
     );
     if (prior) {
       const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
@@ -1336,7 +1521,7 @@ export async function captureImprovement(
     if (evidenceIntegrity) payload.evidenceIntegrity = evidenceIntegrity;
   }
 
-  const issue = await deps.createIssue({
+  const createInput: CreateIssueInput = {
     title: input.title,
     kind: isObservation ? 'change' : storageKindOf(input.kind),
     body: input.body,
@@ -1354,7 +1539,37 @@ export async function captureImprovement(
     // D-002/D-005 (observation-lane-scorecard-classification-2026-08-16): a
     // scorecards:emit verdict files already-terminal; everything else stays 'open'.
     ...(input.initialState ? { state: input.initialState } : {}),
-  });
+  };
+
+  let issue: EngineerIssue;
+  try {
+    issue = await deps.createIssue(createInput);
+  } catch (error) {
+    // The SELECT-before-INSERT exact-key path above is advisory.  Migration 865
+    // is the authority under a race: recover ONLY its unique-index violation,
+    // then re-read and require the complete identity before coalescing.  A
+    // different 23505 (or a winner from another lane/Pot/origin) must remain a
+    // visible failure rather than being silently turned into a duplicate merge.
+    if (!input.watchdogKey || !isWatchdogIdentityConflict(error)) throw error;
+    const raced = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(() => {
+      throw error;
+    });
+    const winner = raced.find(
+      (candidate) => isWatchdogNonTerminal(candidate) && sameWatchdogIdentity(candidate, input, origin),
+    );
+    if (!winner) throw error;
+    return coalesceWatchdogWinner({
+      prior: winner,
+      input,
+      deps,
+      identity,
+      possibleDuplicates,
+      dedupCoverage,
+      topics,
+      alreadyDecided,
+      queueAdmission,
+    });
+  }
   await appendCaptureOccurrence(
     deps,
     input,
