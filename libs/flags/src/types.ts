@@ -1550,6 +1550,14 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_LIVENESS_WATCHDOG: "papercusp-goal-liveness-watchdog",
+  // goal-live-holder-guarantee-2026-08-18 P-009 / D-002: permits the operator
+  // to launch a replacement GOAL-mode holder when an active goal explicitly
+  // declares holder.requireLive=true + holder.onLoss='respawn'. This spends
+  // money and opens unattended agent sessions, so it is deliberately SEPARATE
+  // from the report-only GOAL_LIVENESS_WATCHDOG and DEFAULT OFF as an
+  // owner-authority surface. OFF is a pure no-op before the goals table read;
+  // deterministic read-time deactivation and liveness reporting remain live.
+  GOAL_HOLDER_RESPAWN: "papercusp-goal-holder-respawn",
   // EI-19919820196426791 (half 2): gates the unservable-critical watchdog — a
   // deduped escalation per issue that is simultaneously `critical` and
   // structurally UNCLAIMABLE (lane='observation' or state='needs-human'), past a
