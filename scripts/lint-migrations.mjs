@@ -214,32 +214,41 @@ export function findUnguardedReslug(sqlText) {
   //
   // A reslug UPDATE inside a body really executes, so "see inside bodies" looks right here
   // exactly as it is right for findUniqueIndexShapeSwap. It is not, because THIS check is not
-  // a pure detector: it detects an offence and then DISARMS ITSELF on a guard token found
-  // ANYWHERE IN THE FILE (`hasDedupDelete` / `guardedUpdate` below are file-scoped). Unsealing
-  // bodies therefore widens the GUARD faster than it widens the offence.
+  // a pure detector: it detects an offence and then exempts a guarded UPDATE. Keep the
+  // exemption scoped to the UPDATE being inspected (and its immediately preceding top-level
+  // dedup DELETE); a guard token in an unrelated statement must not disarm the lint.
   //
   // Measured on 382-operator-issue-scope-removal.sql: with bodies live the check finds MORE
   // offences (2 reslug UPDATEs, not 1) and then reports NONE, because an unrelated
   // `DELETE FROM harness_shared.work_items` inside a trigger-function body reads as a dedup
   // guard for a top-level UPDATE 48 lines earlier that it has nothing to do with. A safety lint
   // that a stray token in unrelated body code can switch off is worse than one with a known
-  // blind spot, so bodies stay sealed until the guard is scope-aware (tracked separately).
+  // blind spot, so bodies stay sealed until in-body guard detection is separately scoped.
   const stripped = maskSealingBodies(sqlText);
   const re =
-    /UPDATE\s+[\w".]*\bwork_items\b\s+(?:AS\s+\w+\s+)?SET\b([\s\S]*?)(?:\bWHERE\b|\bRETURNING\b|;)/gi;
+    /UPDATE\s+[\w".]*\bwork_items\b\s+(?:AS\s+\w+\s+)?SET\b([\s\S]*?)(?:;|$)/gi;
   const reslugs = [];
   let m;
   while ((m = re.exec(stripped)) !== null) {
-    if (/\bharness_slug\s*=/.test(m[1])) {
+    const setClause = m[1].split(/\b(?:WHERE|RETURNING)\b/i, 1)[0];
+    if (!/\bharness_slug\s*=/.test(setClause)) continue;
+
+    // The collision guard may be part of this UPDATE's WHERE clause. A separate DELETE is
+    // accepted only when it is the immediately preceding top-level statement, which matches
+    // the migration-630/631 shape without letting an unrelated DELETE elsewhere in the file
+    // exempt this UPDATE.
+    const previousStatement = stripped
+      .slice(0, m.index)
+      .split(';')
+      .map((statement) => statement.trim())
+      .reverse()
+      .find(Boolean) ?? '';
+    const hasDedupDelete = /DELETE\s+FROM\s+[\w".]*\bwork_items\b/i.test(previousStatement);
+    const guardedUpdate = /\bNOT\s+EXISTS\b/i.test(m[0]);
+    if (!hasDedupDelete && !guardedUpdate) {
       reslugs.push(m[0].replace(/\s+/g, ' ').slice(0, 70));
     }
   }
-  if (!reslugs.length) return [];
-  // Collision-safe = de-dup colliders first (a DELETE FROM work_items) OR guard the
-  // UPDATE with NOT EXISTS (mirrors migration 630/631's fix).
-  const hasDedupDelete = /DELETE\s+FROM\s+[\w".]*\bwork_items\b/i.test(stripped);
-  const guardedUpdate = /NOT\s+EXISTS/i.test(stripped);
-  if (hasDedupDelete || guardedUpdate) return [];
   return reslugs;
 }
 

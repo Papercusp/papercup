@@ -473,6 +473,13 @@ describe('findUnguardedReslug (the migration-631 crash-loop class)', () => {
     expect(hits.length).toBe(1);
   });
 
+  it('an unrelated NOT EXISTS statement must NOT disarm a top-level unguarded reslug', () => {
+    const sql =
+      `${RESLUG}\n` +
+      'SELECT 1 WHERE NOT EXISTS (SELECT 1);';
+    expect(findUnguardedReslug(sql)).toHaveLength(1);
+  });
+
   it('accepts a reslug guarded by a dedup DELETE first (the 630/631 fix shape)', () => {
     const guarded = `DELETE FROM harness_shared.work_items o
         WHERE o.harness_slug = 'operator:papercusp-workspace'
