@@ -612,6 +612,29 @@ Each member records terminal evidence through `work_items:complete`. The complet
 
 Sources: [launch-on-plan.ts](packages/operator-core/lib/agent-tools/fleet_registry/launch-on-plan.ts), [get_next.ts](packages/operator-core/lib/agent-tools/scheduler/get_next.ts), [invariant.ts](packages/operator-core/lib/agent-tools/fleet/invariant.ts), [adv-agent-leader-brief.ts](packages/operator-core/lib/adv-agent-leader-brief.ts)
 
+## Example 14: discover the awaitable key instead of guessing or polling
+
+The event families in the previous examples are not improvised strings. Each is declared once, as data, in a single-source-of-truth registry: key template, typed parameters, human meaning, named emitter provenance, whether an emitter fires it today, the poll it replaces, and the sugar verb that wraps the wait. Before polling for a condition — or hand-inventing an event key — an agent asks the catalog what it can wait on:
+
+```json
+{
+  "family": "fleet-drained",
+  "awaitable_now": true
+}
+```
+
+`events:catalog` returns the declared registry. The `fleet-drained` row carries the key template `fleet:drained:<slug>`, the meaning of the transition, the emitter that fires it, its sugar verb `fleet:await-drained`, and `live_awaiters` — how many agents are registered on that key right now. Omit `family` for the whole catalog.
+
+Three properties make this more than documentation:
+
+1. **Single source of truth.** The catalog registry, the await primitives, and the polling tools' `awaitable:` hints all read the same declaration, so discovery cannot drift from emission. A tool like `dev:pipeline_position` answers a poll with a pointer to the event key that replaces the poll.
+2. **Extensible by installation.** Event families declared by installed packs and plugins (`provides.events`) fold into the same catalog under an `installed:<unit>` provenance tag. An extension does not create a second, private event system.
+3. **Read-time audience evidence.** `live_awaiters` is the read-time twin of `events:emit`'s `waiters`/`woken` counts: an emitter can check who is actually listening before trusting a bare emit, and a leader can confirm a declared gate has a registered waiter before relying on it.
+
+The catalog also lists announced gates — the dynamic, leader-declared keys from Example 2 — each with its fired/latched state, so “what can I wait on?” has one answer across built-in, installed, and declared-at-runtime events.
+
+Sources: [events/await/catalog.ts](packages/operator-core/lib/events/await/catalog.ts), [agent-tools/events/catalog.ts](packages/operator-core/lib/agent-tools/events/catalog.ts)
+
 ## Compact mental model
 
 ```text

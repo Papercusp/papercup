@@ -30,7 +30,7 @@ Keep these three guides open as reference and fallback material:
 | ----------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------- |
 | 0:00–1:30   | Hook and mental model          | Papercusp externalizes the state an agent would otherwise carry privately in prose.                         |
 | 1:30–4:30   | An authored tool               | One definition combines human guidance, machine schema, authority, lifecycle emission, and implementation.  |
-| 4:30–6:30   | A meaningful event             | State transitions become named, awaitable signals rather than polling conventions.                          |
+| 4:30–6:30   | A declared, awaitable event    | Event families are declared as data — named, discoverable, awaitable — not improvised strings or polls.     |
 | 6:30–11:00  | Reaction rule and causal graph | Declarative event–condition–action behavior remains durable, bounded, deduplicated, and explainable.        |
 | 11:00–14:00 | Registered live state          | Cells preserve provenance, relativity, falsifiers, and `unknown` rather than publishing convenient guesses. |
 | 14:00–16:30 | Routine and system action      | Time policy is separated from executable behavior.                                                          |
@@ -53,15 +53,16 @@ Open the tabs in this order. Put the three guides in one tab group and the repre
 3. [Agent usage examples](papercusp-agent-usage-examples.md).
 4. [State-object inventory](papercusp-state-object-inventory.md).
 5. [`coord:escalate` tool definition](packages/operator-core/lib/agent-tools/coordination/tools/escalate.ts#L25).
-6. [Fleet-drained event](packages/operator-core/lib/fleet-drained-events.ts#L98).
-7. [Lifecycle reaction rules](packages/operator-core/lib/coord-lifecycle/lifecycle-rules.ts#L80).
-8. [`agent.goal` state cell](packages/operator-core/lib/cell-registrations.ts#L645).
-9. [Routine declaration](packages/operator-core/lib/harness/routines/seed-unclaimed-work-digest-routine.ts#L27).
-10. [System action](packages/operator-core/lib/harness/routines/unclaimed-work-digest-action.ts#L75).
-11. [Pair blueprint](libs/papercusp/packages/harness/blueprints/pair/blueprint.yaml#L6).
-12. [Researcher persona](libs/papercusp/packages/harness/blueprints/base/prompts/researcher.md#L1).
-13. [Plugin handler](libs/papercusp/plugins/fetch-plus/index.ts#L1).
-14. [Plugin declaration](libs/papercusp/plugins/fetch-plus/papercusp.json#L1).
+6. [Event-catalog declaration](packages/operator-core/lib/events/await/catalog.ts#L314).
+7. [Fleet-drained event emission](packages/operator-core/lib/fleet-drained-events.ts#L98).
+8. [Lifecycle reaction rules](packages/operator-core/lib/coord-lifecycle/lifecycle-rules.ts#L80).
+9. [`agent.goal` state cell](packages/operator-core/lib/cell-registrations.ts#L645).
+10. [Routine declaration](packages/operator-core/lib/harness/routines/seed-unclaimed-work-digest-routine.ts#L27).
+11. [System action](packages/operator-core/lib/harness/routines/unclaimed-work-digest-action.ts#L75).
+12. [Pair blueprint](libs/papercusp/packages/harness/blueprints/pair/blueprint.yaml#L6).
+13. [Researcher persona](libs/papercusp/packages/harness/blueprints/base/prompts/researcher.md#L1).
+14. [Plugin handler](libs/papercusp/plugins/fetch-plus/index.ts#L1).
+15. [Plugin declaration](libs/papercusp/plugins/fetch-plus/papercusp.json#L1).
 
 Keep the two optional MCP examples closed unless someone asks about MCP prompts or resources:
 
@@ -146,26 +147,43 @@ The authored capability is the first inspectable unit: guidance, shape, authorit
 
 > MCP can expose tools, prompts, and resources. Papercusp uses those interfaces, but this definition also participates in runtime authority, events, coordination, audit, and role-scoped delivery. MCP is an interface boundary; it is not the whole control plane.
 
-## 4:30–6:30 — Turn a state change into an awaitable event
+## 4:30–6:30 — Turn a state change into a declared, awaitable event
 
-### Show
+### Show, part 1: the declaration
 
-Open [`packages/operator-core/lib/fleet-drained-events.ts`](packages/operator-core/lib/fleet-drained-events.ts#L98). Highlight:
+Open [`packages/operator-core/lib/events/await/catalog.ts`](packages/operator-core/lib/events/await/catalog.ts#L314) at the `fleet-drained` entry. Highlight, in order:
 
-- The exact key family: `fleet:drained:<fleetSlug>`.
+1. The key template with a typed parameter: `fleet:drained:<slug>`.
+2. The human meaning of the transition.
+3. The named emitter provenance.
+4. `replacesPoll` on neighboring entries — the poll each event exists to retire.
+5. The sugar verb: `fleet:await-drained`.
+
+### Say
+
+> Events are declared, not improvised. This registry is the single source of truth for awaitable event families: one entry declares the key template, what the transition means, which code emits it, which polling pattern it replaces, and the sugar verb that wraps the wait. The discovery tool, the await primitives, and the polling tools' own “stop polling — await this instead” hints all read this same declaration, so the catalog and the emitters cannot drift apart.
+
+### Show, part 2: the emission
+
+Switch to [`packages/operator-core/lib/fleet-drained-events.ts`](packages/operator-core/lib/fleet-drained-events.ts#L98). Highlight:
+
+- The emission of the exact declared key family.
 - The human summary and structured payload.
-- The named source.
 - The fail-soft boundary: an event-delivery problem cannot roll back the state transition that caused it.
 
 ### Say
 
-> Once a fleet has no remaining claimable lane, the runtime emits a named event with a payload identifying the fleet. A waiting agent does not need to re-query the database every few seconds or agree on a prose phrase like “looks done.” It waits for the runtime's transition.
+> Once a fleet has no remaining claimable lane, the runtime emits the declared key with a payload identifying the fleet. A waiting agent does not need to re-query the database every few seconds or agree on a prose phrase like “looks done.” It waits for the runtime's transition.
 >
 > The event is deliberately downstream of the authoritative state change. If event delivery fails, it is diagnosed as a delivery problem; it does not undo or corrupt the fleet's actual status.
 
 ### Land this point
 
-Events turn important transitions into push-based rendezvous points without making the event itself the source of truth.
+Events are first-class declared objects — named, typed, discoverable, awaitable — and the emission stays downstream of truth, never the truth itself.
+
+### One sentence on discovery
+
+> Live, `events:catalog` renders this registry — plus event families contributed by installed plugins and any leader-declared gates — each with a `live_awaiters` count, so an emitter can see who is actually listening and an agent about to poll finds the push-based key instead.
 
 ### One sentence on late joiners
 
@@ -339,6 +357,8 @@ In the manifest, point to:
 > A plugin is a removable runtime extension, not arbitrary code silently added to every agent. The handler implements the behavior, while the manifest declares compatibility, schema, roles, quotas, network authority, and the specific secret it may request.
 >
 > Notice that secret access and outbound HTTP access are named capabilities. The plugin does not inherit every credential or every network destination simply because it runs in the same application.
+>
+> Two more things worth saying while this file is open. First, this is one of twenty plugins in the tree — Jira and Linear sync, a Slack notifier, GitHub tooling, a Postgres manager, TUI panes — so this seam is exercised, not aspirational. Second, a plugin's reactive behavior goes through the same event-reaction registry we saw earlier: there is no separate hook-and-filter bus — that layer was deliberately retired — so plugin rules and plugin-fired events appear in the same causal graph as everything else, and `plugins:runtime_status` shows what is loaded right now.
 
 ### Land this point
 
@@ -385,6 +405,10 @@ Open the prepared active session or fleet view. Point to:
 
 Show the prepared waiter and emit the already-declared harmless gate using the exact returned key. Then show the waiter wake or the `already_fired` result.
 
+#### Optional gesture (only if ahead of schedule)
+
+Before firing, run `events:catalog` and point to the declared gate in its announced section: its latch state and `live_awaiters: 1` — the prepared waiter, visible before the emit. Skip this without comment if time is tight.
+
 #### Say
 
 > The waiting session ends its turn. It does not burn tokens asking whether the condition changed. The runtime wakes it when the declared gate fires. If the fire happened before registration, the latch returns immediately instead of creating a dead wait.
@@ -423,7 +447,7 @@ Return to the [compact mental model](papercusp-agent-usage-examples.md#compact-m
 
 > We followed one path from an authored tool to an event, from the event to a durable reaction, from the reaction to inspectable state and coordination, and from there to plans, fleets, waits, and reusable orchestration.
 >
-> The important boundary is what I did not show: raw registries, storage tables, dispatch internals, migrations, or delivery pumps. Those implement the runtime, but they are not the objects an agent should reason about directly. The agent-facing model is intentionally smaller: intent, authority, action, change, wait, recurrence, concurrency, continuity, and proof.
+> The important boundary is what I did not show: raw storage tables, dispatch internals, migrations, or delivery pumps. Those implement the runtime, but they are not the objects an agent should reason about directly. The agent-facing model is intentionally smaller: intent, authority, action, change, wait, recurrence, concurrency, continuity, and proof.
 
 Read the final mapping slowly:
 
@@ -471,15 +495,17 @@ Take one or two short questions. If a question needs more than 45 seconds, say:
 ### First things to cut
 
 1. Optional UI gesture during the state-cell section.
-2. Live `events:graph`; retain the prepared cause-chain diagram.
-3. Detailed persona prose; retain the blueprint/persona distinction.
-4. Recipe dry-run execution; retain search and the returned run arguments.
-5. All optional MCP material.
+2. Optional `events:catalog` gesture in the live story; retain the prepared waiter demonstration.
+3. Live `events:graph`; retain the prepared cause-chain diagram.
+4. Detailed persona prose; retain the blueprint/persona distinction.
+5. Recipe dry-run execution; retain search and the returned run arguments.
+6. All optional MCP material.
 
 ### Never cut
 
 - The opening problem statement.
 - One concrete tool definition.
+- The event-catalog declaration (events are declared, not improvised).
 - The rule-engine cause chain.
 - The `unknown`/`absent` state distinction.
 - The live operational story's plan/work-item view.
@@ -521,7 +547,7 @@ The runtime object that owns the fact is the source of truth; the UI and transcr
 
 ### 8. Why not show registries, stores, dispatchers, migrations, and pumps?
 
-Those are implementation mechanics. They matter to maintainers, but they are not the stable vocabulary an agent or operator should use to reason about work. The demo stays at the authored-runtime and agent-visible state boundary so the architecture remains understandable in half an hour.
+Those are implementation mechanics. They matter to maintainers, but they are not the stable vocabulary an agent or operator should use to reason about work. The demo stays at the authored-runtime and agent-visible state boundary so the architecture remains understandable in half an hour. The event catalog shown in the event segment is the deliberate exception that proves the boundary: it is an authored, agent-facing declaration rendered live by a discovery tool, not an implementation registry.
 
 ### 9. Is Papercusp model- or provider-specific?
 
@@ -584,6 +610,8 @@ Use a declared, latched gate for rendezvous conditions. The completion owner dec
 ### 23. Why not just poll?
 
 Polling consumes turns, introduces detection delay, duplicates load, and can still miss the distinction between “not changed” and “read failed.” Push events are preferred for transitions, while cell subscriptions share a poller when the underlying source genuinely requires measurement. A paced loop is the fallback when no push source exists and must include producer-health checks.
+
+Discovery is part of the answer: `events:catalog` lists every awaitable key family — key template, meaning, emitter, the poll it replaces, its sugar verb, and how many agents are listening right now — and the polling tools themselves advertise the awaitable key that replaces them, so an agent about to poll is pointed at the push-based alternative.
 
 ## C. State, truth, and observability
 
@@ -709,9 +737,13 @@ A blueprint defines the multi-agent topology and runtime policy: roles, dispatch
 
 Yes, through a restricted contribution path. Those rules enter the same reaction registry and appear in the same graph as core rules and tool-local emissions. The contribution does not create a second invisible rules engine.
 
+This is a deliberate design decision, not an accident of history: an earlier WordPress-style hook/filter bus was retired in favor of it. Event-reaction rules are the plugin extension surface, plugin-fired events enter the registry as first-class events, and the legacy lifecycle hooks survive only as a frozen back-compat surface.
+
 ### 53. What can a plugin contribute?
 
-Depending on its manifest and host support, a plugin can contribute tools and related runtime surfaces. The demonstrated plugin declares its tool, schema, roles, quotas, HTTP/MCP exposure, configuration, network destination, and optional secret. The manifest is the inspectable contract; the handler is the implementation.
+Depending on its manifest and host support, a plugin can contribute tools and related runtime surfaces. The demonstrated plugin declares its tool, schema, roles, quotas, HTTP/MCP exposure, configuration, network destination, and optional secret. The manifest is the inspectable contract; the handler is the implementation. A plugin can also declare event families; those fold into the same `events:catalog` under an `installed:<unit>` provenance tag rather than creating a second, private event system.
+
+If they press: beyond tools and events, plugins contribute server actions, API routes, and TUI panes, and `plugins:runtime_status` reports what is loaded, registered, and mounted right now. The plugin protocol itself is defined once in WIT, so a plugin can also ship as a WebAssembly component that loads on either host runtime — the JS host transpiles it at install time, the Rust host runs it under wasmtime — and an alternate-runtime manifest needs no JS entry at all.
 
 ### 54. Can a plugin read every secret?
 
@@ -826,7 +858,7 @@ Use this phrasing when the evidence is not in the room:
 If you lose your place, use this sequence:
 
 1. **Tool:** contract plus authority.
-2. **Event:** named state transition.
+2. **Event:** declared family, named transition.
 3. **Rule:** condition turns the event into action.
 4. **Graph:** explain what could and did fire.
 5. **Cell:** current truth with `unknown` and a falsifier.
