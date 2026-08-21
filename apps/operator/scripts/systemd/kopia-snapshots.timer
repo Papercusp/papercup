@@ -1,8 +1,8 @@
 [Unit]
-Description=Run kopia snapshots every 5 minutes
+Description=Run kopia snapshots every 30 minutes
 
 [Timer]
-# Every 5 minutes. Runs snapshot-all.sh (~5-7min), which ships the local DB
+# Every 30 minutes. Runs snapshot-all.sh, which ships the local DB
 # dumps + registered sources OFFSITE via kopia.
 #
 # WHY OnCalendar, not OnUnitInactiveSec (EI-10733 follow-up, su-a1a71 2026-07-14):
@@ -18,11 +18,12 @@ Description=Run kopia snapshots every 5 minutes
 # The EI-10730 hot-loop (OnUnitActiveSec=5min vs a 5-7min run => back-to-back
 # runs pinning pg_dump ACCESS SHARE locks, which wedged the release pipeline 9h)
 # CANNOT recur with OnCalendar: systemd never QUEUES a start for an
-# already-active oneshot — if a 5-min boundary passes mid-run it is simply
+# already-active oneshot — if a 30-min boundary passes mid-run it is simply
 # skipped and the next run is the first boundary AFTER the unit goes idle, so
-# there is always a real inter-run gap. This preserves the original 5-min
-# cadence intent while surviving manager restarts.
-OnCalendar=*:0/5
+# there is always a real inter-run gap. This preserves the wall-clock cadence
+# across manager restarts. D-001 additionally guards
+# cross-unit/manual overlap and defers scheduled work when host PSI is unsafe.
+OnCalendar=*:0/30
 Persistent=true
 RandomizedDelaySec=20
 AccuracySec=15s

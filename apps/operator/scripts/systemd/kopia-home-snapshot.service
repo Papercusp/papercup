@@ -7,7 +7,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 # Deliberately heavier de-prioritisation than kopia-snapshots.service (Nice=10,
-# best-effort/7). That unit runs for ~3 min every 15 min; this one walks the WHOLE
+# best-effort/7). That unit runs about every 30 min; this one walks the WHOLE
 # home tree once a day and must yield to everything else while it does. The script
 # also re-applies renice/ionice to itself so the settings reach kopia's children.
 Nice=19
@@ -20,7 +20,7 @@ MemoryHigh=8G
 MemoryMax=12G
 MemorySwapMax=0
 TimeoutStopSec=30s
-ExecStart=%h/.config/kopia/home-snapshot.sh
+ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode wait --label daily-home-vm -- %h/.config/kopia/home-snapshot.sh
 # systemd's user manager may fail to kill the root-owned sudo/Kopia child when
 # an OOM tears down the cgroup. The script validates and kills only its recorded
 # exact Kopia PID; it never scans or kills unrelated processes.

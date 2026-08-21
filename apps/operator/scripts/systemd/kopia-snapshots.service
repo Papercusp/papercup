@@ -7,4 +7,7 @@ Type=oneshot
 Nice=10
 IOSchedulingClass=best-effort
 IOSchedulingPriority=7
-ExecStart=%h/.config/kopia/snapshot-all.sh
+ExecStart=%h/.config/kopia/kopia-backup-guard.sh --mode scheduled --label hot -- %h/.config/kopia/snapshot-all.sh
+# If oomd kills the user-owned guard while root Kopia survives sudo, validate
+# and kill only the exact PID this invocation recorded.
+ExecStopPost=%h/.config/kopia/snapshot-all.sh --cleanup

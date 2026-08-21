@@ -587,7 +587,7 @@ DISK_RED_REFILE_H=6 bash apps/operator/scripts/papercup-fedplane-disk-health-che
 
 `papercusp-db-backup.{timer,service}` (hourly `pg_dump -Fd -j` per database, EI-10733),
 `papercusp-db-backup-alert.service` (its `OnFailure=` handler), `kopia-snapshots.{timer,service}`
-(5-min offsite ship of the dumps via kopia), and `kopia-healthcheck.{timer,service}` (15-min
+(30-min offsite ship of the dumps via kopia), and `kopia-healthcheck.{timer,service}` (15-min
 dump-freshness/snapshot-recency probe, a BACKSTOP to `papercup-backup-health.{timer,service}`
 above — see its own header comment for why two checks exist and how they're kept from
 disagreeing).
@@ -599,15 +599,15 @@ symlinked) but silently lost backup EXECUTION entirely — broken-but-detected i
 Relocated here and re-symlinked, mirroring every other unit in this directory, so the whole
 backup stack re-materializes on a fresh machine.
 
-**Deliberately UNIT-FILES-ONLY.** The scripts these units invoke
-(`~/.config/kopia/db-backup.sh`, `snapshot-all.sh`, `healthcheck.sh`, `backup-alert.sh`) are
-NOT relocated here — they stay at their current `~/.config/kopia/` paths (the units' `ExecStart=`
-is untouched) because that directory is separately managed and a full script relocation needs
-its own coordination pass (EI-12028's own filing said as much). This is a strict subset of the
-original ask: it closes the "unit definitions lost on re-provision" gap completely, without
-touching script content or execution behavior at all — verified byte-identical
-(`diff` clean) before symlinking, and `systemctl --user daemon-reload` + `list-timers` confirmed
-every affected timer's schedule/state was unaffected by the swap.
+**Snapshot scripts are canonical here now.** Plan
+`serialize-and-slow-kopia-backups-2026-08-20` completed the deferred relocation for
+`snapshot-all.sh`, `home-snapshot.sh`, and `healthcheck.sh`. Their installed paths remain under
+`~/.config/kopia/`, but those paths are symlinks to the versioned files here. One versioned
+`kopia-backup-guard.sh` owns the global flock: hot scheduled work takes it non-blocking and
+defers when memory full PSI is at least 5 or I/O full PSI is at least 10; daily home/VM and
+protected/manual work wait for it. `kopia-protected-snapshot.sh SOURCE...` is the supported
+manual entrypoint. The remaining `db-backup.sh` and `backup-alert.sh` scripts are still managed
+under `~/.config/kopia/` and are outside this snapshot-serialization contract.
 
 ## Install (one-time, on a fresh machine)
 
@@ -615,17 +615,36 @@ every affected timer's schedule/state was unaffected by the swap.
 cd /home/dev/papercupai-workspace/papercusp/apps/operator/scripts/systemd
 for f in papercusp-db-backup.timer papercusp-db-backup.service papercusp-db-backup-alert.service \
          kopia-snapshots.timer kopia-snapshots.service \
-         kopia-healthcheck.timer kopia-healthcheck.service; do
+         kopia-healthcheck.timer kopia-healthcheck.service \
+         kopia-home-snapshot.timer kopia-home-snapshot.service; do
   ln -sf "$(pwd)/$f" ~/.config/systemd/user/
 done
+mkdir -p ~/.config/kopia
+ln -sf "$(pwd)/kopia-backup-guard.sh" ~/.config/kopia/kopia-backup-guard.sh
+ln -sf "$(pwd)/kopia-snapshot-all.sh" ~/.config/kopia/snapshot-all.sh
+ln -sf "$(pwd)/kopia-home-snapshot.sh" ~/.config/kopia/home-snapshot.sh
+ln -sf "$(pwd)/kopia-healthcheck.sh" ~/.config/kopia/healthcheck.sh
+ln -sf "$(pwd)/kopia-protected-snapshot.sh" ~/.config/kopia/kopia-protected-snapshot.sh
 systemctl --user daemon-reload
-systemctl --user enable --now papercusp-db-backup.timer kopia-snapshots.timer kopia-healthcheck.timer
+systemctl --user enable --now papercusp-db-backup.timer kopia-snapshots.timer \
+  kopia-healthcheck.timer kopia-home-snapshot.timer
 ```
 
-You must ALSO recreate `~/.config/kopia/db-backup.sh`, `snapshot-all.sh`, `healthcheck.sh`, and
-`backup-alert.sh` on the new machine — those are not version-controlled (see above). This
-directory's units will load but the timers will fail with "No such file or directory" until
-those scripts exist at their expected paths.
+You must still recreate `~/.config/kopia/db-backup.sh` and `backup-alert.sh` on a new machine;
+those two scripts are not version-controlled. The Kopia snapshot, home/VM, healthcheck, global
+guard, and supported protected/manual entrypoints are restored by the symlinks above.
+
+## Manual/protected snapshot
+
+Never invoke `sudo kopia snapshot create` directly. The supported command waits for the same
+global lock used by both timers:
+
+```bash
+~/.config/kopia/kopia-protected-snapshot.sh /path/to/source [/another/source]
+```
+
+The hot timer intentionally runs every 30 minutes. `healthcheck.sh` uses a 60-minute snapshot
+staleness bar, which allows one missed/deferred cycle plus runtime and timer jitter.
 
 ## Mandatory post-restore recovery sweep
 
@@ -661,6 +680,8 @@ bash ./papercusp-systemd-restore-recovery.sh --scope both
 
 ```bash
 systemctl --user list-timers papercusp-db-backup.timer kopia-snapshots.timer kopia-healthcheck.timer
+systemctl --user cat kopia-snapshots.service kopia-home-snapshot.service
+bash ~/.config/kopia/healthcheck.sh --self-test
 journalctl --user -u papercusp-db-backup.service --since "2 hours ago"
 cat /mnt/data/Backup/db-dumps/STATUS.json
 ```
