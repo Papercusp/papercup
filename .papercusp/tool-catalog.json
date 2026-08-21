@@ -21627,7 +21627,7 @@
           "POST"
         ]
       },
-      "description": "Send SIGTERM (or SIGKILL) in ONE call, addressed three ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. An explicitly supplied `scopeUnit`/`scopeUnits` is only for a live unaccounted Papercusp scope surfaced by `processes:list { live:true }`; systemd resolves and the handler re-probes its cgroup before reporting success. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling. Results are keyed by taskId/scopeUnit/pid; one failure never fails the rest.",
+      "description": "Send SIGTERM (or SIGKILL) in ONE call, addressed three ways. PREFER `taskId`/`taskIds` (from `processes:list`): kills the whole cgroup SUBTREE, leaves no orphaned grandchildren, and cannot hit a recycled pid. An explicitly supplied `scopeUnit`/`scopeUnits` is only for a live unaccounted Papercusp scope surfaced by `processes:list { live:true }`; systemd resolves and the handler re-probes its cgroup before reporting success. `pid`/`pids` is the legacy path for the six tracked agent kinds and re-verifies kernel identity before signalling.",
       "capabilities": [
         "processes:kill"
       ],
