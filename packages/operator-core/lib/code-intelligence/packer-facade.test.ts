@@ -51,14 +51,33 @@ const ARG_MATRIX: PackerArgs[] = [
   { ...BASE, ignore: ['**/*.test.ts'] },
   { ...BASE, baseRef: 'origin/main' },
   { ...BASE, template: 'security-audit' },
-  // Smuggling attempts: a caller trying to get a forbidden flag into the argv
-  // through a field that is legitimately caller-controlled.
+  { ...BASE, include: ['a/**', 'b/**', 'c/**'], ignore: ['**/dist/**', '**/*.snap'] },
+];
+
+/**
+ * Smuggling attempts: a caller trying to get a forbidden flag into the argv
+ * through a field that is legitimately caller-controlled.
+ *
+ * These MUST be refused outright rather than sanitised. Writing this matrix is
+ * what exposed the original hole — the first version of the builder emitted
+ * `['--include', '--no-security-check']`, which is a flag-shaped token in argv
+ * whose meaning depends on the engine parser's version. Refusing is the only
+ * answer that does not rest on a parser quirk.
+ */
+const SMUGGLING_MATRIX: PackerArgs[] = [
   { ...BASE, include: ['--no-security-check'] },
   { ...BASE, include: ['src/**', '--remote'] },
   { ...BASE, ignore: ['--copy', '-o', '/etc/passwd'] },
-  { ...BASE, ignore: ['--hidden'], include: ['--no-ignore'] },
-  { ...BASE, baseRef: '--clipboard' },
+  { ...BASE, ignore: ['--hidden'] },
+  { ...BASE, include: ['--no-ignore'] },
+  { ...BASE, include: ['-t'] },
 ];
+
+/** Value of a `--flag=value` token, since the builders emit the attached form. */
+const attached = (argv: readonly string[], flag: string): string => {
+  const hit = argv.find((t) => t.startsWith(`${flag}=`));
+  return hit === undefined ? '' : hit.slice(flag.length + 1);
+};
 
 // ───────────────────────── pins and identity ─────────────────────────
 
@@ -134,14 +153,36 @@ describe('dangerous engine flags are unreachable by construction', () => {
     }
   });
 
-  it('code2prompt always writes to STDOUT: -O is present and its value is exactly "-"', () => {
+  it('code2prompt always writes to STDOUT and the target cannot be rebound', () => {
     for (const args of ARG_MATRIX) {
       const argv = buildCode2PromptArgs(args);
-      const i = argv.indexOf('-O');
-      expect(i, 'code2prompt argv must pin its output target').toBeGreaterThanOrEqual(0);
-      expect(argv[i + 1]).toBe('-');
-      // and no second output flag smuggled in behind it
-      expect(argv.filter((t) => t === '-O')).toHaveLength(1);
+      expect(argv, 'output target must be pinned to stdout').toContain('--output-file=-');
+      // exactly one output target, so none can be smuggled in behind it
+      expect(argv.filter((t) => t.startsWith('--output-file'))).toHaveLength(1);
+      expect(argv.filter((t) => t === '-O')).toHaveLength(0);
+    }
+  });
+
+  it('REFUSES every smuggling attempt outright, rather than sanitising it', () => {
+    for (const args of SMUGGLING_MATRIX) {
+      expect(() => buildRepomixArgs(args), JSON.stringify(args)).toThrow(/begins with '-'/);
+      expect(() => buildCode2PromptArgs(args), JSON.stringify(args)).toThrow(/begins with '-'/);
+    }
+  });
+
+  it('REFUSES a flag-shaped baseRef', () => {
+    expect(() => buildCode2PromptArgs({ ...BASE, baseRef: '--clipboard' })).toThrow(/begins with '-'/);
+  });
+
+  it('emits ATTACHED values, so no emitted token can be re-read as an option', () => {
+    // The second, independent defence: even if a pattern slipped past
+    // validation, `--include=<value>` is unambiguous to every argv parser,
+    // whereas `--include <value>` is not.
+    for (const args of ARG_MATRIX) {
+      const argv = buildRepomixArgs(args);
+      expect(argv.some((t) => t.startsWith('--include='))).toBe(true);
+      expect(argv).not.toContain('--include');
+      expect(argv).not.toContain('--ignore');
     }
   });
 
@@ -151,27 +192,21 @@ describe('dangerous engine flags are unreachable by construction', () => {
     expect(buildRepomixArgs(BASE)).not.toContain('--no-security-check'); // subject is not
   });
 
-  it('CONTROL: a builder that honours a caller output path fails the stdout assertion', () => {
-    const wrong = (args: PackerArgs) => {
-      const argv = buildCode2PromptArgs(args);
-      const i = argv.indexOf('-O');
-      return [...argv.slice(0, i + 1), '/tmp/attacker-chosen.md', ...argv.slice(i + 2)];
-    };
-    const w = wrong(BASE);
-    expect(w[w.indexOf('-O') + 1]).not.toBe('-'); // control writes a file
-    const s = buildCode2PromptArgs(BASE);
-    expect(s[s.indexOf('-O') + 1]).toBe('-'); // subject cannot
+  it('CONTROL: the pre-fix DETACHED builder puts a flag-shaped token in argv', () => {
+    // This is verbatim what the first implementation did, kept permanently so
+    // the smuggling refusal above cannot quietly stop testing anything.
+    const wrong = (args: PackerArgs) => ['--include', args.include.join(','), '--stdout'];
+    expect(wrong({ ...BASE, include: ['--no-security-check'] })).toContain('--no-security-check');
+    expect(() => buildRepomixArgs({ ...BASE, include: ['--no-security-check'] })).toThrow();
   });
 });
 
 // ───────────────────────── the deny-set ─────────────────────────
 
 describe('the secret deny-set cannot be shortened by a caller', () => {
-  const ignoreArgOf = (argv: string[], flag: string) => argv[argv.indexOf(flag) + 1] ?? '';
-
   it('every deny glob reaches repomix, whatever the caller passes for ignore', () => {
     for (const args of ARG_MATRIX) {
-      const value = ignoreArgOf(buildRepomixArgs(args), '--ignore');
+      const value = attached(buildRepomixArgs(args), '--ignore');
       for (const glob of SECRET_DENY_GLOBS) {
         expect(value.split(','), `${glob} missing`).toContain(glob);
       }
@@ -180,7 +215,7 @@ describe('the secret deny-set cannot be shortened by a caller', () => {
 
   it('every deny glob reaches code2prompt, whatever the caller passes for ignore', () => {
     for (const args of ARG_MATRIX) {
-      const value = ignoreArgOf(buildCode2PromptArgs(args), '-e');
+      const value = attached(buildCode2PromptArgs(args), '--exclude');
       for (const glob of SECRET_DENY_GLOBS) {
         expect(value.split(','), `${glob} missing`).toContain(glob);
       }
@@ -196,10 +231,10 @@ describe('the secret deny-set cannot be shortened by a caller', () => {
   });
 
   it('CONTROL: a builder that uses only the caller ignore drops the whole deny-set', () => {
-    const wrong = (args: PackerArgs) => ['--ignore', (args.ignore ?? []).join(',')];
-    const w = ignoreArgOf(wrong({ ...BASE, ignore: ['docs/**'] }), '--ignore').split(',');
+    const wrong = (args: PackerArgs) => [`--ignore=${(args.ignore ?? []).join(',')}`];
+    const w = attached(wrong({ ...BASE, ignore: ['docs/**'] }), '--ignore').split(',');
     expect(w).not.toContain('**/.env'); // control leaks secrets
-    const s = ignoreArgOf(buildRepomixArgs({ ...BASE, ignore: ['docs/**'] }), '--ignore').split(',');
+    const s = attached(buildRepomixArgs({ ...BASE, ignore: ['docs/**'] }), '--ignore').split(',');
     expect(s).toContain('**/.env'); // subject does not
   });
 });
