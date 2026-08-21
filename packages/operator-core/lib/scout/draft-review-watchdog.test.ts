@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
+import type { Sql } from 'postgres';
 
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 vi.mock('../pot/started', () => ({
@@ -18,10 +19,12 @@ vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi
 
 import {
   selectStaleDrafts,
+  hasDurableScoutReviewEvidence,
   shouldNudgeHive,
   scoutDraftReviewStaleSec,
   fireReviewWake,
   formatStaleDuration,
+  readScoutDraftCandidates,
   type ScoutDraftCandidate,
 } from './draft-review-watchdog';
 
@@ -62,6 +65,50 @@ describe('selectStaleDrafts', () => {
   it('never selects a draft with a non-finite timestamp (never act blind)', () => {
     const bad: ScoutDraftCandidate = { planSlug: 'nan', title: null, updatedAtMs: Number.NaN };
     expect(selectStaleDrafts([bad], opts)).toEqual([]);
+  });
+
+  it('does not re-alert a draft carrying durable review evidence', () => {
+    const reviewed: ScoutDraftCandidate = {
+      ...draft('reviewed', 48),
+      reviewEvidence: { hasDecision: true, hasNeedsHumanItem: false, hasRevisionHold: false },
+    };
+    const held: ScoutDraftCandidate = {
+      ...draft('held', 48),
+      reviewEvidence: { hasDecision: false, hasNeedsHumanItem: true, hasRevisionHold: false },
+    };
+    const plain = draft('plain', 48);
+
+    expect(hasDurableScoutReviewEvidence(reviewed)).toBe(true);
+    expect(hasDurableScoutReviewEvidence(held)).toBe(true);
+    expect(selectStaleDrafts([reviewed, held, plain], opts).map((d) => d.planSlug)).toEqual(['plain']);
+  });
+});
+
+describe('readScoutDraftCandidates SQL projection', () => {
+  it('projects the structured review fields used by the durable evidence guard', async () => {
+    const sql = vi.fn().mockResolvedValue([
+      {
+        plan_slug: 'scout-reviewed',
+        title: 'reviewed draft',
+        updated_at_ms: NOW - 48 * HOUR,
+        items: [{ status: 'needs-human' }],
+        decisions: [{ id: 'D-001' }],
+        content: '\nrevision hold\n',
+      },
+    ]) as unknown as Sql;
+
+    const got = await readScoutDraftCandidates(sql, 'ws-1', 'pot-1');
+    const projection = (sql as unknown as { mock: { calls: unknown[][] } }).mock.calls[0][0];
+    const sqlText = Array.isArray(projection) ? projection.join(' ') : String(projection);
+
+    expect(sqlText).toContain('items');
+    expect(sqlText).toContain('decisions');
+    expect(sqlText).toContain('content');
+    expect(got[0].reviewEvidence).toEqual({
+      hasDecision: true,
+      hasNeedsHumanItem: true,
+      hasRevisionHold: true,
+    });
   });
 });
 
