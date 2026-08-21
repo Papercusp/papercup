@@ -8,7 +8,7 @@
  *   snapshot/restore → the Kopia backup substrate (workspace files + PG dump, D-008).
  *   runSetup         → setup-release-checkout.sh (FF release tree + submodules + nm).
  *   migrate          → applyStagedMigrations, fail-loud (D-007).
- *   restart          → systemctl restart of the operator unit (gated, shared-box safe).
+ *   restart          → systemctl restart of the operator + background units (gated, shared-box safe).
  *   health/verify    → probeHealth + verify-release-paths (D-011d + Phase-0 isolation).
  *   broadcast        → coord:send "deployed <sha>".
  *
@@ -51,6 +51,43 @@ import { probeHealth } from './health-probe';
 // broadcasts/telemetry; only the lock-identity `ownerId` needs to be unique.
 const DEPLOY_OWNER = `release-deploy:${process.pid}:${randomUUID()}`;
 const DEFAULT_DRAIN_SEC = 120;
+
+export interface SystemdRestartCommand {
+  unit: string;
+  bin: string;
+  args: string[];
+}
+
+/**
+ * Build the command used to restart one configured systemd unit.
+ *
+ * A unit name uses the normal `systemctl --user restart <unit>` shape. The
+ * existing release config also permits a complete command string for local
+ * wrappers/tests, so preserve that form when the value contains spaces.
+ */
+export function systemdRestartCommand(unit: string): SystemdRestartCommand {
+  const parts = unit.includes(' ')
+    ? unit.split(' ')
+    : ['systemctl', '--user', 'restart', unit];
+  const [bin, ...args] = parts;
+  if (!bin || args.length === 0 || args.every((arg) => arg === '')) {
+    throw new Error(`invalid systemd restart command: ${JSON.stringify(unit)}`);
+  }
+  return { unit, bin, args };
+}
+
+/**
+ * Return the ordered restart commands for a deploy. The background unit is
+ * optional by design: an explicit empty value leaves operator-only deployments
+ * unchanged, while the default config activates the long-lived worker host.
+ */
+export function systemdRestartCommands(
+  cfg: Pick<ReleaseConfig, 'systemdUnit' | 'backgroundSystemdUnit'>,
+): SystemdRestartCommand[] {
+  return [cfg.systemdUnit, cfg.backgroundSystemdUnit]
+    .filter((unit) => unit.length > 0)
+    .map(systemdRestartCommand);
+}
 
 /**
  * EI-18674647773291145: the inverse of the `${process.pid}` embedding above —
@@ -357,11 +394,10 @@ export function realDeps(cfg: ReleaseConfig, opts: RealDepsOpts = {}): DeployDep
       if (!allowRestart) {
         throw new Error('restart withheld — set PAPERCUSP_ALLOW_DEV_RESTART=1 to enable the real deploy restart');
       }
-      const [bin, ...rest] = cfg.systemdUnit.includes(' ')
-        ? cfg.systemdUnit.split(' ')
-        : ['systemctl', '--user', 'restart', cfg.systemdUnit];
-      await run(bin, rest);
-      log(`restarted ${cfg.systemdUnit}`);
+      for (const command of systemdRestartCommands(cfg)) {
+        await run(command.bin, command.args);
+        log(`restarted ${command.unit}`);
+      }
     },
 
     async health() {

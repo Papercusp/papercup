@@ -33,6 +33,12 @@ export interface ReleaseConfig {
   integrationBranch: string;
   /** systemd --user unit the operator runs under. */
   systemdUnit: string;
+  /**
+   * systemd --user unit that runs the background workers (scout, routines, and
+   * git-sync). Empty disables the secondary restart for an intentionally
+   * operator-only deployment.
+   */
+  backgroundSystemdUnit: string;
   /** Health endpoint probed after a deploy/restart. */
   operatorHealthUrl: string;
   /** Command (run in a clean checkout) that defines "green". */
@@ -311,6 +317,10 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
       overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging',
     systemdUnit:
       overrides.systemdUnit ?? process.env.PAPERCUSP_SYSTEMD_UNIT ?? 'papercup-dev-api.service',
+    backgroundSystemdUnit:
+      overrides.backgroundSystemdUnit ??
+      process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT ??
+      'papercup-bg-host.service',
     operatorHealthUrl:
       overrides.operatorHealthUrl ??
       process.env.PAPERCUSP_HEALTH_URL ??

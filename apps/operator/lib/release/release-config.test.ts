@@ -36,6 +36,7 @@ const RELEASE_ENV_KEYS = [
   'PAPERCUSP_RELEASE_REF',
   'PAPERCUSP_INTEGRATION_BRANCH',
   'PAPERCUSP_SYSTEMD_UNIT',
+  'PAPERCUSP_BACKGROUND_SYSTEMD_UNIT',
   'PAPERCUSP_HEALTH_URL',
   'PAPERCUSP_GREEN_CMD',
   'PAPERCUSP_CHECKPOINT_LOG_DIR',
@@ -68,8 +69,21 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
     expect(basename(cfg.checkpointRoot)).toBe(`${basename(cfg.integrationRoot)}-checkpoint`);
     expect(cfg.releaseRef).toBe('main');
     expect(cfg.integrationBranch).toBe('staging');
+    expect(cfg.systemdUnit).toBe('papercup-dev-api.service');
+    expect(cfg.backgroundSystemdUnit).toBe('papercup-bg-host.service');
     expect(cfg.greenCmd).toBe('npm run test:affected');
     expect(cfg.greenCheckpointCapacityMode).toBe('shared');
+  });
+
+  it('keeps the background-unit override, including an explicit empty disable value', () => {
+    process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT = 'papercup-bg-host-test.service';
+    expect(releaseConfig().backgroundSystemdUnit).toBe('papercup-bg-host-test.service');
+
+    process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT = '';
+    expect(releaseConfig().backgroundSystemdUnit).toBe('');
+    expect(releaseConfig({ backgroundSystemdUnit: 'papercup-bg-host-override.service' }).backgroundSystemdUnit).toBe(
+      'papercup-bg-host-override.service',
+    );
   });
 
   it('selects reserved capacity only when explicitly configured', () => {
