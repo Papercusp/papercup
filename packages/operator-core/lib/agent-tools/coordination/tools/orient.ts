@@ -1797,7 +1797,9 @@ export async function composeOrient(
         // read as "holds nothing", which is the same false zero `myClaims` guards.
         const rawClaimsForCtx: unknown = selfRow?.claims;
         const holdsItems =
-          typeof rawClaimsForCtx === 'number' ? rawClaimsForCtx > 0 : (rawClaimsForCtx?.length ?? 0) > 0;
+          typeof rawClaimsForCtx === 'number'
+            ? rawClaimsForCtx > 0
+            : Array.isArray(rawClaimsForCtx) && rawClaimsForCtx.length > 0;
         if (holdsItems) contexts.push('item-holder');
 
         if (contexts.length > 0) {
