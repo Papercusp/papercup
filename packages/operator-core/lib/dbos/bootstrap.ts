@@ -498,10 +498,15 @@ export async function startDbos(): Promise<void> {
     // during the outage it targeted, because its runs execute by claiming a
     // work-item and nobody was alive to claim one. Runtime gate:
     // FLAGS.GOAL_LIVENESS_WATCHDOG (default ON), checked per tick.
-    const { startGoalLivenessWatchdog } = await import(
+    const { startGoalHolderRespawner, startGoalLivenessWatchdog } = await import(
       '../system-health/goal-liveness-watchdog'
     );
     startGoalLivenessWatchdog(getOrgPg().sql);
+    // goal-live-holder-guarantee-2026-08-18 P-009: a SEPARATE 60s actor for
+    // goals that explicitly opt into holder.onLoss='respawn'. Its own
+    // default-OFF owner-authority flag keeps report-only liveness enabled
+    // without silently arming unattended agent spend.
+    startGoalHolderRespawner(getOrgPg().sql);
     // EI-19919820196426791 half 2: alarm on an issue that is simultaneously
     // `critical` and structurally UNCLAIMABLE (observation lane / needs-human)
     // past a 7-day floor. The write-time guard on set_priority/update covers the

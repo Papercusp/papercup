@@ -80,6 +80,18 @@ import {
   resolveGoalActivity,
 } from '../goals/activity';
 import {
+  parseGoalLaunchSettings,
+  type GoalLaunchSettings,
+} from '../goal-launch-settings';
+import { resolveGoalHolderPolicy } from '../goal-launch-settings-shared';
+import { launchGoalHolderSession } from '../harness/routines/goal-holder-launch-action';
+import { setMode } from '../modes/store';
+import {
+  decideFlapDamping,
+  initialFlapDampingState,
+  type FlapDampingState,
+} from '../supervision/flap-damping';
+import {
   readGoalHolderRows,
   resolveGoalHoldersFromRows,
   resolveHolderLiveness,
@@ -96,6 +108,8 @@ import {
 export { holderCountsAsAlive } from '../goals/holder';
 
 export const GOAL_LIVENESS_SWEEP_INTERVAL_MS = 10 * 60_000;
+/** P-009: holder recovery is its own faster actor and never rides the report cadence. */
+export const GOAL_HOLDER_RESPAWN_INTERVAL_MS = 60_000;
 
 /**
  * How long a goal may show no live holder before it is called abandoned.
@@ -135,6 +149,10 @@ export interface GoalRowLike {
    * means "the caller scoped it", which is exactly today's behaviour.
    */
   status?: string | null;
+  /** Harness passed to launch-su when this goal earns automatic holder recovery. */
+  installSlug?: string | null;
+  /** Parsed, schema-valid launch settings; invalid stored JSON is fail-dark as null. */
+  launchSettings?: GoalLaunchSettings | null;
 }
 
 /**
@@ -342,9 +360,17 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
     // literal: a paused goal is exempt from this sweep on purpose, and that rule
     // now lives in one place that the in-memory classifier reads too.
     const goalRows = await sql<
-      { id: string; workspace_id: string; title: string; status: string; updated_ms: string }[]
+      {
+        id: string;
+        workspace_id: string;
+        title: string;
+        status: string;
+        install_slug: string | null;
+        launch_settings: unknown;
+        updated_ms: string;
+      }[]
     >`
-      SELECT id, workspace_id, title, status,
+      SELECT id, workspace_id, title, status, install_slug, launch_settings,
              (extract(epoch FROM updated_at) * 1000)::bigint AS updated_ms
         FROM harness_shared.goals
        WHERE status = ANY(${[...GOAL_LIVENESS_SWEEP_STATUSES]}::text[])`;
@@ -354,13 +380,24 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
     // conditions this watchdog exists to report).
     const holders = await readGoalHolderRows(sql);
     return {
-      goals: goalRows.map((r) => ({
-        goalId: r.id,
-        workspaceId: r.workspace_id,
-        title: r.title,
-        status: r.status,
-        updatedAtMs: Number(r.updated_ms),
-      })),
+      goals: goalRows.map((r) => {
+        const parsed = parseGoalLaunchSettings(
+          r.launch_settings,
+          `goal ${r.id} launch_settings`,
+        );
+        if (parsed.error) {
+          console.warn(`[goal-liveness-watchdog] ${parsed.error}; holder respawn stays disabled`);
+        }
+        return {
+          goalId: r.id,
+          workspaceId: r.workspace_id,
+          title: r.title,
+          status: r.status,
+          installSlug: r.install_slug,
+          launchSettings: parsed.settings,
+          updatedAtMs: Number(r.updated_ms),
+        };
+      }),
       holders,
     };
   };
@@ -573,7 +610,267 @@ export async function runGoalLivenessSweepOnce(
   return { scanned: goals.length, escalated, readinessEscalated, skipped: false };
 }
 
+/* ── P-009: opt-in holder recovery ───────────────────────────────────────── */
+
+const HOLDER_RESPAWNER_IDENTITY: AgentIdentity = {
+  ownerId: 'goal-holder-respawner',
+  ownerLabel: 'system · goal holder respawner',
+  source: 'principal',
+  workspaceId: null,
+  userId: null,
+};
+
+export interface GoalHolderRespawnSummary {
+  scanned: number;
+  eligible: number;
+  attempted: number;
+  respawned: number;
+  launchFailed: number;
+  attachFailed: number;
+  gaveUp: number;
+  skipped: boolean;
+}
+
+export interface GoalHolderRespawnDeps {
+  readGoals: GoalLivenessSweepDeps['readGoals'];
+  resolveLiveness: GoalLivenessSweepDeps['resolveLiveness'];
+  flagEnabled: () => Promise<boolean>;
+  launch: (goal: GoalRowLike) => Promise<{ ownerId: string; warnings: string[] }>;
+  attach: (goal: GoalRowLike, ownerId: string) => Promise<void>;
+  escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
+  now: () => number;
+  states: Map<string, FlapDampingState>;
+}
+
+/** Stable state identity: goal ids are only unique inside a workspace. */
+export function goalHolderRespawnKey(
+  goal: Pick<GoalRowLike, 'workspaceId' | 'goalId'>,
+): string {
+  return `${goal.workspaceId}:${goal.goalId}`;
+}
+
+/**
+ * Eligibility is intentionally narrower than "has no holder".
+ *
+ * Only an administratively ACTIVE goal that explicitly earned the `respawn`
+ * disposition may spend money. `requireLive:false` opts out, while an absent or
+ * invalid launch document resolves to the safe default (`deactivate`).
+ */
+export function goalEligibleForHolderRespawn(goal: GoalRowLike): boolean {
+  if (goal.status !== 'active') return false;
+  const policy = resolveGoalHolderPolicy(goal.launchSettings);
+  return policy.requireLive && policy.onLoss === 'respawn';
+}
+
+async function defaultHolderRespawnFlagEnabled(): Promise<boolean> {
+  try {
+    const [{ getFlag }, { FLAGS }] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/flags'),
+    ]);
+    return await getFlag(FLAGS.GOAL_HOLDER_RESPAWN, 'system');
+  } catch {
+    // This is an unattended spend path. Flag uncertainty is a hard no-op.
+    return false;
+  }
+}
+
+async function defaultEscalateHolderRespawnGiveUp(
+  goal: GoalRowLike,
+  restartsInWindow: number,
+): Promise<void> {
+  await openEscalation(HOLDER_RESPAWNER_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `Goal '${goal.goalId}' holder recovery gave up after ${restartsInWindow} attempts ` +
+      'inside the damping window',
+    body:
+      `The goal "${goal.title}" (${goal.goalId}, workspace ${goal.workspaceId}) opted into ` +
+      `holder.onLoss='respawn', but ${restartsInWindow} replacement attempts inside the ` +
+      `shared flap-damping window did not produce a continuously healthy holder. Automatic ` +
+      `restarts are latched off until a holder is positively healthy for the reset window. ` +
+      `Inspect launch/attach warnings, then either restore a holder or change the goal's ` +
+      `holder policy deliberately.`,
+    meta: {
+      dedupKind: 'goal-holder-respawn-give-up',
+      subjectSignature: `${goal.workspaceId}:${goal.goalId}`,
+      goalId: goal.goalId,
+      goalWorkspaceId: goal.workspaceId,
+      restartsInWindow,
+    },
+  });
+}
+
+const goalHolderRespawnStates = new Map<string, FlapDampingState>();
+
+function holderRespawnDeps(
+  sql: Sql,
+  overrides: Partial<GoalHolderRespawnDeps>,
+): GoalHolderRespawnDeps {
+  return {
+    readGoals: makeReadGoals(sql),
+    resolveLiveness: resolveHolderLiveness,
+    flagEnabled: defaultHolderRespawnFlagEnabled,
+    launch: async (goal) =>
+      await launchGoalHolderSession({
+        workspaceId: goal.workspaceId,
+        goalId: goal.goalId,
+        harnessSlug: goal.installSlug ?? '',
+      }),
+    attach: async (goal, ownerId) => {
+      const result = await setMode({
+        workspaceId: goal.workspaceId,
+        ownerId,
+        modeId: 'goal',
+        enabled: true,
+        reason: `goal-holder-respawner recovered lost holder for ${goal.goalId}`,
+        setBy: HOLDER_RESPAWNER_IDENTITY.ownerId,
+        ownerDirected: false,
+        subject: goal.goalId,
+        sql,
+      });
+      if (!result.ok) {
+        throw new Error(
+          'error' in result && result.error
+            ? result.error
+            : `mode store refused GOAL attachment for ${ownerId}`,
+        );
+      }
+    },
+    escalateGiveUp: defaultEscalateHolderRespawnGiveUp,
+    now: Date.now,
+    states: goalHolderRespawnStates,
+    ...overrides,
+  };
+}
+
+/**
+ * One recovery tick. This is deliberately separate from the 10-minute reporting
+ * sweep: recovery has its own default-OFF authority flag, 60-second cadence and
+ * state. A report-only kill-switch can therefore never accidentally arm spend.
+ */
+export async function runGoalHolderRespawnOnce(
+  sql: Sql,
+  overrides: Partial<GoalHolderRespawnDeps> = {},
+): Promise<GoalHolderRespawnSummary> {
+  const deps = holderRespawnDeps(sql, overrides);
+  const summary: GoalHolderRespawnSummary = {
+    scanned: 0,
+    eligible: 0,
+    attempted: 0,
+    respawned: 0,
+    launchFailed: 0,
+    attachFailed: 0,
+    gaveUp: 0,
+    skipped: false,
+  };
+  if (!(await deps.flagEnabled())) return { ...summary, skipped: true };
+
+  const { goals, holders } = await deps.readGoals();
+  summary.scanned = goals.length;
+  const eligible = goals.filter(goalEligibleForHolderRespawn);
+  summary.eligible = eligible.length;
+  const eligibleKeys = new Set(eligible.map(goalHolderRespawnKey));
+
+  // A goal that was paused/closed or opted out starts fresh if it later earns
+  // recovery again. This also bounds the process-local map to currently eligible rows.
+  for (const key of deps.states.keys()) {
+    if (!eligibleKeys.has(key)) deps.states.delete(key);
+  }
+  if (eligible.length === 0) return summary;
+
+  const relevant = holders.filter((holder) =>
+    eligibleKeys.has(`${holder.workspaceId}:${holder.goalId}`),
+  );
+  const ownerIds = [...new Set(relevant.map((holder) => holder.ownerId))];
+  const verdicts = ownerIds.length > 0
+    ? await deps.resolveLiveness(ownerIds)
+    : new Map<string, LivenessVerdict>();
+
+  for (const goal of eligible) {
+    const key = goalHolderRespawnKey(goal);
+    const fold = resolveGoalHoldersFromRows(
+      goal.goalId,
+      goal.workspaceId,
+      relevant,
+      verdicts,
+    );
+
+    // A stub that was never picked up is not a lost holder and must not be
+    // auto-started. Unknown is equally non-actionable: degraded evidence is not death.
+    if (fold.liveness === 'unheld') {
+      deps.states.delete(key);
+      continue;
+    }
+    if (fold.liveness === 'unknown') continue;
+
+    const previous = deps.states.get(key);
+    if (fold.liveness === 'held') {
+      // Do not allocate state for a goal that has never flapped. Once recovery
+      // happened, five continuous healthy minutes clear attempts and give-up.
+      if (previous) {
+        const decision = decideFlapDamping({ healthy: true, state: previous, now: deps.now() });
+        deps.states.set(key, decision.nextState);
+      }
+      continue;
+    }
+
+    const decision = decideFlapDamping({
+      healthy: false,
+      state: previous ?? initialFlapDampingState(),
+      now: deps.now(),
+    });
+    deps.states.set(key, decision.nextState);
+
+    if (decision.action.kind === 'escalate-give-up') {
+      try {
+        await deps.escalateGiveUp(goal, decision.action.restartsInWindow);
+        summary.gaveUp += 1;
+      } catch (error) {
+        // The escalation is the durable signal. If its write fails, clear only
+        // the latch so the next tick retries the deduped open instead of losing it.
+        deps.states.set(key, { ...decision.nextState, gaveUp: false });
+        console.warn(
+          `[goal-holder-respawner] give-up escalation failed for ${goal.goalId} (will retry): ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      continue;
+    }
+    if (decision.action.kind !== 'restart') continue;
+
+    summary.attempted += 1;
+    let launched: { ownerId: string; warnings: string[] };
+    try {
+      launched = await deps.launch(goal);
+    } catch (error) {
+      summary.launchFailed += 1;
+      console.warn(
+        `[goal-holder-respawner] launch failed for ${goal.goalId} (non-fatal, damped): ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+    for (const warning of launched.warnings) {
+      console.warn(`[goal-holder-respawner] ${goal.goalId}: ${warning}`);
+    }
+
+    try {
+      // Launch FIRST, attach only the pre-pinned identity returned by a successful
+      // launch. A failed launch can therefore never leave a phantom holder row.
+      await deps.attach(goal, launched.ownerId);
+      summary.respawned += 1;
+    } catch (error) {
+      summary.attachFailed += 1;
+      console.warn(
+        `[goal-holder-respawner] attach failed for ${goal.goalId} owner ${launched.ownerId} (non-fatal, damped): ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  return summary;
+}
+
 let watchdogTimer: ManagedHandle | null = null;
+let holderRespawnerTimer: ManagedHandle | null = null;
 
 /**
  * Start the goal-liveness watchdog: a recurring process-level sweep.
@@ -601,6 +898,31 @@ export function startGoalLivenessWatchdog(sql: Sql, opts: { intervalMs?: number 
     },
     // D-004: 'timeout-reaper'. The trigger is ELAPSED TIME with no holder — a goal going
     // quiet emits nothing, and absence-over-a-deadline has no publisher to subscribe to.
+    { category: 'watchdog', classification: 'timeout-reaper' },
+  );
+}
+
+/** Start P-009's independently gated, idempotent holder-recovery timer. */
+export function startGoalHolderRespawner(sql: Sql, opts: { intervalMs?: number } = {}): void {
+  const intervalMs = opts.intervalMs ?? GOAL_HOLDER_RESPAWN_INTERVAL_MS;
+  if (holderRespawnerTimer) holderRespawnerTimer.stop();
+  let sweeping = false;
+  holderRespawnerTimer = managedSetInterval(
+    'goal-holder-respawner',
+    intervalMs,
+    () => {
+      if (sweeping) return;
+      sweeping = true;
+      void runGoalHolderRespawnOnce(sql)
+        .catch((error) => {
+          console.warn(
+            `[goal-holder-respawner] sweep failed (non-fatal): ${error instanceof Error ? error.message : String(error)}`,
+          );
+        })
+        .finally(() => {
+          sweeping = false;
+        });
+    },
     { category: 'watchdog', classification: 'timeout-reaper' },
   );
 }
