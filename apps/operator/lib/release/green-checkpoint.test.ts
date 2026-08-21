@@ -1675,6 +1675,19 @@ describe("runGreenCheckpoint", () => {
     expect(onProgress).toHaveBeenCalled();
   });
 
+  it("EI-21012046480619768: preserves a signaled child's close signal", async () => {
+    const result = await runCmd(
+      process.execPath,
+      ["-e", "process.kill(process.pid, 'SIGTERM')"],
+      { allowNonZero: true },
+    );
+
+    // Node reports code=null for a signal; runCmd's compatibility code remains 0, but the
+    // signal must survive so callers cannot mistake a terminated child for a clean exit.
+    expect(result.code).toBe(0);
+    expect(result.signal).toBe("SIGTERM");
+  });
+
   it("EI-13992: a THROWING ensureMigrationsCurrent is swallowed — the gate still runs + judges normally (never blocks on the preflight)", async () => {
     const c1 = await commit("a", "1", "c1");
     await git(repo, ["branch", "ready", c1]);
@@ -5888,6 +5901,55 @@ describe("realCheckpointDeps.runGreen — nothing-to-gate short-circuit (EI-8744
     expect(progress).toHaveBeenCalledWith("command:start:npm");
     expect(progress).toHaveBeenCalledWith("command:output:npm");
     expect(progress).toHaveBeenCalledWith("command:complete:npm");
+  });
+
+  it("EI-21012046480619768: a signaled suite child stays red and records signal attribution", async () => {
+    writeFileSync(
+      join(tree, "package.json"),
+      JSON.stringify({ name: "x", scripts: { "test:affected": "true" } }),
+    );
+    const calls: string[] = [];
+    const exec: CheckpointExec = async (cmd, args) => {
+      calls.push(`${cmd} ${args.join(" ")}`);
+      if (cmd === "npm" && args[0] === "run" && args[1] === "test:affected") {
+        // A real child close event has code=null plus the terminating signal. Keep code=0
+        // here to prove runGreen relies on signal preservation, not on a non-zero exit code.
+        return {
+          code: 0,
+          signal: "SIGTERM",
+          stdout: "",
+          stderr: "",
+        };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: "npm run test:affected",
+      spaBuildWorkspace: "",
+    });
+
+    const result = await realCheckpointDeps(cfg, exec, "signal-run").runGreen(
+      tree,
+      "base",
+    );
+
+    expect(result.green).toBe(false);
+    expect(result.postSuiteMeasured).toBe(false);
+    expect(result.summary).toContain(
+      "CHECKPOINT CHILD TERMINATED BY SIGNAL (SIGTERM)",
+    );
+    expect(result.logPath).toBeDefined();
+    const body = readFileSync(result.logPath!, "utf8");
+    expect(body).toContain(
+      "CHECKPOINT CHILD TERMINATED BY SIGNAL (SIGTERM)",
+    );
+    expect(body).toMatch(
+      /GATE_HELD_BY count=0 attribution=unattributed truncated=false postSuite=not-measured/,
+    );
+    // The signaled suite must not be followed by post-suite legs or a flake-rescue rerun.
+    expect(calls).toEqual(["npm run test:affected"]);
   });
 });
 
