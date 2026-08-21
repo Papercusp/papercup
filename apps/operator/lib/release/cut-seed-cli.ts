@@ -135,6 +135,42 @@ const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
 
 /**
+ * Cross-process singleton for a release cut's live-hive refresh/open window.
+ *
+ * A Corestore fd-lock only serializes writable opens. Two live-operator cuts can
+ * therefore both force-backfill the same PG projection before either opens its
+ * read-only snapshot. Keep the key in PG, where both cut processes already meet,
+ * and hold it transaction-scoped until refresh/drain and the final store open are
+ * complete. `hashtextextended` gives us one deterministic 64-bit advisory key for
+ * the workspace+hive pair without putting user-controlled values into SQL text.
+ */
+export const CUT_SEED_ADVISORY_LOCK_NAMESPACE = 'papercusp:cut-seed';
+
+export async function withCutSeedSingleton<T>(input: {
+  readonly pg: postgres.Sql;
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly run: (pg: postgres.Sql) => Promise<T>;
+}): Promise<T> {
+  return input.pg.begin(async (tx) => {
+    const [{ acquired }] = await tx<{ acquired: boolean }[]>`
+      SELECT pg_try_advisory_xact_lock(
+        hashtextextended(${`${CUT_SEED_ADVISORY_LOCK_NAMESPACE}:${input.workspaceId}:${input.hive}`}, 0)
+      ) AS acquired
+    `;
+    if (!acquired) {
+      throw new Error(
+        `[cut-seed] another seed cut is already refreshing or opening ` +
+          `${input.workspaceId}::${input.hive}; refusing before backfill or corestore open. ` +
+          'Wait for that cut to finish. If it was interrupted after refresh completed, resume with ' +
+          '--no-force-backfill rather than starting a second force-backfill.',
+      );
+    }
+    return input.run(tx as unknown as postgres.Sql);
+  });
+}
+
+/**
  * Keep the seed projection's scrub list in lockstep with the final desktop audit.
  *
  * The audit runs inside the UTS-neutralized child, so its live hostname probe sees
