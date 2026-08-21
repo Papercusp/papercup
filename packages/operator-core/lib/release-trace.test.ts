@@ -413,6 +413,81 @@ describe('buildReleaseTrace', () => {
       positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
     });
 
+    const liveCanonicalOwner = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-39450',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-live-gate-owner',
+      takenAt: '2026-08-20T10:00:00Z',
+      expiresAt: null,
+      holderSessionState: 'live',
+      duplicates: [],
+      thread: {},
+    } as unknown as NonNullable<PipelinePosition['gate']['ownership']>;
+
+    it('prefers a live canonical gate singleton over an obsolete fixer owner-gone', () => {
+      const out = buildReleaseTrace(
+        input({
+          position: position({
+            positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+            gate: { ...position().gate, ownership: liveCanonicalOwner },
+          }),
+          gate: redGate({
+            state: 'owner-gone',
+            covered: false,
+            spawnId: 'obsolete-fixer',
+            ownerSignature: 'x.test.ts',
+            ageMs: 90 * 60_000,
+            label: 'UNOWNED — obsolete release-fixer is CONFIRMED GONE.',
+          }),
+        }),
+      );
+
+      expect(out.gate.redOwner).toMatchObject({
+        state: 'owned-live',
+        covered: true,
+        ownerSignature: 'gate-red-streak:papercusp',
+      });
+      expect(out.gate.redOwner?.label).toContain('WI-39450');
+      expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
+      expect(out.nextVerb?.name).toBe('checkpoint:await');
+      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).toContain('WI-39450');
+      expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).not.toContain('CONFIRMED GONE');
+    });
+
+    it('prefers a measured live run-lock executor even when the singleton projection is absent', () => {
+      const out = buildReleaseTrace(
+        input({
+          position: position({
+            positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+            gate: {
+              ...position().gate,
+              checkpointRunInFlight: {
+                active: true,
+                activeSource: 'run-lock',
+                candidate: 'checkpoint-candidate',
+                elapsedSec: 213,
+                asOfAgeMs: 0,
+              },
+            },
+          }),
+          gate: redGate({
+            state: 'owner-gone',
+            covered: false,
+            spawnId: 'obsolete-fixer',
+            ownerSignature: 'x.test.ts',
+            ageMs: 90 * 60_000,
+            label: 'UNOWNED — obsolete release-fixer is CONFIRMED GONE.',
+          }),
+        }),
+      );
+
+      expect(out.gate.redOwner).toMatchObject({ state: 'owned-live', covered: true });
+      expect(out.gate.redOwner?.label).toContain('checkpoint-candidate');
+      expect(out.gate.redOwner?.label).not.toContain('CONFIRMED GONE');
+    });
+
     it('sends a reader to await the outcome instead of opening a second diagnosis', () => {
       const out = buildReleaseTrace(
         input({

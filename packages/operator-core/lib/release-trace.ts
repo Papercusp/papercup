@@ -8,6 +8,7 @@
 import type { PipelinePosition } from './git-pipeline-position';
 import type { DeployStatus } from './release-deploy-launch';
 import type { GateRedOwnership } from './release/gate-red-ownership';
+import { ownershipHeldByLiveHolder } from './coord/gate-ownership';
 import { classifyReleaseParity } from './release-parity';
 
 export interface ReleaseTraceGate {
@@ -101,6 +102,46 @@ function gateJudgedTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): 
   // while the fallback keeps older callers safe during the field rollout.
   const observedCandidate = input.gate.observedCandidate ?? input.position.gate.observedCandidate;
   return sameSha(input.position.targetSha, observedCandidate);
+}
+
+/**
+ * Prefer the canonical gate owner over a historical release-fixer record.
+ *
+ * `gate.redOwner` comes from `last_fixer`, which is useful lineage for the
+ * fixer-dispatch dedupe but can outlive that fixer.  The gate singleton and the
+ * live run lock are the current execution authorities: when either says a live
+ * red is already being handled, an obsolete fixer must not make this trace tell
+ * every reader to claim the red again.
+ */
+function canonicalRedOwner(input: ReleaseTraceInput): GateRedOwnership | null {
+  if (input.gate.verdictStale || input.gate.consecutiveReds <= 0) return null;
+
+  const ownership = input.position.gate.ownership;
+  const canonicalHolderLive =
+    ownership?.eventKey.startsWith('gate-red-streak:') === true && ownershipHeldByLiveHolder(ownership);
+  const checkpointRun = input.position.gate.checkpointRunInFlight;
+  const checkpointRunLive = checkpointRun?.active === true && checkpointRun.activeSource === 'run-lock';
+  if (!canonicalHolderLive && !checkpointRunLive) return null;
+
+  const ownerText = canonicalHolderLive
+    ? `canonical gate singleton ${ownership?.workItem ?? '(work-item unavailable)'} is held by live ${
+        ownership?.takenBy ?? 'owner'
+      }`
+    : 'the live checkpoint run-lock is held by the canonical gate executor';
+  const runText = checkpointRunLive
+    ? `; checkpoint run is active${checkpointRun?.candidate ? ` on ${checkpointRun.candidate}` : ''}`
+    : '';
+
+  return {
+    state: 'owned-live',
+    covered: true,
+    spawnId: null,
+    ownerSignature: ownership?.eventKey ?? null,
+    ageMs: null,
+    label:
+      `OWNED — ${ownerText}${runText}. Do NOT start a parallel diagnosis; ` +
+      'await the canonical gate owner’s verdict via checkpoint:await and re-read release:trace.',
+  };
 }
 
 export function classifyReleaseWake(
@@ -360,12 +401,14 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
 }
 
 export function buildReleaseTrace(input: ReleaseTraceInput) {
+  const canonicalOwner = canonicalRedOwner(input);
+  const effectiveInput = canonicalOwner ? { ...input, gate: { ...input.gate, redOwner: canonicalOwner } } : input;
   const targetSha = input.position.targetSha;
   const requesterWakes = input.requesterId
     ? input.wakes.filter((wake) => wake.subscriberId === input.requesterId)
     : input.wakes;
   const wake = classifyReleaseWake(targetSha, requesterWakes);
-  const constraints = applicableConstraints(input);
+  const constraints = applicableConstraints(effectiveInput);
   const activeAwaits = input.awaits.filter((a) => a.state === 'registered');
   const generationBehind = input.consumerGeneration != null && input.consumerGeneration !== input.snapshotGeneration;
   const testedSha = input.position.verdictProvenance.lastGreenSha;
@@ -378,7 +421,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
   });
   const parity =
     targetSha != null && input.position.positions.inMain && input.position.positions.deployed && pinParity.ok;
-  const nextVerb = safeNextVerb(input);
+  const nextVerb = safeNextVerb(effectiveInput);
   const ok = input.position.positions.deployed && parity && constraints.every((c) => !c.blocking);
 
   return {
@@ -393,7 +436,7 @@ export function buildReleaseTrace(input: ReleaseTraceInput) {
       presence: input.position.positions,
       runtime: input.position.runtime,
     },
-    gate: input.gate,
+    gate: effectiveInput.gate,
     greenPin: {
       sha: testedSha,
       targetIncluded: input.position.positions.inMain,
