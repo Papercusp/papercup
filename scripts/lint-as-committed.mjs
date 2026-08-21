@@ -178,6 +178,49 @@ export function detectorPathsFromCommand(command) {
 }
 
 /**
+ * Parse a `.gitmodules` file's content into `[{ name, path, url }, ...]`.
+ *
+ * WHY THIS EXISTS (EI-21033860565861795 — the submodule-blindness bug)
+ * `git clone --local --shared --no-checkout` + `checkout --detach` (the extraction
+ * strategy this whole file is built on) materialises gitlinks as EMPTY directories —
+ * it does not, and cannot without extra work, recurse into submodules. So a repo with
+ * submodules (this one has 30+, e.g. `libs/papercusp`) gets a tree that is silently
+ * MISSING every submodule's content, and a lint that resolves an import through one
+ * (say, `libs/papercusp/libs/db/src/connection`) reports a fabricated TS2307 — a
+ * regression the committed code does not actually have. That is axis 2 (content)
+ * wrong in exactly the way this tool exists to prevent, just for a different reason
+ * than the header's `git archive` story: this failure mode is silent, not loud —
+ * there is no "fatal: not a git repository", just a wrong answer that looks like a
+ * real one.
+ *
+ * A minimal INI-style parser is enough here: `.gitmodules` is git's own config
+ * format, always `[submodule "name"]` headers with `key = value` lines under them.
+ */
+export function parseGitmodules(text) {
+  if (typeof text !== 'string' || text.length === 0) return [];
+  const out = [];
+  let current = null;
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    const header = line.match(/^\[submodule\s+"([^"]+)"\]$/);
+    if (header) {
+      current = { name: header[1], path: null, url: null };
+      out.push(current);
+      continue;
+    }
+    if (!current || line.startsWith('#') || line.startsWith(';')) continue;
+    const kv = line.match(/^(\w+)\s*=\s*(.*)$/);
+    if (!kv) continue;
+    const [, key, value] = kv;
+    if (key === 'path') current.path = value.trim();
+    else if (key === 'url') current.url = value.trim();
+  }
+  // A `[submodule "x"]` stanza with no `path =` line is not a real submodule entry —
+  // git itself ignores it. Filtering here keeps every caller from having to re-check.
+  return out.filter((s) => s.path);
+}
+
+/**
  * Overall verdict. Nonzero if ANY lint failed OR could not be run.
  *
  * `missing` (absent at the ref) and `error` (the run itself blew up) MUST count as
@@ -324,6 +367,72 @@ function main() {
       process.exit(2);
     }
     console.log(`  materialised committed tree in ${((Date.now() - t0) / 1000).toFixed(1)}s -> ${workRoot}`);
+
+    // ── initialise submodules: a plain checkout leaves them as EMPTY gitlink dirs ──
+    // Must run BEFORE the node_modules symlink step below: a submodule that is itself
+    // an npm workspace (e.g. libs/papercusp) needs its real directory populated before
+    // anything symlinks into it, and `git submodule update` refuses to clone into a
+    // non-empty target — a node_modules symlink already sitting there would break it.
+    const gitmodulesPath = join(workRoot, '.gitmodules');
+    const submodules = existsSync(gitmodulesPath) ? parseGitmodules(readFileSync(gitmodulesPath, 'utf8')) : [];
+    if (submodules.length > 0) {
+      const t1 = Date.now();
+      // Fail-closed BEFORE touching any submodule: if even one lacks a local checkout
+      // to source from, the resulting tree would be silently incomplete for lints that
+      // resolve imports through it (exactly the bug this section exists to fix), and
+      // this isolated run has no SSH credentials to fetch it — a network attempt would
+      // either fail or hang. Refuse with a diagnostic naming exactly what's missing,
+      // per the header's fail-closed contract, rather than proceed on a partial tree.
+      const unresolvable = submodules
+        .filter((s) => !existsSync(join(repoRoot, s.path, '.git')))
+        .map((s) => `${s.path}: no local checkout at ${join(repoRoot, s.path)} (would need a network clone of ${s.url})`);
+      if (unresolvable.length > 0) {
+        console.error(
+          `lint-as-committed: cannot materialise ${unresolvable.length} submodule(s) at ${short} — refusing to run an incomplete tree:\n` +
+            unresolvable.map((m) => `    - ${m}`).join('\n') +
+            `\n  (This tool never fetches submodules over the network — that would either fail with no\n` +
+            `   credentials or hang. Check out the submodule(s) locally first.)`,
+        );
+        process.exit(2);
+      }
+
+      // Point every submodule's url at its LOCAL on-disk checkout so `submodule update`
+      // clones from THAT (git auto-hardlinks a local-path clone — no network, no copy,
+      // same spirit as the --local --shared clone above) instead of the recorded
+      // ssh:// remote. The exact committed pin is resolvable there: for `--ref=HEAD`
+      // (the default) it is literally the commit already checked out; for any other
+      // ref it is reachable through that checkout's own fetched history, since these
+      // are full, continuously-synced clones, not shallow ones.
+      const init = spawnSync('git', ['submodule', 'init', '--quiet'], { cwd: workRoot, encoding: 'utf8' });
+      if (init.status !== 0) {
+        console.error(`lint-as-committed: failed to init submodules at ${short}:\n${init.stderr || init.stdout}`);
+        process.exit(2);
+      }
+      for (const sub of submodules) {
+        const cfg = spawnSync('git', ['config', `submodule.${sub.name}.url`, join(repoRoot, sub.path)], {
+          cwd: workRoot,
+          encoding: 'utf8',
+        });
+        if (cfg.status !== 0) {
+          console.error(`lint-as-committed: failed to point submodule ${sub.path} at its local checkout:\n${cfg.stderr || cfg.stdout}`);
+          process.exit(2);
+        }
+      }
+      const update = spawnSync('git', ['submodule', 'update', '--quiet'], {
+        cwd: workRoot,
+        encoding: 'utf8',
+        // Belt-and-braces: these urls are all local paths now, so no network call
+        // should happen, but refuse instantly instead of hanging if one somehow does.
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      });
+      if (update.status !== 0) {
+        console.error(`lint-as-committed: failed to materialise submodule content at ${short}:\n${update.stderr || update.stdout}`);
+        process.exit(2);
+      }
+      console.log(
+        `  initialised ${submodules.length} submodule(s) from local checkouts in ${((Date.now() - t1) / 1000).toFixed(1)}s (no network)`,
+      );
+    }
 
     // ── symlink (never copy, never install) every node_modules the workspaces need ──
     // These are the ONE thing not versioned against the ref, and that is stated in the
