@@ -38,6 +38,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getCell } from '../../cell-registry';
+import { resolveSelfSubject } from '../../cell-suggest';
 import { PREDICATE_OPS } from '../../events/await/predicate-watch';
 import watchTool from '../events/watch';
 
