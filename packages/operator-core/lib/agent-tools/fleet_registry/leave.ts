@@ -14,6 +14,7 @@ import { releaseSeatConsumption } from '../../fleet/seat-accounting';
 import { setPresenceFleet } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { json, resetCallerTerminal, resolveFleetCaller, ROUTING_LADDER } from './_shared';
+import { retireFleetLeaderWatches } from './leader-control';
 
 export default defineTool({
   name: 'fleet:leave',
@@ -52,6 +53,11 @@ export default defineTool({
 
     let clearedLeadershipOf: string | null = null;
     if (currentFleet) {
+      // EI-20971037082099943: leadership watches are durable, while membership is not.
+      // A clean leave must sever the old fleet's wake channel or it can resume this
+      // session indefinitely after the presence label is gone. Best-effort hygiene:
+      // membership remains authoritative even if the event store is unavailable.
+      await retireFleetLeaderWatches(ownerId, currentFleet).catch(() => 0);
       const fleet = await getFleet(workspaceId, currentFleet);
       if (fleet && fleet.leaderOwnerId === ownerId) {
         await setFleetLeader(workspaceId, currentFleet, null);

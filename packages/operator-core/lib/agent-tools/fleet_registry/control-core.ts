@@ -241,6 +241,25 @@ export async function applyFleetControl(
   }
   const record: AgentFleetRecord = updated ?? fleet;
 
+  // A wound-down fleet has no live leader-monitoring job to service. Retire the
+  // durable transition watches at the same typed state boundary; otherwise every
+  // later fleet event keeps waking the former leader after shutdown.
+  if (fleet.leaderOwnerId) {
+    const { ensureFleetLeaderControl, retireFleetLeaderWatches } = await import('./leader-control');
+    if (action === 'wind-down') {
+      await retireFleetLeaderWatches(fleet.leaderOwnerId, slug).catch(() => 0);
+    } else {
+      // Resume is the inverse boundary: restore the leader's monitor loop and exact
+      // transition watches so a later fleet failure remains push-driven.
+      await ensureFleetLeaderControl({
+        workspaceId,
+        ownerId: fleet.leaderOwnerId,
+        fleetSlug: slug,
+        harnessSlug: opts?.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug,
+      }).catch(() => null);
+    }
+  }
+
   // EI-203843: make the release durable BEFORE sending the cue. Queued event
   // wakes and cold carry-respawns can arrive after this function returns, so a
   // message alone cannot stop them from re-animating a released member.

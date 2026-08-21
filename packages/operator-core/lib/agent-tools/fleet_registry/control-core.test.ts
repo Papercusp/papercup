@@ -36,6 +36,10 @@ vi.mock('../../session-brief', async (importOriginal) => ({
 // unit tests stay DB-free + deterministic. Default: no stamp (fails-soft path); a
 // dedicated test overrides it to assert the auto-stamp augments the reason + result.
 vi.mock('./drain-stamp', () => ({ buildFleetDrainStamp: vi.fn(async () => null) }));
+vi.mock('./leader-control', () => ({
+  retireFleetLeaderWatches: vi.fn(async () => 0),
+  ensureFleetLeaderControl: vi.fn(async () => ({ healthy: true, repaired: true })),
+}));
 
 import {
   applyFleetControl,
@@ -49,6 +53,7 @@ import { hostAudienceResolvers, listFleetControlMembers } from '../coordination/
 import { CUE_AUTHORITY_FIELD } from '../coordination/cue-authority';
 import { buildFleetDrainStamp } from './drain-stamp';
 import { clearSessionBriefReleasedForFleet, markSessionBriefReleased } from '../../session-brief';
+import { ensureFleetLeaderControl, retireFleetLeaderWatches } from './leader-control';
 
 const getFleetM = vi.mocked(getFleet);
 const setControlM = vi.mocked(setFleetControlState);
@@ -59,6 +64,8 @@ const deliveryMembersM = vi.mocked(hostAudienceResolvers.listFleetMembers);
 const drainStampM = vi.mocked(buildFleetDrainStamp);
 const markReleasedM = vi.mocked(markSessionBriefReleased);
 const clearReleasedM = vi.mocked(clearSessionBriefReleasedForFleet);
+const retireLeaderWatchesM = vi.mocked(retireFleetLeaderWatches);
+const ensureLeaderControlM = vi.mocked(ensureFleetLeaderControl);
 
 function fleet(over: Partial<AgentFleetRecord> = {}): AgentFleetRecord {
   return {
@@ -90,6 +97,8 @@ beforeEach(() => {
   drainStampM.mockResolvedValue(null); // default: fails-soft, no auto-stamp
   markReleasedM.mockResolvedValue(true);
   clearReleasedM.mockResolvedValue(0);
+  retireLeaderWatchesM.mockResolvedValue(0);
+  ensureLeaderControlM.mockResolvedValue({ healthy: true, repaired: true } as never);
   // setFleetControlState echoes the applied state back (the RETURNING row).
   setControlM.mockImplementation(async (_ws, slug, control) =>
     fleet({ fleetSlug: slug, controlState: control.state, controlReason: control.reason ?? null, controlBy: control.by ?? null, controlAt: 99 }),
@@ -158,6 +167,8 @@ describe('applyFleetControl', () => {
       'ws-1',
       expect.objectContaining({ fleet: 'backend', by: callerRef.ownerId }),
     );
+    expect(retireLeaderWatchesM).toHaveBeenCalledWith(callerRef.ownerId, 'backend');
+    expect(ensureLeaderControlM).not.toHaveBeenCalled();
     expect(Math.min(...markReleasedM.mock.invocationCallOrder)).toBeLessThan(
       Math.min(...sendM.mock.invocationCallOrder),
     );
@@ -239,6 +250,11 @@ describe('applyFleetControl', () => {
     }, undefined, callerRef.ownerId);
     expect((sendM.mock.calls[0][1] as { summary: string }).summary).toContain('RESUMED');
     expect(clearReleasedM).toHaveBeenCalledWith('ws-1', 'backend');
+    expect(ensureLeaderControlM).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'ws-1',
+      ownerId: callerRef.ownerId,
+      fleetSlug: 'backend',
+    }));
   });
 
   it('a cue-leg failure never fails the state flip (registry is the source of truth)', async () => {

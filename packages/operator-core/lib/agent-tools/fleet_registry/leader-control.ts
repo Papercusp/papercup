@@ -14,7 +14,12 @@ import {
   materializeLoop,
   type LoopStatus,
 } from '../../harness/routines/loop';
-import { cancelAwait, listActiveAwaits, registerAwait } from '../../events/await/store';
+import {
+  cancelAwait,
+  cancelAwaitsForSubscribersOnKeys,
+  listActiveAwaits,
+  registerAwait,
+} from '../../events/await/store';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { getPresence } from '../coordination/presence';
@@ -77,6 +82,17 @@ function monitorGoal(fleetSlug: string, planSlug?: string | null): string {
 
 function watchKeys(fleetSlug: string): string[] {
   return LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:${fleetSlug}`);
+}
+
+/**
+ * Retire the standing transition watches installed by ensureFleetLeaderControl.
+ *
+ * Fleet membership is mutable while event awaits are durable.  Without an explicit
+ * inverse, a departed/demoted leader keeps receiving the old fleet's transition wakes
+ * forever.  Keep this key-exact so ordinary member-authored fleet awaits are untouched.
+ */
+export async function retireFleetLeaderWatches(ownerId: string, fleetSlug: string): Promise<number> {
+  return cancelAwaitsForSubscribersOnKeys([ownerId], watchKeys(fleetSlug));
 }
 
 function selfExcludingPayloadFilter(eventKey: string, fleetSlug: string, ownerId: string): unknown | undefined {

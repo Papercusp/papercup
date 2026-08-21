@@ -286,9 +286,15 @@ function isPlanGateRejection(error: string): boolean {
 const itemSpec = z.object({
   id: z.string().min(1),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default)'),
-  /** Optional terminal state to also set (e.g. 'passed'|'resolved'|'closed').
-   *  Omit to record + emit the completion WITHOUT changing lifecycle state. */
-  state: z.string().min(1).max(40).optional(),
+  /** Optional terminal state to also set. Omit to record + emit without changing lifecycle. */
+  state: z
+    .string()
+    .min(1)
+    .max(40)
+    .optional()
+    .describe(
+      "Terminal lifecycle intent. Successful completion: 'done' (or legacy 'resolved'/'passed'), which stores as 'done'. Discard/wontfix: 'dropped' (or legacy 'closed'/'deprecated'), which stores as 'dropped'. Never use 'closed' as a generic synonym for successfully completed work. Omit to record + emit without changing lifecycle state.",
+    ),
   /** The structured completion record (D-004). `workItem` defaults to this item's `id`. */
   completion: completionSpec,
   /**
@@ -2578,9 +2584,9 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    'Complete one or many work-items with structured evidence; the system renders and broadcasts it. Pass terminal `state` plus `assumptions` (`"none"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.',
+    'Complete one or many work-items with structured evidence; the system renders and broadcasts it. For successful work pass `state:"done"` (legacy `resolved`/`passed` also maps to done); `closed` means discard/wontfix and maps to `dropped`. Pass terminal `state` plus `assumptions` (`"none"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys); put structured evidence in `completion.verification` (`filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, successful terminal `state:"done"` (or legacy `resolved`/`passed`), and `assumptions` (`\"none\"` or fact keys). Reserve `state:"dropped"` and legacy `closed`/`deprecated` for discard/wontfix. Put structured evidence in `completion.verification` (`filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
@@ -2674,7 +2680,14 @@ export default defineTool({
               .describe('single-complete shorthand: the work-item id (use with `completion`)'),
             harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
             /** Optional terminal state to also set. */
-            state: z.string().min(1).max(40).optional(),
+            state: z
+              .string()
+              .min(1)
+              .max(40)
+              .optional()
+              .describe(
+                "Successful completion: 'done' (legacy 'resolved'/'passed' also maps to done). Discard/wontfix: 'dropped' (legacy 'closed'/'deprecated' maps to dropped). Never use 'closed' for successfully completed work.",
+              ),
             /** The structured completion record (single-complete shorthand). */
             completion: completionSpec.optional(),
             /** Optional kind-specific structured output (single-complete shorthand). */
@@ -2705,7 +2718,14 @@ export default defineTool({
             id: z.string().min(1).optional(),
             harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
             /** Optional terminal state to apply to items that omit their own. */
-            state: z.string().min(1).max(40).optional(),
+            state: z
+              .string()
+              .min(1)
+              .max(40)
+              .optional()
+              .describe(
+                "Default terminal intent for items that omit one. Success: 'done' (legacy 'resolved'/'passed'); discard/wontfix: 'dropped' (legacy 'closed'/'deprecated').",
+              ),
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),
             outputPayload: z.unknown().optional(),

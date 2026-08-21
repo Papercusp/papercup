@@ -102,6 +102,13 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
   it('stays within the shared guidance budget', () => {
     expect(promptWeight(complete as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
+
+  it('publishes closed→dropped semantics so successful work is not marked discarded', () => {
+    expect(complete.description).toContain('`closed` means discard/wontfix');
+    expect(complete.description).toContain('`state:"done"`');
+    expect(complete.guidance?.when).toContain('Reserve `state:"dropped"`');
+    expect(complete.guidance?.when).toContain('legacy `closed`/`deprecated` for discard/wontfix');
+  });
 });
 
 /**

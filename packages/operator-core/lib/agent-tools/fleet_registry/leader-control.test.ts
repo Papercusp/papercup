@@ -7,6 +7,7 @@ const materializeLoop = vi.fn();
 const buildLoopWakePrompt = vi.fn((_args: unknown) => 'wake prompt');
 const listActiveAwaits = vi.fn();
 const cancelAwait = vi.fn();
+const cancelAwaitsForSubscribersOnKeys = vi.fn();
 const registerAwait = vi.fn();
 const captureWakeHandleForOwner = vi.fn();
 const armInboxWake = vi.fn();
@@ -26,6 +27,7 @@ vi.mock('../../harness/routines/loop', () => ({
 vi.mock('../../events/await/store', () => ({
   listActiveAwaits: (...args: unknown[]) => listActiveAwaits(...args),
   cancelAwait: (...args: unknown[]) => cancelAwait(...args),
+  cancelAwaitsForSubscribersOnKeys: (...args: unknown[]) => cancelAwaitsForSubscribersOnKeys(...args),
   registerAwait: (...args: unknown[]) => registerAwait(...args),
 }));
 
@@ -45,6 +47,7 @@ import {
   ensureFleetLeaderControl,
   LEADER_MONITOR_INTERVAL_SEC,
   LEADER_TRANSITION_EVENTS,
+  retireFleetLeaderWatches,
 } from './leader-control';
 
 const input = {
@@ -90,8 +93,22 @@ beforeEach(() => {
     id: 'new-await',
   }));
   cancelAwait.mockResolvedValue(undefined);
+  cancelAwaitsForSubscribersOnKeys.mockResolvedValue(0);
   armInboxWake.mockResolvedValue(undefined);
   getPresence.mockResolvedValue({ potSlug: 'papercusp' });
+});
+
+describe('retireFleetLeaderWatches', () => {
+  it('cancels only the exact standing transition keys for the departed fleet', async () => {
+    cancelAwaitsForSubscribersOnKeys.mockResolvedValue(5);
+
+    await expect(retireFleetLeaderWatches('leader-1', 'alpha')).resolves.toBe(5);
+
+    expect(cancelAwaitsForSubscribersOnKeys).toHaveBeenCalledWith(
+      ['leader-1'],
+      LEADER_TRANSITION_EVENTS.map((transition) => `fleet:${transition}:alpha`),
+    );
+  });
 });
 
 describe('ensureFleetLeaderControl', () => {

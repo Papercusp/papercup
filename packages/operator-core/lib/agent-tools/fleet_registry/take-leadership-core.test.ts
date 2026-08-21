@@ -14,6 +14,7 @@ const setPresenceFleet = vi.fn();
 const fetchPresenceFleet = vi.fn();
 const sendMessage = vi.fn();
 const ensureFleetLeaderControl = vi.fn();
+const retireFleetLeaderWatches = vi.fn();
 
 vi.mock('../../agent-fleets-store', () => ({
   setFleetLeader: (...a: unknown[]) => setFleetLeader(...a),
@@ -30,6 +31,7 @@ vi.mock('../coordination/messages', () => ({
 }));
 vi.mock('./leader-control', () => ({
   ensureFleetLeaderControl: (...a: unknown[]) => ensureFleetLeaderControl(...a),
+  retireFleetLeaderWatches: (...a: unknown[]) => retireFleetLeaderWatches(...a),
 }));
 
 import { takeFleetLeadership } from './take-leadership-core';
@@ -62,6 +64,7 @@ beforeEach(() => {
     healthy: true,
     mode: { healthy: true, changed: true },
   });
+  retireFleetLeaderWatches.mockResolvedValue(0);
 });
 
 describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', () => {
@@ -98,6 +101,7 @@ describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', 
     fetchPresenceFleet.mockResolvedValue(new Map([['su-alice', { fleetSlug: SLUG, fleetRole: 'leader' }]]));
     const out = await takeFleetLeadership(WS, fleet({ leaderOwnerId: 'su-alice' }), identity, 'su-bob');
     expect(setPresenceFleet).toHaveBeenCalledWith(WS, 'su-alice', SLUG, 'member');
+    expect(retireFleetLeaderWatches).toHaveBeenCalledWith('su-alice', SLUG);
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(sendMessage.mock.calls[0][1]).toMatchObject({ to: ['su-alice'] });
     expect(out).toMatchObject({ previousLeader: 'su-alice', demotedPriorLeader: 'su-alice', notified: true });
@@ -116,6 +120,7 @@ describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', 
     const out = await takeFleetLeadership(WS, fleet({ leaderOwnerId: 'su-alice' }), identity, 'su-bob');
     // caller is set to leader, but su-alice is NOT demoted (would yank them out of 'other')
     expect(setPresenceFleet).not.toHaveBeenCalledWith(WS, 'su-alice', SLUG, 'member');
+    expect(retireFleetLeaderWatches).toHaveBeenCalledWith('su-alice', SLUG);
     expect(out.demotedPriorLeader).toBeNull();
     expect(sendMessage).toHaveBeenCalledTimes(1);
     expect(out.notified).toBe(true);

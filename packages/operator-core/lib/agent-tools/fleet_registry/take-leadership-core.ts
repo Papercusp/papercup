@@ -20,6 +20,7 @@ import type { AgentIdentity } from '../coordination/identity';
 import { shouldDemotePriorLeader } from './_shared';
 import {
   ensureFleetLeaderControl,
+  retireFleetLeaderWatches,
   type LeaderControlOutcome,
 } from './leader-control';
 
@@ -150,6 +151,10 @@ export async function takeFleetLeadership(
   let demotedPriorLeader: string | null = null;
   let notified = false;
   if (previousLeader && previousLeader !== ownerId) {
+    // The previous leader's standing transition watches outlive its role unless
+    // explicitly retired. Do this even if it has since joined another fleet: the
+    // keys are scoped to this slug, so cancellation cannot disturb its new lane.
+    await retireFleetLeaderWatches(previousLeader, slug).catch(() => 0);
     // 3. Demote the prior leader's presence → member (ONE leader per fleet). Demote when
     //    they are still labeled in THIS fleet OR carry no fleet label (leader-of-record only
     //    / ended — setPresenceFleet is UPDATE-only, so a gone agent is a harmless no-op);
