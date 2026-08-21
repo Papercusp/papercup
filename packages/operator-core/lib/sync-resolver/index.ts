@@ -102,6 +102,39 @@ const clampedLimitOpt = (cap: number) =>
     .transform((v) => Math.min(v, cap))
     .optional();
 
+/**
+ * A calendar view has no useful reason to request more than three years at once.
+ * Keep this finite at the resolver boundary: `expandOccurrences` is bounded by
+ * its result limit, but a pathological window can still make the recurrence
+ * library walk years of dates before it reaches that limit.
+ */
+export const MAX_SCHEDULED_OCCURRENCES_WINDOW_MS = 3 * 365 * 24 * 60 * 60 * 1000;
+
+const scheduledOccurrencesTimestamp = z.number().int().safe().positive();
+const scheduledOccurrencesArgsSchema = z
+  .object({
+    rangeStartMs: scheduledOccurrencesTimestamp,
+    rangeEndMs: scheduledOccurrencesTimestamp,
+    harnessSlug: z.string().max(200).optional(),
+  })
+  .superRefine(({ rangeStartMs, rangeEndMs }, ctx) => {
+    if (rangeEndMs < rangeStartMs) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rangeEndMs'],
+        message: 'rangeEndMs must be greater than or equal to rangeStartMs',
+      });
+      return;
+    }
+    if (rangeEndMs - rangeStartMs > MAX_SCHEDULED_OCCURRENCES_WINDOW_MS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rangeEndMs'],
+        message: 'scheduled occurrence windows may not exceed three years',
+      });
+    }
+  });
+
 // ─── conversations.agentMessage* (conversations-agent-messages-2026-07-27) ───
 
 /**
@@ -4808,11 +4841,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // workspace_id (shared table, no schema routing). Best-effort: a read error degrades
   // to [] rather than a 500, so the calendar shows its empty state.
   'plans.scheduledOccurrences': {
-    argsSchema: z.object({
-      rangeStartMs: z.number().int(),
-      rangeEndMs: z.number().int(),
-      harnessSlug: z.string().max(200).optional(),
-    }),
+    argsSchema: scheduledOccurrencesArgsSchema,
     resolve: async (args) => {
       const a = args as { rangeStartMs: number; rangeEndMs: number; harnessSlug?: string };
       try {
