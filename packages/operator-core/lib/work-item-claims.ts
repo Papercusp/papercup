@@ -475,6 +475,10 @@ export interface ClaimCheckpointFreshness {
  * claim under host-version skew (the same skew that broke the loop carry-note twice; see
  * carry-note.ts getLoopCarryNote). A cleared checkpoint (note IS NULL, journal-less bee
  * store deletes the row) reads as no-checkpoint, which is the honest "unflushed" state.
+ * EI-19325409132155167: work-item checkpoint writes canonicalize null/empty/'*' harnesses
+ * to `workitem:*:<id>`, while a live claim may retain the concrete session harness. Read
+ * both the claim-derived scope and the canonical wildcard scope so the flush gate cannot
+ * turn a real checkpoint into a false missing-checkpoint warning.
  * Ordered newest-active first. NOT federated; coord-family, workspace+owner filtered.
  */
 export async function listActiveClaimFreshnessForOwner(
@@ -499,7 +503,9 @@ export async function listActiveClaimFreshnessForOwner(
            (extract(epoch from c.last_activity_ts) * 1000)::bigint AS last_activity_ms,
            (SELECT max(cn.updated_ts)
               FROM harness_shared.carry_notes cn
-             WHERE cn.scope = 'workitem:' || c.harness_slug || ':' || c.work_item_id
+             WHERE cn.scope IN (
+                     'workitem:' || c.harness_slug || ':' || c.work_item_id,
+                     'workitem:*:' || c.work_item_id)
                AND cn.note IS NOT NULL)                            AS checkpoint_updated_ms
       FROM harness_shared.work_item_claims c
      WHERE c.owner = ${owner}
