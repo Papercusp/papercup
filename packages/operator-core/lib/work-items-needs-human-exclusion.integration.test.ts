@@ -1,32 +1,11 @@
 /**
- * work-items-needs-human-exclusion.integration.test.ts — the issue-family
- * `payload.needsHuman:true` self-select exclusion (EI-7776).
+ * work-items-needs-human-exclusion.integration.test.ts — post-migration-864
+ * compatibility behavior for the historical `payload.needsHuman` key.
  *
- * When the implement worker resolves an item with outcome `needs-human`,
- * `improvements:resolve` (resolve-core.ts) posts a diagnosis comment, sets
- * `payload.needsHuman:true`, and RELEASES the claim — but the issue-family status dialect has
- * no real terminal "needs human" state (`needs-human`/`blocked`/`wip` all collapse to `open`,
- * EI-450), so the row stayed fully self-selectable. `classifyImprovement` (policy.ts) already
- * keeps a needsHuman-flagged item out of the AUTOMATED improvement-dispatch tier, but that
- * check lives only in the improvement-dispatch path — `scheduler:get_next` /
- * `work_items:claim_next` (the generic backlog-drain self-select) never looked at `needsHuman`
- * at all, so a drain-loop bee re-claimed the SAME already-routed-to-a-human item, re-diagnosed
- * it from scratch, and re-posted the identical comment — confirmed live as EI-7592 being
- * independently "resolved" as the same false positive three times in one afternoon
- * (2026-07-05) before this floor existed.
- *
- * Mirrors work-items-observation-lane-exclusion.integration.test.ts's shape exactly (same D-005
- * floor pattern, applied to a different payload key):
- *
- * Proves against real Postgres (testcontainer; Docker required):
- *   • claimNextWorkItem's issue tier SKIPS a needsHuman:true row and serves a real one instead
- *     — even when the needs-human row is oldest (would otherwise win the oldest-first steal);
- *   • a needsHuman row is STILL directly claimable BY ID (the floor only gates self-select);
- *   • diagnoseClaimNextMiss reports a needsHuman-ONLY backlog as DRAINED (pendingUnclaimed===0,
- *     drained===true) — a needs-human item is not work-queue material AT ALL, so a drainer
- *     facing only human-routed items must be told to idle, never "work exists, don't idle";
- *   • a real ready item alongside a needsHuman one counts fully (the needsHuman row neither
- *     shadows siblings nor inflates the pending/ready counts).
+ * Migration 864 replaced the ambiguous payload flag with typed owner-action and agent-review
+ * destinations. The legacy key remains readable and may still mirror stored status, but an OPEN
+ * row carrying it is ordinary claimable work. Stored status='needs-human' remains the lifecycle
+ * park and payload.needsOwnerAction remains the typed owner-capability admission floor.
  *
  * Run:
  *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
@@ -89,22 +68,19 @@ beforeEach(async () => {
 });
 afterEach(() => setFlagOverridesForTest({}));
 
-describe('claimNextWorkItem SKIPS a needsHuman:true issue (EI-7776)', () => {
-  it('serves the real item, never the needs-human one, even when it is oldest', async () => {
+describe('claimNextWorkItem admits a legacy needsHuman:true OPEN issue after migration 864', () => {
+  it('serves the legacy-tagged item normally when it is oldest', async () => {
     await seedIssue('EI-human', { kind: 'change', createdTs: 100, payload: { needsHuman: true } });
     await seedIssue('WI-real', { createdTs: 200 });
 
-    // Oldest-first would normally serve EI-human (createdTs:100) — the floor must skip it.
+    // The legacy payload key is no longer a floor, so ordinary oldest-first ordering applies.
     const got = await wi.claimNextWorkItem({ harness: H, assignee: 'bee-1' });
-    expect(got?.id).toBe('WI-real');
+    expect(got?.id).toBe('EI-human');
 
-    // Only one real candidate existed — it's now claimed, so the pool is genuinely dry.
-    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' })).toBeNull();
-
-    // The needs-human row was NEVER claimed by the self-select path.
+    expect(await wi.claimNextWorkItem({ harness: H, assignee: 'bee-2' })).toMatchObject({ id: 'WI-real' });
     const rows = await db.sql<{ taken_by: string | null }[]>`
       SELECT taken_by FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = 'EI-human'`;
-    expect(rows[0]?.taken_by).toBeNull();
+    expect(rows[0]?.taken_by).toBe('bee-1');
   });
 
   it('a needsHuman row is STILL directly claimable by id (the floor only gates self-select)', async () => {
@@ -127,26 +103,23 @@ describe('claimNextWorkItem SKIPS a needsHuman:true issue (EI-7776)', () => {
   });
 });
 
-describe('diagnoseClaimNextMiss treats a needsHuman-only backlog as DRAINED (EI-7776)', () => {
-  it('pendingUnclaimed === 0 and drained === true (idle is correct — NOT pending-but-gated)', async () => {
-    // The distinguishing case vs _claimHold: a needs-human item is not work-queue material at
-    // all, so it must NOT inflate the pool — a needsHuman-only queue reads drained, so a
-    // drainer idles instead of hot-retrying an item it can never actually self-select.
+describe('diagnoseClaimNextMiss counts a legacy needsHuman OPEN row as ordinary work', () => {
+  it('reports the row pending and ready instead of a false drain', async () => {
     await seedIssue('EI-human-diag', { kind: 'change', createdTs: 100, payload: { needsHuman: true } });
 
     const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
-    expect(diag.pendingUnclaimed).toBe(0);
-    expect(diag.readyUnclaimed).toBe(0);
-    expect(diag.drained).toBe(true);
+    expect(diag.pendingUnclaimed).toBe(1);
+    expect(diag.readyUnclaimed).toBe(1);
+    expect(diag.drained).toBe(false);
   });
 
-  it('a real ready item alongside a needsHuman one counts fully (needsHuman neither shadows nor inflates)', async () => {
+  it('counts both a plain row and a legacy-tagged row', async () => {
     await seedIssue('EI-human-diag-2', { kind: 'change', createdTs: 100, payload: { needsHuman: true } });
     await seedIssue('WI-ready-diag-2', { createdTs: 200 });
 
     const diag = await wi.diagnoseClaimNextMiss({ harness: H, assignee: 'diag' });
-    expect(diag.pendingUnclaimed).toBe(1); // ONLY the real item — the needs-human row is excluded
-    expect(diag.readyUnclaimed).toBe(1);
+    expect(diag.pendingUnclaimed).toBe(2);
+    expect(diag.readyUnclaimed).toBe(2);
     expect(diag.drained).toBe(false);
   });
 });
@@ -169,7 +142,7 @@ describe('setWorkItemStateWithAliasInfo needs-human auto-gate echoes the FRESH p
     // The bug: this used to be `false`/`undefined` (the pre-merge snapshot) despite the
     // DB write already having landed underneath it.
     expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBe(true);
-    expect(res.aliasNote).toMatch(/auto-routed to a human/);
+    expect(res.aliasNote).toMatch(/stored status='needs-human'.*compatibility mirror/);
   });
 
   it('matches what is actually persisted in Postgres (not just a locally-patched echo)', async () => {
