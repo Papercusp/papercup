@@ -349,20 +349,40 @@ describe('end-to-end — submodule content is materialised, not silently empty (
   // the real CLI against this real, submodule-carrying repo and reading back what it
   // actually materialised.
   it('extracts REAL, committed content for a git-submodule path, not an empty gitlink dir', () => {
-    const subFile = 'libs/papercusp/libs/db/src/connection.ts';
+    const subRoot = 'libs/papercusp';
+    const subRelFile = 'libs/db/src/connection.ts';
+    const subFile = `${subRoot}/${subRelFile}`;
     // Sanity first: if this checkout itself doesn't have the submodule (or the file
     // the bug's repro depends on), the assertions below would pass for the wrong
     // reason — every path missing, not just the extracted one.
-    expect(existsSync(join(repoRoot, 'libs/papercusp', '.git'))).toBe(true);
+    expect(existsSync(join(repoRoot, subRoot, '.git'))).toBe(true);
     expect(existsSync(join(repoRoot, subFile))).toBe(true);
+    // The submodule's pinned commit, resolved from the SUPERPROJECT's tree (a gitlink
+    // resolves like a blob entry, to the commit sha it points at) — and the committed
+    // content itself, read from the SUBMODULE's OWN repository at that pin. A single
+    // `git show <ref>:<path>` from repoRoot cannot do this in one step: git does not
+    // recurse a pathspec across a submodule boundary, which is exactly why this whole
+    // fix (and this test) has to treat the submodule as a second repository.
+    const pin = execFileSync('git', ['rev-parse', `HEAD:${subRoot}`], { cwd: repoRoot, encoding: 'utf8' }).trim();
+    const committed = execFileSync('git', ['show', `${pin}:${subRelFile}`], { cwd: join(repoRoot, subRoot), encoding: 'utf8' });
 
-    const run = spawnSync('node', [scriptPath, '--', 'lint:no-owner-name-tags', '--keep'], {
+    // NOTE: no leading `--` here. `npm run lint:as-committed -- lint:x` works because
+    // NPM's own `--` is consumed by npm itself before the script sees argv; invoking
+    // the script directly (as this test does) must pass the script name bare, or this
+    // tool's OWN `--` forwarding logic swallows it as an (empty) script list.
+    //
+    // The chosen lint is deliberately NOT asserted to PASS: this test's job is to
+    // prove submodule content was materialised, not to pin the pass/fail state of an
+    // unrelated lint. `run.status` distinguishes a genuine lint finding (exit 1, via
+    // `summarize()`) from a setup/environment failure in THIS tool (exit 2) — only
+    // the latter would mean the fix regressed.
+    const run = spawnSync('node', [scriptPath, 'lint:no-owner-name-tags', '--keep'], {
       cwd: repoRoot,
       encoding: 'utf8',
     });
-    expect(run.status).toBe(0);
+    expect(run.status).not.toBe(2);
     // Proof the new step actually engaged, not just that nothing crashed — a future
-    // edit that silently skips submodule init would still exit 0 on this lint (it
+    // edit that silently skips submodule init would still reach this lint fine (it
     // never touches libs/papercusp), so this line is load-bearing, not decorative.
     expect(run.stdout).toMatch(/initialised \d+ submodule\(s\) from local checkouts/);
 
@@ -373,9 +393,9 @@ describe('end-to-end — submodule content is materialised, not silently empty (
       const extracted = readFileSync(join(workRoot, subFile), 'utf8');
       expect(extracted.length).toBeGreaterThan(0);
       // Not just "some content" — the COMMITTED content: `--ref` defaults to HEAD, so
-      // this must byte-match `git show HEAD:<path>`, the exact bytes the release gate
-      // itself would see. That equality is the whole point of this tool.
-      const committed = execFileSync('git', ['show', `HEAD:${subFile}`], { cwd: repoRoot, encoding: 'utf8' });
+      // this must byte-match what's pinned there (`committed`, resolved above), the
+      // exact bytes the release gate itself would see. That equality is the whole
+      // point of this tool.
       expect(extracted).toBe(committed);
     } finally {
       rmSync(workRoot, { recursive: true, force: true });
