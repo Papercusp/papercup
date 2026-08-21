@@ -30,6 +30,12 @@ function breakdown(
   return {
     matchedByFilter: matched,
     claimable,
+    affinityCoverage: {
+      denominator: claimable,
+      nonEmptyPaths: 0,
+      floor: 0.5,
+      belowFloor: false,
+    },
     excluded: {
       taken: 0,
       claimHold: 0,
