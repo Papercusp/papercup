@@ -272,6 +272,14 @@ export const DECLARED_FIELDS = [
     consumer: 'cell-read.ts resolving each declared pointer into `pointers` on the read result (+ state:read rendering them via formatCellPointers)',
     why: 'P-006. A pointer is how one cell tells a reader "the value you want next lives THERE, and here is the call that re-answers it". Unconsumed, the reader is handed a volatile number with no handle attached and transcribes it instead of re-reading — which is the single most expensive misread class on this pipeline: a candidate sha or deploy position that is correct when copied and confidently wrong an hour later. It fails silently and in the confident direction.',
   },
+  {
+    id: 'CellSpec.registeredOn',
+    name: 'registeredOn',
+    declaredIn: 'packages/operator-core/lib/cell-registry.ts',
+    producer: "a cell registration declaring `registeredOn: 'YYYY-MM-DD'` (cell-registrations.ts)",
+    consumer: 'cell-tenure.ts deriving the tenure verdict from it (absent ⇒ `tenure-unknown`), plus agent-plane-measurement-sweep.ts projecting `{ cell, registeredOn }`',
+    why: 'Tenure. Youth and dormancy produce an IDENTICAL zero in telemetry — a cell that was never read leaves no first-seen row to date it from — so without a declared registration date a cut rule cannot tell a three-day-old cell from an abandoned one. Measured: P-008 names `testing.census.population` and `testing.coverage.floor` as its first subjects; both were registered 2026-08-18, so on a 14-day window 11 of those days PREDATE THEIR EXISTENCE and the rule\'s first act would be to recommend cutting two three-day-old cells. Unconsumed, every cell silently degrades to `tenure-unknown` and the rule suppresses every cut while still reporting healthy — fail-closed, so it can only ever hide a cut rather than cause one, which is exactly what makes the breakage quiet.',
+  },
 ];
 
 /**
