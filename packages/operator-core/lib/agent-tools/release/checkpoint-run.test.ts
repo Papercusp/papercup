@@ -77,6 +77,7 @@ afterEach(() => {
   vi.doUnmock('../../workspace-registry');
   vi.doUnmock('../../harness/operator-home-harness');
   vi.doUnmock('../../harness/routines/release-actions');
+  vi.doUnmock('@papercusp/db-org');
 });
 
 /**
@@ -891,15 +892,39 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
   const QUEUE_HEAD = '7490aaa814f1e2f6513bb8467e13acccf1ccace6';
   const CURRENT = 'b8360abde13b0000000000000000000000000000';
 
-  function mockQueue(queue: Record<string, unknown> | null | 'throws') {
+  function mockQueue(queue: Record<string, unknown> | null | 'throws', fixerAlive: boolean | null = true) {
     vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('@papercusp/db-org', async (orig) => ({
+      ...(await orig()),
+      getOrgPg: () => ({ sql: Symbol('test-sql') }),
+    }));
     vi.doMock('../../harness/routines/release-actions', () => ({
       readFrozenCandidateRepairQueue: vi.fn(async () => {
         if (queue === 'throws') throw new Error('queue read unavailable');
         return queue;
       }),
+      releaseFixerSpawnAlive: vi.fn(async () => fixerAlive),
     }));
+  }
+
+  function awaitingFixerQueue(overrides: Record<string, unknown> = {}) {
+    const now = Date.now();
+    return {
+      schemaVersion: 2,
+      phase: 'awaiting-fixer',
+      candidate: 'ed20de6dcb05c0c780437990f7f1070c3a92c853',
+      base: null,
+      repairHead: QUEUE_HEAD,
+      affectedTestProofGroup: null,
+      worktreePath: '/tmp/release-fixer',
+      attempts: 3,
+      openedAtMs: now - 60_000,
+      updatedAtMs: now - 30_000,
+      fixerSpawnId: 's-owner-gone',
+      failingTests: ['lint:tsc'],
+      ...overrides,
+    };
   }
 
   it('refuses before spawn when queue.repairHead does not contain the required repair — force cannot bypass', async () => {
@@ -944,7 +969,102 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       repair_queue: { phase: 'ready-to-verify', repairHead: QUEUE_HEAD },
     });
     expect(String(b.note)).toMatch(/NOT launched/);
-    expect(String(b.note)).toMatch(/frozen-repair queue outranks moving staging/i);
+    expect(String(b.note)).toMatch(/repair head outranks moving staging/i);
+  });
+
+  it('attempts=3 + owner gone predicts abandon-repair and checks the fresh candidate, not stale repairHead', async () => {
+    mockQueue(awaitingFixerQueue(), false);
+    const launchSpy = vi.fn(async () => ({
+      launched: true,
+      unit: 'papercup-green-checkpoint-manual',
+      argv: [],
+      logPath: '/tmp/x.log',
+      willJudge: {
+        candidate: CURRENT,
+        tip: CURRENT,
+        quietCutApplied: false,
+        quietCutSec: 240,
+        excludedCommits: [],
+        excludedPaths: [],
+        excludedEligibility: [],
+        soonestEligibleInSec: null,
+      },
+    }));
+    const ancestrySpy = vi.fn((_root: string, _required: string, candidate: string) => ({
+      ok: candidate === CURRENT,
+      reason: candidate === CURRENT ? 'contained' as const : 'not-ancestor' as const,
+      requiredAncestor: REQUIRED,
+      candidate,
+    }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: vi.fn(async () => ({ ...await PRELAUNCH_OPEN(), candidate: CURRENT })),
+      currentCheckpointCandidate: vi.fn(() => ({
+        current_head: CURRENT,
+        current_candidate: CURRENT,
+        quiet_cut_sec: 240,
+      })),
+      checkpointCandidateContainsAncestor: ancestrySpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ requiredAncestorSha: REQUIRED }, MAKE_CTX())) as never);
+
+    expect(ancestrySpy).toHaveBeenCalledOnce();
+    expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, CURRENT, expect.any(Function));
+    expect(launchSpy).toHaveBeenCalledOnce();
+    expect(b).toMatchObject({
+      ok: true,
+      requiredAncestor: {
+        candidate: CURRENT,
+        candidateSource: 'current-quiet-cut',
+        containedAtPreflight: true,
+        queueDecision: 'abandon-repair',
+        fixerAlive: false,
+      },
+    });
+  });
+
+  it('attempts=3 + liveness unknown preserves wait-for-fixer and fails closed without ancestry check or spawn', async () => {
+    mockQueue(awaitingFixerQueue({ fixerSpawnId: 's-liveness-unknown' }), null);
+    const launchSpy = vi.fn();
+    const ancestrySpy = vi.fn();
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: vi.fn(async () => ({ ...await PRELAUNCH_OPEN(), candidate: CURRENT })),
+      currentCheckpointCandidate: vi.fn(() => ({
+        current_head: CURRENT,
+        current_candidate: CURRENT,
+        quiet_cut_sec: 240,
+      })),
+      checkpointCandidateContainsAncestor: ancestrySpy,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ requiredAncestorSha: REQUIRED }, MAKE_CTX())) as never);
+
+    expect(ancestrySpy).not.toHaveBeenCalled();
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'required_ancestor_unverifiable',
+      candidate: null,
+      candidate_source: 'unresolved',
+      queue_decision: 'wait-for-fixer',
+      fixer_alive: null,
+      repair_queue: {
+        phase: 'awaiting-fixer',
+        attempts: 3,
+        fixerSpawnId: 's-liveness-unknown',
+      },
+    });
+    expect(String(b.note)).toMatch(/queue-not-runnable/);
+    expect(String(b.note)).toMatch(/wait-for-fixer/);
   });
 
   it('fails closed without spawning when the persisted queue cannot be read', async () => {
