@@ -963,6 +963,29 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(out.status).toBe('nothing');
   });
 
+  it('EI-21025944774670342: zero-byte loose objects fail closed with a specific corruption diagnosis before fetch', async () => {
+    const fanoutDir = join(repo, '.git', 'objects', 'aa');
+    const objectName = '0'.repeat(38);
+    const objectPath = join(fanoutDir, objectName);
+    mkdirSync(fanoutDir, { recursive: true });
+    writeFileSync(objectPath, '');
+
+    const broken = await runGitSync('test', { repoPath: repo, config: cfg });
+
+    expect(broken.status).toBe('error');
+    if (broken.status === 'error') {
+      const messages = broken.errors.map((error) => error.message).join('\n');
+      expect(messages).toContain('local Git object database corrupt: 1 zero-byte loose object(s)');
+      expect(messages).toContain(`aa${objectName}`);
+      expect(messages).toContain('repair required before fetch');
+      expect(messages).not.toContain('fetch failed; HEAD has unpushed commits');
+    }
+
+    rmSync(objectPath);
+    const recovered = await runGitSync('test', { repoPath: repo, config: cfg });
+    expect(recovered.status).toBe('nothing');
+  });
+
   it('EI-20232774599730947: P2P commit-only skips direct superproject reconciliation, so a retained installer seed is not transplanted again', async () => {
     // Model the physical Mac after restore: a retained synthetic seed marker,
     // an unrelated GitHub main, and new local work that belongs in the P2P

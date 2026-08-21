@@ -1283,6 +1283,53 @@ async function gitDirForRepo(runGit: RunGit, repoPath: string): Promise<string> 
   return gd.code === 0 ? gd.stdout.trim() : '';
 }
 
+const ZERO_BYTE_LOOSE_OBJECT_REPORT_LIMIT = 20;
+
+/**
+ * A canonical loose object lives at `objects/<2 hex>/<38 hex>`. Git writes it
+ * through a temporary file and atomically renames the completed payload, so a
+ * regular zero-byte file at that final name is corruption, never an in-flight
+ * writer. Detect it before fetch: otherwise Git's `bad object HEAD`/mmap error
+ * is flattened into the generic "fetch failed; HEAD has unpushed commits"
+ * branch and the same checkout can fail silently for dozens of routine ticks.
+ *
+ * Detection is deliberately non-destructive. The object may be a local-only
+ * commit that no remote can restore, so automatic deletion would destroy the
+ * only remaining identity needed for reflog/working-tree recovery.
+ */
+async function findZeroByteLooseObjects(runGit: RunGit, repoPath: string): Promise<string[]> {
+  const gitDir = await gitDirForRepo(runGit, repoPath);
+  if (!gitDir) return [];
+  let fanouts: string[];
+  try {
+    fanouts = await readdir(join(gitDir, 'objects'));
+  } catch {
+    return [];
+  }
+
+  const corrupt: string[] = [];
+  for (const fanout of fanouts.sort()) {
+    if (!/^[0-9a-f]{2}$/i.test(fanout)) continue;
+    let names: string[];
+    try {
+      names = await readdir(join(gitDir, 'objects', fanout));
+    } catch {
+      continue;
+    }
+    for (const name of names.sort()) {
+      if (!/^[0-9a-f]{38}$/i.test(name)) continue;
+      try {
+        const st = await lstat(join(gitDir, 'objects', fanout, name));
+        if (st.isFile() && st.size === 0) corrupt.push(`${fanout}${name}`.toLowerCase());
+      } catch {
+        // A concurrent maintenance process may remove or repack the object.
+      }
+      if (corrupt.length >= ZERO_BYTE_LOOSE_OBJECT_REPORT_LIMIT) return corrupt;
+    }
+  }
+  return corrupt;
+}
+
 async function listTempPackEntries(
   runGit: RunGit,
   repoPath: string,
@@ -2389,6 +2436,15 @@ async function reconcileAndPushOneRepo(
     o.log(
       `[git-sync] ${repoPath}: stale tmp_pack cleanup; pruned ${stale.removed.length} unopened unreferenced file(s), reclaimed ${stale.bytesReclaimed} bytes`,
     );
+  }
+  const zeroByteLooseObjects = await findZeroByteLooseObjects(runGit, repoPath);
+  if (zeroByteLooseObjects.length > 0) {
+    return {
+      status: 'error',
+      message:
+        `local Git object database corrupt: ${zeroByteLooseObjects.length} zero-byte loose object(s): ` +
+        `${zeroByteLooseObjects.join(', ')}; repair required before fetch`,
+    };
   }
   const tempPacksBeforeFetch = await listTempPackFiles(runGit, repoPath);
   const fetch = await runNetworkGitWithGitHubHttpsFallback(runGit, ['fetch', remote, branch], repoPath, o.log);
