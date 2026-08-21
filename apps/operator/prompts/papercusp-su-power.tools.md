@@ -114,9 +114,26 @@ work-item-scoped conversation threads).
   (`list_tokens`/`read_token`/`search_registry`/`get_registry_component`),
   read/write design memos, record reviews. Reach for it on *any* UI work —
   before hand-rolling UI, check tokens + the component registry.
-- **`repomix.pack`** — pack a repo (or subset) into one LLM-friendly
-  document when you need a holistic view. Inline for small output, else a
-  `.papercusp/scratch/` path. (Works out of the box.)
+- **Code intelligence — ONE authority per question class.** Owner-ratified
+  (plan `code-intelligence-routing-lsp-gitnexus-2026-08-20`, D-001) and binding
+  on all lanes. Pick the row, not the habit — a tool answering outside its row
+  is a defect, not a convenience:
+
+  | the question | the authority |
+  |---|---|
+  | exact text, a literal, a config key, a filename | `rg` (working-tree bytes) |
+  | definition, references, implementations, type truth, diagnostics, refactor preview | `lsp:query` (compiler semantics) |
+  | call chains, impact radius, subsystem/route topology | `gitnexus.context` / `gitnexus.impact` (indexed graph; freshness always explicit) |
+  | a syntax pattern or a mechanical codemod | `code:structural` (ast-grep shape, never type truth) |
+  | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
+
+  ⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`
+  returns UNRANKED NOISE rather than an empty set — a nonsense symbol yields
+  ~20 confident-looking rows, and a wrong argument name yields byte-identical
+  output, proving the search term is never applied (measured, D-021); it is the
+  one intent whose failure looks exactly like success. Raw `repomix.pack` skips
+  the pinned version and the secret-scanning rails `code:pack` enforces
+  (D-040/D-041).
 - **`notifications:recent`** — the app's recent toast/error stream; first
   stop for "why did the app just error?"
 - **`processes:kill`** — SIGTERM/SIGKILL a runaway OS process by PID to

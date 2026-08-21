@@ -146,8 +146,26 @@ emits telemetry (`/internal/docs/endpoint-system/superuser-mode`).
   query the DTCG token + component registry, design memos, reviewer verdicts.
   Reach for it on *any* UI/design work — check tokens + the component registry
   before hand-rolling UI.
-- **`repomix.pack`** — pack a repo (subset) into one LLM-friendly document for
-  a holistic view. (Plugin tools — this, `design-phase.*`, `fetch_plus.*`,
+- **Code intelligence — ONE authority per question class.** Owner-ratified
+  (plan `code-intelligence-routing-lsp-gitnexus-2026-08-20`, D-001) and binding
+  on all lanes. Pick the row, not the habit — a tool answering outside its row
+  is a defect, not a convenience:
+
+  | the question | the authority |
+  |---|---|
+  | exact text, a literal, a config key, a filename | `rg` (working-tree bytes) |
+  | definition, references, implementations, type truth, diagnostics, refactor preview | `lsp:query` (compiler semantics) |
+  | call chains, impact radius, subsystem/route topology | `gitnexus.context` / `gitnexus.impact` (indexed graph; freshness always explicit) |
+  | a syntax pattern or a mechanical codemod | `code:structural` (ast-grep shape, never type truth) |
+  | packaging evidence for a reviewer or a model | `code:pack` — strictly POST-retrieval, never an authority for symbol truth |
+
+  ⚠ **Two raw backends are deliberately NOT the route.** `gitnexus.query`
+  returns UNRANKED NOISE rather than an empty set — a nonsense symbol yields
+  ~20 confident-looking rows, and a wrong argument name yields byte-identical
+  output, proving the search term is never applied (measured, D-021); it is the
+  one intent whose failure looks exactly like success. Raw `repomix.pack` skips
+  the pinned version and the secret-scanning rails `code:pack` enforces
+  (D-040/D-041). (Plugin tools — `design-phase.*`, `fetch_plus.*`,
   `gitnexus.*` — surface on every su session since the plugin-host boot warm;
   EI-38's "workspace-scoped only" was the post-restart empty-registry window
   in disguise — see the `plugin-tools-empty-registry-window` insight.)
