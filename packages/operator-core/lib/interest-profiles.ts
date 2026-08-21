@@ -62,7 +62,14 @@ import type { ExternalBlockerRecord } from './external-blockers';
  * several at once (a fleet leader is usually also an item holder); profiles are
  * additive, never exclusive.
  */
-export type InterestContext = 'fleet-leader' | 'fleet-member' | 'plan-holder' | 'item-holder';
+export type InterestContext =
+  | 'fleet-leader'
+  | 'fleet-member'
+  | 'plan-holder'
+  | 'item-holder'
+  | 'blocked-item-holder'
+  | 'claim-holder'
+  | 'answer-requester';
 
 /**
  * How strongly the system should act on the interest.
@@ -331,6 +338,13 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
   },
   {
     context: 'fleet-leader',
+    watch: { kind: 'event', family: 'fleet-admission-blocked' },
+    tier: 'auto-arm',
+    of: ['fleet.slug'],
+    why: 'An admission refusal means the fleet cannot place work under its current claim spec. The leader owns revising that spec or placement before the lane silently starves.',
+  },
+  {
+    context: 'fleet-leader',
     watch: { kind: 'event', family: 'fleet-item-completed' },
     tier: 'fold',
     of: ['fleet.slug'],
@@ -387,6 +401,43 @@ export const INTEREST_PROFILES: readonly InterestProfileRow[] = [
     watch: { kind: 'cell', cell: HOST_MEMORY_PRESSURE_CELL.cell },
     tier: 'fold',
     why: 'Host pressure is the standard false explanation for a slow or flaky run. Folding the measured value lets an agent check the claim instead of asserting it — the persona forbids blaming load without the mechanism.',
+  },
+
+  // ── P-024 narrow auto-arm widening (D-018) ─────────────────────────────────
+  {
+    context: 'blocked-item-holder',
+    watch: { kind: 'event', family: 'work-item-done' },
+    tier: 'auto-arm',
+    of: ['blocker.id'],
+    why: 'A named blocker settling is the concrete edge that can make this held item actionable again; missing it strands an already-owned lane behind a dependency that no longer exists.',
+  },
+  {
+    context: 'blocked-item-holder',
+    watch: { kind: 'event', family: 'work-item-unblocked' },
+    tier: 'auto-arm',
+    of: ['workItem.id'],
+    why: 'The dependent unblocked edge proves its last live blocker cleared. Waking only that holder avoids polling every dependency and avoids waking on partial progress.',
+  },
+  {
+    context: 'claim-holder',
+    watch: { kind: 'event', family: 'claim-released' },
+    tier: 'auto-arm',
+    of: ['workItem.id'],
+    why: 'A claim disappearing through release, reaping, or reassignment changes who owns the lane; the prior holder must not continue working under a silently stale claim.',
+  },
+  {
+    context: 'answer-requester',
+    watch: { kind: 'event', family: 'conversation-answered' },
+    tier: 'auto-arm',
+    of: ['conversation.id'],
+    why: 'A concrete answer resolves the requester\'s decision edge. Auto-arming that one request avoids hidden polling without subscribing the requester to unrelated conversations.',
+  },
+  {
+    context: 'answer-requester',
+    watch: { kind: 'event', family: 'escalation-resolved' },
+    tier: 'auto-arm',
+    of: ['escalation.id'],
+    why: 'An escalation resolution is the exact edge the requester needs to resume; binding one await to that escalation keeps the wake attributable and lifecycle-scoped.',
   },
 ];
 

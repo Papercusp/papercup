@@ -137,12 +137,13 @@ describe('retireFleetLeaderWatches', () => {
 });
 
 describe('ensureFleetLeaderControl', () => {
-  it('derives the exact four standard event keys from the fleet-leader auto-arm profile', () => {
+  it('derives the exact five standard event keys from the fleet-leader auto-arm profile', () => {
     expect(standardEventKeys()).toEqual([
       'fleet:member-dead:alpha',
       'fleet:drained:alpha',
       'fleet:context-critical:alpha',
       'fleet:claim-released:alpha',
+      'fleet:admission-blocked:alpha',
     ]);
     expect(standardEventKeys()).not.toContain('fleet:item-completed:alpha');
   });
@@ -168,7 +169,7 @@ describe('ensureFleetLeaderControl', () => {
     expect(registerAwait).not.toHaveBeenCalled();
     expect(out.watches.cancel).toEqual({
       tool: 'events:cancel',
-      args: { await_ids: [1, 2, 3, 4] },
+      args: { await_ids: [1, 2, 3, 4, 5] },
     });
   });
 
@@ -233,11 +234,11 @@ describe('ensureFleetLeaderControl', () => {
         mode: 'monitor',
       }),
     );
-    expect(registerAwait).toHaveBeenCalledTimes(4);
+    expect(registerAwait).toHaveBeenCalledTimes(5);
     expect(out.watches.added).toEqual(standardEventKeys());
     expect(out.watches.cancel).toEqual({
       tool: 'events:cancel',
-      args: { await_ids: [101, 102, 103, 104] },
+      args: { await_ids: [101, 102, 103, 104, 105] },
     });
 
     const registrations = registerAwait.mock.calls.map(([args]) => args as Record<string, unknown>);
@@ -252,7 +253,7 @@ describe('ensureFleetLeaderControl', () => {
     expect(registrations.find((args) => args.eventKey === 'fleet:context-critical:alpha')).toMatchObject({
       payloadFilter: { not: { agentId: { equals: 'leader-1' } } },
     });
-    for (const eventKey of ['fleet:claim-released:alpha', 'fleet:drained:alpha']) {
+    for (const eventKey of ['fleet:claim-released:alpha', 'fleet:drained:alpha', 'fleet:admission-blocked:alpha']) {
       expect(registrations.find((args) => args.eventKey === eventKey)).not.toHaveProperty('payloadFilter');
     }
   });

@@ -26,7 +26,15 @@ import {
  * empty registry — which is why the pattern is repeated rather than assumed.
  * ══════════════════════════════════════════════════════════════════════════════ */
 
-const ALL_CONTEXTS: InterestContext[] = ['fleet-leader', 'fleet-member', 'plan-holder', 'item-holder'];
+const ALL_CONTEXTS: InterestContext[] = [
+  'fleet-leader',
+  'fleet-member',
+  'plan-holder',
+  'item-holder',
+  'blocked-item-holder',
+  'claim-holder',
+  'answer-requester',
+];
 
 describe('interest profiles — calibration (guards against a vacuous pass)', () => {
   it('the registry is non-empty, so the referential assertions below have subjects', () => {
