@@ -171,6 +171,12 @@ const EPHEMERAL_PATH_ROOTS = ['/tmp/', '/var/tmp/', '/var/folders/', '/run/', '/
  */
 const RUN_SCOPED_PATH_TOKEN = /\d{4}-\d{2}-\d{2}|\d{8,}/;
 
+/** A manual checkpoint unit's log is run-scoped even when its unit id has no timestamp. */
+const MANUAL_CHECKPOINT_UNIT_LOG = /^papercup-green-checkpoint-manual-[a-z0-9-]+\.log$/i;
+
+/** Persisted checkpoint logs encode the base/candidate identity in their filename. */
+const PERSISTED_CHECKPOINT_LOG_PATH = /(?:^|\/)\.papercusp\/checkpoint-logs\/[^/]+-base-[^/]+-cand-[^/]+\.log$/i;
+
 /** Quoted literals, skipping any template that interpolates (`$` excluded): a
  *  path BUILT at runtime is derived-from-live-state and therefore fine. */
 const SCRIPT_STRING_LITERAL = /'([^'\\\n]*)'|"([^"\\\n]*)"|`([^`\\$]*)`/g;
@@ -191,9 +197,13 @@ export function findVolatileRunArtifactLiteral(script: string): string | null {
     const value = match[1] ?? match[2] ?? match[3];
     if (!value) continue;
     const root = EPHEMERAL_PATH_ROOTS.find((r) => value.toLowerCase().startsWith(r));
-    if (!root) continue;
-    if (!RUN_SCOPED_PATH_TOKEN.test(value.slice(root.length))) continue;
-    return value;
+    if (root) {
+      const rootRelativePath = value.slice(root.length);
+      if (RUN_SCOPED_PATH_TOKEN.test(rootRelativePath) || MANUAL_CHECKPOINT_UNIT_LOG.test(rootRelativePath)) {
+        return value;
+      }
+    }
+    if (PERSISTED_CHECKPOINT_LOG_PATH.test(value)) return value;
   }
   return null;
 }

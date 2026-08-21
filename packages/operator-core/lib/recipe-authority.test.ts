@@ -157,6 +157,20 @@ describe('recipe recommendation authority (P-008)', () => {
     expect(
       findVolatileRunArtifactLiteral(`await tools.capability.read({ file_path: "/tmp/run-1786896331.log" });`),
     ).toBe('/tmp/run-1786896331.log');
+    for (const path of [
+      '/tmp/papercup-green-checkpoint-manual-1fxzuva.log',
+      '/home/marsh-office/.papercusp/checkpoint-logs/2026-08-12T19-34-01-974Z-base-8779b1c7f288-cand-53f4676ffa37.log',
+      '/home/marsh-office/.papercusp/checkpoint-logs/2026-08-21T00-03-33-331Z-base-a2d69cef50d5-cand-1bbf7e4fe81c.log',
+    ]) {
+      expect(findVolatileRunArtifactLiteral(`const p = '${path}';`)).toBe(path);
+    }
+    // A runtime-resolved active log is safe: the path is not frozen into the recipe.
+    expect(findVolatileRunArtifactLiteral(`
+      const currentLog = await resolveCurrentCheckpointLog();
+      return await tools.capability.read({ file_path: currentLog });
+    `)).toBeNull();
+    // A manual unit name without a unit suffix is not enough to identify one run.
+    expect(findVolatileRunArtifactLiteral(`const p = '/tmp/papercup-green-checkpoint-manual.log';`)).toBeNull();
     // a stable temp path is NOT run-scoped — reusable, must stay recommendable
     expect(findVolatileRunArtifactLiteral(`const p = '/tmp/papercup-green-checkpoint.log';`)).toBeNull();
     // a path DERIVED at runtime is the correct shape and must not be flagged
