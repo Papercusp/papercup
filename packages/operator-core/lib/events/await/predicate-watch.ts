@@ -571,6 +571,64 @@ export interface PredicateEvalResult {
 }
 
 /**
+ * P-001 of state-plane-interest-and-hardening-2026-08-21 — the fire payload's
+ * PLANE HANDLE. The wake was the one delivery surface in the state plane that
+ * handed an agent a volatile value ({ observed }) without the cell that
+ * re-answers it, at exactly the moment the agent is most likely to act on that
+ * snapshot (it was woken BECAUSE of it). This derives the `reread` handle the
+ * way state-plane-stamp derives door stamps: from the REGISTRY, never a stored
+ * copy (D-038 axis 5 — a stored cell id would drift on a rename and keep
+ * emitting a stale handle).
+ *
+ * Match: the poll-signalled cell whose changeSignal (tool, path) — or declared
+ * materiality path (P-021: an `of:'material'` subscription watches that path) —
+ * equals this row's. The registration-time dedupe in the stamp module treats
+ * two cells declaring one path as a registry defect; first match is
+ * deterministic here for the same reason.
+ *
+ * AUDIENCE (P-019): the handle is checked against the ROW'S OWN identity
+ * (ownerId/role/harness) — a hand-rolled watch:create on the same (tool, path)
+ * by a caller outside the cell's audience must not learn the cell exists, so
+ * out-of-audience derives NO handle rather than leaking a name. A state:subscribe
+ * registrant passed getCell() at registration, so their handle always derives.
+ *
+ * TOTAL — never throws, never blocks a fire: any failure (unregistered cells,
+ * a missing subject for a caller-relative cell) degrades to `undefined`, i.e.
+ * the pre-P-001 payload shape. An incomplete handle is worse than none
+ * (state-plane-stamp's `unreadable` rule; here omission is the fail-safe).
+ */
+export function deriveCellReread(row: {
+  tool: string;
+  path: string;
+  args: unknown;
+  ownerId: string;
+  role: string;
+  harnessSlug: string | null;
+}): { tool: 'state:read'; args: { cell: string; as?: string } } | undefined {
+  try {
+    const spec = listCellsUnchecked().find(
+      (c) =>
+        c.changeSignal.kind === 'poll' &&
+        c.changeSignal.tool === row.tool &&
+        (c.changeSignal.path === row.path || c.materiality?.path === row.path),
+    );
+    if (!spec) return undefined;
+    if (!canReadCell(spec, { ownerId: row.ownerId, roles: row.role ? [row.role] : [], harnessSlug: row.harnessSlug ?? undefined })) {
+      return undefined;
+    }
+    const rel = spec.callerRelativity;
+    if (rel.kind === 'parameter') {
+      const subject = (row.args as Record<string, unknown> | null)?.[rel.param];
+      if (typeof subject !== 'string' || subject.trim().length === 0) return undefined;
+      return { tool: 'state:read', args: { cell: spec.cell, as: subject } };
+    }
+    return { tool: 'state:read', args: { cell: spec.cell } };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * One evaluation of one row: dispatch → extract → compare → EDGE-fire (matched
  * while last_eval was not true) the paired await via emitAwaitedEvent. `once`
  * rows deactivate on fire. Errors accumulate; the Nth consecutive one
@@ -585,11 +643,17 @@ export async function evalPredicateWatch(row: PredicateWatchRow): Promise<Predic
     const edge = matched && row.lastEval !== true;
     const deactivate = edge && row.once;
     if (edge) {
+      const reread = deriveCellReread(row);
       await emitAwaitedEvent({
         key: row.eventKey,
         payload: {
           observed,
           predicate: { tool: row.tool, path: row.path, op: row.op, value: row.value },
+          // P-001: `observed` is FIRE-TIME and goes stale across the fire→delivery
+          // lag (a parked session boots, a respawn queues). The handle re-answers it
+          // from the same resolver at the moment of acting. Omitted when no
+          // registered cell matches or the reader is out of its audience.
+          ...(reread ? { reread } : {}),
         },
         summary: `predicate matched: ${row.tool} ${row.path} ${row.op}${row.value === undefined ? '' : ` ${JSON.stringify(row.value)}`} (observed ${String(JSON.stringify(observed)).slice(0, 200)})`,
         source: `predicate-watch:${row.ownerId}`,

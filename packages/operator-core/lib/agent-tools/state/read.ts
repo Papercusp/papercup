@@ -21,8 +21,9 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { formatCellHoist, formatCellPointers, readCell, type CellRead } from '../../cell-read';
-import { listCells } from '../../cell-registry';
+import { listCells, getCell } from '../../cell-registry';
 import { formatCellUnknown } from '../../cell-contract';
+import { absentReadAftercare, resolveSelfSubject } from '../../cell-suggest';
 
 /** The `value` branch of a cell read, plus a `summary` ONLY when its hoist has
  *  something to say (see `formatCellHoist` — a measured-empty channel stays quiet). */
@@ -127,6 +128,12 @@ export default defineTool({
         nullable: s.nullable,
         callerRelativity: s.callerRelativity,
         readable: s.changeSignal.kind === 'poll',
+        // P-002 (EI-21069242359753673): an event-signalled cell has no resolver to
+        // poll, so `state:subscribe` REFUSES it and redirects to events:await. The
+        // directory used to send exactly those callers to state:subscribe — a
+        // guaranteed refusal on their next call. Name the key here instead, which is
+        // what the refusal itself does.
+        ...(s.changeSignal.kind === 'event' ? { awaitKey: s.changeSignal.key } : {}),
       }));
       return {
         content: [
@@ -136,12 +143,21 @@ export default defineTool({
               ok: true,
               cells,
               count: cells.length,
-              note: 'Cells you may read. `readable:false` is event-signalled only — use state:subscribe. This list is audience-filtered; cells outside your audience are omitted, not marked.',
+              note: 'Cells you may read. `readable:false` = event-signalled: it has no resolver to poll, so state:subscribe refuses it — await its `awaitKey` with events:await instead. `readable:true` cells take state:subscribe. A cell whose callerRelativity is a `parameter` needs `as`; where that parameter is an agent identity, `as:"self"` means you. This list is audience-filtered; cells outside your audience are omitted, not marked.',
             }),
           },
         ],
       };
     }
+
+    // P-003 — `as:"self"` for an IDENTITY-keyed cell resolves to the caller's own
+    // ownerId (the coord-tools convention, absent from the plane until now). Every
+    // other subject, and every non-identity parameter, passes through untouched.
+    // Resolved against the cell's own declared relativity, so a per-PATH cell can
+    // never silently answer about a file named "self". `getCell` is audience-checked,
+    // so an unreadable cell resolves nothing and falls through to `absent` below.
+    const specForSelf = getCell(args.cell, reader);
+    const subject = specForSelf ? resolveSelfSubject(args.as, specForSelf, reader.ownerId) : args.as;
 
     const out = await readCell(
       args.cell,
@@ -156,7 +172,7 @@ export default defineTool({
         // is the same failure D-042 names: an access default that fails OPEN.
         role: ctx.role ?? '',
       },
-      args.as,
+      subject,
     );
 
     // `summary` renders the unknown in prose so a human-facing surface never shows a
@@ -181,11 +197,20 @@ export default defineTool({
                     .join(' · '),
                 }
               : out.status === 'absent'
-                ? {
-                    ok: true,
-                    ...out,
-                    summary: `No cell "${out.cell}" is readable by you. It may not exist, or it may be outside your audience — these are deliberately indistinguishable. Do NOT reconstruct the value from another surface.`,
-                  }
+                ? (() => {
+                    // P-002 — NAVIGATION aftercare on a refusal that stays an
+                    // INFORMATION dead end. Candidates come from listCells(reader)
+                    // ONLY: suggesting out-of-audience names would leak exactly what
+                    // `absent` exists to hide. Silent when there is nothing to say.
+                    const aftercare = absentReadAftercare(out.cell, listCells(reader));
+                    const base = `No cell "${out.cell}" is readable by you. It may not exist, or it may be outside your audience — these are deliberately indistinguishable. Do NOT reconstruct the value from another surface.`;
+                    const extra = aftercare.notACell
+                      ? ` ⓘ ${aftercare.notACell}`
+                      : aftercare.didYouMean
+                        ? ` Did you mean: ${aftercare.didYouMean.map((c) => `\`${c}\``).join(', ')}?`
+                        : '';
+                    return { ok: true, ...out, ...aftercare, summary: base + extra };
+                  })()
                 : // D-039 — a LOUD hoist gets prose too. The payload already carries
                   // `unknownHoist` for a program to branch on; this is the half that
                   // reaches a reader who skims. Silent on a measured-empty channel, so
