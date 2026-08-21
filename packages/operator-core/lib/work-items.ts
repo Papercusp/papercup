@@ -5693,6 +5693,9 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- pool-level exclusion as observation-lane, so an all-needs-human backlog also reads
          -- drained:true rather than idling a drainer on unpickable rows.
          AND ${needsHumanExclusionSql(sql)}
+         -- D-003/P-004: pending/revision-requested rows are owned by the reviewer/revision
+         -- lifecycle, not the normal implementation pool. Approval re-admits them.
+         AND ${agentReviewNormalExclusionSql(sql)}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: an auto-filed replication-liveness detector EI is gated to the p2p fleet and
          -- unactionable by a generic self-selector — pool-exclude it too (like observation/
@@ -5748,6 +5751,7 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-7776: a needsHuman-routed row is not work-queue material either — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
          AND ${needsHumanExclusionSql(sql)}
+         AND ${agentReviewNormalExclusionSql(sql)}
          AND ${externalBlockersExclusionSql(sql)}
          -- WI-2633: a replication-liveness detector EI is gated to the p2p fleet — same floor the
          -- claim applies (below), so the miss diagnosis never disagrees with what it serves.
@@ -5807,6 +5811,8 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
   'already-taken': 'already claimed by another agent',
   'observation-lane': 'payload.lane = "observation" — a captured NOTE, never work-queue material (D-005)',
   'needs-human': 'payload.needsHuman = true — routed to a human for ratification (EI-7776)',
+  'agent-review':
+    'payload.agentReview is pending or revision-requested — reserved to the peer-review lifecycle until approved',
   'external-blocker': 'payload.externalBlockers contains an active typed capability dependency',
   'claim-hold':
     'payload._claimHold = true — deliberately held (WI-2797). TWO provenance conventions, both must be checked before ' +
@@ -5870,6 +5876,7 @@ export async function explainIssueClaimFloors(
       ok_origin: boolean;
       ok_observation: boolean;
       ok_needs_human: boolean;
+      ok_agent_review: boolean;
       ok_external_blocker: boolean;
       ok_claim_hold: boolean;
       ok_plan_lane: boolean;
@@ -5889,6 +5896,7 @@ export async function explainIssueClaimFloors(
            (${isIssueLocallyClaimableWhereSql(sql, issueWs)})                     AS ok_origin,
            (${observationLaneExclusionSql(sql)})                                  AS ok_observation,
            (${needsHumanExclusionSql(sql)})                                       AS ok_needs_human,
+           (${agentReviewNormalExclusionSql(sql)})                                 AS ok_agent_review,
            (${externalBlockersExclusionSql(sql)})                                 AS ok_external_blocker,
            (${claimHoldExclusionSql(sql)})                                        AS ok_claim_hold,
            (${reservedPlanLaneExclusionSql(sql, assignee)})                       AS ok_plan_lane,
@@ -5921,8 +5929,10 @@ export async function explainIssueClaimFloors(
               ? 'observation-lane'
               : !r.ok_needs_human
                 ? 'needs-human'
-                : !r.ok_external_blocker
-                  ? 'external-blocker'
+                : !r.ok_agent_review
+                  ? 'agent-review'
+                  : !r.ok_external_blocker
+                    ? 'external-blocker'
                   : !r.ok_claim_hold
                     ? 'claim-hold'
                     : !r.ok_plan_lane
@@ -6199,6 +6209,10 @@ export async function claimNextIssueWorkItem(
           -- "routed to a human" comment forever (confirmed live: EI-7592 "resolved" 3x in one
           -- afternoon). Still directly claimable BY ID.
           AND ${needsHumanExclusionSql(tx)}
+          -- D-003/P-004: normal self-selection cannot take pending review work or the
+          -- submitter-owned revision interval. The dedicated reviewer tool is the only
+          -- selector for pending; approved rows pass this floor again.
+          AND ${agentReviewNormalExclusionSql(tx)}
           AND ${externalBlockersExclusionSql(tx)}
           -- WI-2633: never self-select an auto-filed replication-liveness detector EI
           -- (payload._ei.created_by='system:replication-liveness'). A generic backlog-drain
