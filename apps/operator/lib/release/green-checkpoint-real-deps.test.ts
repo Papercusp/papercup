@@ -720,6 +720,47 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
     );
   });
 
+  it("classifies a post-suite ENOSPC red before publishing failing-file evidence", async () => {
+    const lowSpaceOutput =
+      ">>> @papercusp/operator-core :: npm run test\n" +
+      "Error: ENOSPC: no space left on device, open '/tmp/pcv/worker.json'\n" +
+      "Error: ENOSPC: no space left on device, write '/tmp/pcv/reporter.json'\n";
+    const healthy = {
+      path: "/tmp",
+      totalBytes: 7.3 * 1024 ** 4,
+      freeBytes: 1_000 * 1024 ** 3,
+      freePct: 0.2,
+      totalInodes: 1_000_000,
+      freeInodes: 500_000,
+      freeInodesPct: 0.5,
+    };
+    const exhausted = {
+      ...healthy,
+      freeBytes: 0,
+      freePct: 0,
+    };
+    let samples = 0;
+    const { exec, calls } = makeExec([{ code: 1, stdout: lowSpaceOutput }]);
+    const r = await realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-infra-run",
+      undefined,
+      undefined,
+      async () => [samples++ === 0 ? healthy : exhausted],
+    ).runGreen(cpTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.infraFault).toMatchObject({
+      kind: "disk-space-exhausted",
+      paths: ["/tmp"],
+    });
+    expect(r.infraFault?.note).toMatch(/must NOT be triaged/);
+    expect(samples).toBe(2);
+    // A red suite defers post-suite legs; disk attribution happens before any rescue path.
+    expect(calls).toHaveLength(1);
+  });
+
   it("threads a frozen repair proof group into the candidate suite without replacing the verifier run id", async () => {
     // suite green → marker grep has no match → SPA build green.
     const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);

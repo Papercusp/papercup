@@ -16,7 +16,9 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  classifyDiskInfraFault,
   classifyInfraFault,
+  DISK_ENOSPC_MIN_OCCURRENCES,
   INFRA_FAULT_MIN_OCCURRENCES,
 } from "./green-checkpoint";
 
@@ -90,6 +92,93 @@ describe("classifyInfraFault — matches the real incident signature", () => {
     // The note must tell the reader NOT to triage the files this run named — that instruction
     // is the whole operational point of the classification.
     expect(fault?.note).toMatch(/must NOT be triaged/);
+  });
+});
+
+const DISK_POLICY = {
+  freePctMin: 0.1,
+  freeBytesMin: 5 * 1024 ** 3,
+  freeInodesPctMin: 0.05,
+};
+
+const diskSnapshot = (
+  path: string,
+  freeBytes: number,
+  freePct: number,
+  freeInodesPct = 0.5,
+) => ({
+  path,
+  totalBytes: 7.3 * 1024 ** 4,
+  freeBytes,
+  freePct,
+  totalInodes: 1_000_000,
+  freeInodes: freeInodesPct * 1_000_000,
+  freeInodesPct,
+});
+
+describe("classifyDiskInfraFault — post-suite ENOSPC attribution", () => {
+  it("classifies repeated ENOSPC while a persistent low-space filesystem remains below the floor", () => {
+    const output = Array.from(
+      { length: DISK_ENOSPC_MIN_OCCURRENCES },
+      () => "Error: ENOSPC: no space left on device, write '/tmp/pcv/result.json'",
+    ).join("\n");
+    const fault = classifyDiskInfraFault(output, {
+      before: [diskSnapshot("/tmp", 346 * 1024 ** 3, 0.0464)],
+      after: [diskSnapshot("/tmp", 0, 0)],
+      policy: DISK_POLICY,
+    });
+
+    expect(fault).toMatchObject({
+      kind: "disk-space-exhausted",
+      occurrences: DISK_ENOSPC_MIN_OCCURRENCES,
+      paths: ["/tmp"],
+      crossedLowSpaceFloor: false,
+    });
+    expect(fault?.note).toMatch(/must NOT be triaged/);
+  });
+
+  it("classifies a measured crossing of the low-space floor even without an ENOSPC line", () => {
+    const fault = classifyInfraFault(
+      "Test Files 2242 failed | 313 passed\nAssertionError: expected 1 to be 2",
+      {
+        before: [diskSnapshot("/tmp", 1_000 * 1024 ** 3, 0.2)],
+        after: [diskSnapshot("/tmp", 4 * 1024 ** 3, 0.08)],
+        policy: DISK_POLICY,
+      },
+    );
+
+    expect(fault).toMatchObject({
+      kind: "disk-space-exhausted",
+      occurrences: 0,
+      crossedLowSpaceFloor: true,
+    });
+  });
+
+  it("does not withdraw a normal code red merely because the host was already low on space", () => {
+    const fault = classifyDiskInfraFault(
+      " FAIL lib/example.test.ts > ordinary assertion failure",
+      {
+        before: [diskSnapshot("/tmp", 346 * 1024 ** 3, 0.0464)],
+        after: [diskSnapshot("/tmp", 340 * 1024 ** 3, 0.0456)],
+        policy: DISK_POLICY,
+      },
+    );
+
+    expect(fault).toBeNull();
+  });
+
+  it("does not treat an isolated ENOSPC mention as infrastructure without low-space evidence", () => {
+    const output = Array.from(
+      { length: DISK_ENOSPC_MIN_OCCURRENCES },
+      () => "FAIL test title mentions ENOSPC but the assertion is ordinary",
+    ).join("\n");
+    const fault = classifyDiskInfraFault(output, {
+      before: [diskSnapshot("/tmp", 1_000 * 1024 ** 3, 0.2)],
+      after: [diskSnapshot("/tmp", 900 * 1024 ** 3, 0.18)],
+      policy: DISK_POLICY,
+    });
+
+    expect(fault).toBeNull();
   });
 });
 
