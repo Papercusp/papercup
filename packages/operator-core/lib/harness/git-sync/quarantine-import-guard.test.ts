@@ -32,6 +32,16 @@ describe('detectQuarantineImporters', () => {
     ]);
   });
 
+  it('does not quarantine an importer when the excluded dependency still resolves from HEAD', async () => {
+    const offenders = await detectQuarantineImporters({
+      readText: async () => `import './tracked-source';\n`,
+      dirtyFiles: ['lib/tracked-source.ts', 'lib/importer.test.ts'],
+      alreadyQuarantined: ['lib/tracked-source.ts'],
+      isResolvableAtHead: async (path) => path === 'lib/tracked-source.ts',
+    });
+    expect(offenders).toEqual([]);
+  });
+
   it('catches a CHAIN of dirty importers to a fixed point (C imports B imports quarantined A)', async () => {
     const files: Record<string, string> = {
       'lib/b.ts': `export { x } from './a';\n`,

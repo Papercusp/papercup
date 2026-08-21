@@ -55,6 +55,12 @@ export interface QuarantineImportGuardDeps {
    *  content-guard + deletion-guard offenders) — the "infectious" set an importer
    *  must be held back alongside. */
   alreadyQuarantined: string[];
+  /** Whether a quarantined path still resolves from the committed HEAD tree. A
+   *  tracked-but-modified dependency remains available to an importer in HEAD,
+   *  so it is safe for that importer to commit while the dependency stays dirty.
+   *  When omitted, the historical conservative behavior treats every quarantined
+   *  path as absent from HEAD (useful for the pure guard tests). */
+  isResolvableAtHead?: (relPath: string) => Promise<boolean>;
   log?: (m: string) => void;
 }
 
@@ -87,11 +93,30 @@ function isScannableCandidate(path: string): boolean {
  * unsafe deletion — no new commit-path plumbing.
  */
 export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps): Promise<ContentOffender[]> {
-  const { readText, dirtyFiles, alreadyQuarantined, log } = deps;
+  const { readText, dirtyFiles, alreadyQuarantined, isResolvableAtHead, log } = deps;
   if (alreadyQuarantined.length === 0) return [];
-  const quarantined = new Set(alreadyQuarantined);
+  // A quarantined file that is already present in HEAD is not infectious: the
+  // importer committed by this tick still resolves the prior, committed copy.
+  // Only a dependency absent from HEAD can make an importer unresolvable in an
+  // isolated checkout. Keep the conservative old behavior when the HEAD seam is
+  // omitted by a caller that only wants the pure detector semantics.
+  const infectiousPaths: string[] = [];
+  for (const path of [...new Set(alreadyQuarantined)]) {
+    let presentAtHead = false;
+    if (isResolvableAtHead) {
+      try {
+        presentAtHead = await isResolvableAtHead(path);
+      } catch (e) {
+        log?.(`[quarantine-import-guard] could not check ${path} in HEAD — treating it as absent (fail safe): ${errMsg(e)}`);
+      }
+    }
+    if (!presentAtHead) infectiousPaths.push(path);
+  }
+  if (infectiousPaths.length === 0) return [];
+
+  const quarantined = new Set(infectiousPaths);
   // Normalized targets an importer's resolved specifier must match — precomputed once.
-  const quarantinedNormalized = new Set(alreadyQuarantined.map((p) => normalizeModulePath(p)));
+  const quarantinedNormalized = new Set(infectiousPaths.map((p) => normalizeModulePath(p)));
 
   const candidates = [...new Set(dirtyFiles)].filter((f) => isScannableCandidate(f) && !quarantined.has(f));
   if (candidates.length === 0) return [];
@@ -126,7 +151,7 @@ export async function detectQuarantineImporters(deps: QuarantineImportGuardDeps)
         if (!quarantinedNormalized.has(resolved)) continue;
         // Which already-quarantined path this resolves to (for the error message —
         // several could normalize the same; report the first match).
-        const target = alreadyQuarantined.find((p) => normalizeModulePath(p) === resolved) ?? resolved;
+        const target = infectiousPaths.find((p) => normalizeModulePath(p) === resolved) ?? resolved;
         quarantined.add(file);
         quarantinedNormalized.add(normalizeModulePath(file));
         offenders.push({

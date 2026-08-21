@@ -40,7 +40,7 @@ import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, parseDirtyPaths, type ContentOffender } from './content-guard';
-import { detectUnsafeDeletions } from './deletion-import-guard';
+import { detectUnsafeDeletions, normalizeModulePath, RESOLVABLE_EXTS } from './deletion-import-guard';
 import { detectWholesaleDeletion } from './wholesale-deletion-guard';
 import { detectQuarantineImporters } from './quarantine-import-guard';
 import { DEFAULT_CONTENT_DETECTORS, type ContentDetector } from '../../content-lint/registry';
@@ -765,6 +765,41 @@ const isDirty = async (runGit: RunGit, repo: string): Promise<boolean> => {
   const r = await runGit(['status', '--porcelain'], repo);
   return r.code === 0 && r.stdout.trim().length > 0;
 };
+
+/** Candidate HEAD paths for the same module resolution key used by the
+ * quarantine-import guard. The exact path is checked first, then the normal JS/
+ * TS extensions and directory index forms so a quarantined `foo.ts` does not
+ * infect an importer when a committed `foo.js` or `foo/index.ts` still resolves. */
+function headModuleCandidates(relPath: string): string[] {
+  const normalized = normalizeModulePath(relPath);
+  return [
+    ...new Set([
+      relPath,
+      ...RESOLVABLE_EXTS.map((ext) => `${normalized}${ext}`),
+      ...RESOLVABLE_EXTS.map((ext) => `${normalized}/index${ext}`),
+    ]),
+  ];
+}
+
+async function isModuleResolvableAtHead(
+  runGit: RunGit,
+  repoPath: string,
+  relPath: string,
+  log: (m: string) => void,
+): Promise<boolean> {
+  for (const candidate of headModuleCandidates(relPath)) {
+    try {
+      const result = await runGit(['cat-file', '-e', `HEAD:${candidate}`], repoPath);
+      if (result.code === 0) return true;
+    } catch (e) {
+      // A HEAD probe is a safety refinement, not a reason to wedge git-sync. If
+      // it cannot be measured, retain the guard's conservative quarantine.
+      log(`[quarantine-import-guard] HEAD probe failed for ${relPath}: ${errMsg(e)}`);
+      return false;
+    }
+  }
+  return false;
+}
 
 /** Current branch name, or null when HEAD is detached. */
 const currentBranch = async (runGit: RunGit, repo: string): Promise<string | null> => {
@@ -1975,6 +2010,7 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
         readText: (rel) => o.readText(repoPath, rel),
         dirtyFiles: dirtyForScan,
         alreadyQuarantined: preDeletionQuarantined,
+        isResolvableAtHead: (rel) => isModuleResolvableAtHead(runGit, repoPath, rel, o.log),
         log: o.log,
       });
       if (importerErrors.length > 0) contentErrors = [...contentErrors, ...importerErrors];

@@ -863,6 +863,27 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(dirty).toContain('watchdog.test.ts');
   });
 
+  it('EI-21031600248610340: a tracked-but-modified quarantined dependency does not infect its importer', async () => {
+    writeFileSync(join(repo, 'watchdog.md'), 'initial and committed\n');
+    git(repo, 'add', 'watchdog.md');
+    git(repo, 'commit', '--no-verify', '-m', 'seed tracked dependency');
+    git(repo, 'push', 'origin', 'HEAD:main');
+
+    writeFileSync(join(repo, 'watchdog.md'), 'this is BROKEN\n');
+    writeFileSync(join(repo, 'watchdog.test.ts'), `import './watchdog.md';\nit('ok', () => {});\n`);
+
+    const out = await runGitSync('test', { repoPath: repo, config: cfg, contentDetectors: [brokenDetector] });
+
+    expect(out.status).toBe('synced');
+    expect(out.contentErrors.map((c) => c.file)).toEqual(['watchdog.md']);
+    const originFiles = git(originDir, 'ls-tree', '-r', '--name-only', 'main');
+    expect(originFiles).toContain('watchdog.md');
+    expect(originFiles).toContain('watchdog.test.ts');
+    expect(git(originDir, 'show', 'main:watchdog.md')).toBe('initial and committed');
+    expect(git(repo, 'status', '--porcelain')).toContain('watchdog.md');
+    expect(git(repo, 'status', '--porcelain')).not.toContain('watchdog.test.ts');
+  });
+
   it('EI-19932544083689229: once the subject is fixed, the previously-held-back importer commits too (self-heal, no residual quarantine)', async () => {
     writeFileSync(join(repo, 'watchdog.md'), 'this is BROKEN\n');
     writeFileSync(join(repo, 'watchdog.test.ts'), `import './watchdog.md';\nit('ok', () => {});\n`);
