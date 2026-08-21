@@ -1008,6 +1008,12 @@ describe('clean sync outcome', () => {
           bridgeContainedReleaseMainOnCommitOnly: mode === 'bridged',
         }),
       }));
+      expect(gitSyncActivityPatches().map((activity) => activity.phase)).toEqual([
+        'local-sync',
+        'post-legs',
+        'complete',
+      ]);
+      expect(gitSyncActivityPatches()[1]).toMatchObject({ active: true, outcome_status: 'nothing' });
     },
   );
 
