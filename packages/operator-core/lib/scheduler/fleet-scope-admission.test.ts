@@ -1,6 +1,6 @@
 /** Recurrence guards for P-016's shared fleet-scope predicate + wind-down contract. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { FilterNode } from './claim-spec';
+import { DEFAULT_CLAIM_SPEC, type FilterNode } from './claim-spec';
 import type { ClaimSpecRecord } from './claim-spec-store';
 // Type-only: erased at compile time, so this does NOT defeat the vi.mock('../work-items')
 // factory below — it only makes the fixture genuinely checked against the real shape.
@@ -90,6 +90,7 @@ import {
   readFleetPauseState,
   reconcileFleetScopeClaims,
   type FleetScopeAdmission,
+  type FleetScopeContext,
 } from './fleet-scope-admission';
 
 describe('fleetLeaderUnavailableRefusal (EI-21079515303301272)', () => {
@@ -101,9 +102,17 @@ describe('fleetLeaderUnavailableRefusal (EI-21079515303301272)', () => {
       workspaceId: 'papercusp-workspace',
       record: {
         source: 'fleet' as const,
-        spec: { specId: 'leaderless-rev4', revision: 4 },
+        spec: {
+          ...DEFAULT_CLAIM_SPEC,
+          specId: 'leaderless-rev4',
+          revision: 4,
+        },
+        revision: 4,
+        updatedBy: 'test-fixture',
+        updatedAt: '2026-08-21T22:00:00.000Z',
+        fleetSlug: 'leaderless-fleet',
       },
-    };
+    } satisfies FleetScopeContext;
 
     const refusal = fleetLeaderUnavailableRefusal(scope);
 
