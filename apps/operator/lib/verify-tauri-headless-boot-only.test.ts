@@ -17,12 +17,17 @@ describe('WI-4975 — verify-tauri-headless --boot-only keeps the isolated app a
   });
 
   it('inherits an existing managed task scope instead of creating an unaccounted sibling', () => {
-    expect(src).toContain('caller_has_managed_task_scope()');
+    // capability:bash stamps this reserved marker only after durable task
+    // enrollment, and the bash-job service cgroup is the root the verifier
+    // must inherit. Do not infer ledger ownership from a particular systemd
+    // unit suffix: bash jobs use a managed service, not a verifier scope.
+    expect(src).toContain('PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID');
+    expect(src).toContain('if [ -n "$CAPABILITY_BASH_BACKGROUND_TASK_ID" ]; then');
     expect(src).toContain('VERIFY_SCOPE_MODE="inherit"');
     expect(src).toContain('VERIFY_SCOPE_INHERITED=1');
-    expect(src).toMatch(/if caller_has_managed_task_scope; then[\s\S]*?VERIFY_SCOPE_MODE="inherit"[\s\S]*?elif \[ "\$\(uname -s/);
+    expect(src).toMatch(/if \[ -n "\$CAPABILITY_BASH_BACKGROUND_TASK_ID" \]; then[\s\S]*?VERIFY_SCOPE_MODE="inherit"[\s\S]*?elif \[ "\$\(uname -s/);
     expect(src).toMatch(/if \[ "\$VERIFY_SCOPE_MODE" = "sibling" \]; then[\s\S]*?systemd-run --user --scope/);
-    expect(src).toContain('children stay in caller\'s managed task scope');
+    expect(src).toContain('children stay in capability:bash managed task scope');
   });
 
   it('keeps the sibling user-scope fallback for untracked callers', () => {

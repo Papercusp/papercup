@@ -429,19 +429,36 @@ fi
 # EI-20227529270079601 / EI-9748 Route A: `setsid` creates a new session and
 # process group, but it does NOT escape the spawning operator service's cgroup.
 # A systemd KillMode=control-group restart would otherwise terminate every
-# long-lived verifier process together. Reuse the product headless-spawn shape:
-# a transient user scope is a sibling of the operator service, and the shared
-# papercusp slice keeps an un-enrolled verifier scope discoverable/reapable.
+# long-lived verifier process together. A managed task invocation already has a
+# `pc-<taskId>.scope` root, though: creating another named scope from inside it
+# makes a sibling outside that ledger row and briefly reports the verifier as
+# unaccounted. Inherit that managed root when present; only untracked callers
+# use the sibling-scope escape that protects them from an operator restart.
 VERIFY_SCOPE_SLICE="papercusp-agent-session.slice"
 VERIFY_SCOPE_BASE="papercup-tauri-verify-${DISPLAY_NUM}-$$"
 VERIFY_SCOPE_ENABLED=0
-if [ "$(uname -s 2>/dev/null || true)" = "Linux" ] && command -v systemd-run >/dev/null 2>&1; then
+VERIFY_SCOPE_MODE="process-group"
+VERIFY_SCOPE_INHERITED=0
+
+# `capability:bash` forcibly stamps this reserved marker only after
+# `beginSyncEnrolment` has minted a durable task id and placed the shell in its
+# managed task service. The bash-job service is the cgroup root we must inherit;
+# creating a verifier-local sibling scope would put Xvfb/openbox/Tauri outside
+# that ledger row. A direct `setsid` keeps them in the inherited cgroup while
+# still detaching them from the caller's terminal session.
+CAPABILITY_BASH_BACKGROUND_TASK_ID="${PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID:-}"
+if [ -n "$CAPABILITY_BASH_BACKGROUND_TASK_ID" ]; then
+  VERIFY_SCOPE_MODE="inherit"
+  VERIFY_SCOPE_INHERITED=1
+  log "verifier cgroup inheritance enabled: children stay in capability:bash managed task scope (task=${CAPABILITY_BASH_BACKGROUND_TASK_ID})"
+elif [ "$(uname -s 2>/dev/null || true)" = "Linux" ] && command -v systemd-run >/dev/null 2>&1; then
   # Probe the actual user manager, rather than trusting the binary to be on PATH
   # (containers often ship systemd-run without a usable user bus). A failed probe
   # keeps the cross-platform fallback, but is named loudly and paired with the
   # boot-only provenance/liveness check below.
   if systemd-run --user --scope --quiet --collect --unit="${VERIFY_SCOPE_BASE}-probe" --slice="$VERIFY_SCOPE_SLICE" -- true >/dev/null 2>&1; then
     VERIFY_SCOPE_ENABLED=1
+    VERIFY_SCOPE_MODE="sibling"
     log "verifier cgroup isolation enabled: transient user scopes under $VERIFY_SCOPE_SLICE (base=${VERIFY_SCOPE_BASE})"
   else
     log "WARNING: systemd-run is present but the user-scope probe failed — verifier processes remain in the launcher cgroup; use VERIFY_TAURI_LIVENESS_CHECK before every drive (EI-20227529270079601)."
@@ -538,16 +555,16 @@ log "contention: $(contention_summary)"
 XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
 TAURI_SCOPE_UNIT=""
 
-# Launch a long-lived verifier process in the sibling user scope when Route A is
-# available. The caller keeps the systemd-run client PID as the process-group
-# handle; `--scope` keeps the payload in that group with inherited stdio/env, and
-# the generated stop script also stops the named scopes for a cgroup-complete
-# teardown. The plain `setsid` branch is only for hosts without a usable user
-# manager (macOS/bare containers).
+# Launch a long-lived verifier process. Managed callers use the plain `setsid`
+# branch so the payload remains in their ledgered cgroup; untracked callers use
+# the sibling user scope when Route A is available. The caller keeps the
+# systemd-run client PID as the process-group handle in that fallback, and the
+# generated stop script also stops the named scopes for a cgroup-complete
+# teardown.
 start_verify_process() {
   local unit="$1" output="$2"
   shift 2
-  if [ "$VERIFY_SCOPE_ENABLED" = 1 ]; then
+  if [ "$VERIFY_SCOPE_MODE" = "sibling" ]; then
     setsid systemd-run --user --scope --quiet --collect --unit="$unit" --slice="$VERIFY_SCOPE_SLICE" -- "$@" >"$output" 2>&1 &
   else
     setsid "$@" >"$output" 2>&1 &
@@ -628,7 +645,10 @@ EXPECTED_DISPLAY=":$DISPLAY_NUM"
 EXPECTED_PORT="$DEV_PORT"
 EXPECTED_SID="$TAURI_OWNER_SID"
 EXPECTED_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
-SCOPE_UNIT="${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
+SCOPE_UNIT=""
+if [ "$VERIFY_SCOPE_ENABLED" = 1 ]; then
+  SCOPE_UNIT="${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
+fi
 
 if ! kill -0 "\$PID" 2>/dev/null; then
   echo "FATAL: verifier bridge PID \$PID is gone at \$(date -u +%FT%TZ) — inspect \$LOG and boot a fresh rig; do not attach to another bridge." >&2
@@ -676,7 +696,13 @@ write_boot_only_env_script() {
       printf 'VERIFY_TAURI_SPA_DIST=%q\n' "$SPA_DIST"
       printf 'VERIFY_TAURI_LIVENESS_CHECK=%q\n' "$WORK/check-live.sh"
       printf 'VERIFY_TAURI_SCOPE_ENABLED=%q\n' "$VERIFY_SCOPE_ENABLED"
-      printf 'VERIFY_TAURI_SCOPE_UNIT=%q\n' "${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
+      printf 'VERIFY_TAURI_SCOPE_MODE=%q\n' "$VERIFY_SCOPE_MODE"
+      printf 'VERIFY_TAURI_SCOPE_INHERITED=%q\n' "$VERIFY_SCOPE_INHERITED"
+      EXPORTED_SCOPE_UNIT=""
+      if [ "$VERIFY_SCOPE_ENABLED" = 1 ]; then
+        EXPORTED_SCOPE_UNIT="${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
+      fi
+      printf 'VERIFY_TAURI_SCOPE_UNIT=%q\n' "$EXPORTED_SCOPE_UNIT"
       printf 'VERIFY_TAURI_HEARTBEAT=%q\n' "$HEARTBEAT_FILE"
       printf 'VERIFY_TAURI_ENV_FILE=%q\n' "$BOOT_ONLY_ENV"
       printf 'VERIFY_TAURI_AGENT_TOOLS_BIN=%q\n' "$VERIFY_TAURI_AGENT_TOOLS_BIN"
