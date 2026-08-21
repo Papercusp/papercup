@@ -42,7 +42,12 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // resolution path (`resolveProvenGreenRedTests`, P-007), which resolves a genuinely-fixed
   // test on N consecutive recorded greens and attaches them as real completion evidence.
   // Absence-closing it was strictly the weaker, unfalsifiable half of that pair.
-  'repeated-tool-error',
+  // ⛔ 'repeated-tool-error' is DELIBERATELY ABSENT. A quiet error-observation window
+  // only proves that the failing call was not observed; it does not prove that the
+  // underlying deployed tool schema or handler changed. In particular, traffic can
+  // stop after a schema rejection, making absence indistinguishable from an idle
+  // monitor. Require positive verification (or an explicit fix/deploy reference)
+  // before retiring this source; absence-only auto-close is unsafe here.
   'stalled-feature',
   'unresolved-escalation',
   'failed-spawn',

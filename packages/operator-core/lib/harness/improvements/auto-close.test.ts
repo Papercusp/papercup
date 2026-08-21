@@ -75,7 +75,7 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
   });
 
   it('accepts every eligible source and rejects an unlisted one', () => {
-    for (const src of ['repeated-tool-error', 'stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression', 'routine-failure']) {
+    for (const src of ['stalled-feature', 'unresolved-escalation', 'failed-spawn', 'smoke-fail', 'escalation-spike', 'fire-circuit-open', 'governor-starvation', 'orphaned-spawn', 'stuck-plan', 'ship-link-stuck', 'stalled-claim', 'loop-stalled', 'migration-drift', 'perf-regression', 'routine-failure']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(true);
     }
     // service-down is deliberately excluded: its P-004 freshness gate SKIPS collection
@@ -86,6 +86,18 @@ describe('decideAutoClose — guards (the safety-critical decision)', () => {
     for (const src of ['service-down', 'orphaned-dispatch', 'insight-staleness']) {
       expect(decideAutoClose({ ...baseCandidate, watchdogKey: `${src}:k` }, baseCtx).close).toBe(false);
     }
+  });
+
+  it('EI-21095659198152574: NEVER absence-closes repeated-tool-error without positive verification', () => {
+    // A quiet error-observation window only means that the rejected call was not
+    // observed. It cannot prove a deployed schema/handler changed: traffic may have
+    // stopped after the rejection, as happened for the requiredAncestorSha gap.
+    const d = decideAutoClose(
+      { ...baseCandidate, watchdogKey: 'repeated-tool-error:release:checkpoint-run:requiredAncestorSha' },
+      baseCtx,
+    );
+    expect(d).toMatchObject({ close: false, reason: 'ineligible-source' });
+    expect(AUTO_CLOSE_ELIGIBLE_SOURCES.has('repeated-tool-error')).toBe(false);
   });
 
   it('P-003: NEVER absence-closes a red-test signal — a quiet tick means "nobody ran it", not "it passes"', () => {
