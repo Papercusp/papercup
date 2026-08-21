@@ -145,14 +145,14 @@ describe('starlightContentAdapter — real operator-docs tree', () => {
     expect(pages.length).toBeGreaterThanOrEqual(100);
 
     const slugs = new Set(pages.map((p) => p.slug));
-    expect(slugs.has('sample-root-doc')).toBe(true);
+    expect(slugs.has('performance')).toBe(true); // a real root-level page
     expect(slugs.has('agents')).toBe(true); // agents/index.mdx
     expect(slugs.has('endpoint-system/overview')).toBe(true);
 
-    const policies = await src.getPage('sample-root-doc');
-    expect(policies).not.toBeNull();
-    expect(policies!.title.length).toBeGreaterThan(0);
-    expect(policies!.url).toBe('/internal/docs/sample-root-doc');
+    const perf = await src.getPage('performance');
+    expect(perf).not.toBeNull();
+    expect(perf!.title.length).toBeGreaterThan(0);
+    expect(perf!.url).toBe('/internal/docs/performance');
   });
 
   it('buildOutline runs against real tree without error', async () => {
