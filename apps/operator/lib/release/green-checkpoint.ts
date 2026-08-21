@@ -106,6 +106,10 @@ import {
 // deliberately outside the root npm workspaces (the lockfile carries them as standalone links),
 // so `npm --workspace <name>` cannot address them from the superproject root.
 import { STANDALONE_PACKAGE_DIRS } from "../../../../scripts/lib/test-runner-classes.mjs";
+import {
+  resolveBatchTimeoutMs,
+  resolveTaskTimeoutMs,
+} from "../../../../scripts/lib/batch-watchdog.mjs";
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
 // Imported (not merely re-exported) because `log()` below calls orchestratorStdoutTag() on
@@ -4741,14 +4745,40 @@ export function parseCrashedWorkspaces(output: string): string[] {
  * BOTH directions (a real break can be masked exactly as easily as an innocent file can be
  * failed), and "we cannot tell" is the only claim the evidence supports.
  */
+export interface CheckpointDiskSnapshot {
+  path: string;
+  totalBytes: number;
+  freeBytes: number;
+  freePct: number;
+  totalInodes: number;
+  freeInodes: number;
+  freeInodesPct: number;
+}
+
+export interface DiskInfraFaultPolicy {
+  freePctMin: number;
+  freeBytesMin: number;
+  freeInodesPctMin: number;
+}
+
 export interface InfraFaultClassification {
-  /** the fault class — the only one recognised today. */
-  kind: "vite-node-cache-vanished";
-  /** how many cache-ENOENT lines the output carried (a floor: vitest truncates its own
-   *  reporter output, so this is never the true failure count). */
+  /** the host fault class; neither class renders a code verdict. */
+  kind: "vite-node-cache-vanished" | "disk-space-exhausted";
+  /** how many matching fault lines the output carried. */
   occurrences: number;
-  /** the distinct cache ROOTS that vanished (one per vitest instance in the run). */
-  roots: string[];
+  /** the distinct vite-node cache ROOTS that vanished. */
+  roots?: string[];
+  /** the affected filesystems for a disk-space fault. */
+  paths?: string[];
+  /** true when the post-suite sample crossed the configured low-space floor. */
+  crossedLowSpaceFloor?: boolean;
+  /** bounded post-suite evidence for a disk-space fault. */
+  snapshots?: Array<{
+    path: string;
+    freeBytes: number;
+    freePct: number;
+    freeInodesPct: number;
+  }>;
   /** human-readable note for the verdict summary / broadcast. */
   note: string;
 }
@@ -4758,6 +4788,12 @@ export interface InfraFaultClassification {
  *  stake) but non-zero, so a single stray line — including a test that legitimately prints one
  *  — cannot by itself withdraw a verdict. */
 export const INFRA_FAULT_MIN_OCCURRENCES = 5;
+
+/** EI-21053570719607951: a single ENOSPC mention can be a fixture/test title. The
+ *  post-suite disk sample is the primary guard; two matching output lines are enough
+ *  to preserve the incident's real failure signature when the filesystem remains below
+ *  the warning floor throughout the run. */
+export const DISK_ENOSPC_MIN_OCCURRENCES = 2;
 
 /** EI-20767792192323374: the vite-node module-cache ENOENT shape. Anchored on BOTH halves —
  *  an `ENOENT` on the same line AND a quoted path whose final two segments are
@@ -4778,6 +4814,11 @@ const VITE_NODE_CACHE_ENOENT_RE =
  */
 export function classifyInfraFault(
   output: string,
+  disk?: {
+    before?: CheckpointDiskSnapshot[];
+    after?: CheckpointDiskSnapshot[];
+    policy?: DiskInfraFaultPolicy;
+  },
 ): InfraFaultClassification | null {
   const roots = new Set<string>();
   let occurrences = 0;
@@ -4785,19 +4826,104 @@ export function classifyInfraFault(
     occurrences++;
     roots.add(m[1].replace(/\/(?:ssr|client)\/[^/]*$/, ""));
   }
-  if (occurrences < INFRA_FAULT_MIN_OCCURRENCES) return null;
-  const rootList = [...roots].sort();
+  if (occurrences >= INFRA_FAULT_MIN_OCCURRENCES) {
+    const rootList = [...roots].sort();
+    return {
+      kind: "vite-node-cache-vanished",
+      occurrences,
+      roots: rootList,
+      note:
+        `infra fault: the vite-node module cache VANISHED mid-run — ${occurrences} ENOENT(s) opening cached ` +
+        `modules under ${rootList.length} root(s) (${rootList.slice(0, 3).join(", ")}${rootList.length > 3 ? ", …" : ""}). ` +
+        `Every result in this run is untrustworthy in BOTH directions (a real break is masked exactly as easily as an ` +
+        `innocent file is failed), so NO verdict is rendered about the code and the failing files named by this run ` +
+        `must NOT be triaged. This is a HOST fault, not a code fault: something deleted the runner's own temp root ` +
+        `while it was executing.`,
+    };
+  }
+
+  return classifyDiskInfraFault(output, disk);
+}
+
+const DISK_ENOSPC_LINE_RE = /no space left on device/i;
+
+function isDiskSnapshotLow(
+  snapshot: CheckpointDiskSnapshot,
+  policy: DiskInfraFaultPolicy,
+): boolean {
+  return (
+    snapshot.freeBytes < policy.freeBytesMin ||
+    snapshot.freePct < policy.freePctMin ||
+    (snapshot.totalInodes > 0 &&
+      snapshot.freeInodesPct < policy.freeInodesPctMin)
+  );
+}
+
+/**
+ * EI-21053570719607951: classify a red suite whose writes exhausted the filesystem
+ * backing its temp directory. The output alone is deliberately insufficient: a test
+ * title can mention ENOSPC, and a persistent low-space alarm is not proof that this run
+ * caused a failure. Require either matching ENOSPC output while the post-suite sample is
+ * below the warning floor, or a measured crossing from healthy to below-floor space.
+ */
+export function classifyDiskInfraFault(
+  output: string,
+  disk?: {
+    before?: CheckpointDiskSnapshot[];
+    after?: CheckpointDiskSnapshot[];
+    policy?: DiskInfraFaultPolicy;
+  },
+): InfraFaultClassification | null {
+  const after = disk?.after ?? [];
+  const policy = disk?.policy;
+  if (!policy || after.length === 0) return null;
+
+  const occurrences = output
+    .split(/\r?\n/)
+    .filter((line) => DISK_ENOSPC_LINE_RE.test(line)).length;
+  // RegExp.test with no global flag is state-free, but keep this explicit so a future
+  // change to the pattern cannot make line counting depend on prior matches.
+  DISK_ENOSPC_LINE_RE.lastIndex = 0;
+
+  const beforeByPath = new Map(
+    (disk?.before ?? []).map((snapshot) => [snapshot.path, snapshot]),
+  );
+  const lowAfter = after.filter((snapshot) =>
+    isDiskSnapshotLow(snapshot, policy),
+  );
+  const crossedLowSpaceFloor = lowAfter.some((snapshot) => {
+    const before = beforeByPath.get(snapshot.path);
+    return before !== undefined && !isDiskSnapshotLow(before, policy);
+  });
+  const hasEnospcEvidence = occurrences >= DISK_ENOSPC_MIN_OCCURRENCES;
+  if (!crossedLowSpaceFloor && !(hasEnospcEvidence && lowAfter.length > 0))
+    return null;
+
+  const snapshots = lowAfter.map((snapshot) => ({
+    path: snapshot.path,
+    freeBytes: snapshot.freeBytes,
+    freePct: snapshot.freePct,
+    freeInodesPct: snapshot.freeInodesPct,
+  }));
+  const details = snapshots
+    .map(
+      (snapshot) =>
+        `${snapshot.path}: ${(snapshot.freeBytes / 1024 ** 3).toFixed(1)} GiB free ` +
+        `(${(snapshot.freePct * 100).toFixed(2)}%), ` +
+        `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
+    )
+    .join("; ");
   return {
-    kind: "vite-node-cache-vanished",
+    kind: "disk-space-exhausted",
     occurrences,
-    roots: rootList,
+    paths: snapshots.map((snapshot) => snapshot.path),
+    crossedLowSpaceFloor,
+    snapshots,
     note:
-      `infra fault: the vite-node module cache VANISHED mid-run — ${occurrences} ENOENT(s) opening cached ` +
-      `modules under ${rootList.length} root(s) (${rootList.slice(0, 3).join(", ")}${rootList.length > 3 ? ", …" : ""}). ` +
-      `Every result in this run is untrustworthy in BOTH directions (a real break is masked exactly as easily as an ` +
-      `innocent file is failed), so NO verdict is rendered about the code and the failing files named by this run ` +
-      `must NOT be triaged. This is a HOST fault, not a code fault: something deleted the runner's own temp root ` +
-      `while it was executing.`,
+      `infra fault: the filesystem backing the checkpoint temp directory crossed or remained below ` +
+      `the low-space floor during the run${occurrences > 0 ? ` (${occurrences} ENOSPC/no-space output line(s))` : ""}. ` +
+      `Post-suite disk evidence: ${details}. No code verdict is rendered and the failing files named by ` +
+      `this run must NOT be triaged; free space before retrying the gate.`,
   };
 }
 
@@ -8239,6 +8365,33 @@ function commandCompletedSuccessfully(
 export const ISOLATION_RUN_TIMEOUT_MS = 5 * 60_000;
 
 /**
+ * EI-204898: task-shaped test rescues used to bypass the affected runner's parent-owned
+ * watchdog entirely. Keep their outer bound on the same conservative policy as the batch
+ * runner: a generous floor for the largest workspace, adaptive headroom when a caller has
+ * supplied an override, and a ceiling below the gate-wide backstop. The env is the already
+ * sanitized child env, so a host-only override cannot silently change what the rescue claims
+ * to have bounded.
+ */
+const RESCUE_TASK_TIMEOUT_FLOOR_MS = 45 * 60_000;
+const RESCUE_TASK_TIMEOUT_MAX_MS = 90 * 60_000;
+
+function rescueTaskWatchdogOptions(
+  script: string,
+  env: NodeJS.ProcessEnv,
+): { timeoutMs?: number; killProcessGroupOnTimeout?: boolean } {
+  if (script !== "test" && !script.startsWith("test:")) return {};
+  const timeoutMs = resolveTaskTimeoutMs({
+    overrideMs: resolveBatchTimeoutMs(
+      env.AFFECTED_BATCH_TIMEOUT_MS,
+      RESCUE_TASK_TIMEOUT_FLOOR_MS,
+    ),
+    floorMs: RESCUE_TASK_TIMEOUT_FLOOR_MS,
+    maxMs: RESCUE_TASK_TIMEOUT_MAX_MS,
+  });
+  return { timeoutMs, killProcessGroupOnTimeout: true };
+}
+
+/**
  * EI-19332206710686203: the PER-TEST deadline every RESCUE re-run passes to vitest.
  *
  * Vitest's default `testTimeout` is 5s, and at the time this was written NOTHING in the
@@ -10056,6 +10209,9 @@ export function realCheckpointDeps(
    *  failing file once, so ran a real 5s setTimeout on every invocation). */
   flakeAbsorptionOpts?: Parameters<typeof attemptFlakeAbsorption>[3],
   reportProgress?: (detail?: string) => void,
+  /** EI-21053570719607951: override the statfs sampler in focused tests. Production
+   *  samples the filesystem backing os.tmpdir() before and after the suite. */
+  sampleDiskSnapshotsOverride?: () => Promise<CheckpointDiskSnapshot[]>,
 ): CheckpointDeps {
   const notifyProgress = (detail?: string) => {
     try {
@@ -10074,6 +10230,25 @@ export function realCheckpointDeps(
     // EMITTING process. See ORCHESTRATOR_STDOUT_TAG_UNDER_TEST for why this is the one place
     // it can be decided correctly.
     console.log(`${orchestratorStdoutTag()} ${s}`);
+  };
+  const sampleCheckpointDisk =
+    sampleDiskSnapshotsOverride ??
+    (async (): Promise<CheckpointDiskSnapshot[]> => {
+      const { sampleDiskSnapshots } = await import(
+        "@papercusp/operator-core/lib/storage/disk-space-alarm"
+      );
+      return sampleDiskSnapshots([os.tmpdir()]);
+    });
+  const checkpointDiskPolicy = async (): Promise<DiskInfraFaultPolicy> => {
+    const { diskPolicyFromEnv } = await import(
+      "@papercusp/operator-core/lib/storage/disk-space-alarm"
+    );
+    const policy = diskPolicyFromEnv();
+    return {
+      freePctMin: policy.freePctMin,
+      freeBytesMin: policy.freeBytesMin,
+      freeInodesPctMin: policy.freeInodesPctMin,
+    };
   };
   /**
    * Feed every real command boundary and output chunk into the watchdog seam. Keeping this
@@ -10288,10 +10463,9 @@ export function realCheckpointDeps(
       const {
         detectCriticalWriteHeadroom,
         diskPolicyFromEnv,
-        sampleDiskSnapshots,
       } = await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
       const tempPath = os.tmpdir();
-      const snapshots = await sampleDiskSnapshots([tempPath]);
+      const snapshots = await sampleCheckpointDisk();
       const snapshot = snapshots[0];
       if (!snapshot) {
         return {
@@ -10862,6 +11036,30 @@ export function realCheckpointDeps(
           "unknown",
         ...(execution?.setup ? { setup: execution.setup } : {}),
       };
+      // EI-21053570719607951: the early orchestration preflight protects setupTree, but it
+      // cannot explain a filesystem that fills DURING the suite. Capture the same tmpdir
+      // filesystem immediately around the expensive run so a red with ENOSPC (or a measured
+      // crossing of the low-space floor) becomes an infra-inconclusive verdict instead of a
+      // thousands-of-files code red.
+      let diskBeforeSuite: CheckpointDiskSnapshot[] | undefined;
+      let diskPolicy: DiskInfraFaultPolicy | undefined;
+      try {
+        diskPolicy = await checkpointDiskPolicy();
+        diskBeforeSuite = await sampleCheckpointDisk();
+        const snapshot = diskBeforeSuite[0];
+        if (snapshot) {
+          log(
+            `disk-headroom suite baseline: ${snapshot.path} ${(snapshot.freeBytes / 1024 ** 3).toFixed(1)} GiB free ` +
+              `(${(snapshot.freePct * 100).toFixed(2)}%), ${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
+          );
+        }
+      } catch (e) {
+        // Disk evidence is diagnostic. A sampler failure must not turn a normal suite into
+        // an infra verdict, and the existing cache classifier remains available below.
+        log(
+          `disk-headroom suite baseline skipped (${e instanceof Error ? e.message : e})`,
+        );
+      }
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
       const r = await exec(cmd, args, {
@@ -11041,6 +11239,22 @@ export function realCheckpointDeps(
         }
       }
 
+      let diskAfterSuite: CheckpointDiskSnapshot[] | undefined;
+      try {
+        diskAfterSuite = await sampleCheckpointDisk();
+        const snapshot = diskAfterSuite[0];
+        if (snapshot) {
+          log(
+            `disk-headroom suite result: ${snapshot.path} ${(snapshot.freeBytes / 1024 ** 3).toFixed(1)} GiB free ` +
+              `(${(snapshot.freePct * 100).toFixed(2)}%), ${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
+          );
+        }
+      } catch (e) {
+        log(
+          `disk-headroom suite result skipped (${e instanceof Error ? e.message : e})`,
+        );
+      }
+
       // Persist the FULL suite (+ build) output — the 2000-char tail below repeatedly
       // proved undiagnosable post-hoc ("2 non-quarantined task(s) failed" with no test
       // names survived the truncation; 2026-06-06/07 cost five diagnosis round-trips +
@@ -11216,7 +11430,13 @@ export function realCheckpointDeps(
       // passed despite a cache hiccup keeps its pass. See classifyInfraFault for why an infra
       // fault is INCONCLUSIVE rather than absorbed-to-green (it never promotes, so it cannot
       // manufacture a false green the way an absorber can).
-      const infraFault = green ? null : classifyInfraFault(fullOutput);
+      const infraFault = green
+        ? null
+        : classifyInfraFault(fullOutput, {
+            before: diskBeforeSuite,
+            after: diskAfterSuite,
+            policy: diskPolicy,
+          });
       if (infraFault) log(infraFault.note);
       // Publish the gate's canonical red attribution while we are still inside the real-deps
       // runner. The orchestration caller appends richer notes later, but a self-watchdog,
@@ -11415,6 +11635,7 @@ export function realCheckpointDeps(
           cwd: invocation.cwd,
           env,
           allowNonZero: true,
+          ...rescueTaskWatchdogOptions(script, env),
         }).catch((e: unknown) => ({ code: 1, stdout: "", stderr: String(e) }));
         summaries.push(`${label}: ${r.code === 0 ? "pass" : "FAIL"}`);
         if (r.code !== 0) return { pass: false, summary: summaries.join("; ") };
