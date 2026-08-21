@@ -282,6 +282,7 @@ export async function writeContent(
       docId,
       content,
       sha256(content),
+      frontmatter === null ? null : JSON.stringify(frontmatter),
       expected.contentHash,
       expected.updatedAt,
     ],

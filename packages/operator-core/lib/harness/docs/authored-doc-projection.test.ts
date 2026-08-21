@@ -219,8 +219,8 @@ describe('authored-doc projection (P-008)', () => {
         query: async (sql: string, values?: unknown[]) => {
           statement = sql;
           parameters = values ?? [];
-          const expectedHash = parameters[5];
-          const expectedUpdatedAt = parameters[6];
+          const expectedHash = parameters[6];
+          const expectedUpdatedAt = parameters[7];
           if (current.contentHash !== expectedHash || current.updatedAt !== expectedUpdatedAt) {
             return { rows: [], rowCount: 0 };
           }
@@ -241,7 +241,12 @@ describe('authored-doc projection (P-008)', () => {
       expect(accepted).toBe(false);
       expect(current.content).toBe(newer);
       expect(statement).toContain('AND content_hash = $7 AND updated_at = $8');
-      expect(parameters.slice(5)).toEqual([sha256(canonical), '2026-08-21T16:59:00.000Z']);
+      // parameters[5] is the derived frontmatter bind ($6::jsonb) — it must be sent as the
+      // JSON-stringified index derived from the CONTENT BEING WRITTEN (`canonical`), not left
+      // out of the values array (the bug this test guards: frontmatter was computed and then
+      // silently dropped, shifting every CAS parameter one slot to the left).
+      expect(parameters[5]).toEqual(JSON.stringify(deriveFrontmatterIndex(canonical)));
+      expect(parameters.slice(6)).toEqual([sha256(canonical), '2026-08-21T16:59:00.000Z']);
     });
   });
 
