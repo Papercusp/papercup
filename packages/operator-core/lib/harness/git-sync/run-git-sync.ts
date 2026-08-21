@@ -470,6 +470,8 @@ export interface ToolRoutingCheckerContext {
   log: (message: string) => void;
 }
 
+export type ToolRoutingChecker = (context: ToolRoutingCheckerContext) => Promise<void>;
+
 /**
  * Run the generated routing check in a bounded child. The generator reads the
  * canonical doc-part store, so a broken DB/client or a half-written peer module
