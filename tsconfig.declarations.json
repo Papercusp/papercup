@@ -215,6 +215,12 @@
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing
     // it because the module is a shared exit-safety helper with full JSDoc, so the
     // emit is genuinely typed rather than a suppression.
-    "scripts/lib/write-stdout-sync.mjs"
+    "scripts/lib/write-stdout-sync.mjs",
+    // EI-21048499991398082 — the AFFECTED_TASK_PROGRESS `exitStatus=`/`signal=` field
+    // formatter, extracted so the "pending" vs "known: not applicable" distinction is
+    // unit-testable. Registered for the first reason this list exists: it is imported
+    // directly by affected-tests-task-progress-line.test.ts, which would otherwise pay
+    // a TS7016 absorbed into that file's permanent tsc baseline.
+    "scripts/lib/task-progress-line.mjs"
   ]
 }

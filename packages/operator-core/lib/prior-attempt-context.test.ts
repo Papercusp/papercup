@@ -4,6 +4,7 @@ import {
   collectPriorAttempts,
   compilePriorAttempts,
   getClaimTimePriorAttemptBrief,
+  resolvePriorAttemptRefs,
   type PriorAttemptSource,
 } from './prior-attempt-context';
 import type { WorkItem } from './work-items';
@@ -126,6 +127,84 @@ describe('buildBoundedPriorAttemptBrief', () => {
   });
 });
 
+describe('buildBoundedPriorAttemptBrief omission drill-down (P-017)', () => {
+  it('names every omitted record by raw ref, not only by authority tally', () => {
+    // 40 ordinary records against a 5-record budget: 35 must be dropped.
+    const sources = Array.from({ length: 40 }, (_, i) =>
+      source({ rawRef: `WI-5#comment:${i}`, scope: 'same-spec', text: `Attempt ${i}.` }),
+    );
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxRecords: 5 });
+    expect(brief).not.toBeNull();
+    expect(brief!.omission.omittedRecords).toBe(35);
+    expect(brief!.omission.omittedByAuthority.comment).toBe(35);
+
+    // The tally alone cannot say WHICH history was dropped. The refs can, and
+    // they must be exactly the complement of what the brief admitted.
+    const omittedRefs = brief!.omission.omittedRefs.map((entry) => entry.rawRef);
+    expect(omittedRefs).toHaveLength(35);
+    expect(brief!.omission.omittedRefsTruncated).toBe(false);
+    expect(new Set(omittedRefs).size).toBe(35);
+    for (const ref of omittedRefs) expect(brief!.rawRefs).not.toContain(ref);
+    expect([...brief!.rawRefs, ...omittedRefs].sort()).toEqual(sources.map((s) => s.rawRef).sort());
+  });
+
+  it('carries enough identity on an omitted ref to route the drill-down', () => {
+    const brief = buildBoundedPriorAttemptBrief(
+      compilePriorAttempts([
+        source({ rawRef: 'plan#SPEC-1@2', scope: 'same-spec', authority: 'current-spec', text: 'Current.' }),
+        source({ rawRef: 'WI-7#comment:1', scope: 'same-plan-item', workItemId: 'WI-7', text: 'Dropped attempt.' }),
+      ]),
+      { maxRecords: 1 },
+    );
+    expect(brief!.omission.omittedRefs).toEqual([
+      {
+        authority: 'comment',
+        scope: 'same-plan-item',
+        rawRef: 'WI-7#comment:1',
+        workItemId: 'WI-7',
+        specId: undefined,
+        at: '2026-08-20T12:00:00.000Z',
+      },
+    ]);
+  });
+
+  it('marks a clipped body so a truncated retraction is not read as the whole record', () => {
+    // The retraction lives PAST the cut — truncated, this record reads as
+    // endorsement of the very approach its tail withdraws.
+    const long = `Approach: reused the reader. ${'x'.repeat(900)} False premise: the reader never existed.`;
+    const brief = buildBoundedPriorAttemptBrief(
+      compilePriorAttempts([source({ rawRef: 'WI-8#checkpoint', authority: 'checkpoint', text: long })]),
+      { maxTextChars: 120 },
+    );
+    const record = brief!.attempts[0]!;
+    expect(record.textTruncated).toBe(true);
+    expect(record.fullTextChars).toBe(long.length);
+    expect(record.text).not.toContain('False premise');
+    expect(record.rawRef).toBe('WI-8#checkpoint');
+  });
+
+  it('reports its own ref-list truncation rather than passing an exhausted list off as complete', () => {
+    const sources = Array.from({ length: 260 }, (_, i) =>
+      source({ rawRef: `WI-6#comment:${i}`, text: `Attempt ${i}.` }),
+    );
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxRecords: 1 });
+    expect(brief!.omission.omittedRecords).toBe(259);
+    expect(brief!.omission.omittedRefs).toHaveLength(200);
+    expect(brief!.omission.omittedRefsTruncated).toBe(true);
+  });
+
+  it('counts a record rejected twice — budget then envelope overflow — as one omission', () => {
+    const sources = Array.from({ length: 12 }, (_, i) =>
+      source({ rawRef: `WI-4#comment:${i}`, text: `Attempt ${i}. ${'y'.repeat(600)}` }),
+    );
+    const brief = buildBoundedPriorAttemptBrief(compilePriorAttempts(sources), { maxChars: 2_000 });
+    const refs = brief!.omission.omittedRefs.map((entry) => entry.rawRef);
+    expect(new Set(refs).size).toBe(refs.length);
+    expect(refs.length).toBe(brief!.omission.omittedRecords);
+    expect(Object.values(brief!.omission.omittedByAuthority).reduce((a, b) => a + b, 0)).toBe(refs.length);
+  });
+});
+
 describe('collectPriorAttempts', () => {
   it('projects existing spec/decision/evidence/checkpoint/thread/completion stores without minting authority', async () => {
     const item = {
@@ -171,6 +250,88 @@ describe('collectPriorAttempts', () => {
     ]);
     expect(result.records.filter((record) => record.workItemId === 'WI-9').every((record) => record.scope === 'same-spec')).toBe(true);
     expect(result.records.find((record) => record.authority === 'retraction')?.rawRef).toBe('WI-9#comment:7');
+  });
+});
+
+describe('resolvePriorAttemptRefs (P-017 raw drill-down)', () => {
+  const item = {
+    id: 'WI-9',
+    family: 'issue',
+    harness: 'papercusp',
+    sourcePlanItemIds: ['P-009'],
+    payload: {},
+    terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
+    completionAuthority: null,
+    terminalOwner: null,
+    closedAt: null,
+    updatedAt: '2026-08-20T12:00:00Z',
+  } as unknown as WorkItem;
+  // A checkpoint body long enough that any bounded brief must clip it — the
+  // drill-down exists precisely for what the clip removes.
+  const longCheckpoint = `Approach: reused the reader. ${'z'.repeat(1_200)} False premise: the reader never existed.`;
+  const deps = {
+    getPlan: async () => ({ content: '## Decisions\n\n### D-001 — Reuse the reader\nDate: 2026-08-20\nDo not add a ledger.' }),
+    specs: async () => [],
+    edges: async () => [],
+    evidence: async () => [],
+    item: async () => item,
+    items: async () => [item],
+    thread: async () => ({ posts: [], total: 0, topics: [], createdAt: '2026-08-20T08:00:00Z' }),
+    checkpoint: async () => ({ checkpoint: longCheckpoint, updatedAtMs: Date.parse('2026-08-20T10:00:00Z') }),
+    lifecycle: async () => ({ events: [], flags: { needsHuman: false, claimHold: false, heldOpenBy: null, heldOpenReason: null }, coverage: { auditRows: 0, reopenEntries: 0, notRecorded: [], degraded: false } }),
+    priorWork: async () => null,
+  };
+  const pointer = { harness: 'papercusp', planSlug: 'plan', planItemId: 'P-009', workItemId: 'WI-9' };
+
+  it('returns the FULL text a bounded brief had to clip', async () => {
+    const brief = await getClaimTimePriorAttemptBrief({ ...pointer, budget: { maxTextChars: 100 } }, deps as never);
+    const clipped = brief!.attempts.find((record) => record.authority === 'checkpoint')!;
+    expect(clipped.textTruncated).toBe(true);
+    expect(clipped.text).not.toContain('False premise');
+
+    const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: [clipped.rawRef] }, deps as never);
+    expect(resolved!.records).toHaveLength(1);
+    // The withdrawal that the clip hid is recoverable from the ref alone.
+    expect(resolved!.records[0]!.text).toContain('False premise: the reader never existed.');
+    expect(resolved!.records[0]!.text.length).toBeGreaterThan(clipped.text.length);
+  });
+
+  it('reports refs that no longer compile instead of silently returning fewer records', async () => {
+    const resolved = await resolvePriorAttemptRefs(
+      { ...pointer, rawRefs: ['WI-9#checkpoint', 'WI-9#comment:404'] },
+      deps as never,
+    );
+    expect(resolved!.records.map((record) => record.rawRef)).toEqual(['WI-9#checkpoint']);
+    expect(resolved!.unresolved).toEqual(['WI-9#comment:404']);
+  });
+
+  it('stamps the fingerprint it resolved against so a caller can detect history moving under it', async () => {
+    const brief = await getClaimTimePriorAttemptBrief(pointer, deps as never);
+    const resolved = await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['WI-9#checkpoint'] }, deps as never);
+    expect(resolved!.fingerprint).toBe(brief!.fingerprint);
+    expect(resolved!.schemaVersion).toBe('prior-attempt-refs-v1');
+  });
+
+  it('asks for nothing when given no refs, and fails soft on a pathological read', async () => {
+    expect(await resolvePriorAttemptRefs({ ...pointer, rawRefs: [] }, deps as never)).toBeNull();
+    expect(await resolvePriorAttemptRefs({ ...pointer, rawRefs: ['  '] }, deps as never)).toBeNull();
+
+    const never = () => new Promise<never>(() => {});
+    const started = performance.now();
+    const result = await resolvePriorAttemptRefs(
+      { ...pointer, rawRefs: ['WI-9#checkpoint'], timeoutMs: 25 },
+      {
+        getPlan: never, specs: never, edges: never, evidence: never, item: never,
+        items: never, thread: never, checkpoint: never, lifecycle: never, priorWork: never,
+      } as never,
+    );
+    expect(result).toBeNull();
+    expect(performance.now() - started).toBeLessThan(500);
+  });
+
+  it('returns null without a plan pointer rather than guessing a scope', async () => {
+    expect(await resolvePriorAttemptRefs({ workItemId: 'WI-9', rawRefs: ['WI-9#checkpoint'] }, deps as never)).toBeNull();
   });
 });
 

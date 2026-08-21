@@ -126,6 +126,15 @@ export interface BoundedPriorAttemptBrief {
   omission: {
     omittedRecords: number;
     omittedByAuthority: Partial<Record<PriorAttemptAuthority, number>>;
+    /** P-017: the refs of the records this brief left out.  A COUNT tells the
+     * reader that history was dropped but not WHICH history, which makes the
+     * omission unauditable; these refs resolve through
+     * resolvePriorAttemptRefs().  Bounded independently of the record budget —
+     * a ref is ~100 bytes against a record's ~700. */
+    omittedRefs: PriorAttemptOmittedRef[];
+    /** P-017: true when even `omittedRefs` had to be cut.  Without this an
+     * exhausted ref list is indistinguishable from a complete one. */
+    omittedRefsTruncated: boolean;
     sourceCount: number;
     deduplicatedCount: number;
     truncated: boolean;
@@ -317,6 +326,11 @@ function briefSize(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), 'utf8');
 }
 
+/** P-017: how many omitted-record refs a brief carries before it must itself
+ * truncate.  Deliberately generous relative to `maxRecords` — a ref costs ~100
+ * bytes against a record's ~700, so retrievability is cheap next to detail. */
+const OMITTED_REF_CAP = 200;
+
 /**
  * Bounded claim-time projection.  Budgeting is deterministic and omission is
  * explicit.  Canonical authority and lifted residue are admitted before ordinary
@@ -348,6 +362,22 @@ export function buildBoundedPriorAttemptBrief(
     residue: residue.map((entry) => entry.rawRef),
   };
   const omitted = new Map<PriorAttemptAuthority, number>();
+  // P-017: identity of every dropped record, not just its tally.  Keyed by
+  // rawRef because a record can be rejected twice (budget, then envelope
+  // overflow) and must not be double-counted as two distinct omissions.
+  const omittedRefs = new Map<string, PriorAttemptOmittedRef>();
+  const dropRecord = (record: PriorAttemptRecord) => {
+    if (omittedRefs.has(record.rawRef)) return;
+    omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
+    omittedRefs.set(record.rawRef, {
+      authority: record.authority,
+      scope: record.scope,
+      rawRef: record.rawRef,
+      workItemId: record.workItemId,
+      specId: record.specId,
+      at: record.at,
+    });
+  };
   let admitted = 0;
 
   // Assemble against a pessimistic envelope, then fill ordinary detail from the
@@ -363,6 +393,12 @@ export function buildBoundedPriorAttemptBrief(
     omission: {
       omittedRecords: compilation.records.length - admitted,
       omittedByAuthority: {},
+      // Sized, not populated: the envelope is a PESSIMISTIC probe for the
+      // admit loop, and it must reserve the bytes the omitted-ref list will
+      // eventually cost, or the last admitted record wins space that the
+      // omission block then has to overflow.
+      omittedRefs: [...omittedRefs.values()].slice(0, OMITTED_REF_CAP),
+      omittedRefsTruncated: omittedRefs.size > OMITTED_REF_CAP,
       sourceCount: compilation.sourceCount,
       deduplicatedCount: compilation.deduplicatedCount,
       truncated: admitted < compilation.records.length,
@@ -386,7 +422,7 @@ export function buildBoundedPriorAttemptBrief(
 
   for (const record of ordinaryRecords) {
     if (admitted >= maxRecords) {
-      omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
+      dropRecord(record);
       continue;
     }
     const projected = briefRecord(record, maxTextChars);
@@ -397,12 +433,8 @@ export function buildBoundedPriorAttemptBrief(
       attempts.pop();
       rawRefs.pop();
       admitted -= 1;
-      omitted.set(record.authority, (omitted.get(record.authority) ?? 0) + 1);
+      dropRecord(record);
     }
-  }
-  for (const record of ordinaryRecords) {
-    if (attempts.some((attempt) => attempt.rawRef === record.rawRef)) continue;
-    if (!omitted.has(record.authority)) omitted.set(record.authority, 0);
   }
   const omittedRecords = compilation.records.length - admitted;
   const result: BoundedPriorAttemptBrief = {
@@ -416,6 +448,8 @@ export function buildBoundedPriorAttemptBrief(
     omission: {
       omittedRecords,
       omittedByAuthority: Object.fromEntries([...omitted].filter(([, count]) => count > 0)),
+      omittedRefs: [...omittedRefs.values()].slice(0, OMITTED_REF_CAP),
+      omittedRefsTruncated: omittedRefs.size > OMITTED_REF_CAP,
       sourceCount: compilation.sourceCount,
       deduplicatedCount: compilation.deduplicatedCount,
       truncated: omittedRecords > 0,
@@ -743,6 +777,73 @@ export async function getClaimTimePriorAttemptBrief(
       }),
     ]);
     return buildBoundedPriorAttemptBrief(compilation, opts.budget);
+  } catch {
+    return null;
+  }
+}
+
+export interface PriorAttemptRefResolution {
+  schemaVersion: 'prior-attempt-refs-v1';
+  /** Full, UNTRUNCATED records for the refs that still compile. */
+  records: PriorAttemptRecord[];
+  /** Refs that no longer resolve.  A ref goes unresolved when its source moved
+   * on (a checkpoint replaced, a comment edited, a plan item re-scoped) — which
+   * is a real answer about the history, not an error.  Returning it explicitly
+   * keeps a vanished source distinguishable from one this call never looked for. */
+  unresolved: string[];
+  /** The compilation fingerprint the refs were resolved against.  A caller
+   * holding a brief can compare it to `brief.fingerprint`: a mismatch means the
+   * history moved between the brief and the drill-down. */
+  fingerprint: string;
+}
+
+/**
+ * P-017 raw drill-down.  Resolves brief refs — admitted, protected, or OMITTED —
+ * back to their full source records.
+ *
+ * This is a re-projection of the same authority the brief was cut from, not a
+ * second store: it re-runs the canonical collector and selects by `rawRef`.  So
+ * a ref that a bounded brief could only afford to COUNT still leads back to the
+ * text, which is the property the module docstring promises and the budget loop
+ * would otherwise quietly break.
+ */
+export async function resolvePriorAttemptRefs(
+  opts: ClaimTimePriorAttemptOptions & { rawRefs: readonly string[] },
+  deps: CollectorDeps = DEFAULT_DEPS,
+): Promise<PriorAttemptRefResolution | null> {
+  const wanted = [...new Set(opts.rawRefs.filter((ref) => typeof ref === 'string' && ref.trim()))];
+  if (!wanted.length) return null;
+  const pointer = planPointer(opts);
+  if (!pointer) return null;
+  const workItemId = opts.workItemId ?? opts.workItem?.id ?? `plan-item:${pointer.planSlug}#${pointer.planItemId}`;
+  const timeoutMs = Math.max(100, opts.timeoutMs ?? PRIOR_ATTEMPT_CLAIM_BUDGET_MS);
+  try {
+    const compilation = await Promise.race([
+      collectPriorAttempts(
+        {
+          harnessSlug: opts.harness ?? opts.workItem?.harness ?? undefined,
+          planSlug: pointer.planSlug,
+          planItemId: pointer.planItemId,
+          workItemId,
+          maxPlanWorkItems: 16,
+          maxThreadPosts: 12,
+        },
+        deps,
+      ),
+      new Promise<never>((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('prior-attempt-resolve-timeout')), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+    const want = new Set(wanted);
+    const records = compilation.records.filter((record) => want.has(record.rawRef));
+    const found = new Set(records.map((record) => record.rawRef));
+    return {
+      schemaVersion: 'prior-attempt-refs-v1',
+      records,
+      unresolved: wanted.filter((ref) => !found.has(ref)),
+      fingerprint: compilation.fingerprint,
+    };
   } catch {
     return null;
   }
