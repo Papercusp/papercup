@@ -43,12 +43,13 @@
     "react-responsive-carousel": "^3.2.23"
   },
   "devDependencies": {
+    "@typescript/native": "npm:typescript@7.0.2",
     "@papercusp/test-config": "*",
     "@tanstack/router-plugin": "^1.168.9",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
-    "typescript": "^6.0.3",
+    "typescript": "npm:@typescript/typescript6@6.0.2",
     "vite": "^8.0.13",
     "vitest": "^4.1.4"
   }
