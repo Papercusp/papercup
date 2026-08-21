@@ -28,8 +28,11 @@ import {
   MCP_LANGUAGE_SERVER_SERVED_INTENTS,
   MCP_LANGUAGE_SERVER_TOOL_SURFACE,
   auditToolSurface,
+  classifyColdStarts,
   classifyDivergence,
   gradeSites,
+  probeLanguage,
+  KNOWN_COLD_START_EXCEEDANCES,
   median,
   resolveProbeCursor,
   type BenchMeasurement,
@@ -455,5 +458,97 @@ describe('accounted RSS exceedances (P-010: a real breach, bounded not silenced)
     const rust = KNOWN_RSS_EXCEEDANCES.find((k) => k.language === 'rust');
     expect(rust, 'the measured rust-analyzer exceedance is not recorded').toBeDefined();
     expect(rust?.observedMb).toBeGreaterThan(2_000);
+  });
+});
+
+describe('cold-start budget grading (P-018: coldStartMsMax was a dead field)', () => {
+  // WHY THIS SUITE EXISTS. `coldStartMsMax` shipped in ResourceBudget and was
+  // read by NOTHING — grep found exactly two references, both parts of its own
+  // declaration — while the measured rust cold start (10,760ms) already
+  // breached it. A budget nothing grades cannot fail, so a cold-start
+  // regression had no way to surface. These tests guard the grader itself and
+  // deliberately need no language server.
+  //
+  // Every case pairs the real subject with a CONTROL that must grade the other
+  // way. A guard only ever exercised on inputs it passes measures nothing —
+  // which is precisely how the dead field survived this long.
+
+  function cold(over: Partial<BenchMeasurement> = {}): BenchMeasurement {
+    return {
+      caseId: 'rust-trait-implementations',
+      intent: 'implementations',
+      backend: 'lsp-adapter',
+      serverWasCold: true,
+      timeToCorrectMs: 10_760,
+      warmQueryMs: 30,
+      warmQuerySamplesMs: [30],
+      warmQueryMaxMs: 54,
+      attempts: 1,
+      correct: true,
+      trustworthyEmpty: true,
+      grade: { correct: true, missing: [], extra: [], reason: 'ok' },
+      error: null,
+      returnedSites: [],
+      emptyThenFilledMs: null,
+      notAttempted: false,
+      ...over,
+    };
+  }
+
+  it('resolves a probe to the language that actually answered it', () => {
+    expect(probeLanguage('rust-trait-implementations')).toBe('rust');
+    expect(probeLanguage('definition-cross-package-bare-specifier')).toBe('typescript');
+    // CONTROL: an unknown case must not resolve to some default language.
+    expect(probeLanguage('no-such-case')).toBeNull();
+  });
+
+  it('grades the measured rust cold start as over budget but ACCOUNTED', () => {
+    const [v] = classifyColdStarts([cold()]);
+    expect(v?.language).toBe('rust');
+    expect(v?.timeToCorrectMs).toBeGreaterThan(DEFAULT_RESOURCE_BUDGET.coldStartMsMax);
+    expect(v?.overBudget).toBe(true);
+    expect(v?.accounted).toBe(true);
+  });
+
+  it('FAILS an over-budget language with no accounting entry', () => {
+    // The control that proves the guard can fail at all: same shape, a
+    // language nobody accounted for. If this ever grades `accounted`, the
+    // assertion in the integration test is decorative.
+    const [v] = classifyColdStarts([
+      cold({ caseId: 'definition-cross-package-bare-specifier', timeToCorrectMs: 45_000 }),
+    ]);
+    expect(v?.language).toBe('typescript');
+    expect(v?.overBudget).toBe(true);
+    expect(v?.accounted).toBe(false);
+  });
+
+  it('does not flag a cold start that meets the budget', () => {
+    // The real measured TypeScript cold start.
+    const [v] = classifyColdStarts([
+      cold({ caseId: 'definition-cross-package-bare-specifier', timeToCorrectMs: 3_917 }),
+    ]);
+    expect(v?.overBudget).toBe(false);
+    expect(v?.accounted).toBe(false);
+  });
+
+  it('ignores probes that never paid a cold start or never graded correct', () => {
+    // A never-correct probe is a CORRECTNESS failure and is reported as one
+    // elsewhere. Folding it in here would report the same defect twice, the
+    // second time as a latency breach it is not.
+    expect(classifyColdStarts([cold({ serverWasCold: false })])).toEqual([]);
+    expect(classifyColdStarts([cold({ timeToCorrectMs: null })])).toEqual([]);
+    expect(classifyColdStarts([cold({ notAttempted: true })])).toEqual([]);
+  });
+
+  it('keeps every accounting entry bounded and explained', () => {
+    expect(KNOWN_COLD_START_EXCEEDANCES.length).toBeGreaterThan(0);
+    for (const k of KNOWN_COLD_START_EXCEEDANCES) {
+      // A ceiling at or below the budget would make the entry meaningless;
+      // an unbounded one would make "accounted" mean "unwatched".
+      expect(k.observedCeilingMs).toBeGreaterThan(DEFAULT_RESOURCE_BUDGET.coldStartMsMax);
+      expect(k.observedCeilingMs).toBeGreaterThan(k.observedMs);
+      expect(k.observedCeilingMs).toBeLessThanOrEqual(300_000);
+      expect(k.why.length).toBeGreaterThan(80);
+    }
   });
 });
