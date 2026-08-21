@@ -24,6 +24,7 @@ import {
   BENCH_PROBES,
   CORPUS_GROUND_TRUTH_INTENTS,
   KNOWN_DIVERGENCES,
+  KNOWN_RSS_EXCEEDANCES,
   MCP_LANGUAGE_SERVER_SERVED_INTENTS,
   MCP_LANGUAGE_SERVER_TOOL_SURFACE,
   auditToolSurface,
@@ -34,7 +35,11 @@ import {
   type BenchMeasurement,
 } from './code-intel-bench.ts';
 import { corpusCase } from './acceptance-corpus.ts';
-import { isMutatingToolName, type SymbolSite } from './contracts.ts';
+import {
+  DEFAULT_RESOURCE_BUDGET,
+  isMutatingToolName,
+  type SymbolSite,
+} from './contracts.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..', '..', '..', '..');
@@ -253,5 +258,202 @@ describe('read-plane audit of the mcp-language-server comparator', () => {
     for (const t of MCP_LANGUAGE_SERVER_TOOL_SURFACE.filter((t) => t.writesToDisk)) {
       expect(t.evidence).toMatch(/ApplyWorkspaceEdit/);
     }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('warm-query statistic (P-010: one sample is not a steady state)', () => {
+  it('reduces to the median, not the mean — one stall must not BE the number', () => {
+    // The measured case: four fast samples and one post-indexing stall. A mean
+    // reports 442ms and fails a 1500ms budget the backend actually meets at
+    // steady state; the median reports the behaviour.
+    const samples = [2, 3, 2, 2183, 2];
+    expect(median(samples)).toBe(2);
+    const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+    expect(mean).toBeGreaterThan(400); // control: the mean really is distorted
+  });
+
+  it('does NOT flatter the backend by reporting its best case', () => {
+    // Falsifiability control for the opposite error: had this been a min, a
+    // genuinely slow backend would report 2ms.
+    expect(median([2, 1800, 1900, 2000, 2100])).toBe(1900);
+    expect(median([2, 1800, 1900, 2000, 2100])).not.toBe(2);
+  });
+
+  it('averages the middle pair on an even sample count', () => {
+    expect(median([10, 20, 30, 40])).toBe(25);
+  });
+
+  it('returns null for no samples rather than a fabricated zero', () => {
+    // A 0ms warm query would read as the fastest possible backend.
+    expect(median([])).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('accounted corpus divergences (P-010: frozen corpus vs LSP semantics)', () => {
+  const BARREL = 'references-through-barrel-reexport';
+  const DECL = 'libs/generic/dock-workbench/src/panel-registry.ts:30';
+  const INDEX = 'libs/generic/dock-workbench/src/index.ts:4';
+  const CONSUMER = 'apps/operator/components/DockWorkspace.tsx:45';
+
+  function measurement(over: Partial<BenchMeasurement> = {}): BenchMeasurement {
+    return {
+      caseId: BARREL,
+      intent: 'references',
+      backend: 'lsp-adapter',
+      serverWasCold: false,
+      timeToCorrectMs: null,
+      warmQueryMs: null,
+      warmQuerySamplesMs: [],
+      warmQueryMaxMs: null,
+      attempts: 1,
+      correct: false,
+      trustworthyEmpty: true,
+      grade: { correct: false, missing: [INDEX], extra: [], reason: `missing ${INDEX}` },
+      error: null,
+      returnedSites: [DECL, CONSUMER],
+      emptyThenFilledMs: null,
+      notAttempted: false,
+      ...over,
+    };
+  }
+
+  it('accounts the barrel wildcard re-export, which names no symbol', () => {
+    const v = classifyDivergence(measurement());
+    expect(v.accounted).toBe(true);
+    expect(v.reason).toMatch(/WILDCARD/);
+  });
+
+  it('REFUSES to account a case that is missing some OTHER site', () => {
+    // The guard that stops this becoming "3 of 4 pass": a newly-missing site
+    // must never be absorbed by an existing accounting entry.
+    const v = classifyDivergence(
+      measurement({
+        grade: {
+          correct: false,
+          missing: [INDEX, DECL],
+          extra: [],
+          reason: 'missing two',
+        },
+        returnedSites: [CONSUMER],
+      }),
+    );
+    expect(v.accounted).toBe(false);
+    expect(v.reason).toMatch(/NOT covered/);
+    expect(v.reason).toContain(DECL);
+  });
+
+  it("REFUSES to account a case whose OWN property has broken", () => {
+    // A false-empty reference set is exactly what corpus case 2 exists to
+    // catch. It must fail even though its missing-set is the accounted one.
+    const v = classifyDivergence(measurement({ returnedSites: [] }));
+    expect(v.accounted).toBe(false);
+    expect(v.reason).toMatch(/NO LONGER HOLDS/);
+  });
+
+  it('REFUSES to account a set that stops at the declaring package', () => {
+    // Reaches the declaration and the barrel, but no consumer THROUGH it —
+    // the precise failure shape the case describes.
+    const v = classifyDivergence(measurement({ returnedSites: [DECL, INDEX] }));
+    expect(v.accounted).toBe(false);
+    expect(v.reason).toMatch(/NO LONGER HOLDS/);
+  });
+
+  it('REFUSES to account a backend error', () => {
+    const v = classifyDivergence(measurement({ error: 'connection closed' }));
+    expect(v.accounted).toBe(false);
+    expect(v.reason).toMatch(/errored/);
+  });
+
+  it('REFUSES to account an unsanctioned extra site', () => {
+    const v = classifyDivergence(
+      measurement({
+        grade: { correct: false, missing: [INDEX], extra: ['some/other.ts:1'], reason: 'x' },
+      }),
+    );
+    expect(v.accounted).toBe(false);
+    expect(v.reason).toMatch(/unsanctioned extra/);
+  });
+
+  it('accounts NOTHING for a case with no accounting entry', () => {
+    const v = classifyDivergence(measurement({ caseId: 'shadowed-symbol-no-cross-contamination' }));
+    expect(v.accounted).toBe(false);
+    expect(v.reason).toMatch(/no accounted divergence/);
+  });
+
+  it('never labels a CORRECT measurement a divergence', () => {
+    expect(classifyDivergence(measurement({ correct: true })).accounted).toBe(false);
+  });
+
+  it('the barrel property is satisfied by a same-package sibling consumer', () => {
+    // Regression guard for a real test bug: a first draft of the integration
+    // assertion restated this property as "any site outside
+    // libs/generic/dock-workbench/src/" and failed a PASSING run, because the
+    // consumers live inside that package in a sibling file. What matters is
+    // reaching beyond the declaring MODULE and the barrel, not the package.
+    const known = KNOWN_DIVERGENCES.find((d) => d.caseId === BARREL);
+    expect(
+      known?.propertyHolds(
+        measurement({
+          returnedSites: [DECL, 'libs/generic/dock-workbench/src/DockWorkspace.tsx:45'],
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it('every accounting entry names a real corpus case and real expected sites', () => {
+    // Stops the accounting list rotting into prose about cases that no longer
+    // exist, or "unreachable" sites the corpus never actually expected.
+    for (const d of KNOWN_DIVERGENCES) {
+      const kase = corpusCase(d.caseId);
+      expect(kase, `accounted divergence names unknown case '${d.caseId}'`).toBeDefined();
+      const expected = (kase?.expectedSites ?? []).map((s) => `${s.path}:${s.line1}`);
+      for (const site of d.unreachableSites) {
+        expect(expected, `'${site}' is not an expected site of '${d.caseId}'`).toContain(site);
+      }
+      expect(d.why.length).toBeGreaterThan(40);
+      expect(d.property.length).toBeGreaterThan(40);
+    }
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('accounted RSS exceedances (P-010: a real breach, bounded not silenced)', () => {
+  it('does NOT raise the frozen budget to make a breach pass', () => {
+    // The whole point: a budget edited to match the backend it judges stops
+    // being a budget. P-002 froze this at 1024MB and it stays there.
+    expect(DEFAULT_RESOURCE_BUDGET.rssMbMax).toBe(1_024);
+  });
+
+  it('every accounted exceedance actually EXCEEDS the budget it excepts', () => {
+    // Stops the list accumulating entries for servers that are fine — which
+    // would quietly widen the exception surface for nothing.
+    for (const k of KNOWN_RSS_EXCEEDANCES) {
+      expect(
+        k.observedMb,
+        `${k.language} is listed as an exceedance but measured under budget`,
+      ).toBeGreaterThan(DEFAULT_RESOURCE_BUDGET.rssMbMax);
+    }
+  });
+
+  it('bounds every accounted exceedance above its observed size', () => {
+    // "Accounted" must not become "unwatched": the ceiling has to leave
+    // headroom over what was measured, and has to be a real limit.
+    for (const k of KNOWN_RSS_EXCEEDANCES) {
+      expect(k.observedCeilingMb).toBeGreaterThan(k.observedMb);
+      expect(k.observedCeilingMb).toBeLessThan(16_384);
+      expect(k.why.length).toBeGreaterThan(80);
+    }
+  });
+
+  it('names rust-analyzer specifically, with its measured size', () => {
+    // The finding this exists to carry into backend selection (P-011).
+    const rust = KNOWN_RSS_EXCEEDANCES.find((k) => k.language === 'rust');
+    expect(rust, 'the measured rust-analyzer exceedance is not recorded').toBeDefined();
+    expect(rust?.observedMb).toBeGreaterThan(2_000);
   });
 });
