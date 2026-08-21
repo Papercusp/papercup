@@ -2353,7 +2353,7 @@
           "POST"
         ]
       },
-      "description": "Stop a background shell job (started by capability:bash run_in_background:true). Sends SIGTERM then SIGKILL. Returns the final tail of output.",
+      "description": "Stop a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can kill it after carry. Sends SIGTERM then SIGKILL. Returns the final tail of output.",
       "capabilities": [
         "capability:bash"
       ],
@@ -2416,7 +2416,7 @@
       "guidance": {
         "when": "Stop a background job you no longer need (a dev server, a runaway build).",
         "notWhen": "A job that already finished — capability:bash_output already shows its terminal status.",
-        "chaining": "capability:bash { run_in_background:true } → … → capability:bash_kill { bash_id }."
+        "chaining": "capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry → capability:bash_kill { task_id }."
       }
     },
     {
