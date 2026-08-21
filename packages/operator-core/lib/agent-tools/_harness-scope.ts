@@ -127,11 +127,30 @@ export function resolveHarnessScope(
 /** Shared detail string for the `harness_required` error every gated tool returns. */
 export const HARNESS_REQUIRED_DETAIL =
   "No harness specified. `harness` is a per-call arg — pass it on THIS call " +
-  "(you don't need a differently-scoped session): a concrete slug for that " +
-  "harness, or `harness: 'all'` for operator / cross-harness scope (e.g. " +
-  "Papercusp's own plans/docs). Writing a plan? Decide which project it's " +
-  'about and pass that harness. (A harness-scoped session supplies this ' +
-  'automatically.)';
+  "(you don't need a differently-scoped session): normally the concrete slug for that " +
+  "harness (for example, `harness: 'papercusp'` for Papercusp's own plans). " +
+  "`harness: 'all'` is valid only in an unscoped (`--all-workspaces`) session; a " +
+  'workspace-scoped session rejects it as `harness_forbidden`. (A harness-scoped ' +
+  'session supplies its concrete slug automatically.)';
+
+export function harnessRequiredDetail(ctx?: { workspaceId?: string | null }): string {
+  const workspaceId = ctx?.workspaceId?.trim();
+  if (isAllHarnessSentinel(workspaceId)) {
+    return (
+      "No harness specified. This is an unscoped (`--all-workspaces`) session, so pass " +
+      "either a concrete harness slug or `harness: 'all'` on THIS call."
+    );
+  }
+  if (workspaceId) {
+    return (
+      `No harness specified. This session is scoped to workspace "${workspaceId}". ` +
+      "Pass the concrete in-scope harness slug on THIS call (for example, `harness: 'papercusp'` " +
+      "for Papercusp's own plans). Do not retry with `harness: 'all'`: that is the unscoped " +
+      'escape and this session will reject it as `harness_forbidden`.'
+    );
+  }
+  return HARNESS_REQUIRED_DETAIL;
+}
 
 /**
  * Bulk harness-scope resolution (bulk-endpoint-standardization-2026-06-21): the
@@ -172,7 +191,7 @@ export function harnessScopedCtx<T extends { harnessSlug?: string | null }>(
   ctx: T,
 ): T & { harnessSlug: string } {
   const scope = resolveHarnessScope(argHarness, ctx);
-  if (scope.kind === 'none') throw new HarnessRequiredError(HARNESS_REQUIRED_DETAIL);
+  if (scope.kind === 'none') throw new HarnessRequiredError(harnessRequiredDetail(ctx));
   return { ...ctx, harnessSlug: scope.kind === 'all' ? HARNESS_ALL : scope.slug };
 }
 
@@ -203,7 +222,10 @@ export function resolveConcreteHarnessSlug(
  * when no concrete harness can be resolved (mirrors `docs:get`). Fail LOUD — the
  * caller gets a clear, actionable error instead of an empty/wrong-scope success.
  */
-export function harnessRequiredResult(toolName?: string): {
+export function harnessRequiredResult(
+  toolName?: string,
+  ctx?: { workspaceId?: string | null },
+): {
   isError: true;
   content: { type: 'text'; text: string }[];
 } {
@@ -215,7 +237,7 @@ export function harnessRequiredResult(toolName?: string): {
         text: JSON.stringify({
           error: 'harness_required',
           ...(toolName ? { tool: toolName } : {}),
-          detail: HARNESS_REQUIRED_DETAIL,
+          detail: harnessRequiredDetail(ctx),
         }),
       },
     ],

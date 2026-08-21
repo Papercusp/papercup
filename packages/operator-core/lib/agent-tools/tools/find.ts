@@ -36,7 +36,13 @@
  * space by a settings change mid-process.
  */
 import { z } from 'zod';
-import { defineTool, listAllProjectedTools, AGENT_ROLES } from '@papercusp/agent-mcp';
+import {
+  AGENT_ROLES,
+  PROJECTED_TOOL_REGISTRY_SOURCE,
+  defineTool,
+  listAllProjectedTools,
+  projectedToolRegistryRevision,
+} from '@papercusp/agent-mcp';
 import { categoryOf } from '../../cupboard/tools-search';
 import { arrayItemConstraintText, schemaToText, type ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
@@ -456,7 +462,7 @@ export default defineTool({
       'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
       'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
-      '{ query, count, semantic: "on"|"warming"|"lexical-only", activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (the tool\'s declared response shape, or null if it has not declared one), via }], howToCall }',
+      '{ query, count, semantic: "on"|"warming"|"lexical-only", registry: { source, revision }, activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (the tool\'s declared response shape, or null if it has not declared one), via }], howToCall }',
     seeAlso: [
       'agent_tools:list (full permission-annotated dump)',
       'meta:define-tool (define a new tool if none exists)',
@@ -477,6 +483,10 @@ export default defineTool({
     limit: z.number().int().positive().max(25).optional(),
   }),
   async handler(args, ctx) {
+    const registry = {
+      source: PROJECTED_TOOL_REGISTRY_SOURCE,
+      revision: projectedToolRegistryRevision(),
+    };
     const { corpus: fullCorpus, embedText, schemaByTool } = buildCorpus();
     const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     const corpus = await filterCorpusForConfirmedHiveScope(
@@ -540,7 +550,7 @@ export default defineTool({
         "the tool's real (colon-form) name; works on every client, needs no load step. " +
         'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
     const bounded = boundDiscoveryHits(
-      { query: args.query, semantic, activated, howToCall, totalMatches: hits.length },
+      { query: args.query, semantic, registry, activated, howToCall, totalMatches: hits.length },
       projectedHits,
     );
     return {
@@ -553,6 +563,7 @@ export default defineTool({
             totalMatches: hits.length,
             truncated: bounded.truncated,
             semantic,
+            registry,
             // true ⇒ the server-side session allowlist grew and emitted the
             // standard list_changed request. It cannot prove the client has
             // consumed that notification and materialized wrappers yet.

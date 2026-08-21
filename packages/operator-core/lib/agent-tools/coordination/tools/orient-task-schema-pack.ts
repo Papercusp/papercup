@@ -8,7 +8,11 @@
  * activation notification; it does not create a second catalog.
  */
 import { createHash } from 'node:crypto';
-import { listAllProjectedTools } from '@papercusp/agent-mcp';
+import {
+  PROJECTED_TOOL_REGISTRY_SOURCE,
+  listAllProjectedTools,
+  projectedToolRegistryRevision,
+} from '@papercusp/agent-mcp';
 import { schemaToText } from '../../../cupboard/tools-discovery';
 
 export const TASK_SCHEMA_PACK_SCHEMA = 'orient-task-tool-schema-pack-v1' as const;
@@ -48,7 +52,11 @@ export interface TaskToolSchemaPack {
     signals: string[];
   };
   budget: { maxChars: number; serializedChars: number; estimatedTokens: number; maxTools: number };
-  provenance: { source: 'coord:orient'; schemaSource: 'projected-tool-registry' };
+  provenance: {
+    source: 'coord:orient';
+    schemaSource: typeof PROJECTED_TOOL_REGISTRY_SOURCE;
+    registryRevision: string;
+  };
   resync: {
     on: readonly ['missing-base', 'schema-mismatch', 'watermark-mismatch', 'mode-transition', 'scope-transition'];
     verb: 'coord:orient';
@@ -248,6 +256,9 @@ export function buildTaskToolSchemaPack(
 
   const requested = [...candidates.entries()]
     .sort(([a, ap], [b, bp]) => bp - ap || a.localeCompare(b));
+  const registryRevision = projectedToolRegistryRevision(
+    catalog as Parameters<typeof projectedToolRegistryRevision>[0],
+  );
   const missing = requested.filter(([name]) => !byName.has(name)).map(([name]) => name);
   const allTools = requested
     .flatMap(([name]) => {
@@ -281,7 +292,7 @@ export function buildTaskToolSchemaPack(
     signals: [...new Set(signals)].sort(),
   };
   const watermark = createHash('sha256')
-    .update(JSON.stringify({ schemaVersion: TASK_SCHEMA_PACK_SCHEMA, basis, tools: allTools }))
+    .update(JSON.stringify({ schemaVersion: TASK_SCHEMA_PACK_SCHEMA, registryRevision, basis, tools: allTools }))
     .digest('hex')
     .slice(0, 24);
   const serializedChars = JSON.stringify({ toolNames, tools }).length;
@@ -300,7 +311,11 @@ export function buildTaskToolSchemaPack(
       estimatedTokens: Math.ceil(serializedChars / 4),
       maxTools: TASK_SCHEMA_PACK_MAX_TOOLS,
     },
-    provenance: { source: 'coord:orient', schemaSource: 'projected-tool-registry' },
+    provenance: {
+      source: 'coord:orient',
+      schemaSource: PROJECTED_TOOL_REGISTRY_SOURCE,
+      registryRevision,
+    },
     resync: {
       on: ['missing-base', 'schema-mismatch', 'watermark-mismatch', 'mode-transition', 'scope-transition'],
       verb: 'coord:orient',

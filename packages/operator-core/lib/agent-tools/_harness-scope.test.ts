@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { HarnessRequiredError } from '@papercusp/agent-mcp';
 import {
   harnessRequiredResult,
+  harnessRequiredDetail,
   harnessScopedCtx,
   isAllHarnessSentinel,
   isEngineeringDocsSentinel,
@@ -140,10 +141,31 @@ describe('harnessRequiredResult', () => {
   });
 });
 
+describe('harnessRequiredDetail (P-002 registry-guidance contradiction)', () => {
+  it("tells a workspace-scoped caller to use a concrete harness and forbids the doomed 'all' retry", () => {
+    const detail = harnessRequiredDetail({ workspaceId: 'workspace-1' });
+    expect(detail).toContain("`harness: 'papercusp'`");
+    expect(detail).toContain("Do not retry with `harness: 'all'`");
+    expect(detail).toContain('harness_forbidden');
+  });
+
+  it("allows the 'all' sentinel only for a truly unscoped workspace context", () => {
+    const detail = harnessRequiredDetail({ workspaceId: '*' });
+    expect(detail).toContain("`harness: 'all'`");
+    expect(detail).toContain('--all-workspaces');
+    expect(detail).not.toContain('harness_forbidden');
+  });
+});
+
 describe('harnessScopedCtx', () => {
   it('throws HarnessRequiredError when no harness is resolvable', () => {
     expect(() => harnessScopedCtx(undefined, { harnessSlug: '*' })).toThrow(HarnessRequiredError);
     expect(() => harnessScopedCtx(undefined, { harnessSlug: undefined })).toThrow(HarnessRequiredError);
+  });
+
+  it("pins plans:get's workspace-scoped harness_required correction away from harness:'all'", () => {
+    expect(() => harnessScopedCtx(undefined, { harnessSlug: '*', workspaceId: 'workspace-1' }))
+      .toThrow(/Do not retry with `harness: 'all'`.*harness_forbidden/);
   });
 
   it("'all' arg → ctx with harnessSlug '*' (preserving other ctx fields)", () => {

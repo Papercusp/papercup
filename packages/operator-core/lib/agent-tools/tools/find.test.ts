@@ -56,6 +56,7 @@ async function callHandler(args: Record<string, unknown>, ctx: Record<string, un
     query: string;
     count: number;
     semantic: 'on' | 'warming' | 'lexical-only';
+    registry: { source: string; revision: string };
     hits: Array<{ tool: string; description: string | null; argSchema: string | null; via: string }>;
     howToCall: string;
   };
@@ -230,6 +231,10 @@ describe('handler — graceful degrade + result shape', () => {
   it('runs lexical-only when no embedder is configured, marking semantic accordingly', async () => {
     const out = await callHandler({ query: 'find tools by intent' });
     expect(out.semantic).toBe('lexical-only'); // never silently pretends semantic ran
+    expect(out.registry).toEqual({
+      source: 'projected-tool-registry',
+      revision: expect.stringMatching(/^projected-tool-registry-v1:/),
+    });
     expect(out.count).toBeGreaterThan(0);
     // every hit carries name + description + argSchema + via.
     for (const h of out.hits) {

@@ -58,6 +58,11 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
       'recipes:run',
     ]));
     expect(pack.missing).toEqual([]);
+    expect(pack.provenance).toEqual({
+      source: 'coord:orient',
+      schemaSource: 'projected-tool-registry',
+      registryRevision: expect.stringMatching(/^projected-tool-registry-v1:/),
+    });
     expect(pack.budget.serializedChars).toBeLessThanOrEqual(TASK_SCHEMA_PACK_BUDGET_CHARS);
     expect(pack.resync).toMatchObject({
       verb: 'coord:orient',
@@ -81,6 +86,28 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     expect(same.watermark).toBe(a.watermark);
     expect(same.generation).toBe(a.generation);
     expect(changed.watermark).not.toBe(a.watermark);
+  });
+
+  it('changes the registry revision and pack watermark when an accepted schema changes', () => {
+    const before = buildTaskToolSchemaPack({ intent: 'resume work' }, catalog);
+    const changedCatalog = catalog.map((tool) =>
+      tool.expose.mcp.name === 'work_items:get'
+        ? {
+            ...tool,
+            inputSchema: {
+              ...tool.inputSchema,
+              properties: {
+                ...tool.inputSchema.properties,
+                detail: { type: 'boolean' },
+              },
+            },
+          }
+        : tool,
+    );
+    const after = buildTaskToolSchemaPack({ intent: 'resume work' }, changedCatalog);
+
+    expect(after.provenance.registryRevision).not.toBe(before.provenance.registryRevision);
+    expect(after.watermark).not.toBe(before.watermark);
   });
 
   it('reports unavailable canonical tools loudly instead of advertising phantom schemas', () => {
