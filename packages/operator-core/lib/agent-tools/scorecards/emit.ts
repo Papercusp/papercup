@@ -31,11 +31,7 @@ import {
 } from '../../scorecards';
 import { scorecardInstrumentSnapshotSchema, scorecardRatingEntrySchema } from './evaluate';
 import { acceptanceGraderLabelPrefix } from '../../acceptance-grader';
-import {
-  GRADING_INTEGRITY_RUBRIC_REF,
-  gradingAuditGateEnabled,
-  needsGradingAudit,
-} from '../../grading-integrity';
+import { GRADING_INTEGRITY_RUBRIC_REF, gradingAuditGateEnabled, needsGradingAudit } from '../../grading-integrity';
 import type { ScorecardGradingAudit } from '../../harness/improvements/observation-types';
 import { killTask } from '../../task-manager/control';
 import { listTasks } from '../../task-manager/store';
@@ -63,6 +59,7 @@ import { readCoverage } from '../testing/coverage';
 import { TERMINAL_COMPLETION_EVIDENCE_KEY } from '../../coord-lifecycle/records';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { trackDetached } from '../../detached-imports';
+import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 
 /**
  * A tests-backed scorecard is intentionally a long-running write: it shells one
@@ -161,9 +158,8 @@ export async function cleanupAcceptanceGraderTasks(
     limit: 2_000,
   });
   const matched = tasks.filter(
-    (task) => task.detail.headless === true &&
-      typeof task.detail.label === 'string' &&
-      task.detail.label.startsWith(prefix),
+    (task) =>
+      task.detail.headless === true && typeof task.detail.label === 'string' && task.detail.label.startsWith(prefix),
   );
   const results = await Promise.all(
     matched.map(async (task) => ({
@@ -189,6 +185,8 @@ export async function emitScorecard(
     /** Injectable seam for tests — production runs the real router via the testing:run core. */
     evaluateChecks?: typeof evaluateCriterionTestChecks;
     evaluateCoverageChecks?: typeof evaluateCriterionCoverageChecks;
+    /** Audited coord-identity continuity resolver. */
+    sameAcceptanceAuthor?: typeof isAcceptanceAuthorIdentity;
   } = {},
 ) {
   const rubric = await getRubric(args.rubricRef);
@@ -199,11 +197,16 @@ export async function emitScorecard(
     if (acceptance && rubric.kind !== 'acceptance') {
       return {
         ok: false as const,
-        error: "acceptance is valid only for kind:'acceptance' rubrics — a standard scorecard records ratings, not a plan ship verdict",
+        error:
+          "acceptance is valid only for kind:'acceptance' rubrics — a standard scorecard records ratings, not a plan ship verdict",
       };
     }
     if (rubric.kind === 'acceptance') {
-      const callerIsImplementer = implementer != null && input.createdBy === implementer;
+      const sameAcceptanceAuthor = deps.sameAcceptanceAuthor ?? isAcceptanceAuthorIdentity;
+      const identityWorkspace = rubric.workspaceId || input.workspaceId || activeWorkspaceId();
+      const callerIsImplementer =
+        implementer != null &&
+        (await sameAcceptanceAuthor(implementer, input.createdBy, { workspaceId: identityWorkspace }));
       if (!callerIsImplementer && acceptance) {
         return {
           ok: false as const,
@@ -221,14 +224,15 @@ export async function emitScorecard(
       }
       if (callerIsImplementer) {
         const prior = await listScorecards({ rubricRef: args.rubricRef, limit: 50 });
-        const independent = prior.find(
-          (card) =>
-            card.rubricResolved &&
-            card.missingKeys.length === 0 &&
-            !card.synthesized &&
-            card.createdBy != null &&
-            card.createdBy !== implementer,
-        );
+        let independent = undefined;
+        for (const card of prior) {
+          if (!card.rubricResolved || card.missingKeys.length !== 0 || card.synthesized || card.createdBy == null)
+            continue;
+          if (!(await sameAcceptanceAuthor(implementer, card.createdBy, { workspaceId: identityWorkspace }))) {
+            independent = card;
+            break;
+          }
+        }
         if (!independent) {
           return {
             ok: false as const,
@@ -242,11 +246,12 @@ export async function emitScorecard(
     const ratings = normalizeScorecardRatings(args.ratings as ObservationRatings, rubric);
     const observationForValidation = { rubricRef: args.rubricRef, ratings };
     validateObservationRatings(observationForValidation);
-    validateScorecardCompleteness(observationForValidation, rubric.criteria.map((criterion) => criterion.key));
+    validateScorecardCompleteness(
+      observationForValidation,
+      rubric.criteria.map((criterion) => criterion.key),
+    );
     validateScorecardRatingValues(observationForValidation, rubric);
-    const instrumentSnapshots = args.instrumentSnapshots as
-      | Record<string, ScorecardInstrumentSnapshot>
-      | undefined;
+    const instrumentSnapshots = args.instrumentSnapshots as Record<string, ScorecardInstrumentSnapshot> | undefined;
     const evidenceFingerprint = scorecardEvidenceFingerprint({
       rubricRef: args.rubricRef,
       ratings,
@@ -348,9 +353,7 @@ export async function emitScorecard(
         ...(rubricRevision != null ? { rubricRevision } : {}),
         critiquePosts: critique.critiquePosts,
         ...(critique.critics.length > 0 ? { critics: critique.critics } : {}),
-        ...(waived
-          ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason }
-          : {}),
+        ...(waived ? { unanswered: true as const, unansweredReason: args.vettingUnansweredReason } : {}),
       };
     }
     // P-008 (EI-20581177540737568): a 'violatable' criterion is monotonic-downward — one
@@ -429,9 +432,10 @@ export async function emitScorecard(
     const sourceHive = args.sourceHive ?? input.ctxHarness;
     if (args.supersedes) {
       const superseded = await getIssue(args.supersedes);
-      const raw = superseded?.payload && typeof superseded.payload === 'object' && !Array.isArray(superseded.payload)
-        ? (superseded.payload as { observation?: unknown }).observation
-        : undefined;
+      const raw =
+        superseded?.payload && typeof superseded.payload === 'object' && !Array.isArray(superseded.payload)
+          ? (superseded.payload as { observation?: unknown }).observation
+          : undefined;
       const prior = asStructuredObservation(raw);
       if (!prior?.rubricRef || !prior.ratings) {
         return { ok: false as const, error: `superseded scorecard '${args.supersedes}' not found` };
@@ -449,16 +453,14 @@ export async function emitScorecard(
         };
       }
     }
-    const latest = (
-      await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 })
-    )[0];
+    const latest = (await listScorecards({ rubricRef: args.rubricRef, sourceHive, limit: 1 }))[0];
     const latestFingerprint = latest
-      ? latest.evidenceFingerprint ??
+      ? (latest.evidenceFingerprint ??
         scorecardEvidenceFingerprint({
           rubricRef: latest.rubricRef,
           ratings: latest.ratings,
           ...(latest.acceptance ? { acceptance: latest.acceptance } : {}),
-        })
+        }))
       : null;
     const sameCorrectionAlreadyExists = args.supersedes && latest?.supersedes === args.supersedes;
     // P-008: a terminal re-emit of IDENTICAL ratings is the finalization step, not a
@@ -486,9 +488,10 @@ export async function emitScorecard(
       latestFingerprint === evidenceFingerprint &&
       (!args.supersedes || sameCorrectionAlreadyExists)
     ) {
-      const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
-        ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
-        : undefined;
+      const acceptanceGraderCleanup =
+        rubric.kind === 'acceptance' && input.role === 'judge'
+          ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
+          : undefined;
       return {
         ok: true as const,
         created: false,
@@ -557,9 +560,7 @@ export async function emitScorecard(
         // `workspace_id`, so resolving it without one would widen the scope to every
         // workspace's rows — the silent-widening this check exists to refuse.
         resolvePlanTouchedFiles: () =>
-          subjectPlan && workspaceId
-            ? planTouchedFiles(workspaceId, subjectPlan)
-            : Promise.resolve(null),
+          subjectPlan && workspaceId ? planTouchedFiles(workspaceId, subjectPlan) : Promise.resolve(null),
       });
       if (!coverageEvaluation.ok) {
         return {
@@ -628,9 +629,10 @@ export async function emitScorecard(
         verdict: auditVerdictFromRatings(ratings),
       });
     }
-    const acceptanceGraderCleanup = rubric.kind === 'acceptance' && input.role === 'judge'
-      ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
-      : undefined;
+    const acceptanceGraderCleanup =
+      rubric.kind === 'acceptance' && input.role === 'judge'
+        ? await cleanupAcceptanceGraderTasks(args.rubricRef, { workspaceId: input.workspaceId })
+        : undefined;
     return {
       ok: true as const,
       created: result.created,
@@ -639,7 +641,11 @@ export async function emitScorecard(
       // P-013: surfaced loudly — this card does not enter the trend until audited.
       ...(gradingAudit ? { gradingAuditPending: true } : {}),
       ...(auditSettlement
-        ? { gradingAuditRecorded: auditSettlement.ok, ...(auditSettlement.gradingAudit ? { gradingAudit: auditSettlement.gradingAudit } : {}), ...(auditSettlement.error ? { gradingAuditError: auditSettlement.error } : {}) }
+        ? {
+            gradingAuditRecorded: auditSettlement.ok,
+            ...(auditSettlement.gradingAudit ? { gradingAudit: auditSettlement.gradingAudit } : {}),
+            ...(auditSettlement.error ? { gradingAuditError: auditSettlement.error } : {}),
+          }
         : {}),
       ...(args.supersedes ? { supersedes: args.supersedes } : {}),
       canonicalRatings: ratings,
@@ -663,9 +669,9 @@ export default defineTool({
   description:
     "Validate, canonicalize, and file one COMPLETE rubric scorecard through the existing observation ledger. Requires evidence for every declared criterion. For kind:'acceptance', a non-implementer emits ratings first; the rubric author then re-emits with acceptance:{verdict,reasoning}. Stamps the running generation, stores deterministic instrument snapshots, and declines unchanged evidence by fingerprint unless force:true.",
   guidance: {
-    when:
-      'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
-    notWhen: 'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
+    when: 'Filing a GRADE-mode or release-readiness scorecard. Prefer this typed surface over hand-assembling improvements:capture observation payloads.',
+    notWhen:
+      'Building the grading skeleton or previewing a delta — scorecards:evaluate. Free-text observations — improvements:capture.',
     chaining:
       'scorecards:evaluate { rubricRef } → grade every returned criterion → scorecards:emit { rubricRef, ratings, instrumentSnapshots } → scorecards:list / rubrics:trend.',
     seeAlso: ['scorecards:evaluate', 'scorecards:list', 'rubrics:trend'],
@@ -688,9 +694,7 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ctxHarness =
-      typeof ctx.harnessSlug === 'string' && ctx.harnessSlug && ctx.harnessSlug !== '*'
-        ? ctx.harnessSlug
-        : undefined;
+      typeof ctx.harnessSlug === 'string' && ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : undefined;
     return {
       data: await emitScorecard(args, {
         createdBy: identity.ownerId,

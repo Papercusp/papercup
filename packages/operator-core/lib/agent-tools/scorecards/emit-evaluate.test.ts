@@ -17,6 +17,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Rubric } from '../../rubrics';
 import { scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
+import { isAcceptanceAuthorIdentity } from '../../acceptance-author-identity';
 
 vi.mock('../../rubrics', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../rubrics')>();
@@ -32,6 +33,9 @@ vi.mock('../../scorecards', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scorecards')>();
   return { ...actual, listScorecards: vi.fn(async () => [] as ScorecardRow[]) };
 });
+vi.mock('../../acceptance-author-identity', () => ({
+  isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
+}));
 
 import { getRubric } from '../../rubrics';
 import { captureImprovement } from '../../harness/improvements/capture-core';
@@ -44,6 +48,7 @@ const getRubricM = vi.mocked(getRubric);
 const captureM = vi.mocked(captureImprovement);
 const listM = vi.mocked(listScorecards);
 const getIssueM = vi.mocked(getIssue);
+const sameAuthorM = vi.mocked(isAcceptanceAuthorIdentity);
 
 const RUBRIC: Rubric = {
   rubricId: 'test-rubric',
@@ -52,7 +57,7 @@ const RUBRIC: Rubric = {
   title: 'Test Rubric',
   description: 'd',
   criteria: [
-    { key: 'crit-a', title: 'Criterion A', model: 'm', method: 'm' , driftMarkers: 'd' },
+    { key: 'crit-a', title: 'Criterion A', model: 'm', method: 'm', driftMarkers: 'd' },
     { key: 'crit-b', title: 'Criterion B', model: 'm', method: 'm', driftMarkers: 'd' },
   ],
   ratingScale: ['pass', 'partial', 'fail'],
@@ -78,6 +83,7 @@ const RATINGS = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  sameAuthorM.mockImplementation(async (author, candidate) => author === candidate);
   getRubricM.mockResolvedValue(RUBRIC);
   listM.mockResolvedValue([]);
   captureM.mockResolvedValue({ created: true, issue: { id: 'ISS-1' } } as never);
@@ -93,7 +99,10 @@ describe('emitScorecard', () => {
   });
 
   it('incomplete ratings (missing a required criterion) → ok:false, never files', async () => {
-    const r = await emitScorecard({ rubricRef: 'test-rubric', ratings: { 'crit-a': RATINGS['crit-a'] } }, { createdBy: 'su-1' });
+    const r = await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: { 'crit-a': RATINGS['crit-a'] } },
+      { createdBy: 'su-1' },
+    );
     expect(r.ok).toBe(false);
     expect(captureM).not.toHaveBeenCalled();
   });
@@ -121,9 +130,10 @@ describe('emitScorecard', () => {
   });
 
   it('DEDUPLICATION: identical evidence to the latest scorecard is declined (unchanged-evidence), never re-files', async () => {
-    const firstFingerprint = (
-      await emitScorecard({ rubricRef: 'test-rubric', ratings: RATINGS }, { createdBy: 'su-1' })
-    ) as { evidenceFingerprint: string };
+    const firstFingerprint = (await emitScorecard(
+      { rubricRef: 'test-rubric', ratings: RATINGS },
+      { createdBy: 'su-1' },
+    )) as { evidenceFingerprint: string };
     captureM.mockClear();
     listM.mockResolvedValue([
       {
@@ -194,11 +204,19 @@ describe('emitScorecard', () => {
     getIssueM.mockResolvedValue({
       payload: { observation: { rubricRef: 'test-rubric', ratings: RATINGS } },
     } as never);
-    listM.mockResolvedValue([{
-      issueId: 'ISS-OLD', rubricRef: 'test-rubric', ratings: RATINGS,
-      missingKeys: [], rubricResolved: true, evidenceFingerprint: first.evidenceFingerprint,
-      synthesized: false, score10: null, linkedItems: [],
-    } as unknown as ScorecardRow]);
+    listM.mockResolvedValue([
+      {
+        issueId: 'ISS-OLD',
+        rubricRef: 'test-rubric',
+        ratings: RATINGS,
+        missingKeys: [],
+        rubricResolved: true,
+        evidenceFingerprint: first.evidenceFingerprint,
+        synthesized: false,
+        score10: null,
+        linkedItems: [],
+      } as unknown as ScorecardRow,
+    ]);
 
     const r = await emitScorecard(
       { rubricRef: 'test-rubric', ratings: RATINGS, supersedes: 'ISS-OLD' },
@@ -249,10 +267,7 @@ describe('emitScorecard', () => {
 
   it('an independent acceptance grader emits ratings without an implementer verdict', async () => {
     getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
-    const r = await emitScorecard(
-      { rubricRef: 'acceptance-rubric', ratings: RATINGS },
-      { createdBy: 'su-grader' },
-    );
+    const r = await emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS }, { createdBy: 'su-grader' });
     expect(r).toMatchObject({ ok: true, created: true });
     expect(captureM.mock.calls[0][0]).toMatchObject({
       payloadExtra: { observation: { rubricRef: 'acceptance-rubric', ratings: RATINGS } },
@@ -324,6 +339,54 @@ describe('emitScorecard', () => {
     expect((r as { evidenceFingerprint: string }).evidenceFingerprint).not.toBe(
       scorecardEvidenceFingerprint({ rubricRef: 'acceptance-rubric', ratings: RATINGS }),
     );
+  });
+
+  it('lets an audited successor record the author verdict and never treats that successor as an independent grader', async () => {
+    getRubricM.mockResolvedValue(ACCEPTANCE_RUBRIC);
+    sameAuthorM.mockImplementation(
+      async (author, candidate) =>
+        author === candidate || (author === 'su-implementer' && candidate === 'su-successor'),
+    );
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-independent',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-grader',
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+    const acceptance = { verdict: 'accept' as const, reasoning: 'The independent evidence meets this plan.' };
+    await expect(
+      emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS, acceptance }, { createdBy: 'su-successor' }),
+    ).resolves.toMatchObject({ ok: true, created: true, acceptance });
+
+    listM.mockResolvedValue([
+      {
+        issueId: 'EI-successor-self-grade',
+        createdAt: '2026-08-21T01:00:00Z',
+        createdBy: 'su-successor',
+        rubricRef: 'acceptance-rubric',
+        ratings: RATINGS,
+        nKeys: 2,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+    await expect(
+      emitScorecard({ rubricRef: 'acceptance-rubric', ratings: RATINGS, acceptance }, { createdBy: 'su-successor' }),
+    ).resolves.toMatchObject({ ok: false, error: expect.stringContaining('must follow') });
   });
 });
 

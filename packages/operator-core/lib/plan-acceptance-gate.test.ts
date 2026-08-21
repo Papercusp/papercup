@@ -13,6 +13,7 @@ import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
+import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
 
 vi.mock('./rubrics', () => ({
   getAcceptanceRubricForPlan: vi.fn(),
@@ -22,6 +23,9 @@ vi.mock('./rubrics', () => ({
 }));
 vi.mock('./scorecards', () => ({
   listScorecards: vi.fn(),
+}));
+vi.mock('./acceptance-author-identity', () => ({
+  isAcceptanceAuthorIdentity: vi.fn(async (author: string | null, candidate: string | null) => author === candidate),
 }));
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: vi.fn(),
@@ -42,6 +46,7 @@ const mockRevision = vi.mocked(getRubricPlanRevision);
 const mockScorecards = vi.mocked(listScorecards);
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
+const mockAuthorIdentity = vi.mocked(isAcceptanceAuthorIdentity);
 
 /** A sql`` tag that resolves the same rows for any query. */
 const sqlReturning = (rows: unknown[]) => {
@@ -87,6 +92,7 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockAuthorIdentity.mockImplementation(async (author, candidate) => author === candidate);
   // This suite exercises the acceptance-rubric family in isolation. The newer
   // code-truth gates have their own focused suite and deliberately run first in
   // production, so leave them disabled here unless a test opts in explicitly.
@@ -110,9 +116,7 @@ describe('evaluatePlanAcceptanceGate', () => {
   });
 
   it('a scheduled template INSTANCE is exempt', async () => {
-    mockPg.mockReturnValue(
-      sqlReturning([{ plan_slug: 'run-2026-08-11', template: null, template_slug: 'daily-ops' }]),
-    );
+    mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'run-2026-08-11', template: null, template_slug: 'daily-ops' }]));
     const v = await evaluatePlanAcceptanceGate('run-2026-08-11');
     expect(v).toMatchObject({ satisfied: true, skipped: 'template-instance' });
   });
@@ -167,9 +171,7 @@ describe('evaluatePlanAcceptanceGate', () => {
 
   it('a new independent grading without an implementer verdict refuses acceptance_not_recorded', async () => {
     mockRubric.mockResolvedValue(acceptanceRubric());
-    mockScorecards.mockResolvedValue([
-      scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
-    ]);
+    mockScorecards.mockResolvedValue([scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' })]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({
       satisfied: false,
@@ -209,6 +211,34 @@ describe('evaluatePlanAcceptanceGate', () => {
     const rejected = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(rejected).toMatchObject({ satisfied: false, code: 'acceptance_rejected' });
     expect(rejected.message).toContain('regression evidence remains unresolved');
+  });
+
+  it('accepts an audited successor verdict but never counts that successor as the independent grader', async () => {
+    mockRubric.mockResolvedValue(acceptanceRubric());
+    mockAuthorIdentity.mockImplementation(
+      async (author, candidate) =>
+        author === candidate || (author === 'su-implementer' && candidate === 'su-successor'),
+    );
+    const successorVerdict = scorecard({
+      issueId: 'EI-successor-accept',
+      createdAt: '2026-08-21T02:00:00Z',
+      createdBy: 'su-successor',
+      acceptance: { verdict: 'accept', reasoning: 'The independent evidence meets the plan.' },
+    });
+    mockScorecards.mockResolvedValue([
+      successorVerdict,
+      scorecard({ createdAt: '2026-08-21T01:00:00Z', createdBy: 'su-grader' }),
+    ]);
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: true,
+      gradedBy: 'su-grader',
+    });
+
+    mockScorecards.mockResolvedValue([successorVerdict]);
+    await expect(evaluatePlanAcceptanceGate('some-plan-2026-08-11')).resolves.toMatchObject({
+      satisfied: false,
+      code: 'self_graded_only',
+    });
   });
 
   it('an implementer verdict filed before independent grading does not count', async () => {
@@ -305,14 +335,13 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     mockScorecards.mockImplementation(async (filter?: { rubricRef?: string }) =>
       filter?.rubricRef === 'meta-acceptance-rubric'
         ? metaCards
-        : acceptanceCards ?? [scorecard({ createdBy: 'su-grader' })],
+        : (acceptanceCards ?? [scorecard({ createdBy: 'su-grader' })]),
     );
   };
 
   beforeEach(() => {
     mockFlag.mockImplementation(
-      async (flag) =>
-        flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE,
+      async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_VETTING_GATE,
     );
     mockRubric.mockResolvedValue(acceptanceRubric());
     // The meta-rubric is REGISTERED but deliberately still 'proposed': the gate must

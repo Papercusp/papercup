@@ -26,13 +26,9 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
-import {
-  getAcceptanceRubricForPlan,
-  getRubric,
-  getRubricPlanRevision,
-  META_ACCEPTANCE_RUBRIC_ID,
-} from './rubrics';
+import { getAcceptanceRubricForPlan, getRubric, getRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from './rubrics';
 import { listScorecards } from './scorecards';
+import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
 import {
   citationBlobSha,
   getEffectiveItemAudits,
@@ -147,9 +143,7 @@ export async function evaluatePlanAcceptanceGate(
   const itemGate = await getFlag(FLAGS.PLAN_ITEM_COMPLETION_GATE, 'system').catch(() => true);
   if (itemGate) {
     const items = await getPlanItemStatuses(planSlug);
-    const unfinished = items.filter((i) =>
-      (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status),
-    );
+    const unfinished = items.filter((i) => (UNFINISHED_ITEM_STATUSES as readonly string[]).includes(i.status));
     if (unfinished.length > 0) {
       if (force) {
         forcedChecks.push('plan_items_unfinished');
@@ -203,9 +197,7 @@ export async function evaluatePlanAcceptanceGate(
       const hasVerifyingCitations = effectiveAudits.some(({ entry }) =>
         entry.citations.some((citation) => citation.kind === 'code' || citation.kind === 'test'),
       );
-      const citationContext = hasVerifyingCitations
-        ? await repoCitationContextForHarness(audit.harnessSlug)
-        : null;
+      const citationContext = hasVerifyingCitations ? await repoCitationContextForHarness(audit.harnessSlug) : null;
 
       if (hasVerifyingCitations && !citationContext) {
         broken.push(`audit harness '${audit.harnessSlug}' has no registered canonical source root`);
@@ -248,9 +240,7 @@ export async function evaluatePlanAcceptanceGate(
 
             const currentBlobSha = citationBlobSha(citation, citationContext.deps);
             if (!citation.blobSha) {
-              reasons.push(
-                `${citation.path ?? '(no path)'} has no audit-time blob fingerprint (audit #${auditSeq})`,
-              );
+              reasons.push(`${citation.path ?? '(no path)'} has no audit-time blob fingerprint (audit #${auditSeq})`);
             } else if (!currentBlobSha) {
               reasons.push(`${citation.path ?? '(no path)'} cannot be fingerprinted now (audit #${auditSeq})`);
             } else if (currentBlobSha !== citation.blobSha) {
@@ -358,9 +348,7 @@ export async function evaluatePlanAcceptanceGate(
       // The linked consult is what makes an attestation a VETTING (a plain meta-grade
       // without one skipped the external critique the flow exists to inject).
       const vettedCards = metaCards.filter((s) => s.vetting?.consultId);
-      const current = vettedCards.find(
-        (s) => currentRevision == null || s.vetting?.rubricRevision === currentRevision,
-      );
+      const current = vettedCards.find((s) => currentRevision == null || s.vetting?.rubricRevision === currentRevision);
       if (!current) {
         const vettedRevisions = [
           ...new Set(vettedCards.map((s) => s.vetting?.rubricRevision).filter((v) => v != null)),
@@ -414,8 +402,22 @@ export async function evaluatePlanAcceptanceGate(
         `evidence per rating — then the ship succeeds (grader ≠ implementer, plan D-005).`,
     };
   }
+  const implementerIdentities = new Set<string>();
+  if (implementer) {
+    implementerIdentities.add(implementer);
+    const candidateIds = [...new Set(complete.map((s) => s.createdBy).filter((id): id is string => id != null))];
+    await Promise.all(
+      candidateIds.map(async (candidateId) => {
+        if (await isAcceptanceAuthorIdentity(implementer, candidateId, { workspaceId: rubric.workspaceId })) {
+          implementerIdentities.add(candidateId);
+        }
+      }),
+    );
+  }
+  const isImplementerScorecard = (scorecard: (typeof complete)[number]) =>
+    scorecard.createdBy != null && implementerIdentities.has(scorecard.createdBy);
   const independent = complete
-    .filter((s) => !implementer || (s.createdBy != null && s.createdBy !== implementer))
+    .filter((s) => !implementer || (s.createdBy != null && !isImplementerScorecard(s)))
     .slice()
     .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
   if (!independent) {
@@ -429,19 +431,14 @@ export async function evaluatePlanAcceptanceGate(
         `different agent or the owner must file the grading scorecard.`,
     };
   }
-  const explicitVerdicts = implementer
-    ? complete.filter((s) => s.createdBy === implementer && s.acceptance)
-    : [];
+  const explicitVerdicts = implementer ? complete.filter((s) => isImplementerScorecard(s) && s.acceptance) : [];
   // listScorecards is newest-first, but sort defensively because tests/injected
   // readers are not required to preserve the storage ordering contract.
-  const latestVerdict = explicitVerdicts
-    .slice()
-    .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
+  const latestVerdict = explicitVerdicts.slice().sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0];
   const verdictFollowsLatestIndependent = latestVerdict
     ? Date.parse(independent.createdAt) <= Date.parse(latestVerdict.createdAt)
     : false;
-  const latestIndependentIsLegacy =
-    Date.parse(independent.createdAt) < Date.parse(ACCEPTANCE_VERDICT_REQUIRED_AFTER);
+  const latestIndependentIsLegacy = Date.parse(independent.createdAt) < Date.parse(ACCEPTANCE_VERDICT_REQUIRED_AFTER);
   if (!verdictFollowsLatestIndependent && !latestIndependentIsLegacy) {
     return {
       satisfied: false,
