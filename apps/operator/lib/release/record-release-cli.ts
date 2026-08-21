@@ -619,6 +619,29 @@ export function scanArtifacts(
   return found.sort((a, b) => a.platform.localeCompare(b.platform) || a.name.localeCompare(b.name));
 }
 
+/**
+ * A desktop release may be deliberately partial (one platform can land later),
+ * but it must never be a zero-artifact record. A missing or wrong bundle root
+ * otherwise looks exactly like an intentional partial cut: the completeness
+ * warning is non-blocking and the CLI exits 0. Keep this check after all
+ * resolved roots have been scanned so a valid artifact in a secondary leg is
+ * still accepted.
+ */
+export function assertRequestedDesktopArtifacts(
+  version: string,
+  artifacts: readonly ReleaseArtifact[],
+  bundleDirs: readonly string[],
+): void {
+  if (artifacts.length > 0) return;
+  const roots = bundleDirs.length > 0 ? bundleDirs.map((dir) => `    ${dir}`).join('\n') : '    (none)';
+  throw new Error(
+    `[record-release] REFUSING TO RECORD ${version}: no desktop artifact matching the requested ` +
+      `version was found across the resolved bundle roots.\n` +
+      `  Resolved roots:\n${roots}\n` +
+      '  Build the requested desktop version before recording; a zero-artifact release is not a valid partial cut.',
+  );
+}
+
 /** Bounded recursive file walk (depth-limited so a deep build tree can't wedge the scan). */
 function walkFiles(dir: string, maxDepth: number, depth = 0): string[] {
   if (depth > maxDepth) return [];
@@ -1031,6 +1054,12 @@ export async function run(opts: RecordOpts): Promise<number> {
     }
 
     const desktopArtifacts = scanArtifacts(opts.bundleDirs, opts.version, tag);
+    try {
+      assertRequestedDesktopArtifacts(opts.version, desktopArtifacts, opts.bundleDirs);
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 1;
+    }
     // Mobile artifacts live in a separate repo + are not version-named — see
     // scanMobileArtifacts. Merged into the same record; the page + history.json
     // give `product:'mobile'` its own section, and the desktop auto-update

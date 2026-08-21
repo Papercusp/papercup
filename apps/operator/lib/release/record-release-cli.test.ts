@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import {
   buildRunOpts,
   ANDROID_RELEASE_PROVENANCE_PATH,
+  assertRequestedDesktopArtifacts,
   classifyArtifact,
   collectedLinuxBundleRoot,
   computeMobileRegression,
@@ -339,6 +340,26 @@ describe('isImplausiblyTiny — the artifact-recorder plausibility floor (EI-186
     expect(isImplausiblyTiny(MIN_PLAUSIBLE_ARTIFACT_BYTES)).toBe(false);
     expect(isImplausiblyTiny(MIN_PLAUSIBLE_ARTIFACT_BYTES + 1)).toBe(false);
     expect(isImplausiblyTiny(1_306_392_652)).toBe(false); // a real mac dmg size
+  });
+});
+
+describe('assertRequestedDesktopArtifacts — reject zero-artifact records', () => {
+  it('rejects a requested version when every resolved bundle root is empty or stale', () => {
+    expect(() =>
+      assertRequestedDesktopArtifacts('0.0.17', [], ['/release/bundle/linux', '/release/bundle/mac']),
+    ).toThrow(/no desktop artifact matching the requested version was found/);
+  });
+
+  it('accepts a real requested-version artifact found across the resolved roots', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rel-assert-'));
+    const debDir = path.join(root, 'deb');
+    fs.mkdirSync(debDir, { recursive: true });
+    fs.writeFileSync(path.join(debDir, 'Papercusp GUI_0.0.17_amd64.deb'), plausibleBytes('assert'));
+
+    const artifacts = scanArtifacts([root], '0.0.17', 'desktop-v0.0.17-alpha');
+    expect(() => assertRequestedDesktopArtifacts('0.0.17', artifacts, [root])).not.toThrow();
+
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });
 
@@ -813,5 +834,12 @@ describe('linux bundle root — producer/consumer contract (EI-18103803991060000
     expect(publish).toContain('aws s3 sync "$SITE_DIR/work-items"');
     expect(publish).toContain('linked work-item detail page served and byte-identical');
     expect(publish).toContain('"${BASE}/${DETAIL_PAGE}"');
+
+    // A plausible stale site must not pass merely because it has index/history
+    // files. Both projections must bind to the release selected for publishing;
+    // holding pages are the deliberate exception handled by the script.
+    expect(publish).toContain('VERSION="${1:-${PAPERCUSP_RELEASE_VERSION:-}}"');
+    expect(publish).toContain('historyVersion !== expectedVersion || indexVersion !== expectedVersion');
+    expect(publish).toContain('papercusp-page-mode" content="holding"');
   });
 });
