@@ -582,6 +582,28 @@ const post = defineTool({
       /* flag miss ⇒ replace-base stays off */
     }
 
+    // code-intelligence-routing-lsp-gitnexus-2026-08-20 P-021 (D-013): may this omp
+    // role session KEEP its native `lsp` builtin? Same resolve-server-side/thread-via-
+    // envelopeEnv shape as REPLACE_CLAUDE_BASE above (psu-launcher.mjs is bare node and
+    // cannot read a TS flag). The decision itself — including the local-model TIER
+    // GATE that is what makes OMP_NATIVE_LSP_BUILTIN safe to ship default-ON — lives
+    // in ONE place, mayKeepOmpNativeLsp, shared with bootstrap-su. Read its header
+    // before changing anything here. Fail-soft ⇒ off ⇒ the launcher strips the
+    // builtin, byte-identical to the pre-P-021 hard-coded `--no-lsp`.
+    let ompNativeLsp = false;
+    try {
+      if (agent === 'omp') {
+        const { mayKeepOmpNativeLsp } = await import('../../../omp-native-lsp-gate');
+        ompNativeLsp = mayKeepOmpNativeLsp({
+          agent,
+          model: body.model?.trim() || null,
+          flagEnabled: await getFlag(FLAGS.OMP_NATIVE_LSP_BUILTIN, workspace),
+        });
+      }
+    } catch {
+      /* flag miss ⇒ builtin stays stripped (pre-P-021 behaviour stands) */
+    }
+
     const result: BootstrapRoleResult = {
       status: 'ok',
       sessionId,
@@ -609,6 +631,10 @@ const post = defineTool({
         // don't collide. Same value recorded as adv_sessions.coord_owner_id.
         PAPERCUSP_SID: sid,
         ...(replaceClaudeBase ? { PAPERCUSP_REPLACE_CLAUDE_BASE: '1' } : {}),
+        // P-021/D-013 — see the ompNativeLsp resolution above. Set-when-true, so
+        // ABSENT is the safe reading: the launcher strips omp's native `lsp`
+        // builtin unless this explicitly says it may keep it.
+        ...(ompNativeLsp ? { PAPERCUSP_OMP_NATIVE_LSP: '1' } : {}),
         ...(codexHome ? { CODEX_HOME: codexHome } : {}),
         ...accountPin.env,
         // named-su-agent-fleets P-009: fold the fleet membership env (PAPERCUSP_FLEET_SLUG /
