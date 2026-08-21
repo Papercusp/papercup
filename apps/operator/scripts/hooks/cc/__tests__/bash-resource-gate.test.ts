@@ -4716,6 +4716,24 @@ describe('substitution verdict handling', () => {
   };
   const run = (command = CAT) => runGate(bashCmd(command), { PAPERCUSP_OPERATOR_URL: url });
 
+  it('allows a read-only ps/grep inspection that mentions heavy tools under load (EI-19299721661084366)', () => {
+    // The live operator must answer first so the heavy-admission leg is reached;
+    // otherwise its substitution pre-filter fails open before this regression can
+    // be observed. This is the exact filed command, with a deterministic over-
+    // threshold load, and it must remain an empty-output allow.
+    setReply({ decision: 'allow', matched: [] });
+    const out = runGate(
+      bashCmd('ps -eo pid,etimes,pcpu,comm,args --sort=-pcpu | grep -E "vitest|tsc|node scripts/test-files" | grep -v grep'),
+      {
+        PAPERCUSP_OPERATOR_URL: url,
+        ...AGENT,
+        PC_HEAVY_MAX_LOAD1: '100',
+        PC_HEAVY_LOAD1_OVERRIDE: '200',
+      },
+    );
+    expectAllow(out);
+  });
+
   it('tier=advise rides out as a NON-BLOCKING additionalContext', () => {
     setReply({ decision: 'allow', matched: [], substitutions: [SUB], substitutionTier: 'advise' });
     const out = run();
