@@ -12506,7 +12506,7 @@
           "POST"
         ]
       },
-      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:\"observation\" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).",
+      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → agent-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:\"observation\" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).",
       "capabilities": [
         "coord:write"
       ],
