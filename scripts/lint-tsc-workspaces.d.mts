@@ -41,6 +41,15 @@ export function selectGatedPackages({ repoRoot, roots, exempt, untypecheckable, 
     siblingOwned: any[];
 };
 /**
+ * Replace only direct `npx tsc` fan-out commands with the repository's pinned native CLI.
+ * Declared package scripts remain untouched: npm must still supply their package-local cwd/env
+ * contract, while the direct promoted-tsconfig path has no reason to depend on an ambient bin.
+ *
+ * `resolveTscBin` is injectable so the command wiring can be tested against a synthetic tree
+ * without manufacturing a node_modules installation inside that fixture.
+ */
+export function pinDirectTscCommands(packages: any, repoRoot: any, resolveTscBin?: typeof resolvePinnedTscBin): any;
+/**
  * Read one package's INTERNAL dependency names — its `@papercusp/*` entries from
  * dependencies + devDependencies.
  *
@@ -75,7 +84,7 @@ export function orderPackages(packages: any): {
     external: string[];
     cycles: any[];
 };
-export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, log, warn, error, }?: {
+export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listInvisible, spawn, resolveTscBin, log, warn, error, }?: {
     repoRoot?: string | undefined;
     roots?: string[] | undefined;
     exempt?: Record<string, Exemption> | undefined;
@@ -87,6 +96,7 @@ export function main({ repoRoot, roots, exempt, untypecheckable, listOnly, listI
     listOnly?: boolean | undefined;
     listInvisible?: boolean | undefined;
     spawn?: typeof realSpawn | undefined;
+    resolveTscBin?: typeof resolvePinnedTscBin | null | undefined;
     log?: {
         (...data: any[]): void;
         (message?: any, ...optionalParams: any[]): void;
@@ -229,4 +239,5 @@ export type Exemption = {
      */
     filedAs: string;
 };
+import { resolvePinnedTscBin } from './lib/tsc-baseline-gate.mjs';
 import { realSpawn } from './lib/typecheck-fanout.mjs';

@@ -502,6 +502,31 @@ export function formatLandingRaceCaveat({ recentCount, windowMin }: {
     windowMin?: number;
 }): string[];
 /**
+ * Resolve the repository's pinned TypeScript CLI by package identity, never through the
+ * ambient `node_modules/.bin/tsc` slot (EI-21107417900847684).
+ *
+ * The toolchain contract deliberately installs TWO compilers: `@typescript/native` owns the
+ * TypeScript 7 CLI, while `typescript` names the TypeScript 6 compiler API required by TypeDoc,
+ * typescript-eslint, and declaration generation. During a concurrent install the shared `.bin`
+ * slot briefly resolved to the unrelated placeholder `tsc` package, so `npx tsc` exited 1 with
+ * zero diagnostics and red-pinned the release gate. Resolve the native package's declared bin
+ * from the root manifest instead; this is the CLI counterpart of gen-declarations.ts resolving
+ * its compiler-API input by package identity.
+ *
+ * @param {string} root repository root
+ * @returns {string} absolute path to the pinned native tsc entrypoint
+ */
+export function resolvePinnedTscBin(root: string): string;
+/**
+ * Replace only the canonical `npx tsc …` prefix with the pinned native compiler. Arbitrary
+ * injected commands (the focused tests use `cat <fixture>`) remain byte-for-byte unchanged.
+ *
+ * @param {string} root repository root
+ * @param {string} tscCommand configured command
+ * @returns {string}
+ */
+export function resolvePinnedTscCommand(root: string, tscCommand: string): string;
+/**
  * The child env for a tsc spawn: `process.env` plus `extra`, with
  * `--max-old-space-size` appended to NODE_OPTIONS.
  *
