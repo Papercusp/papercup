@@ -6,10 +6,13 @@
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-const { backgroundWorkersEnabledMock, getFlagMock, readSharedSnapshotMock } = vi.hoisted(() => ({
+const { backgroundWorkersEnabledMock, getFlagMock, readSharedSnapshotMock, statfsMock, homedirMock, tmpdirMock } = vi.hoisted(() => ({
   backgroundWorkersEnabledMock: vi.fn(() => false),
   getFlagMock: vi.fn(async () => true),
   readSharedSnapshotMock: vi.fn(async () => null),
+  statfsMock: vi.fn(),
+  homedirMock: vi.fn(() => '/home/tester'),
+  tmpdirMock: vi.fn(() => '/tmp'),
 }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
@@ -23,7 +26,17 @@ vi.mock('../derived-reads/shared-snapshot', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../derived-reads/shared-snapshot')>()),
   readSharedSnapshot: readSharedSnapshotMock,
 }));
+vi.mock('node:fs/promises', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:fs/promises')>()),
+  statfs: statfsMock,
+}));
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()),
+  homedir: homedirMock,
+  tmpdir: tmpdirMock,
+}));
 import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, resolveSystemHealth, _resetSystemHealthCache, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
+import { readDiskPressure } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -34,6 +47,34 @@ import type { HealthPanel, PanelKey, PanelStatus, SystemHealth, SystemHealthPane
  *  fields, so these tests need no cast and stay honest if the shape changes. */
 const candidate = (id: string): ImprovementCandidate =>
   ({ id, kind: 'bug', scope: 'operator', title: `candidate ${id}` });
+
+describe('readDiskPressure — process temp filesystem coverage (EI-21048564873280768)', () => {
+  beforeEach(() => {
+    statfsMock.mockReset();
+    homedirMock.mockReturnValue('/home/tester');
+    tmpdirMock.mockReturnValue('/tmp');
+  });
+
+  it('probes tmpdir() and retains a separate temp mount after same-device deduplication', async () => {
+    const root = { type: 1, blocks: 100, bsize: 1, bavail: 10, bfree: 10 };
+    const temp = { type: 2, blocks: 1000, bsize: 1, bavail: 20, bfree: 20 };
+    statfsMock.mockImplementation(async (path: string) => {
+      if (path === '/home/tester/.papercusp' || path === process.cwd()) return root;
+      if (path === '/tmp') return temp;
+      throw new Error(`unexpected path: ${path}`);
+    });
+
+    await expect(readDiskPressure()).resolves.toEqual([
+      { path: '/home/tester/.papercusp', usedPct: 90, freeGb: 0 },
+      { path: '/tmp', usedPct: 98, freeGb: 0 },
+    ]);
+    expect(statfsMock.mock.calls.map(([path]) => path)).toEqual([
+      '/home/tester/.papercusp',
+      process.cwd(),
+      '/tmp',
+    ]);
+  });
+});
 
 describe('resolveSystemHealth — reader cold-cache guard (EI-203357)', () => {
   beforeEach(() => {

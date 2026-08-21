@@ -2024,12 +2024,15 @@ async function collectInfra(ctx: HealthCtx): Promise<HealthPanel<InfraHealth>> {
   });
 }
 
-/** health-tab-v2 P-011: used% per watched volume (~/.papercusp + the working
- *  tree), deduped by filesystem identity. null when statfs is unavailable. */
-async function readDiskPressure(): Promise<Array<{ path: string; usedPct: number; freeGb: number }> | null> {
+/** health-tab-v2 P-011: used% per watched volume (~/.papercusp, the working
+ *  tree, and the process temp root), deduped by filesystem identity. The temp
+ *  root matters because agent/tool output is written there and it can be a
+ *  separate mount from the operator's home (as on the dev box, where /tmp is
+ *  backed by /mnt/data). null when statfs is unavailable. */
+export async function readDiskPressure(): Promise<Array<{ path: string; usedPct: number; freeGb: number }> | null> {
   const { statfs } = await import('node:fs/promises');
-  const { homedir } = await import('node:os');
-  const paths = [`${homedir()}/.papercusp`, process.cwd()];
+  const { homedir, tmpdir } = await import('node:os');
+  const paths = [`${homedir()}/.papercusp`, process.cwd(), tmpdir()];
   const seen = new Set<string>();
   const out: Array<{ path: string; usedPct: number; freeGb: number }> = [];
   for (const p of paths) {
