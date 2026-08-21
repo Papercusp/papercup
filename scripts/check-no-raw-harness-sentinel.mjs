@@ -92,7 +92,11 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#2:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
   "packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? prior.harness ?? null,",
   "packages/operator-core/lib/agent-tools/work_items/create.ts:fallback#1:harness: s.harness ?? ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/work_items/create.ts:identity-field#1:const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };",
+  // Same baselined site as before, re-keyed: `createCtx` was reformatted from a one-line
+  // object to a multi-line one (6d1f02aebe, which also added `projectDir`), which changes
+  // the finding TEXT and therefore the key, while `harnessSlug: ctx.harnessSlug` itself is
+  // byte-identical. Not a new exposure — re-keyed, never widened.
+  "packages/operator-core/lib/agent-tools/work_items/create.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/blueprint-steps/ops/calibration-resolve.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
   "packages/operator-core/lib/blueprint-steps/ops/change-ledger-scan.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
   "packages/operator-core/lib/blueprint-steps/ops/deferral-interest-refit.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
