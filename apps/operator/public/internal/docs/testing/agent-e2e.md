@@ -2305,6 +2305,23 @@ use `check`/`dom` for anything the DOM can express. On a GL-less display the DOM
 keeps working perfectly while every screenshot comes back empty.
 :::
 
+:::caution\[An element-scoped crop can paint a phantom artifact that is absent from the page]
+Even with a correctly targeted, GPU-painted window, `screenshot -s` /
+`screenshot --selector` can introduce a thin bar or other plausible-looking
+pixels into the crop. The same region can be absent from a full-window capture
+of the identical render, while `elementFromPoint`, computed styles, and the
+element's pseudo-elements show no corresponding page content. Treat a
+suspicious pixel that only appears in the selector crop as a capture artifact,
+not as a CSS defect.
+
+Before reporting a visual defect found with an element crop, take a
+full-window capture at the same instant and inspect the corresponding absolute
+region. For reliable visual evidence, crop that full-window image using the
+element rectangle from a bridge `eval`/`getBoundingClientRect()` result; when
+the assertion is expressible in the DOM, prefer `check` or
+`@papercusp/tauri-verify`'s `layout()` instead.
+:::
+
 Recipe — isolated **GPU-accelerated** instance via VirtualGL (no focus-steal):
 
 ```sh

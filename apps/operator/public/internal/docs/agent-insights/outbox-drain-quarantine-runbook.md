@@ -1,6 +1,10 @@
 # The promised-but-missing WI-3896 quarantine runbook: manually clearing a poison outbox row (mig 645)
 URL: /internal/docs/agent-insights/outbox-drain-quarantine-runbook
 
+outbox-drain.ts's WI-3896 quarantine was in-memory only, and the reconcile counted quarantined rows as stalled forever — mig 645 persists quarantine + excludes it from the drain SELECT and the reconcile metric. Addendum: the exclusion missed a second independent reader (fleet-monitors.ts's scanOutboxHealth), fixed in EI-21009625512310918.
+
+# The promised-but-missing WI-3896 quarantine runbook: manually clearing a poison outbox row (mig 645)
+
 outbox-drain.ts's poison-row quarantine (WI-3896) was in-memory only — a restart forgot it and re-timed-out the same row every cycle, and the federation-drain-reconcile watchdog counted quarantined rows toward its stall metric forever, perpetually refiling "Federation stall" bugs for a harness that was actually healthy. Mig 645 persists quarantine + excludes it from both the drain SELECT and the reconcile metric; this is the "root-cause + manually clear via the runbook" runbook every WI-3896-era comment promised but never wrote.
 
 ## Symptom
@@ -86,14 +90,29 @@ topic join / epoch-key state is what it should be), then:
   clear, so it gets a full new `ROW_QUARANTINE_THRESHOLD` allowance before
   being re-quarantined if it's still genuinely poison).
 
-## The generalizable lesson
+## Addendum (EI-21009625512310918, 2026-08-21): the exclusion missed a SECOND independent reader
 
-**A "leave it undrained on purpose" triage mechanism (quarantine, dead-letter,
-skip-list, …) must ALSO be excluded from whatever health/alerting metric
-measures "how long has this been undrained/unprocessed" — or the alert
-becomes a permanent, ever-worsening false positive for exactly the condition
-the triage mechanism was built to make safe to ignore.** Persisting
-in-process-only mitigation state across restarts is the same lesson from the
-other direction: a fix that only survives until the next restart re-pays its
-own cost (here, \~135s of wasted retries) every single cycle, forever, on a
-host that recycles every 5-8 minutes.
+Mig 645's fix updated exactly ONE reader of `substrate_outbox`'s "undrained"
+concept — `load-drain-stats.ts`'s `loadSubstrateDrainStats`, the one the
+2026-07-20 incident named. It did not (and structurally could not, since
+nothing links the two) also update `fleet-monitors.ts`'s `scanOutboxHealth` —
+a SECOND, independently-written query over the exact same table computing the
+exact same "how much is undrained, how old is the oldest row" shape for the
+shared-hive-loop P-013 live-fleet monitor. `scanOutboxHealth` kept the
+un-excluded `WHERE drained_at IS NULL` query for another month, and hit the
+identical perpetual-false-positive failure mode this doc already described —
+just through a different code path, filed as a fresh `shared-hive invariant:
+substrate outbox depth/age breach` bug instead of a `Federation stall` one.
+
+**The generalizable lesson, sharpened:** when you find and fix a place a
+shared metric definition ("undrained" = `drained_at IS NULL`) needs a new
+predicate, **grep for every OTHER computation of that same metric before
+closing the incident** — not just the one the incident happened to name. A
+concept re-implemented in two independent SQL queries over the same table
+drifts silently the moment only one of them gets the fix; the second one
+looks completely unrelated (different file, different caller, different
+downstream alert) until you trace both back to the same table and the same
+column meaning. `scanOutboxHealth` and `loadSubstrateDrainStats` now both
+carry `AND quarantined_at IS NULL`; if a THIRD reader of `substrate_outbox`'s
+undrained state is ever added, it needs the same line, and nothing enforces
+that structurally — this doc is the only thing pointing at it.
