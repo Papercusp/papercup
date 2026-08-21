@@ -79,6 +79,7 @@ interface PublishBody {
   // Event axis, consumer half (migration 013 / D-003 / P-008). The event-key
   // FAMILIES the unit REQUIRES; kinds plugin|pack only. Same storage posture.
   requires_events?: unknown;         // expected: Array<{ family, optional? }>
+  requires_rubrics?: unknown;        // expected: Array<{ rubricRef, optional? }> (migration 015)
   // Repo→Hive binding (migration 007 / hive-from-github-url D-004 HYBRID):
   // owning Hive's raw-32-byte-base64 Ed25519 pubkey + denormalized title.
   hive_pubkey?: unknown;             // expected: 44-char base64 (32 bytes)
@@ -107,6 +108,12 @@ const PROVIDES_EVENTS_MAX_DESCRIBE_LEN = 300;
 /** requires_events caps (migration 013): a declaration, not a payload. */
 const REQUIRES_EVENTS_MAX_ENTRIES = 200;
 const REQUIRES_EVENTS_MAX_FAMILY_LEN = 128;
+
+/** requires_rubrics caps (migration 015): same posture. The ref cap matches
+ *  LISTING_REF_RE's 200, since a rubricRef is matched against a rubric listing's
+ *  listing_ref — a longer one could never resolve. */
+const REQUIRES_RUBRICS_MAX_ENTRIES = 200;
+const REQUIRES_RUBRICS_MAX_REF_LEN = 200;
 
 const TOPIC_HEX_RE = /^[0-9a-f]{64}$/;
 // Standard base64 of exactly 32 raw bytes (an Ed25519 pubkey): 43 chars + '='.
@@ -437,6 +444,54 @@ function registerListingEndpoints(
       requiresEventsJson = JSON.stringify(clean);
     }
 
+    // requires_rubrics (migration 015 / cupboard-plan-rubric-recipe-sharing D-001)
+    // — the rubric axis's consumer half, structurally the same declaration as
+    // requires_events above and validated the same way.
+    //
+    // Two deliberate differences from requires_events:
+    //   1. KIND SCOPE is 'plan' only, for now. The COLUMN is kind-agnostic on
+    //      purpose (so a future kind needs no table rebuild), but accepting the
+    //      field from a kind with no install-time resolver would store a
+    //      declaration nothing ever reads — a silent no-op is worse than a 400.
+    //      Widening this check is the only change needed to admit another kind.
+    //   2. There is no provides_rubrics counterpart to cross-check (D-002): a
+    //      kind='rubric' row provides exactly the rubric named by its listing_ref.
+    //
+    // As with requires_events, resolvability is NOT validated here: the Cupboard
+    // has no idea which rubrics the installing workspace already holds (its bundled
+    // first-party set alone may satisfy the whole declaration). The storefront
+    // stores the DECLARATION; the operator resolves it at install time.
+    let requiresRubricsJson: string | null = null;
+    if (body.requires_rubrics != null) {
+      const bad = (reason: string) =>
+        c.json({ error: 'invalid_field', field: 'requires_rubrics', reason }, 400);
+      if (kind !== 'plan') return bad('plan_kind_only');
+      const rr = body.requires_rubrics;
+      if (!Array.isArray(rr) || rr.length === 0 || rr.length > REQUIRES_RUBRICS_MAX_ENTRIES) {
+        return bad('array_1_to_200');
+      }
+      const refs = new Set<string>();
+      const clean: Array<{ rubricRef: string; optional?: boolean }> = [];
+      for (const raw of rr) {
+        if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return bad('entries_must_be_objects');
+        const { rubricRef, optional } = raw as Record<string, unknown>;
+        if (
+          typeof rubricRef !== 'string' ||
+          rubricRef.trim().length === 0 ||
+          rubricRef.length > REQUIRES_RUBRICS_MAX_REF_LEN
+        ) {
+          return bad('rubricRef_non_empty_string_max_200');
+        }
+        if (optional != null && typeof optional !== 'boolean') return bad('optional_must_be_boolean');
+        // Same reasoning as duplicate_family above: a duplicate ref with
+        // CONFLICTING optionality is ambiguous in the one way that matters.
+        if (refs.has(rubricRef)) return bad('duplicate_rubric_ref');
+        refs.add(rubricRef);
+        clean.push({ rubricRef, ...(optional === true ? { optional: true } : {}) });
+      }
+      requiresRubricsJson = JSON.stringify(clean);
+    }
+
     // App distribution fields (migration 014 / cupboard-app-distribution P-003).
     // ALL app-only: a non-app listing carrying any of them is a client bug, so
     // reject rather than silently drop (same posture as provides_tools's
@@ -642,6 +697,7 @@ function registerListingEndpoints(
       provides_tools: providesToolsJson,
       provides_events: providesEventsJson,
       requires_events: requiresEventsJson,
+      requires_rubrics: requiresRubricsJson,
       hive_pubkey: (body.hive_pubkey as string | undefined) ?? null,
       hive_title: (body.hive_title as string | undefined) ?? null,
       // P-018: the blueprint.yaml `kind` for a blueprint listing (the Hives-tab
