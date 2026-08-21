@@ -52,9 +52,14 @@ const INPUT = { eventKey: 'predicate:w1', workspaceId: 'papercusp-workspace' };
 const valueRead = (over: Record<string, unknown> = {}) => ({
   status: 'value' as const,
   cell: 'gate.greenCheckpoint.verdict',
-  value: 'green',
-  headline: 'green',
+  value: 0,
+  headline: 'gate.consecutiveReds',
   resolver: 'gitPipelinePosition',
+  falsifier: {
+    field: 'verdictProvenance.mainBehindStaging',
+    value: false,
+    kills: '"0 consecutive reds" read as "the pipeline is healthy"',
+  },
   ...over,
 });
 
@@ -68,7 +73,9 @@ describe('the healthy fold', () => {
   it('renders the delivery-time headline, a dated stamp, and the re-read handle', async () => {
     const block = await prepareCellWakeFold(INPUT);
 
-    expect(block).toContain('gate.greenCheckpoint.verdict = green');
+    // Keep the declared path and measured value distinct. The old fixture set both to
+    // "green", masking a renderer that printed the path while dropping `read.value`.
+    expect(block).toContain('gate.greenCheckpoint.verdict · gate.consecutiveReds = 0');
     expect(block).toContain('re-read at delivery');
     // The handle rides along even on the healthy path: this reading is itself a
     // snapshot, just a dated one, and the agent may act minutes from now.
@@ -88,7 +95,7 @@ describe('the healthy fold', () => {
     expect(block).toContain("state:read { cell: 'git.pipelinePosition', as: 'apps/operator/x.ts' }");
   });
 
-  it('reads with the WATCH ROW\'s identity — the delivery carries no role or harness', async () => {
+  it("reads with the WATCH ROW's identity — the delivery carries no role or harness", async () => {
     await prepareCellWakeFold(INPUT);
 
     const [, reader, env] = readCellMock.mock.calls[0];
@@ -110,6 +117,63 @@ describe('the healthy fold', () => {
     const block = await prepareCellWakeFold(INPUT);
 
     expect(block).toContain('material · gate.red = 3');
+  });
+
+  it('carries the falsifier measurement and the false reading it kills', async () => {
+    readCellMock.mockResolvedValue(
+      valueRead({
+        falsifier: {
+          field: 'verdictProvenance.mainBehindStaging',
+          value: true,
+          kills: '"0 consecutive reds" read as "the pipeline is healthy"',
+        },
+      }),
+    );
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('falsifier · verdictProvenance.mainBehindStaging = true');
+    expect(block).toContain('kills · "0 consecutive reds" read as "the pipeline is healthy"');
+  });
+
+  it('reports a drifted falsifier as missing, never as measured null agreement', async () => {
+    readCellMock.mockResolvedValue(
+      valueRead({
+        falsifier: {
+          field: 'verdictProvenance.mainBehindStaging',
+          value: null,
+          kills: 'a false healthy verdict',
+          drifted: true,
+        },
+      }),
+    );
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('registration drift');
+    expect(block).toContain('headline is UNFALSIFIED');
+    expect(block).not.toContain('mainBehindStaging = null');
+  });
+
+  it('reports a door-truncated falsifier and preserves its full-read lever', async () => {
+    readCellMock.mockResolvedValue(
+      valueRead({
+        falsifier: {
+          field: 'serving.startedSinceCodeChange',
+          value: null,
+          kills: '"deployed" read as "the process executes it"',
+          truncatedByDoor: true,
+          fullRead: { tool: 'dev:pipeline_position', args: { path: 'x.ts' } },
+        },
+      }),
+    );
+
+    const block = await prepareCellWakeFold(INPUT);
+
+    expect(block).toContain('was truncated in transit');
+    expect(block).toContain('headline is UNFALSIFIED');
+    expect(block).toContain('full read · {"tool":"dev:pipeline_position"');
+    expect(block).not.toContain('registration drift');
   });
 
   it('hoists a NON-AUTHORITATIVE reading where it cannot be skipped', async () => {
@@ -188,7 +252,7 @@ describe('no fold at all — the cases with genuinely nothing to say', () => {
     expect(getPredicateWatchMock).not.toHaveBeenCalled();
   });
 
-  it('a GC\'d or reaped watch row', async () => {
+  it("a GC'd or reaped watch row", async () => {
     getPredicateWatchMock.mockResolvedValue(null);
     expect(await prepareCellWakeFold(INPUT)).toBeNull();
   });
@@ -218,7 +282,7 @@ describe('no fold at all — the cases with genuinely nothing to say', () => {
 });
 
 describe('the budget itself', () => {
-  it('defaults well below readCell\'s own ~10s hung-resolver ceiling', async () => {
+  it("defaults well below readCell's own ~10s hung-resolver ceiling", async () => {
     // Those are different jobs: that ceiling stops a hung resolver wedging a caller;
     // this one stops a merely SLOW resolver delaying an interrupt.
     expect(CELL_WAKE_FOLD_BUDGET_MS).toBeLessThanOrEqual(2000);
@@ -228,13 +292,11 @@ describe('the budget itself', () => {
   it('CONTROL — a resolver inside the budget is NOT degraded', async () => {
     // Calibration: without this, every degrade assertion above would pass just as
     // happily against an implementation that degrades unconditionally.
-    readCellMock.mockImplementation(
-      () => new Promise((r) => setTimeout(() => r(valueRead()), 5)),
-    );
+    readCellMock.mockImplementation(() => new Promise((r) => setTimeout(() => r(valueRead()), 5)));
 
     const block = await prepareCellWakeFold({ ...INPUT, budgetMs: 500 });
 
     expect(block).not.toContain('NOT re-read at delivery');
-    expect(block).toContain('gate.greenCheckpoint.verdict = green');
+    expect(block).toContain('gate.greenCheckpoint.verdict · gate.consecutiveReds = 0');
   });
 });

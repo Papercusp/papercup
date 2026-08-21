@@ -35,7 +35,7 @@
  * resolver — yields the handle-only form or `null`, i.e. the pre-P-022 wake.
  */
 
-import { formatCellHoist, readCell } from '../../cell-read';
+import { formatCellHoist, readCell, type CellFalsifierRead } from '../../cell-read';
 import { deriveCellReread, getPredicateWatch } from './predicate-watch';
 
 /** Wake-safe resolve budget. Deliberately far below `readCell`'s own ~10s bound: that
@@ -67,6 +67,31 @@ function brief(value: unknown, max = 120): string {
 function handleCall(handle: { args: { cell: string; as?: string } }): string {
   const { cell, as } = handle.args;
   return `state:read { cell: '${cell}'${as ? `, as: '${as}'` : ''} }`;
+}
+
+/**
+ * Render the independent measurement that can invalidate a tempting reading of the
+ * headline. A delivery-time fold without this block is weaker than the `state:read`
+ * it claims to carry: the push recipient gets the value, but not the evidence the
+ * cell author declared specifically to keep that value from becoming a false verdict.
+ *
+ * Drift and door truncation are deliberately LOUD. In either case the falsifier did
+ * not arrive, so `value:null` must never look like measured agreement.
+ */
+function falsifierLines(falsifier: CellFalsifierRead): string[] {
+  if (falsifier.truncatedByDoor) {
+    return [
+      `  ⚠ falsifier · ${falsifier.field} was truncated in transit; the headline is UNFALSIFIED`,
+      ...(falsifier.fullRead === undefined ? [] : [`    full read · ${brief(falsifier.fullRead, 240)}`]),
+    ];
+  }
+  if (falsifier.drifted) {
+    return [
+      `  ⚠ falsifier · ${falsifier.field} is absent from the resolver result (registration drift); ` +
+        'the headline is UNFALSIFIED',
+    ];
+  }
+  return [`  falsifier · ${falsifier.field} = ${brief(falsifier.value)}`, `    kills · ${brief(falsifier.kills, 280)}`];
 }
 
 /**
@@ -155,7 +180,8 @@ export async function prepareCellWakeFold(input: CellWakeFoldInput): Promise<str
 
     const lines: string[] = [];
     if (read.status === 'value') {
-      lines.push(`[cell] ${read.cell} = ${read.headline}  (re-read at delivery ${stamp})`);
+      lines.push(`[cell] ${read.cell} · ${read.headline} = ${brief(read.value)}  (re-read at delivery ${stamp})`);
+      lines.push(...falsifierLines(read.falsifier));
       if (read.material) {
         // P-021: the MATERIAL answer is a lens on the same derivation, and it is the one
         // a subscriber watching a high-churn cell actually asked about.
