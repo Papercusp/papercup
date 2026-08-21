@@ -371,9 +371,7 @@ function main() {
   const json = argv.includes('--json');
   const fail = argv.includes('--fail');
   const baseIdx = argv.indexOf('--base');
-  // Green-checkpoint supplies AFFECTED_BASE while judging a clean candidate checkout. Local
-  // invocations retain the HEAD default, and an explicit --base remains authoritative.
-  const base = baseIdx >= 0 ? argv[baseIdx + 1] : process.env.AFFECTED_BASE || 'HEAD';
+  const base = baseIdx >= 0 ? argv[baseIdx + 1] : 'HEAD';
 
   // `--files=a,b,c` DECLARES the set instead of inferring it. Mirrors lint:tsc, which
   // learned the same lesson: on a tree the whole fleet edits, an inferred "changed set"
