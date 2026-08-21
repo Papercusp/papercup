@@ -459,7 +459,7 @@
           "POST"
         ]
       },
-      "description": "Set the owner's account steer the fleet honours when picking a pool account to spawn/deploy on: `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account), `defaultAccountId` (the Claude account standing in for this machine's ~/.claude login; null clears it). The two lists RESTRICT selection and are applied fail-soft BEFORE the headroom/drain selectors; the default only replaces the implicit local-login fallback, so it never narrows the pool or defeats failover. `clear:true` wipes all three. Returns {ok, override}.",
+      "description": "Set the owner's account steer the fleet honours when picking a pool account to spawn/deploy on: `forcedAccounts` (allow-list — use ONLY these), `excludeAccounts` (skip these, e.g. a flaky/rate-limited account), `defaultAccountId` (the Claude account standing in for this machine's ~/.claude login; null clears it). The two lists RESTRICT selection and are applied fail-soft BEFORE the headroom/drain selectors; the default only replaces the implicit local-login fallback, so it never narrows the pool or defeats failover. `clear:true` wipes all three. Writes reject unknown pool ids, contradictory forced+excluded ids, and accidental zero-account collapse; pass `confirmCollapse:true` only when that narrowing is intentional. Returns {ok, override}.",
       "capabilities": [
         "harness:write"
       ],
