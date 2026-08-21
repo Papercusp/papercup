@@ -814,8 +814,10 @@ export interface IssueClaimExclusionBreakdown {
   excluded: {
     taken: number;
     claimHold: number;
-    /** Legacy needsHuman plus the strict needsOwnerAction floor. */
-    needsHuman: number;
+    /** Legacy compatibility cohort awaiting the P-006 data migration. */
+    legacyNeedsHuman: number;
+    /** Strict owner capability: credential, physical device, or external-service action. */
+    needsOwnerAction: number;
     agentReview: number;
     observationLane: number;
     externalBlocker: number;
@@ -873,7 +875,8 @@ export interface IssueClaimExclusionBreakdown {
  *  here fails immediately instead of silently widening the queue. Add a floor to the
  *  subquery ⇒ add it here. */
 export const ALL_ISSUE_CLAIM_FLOORS_PASS =
-  `ok_untaken AND ok_claim_hold AND ok_needs_human AND ok_agent_review AND ok_observation ` +
+  `ok_untaken AND ok_claim_hold AND ok_legacy_needs_human AND ok_needs_owner_action ` +
+  `AND ok_agent_review AND ok_observation ` +
   `AND ok_external_blocker AND ok_plan_lane AND ok_federation AND ok_loop_noise ` +
   `AND ok_completed AND ok_watchdog_recovery AND ok_rig AND ok_no_blocker ` +
   `AND ok_cooldown AND ok_origin`;
@@ -911,8 +914,8 @@ export function issueClaimCandidateSubquery(
       (${compiled})                                                     AS spec_match,
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
-      (${legacyNeedsHumanExclusionSql(sql)} AND ${needsOwnerActionExclusionSql(sql)})
-                                                                         AS ok_needs_human,
+      (${legacyNeedsHumanExclusionSql(sql)})                             AS ok_legacy_needs_human,
+      (${needsOwnerActionExclusionSql(sql)})                             AS ok_needs_owner_action,
       (${agentReviewNormalExclusionSql(sql)})                            AS ok_agent_review,
       (${observationLaneExclusionSql(sql)})                             AS ok_observation,
       (${externalBlockersExclusionSql(sql)})                            AS ok_external_blocker,
@@ -1011,7 +1014,8 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND ${sql.unsafe(ALL_ISSUE_CLAIM_FLOORS_PASS)})::int AS claimable,
       count(*) FILTER (WHERE spec_match AND NOT ok_untaken)::int                       AS taken,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_claim_hold)::int      AS claim_hold,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_human)::int     AS needs_human,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_legacy_needs_human)::int AS legacy_needs_human,
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_needs_owner_action)::int AS needs_owner_action,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_agent_review)::int     AS agent_review,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int     AS observation_lane,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_external_blocker)::int AS external_blocker,
@@ -1029,7 +1033,8 @@ export async function aggregateIssueClaimExclusions(
     claimable: number;
     taken: number;
     claim_hold: number;
-    needs_human: number;
+    legacy_needs_human: number;
+    needs_owner_action: number;
     agent_review: number;
     observation_lane: number;
     external_blocker: number;
@@ -1049,7 +1054,8 @@ export async function aggregateIssueClaimExclusions(
     excluded: {
       taken: r?.taken ?? 0,
       claimHold: r?.claim_hold ?? 0,
-      needsHuman: r?.needs_human ?? 0,
+      legacyNeedsHuman: r?.legacy_needs_human ?? 0,
+      needsOwnerAction: r?.needs_owner_action ?? 0,
       agentReview: r?.agent_review ?? 0,
       observationLane: r?.observation_lane ?? 0,
       externalBlocker: r?.external_blocker ?? 0,
@@ -1073,7 +1079,8 @@ export async function aggregateIssueClaimExclusions(
 export interface IssueClaimExclusionSample {
   taken: string[];
   claimHold: string[];
-  needsHuman: string[];
+  legacyNeedsHuman: string[];
+  needsOwnerAction: string[];
   agentReview: string[];
   observationLane: string[];
   externalBlocker: string[];
@@ -1155,7 +1162,8 @@ export async function sampleIssueClaimExclusions(
     SELECT
       ${sampleOf('NOT ok_untaken', '')}        AS taken,
       ${sampleOf('NOT ok_claim_hold')}          AS claim_hold,
-      ${sampleOf('NOT ok_needs_human')}         AS needs_human,
+      ${sampleOf('NOT ok_legacy_needs_human')}  AS legacy_needs_human,
+      ${sampleOf('NOT ok_needs_owner_action')}  AS needs_owner_action,
       ${sampleOf('NOT ok_agent_review')}         AS agent_review,
       ${sampleOf('NOT ok_observation')}         AS observation_lane,
       ${sampleOf('NOT ok_external_blocker')}    AS external_blocker,
@@ -1170,7 +1178,8 @@ export async function sampleIssueClaimExclusions(
   `) as Array<{
     taken: string[];
     claim_hold: string[];
-    needs_human: string[];
+    legacy_needs_human: string[];
+    needs_owner_action: string[];
     agent_review: string[];
     observation_lane: string[];
     external_blocker: string[];
@@ -1187,7 +1196,8 @@ export async function sampleIssueClaimExclusions(
   return {
     taken: r?.taken ?? [],
     claimHold: r?.claim_hold ?? [],
-    needsHuman: r?.needs_human ?? [],
+    legacyNeedsHuman: r?.legacy_needs_human ?? [],
+    needsOwnerAction: r?.needs_owner_action ?? [],
     agentReview: r?.agent_review ?? [],
     observationLane: r?.observation_lane ?? [],
     externalBlocker: r?.external_blocker ?? [],
