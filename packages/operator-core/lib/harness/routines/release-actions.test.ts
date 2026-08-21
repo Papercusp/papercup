@@ -326,6 +326,13 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(checkpointFallbackStatus(undefined)).toBe('error');
   });
 
+  it('EI-21103236147949832: external SIGTERM/exit 143 is cancelled, while the own deadline wins', () => {
+    expect(checkpointFallbackStatus(false, 143, null)).toBe('cancelled');
+    expect(checkpointFallbackStatus(false, 1, 'SIGTERM')).toBe('cancelled');
+    expect(checkpointFallbackStatus(true, 143, 'SIGTERM')).toBe('deadline-exceeded');
+    expect(checkpointFallbackStatus(false, 1, null)).toBe('error');
+  });
+
   it('WI-39841: deadline-exceeded is a NON-VERDICT, not a red', () => {
     // One phase later again, and arrived at from the opposite end: migrations-pending and
     // infra-inconclusive abort BEFORE judging, while this run was killed DURING/AFTER judging
@@ -337,6 +344,11 @@ describe('classifyGateStallStatus (EI-2615: skipped-locked must not fake a red s
     expect(classifyGateStallStatus('deadline-exceeded', false)).toBe('noop');
     // …and a moved pin still wins, exactly as for every other status.
     expect(classifyGateStallStatus('deadline-exceeded', true)).toBe('reset');
+  });
+
+  it('EI-21103236147949832: an externally cancelled run is a NON-VERDICT, not a red', () => {
+    expect(classifyGateStallStatus('cancelled', false)).toBe('noop');
+    expect(classifyGateStallStatus('cancelled', true)).toBe('reset');
   });
 
   it('WI-39944: serialized repair waits are NON-VERDICTS, not reds', () => {

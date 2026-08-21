@@ -252,6 +252,9 @@ interface RunResult {
   code: number;
   stdout: string;
   stderr: string;
+  /** Process signal reported by Node. `systemd-run --scope` commonly translates an
+   *  externally-stopped scope to exit 143 instead, so callers must check both forms. */
+  signal?: NodeJS.Signals | null;
   /** WI-39841 (Defect 2): THIS runner's own deadline timer fired and SIGTERM'd the group.
    *  Without it, a deadline-kill is indistinguishable from a script crash — both arrive as a
    *  non-zero exit with no parseable result marker, and both were recorded as a red. They call
@@ -342,9 +345,9 @@ function runScript(
       child.stdout.on('data', (d) => (stdout += d.toString()));
       child.stderr.on('data', (d) => (stderr += d.toString()));
       child.on('error', (e) => finishOrFallback({ code: 1, stdout, stderr: stderr + String(e) }, true));
-      child.on('close', (code) =>
+      child.on('close', (code, signal) =>
         finishOrFallback(
-          { code: code ?? 1, stdout, stderr },
+          { code: code ?? (signal === 'SIGTERM' ? 143 : 1), stdout, stderr, signal },
           code !== 0 && Date.now() - startedAt < 5_000 && SCOPE_LAUNCH_FAILURE_RE.test(stderr),
         ),
       );
@@ -979,7 +982,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // dying, so this only relabels the genuinely verdict-less case.
   // Explicitly `string`, NOT the helper's narrow union: this is the broad status vocabulary and
   // it is reassigned from `parsed.reason` below (advanced | up-to-date | not-green | …).
-  let status: string = checkpointFallbackStatus(r.timedOut);
+  let status: string = checkpointFallbackStatus(r.timedOut, r.code, r.signal);
   let candidate: string | undefined;
   let summary: string | undefined;
   let failingTests: string[] | undefined;
@@ -1339,8 +1342,18 @@ export function isProvenStaleCandidate(retriage?: GateStallRetriage | null): boo
  * 'deadline-exceeded' status means "killed AND never reported", which is exactly the tick that
  * establishes nothing about the code.
  */
-export function checkpointFallbackStatus(timedOut: boolean | undefined): 'deadline-exceeded' | 'error' {
-  return timedOut ? 'deadline-exceeded' : 'error';
+export function checkpointFallbackStatus(
+  timedOut: boolean | undefined,
+  exitCode?: number,
+  signal?: NodeJS.Signals | null,
+): 'deadline-exceeded' | 'cancelled' | 'error' {
+  if (timedOut) return 'deadline-exceeded';
+  // EI-21103236147949832: stopping a systemd transient scope makes the systemd-run
+  // wrapper exit 143; a directly-spawned child reports SIGTERM. Neither produced a
+  // suite verdict, so classifying either as a crash creates a false red and preserves
+  // the previous run's failing-test signature. The runner's own deadline wins above.
+  if (exitCode === 143 || signal === 'SIGTERM') return 'cancelled';
+  return 'error';
 }
 
 export function classifyGateStallStatus(
@@ -1375,6 +1388,7 @@ export function classifyGateStallStatus(
     status === 'infra-inconclusive' ||
     status === 'disk-headroom' ||
     status === 'deadline-exceeded' ||
+    status === 'cancelled' ||
     status === 'repair-in-progress' ||
     status === 'repair-staging-mismatch'
   )
@@ -1510,6 +1524,13 @@ export function gateStallNoopLogMessage(status: string): string {
       `they are innocent. No peer run is in flight; the next scheduled run judges normally once the host fault ` +
       `clears. Leaving gate_health untouched (not a red; a frozen \`main\` is still escalated by ` +
       `checkMainBehindStaging / evaluateGreenStall, not by this counter — see classifyGateStallStatus)`
+    );
+  }
+  if (status === 'cancelled') {
+    return (
+      `${orchestratorStdoutTag()} 'cancelled' — this run was externally SIGTERMed before it ` +
+      `published a result marker. It rendered no code verdict, so the red streak and prior ` +
+      `failing-test signature stay untouched; gate_health.inconclusive records the cancellation`
     );
   }
   if (status === 'migrations-pending') {
@@ -1683,6 +1704,7 @@ export async function trackGateStall(
       status === 'migrations-pending' ||
       status === 'infra-inconclusive' ||
       status === 'deadline-exceeded' ||
+      status === 'cancelled' ||
       status === 'repair-in-progress' ||
       status === 'repair-staging-mismatch'
     ) {
