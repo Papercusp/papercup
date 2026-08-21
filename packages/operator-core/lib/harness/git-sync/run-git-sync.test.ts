@@ -1926,6 +1926,56 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     ).toEqual([ignoredPath]);
   });
 
+  it('EI-21025874195651806: filters an ignored untracked protected path before the first add', async () => {
+    const ignoredPath = 'tools/perf-test/wdio/package-lock.json';
+    const stageableProtectedPath = 'tracked-protected.txt';
+    const addCalls: string[][] = [];
+    const checkIgnoreCalls: string[][] = [];
+    const logs: string[] = [];
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain -z -uall')) return { code: 0, stdout: '' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: ' M file.txt\n' };
+      if (j.startsWith('check-ignore -z --')) {
+        checkIgnoreCalls.push(args);
+        // Default `git check-ignore` suppresses tracked files. The fake models
+        // that contract: only the ignored-untracked path is returned, so the
+        // tracked protected path must remain in the exclusion pathspec.
+        const queried = args.slice(args.indexOf('--') + 1);
+        const hits = queried.filter((path) => path === ignoredPath);
+        return hits.length ? { code: 0, stdout: `${hits.join('\0')}\0` } : { code: 1, stdout: '' };
+      }
+      if (j.startsWith('add')) {
+        addCalls.push(args);
+        return { code: 0 };
+      }
+      if (j.startsWith('commit')) return { code: 0 };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count')) return { code: 0, stdout: '0' };
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      excludePaths: [ignoredPath, stageableProtectedPath],
+      config: { pushSubmodules: false },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(checkIgnoreCalls).toHaveLength(1);
+    expect(checkIgnoreCalls[0]).toContain(ignoredPath);
+    expect(checkIgnoreCalls[0]).not.toContain('--no-index');
+    expect(addCalls).toHaveLength(1); // no red first attempt + recovery retry
+    expect(addCalls[0]).not.toContain(`:(exclude,literal)${ignoredPath}`);
+    expect(addCalls[0]).toContain(`:(exclude,literal)${stageableProtectedPath}`);
+    expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
+  });
+
   it('EI-20201578457434474: live index.lock contention retries with bounded backoff before surfacing an error', async () => {
     let addAttempts = 0;
     const run = fakeGit((args) => {
