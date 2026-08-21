@@ -63,6 +63,13 @@ function payloadSha(value: unknown): string | null {
   return null;
 }
 
+function sameSha(a: string | null | undefined, b: string | null | undefined): boolean {
+  if (!a || !b) return false;
+  const left = a.toLowerCase();
+  const right = b.toLowerCase();
+  return left === right || left.startsWith(right) || right.startsWith(left);
+}
+
 function pipelineName(root: string): string {
   return (path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
 }
@@ -164,6 +171,12 @@ export default defineTool({
     }
     const position = positionRead.value;
     if (!position) throw new Error('release:trace:pipeline-position returned no position');
+    // An inconclusive checkpoint does not judge code. Its gate counters and failingTests
+    // therefore describe the previous verdict and must not be attributed to this candidate.
+    // Keep the older counters/candidate in the projection as historical context, but make
+    // the gate non-authoritative and suppress its test names only for the exact candidate.
+    const inconclusiveCandidate = snapshot.gate.inconclusive?.candidate;
+    const candidateInconclusive = sameSha(position.targetSha, inconclusiveCandidate);
     const deploy = computeDeployStatus(snapshot);
     const pipeline = pipelineName(snapshot.deploy.integrationRoot);
     const keys = [
@@ -242,9 +255,9 @@ export default defineTool({
         workItem: args.work_item,
         gate: {
           state: deploy.state,
-          authoritative: !snapshot.gate.verdictStale,
+          authoritative: !snapshot.gate.verdictStale && !candidateInconclusive,
           consecutiveReds: snapshot.gate.consecutiveReds,
-          failingTests: snapshot.gate.verdictStale ? [] : snapshot.gate.failingTests,
+          failingTests: snapshot.gate.verdictStale || candidateInconclusive ? [] : snapshot.gate.failingTests,
           fireStale: snapshot.gate.fireStale,
           fireStaleReason: snapshot.gate.fireStaleReason,
           verdictStale: snapshot.gate.verdictStale,

@@ -171,6 +171,47 @@ describe('release:trace tool contract', () => {
     );
   });
 
+  it('suppresses prior failing tests when the requested candidate is infra-inconclusive', async () => {
+    const targetSha = 'a'.repeat(40);
+    const inconclusive = {
+      status: 'infra-inconclusive',
+      candidate: targetSha.slice(0, 8),
+      detail: 'green-checkpoint rendered no code verdict',
+      observedAtMs: 123,
+    };
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: {
+        verdictStale: false,
+        consecutiveReds: 5,
+        failingTests: ['historical-red.test.ts'],
+        fireStale: false,
+        observedCandidate: 'older-candidate',
+        inconclusive,
+      },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'gate-red' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: false });
+
+    await tool.handler({ sha: targetSha } as never, {} as never);
+
+    expect(mocks.buildReleaseTrace).toHaveBeenCalledWith(
+      expect.objectContaining({
+        gate: expect.objectContaining({
+          authoritative: false,
+          consecutiveReds: 5,
+          failingTests: [],
+          inconclusive,
+        }),
+      }),
+    );
+  });
+
   it('returns an unknown, retryable result when the pipeline snapshot exceeds its budget', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.useFakeTimers();
