@@ -243,7 +243,7 @@ export default defineTool({
       .array(z.string())
       .optional()
       .describe(
-        'Repo-relative files your change touches. The launch receipt reports callerEditsInCandidate { included, missing } for the PRE-LAUNCH PREDICTED candidate and marks candidateBinding.status="predicted-unconfirmed"; the detached writer can re-resolve onto a different commit (including a frozen-repair head), so release:trace must confirm its actual bound candidate before a red or green is treated as a verdict on your code. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.',
+      'Repo-relative files your change touches. The launch receipt reports callerEditsInCandidate { included, missing } for the exact candidate transported into the detached CLI. PASS THIS: without it the check falls back to the whole shared tree\'s uncommitted files, which includes peers\' edits and cannot see a change you already committed — and it is also what arms the pre-launch refusal (reason:would_exclude_declared_paths), which declines to spend a ~55min suite on a candidate that provably lacks these files.',
       ),
     waitForEligibility: z
       .boolean()
@@ -502,7 +502,9 @@ export default defineTool({
     // The explicit required-ancestor path already performs this queue-aware read as part of its
     // lineage check; avoid a second read there so both answers cannot drift across a DB update.
     const frozenRepairQueuePreflight =
-      !preflight.refuse && !args.requiredAncestorSha ? await assessFrozenRepairQueuePreflight() : null;
+      !preflight.refuse && !args.requiredAncestorSha
+        ? await assessFrozenRepairQueuePreflight(preflight.candidate)
+        : null;
     const requiredAncestorPreflight =
       !preflight.refuse && args.requiredAncestorSha
         ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)
@@ -743,7 +745,13 @@ export default defineTool({
         ],
       };
     }
-    const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
+    const launchCandidate =
+      requiredAncestorPreflight?.candidate ?? frozenRepairQueuePreflight?.candidate ?? preflight.candidate;
+    const result = await launchDetachedCheckpoint({
+      force: args.force,
+      replaceStale: args.replaceStale,
+      ...(launchCandidate ? { candidate: launchCandidate } : {}),
+    });
     // WI-6962: the host could not be asked whether a run is in flight, so we refused rather
     // than gambled. This is a DIFFERENT answer from already_running and needs a different
     // response: retry in a moment (the probe is a fork, and it fails under host pressure),
@@ -1032,50 +1040,39 @@ export default defineTool({
     // hour before making both mistakes, which is the evidence that a rule you must recall
     // at exactly the right instant is a detector that only fires for someone who already
     // knows. It belongs in the return value.
-    const predictedCandidateSha = requiredAncestorPreflight?.candidate ?? result.willJudge?.candidate ?? null;
+    const transportedCandidateSha = launchCandidate ?? result.willJudge?.candidate ?? null;
     const reportedWillJudge = result.willJudge
       ? {
           ...result.willJudge,
-          candidate: predictedCandidateSha,
+          candidate: transportedCandidateSha,
           candidateSource: requiredAncestorPreflight?.candidateSource ?? 'current-quiet-cut',
         }
       : null;
     const containment = result.launched
       ? await checkpointCandidateContainment({
-          candidateSha: predictedCandidateSha,
+          candidateSha: transportedCandidateSha,
           tipSha: result.willJudge?.tip ?? null,
           paths: args.paths,
         })
       : null;
 
-    // EI-21047439235631660 — `willJudge` is a PRE-LAUNCH prediction, not the detached
-    // writer's bound candidate. The distinction was already documented on the low-level
-    // type, but this handler erased it in two higher-level places: it returned the containment
-    // under the settled-sounding `callerEditsInCandidate` field and rendered the positive as
-    // "this is a real verdict on your change". Live repro: the receipt predicted b8360abd and
-    // positively included both declared files; the writer then followed a persisted frozen-
-    // repair queue and bound 7490aaa8, which contains neither b836 nor the required 65b repair.
-    //
-    // Keep the backwards-compatible field, but carry machine-readable reliability on BOTH
-    // the field and the launch envelope, and replace every settled sentence with prediction
-    // grammar. `release:trace` is the only post-launch binding authority; until it names the
-    // writer candidate, a launch receipt can prove only what the predicted candidate contains.
+    // EI-211596: the queue-aware preflight now resolves one exact target and transports it
+    // through systemd into green-checkpoint's --candidate seam. The receipt therefore names
+    // the actual initial writer binding rather than a launch-side prediction.
     const candidateBinding = result.launched
       ? {
-          status: 'predicted-unconfirmed' as const,
-          predictedCandidate: predictedCandidateSha,
-          actualCandidate: null,
-          verifyWith:
-            'release:trace — then git merge-base --is-ancestor <required-sha> <checkpointRunInFlight.candidate>',
+          status: 'exact-transported' as const,
+          transportedCandidate: transportedCandidateSha,
+          actualCandidate: transportedCandidateSha,
         }
       : null;
     const reportedContainment = containment
       ? {
           ...containment,
-          candidateReliability: 'predicted-unconfirmed' as const,
-          verifiedAgainstActualWriter: false,
+          candidateReliability: 'exact-transported' as const,
+          verifiedAgainstActualWriter: true,
           warning: containment.missing.length
-            ? `⚠ PRE-LAUNCH PREDICTION ONLY — the predicted candidate lacks ${containment.missing.length} declared file(s) (${containment.missing.slice(0, 4).join(', ')}${containment.missing.length > 4 ? ', …' : ''}). The detached writer can bind another commit; confirm its actual candidate with release:trace before treating a red or green as evidence about your change.`
+            ? `⚠ THE TRANSPORTED CANDIDATE lacks ${containment.missing.length} declared file(s) (${containment.missing.slice(0, 4).join(', ')}${containment.missing.length > 4 ? ', …' : ''}). A red from this run is not evidence that those file versions failed.`
             : null,
         }
       : null;
@@ -1104,11 +1101,11 @@ export default defineTool({
     const containmentPart = reportedContainment?.warning
       ? ` ${reportedContainment.warning}`
       : declaredAllIn
-        ? ` ✓ pre-launch prediction: the predicted candidate carries all ${reportedContainment.included.length} file(s) you named. This is NOT yet proof that the detached writer carries them; confirm its bound candidate with release:trace.`
+        ? ` ✓ exact transported candidate carries all ${reportedContainment.included.length} file(s) you named.`
         : '';
 
     const candidateBindingPart = candidateBinding
-      ? ` ⚠ CANDIDATE BINDING UNCONFIRMED: this receipt predicts ${candidateBinding.predictedCandidate?.slice(0, 12) ?? 'an unresolved candidate'}, but the detached writer re-resolves independently and may follow a persisted frozen-repair queue. Re-read release:trace for checkpointRunInFlight.candidate before acting on containment or verdict.`
+      ? ` ✓ CANDIDATE BINDING EXACT: ${candidateBinding.transportedCandidate?.slice(0, 12) ?? 'unresolved'} was transported into the detached green-checkpoint CLI.`
       : '';
 
     // The old text ended at "if your fix is among them" and listed SHAS — the one space the

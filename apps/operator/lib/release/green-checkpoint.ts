@@ -57,6 +57,7 @@ import {
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
 } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
+import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -6404,9 +6405,10 @@ export async function runGreenCheckpoint(
       );
     }
   }
-  let candidate = opts.candidate
+  const transportedCandidate = opts.candidate
     ? await revParse(cfg.integrationRoot, opts.candidate)
     : await revParse(cfg.integrationRoot, cfg.integrationBranch);
+  let candidate = transportedCandidate;
   const lastReady = (await refExists(cfg.integrationRoot, cfg.releaseRef))
     ? await revParse(cfg.integrationRoot, cfg.releaseRef)
     : null;
@@ -6766,7 +6768,12 @@ export async function runGreenCheckpoint(
           repairQueue = null;
           repairVerification = false;
           repairOutcomeReconciled = true;
-          candidate = await revParse(cfg.integrationRoot, outcomeProof.tip);
+          candidate = await revParse(
+            cfg.integrationRoot,
+            outcomeProof.kind === "full-suite-required"
+              ? transportedCandidate
+              : outcomeProof.tip,
+          );
           deps.log(
             outcomeProof.kind === "proved"
               ? `${outcomeProof.summary}; cleared the obsolete exact-patch queue and continuing with a normal gate at that exact tip`
@@ -11005,30 +11012,7 @@ export function realCheckpointDeps(
             );
           },
           async stagingContainsFrozenRepair(queue: FrozenCandidateRepairQueue) {
-            const patchResult = spawnSync("git", [
-              "-C",
-              queue.worktreePath,
-              "diff",
-              "--binary",
-              queue.candidate,
-              queue.repairHead,
-            ]);
-            if (patchResult.status !== 0 || !patchResult.stdout?.length)
-              return false;
-            const check = spawnSync(
-              "git",
-              [
-                "-C",
-                cfg.integrationRoot,
-                "apply",
-                "--reverse",
-                "--check",
-                "--binary",
-                "-",
-              ],
-              { input: patchResult.stdout },
-            );
-            return check.status === 0;
+            return stagingContainsFrozenRepairPatch(queue, cfg.integrationRoot);
           },
           async reconcileFrozenRepairIntoStaging(
             queue: FrozenCandidateRepairQueue,

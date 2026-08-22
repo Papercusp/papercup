@@ -111,6 +111,36 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain('> /tmp/cp.log 2>&1');
   });
 
+  it('EI-211596: transports one validated exact candidate into the detached CLI', () => {
+    const candidate = 'a'.repeat(40);
+    const inner = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin:/bin',
+      false,
+      undefined,
+      null,
+      'shared',
+      candidate,
+    ).at(-1)!;
+    expect(inner).toContain(`green-checkpoint.ts --candidate '${candidate}'`);
+  });
+
+  it('EI-211596: never forwards an unvalidated candidate into the bash command', () => {
+    const inner = buildCheckpointSystemdArgv(
+      '/tree',
+      '/tmp/cp.log',
+      '/usr/bin:/bin',
+      false,
+      undefined,
+      null,
+      'shared',
+      "bad'; touch /tmp/pwned; '",
+    ).at(-1)!;
+    expect(inner).not.toContain('--candidate');
+    expect(inner).not.toContain('touch /tmp/pwned');
+  });
+
   it('uses the periodic cap policy for reserved manual runs and does not invent TasksMax', () => {
     const argv = buildCheckpointSystemdArgv(
       '/tree',
@@ -345,6 +375,29 @@ describe('launchDetachedCheckpoint', () => {
     const r = await p;
     expect(r.launched).toBe(false);
     expect(r.reason).toMatch(/not found/);
+  });
+
+  it('EI-211596: binds willJudge and argv to the explicit candidate instead of re-resolving it', async () => {
+    const candidate = 'a'.repeat(40);
+    const movingTip = 'f'.repeat(40);
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const execFn = vi.fn(() => ({ status: 0, stdout: movingTip, stderr: '' }));
+    const p = launchDetachedCheckpoint({ root: '/tree', force: true, candidate }, spawnFn, execFn);
+    child.emit('close', 0);
+    const r = await p;
+    expect(r).toMatchObject({ launched: true, willJudge: { candidate, tip: movingTip } });
+    expect(r.argv.at(-1)).toContain(`green-checkpoint.ts --candidate '${candidate}'`);
+  });
+
+  it('EI-211596: rejects an invalid explicit candidate before spawn', async () => {
+    const spawnFn = vi.fn();
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree', force: true, candidate: "bad'; touch /tmp/pwned; '" },
+      spawnFn as never,
+    );
+    expect(r).toMatchObject({ launched: false, reason: 'invalid_candidate', argv: [] });
+    expect(spawnFn).not.toHaveBeenCalled();
   });
 });
 

@@ -733,14 +733,15 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(await revParse(repo, "ready")).toBe(stagingTip);
   });
 
-  it("runs the full canonical suite at staging when an obsolete repair signature cannot be selectively replayed", async () => {
+  it("keeps the transported quiet-cut candidate when an obsolete repair needs the full suite and staging tip is young", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "broken", "frozen candidate");
     const repaired = await commit("b", "fixed", "isolated repair");
 
     await git(repo, ["reset", "--hard", ready]);
-    const stagingTip = await commit("b", "fixed independently", "canonical independent fix");
+    const transportedQuietCut = await commit("b", "fixed independently", "canonical quiet-cut target");
+    const youngStagingTip = await commit("c", "young", "newer tip after launch target was selected");
     const now = Date.now();
     let queue: FrozenCandidateRepairQueue | null = {
       schemaVersion: 2,
@@ -771,24 +772,28 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     };
     deps.frozenRepairFixerAlive = async () => false;
     deps.stagingContainsFrozenRepair = async () => false;
-    deps.resolveTip = async () => stagingTip;
+    deps.resolveTip = async () => youngStagingTip;
     deps.cleanupFrozenRepairWorktree = async () => {
       cleanupCount += 1;
     };
 
-    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate: transportedQuietCut,
+      noPush: true,
+    });
 
     expect(result).toMatchObject({
       advanced: true,
       green: true,
       reason: "advanced",
-      candidate: stagingTip,
+      candidate: transportedQuietCut,
       from: ready,
     });
     expect(queue).toBeNull();
     expect(cleanupCount).toBe(1);
     expect(calls.filter((call) => call === "runGreen")).toHaveLength(1);
-    expect(await revParse(repo, "ready")).toBe(stagingTip);
+    expect(await revParse(repo, "ready")).toBe(transportedQuietCut);
+    expect(result.candidate).not.toBe(youngStagingTip);
   });
 
   it("keeps EI-210831 alignment retry in charge when any queued failure still reproduces", async () => {

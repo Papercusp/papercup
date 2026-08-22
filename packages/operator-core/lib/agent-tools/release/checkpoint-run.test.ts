@@ -78,6 +78,7 @@ beforeEach(() => {
         proceed: true,
         reason: 'clear' as const,
         candidate: null,
+        candidateSource: 'unresolved' as const,
         repairQueue: null,
         queueDecision: 'run-normal-gate' as const,
         nextAttempt: null,
@@ -805,11 +806,11 @@ describe('release:checkpoint-run', () => {
     });
     expect(b.callerEditsInCandidate).toMatchObject({
       missing: ['packages/operator-core/lib/mine.ts'],
-      candidateReliability: 'predicted-unconfirmed',
-      verifiedAgainstActualWriter: false,
+      candidateReliability: 'exact-transported',
+      verifiedAgainstActualWriter: true,
     });
-    expect(b.candidateBinding).toMatchObject({ status: 'predicted-unconfirmed', actualCandidate: null });
-    expect(String(b.note)).toMatch(/PRE-LAUNCH PREDICTION ONLY/);
+    expect(b.candidateBinding).toMatchObject({ status: 'exact-transported', actualCandidate: 'aaaaaaa' });
+    expect(String(b.note)).toMatch(/TRANSPORTED CANDIDATE/);
     expect(String(b.note)).toMatch(/not evidence your change failed/i);
   });
 
@@ -855,22 +856,19 @@ describe('release:checkpoint-run', () => {
 
     const { default: tool } = await import('./checkpoint-run');
     const b = parse((await tool.handler({ paths: ['packages/operator-core/lib/mine.ts'] }, MAKE_CTX())) as never);
-    // EI-210474: a positive against the PRE-LAUNCH prediction is useful, but it cannot
-    // certify the detached writer — a persisted frozen-repair queue may rebind it.
-    expect(String(b.note)).toMatch(/pre-launch prediction/i);
-    expect(String(b.note)).toMatch(/NOT yet proof that the detached writer carries them/);
+    expect(String(b.note)).toMatch(/exact transported candidate/i);
     expect(String(b.note)).not.toMatch(/real verdict on your change/);
     expect(b.callerEditsInCandidate).toMatchObject({
-      candidateReliability: 'predicted-unconfirmed',
-      verifiedAgainstActualWriter: false,
+      candidateReliability: 'exact-transported',
+      verifiedAgainstActualWriter: true,
     });
-    expect(b.candidateBinding).toMatchObject({ status: 'predicted-unconfirmed', actualCandidate: null });
+    expect(b.candidateBinding).toMatchObject({ status: 'exact-transported', actualCandidate: 'aaaaaaa' });
     // The generic exclusion notice is kept but DOWNGRADED — it is provably not about the
     // caller's files, so it must not read as a warning that shadows the positive answer.
     expect(String(b.note)).toMatch(/none of the files you named/);
     // The only warning is the new binding rail; the positive containment itself stays positive.
-    expect(String(b.note)).toMatch(/⚠ CANDIDATE BINDING UNCONFIRMED/);
-    expect(String(b.note)).not.toMatch(/PRE-LAUNCH PREDICTION ONLY — the predicted candidate lacks/);
+    expect(String(b.note)).toMatch(/CANDIDATE BINDING EXACT/);
+    expect(String(b.note)).not.toMatch(/TRANSPORTED CANDIDATE lacks/);
   });
 
   it('answers containment on the already_running path too — that verdict is the one landing', async () => {
@@ -1097,7 +1095,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     });
   });
 
-  it('refuses before spawn when queue.repairHead does not contain the required repair — force cannot bypass', async () => {
+  it('uses current quiet-cut when a ready repair patch is not observable on staging', async () => {
     mockQueue({
       phase: 'ready-to-verify',
       candidate: 'ed20de6dcb05c0c780437990f7f1070c3a92c853',
@@ -1109,7 +1107,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       ok: false,
       reason: 'not-ancestor' as const,
       requiredAncestor: REQUIRED,
-      candidate: QUEUE_HEAD,
+      candidate: CURRENT,
     }));
     vi.doMock('../../release-checkpoint-launch', async (orig) => ({
       ...(await orig()),
@@ -1128,18 +1126,18 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     const b = parse((await tool.handler({ requiredAncestorSha: REQUIRED, force: true }, MAKE_CTX())) as never);
 
     expect(launchSpy).not.toHaveBeenCalled();
-    expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, QUEUE_HEAD, expect.any(Function));
+    expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, CURRENT, expect.any(Function));
     expect(b).toMatchObject({
       ok: false,
       launched: false,
       reason: 'required_ancestor_missing',
       required_ancestor: REQUIRED,
-      candidate: QUEUE_HEAD,
-      candidate_source: 'frozen-repair-queue',
+      candidate: CURRENT,
+      candidate_source: 'current-quiet-cut',
       repair_queue: { phase: 'ready-to-verify', repairHead: QUEUE_HEAD },
     });
     expect(String(b.note)).toMatch(/NOT launched/);
-    expect(String(b.note)).toMatch(/repair head outranks moving staging/i);
+    expect(String(b.note)).toMatch(/fresh current-quiet-cut candidate/i);
   });
 
   it('attempts=3 + owner gone predicts abandon-repair and checks the fresh candidate, not stale repairHead', async () => {
@@ -1184,7 +1182,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
 
     expect(ancestrySpy).toHaveBeenCalledOnce();
     expect(ancestrySpy).toHaveBeenCalledWith(expect.any(String), REQUIRED, CURRENT, expect.any(Function));
-    expect(launchSpy).toHaveBeenCalledOnce();
+    expect(launchSpy).toHaveBeenCalledWith({ candidate: CURRENT });
     expect(b).toMatchObject({
       ok: true,
       requiredAncestor: {
@@ -1266,7 +1264,7 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
     expect(String(b.note)).toMatch(/UNKNOWN refuses/);
   });
 
-  it('passes the queue-aware guard but keeps post-launch binding explicitly unconfirmed', async () => {
+  it('passes the queue-aware guard and transports the exact binding into the detached CLI', async () => {
     mockQueue(null);
     const launchSpy = vi.fn(async () => ({
       launched: true,
@@ -1319,13 +1317,13 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       paths: ['packages/operator-core/lib/mine.ts'],
     }, MAKE_CTX())) as never);
 
-    expect(launchSpy).toHaveBeenCalledOnce();
+    expect(launchSpy).toHaveBeenCalledWith({ candidate: CURRENT });
     expect(b).toMatchObject({
       ok: true,
       candidateBinding: {
-        status: 'predicted-unconfirmed',
-        predictedCandidate: CURRENT,
-        actualCandidate: null,
+        status: 'exact-transported',
+        transportedCandidate: CURRENT,
+        actualCandidate: CURRENT,
       },
       requiredAncestor: {
         requiredSha: REQUIRED,
@@ -1335,12 +1333,11 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       },
       callerEditsInCandidate: {
         candidateSha: CURRENT,
-        candidateReliability: 'predicted-unconfirmed',
-        verifiedAgainstActualWriter: false,
+        candidateReliability: 'exact-transported',
+        verifiedAgainstActualWriter: true,
       },
     });
-    expect(String(b.note)).toMatch(/CANDIDATE BINDING UNCONFIRMED/);
-    expect(String(b.note)).toMatch(/release:trace/);
+    expect(String(b.note)).toMatch(/CANDIDATE BINDING EXACT/);
   });
 });
 

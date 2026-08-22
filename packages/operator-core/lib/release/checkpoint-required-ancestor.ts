@@ -27,6 +27,7 @@ export type FrozenRepairQueuePreflight = {
   proceed: boolean;
   reason: 'clear' | 'repair-in-progress' | 'queue-unreadable';
   candidate: string | null;
+  candidateSource: 'frozen-repair-queue' | 'current-quiet-cut' | 'unresolved';
   repairQueue: FrozenCandidateRepairQueue | null;
   queueDecision: FrozenRepairQueueDecision['kind'] | null;
   nextAttempt: number | null;
@@ -40,6 +41,65 @@ type FrozenRepairQueueState = {
   queueDecision: FrozenRepairQueueDecision;
   fixerAlive: boolean | null;
 };
+
+/**
+ * True only when canonical staging already contains the frozen repair's exact binary
+ * patch. This is the same reverse-apply proof used by the detached writer; keeping it
+ * here makes the request-side launch target and runtime queue reconciliation classify
+ * a ready-to-verify queue from one implementation.
+ */
+export function stagingContainsFrozenRepairPatch(
+  queue: FrozenCandidateRepairQueue,
+  root = integrationRoot(),
+): boolean {
+  const patchResult = spawnSync('git', [
+    '-C',
+    queue.worktreePath,
+    'diff',
+    '--binary',
+    queue.candidate,
+    queue.repairHead,
+  ]);
+  if (patchResult.status !== 0 || !patchResult.stdout?.length) return false;
+  const check = spawnSync(
+    'git',
+    ['-C', root, 'apply', '--reverse', '--check', '--binary', '-'],
+    { input: patchResult.stdout },
+  );
+  return check.status === 0;
+}
+
+function currentQuietCutCandidate(predictedCandidate: string | null, root: string): string | null {
+  if (predictedCandidate) return predictedCandidate;
+  const execFn = (cmd: string, argv: string[]) => {
+    const result = spawnSync(cmd, argv, { encoding: 'utf8' });
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  };
+  return currentCheckpointCandidate(root, execFn).current_candidate;
+}
+
+function resolveRunnableCandidate(
+  queueDecision: FrozenRepairQueueDecision,
+  repairQueue: FrozenCandidateRepairQueue | null,
+  predictedCandidate: string | null,
+  root: string,
+): { candidate: string | null; source: 'frozen-repair-queue' | 'current-quiet-cut' | 'unresolved' } | null {
+  if (queueDecision.kind === 'verify-repair') {
+    const patchAlreadyOnStaging = Boolean(
+      repairQueue && stagingContainsFrozenRepairPatch(repairQueue, root),
+    );
+    if (patchAlreadyOnStaging) {
+      return { candidate: queueDecision.candidate, source: 'frozen-repair-queue' };
+    }
+    const candidate = currentQuietCutCandidate(predictedCandidate, root);
+    return { candidate, source: candidate ? 'current-quiet-cut' : 'unresolved' };
+  }
+  if (queueDecision.kind === 'run-normal-gate' || queueDecision.kind === 'abandon-repair') {
+    const candidate = currentQuietCutCandidate(predictedCandidate, root);
+    return { candidate, source: candidate ? 'current-quiet-cut' : 'unresolved' };
+  }
+  return null;
+}
 
 /**
  * Read the same persisted queue and fixer liveness used by the detached checkpoint writer.
@@ -85,7 +145,10 @@ async function readFrozenRepairQueueState(): Promise<FrozenRepairQueueState> {
  * `verify-repair` decisions continue into a suite-producing path, so they are allowed here;
  * every other queue decision refuses before the systemd unit is created.
  */
-export async function assessFrozenRepairQueuePreflight(): Promise<FrozenRepairQueuePreflight> {
+export async function assessFrozenRepairQueuePreflight(
+  predictedCandidate: string | null = null,
+  root = integrationRoot(),
+): Promise<FrozenRepairQueuePreflight> {
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let fixerAlive: boolean | null = null;
   try {
@@ -97,10 +160,14 @@ export async function assessFrozenRepairQueuePreflight(): Promise<FrozenRepairQu
       queueDecision.kind === 'run-normal-gate' ||
       queueDecision.kind === 'verify-repair' ||
       queueDecision.kind === 'abandon-repair';
+    const runnableCandidate = suiteProducingDecision
+      ? resolveRunnableCandidate(queueDecision, repairQueue, predictedCandidate, root)
+      : null;
     return {
       proceed: suiteProducingDecision,
       reason: suiteProducingDecision ? 'clear' : 'repair-in-progress',
-      candidate: repairQueue?.repairHead ?? null,
+      candidate: runnableCandidate?.candidate ?? repairQueue?.repairHead ?? null,
+      candidateSource: runnableCandidate?.source ?? 'unresolved',
       repairQueue,
       queueDecision: queueDecision.kind,
       nextAttempt: queueDecision.kind === 'dispatch-fixer' ? queueDecision.nextAttempt : null,
@@ -115,6 +182,7 @@ export async function assessFrozenRepairQueuePreflight(): Promise<FrozenRepairQu
       proceed: false,
       reason: 'queue-unreadable',
       candidate: null,
+      candidateSource: 'unresolved',
       repairQueue,
       queueDecision: null,
       nextAttempt: null,
@@ -166,13 +234,12 @@ export async function assessRequiredAncestorPreflight(
       stderr: result.stderr ?? '',
     };
   };
-  const current = predictedCandidate ?? currentCheckpointCandidate(root, execFn).current_candidate;
-  const runnableCandidate =
-    queueDecision.kind === 'verify-repair'
-      ? { candidate: queueDecision.candidate, source: 'frozen-repair-queue' as const }
-      : queueDecision.kind === 'run-normal-gate' || queueDecision.kind === 'abandon-repair'
-        ? { candidate: current, source: current ? ('current-quiet-cut' as const) : ('unresolved' as const) }
-        : null;
+  const runnableCandidate = resolveRunnableCandidate(
+    queueDecision,
+    repairQueue,
+    predictedCandidate,
+    root,
+  );
   if (!runnableCandidate) {
     return {
       ok: false,

@@ -1347,6 +1347,8 @@ export function buildCheckpointSystemdArgv(
    *  Same forwarding reason as `partialGreenGate` — see the note below. Anything other than
    *  those two literals is DROPPED rather than forwarded (see the validation below). */
   capacityMode?: string | null,
+  /** Exact, request-side resolved launch target. Invalid values are never forwarded. */
+  candidateSha?: string | null,
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -1372,6 +1374,9 @@ export function buildCheckpointSystemdArgv(
       ? `PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${capacityMode}' `
       : '';
   const gateEnv = `${partialGreenGate ? `PAPERCUSP_PARTIAL_GREEN_GATE='1' ` : ''}${capacity}`;
+  const candidateArg = candidateSha && /^[0-9a-f]{40}$/.test(candidateSha)
+    ? ` --candidate '${candidateSha}'`
+    : '';
   // Keep detached manual runs under the same cgroup memory policy as the periodic gate.
   // The capacity argument is the already-validated contract forwarded below; an omitted or
   // unrecognised value deliberately uses the conservative shared-mode cap. TasksMax is not
@@ -1387,7 +1392,7 @@ export function buildCheckpointSystemdArgv(
   const link = runLogPath ? `ln -sfn '${runLogPath}' '${logPath}' && ` : '';
   const inner =
     `${link}${gateEnv}PAPERCUSP_INTEGRATION_ROOT='${root}' '${tsxBin(root)}' ` +
-    `apps/operator/lib/release/green-checkpoint.ts > ${target} 2>&1`;
+    `apps/operator/lib/release/green-checkpoint.ts${candidateArg} > ${target} 2>&1`;
   // EI-210996: the checkpoint process cannot publish its own verdict after SIGKILL/OOM.
   // ExecStopPost belongs to systemd, so it still appends the manager-provided terminal
   // tuple to this run's immutable log. The transient property is passed over D-Bus, so
@@ -1498,6 +1503,8 @@ export function checkpointEligibilityPendingId(input: {
 export interface LaunchCheckpointOpts {
   /** Integration tree root (default integrationRoot()). */
   root?: string;
+  /** Exact preflight-resolved candidate to transport across the detached CLI seam. */
+  candidate?: string | null;
   /** Skip the pre-launch active-run check (WI-1562) and attempt the launch regardless.
    *  ⚠ WI-6962: this was documented as safe because "systemd's own same-unit collision guard
    *  is still the final backstop". THAT IS FALSE, and the false belief is what made the
@@ -2101,6 +2108,16 @@ export function launchDetachedCheckpoint(
   const runLogPath = checkpointRunLogPath(unit);
   let replacedStale: ActiveCheckpointCheck | undefined;
 
+  if (opts.candidate != null && !/^[0-9a-f]{40}$/.test(opts.candidate)) {
+    return Promise.resolve({
+      launched: false,
+      unit,
+      argv: [],
+      logPath: runLogPath,
+      reason: 'invalid_candidate',
+    });
+  }
+
   if (!opts.force) {
     const active = checkActiveCheckpointRun(root, execFn, readLogHead);
     // WI-6962: an INDETERMINATE probe is not a refusal to launch "because something is
@@ -2187,6 +2204,9 @@ export function launchDetachedCheckpoint(
     }
   }
 
+  const current = currentCheckpointCandidate(root, execFn);
+  const tipSha = current.current_head;
+  const candidateSha = opts.candidate ?? current.current_candidate;
   const argv = buildCheckpointSystemdArgv(
     root,
     logPath,
@@ -2199,6 +2219,7 @@ export function launchDetachedCheckpoint(
     // WI-39472: forward the launcher's capacity contract, so a manual run uses the same fork
     // budget as the scheduled gate instead of silently falling back to `shared`.
     process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null,
+    candidateSha,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
@@ -2206,9 +2227,6 @@ export function launchDetachedCheckpoint(
   // detached process's own log to discover their just-landed fix was quiet-cut EXCLUDED. See
   // the LaunchCheckpointResult.willJudge doc for the benign launch-time-vs-run-time race this
   // does not (and cannot) close.
-  const current = currentCheckpointCandidate(root, execFn);
-  const tipSha = current.current_head;
-  const candidateSha = current.current_candidate;
   const quietCutApplied = Boolean(tipSha && candidateSha && tipSha !== candidateSha);
   const excluded =
     quietCutApplied && candidateSha && tipSha
