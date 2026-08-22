@@ -93,6 +93,22 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(lintCarrySurfaceProvenance('[inferred] owner wants this merged').flagged).toBe(false);
   });
 
+  it('accepts a typed system-derived fleet-control cue without masking an untagged line', () => {
+    const r = lintCarrySurfaceProvenance(
+      '[system-derived:fleet-control] Fleet backend is winding down. ' +
+        'Do NOT pull new work from this fleet\'s lanes until a fleet:resume cue lands.',
+    );
+    expect(r).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('does NOT treat an unrelated system-derived marker as a source tag', () => {
+    const r = lintCarrySurfaceProvenance(
+      '[system-derived:other] Do NOT pull new work from this fleet\'s lanes until a fleet:resume cue lands.',
+    );
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0]?.kind).toBe('bare-gate-imperative');
+  });
+
   // P-014 (deterministic-context-carry): manual [owner:…] tags are retired as
   // evidence — a turn ref is the verifiable anchor.
   it('P-014: a manual [owner:…] tag with NO turn ref is flagged manual-owner-tag', () => {

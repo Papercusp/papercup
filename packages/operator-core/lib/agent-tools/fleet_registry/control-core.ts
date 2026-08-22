@@ -103,7 +103,8 @@ export function fleetControlCueText(
       summary: `Fleet ${fleet} WIND-DOWN (typed control cue, by ${byHandle})${reason ? `: ${reason}` : ''}`,
       body:
         `Fleet ${fleet} is WINDING DOWN${reason ? ` — reason: ${reason}` : ''}. ` +
-        'This is a TYPED, BINDING control cue (registry control_state=winding-down). ' +
+        'This is a TYPED, BINDING control cue [system-derived:fleet-control] ' +
+        '(registry control_state=winding-down). ' +
         'Finish only the atomic step in hand, then: work_items:checkpoint + release your claims ' +
         `(or complete with evidence), release your file locks, loop:end any armed loop, and ${ackInstruction} ` +
         'to send your one-line disposition to the leader. This lifecycle ack is recorded without ' +

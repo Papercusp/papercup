@@ -58,6 +58,7 @@ import {
 import { buildFleetDrainStamp } from './drain-stamp';
 import { clearSessionBriefReleasedForFleet, markSessionBriefReleased } from '../../session-brief';
 import { ensureFleetLeaderControl, retireFleetLeaderWatches } from './leader-control';
+import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 
 const getFleetM = vi.mocked(getFleet);
 const setControlM = vi.mocked(setFleetControlState);
@@ -154,6 +155,8 @@ describe('fleetControlCueText (pure)', () => {
     expect(summary).toContain('WIND-DOWN');
     expect(summary).toContain('release cut');
     expect(body).toContain('BINDING');
+    expect(body).toContain('[system-derived:fleet-control]');
+    expect(lintCarrySurfaceProvenance(body)).toEqual({ flagged: false, matches: [] });
     expect(body).toContain('work_items:checkpoint');
     expect(body).toContain('coord:ack { msg_id }');
     expect(body).toContain('fleet:resume');

@@ -26,12 +26,18 @@
  * rejected write.
  */
 
-/** The four tagged-source forms the "Directive provenance" convention recognizes.
+/** The tagged-source forms the "Directive provenance" convention recognizes.
  *  The owner alternative accepts the same near-miss separator shapes as
  *  {@link OWNER_TAG_RE} (defined below) — kept as a literal here rather than an
  *  interpolated reference so this declaration doesn't have to move below its
- *  dependency; the two are asserted in sync by the module's own tests. */
-const SOURCE_TAG_RE = /\[(?:\bowner\b\s*[:=\-]?\s*[^\]]+|self-imposed|peer:[^\]]+|inferred)\]/i;
+ *  dependency; the two are asserted in sync by the module's own tests.
+ *
+ *  `[system-derived:fleet-control]` is reserved for a typed fleet-control cue:
+ *  its imperative is a live registry fact, not an owner or agent directive. Keep
+ *  the namespace explicit so a generic machine-written sentence cannot silently
+ *  clear this lint. */
+const SOURCE_TAG_RE =
+  /\[(?:\bowner\b\s*[:=\-]?\s*[^\]]+|self-imposed|peer:[^\]]+|inferred|system-derived:fleet-control)\]/i;
 
 /** P-014 (deterministic-context-carry): a turn ref `[turn:<session>@<ts>]` is the
  *  VERIFIABLE anchor for a directive — the stamper (carry-surface-provenance-stamp)
