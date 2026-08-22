@@ -22,11 +22,25 @@ configureBackup({
   // Called per use (not cached) so getOrgPg's discovery-file change
   // detection fires — see getOrgPg's own doc-comment.
   getSql: () => getOrgPg().sql,
-  workspacesRoot,
+  // Wrapped, NOT passed by reference. `configureBackup` runs at module-eval
+  // time (this file is imported for its side-effect), so passing the imported
+  // binding directly DEREFERENCES `../workspace-registry` the instant anything
+  // in the agent-tools import graph is loaded. Under vitest that graph is
+  // routinely reached from unrelated prompt/registry suites whose
+  // `vi.mock('../workspace-registry', () => ({ activeWorkspaceId }))` is a
+  // partial mock — and reading a property the mock does not define is a HARD
+  // vitest throw ("No \"workspacesRoot\" export is defined on the ... mock"),
+  // failing the whole suite file at import. Deferring the read to call time
+  // keeps every host seam here lazy (same reasoning as getSql above) so a
+  // partial mock upstream can never strand an unrelated test file.
+  workspacesRoot: () => workspacesRoot(),
   // Backup tables are defined by the migration baseline now; the host seam
   // is a no-op.
   ensureSchema: async () => {},
-  getHarnessAdminUrl: getHarnessAdminUrlWithSource,
+  // Wrapped for the same module-eval-time reason as `workspacesRoot` above:
+  // every host seam on this object stays lazy so no partial mock of a source
+  // module can throw while this side-effect import is being evaluated.
+  getHarnessAdminUrl: () => getHarnessAdminUrlWithSource(),
   // Battery-aware pause for the orphan sweep. Resilient: any failure
   // resolving the decision means "don't pause" (the sweep is cheap).
   shouldPauseSweep: () => {
