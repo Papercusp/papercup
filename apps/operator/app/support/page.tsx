@@ -84,7 +84,7 @@ bun add -g @oh-my-pi/pi-coding-agent`}</pre>
           Run <code>papercusp publish</code> from the directory containing your <code>papercusp.json</code>. The CLI handles signing, secret-scanning, and SBOM generation automatically.
         </p>
         <p>
-          You'll need a GitHub identity to publish — run <code>papercusp login</code> first. Your namespace is your GitHub login (e.g. <code>@avi/my-template</code>).
+          You'll need a GitHub identity to publish — run <code>papercusp login</code> first. Your namespace is your GitHub login (e.g. <code>@yourname/my-template</code>).
         </p>
         <p>
           Browse what's already there in the <RouteLink href="/cupboard">Cupboard</RouteLink>.
