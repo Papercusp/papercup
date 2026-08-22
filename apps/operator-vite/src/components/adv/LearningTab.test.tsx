@@ -57,11 +57,12 @@ Object.defineProperty(window, "localStorage", {
 // P-003 merge retired the old inline-radio card. A no-op is correct here: these
 // tests assert DOM and behaviour, never layout, so there is nothing to measure.
 if (!("ResizeObserver" in globalThis)) {
-  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = class {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
-  };
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
 }
 
 const nuqsState: Record<string, unknown> = {
@@ -72,6 +73,7 @@ const nuqsState: Record<string, unknown> = {
   irail: null,
   impf: null,
   impq: "",
+  rtf: null,
   rrubric: null,
   lretain: null,
   lhive: "",
@@ -150,14 +152,22 @@ vi.mock("@tanstack/react-virtual", () => {
   // The factory REPLACES the whole module, so every export a mounted view
   // touches must exist: VirtualGrid uses useVirtualizer, the Improvements
   // list uses useWindowVirtualizer.
-  return { useVirtualizer: stubVirtualizer, useWindowVirtualizer: stubVirtualizer };
+  return {
+    useVirtualizer: stubVirtualizer,
+    useWindowVirtualizer: stubVirtualizer,
+  };
 });
 
 // The pot lens is INHERITED from the top-bar selector via useAdvScope (owner
 // directive 2026-07-26 — the tab's own ?lhive= picker is gone). Tests drive the
 // lens by mutating this bag; beforeEach resets it to the alpha-hive default the
 // old first-list-entry fallback used, so scoping expectations read the same.
-const advScopeState = { allMode: false, slug: "alpha-hive" as string | null, hive: "alpha-hive", ready: true };
+const advScopeState = {
+  allMode: false,
+  slug: "alpha-hive" as string | null,
+  hive: "alpha-hive",
+  ready: true,
+};
 vi.mock("./AdvShell", async (importOriginal) => {
   const orig = await importOriginal<typeof import("./AdvShell")>();
   return { ...orig, useAdvScope: () => ({ ...advScopeState }) };
@@ -582,6 +592,13 @@ let retainCountsResult: Record<string, unknown> = {
   error: null,
   invalidate: vi.fn(),
 };
+let retainSummaryResult: Record<string, unknown> = {
+  data: [{ total: 0, matched: 0, facets: [] }],
+  loading: false,
+  fetching: false,
+  error: null,
+  invalidate: vi.fn(),
+};
 // WI-6383: when set, `learning.hiveThroughput` returns THIS — lets a test model
 // the DEGRADED snapshot the resolver returns for an unreadable substrate (a
 // successful read carrying `unavailable`, never a thrown transport error).
@@ -607,7 +624,9 @@ vi.mock("@papercusp/sync", async () => ({
     // not fetch, so it must not clobber the recorded args of the real read.
     if (opts.enabled !== false) seenArgs[opts.queryName] = opts.args;
     if (opts.queryName === "learning.gym") {
-      const hasHive = Boolean((opts.args as { hive?: string } | undefined)?.hive);
+      const hasHive = Boolean(
+        (opts.args as { hive?: string } | undefined)?.hive,
+      );
       return !hasHive && gymWideResult ? gymWideResult : gymResult;
     }
     if (opts.queryName === "learning.hiveThroughput" && throughputResult) {
@@ -615,6 +634,8 @@ vi.mock("@papercusp/sync", async () => ({
     }
     if (opts.queryName === "learning.retainFeed") return retainFeedResult;
     if (opts.queryName === "learning.retainCounts") return retainCountsResult;
+    if (opts.queryName === "learning.retainFeed.summary")
+      return retainSummaryResult;
     if (opts.queryName === "learning.retainDetail") return retainDetailResult;
     if (opts.queryName === "learning.retainPlanChildren") {
       return {
@@ -647,42 +668,42 @@ vi.mock("@papercusp/sync", async () => ({
       };
     }
     return opts.queryName === "learning.apiary"
-        ? apiaryResult
-        : opts.queryName === "learning.hiveEvalTrend"
-          ? hiveEvalResult
-          : opts.queryName === "learning.knowledge"
-            ? knowledgeResult
-            : opts.queryName === "learning.scout"
-              ? scoutResult
-              : opts.queryName === "learning.hiveList"
-                ? hiveListResult
-                : opts.queryName === "learning.retain"
-                    ? {
-                        data: [
-                          {
-                            banked: { improvementsFiled7d: 5, plansDrafted7d: 2 },
-                            lensWeights: null,
-                            rubricChanges: [],
-                            insightDocs: [],
-                            recipes: [],
-                            generatedAt: "2026-07-19T00:00:00.000Z",
-                          },
-                        ],
-                        loading: false,
-                        fetching: false,
-                        error: null,
-                        invalidate: vi.fn(),
-                      }
-                  : opts.queryName === "knowledgePacks.list" ||
-                      opts.queryName === "knowledgePacks.candidates"
-                    ? {
-                        data: [],
-                        loading: false,
-                        fetching: false,
-                        error: null,
-                        invalidate: vi.fn(),
-                      }
-                    : improvementsResult;
+      ? apiaryResult
+      : opts.queryName === "learning.hiveEvalTrend"
+        ? hiveEvalResult
+        : opts.queryName === "learning.knowledge"
+          ? knowledgeResult
+          : opts.queryName === "learning.scout"
+            ? scoutResult
+            : opts.queryName === "learning.hiveList"
+              ? hiveListResult
+              : opts.queryName === "learning.retain"
+                ? {
+                    data: [
+                      {
+                        banked: { improvementsFiled7d: 5, plansDrafted7d: 2 },
+                        lensWeights: null,
+                        rubricChanges: [],
+                        insightDocs: [],
+                        recipes: [],
+                        generatedAt: "2026-07-19T00:00:00.000Z",
+                      },
+                    ],
+                    loading: false,
+                    fetching: false,
+                    error: null,
+                    invalidate: vi.fn(),
+                  }
+                : opts.queryName === "knowledgePacks.list" ||
+                    opts.queryName === "knowledgePacks.candidates"
+                  ? {
+                      data: [],
+                      loading: false,
+                      fetching: false,
+                      error: null,
+                      invalidate: vi.fn(),
+                    }
+                  : improvementsResult;
   },
 }));
 
@@ -725,6 +746,7 @@ beforeEach(() => {
   nuqsState.irail = null;
   nuqsState.impf = null;
   nuqsState.impq = "";
+  nuqsState.rtf = null;
   nuqsState.itrace = null;
   nuqsState.rrubric = null;
   nuqsState.lretain = null;
@@ -816,6 +838,13 @@ beforeEach(() => {
   };
   retainCountsResult = {
     data: [null],
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: vi.fn(),
+  };
+  retainSummaryResult = {
+    data: [{ total: 0, matched: 0, facets: [] }],
     loading: false,
     fetching: false,
     error: null,
@@ -914,7 +943,9 @@ describe("LearningTab — Improvements view (default)", () => {
 
     render(<LearningTab />);
 
-    expect(screen.getByText("cup:spawn children are coordination-MUTE")).toBeTruthy();
+    expect(
+      screen.getByText("cup:spawn children are coordination-MUTE"),
+    ).toBeTruthy();
   });
 
   it("threads bounded impf storage axes and impq to the server while leaving presentation filters client-side", () => {
@@ -993,13 +1024,15 @@ describe("LearningTab — Improvements view (default)", () => {
       expect(screen.queryByRole("tab", { name: "Gym" })).toBeNull();
       // Landed on Improve → Improvements (the default), not an empty pane.
       expect(
-        screen.getByRole("tab", { name: "Improve" }).getAttribute("aria-selected"),
+        screen
+          .getByRole("tab", { name: "Improve" })
+          .getAttribute("aria-selected"),
       ).toBe("true");
       // Improve now holds ONE view, so it renders no view-tab strip at all —
-    // the same shape Analyze (Pipeline) and Retain (Learnings) already had.
-    // Assert the merged pane itself rather than a tab that correctly no
-    // longer exists.
-    expect(screen.getByLabelText("Where these came from")).toBeTruthy();
+      // the same shape Analyze (Pipeline) and Retain (Learnings) already had.
+      // Assert the merged pane itself rather than a tab that correctly no
+      // longer exists.
+      expect(screen.getByLabelText("Where these came from")).toBeTruthy();
     });
   });
 
@@ -1042,7 +1075,9 @@ describe("LearningTab — Improvements view (default)", () => {
       render(<LearningTab />);
       expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
       expect(
-        screen.getByRole("tab", { name: "Improve" }).getAttribute("aria-selected"),
+        screen
+          .getByRole("tab", { name: "Improve" })
+          .getAttribute("aria-selected"),
       ).toBe("true");
     });
 
@@ -1133,11 +1168,15 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(screen.queryByText("The loop has not produced anything here yet")).toBeNull();
+    expect(
+      screen.queryByText("The loop has not produced anything here yet"),
+    ).toBeNull();
     expect(screen.getByText("Cache-warmup plan draft")).toBeTruthy();
     // An unfiled idea states its pipeline position rather than leaving it
     // blank — in the P-004 public vocabulary, not the storage words.
-    expect(screen.getAllByText("not ready yet").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("not ready yet").length).toBeGreaterThanOrEqual(
+      1,
+    );
   });
 
   // ── P-004: the pipeline-state vocabulary ──────────────────────────────────
@@ -1272,9 +1311,7 @@ describe("LearningTab — Improvements view (default)", () => {
       invalidate: vi.fn(),
     };
     render(<LearningTab />);
-    expect(
-      document.querySelector(".pc-learning-visual__statline"),
-    ).toBeNull();
+    expect(document.querySelector(".pc-learning-visual__statline")).toBeNull();
     expect(document.querySelector(".pc-hqdrain")).toBeNull();
     expect(
       screen.getByText("Peer restarts massacre in-flight spawns"),
@@ -1422,7 +1459,12 @@ describe("LearningTab — Gym view", () => {
         {
           proposals: [],
           autoloops: [
-            { harnessSlug: "papercusp", enabled: false, status: "idle", spentUsd: 0 },
+            {
+              harnessSlug: "papercusp",
+              enabled: false,
+              status: "idle",
+              spentUsd: 0,
+            },
           ],
           archiveSeeds: [],
         },
@@ -1482,7 +1524,13 @@ describe("LearningTab — Gym view", () => {
   // carries it must render as ordinary scoped data, with no cross-tenant note.
   it("renders a legacy scopeFallback payload as ordinary scoped data — no cross-tenant note (WI-5809)", () => {
     gymResult = {
-      data: [{ proposals: [{ id: "p1", status: "pending" }], autoloops: [], scopeFallback: true }],
+      data: [
+        {
+          proposals: [{ id: "p1", status: "pending" }],
+          autoloops: [],
+          scopeFallback: true,
+        },
+      ],
       loading: false,
       fetching: false,
       error: null,
@@ -1853,7 +1901,9 @@ describe("LearningTab — Benchmark view", () => {
     render(<LearningTab />);
     expect(screen.getByText("Outcome gate")).toBeTruthy();
     // P-006: leads with the question the scoring trend answers.
-    expect(screen.getByText("Are orchestration scores improving?")).toBeTruthy();
+    expect(
+      screen.getByText("Are orchestration scores improving?"),
+    ).toBeTruthy();
     expect(screen.getByText("1.30×")).toBeTruthy(); // latest critical-path ratio
     expect(screen.getAllByText("7.200").length).toBeGreaterThanOrEqual(1); // latest composite
     expect(document.querySelectorAll("figure.pc-benchtrend")).toHaveLength(1);
@@ -1913,7 +1963,11 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
   //   idea-2 — graded ★4 by "auto-grader" (rail gym)
   const GRADE_URL = "/api/agent-tools/scout/grade-idea";
 
-  const stubFetch = (impl: { ok: boolean; status?: number; body?: unknown }) => {
+  const stubFetch = (impl: {
+    ok: boolean;
+    status?: number;
+    body?: unknown;
+  }) => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: impl.ok,
       status: impl.status ?? (impl.ok ? 200 : 500),
@@ -1967,7 +2021,10 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({ ideaId: "idea-1", grade: 2 });
+    expect(JSON.parse(String(init.body))).toEqual({
+      ideaId: "idea-1",
+      grade: 2,
+    });
   });
 
   it("8. rolls the optimistic grade BACK and surfaces the error when the write fails", async () => {
@@ -1994,7 +2051,10 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
   it("8b. rolls back when the tool answers applied:false, even though HTTP succeeded", async () => {
     // A 200 carrying applied:false is the nastier case: the transport is fine,
     // so only the payload says the grade did not land.
-    stubFetch({ ok: true, body: { ok: true, applied: false, reason: "idea is gone" } });
+    stubFetch({
+      ok: true,
+      body: { ok: true, applied: false, reason: "idea is gone" },
+    });
     nuqsState.grade = "idea-1";
     render(<LearningTab />);
 
@@ -2064,9 +2124,9 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
     render(<LearningTab />);
 
     const strip = screen.getByLabelText("Lens sampling weights");
-    const shares = Array.from(
-      strip.querySelectorAll(".pc-learning__lens"),
-    ).map((el) => el.getAttribute("title") ?? "");
+    const shares = Array.from(strip.querySelectorAll(".pc-learning__lens")).map(
+      (el) => el.getAttribute("title") ?? "",
+    );
 
     // 4/8, 3/8, 1/8 → 50%, 38%, 13%, descending.
     expect(shares[0]).toContain("first-principles: 50%");
@@ -2182,7 +2242,9 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     expect(txt(cells)).not.toContain("pending");
 
     // ...and it IS in the trace, which is open on this row.
-    const trace = screen.getByLabelText("Pipeline trace for Tighter scoper prompt");
+    const trace = screen.getByLabelText(
+      "Pipeline trace for Tighter scoper prompt",
+    );
     expect(txt(trace)).toContain("won");
   });
 
@@ -2254,7 +2316,13 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     improvementsResult = {
       ...improvementsResult,
       data: [
-        { ...improvementsDigest, total: 0, open: 0, autoEligible: [], humanQueue: [] },
+        {
+          ...improvementsDigest,
+          total: 0,
+          open: 0,
+          autoEligible: [],
+          humanQueue: [],
+        },
       ],
     };
     scoutResult = {
@@ -2294,7 +2362,9 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
       ".pc-learning-visual__empty",
     ) as HTMLElement;
     expect(txt(empty)).toContain("Nothing matches the current filter");
-    expect(within(empty).queryByRole("button", { name: "Open Arming" })).toBeNull();
+    expect(
+      within(empty).queryByRole("button", { name: "Open Arming" }),
+    ).toBeNull();
     expect(txt(empty)).not.toContain("once armed");
   });
 
@@ -2305,9 +2375,7 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     const trace = screen.getByLabelText(
       "Pipeline trace for Cache-warmup plan draft",
     );
-    const chips = Array.from(
-      trace.querySelectorAll(".pc-learning__tracechip"),
-    );
+    const chips = Array.from(trace.querySelectorAll(".pc-learning__tracechip"));
 
     // GROUNDING — an opaque `wi:` ref resolves to its TITLE. The raw id alone is
     // unreadable evidence: "grounded in EI-100" tells the reader nothing about
@@ -2567,7 +2635,9 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     render(<LearningTab />);
     // The ledger feed + the always-on strip both carry the lens (WI-39535 —
     // the standalone learning.hive pool read is gone; memories ride the feed).
-    expect(seenArgs["learning.retainFeed"]).toMatchObject({ hive: "beta-hive" });
+    expect(seenArgs["learning.retainFeed"]).toMatchObject({
+      hive: "beta-hive",
+    });
     expect(seenArgs["learning.retain"]).toEqual({ hive: "beta-hive" });
   });
 
@@ -3016,7 +3086,9 @@ describe("GymView — recent-challengers header carries recency", () => {
     };
     render(<LearningTab />);
 
-    const head = document.querySelector(".pc-learning__sectionhead--stickyruns");
+    const head = document.querySelector(
+      ".pc-learning__sectionhead--stickyruns",
+    );
     expect(head).toBeTruthy(); // the header must be the sticky variant
     const recency = head?.querySelector(".pc-learning__runsrecency");
     expect(recency).toBeTruthy();
@@ -3039,7 +3111,12 @@ describe("GymView — recent-challengers header carries recency", () => {
     advScopeState.slug = "papercusp";
     advScopeState.hive = "papercusp";
     const now = Date.now();
-    const mkProp = (id: string, variantId: string, createdAt: number, role = "worker") => ({
+    const mkProp = (
+      id: string,
+      variantId: string,
+      createdAt: number,
+      role = "worker",
+    ) => ({
       id,
       variantId,
       role,
@@ -3084,7 +3161,9 @@ describe("GymView — recent-challengers header carries recency", () => {
     // Grouped by role — the per-type stacks the CardStack decks used to give.
     const groups = document.querySelectorAll(".pc-learning__gymrolegroup");
     expect(groups).toHaveLength(2); // worker + director
-    const groupLabels = [...groups].map((g) => g.getAttribute("aria-label") ?? "");
+    const groupLabels = [...groups].map(
+      (g) => g.getAttribute("aria-label") ?? "",
+    );
     // Groups ordered by the recency of their newest challenger: worker (1h) before
     // director (5h) — NOT by group size.
     expect(groupLabels[0]).toContain("worker");

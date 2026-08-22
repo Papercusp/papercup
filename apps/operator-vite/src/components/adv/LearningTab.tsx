@@ -100,9 +100,11 @@ import {
   RETAIN_STATUSFUL_KINDS,
   type RetainDetail,
   type RetainFeedCounts,
+  type RetainFeedColumnFilters,
   type RetainFeedFilter,
   type RetainFeedKind,
   type RetainFeedPage,
+  type RetainFeedQueryArgs,
   type RetainFeedRow,
   type RetainFeedTab,
   type RetainPlanChild,
@@ -137,6 +139,8 @@ import { Popover } from "@/app/harness/Popover";
 import { CardStack } from "@papercusp/card-stack";
 import {
   useColumnFilters,
+  useColumnFilterState,
+  useColumnFiltersFromState,
   parseAsColumnFilters,
   ColumnFilterBar,
   filterCountLabel,
@@ -224,7 +228,9 @@ function statusDescription(status: LearningViewStatus): string {
 /** Built per-render from the active lexicon (restore-pot-lexicon P-006 — same
  *  pattern as railMeta): the tenancy noun in these one-liners must track the
  *  FLAGS.THE_HIVE pack instead of hardcoding one pack's label. */
-function viewDescriptions(t: ReturnType<typeof useLexicon>): Record<LView, string> {
+function viewDescriptions(
+  t: ReturnType<typeof useLexicon>,
+): Record<LView, string> {
   const pot = t("pot", { lower: true });
   return {
     signals:
@@ -271,7 +277,11 @@ const STAGE_DESCRIPTIONS: Record<LearningStage, string> = {
 
 /** The Verify stage's views — hoisted so the stage can be declared LAST in
  *  {@link STAGES} (owner ask 2026-07-19) without burying the list mid-array. */
-const VERIFY_VIEWS: ReadonlyArray<{ id: LView; label: string; icon: typeof Eye }> = [
+const VERIFY_VIEWS: ReadonlyArray<{
+  id: LView;
+  label: string;
+  icon: typeof Eye;
+}> = [
   { id: "benchmark", label: "Benchmark", icon: FlaskConical },
   // P-006: this view renders hive-eval SCORING trends (is orchestration
   // quality improving?), not an orchestration control surface — the label
@@ -814,61 +824,63 @@ export default function LearningTab() {
           pause/resume-all learning routines + the loop's spend (LearningLoopControl,
           absolutely positioned at the row's right edge). */}
       <div className="pc-learning__stagerow">
-      <Tabs.Root
-        className="pc-learning__stages"
-        value={activeStage ?? ""}
-        onValueChange={(next) => {
-          // `stages`, not STAGES: clicking a stage lands on its FIRST VISIBLE
-          // view, so a gated view can never be selected by the stage nav.
-          const stage = stages.find((candidate) => candidate.id === next);
-          if (stage?.views[0]) void setLview(stage.views[0].id);
-        }}
-      >
-        <Tabs.List
-          className="pc-learning__stage-list"
-          aria-label="Learning loop stage"
+        <Tabs.Root
+          className="pc-learning__stages"
+          value={activeStage ?? ""}
+          onValueChange={(next) => {
+            // `stages`, not STAGES: clicking a stage lands on its FIRST VISIBLE
+            // view, so a gated view can never be selected by the stage nav.
+            const stage = stages.find((candidate) => candidate.id === next);
+            if (stage?.views[0]) void setLview(stage.views[0].id);
+          }}
         >
-          {stages.map((stage, index) => {
-            const Icon = stage.icon;
-            const status = stageStatus(stage, viewStatuses);
-            const semantic = status ? statusSemantic(status) : null;
-            return (
-              <Tabs.Trigger
-                key={stage.id}
-                value={stage.id}
-                className="pc-learning__stage"
-                aria-label={stage.label}
-                title={STAGE_DESCRIPTIONS[stage.id]}
-                aria-describedby={
-                  status ? `learning-stage-status-${stage.id}` : undefined
-                }
-              >
-                <span
-                  className={`pc-learning__stage-icon${semantic ? ` has-${semantic}` : ""}`}
+          <Tabs.List
+            className="pc-learning__stage-list"
+            aria-label="Learning loop stage"
+          >
+            {stages.map((stage, index) => {
+              const Icon = stage.icon;
+              const status = stageStatus(stage, viewStatuses);
+              const semantic = status ? statusSemantic(status) : null;
+              return (
+                <Tabs.Trigger
+                  key={stage.id}
+                  value={stage.id}
+                  className="pc-learning__stage"
+                  aria-label={stage.label}
+                  title={STAGE_DESCRIPTIONS[stage.id]}
+                  aria-describedby={
+                    status ? `learning-stage-status-${stage.id}` : undefined
+                  }
                 >
-                  <Icon size={16} aria-hidden />
-                  {semantic ? (
-                    <>
-                      <span className="pc-learning__statusmark" aria-hidden />
-                      <span
-                        id={`learning-stage-status-${stage.id}`}
-                        className="pc-learning__statusdesc"
-                      >
-                        {statusDescription(status!)}
-                      </span>
-                    </>
+                  <span
+                    className={`pc-learning__stage-icon${semantic ? ` has-${semantic}` : ""}`}
+                  >
+                    <Icon size={16} aria-hidden />
+                    {semantic ? (
+                      <>
+                        <span className="pc-learning__statusmark" aria-hidden />
+                        <span
+                          id={`learning-stage-status-${stage.id}`}
+                          className="pc-learning__statusdesc"
+                        >
+                          {statusDescription(status!)}
+                        </span>
+                      </>
+                    ) : null}
+                  </span>
+                  <span className="pc-learning__stage-label">
+                    {stage.label}
+                  </span>
+                  {index < stages.length - 1 ? (
+                    <span className="pc-learning__stage-line" aria-hidden />
                   ) : null}
-                </span>
-                <span className="pc-learning__stage-label">{stage.label}</span>
-                {index < stages.length - 1 ? (
-                  <span className="pc-learning__stage-line" aria-hidden />
-                ) : null}
-              </Tabs.Trigger>
-            );
-          })}
-        </Tabs.List>
-      </Tabs.Root>
-      <LearningLoopControl />
+                </Tabs.Trigger>
+              );
+            })}
+          </Tabs.List>
+        </Tabs.Root>
+        <LearningLoopControl />
       </div>
 
       <div className="pc-learning__controls">
@@ -877,9 +889,14 @@ export default function LearningTab() {
             useAdvScope — see the `hive` derivation above. The inherited pot is
             named in the strap line below so scope stays visible. */}
         {hiveAware && hive ? (
-          <span className="pc-learning__hivepick" title={`Scoped to the ${t("pot", { lower: true })} selected in the top bar`}>
+          <span
+            className="pc-learning__hivepick"
+            title={`Scoped to the ${t("pot", { lower: true })} selected in the top bar`}
+          >
             <Brain size={12} aria-hidden />
-            <span className="pc-learning__hivepicklabel">{hiveHomeLabel(hive)}</span>
+            <span className="pc-learning__hivepicklabel">
+              {hiveHomeLabel(hive)}
+            </span>
           </span>
         ) : null}
         {activeStageMeta && activeStageMeta.views.length > 1 ? (
@@ -1204,14 +1221,22 @@ type Lane = (typeof LANES)[number];
 
 type LearningServerFilters = Pick<
   LearningImprovementsArgs,
-  "kinds" | "severities" | "scopes" | "stages" | "ideaTypes" | "lenses" | "score" | "ageDays"
+  | "kinds"
+  | "severities"
+  | "scopes"
+  | "stages"
+  | "ideaTypes"
+  | "lenses"
+  | "score"
+  | "ageDays"
 >;
 
 // `useSyncQuery` accepts a generic JSON-ish argument record, while the resolver
 // exposes a closed interface so callers get exact field names and values. Keep
 // both guarantees at this transport boundary instead of weakening the resolver
 // contract with a string index signature.
-type LearningImprovementsQueryArgs = LearningImprovementsArgs & Record<string, unknown>;
+type LearningImprovementsQueryArgs = LearningImprovementsArgs &
+  Record<string, unknown>;
 
 /** Provenance scope — the mockup's scope bar (owner-approved 2026-07-27).
  *
@@ -1281,24 +1306,30 @@ function isSelectedRow(row: LoopRow, lsel: string | null): boolean {
  * loop the human teaches the generator by grading and never approves the work.
  * Naming a gate that nobody operates invites someone to wait at it.
  */
-type PipelineState = "not-ready" | "approved" | "in-flight" | "shipped" | "dropped";
+type PipelineState =
+  | "not-ready"
+  | "approved"
+  | "in-flight"
+  | "shipped"
+  | "dropped";
 
-const PIPELINE_STATES: Record<PipelineState, { label: string; desc: string }> = {
-  "not-ready": {
-    label: "not ready yet",
-    desc: "The loop produced this idea but has not filed it as work yet.",
-  },
-  approved: {
-    label: "approved",
-    desc: "Filed as work. Waiting for an agent to pick it up.",
-  },
-  "in-flight": {
-    label: "in flight",
-    desc: "An agent is working on this right now.",
-  },
-  shipped: { label: "shipped", desc: "Landed." },
-  dropped: { label: "dropped", desc: "Abandoned — closed without shipping." },
-};
+const PIPELINE_STATES: Record<PipelineState, { label: string; desc: string }> =
+  {
+    "not-ready": {
+      label: "not ready yet",
+      desc: "The loop produced this idea but has not filed it as work yet.",
+    },
+    approved: {
+      label: "approved",
+      desc: "Filed as work. Waiting for an agent to pick it up.",
+    },
+    "in-flight": {
+      label: "in flight",
+      desc: "An agent is working on this right now.",
+    },
+    shipped: { label: "shipped", desc: "Landed." },
+    dropped: { label: "dropped", desc: "Abandoned — closed without shipping." },
+  };
 
 /**
  * Which pipeline state a merged row is in — exclusive by construction.
@@ -1364,18 +1395,59 @@ function ImprovementsView({
   // miss the snapshot, and pay the 0.4-0.5s inline compute on every mount.
   // Parse the complete impf state before the sync read so storage-backed axes
   // are bounded in SQL; presentation-only filters remain client-derived.
-  const filterCols = useMemo<FilterableColumn<LoopRow>[]>(() => [
-    { key: "kind", header: "Kind", filter: { type: "enum", accessor: (r) => r.item?.kind ?? "—" } },
-    { key: "severity", header: "Severity", filter: { type: "enum", accessor: (r) => r.item?.severity ?? "—" } },
-    { key: "scope", header: "Scope", filter: { type: "enum", accessor: (r) => r.item?.scope ?? "—" } },
-    { key: "stage", header: "Stage", filter: { type: "enum", accessor: (r) => PIPELINE_STATES[pipelineState(r)].label } },
-    { key: "ideaType", header: "Idea type", filter: { type: "enum", accessor: (r) => r.item?.ideaType ?? "—" } },
-    { key: "lens", header: "Lens", filter: { type: "enum", accessor: (r) => r.idea?.lens ?? "—" } },
-    { key: "score", header: "Score", filter: { type: "number", accessor: (r) => r.item?.score ?? 0 } },
-    { key: "ageDays", header: "Age (days)", filter: { type: "number", accessor: (r) => r.item?.ageDays ?? 0 } },
-  ], []);
+  const filterCols = useMemo<FilterableColumn<LoopRow>[]>(
+    () => [
+      {
+        key: "kind",
+        header: "Kind",
+        filter: { type: "enum", accessor: (r) => r.item?.kind ?? "—" },
+      },
+      {
+        key: "severity",
+        header: "Severity",
+        filter: { type: "enum", accessor: (r) => r.item?.severity ?? "—" },
+      },
+      {
+        key: "scope",
+        header: "Scope",
+        filter: { type: "enum", accessor: (r) => r.item?.scope ?? "—" },
+      },
+      {
+        key: "stage",
+        header: "Stage",
+        filter: {
+          type: "enum",
+          accessor: (r) => PIPELINE_STATES[pipelineState(r)].label,
+        },
+      },
+      {
+        key: "ideaType",
+        header: "Idea type",
+        filter: { type: "enum", accessor: (r) => r.item?.ideaType ?? "—" },
+      },
+      {
+        key: "lens",
+        header: "Lens",
+        filter: { type: "enum", accessor: (r) => r.idea?.lens ?? "—" },
+      },
+      {
+        key: "score",
+        header: "Score",
+        filter: { type: "number", accessor: (r) => r.item?.score ?? 0 },
+      },
+      {
+        key: "ageDays",
+        header: "Age (days)",
+        filter: { type: "number", accessor: (r) => r.item?.ageDays ?? 0 },
+      },
+    ],
+    [],
+  );
   const [filterState] = useQueryState("impf", parseAsColumnFilters(filterCols));
-  const [search, setSearch] = useQueryState("impq", parseAsString.withDefault(""));
+  const [search, setSearch] = useQueryState(
+    "impq",
+    parseAsString.withDefault(""),
+  );
   const [lane, setLane] = useQueryState(
     "lane",
     parseAsStringEnum<Lane>([...LANES]).withDefault("all"),
@@ -1385,7 +1457,8 @@ function ImprovementsView({
   const serverFilters = useMemo<LearningServerFilters>(() => {
     const valuesFor = (key: string): string[] => {
       const value = filterState?.[key];
-      if (Array.isArray(value)) return value.filter((item): item is string => typeof item === "string");
+      if (Array.isArray(value))
+        return value.filter((item): item is string => typeof item === "string");
       return typeof value === "string" && value ? [value] : [];
     };
     const kinds = valuesFor("kind").filter(
@@ -1405,21 +1478,38 @@ function ImprovementsView({
         severities.push(severity);
       }
     }
-    const scopes = valuesFor("scope").filter((scopeValue) => scopeValue !== "—");
+    const scopes = valuesFor("scope").filter(
+      (scopeValue) => scopeValue !== "—",
+    );
     const stages = valuesFor("stage").flatMap((label) => {
       if (label in PIPELINE_STATES) {
-        return [label as NonNullable<LearningImprovementsArgs["stages"]>[number]];
+        return [
+          label as NonNullable<LearningImprovementsArgs["stages"]>[number],
+        ];
       }
-      const hit = Object.entries(PIPELINE_STATES).find(([, meta]) => meta.label === label);
-      return hit ? [hit[0] as NonNullable<LearningImprovementsArgs["stages"]>[number]] : [];
+      const hit = Object.entries(PIPELINE_STATES).find(
+        ([, meta]) => meta.label === label,
+      );
+      return hit
+        ? [hit[0] as NonNullable<LearningImprovementsArgs["stages"]>[number]]
+        : [];
     });
     const ideaTypes = valuesFor("ideaType").filter((value) => value !== "—");
     const lenses = valuesFor("lens").filter((value) => value !== "—");
-    const rangeFor = (key: string): NonNullable<LearningImprovementsArgs["score"]> | undefined => {
+    const rangeFor = (
+      key: string,
+    ): NonNullable<LearningImprovementsArgs["score"]> | undefined => {
       const value = filterState?.[key];
-      if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-      const min = typeof value.min === "number" && Number.isFinite(value.min) ? value.min : undefined;
-      const max = typeof value.max === "number" && Number.isFinite(value.max) ? value.max : undefined;
+      if (!value || typeof value !== "object" || Array.isArray(value))
+        return undefined;
+      const min =
+        typeof value.min === "number" && Number.isFinite(value.min)
+          ? value.min
+          : undefined;
+      const max =
+        typeof value.max === "number" && Number.isFinite(value.max)
+          ? value.max
+          : undefined;
       return min === undefined && max === undefined ? undefined : { min, max };
     };
     const score = rangeFor("score");
@@ -1435,15 +1525,18 @@ function ImprovementsView({
       ...(ageDays ? { ageDays } : {}),
     };
   }, [filterState]);
-  const serverArgs = useMemo<LearningImprovementsQueryArgs>(() => ({
-    ...(hive ? { hive } : {}),
-    ...(scope === "all" ? { scope: "all" as const } : {}),
-    ...(lane !== "all" ? { lanes: [lane] } : {}),
-    ...(src ? { sources: [src] } : {}),
-    ...(railFilter ? { rails: [railFilter] } : {}),
-    ...serverFilters,
-    ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
-  }), [hive, lane, railFilter, scope, search, serverFilters, src]);
+  const serverArgs = useMemo<LearningImprovementsQueryArgs>(
+    () => ({
+      ...(hive ? { hive } : {}),
+      ...(scope === "all" ? { scope: "all" as const } : {}),
+      ...(lane !== "all" ? { lanes: [lane] } : {}),
+      ...(src ? { sources: [src] } : {}),
+      ...(railFilter ? { rails: [railFilter] } : {}),
+      ...serverFilters,
+      ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
+    }),
+    [hive, lane, railFilter, scope, search, serverFilters, src],
+  );
   const serverPredicateActive =
     lane !== "all" ||
     Boolean(src) ||
@@ -1503,9 +1596,12 @@ function ImprovementsView({
   // the switch would measure nothing (EI-19383745196363732).
   const summarySettled =
     !serverPredicateActive ||
-    (!summarySync.loading && (summarySync.data !== undefined || Boolean(summarySync.error)));
+    (!summarySync.loading &&
+      (summarySync.data !== undefined || Boolean(summarySync.error)));
   const improvementsSettled =
-    !sync.loading && (sync.data !== undefined || Boolean(sync.error)) && summarySettled;
+    !sync.loading &&
+    (sync.data !== undefined || Boolean(sync.error)) &&
+    summarySettled;
   useInteractionSettle(
     PERF_INTERACTIONS.learningViewSwitch,
     improvementsSettled,
@@ -1754,7 +1850,9 @@ function ImprovementsView({
   }, [digest, ideaByItemId, lane, routed]);
 
   const sources = useMemo<string[]>(() => {
-    const serverFacet = improveSummary?.facets?.find((facet) => facet.key === "source");
+    const serverFacet = improveSummary?.facets?.find(
+      (facet) => facet.key === "source",
+    );
     if (serverFacet) return serverFacet.values.map((value) => value.value);
     const s = new Set<string>();
     for (const it of [
@@ -1787,9 +1885,13 @@ function ImprovementsView({
   // The corpus number is not lost — it moves to the chip's tooltip, where it is
   // context rather than a promise (and to the honest `N of total` denominators).
   const railCounts = useMemo(() => {
-    const serverFacet = improveSummary?.facets?.find((facet) => facet.key === "rail");
+    const serverFacet = improveSummary?.facets?.find(
+      (facet) => facet.key === "rail",
+    );
     if (serverFacet) {
-      return new Map(serverFacet.values.map((value) => [value.value, value.count]));
+      return new Map(
+        serverFacet.values.map((value) => [value.value, value.count]),
+      );
     }
     const counts = new Map<string, number>();
     for (const row of railScopedRows) {
@@ -1841,7 +1943,8 @@ function ImprovementsView({
   const improveCountEvidence = useMemo<CountEvidence>(() => {
     if (serverPredicateActive) {
       if (summarySync.error) return { kind: "unknown", reason: "failed" };
-      if (!improveSummary || summarySync.loading) return { kind: "unknown", reason: "updating" };
+      if (!improveSummary || summarySync.loading)
+        return { kind: "unknown", reason: "updating" };
       return {
         kind: "corpus",
         count: improveSummary.matched,
@@ -1854,15 +1957,27 @@ function ImprovementsView({
       : {
           kind: "window",
           count: rows.length,
-          window: "the current bounded Improve digest window after source and rail scope",
+          window:
+            "the current bounded Improve digest window after source and rail scope",
         };
-  }, [digest, improveSummary, rows.length, serverPredicateActive, summarySync.error, summarySync.loading]);
+  }, [
+    digest,
+    improveSummary,
+    rows.length,
+    serverPredicateActive,
+    summarySync.error,
+    summarySync.loading,
+  ]);
   const serverEnumOptions = useMemo(() => {
-    if (!improveSummary || !Array.isArray(improveSummary.facets)) return undefined;
+    if (!improveSummary || !Array.isArray(improveSummary.facets))
+      return undefined;
     return new Map(
       improveSummary.facets.map((facet) => [
         facet.key,
-        facet.values.map((value) => ({ value: value.value, count: value.count })),
+        facet.values.map((value) => ({
+          value: value.value,
+          count: value.count,
+        })),
       ]),
     );
   }, [improveSummary]);
@@ -1932,7 +2047,9 @@ function ImprovementsView({
   // — owner 2026-07-27]. Retiring the queue's remaining vocabulary is P-004.
   useEffect(() => {
     onStatus?.(
-      sync.error || scoutSync.error || (serverPredicateActive && summarySync.error)
+      sync.error ||
+        scoutSync.error ||
+        (serverPredicateActive && summarySync.error)
         ? "bad"
         : health.status !== "neutral"
           ? health.status
@@ -1942,7 +2059,15 @@ function ImprovementsView({
               ? "good"
               : "neutral",
     );
-  }, [digest, health.status, onStatus, scoutSync.error, serverPredicateActive, summarySync.error, sync.error]);
+  }, [
+    digest,
+    health.status,
+    onStatus,
+    scoutSync.error,
+    serverPredicateActive,
+    summarySync.error,
+    sync.error,
+  ]);
 
   return (
     <section className="pc-learning__section">
@@ -1982,13 +2107,16 @@ function ImprovementsView({
           <strong>{snap?.totalRouted ?? 0}</strong> ideas
         </span>
         {digest ? (
-          <span title={`${PIPELINE_STATES.approved.desc} Includes work already in flight.`}>
+          <span
+            title={`${PIPELINE_STATES.approved.desc} Includes work already in flight.`}
+          >
             <strong>{digest.open}</strong> in the queue
           </span>
         ) : null}
         {snap?.improveFunnel ? (
           <span title={PIPELINE_STATES.shipped.desc}>
-            <strong>{snap.improveFunnel.done}</strong> {PIPELINE_STATES.shipped.label}
+            <strong>{snap.improveFunnel.done}</strong>{" "}
+            {PIPELINE_STATES.shipped.label}
           </span>
         ) : null}
         {health.markers.length > 0 ? (
@@ -2011,7 +2139,10 @@ function ImprovementsView({
           at all. Scoping to the loop's own output is the default; everything
           else is one click away, and the way OUT is stated rather than left
           for the reader to wonder about. */}
-      <div className="pc-learning__idea-filters" aria-label="Where these came from">
+      <div
+        className="pc-learning__idea-filters"
+        aria-label="Where these came from"
+      >
         <Tooltip label="Only what the learning loop produced: ideas, and the work items they became.">
           <button
             type="button"
@@ -2020,7 +2151,9 @@ function ImprovementsView({
           >
             <Radar size={11} aria-hidden />
             From the loop{" "}
-            {digest && scope === "loop" ? <strong>{digest.total}</strong> : null}
+            {digest && scope === "loop" ? (
+              <strong>{digest.total}</strong>
+            ) : null}
           </button>
         </Tooltip>
         {sources.map((s) => {
@@ -2166,8 +2299,8 @@ function ImprovementsView({
                   : isFiltered
                     ? "The paired exact summary is updating; no page-local denominator is substituted."
                     : digest?.windowed
-                  ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
-                    : "Rows in scope — ideas and the work they became."
+                      ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
+                      : "Rows in scope — ideas and the work they became."
               }
             >
               {isFiltered
@@ -2247,7 +2380,11 @@ function ImprovementsView({
               ? undefined
               : `The ${t("scout")} reads this ${t("pot", { lower: true })}'s history on a cadence and routes surviving ideas here — cycles usually appear within the hour once armed.`
           }
-          action={isFiltered ? undefined : { label: "Open Arming", onClick: openArming }}
+          action={
+            isFiltered
+              ? undefined
+              : { label: "Open Arming", onClick: openArming }
+          }
         />
       ) : !showDashboard ? (
         <ul className="pc-learning__list pc-learning__list--direct">
@@ -2298,9 +2435,13 @@ function ImprovementsView({
                   <GitBranch size={11} aria-hidden />
                   <strong title={d.title ?? d.planSlug}>{d.planSlug}</strong>
                   {d.planStatus == null ? (
-                    <em title="The draft plan row no longer exists (superseded or deleted).">gone</em>
+                    <em title="The draft plan row no longer exists (superseded or deleted).">
+                      gone
+                    </em>
                   ) : (
-                    <em title={`Draft plan lifecycle status.`}>{d.planStatus}</em>
+                    <em title={`Draft plan lifecycle status.`}>
+                      {d.planStatus}
+                    </em>
                   )}
                   {d.planVersion != null ? (
                     <span
@@ -2692,7 +2833,11 @@ function IdeaTrace({
       return (
         <Tooltip
           key={ref}
-          label={title ? `${rest} — ${title} (select in this list)` : `${rest} — select in this list`}
+          label={
+            title
+              ? `${rest} — ${title} (select in this list)`
+              : `${rest} — select in this list`
+          }
         >
           <button
             type="button"
@@ -2784,7 +2929,8 @@ function IdeaTrace({
         <strong
           title={
             eff
-              ? (eff.feedback ?? `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`)
+              ? (eff.feedback ??
+                `Graded by ${graderLabel(eff.gradedBy, ctx.brainWord)}`)
               : "Ungraded — the grade→learn half of the loop has not seen this idea."
           }
         >
@@ -2880,9 +3026,7 @@ function LoopRowView({
             type="button"
             className="pc-learning__rowmain"
             aria-expanded={isTraceOpen}
-            onClick={() =>
-              ctx.onToggleTrace(isTraceOpen ? null : idea.ideaId)
-            }
+            onClick={() => ctx.onToggleTrace(isTraceOpen ? null : idea.ideaId)}
           >
             <span className="pc-learning__id" style={{ color: leadColor }}>
               {leadLabel}
@@ -2900,7 +3044,10 @@ function LoopRowView({
         {idea ? (
           <span
             className="pc-learning__chip pc-learning__chip--idea"
-            style={{ color: lensColor(idea.lens), borderColor: lensColor(idea.lens) }}
+            style={{
+              color: lensColor(idea.lens),
+              borderColor: lensColor(idea.lens),
+            }}
             title="The creative lens that produced this idea"
           >
             {idea.lens}
@@ -2909,7 +3056,10 @@ function LoopRowView({
         {item ? (
           <span
             className="pc-learning__chip"
-            style={{ color: sevColor ?? undefined, borderColor: sevColor ?? undefined }}
+            style={{
+              color: sevColor ?? undefined,
+              borderColor: sevColor ?? undefined,
+            }}
           >
             {item.severity ?? "—"}
           </span>
@@ -3269,9 +3419,18 @@ function GymView({
   // Collapsed challenger role groups — comma-separated roles, in the URL so the
   // view is shareable and agent-readable (repo convention: user-meaningful state
   // goes in nuqs, never useState).
-  const [collapsedRolesRaw, setCollapsedRoles] = useQueryState("gymroles", parseAsString);
+  const [collapsedRolesRaw, setCollapsedRoles] = useQueryState(
+    "gymroles",
+    parseAsString,
+  );
   const collapsedRoles = useMemo(
-    () => new Set((collapsedRolesRaw ?? "").split(",").map((s) => s.trim()).filter(Boolean)),
+    () =>
+      new Set(
+        (collapsedRolesRaw ?? "")
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      ),
     [collapsedRolesRaw],
   );
   const toggleRole = (role: string) => {
@@ -3303,7 +3462,11 @@ function GymView({
   // (EI-19383745196363732).
   const gymSettled =
     !sync.loading && (sync.data !== undefined || Boolean(sync.error));
-  useInteractionSettle(PERF_INTERACTIONS.learningViewSwitch, gymSettled, active);
+  useInteractionSettle(
+    PERF_INTERACTIONS.learningViewSwitch,
+    gymSettled,
+    active,
+  );
   const proposals = snap?.proposals ?? [];
   const autoloops = snap?.autoloops ?? [];
   const archiveSeeds = snap?.archiveSeeds ?? [];
@@ -3361,7 +3524,10 @@ function GymView({
   const challengerCards = useMemo(
     () =>
       proposals
-        .map((p) => ({ p, run: p.variantId ? runByVariant.get(p.variantId) ?? null : null }))
+        .map((p) => ({
+          p,
+          run: p.variantId ? (runByVariant.get(p.variantId) ?? null) : null,
+        }))
         .sort((a, b) => (b.p.createdAt ?? 0) - (a.p.createdAt ?? 0)),
     [proposals, runByVariant],
   );
@@ -3372,7 +3538,9 @@ function GymView({
    * line was ever for, so it is the only case that still renders one.
    */
   const orphanRuns = useMemo(() => {
-    const carded = new Set(proposals.map((p) => p.variantId).filter(Boolean) as string[]);
+    const carded = new Set(
+      proposals.map((p) => p.variantId).filter(Boolean) as string[],
+    );
     return runs.filter((r) => !carded.has(r.variantId));
   }, [runs, proposals]);
 
@@ -3402,7 +3570,10 @@ function GymView({
           return when != null && (acc == null || when > acc) ? when : acc;
         }, null),
       }))
-      .sort((a, b) => (b.newestAt ?? 0) - (a.newestAt ?? 0) || a.role.localeCompare(b.role));
+      .sort(
+        (a, b) =>
+          (b.newestAt ?? 0) - (a.newestAt ?? 0) || a.role.localeCompare(b.role),
+      );
   }, [challengerCards]);
   const t = useLexicon();
   const running = activeAutoloops.length;
@@ -3598,9 +3769,13 @@ function GymView({
                   execution facts, so this block no longer duplicates the cards
                   (it was 15 of 17 duplicates) or pushes them out of the pane. */}
               {orphanRuns.length > 0 ? (
-                <div className="pc-learning__gymcycles" aria-label="Gym runs without a proposal">
+                <div
+                  className="pc-learning__gymcycles"
+                  aria-label="Gym runs without a proposal"
+                >
                   {orphanRuns.map((r) => {
-                    const promoted = r.decision === "accept" || r.decision === "promote";
+                    const promoted =
+                      r.decision === "accept" || r.decision === "promote";
                     const tone = r.isBaseline
                       ? "pending"
                       : promoted
@@ -3625,11 +3800,16 @@ function GymView({
                         title={`${r.runCount} scored run(s) of ${r.variantId} in cycle ${r.cycle} on ${r.harnessSlug}${r.states.length ? ` — outcomes: ${r.states.join(", ")}` : ""}${when ? ` — ${new Date(when).toLocaleString()}` : ""}`}
                       >
                         {when ? (
-                          <span className="pc-learning__age">{whenLabel(when)}</span>
+                          <span className="pc-learning__age">
+                            {whenLabel(when)}
+                          </span>
                         ) : null}
                         <span
                           className="pc-learning__chip"
-                          style={{ color: decisionColor, borderColor: decisionColor }}
+                          style={{
+                            color: decisionColor,
+                            borderColor: decisionColor,
+                          }}
                         >
                           {r.isBaseline ? (
                             <Clock size={10} aria-hidden />
@@ -3693,7 +3873,9 @@ function GymView({
                       >
                         {group.role}
                       </span>
-                      <span className="pc-learning__chip">{group.items.length}</span>
+                      <span className="pc-learning__chip">
+                        {group.items.length}
+                      </span>
                       {group.newestAt != null ? (
                         <span className="pc-learning__age">
                           newest {whenLabel(group.newestAt)}
@@ -3701,110 +3883,124 @@ function GymView({
                       ) : null}
                     </button>
                     {collapsed ? null : (
-              <div className="pc-learning__gymcardgrid">
-                {group.items.map(({ p, run }) => {
-                  const role = p.role || "unknown";
-                  const accent = lensColor(role);
-                  const delta = deltaLabel(p.devAnchorDelta);
-                  const statusColor = statusToneColor(p.status);
-                  return (
-                    <section
-                      key={p.id}
-                      className="pc-learning__gymcard"
-                      style={{ borderLeftColor: accent }}
-                      aria-label={`${role} challenger ${p.variantId ?? p.id}`}
-                    >
-                      <div className="pc-learning__ideacard">
-                              <div className="pc-learning__ideacard-head">
-                                <span
-                                  className="pc-learning__chip"
-                                  style={{ color: statusColor, borderColor: statusColor }}
-                                >
-                                  {p.status === "accepted" ? (
-                                    <CheckCircle2 size={10} aria-hidden />
-                                  ) : p.status === "rejected" ? (
-                                    <XCircle size={10} aria-hidden />
-                                  ) : (
-                                    <Clock size={10} aria-hidden />
-                                  )}
-                                  {p.status === "accepted" ? "champion" : p.status}
-                                </span>
-                                <span
-                                  className="pc-learning__chip"
-                                  style={{ color: accent, borderColor: accent }}
-                                  title="The agent role whose prompt this challenger rewrites"
-                                >
-                                  {role}
-                                </span>
-                                <span className="pc-learning__chip" title="Gym cycle number">
-                                  cycle {p.cycle}
-                                </span>
-                                {/* The execution facts the compact line used to
+                      <div className="pc-learning__gymcardgrid">
+                        {group.items.map(({ p, run }) => {
+                          const role = p.role || "unknown";
+                          const accent = lensColor(role);
+                          const delta = deltaLabel(p.devAnchorDelta);
+                          const statusColor = statusToneColor(p.status);
+                          return (
+                            <section
+                              key={p.id}
+                              className="pc-learning__gymcard"
+                              style={{ borderLeftColor: accent }}
+                              aria-label={`${role} challenger ${p.variantId ?? p.id}`}
+                            >
+                              <div className="pc-learning__ideacard">
+                                <div className="pc-learning__ideacard-head">
+                                  <span
+                                    className="pc-learning__chip"
+                                    style={{
+                                      color: statusColor,
+                                      borderColor: statusColor,
+                                    }}
+                                  >
+                                    {p.status === "accepted" ? (
+                                      <CheckCircle2 size={10} aria-hidden />
+                                    ) : p.status === "rejected" ? (
+                                      <XCircle size={10} aria-hidden />
+                                    ) : (
+                                      <Clock size={10} aria-hidden />
+                                    )}
+                                    {p.status === "accepted"
+                                      ? "champion"
+                                      : p.status}
+                                  </span>
+                                  <span
+                                    className="pc-learning__chip"
+                                    style={{
+                                      color: accent,
+                                      borderColor: accent,
+                                    }}
+                                    title="The agent role whose prompt this challenger rewrites"
+                                  >
+                                    {role}
+                                  </span>
+                                  <span
+                                    className="pc-learning__chip"
+                                    title="Gym cycle number"
+                                  >
+                                    cycle {p.cycle}
+                                  </span>
+                                  {/* The execution facts the compact line used to
                                     carry — folded in so removing the duplicate
                                     line loses nothing. */}
-                                {run ? (
-                                  <span
-                                    className="pc-learning__chip"
-                                    title={`${run.runCount} scored run(s) of ${run.variantId}${run.states.length ? ` — outcomes: ${run.states.join(", ")}` : ""}`}
-                                  >
-                                    {run.runCount} run{run.runCount === 1 ? "" : "s"}
-                                    {run.states.length ? ` · ${run.states.join(", ")}` : ""}
+                                  {run ? (
+                                    <span
+                                      className="pc-learning__chip"
+                                      title={`${run.runCount} scored run(s) of ${run.variantId}${run.states.length ? ` — outcomes: ${run.states.join(", ")}` : ""}`}
+                                    >
+                                      {run.runCount} run
+                                      {run.runCount === 1 ? "" : "s"}
+                                      {run.states.length
+                                        ? ` · ${run.states.join(", ")}`
+                                        : ""}
+                                    </span>
+                                  ) : null}
+                                  <span className="pc-learning__age">
+                                    {whenLabel(p.createdAt)}
+                                    {p.decidedAt
+                                      ? ` · decided ${whenLabel(p.decidedAt)}`
+                                      : ""}
                                   </span>
+                                </div>
+                                <strong className="pc-learning__gymtitle">
+                                  {p.rationale ?? p.variantId ?? p.id}
+                                </strong>
+                                <div className="pc-learning__gymdeltas">
+                                  <span
+                                    className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
+                                    title="Judge-score change vs the current champion — positive means the challenger did better"
+                                  >
+                                    {delta.text} benchmark
+                                  </span>
+                                  {p.costDelta != null ? (
+                                    <span
+                                      className={`pc-learning__delta pc-learning__delta--${p.costDelta > 0 ? "bad" : p.costDelta < 0 ? "good" : "flat"}`}
+                                      title="Per-task cost change vs the champion"
+                                    >
+                                      {p.costDelta > 0 ? "+" : ""}
+                                      {p.costDelta.toFixed(2)} cost
+                                    </span>
+                                  ) : null}
+                                  {p.probeStatus ? (
+                                    <span
+                                      className="pc-learning__chip"
+                                      title="Regression-probe verdict — did the challenger still catch the planted failures?"
+                                    >
+                                      probes: {p.probeStatus}
+                                    </span>
+                                  ) : null}
+                                  <span
+                                    className="pc-learning__chip pc-learning__chip--idea"
+                                    title="The gym harness that ran this experiment"
+                                  >
+                                    {p.harnessSlug}
+                                  </span>
+                                </div>
+                                {p.proposedMd ? (
+                                  <pre
+                                    className="pc-learning__gymprompt"
+                                    title="The challenger prompt (first lines)"
+                                  >
+                                    {p.proposedMd}
+                                  </pre>
                                 ) : null}
-                                <span className="pc-learning__age">
-                                  {whenLabel(p.createdAt)}
-                                  {p.decidedAt
-                                    ? ` · decided ${whenLabel(p.decidedAt)}`
-                                    : ""}
-                                </span>
                               </div>
-                              <strong className="pc-learning__gymtitle">
-                                {p.rationale ?? p.variantId ?? p.id}
-                              </strong>
-                              <div className="pc-learning__gymdeltas">
-                                <span
-                                  className={`pc-learning__delta pc-learning__delta--${delta.tone}`}
-                                  title="Judge-score change vs the current champion — positive means the challenger did better"
-                                >
-                                  {delta.text} benchmark
-                                </span>
-                                {p.costDelta != null ? (
-                                  <span
-                                    className={`pc-learning__delta pc-learning__delta--${p.costDelta > 0 ? "bad" : p.costDelta < 0 ? "good" : "flat"}`}
-                                    title="Per-task cost change vs the champion"
-                                  >
-                                    {p.costDelta > 0 ? "+" : ""}
-                                    {p.costDelta.toFixed(2)} cost
-                                  </span>
-                                ) : null}
-                                {p.probeStatus ? (
-                                  <span
-                                    className="pc-learning__chip"
-                                    title="Regression-probe verdict — did the challenger still catch the planted failures?"
-                                  >
-                                    probes: {p.probeStatus}
-                                  </span>
-                                ) : null}
-                                <span
-                                  className="pc-learning__chip pc-learning__chip--idea"
-                                  title="The gym harness that ran this experiment"
-                                >
-                                  {p.harnessSlug}
-                                </span>
-                              </div>
-                              {p.proposedMd ? (
-                                <pre
-                                  className="pc-learning__gymprompt"
-                                  title="The challenger prompt (first lines)"
-                                >
-                                  {p.proposedMd}
-                                </pre>
-                              ) : null}
-                            </div>
-                    </section>
-                  );
-                })}
-              </div>
+                            </section>
+                          );
+                        })}
+                      </div>
                     )}
                   </section>
                 );
@@ -4066,11 +4262,11 @@ function ApiaryView({
         />
       ) : !latest && !pending ? (
         // WI-6388: teaching copy per LearningVisualEmpty's own contract.
-              <LearningVisualEmpty
-                icon={Gauge}
-                title="No benchmark runs"
-                body="This view compares runs against the same benchmark set, so a regression shows up as a score drop. Runs appear here once a benchmark has been run."
-              />
+        <LearningVisualEmpty
+          icon={Gauge}
+          title="No benchmark runs"
+          body="This view compares runs against the same benchmark set, so a regression shows up as a score drop. Runs appear here once a benchmark has been run."
+        />
       ) : (
         <>
           {!latest && pending ? (
@@ -4755,9 +4951,7 @@ function railMeta(
     tick is red; a ran cycle that exhausted its budget without routing anything
     is amber (the WI-4482 starvation signature — spend with no yield); a
     completed run is green; a self-gated tick is idle/neutral. */
-function tickTone(
-  tk: ScoutTickEconomics,
-): "good" | "warn" | "bad" | "idle" {
+function tickTone(tk: ScoutTickEconomics): "good" | "warn" | "bad" | "idle" {
   if (tk.status === "error") return "bad";
   if (tk.status === "ran")
     return tk.stop === "budget-exhausted" && tk.routed === 0 ? "warn" : "good";
@@ -4788,7 +4982,11 @@ const GRADE_MEANING: Record<number, string> = {
     (restore-pot-lexicon P-006; the retired 'Queen' value was migrated —
     WI-39481). */
 const graderLabel = (gradedBy: string, brainWord: string): string =>
-  gradedBy === "owner" ? "Owner" : gradedBy === "auto-grader" ? brainWord : gradedBy;
+  gradedBy === "owner"
+    ? "Owner"
+    : gradedBy === "auto-grader"
+      ? brainWord
+      : gradedBy;
 
 /** The tool-proxy response envelope varies (the parsed result | {result} | MCP
     content text) — unwrap whichever the dispatcher returns. */
@@ -5286,7 +5484,10 @@ function CadenceCard({
         className="pc-learning__cadence-lanes"
         title={cadence.lanes
           .filter((l) => l.count > 0)
-          .map((l) => `${l.count} ${l.lane.replace(/-/g, " ")} × weight ${l.weight} = ${l.count * l.weight}`)
+          .map(
+            (l) =>
+              `${l.count} ${l.lane.replace(/-/g, " ")} × weight ${l.weight} = ${l.count * l.weight}`,
+          )
           .join("\n")}
       >
         {cadence.lanes.some((l) => l.count > 0) ? (
@@ -5299,7 +5500,10 @@ function CadenceCard({
           </>
         ) : null}
         {cadence.lanes.every((l) => l.count === 0) ? (
-          <span className="pc-learning__flowchip" title="No lane has accumulated new signal since the last successful cycle.">
+          <span
+            className="pc-learning__flowchip"
+            title="No lane has accumulated new signal since the last successful cycle."
+          >
             no new signal in any lane
           </span>
         ) : null}
@@ -5355,7 +5559,9 @@ function LoopEngineInstruments({
             <small>ideas</small>
           </span>
           <i aria-hidden>→</i>
-          <span title={`Filed as work on the improvement rail. ${PIPELINE_STATES.approved.desc}`}>
+          <span
+            title={`Filed as work on the improvement rail. ${PIPELINE_STATES.approved.desc}`}
+          >
             <strong>{snap.improveFunnel.filed}</strong>
             <small>{PIPELINE_STATES.approved.label}</small>
           </span>
@@ -5614,11 +5820,7 @@ function LearningsView({
   }, [extrasSnap]);
   useEffect(() => {
     onStatus?.(
-      ledgerState.error
-        ? "bad"
-        : ledgerState.rowCount > 0
-          ? "good"
-          : "neutral",
+      ledgerState.error ? "bad" : ledgerState.rowCount > 0 ? "good" : "neutral",
     );
   }, [onStatus, ledgerState.error, ledgerState.rowCount]);
 
@@ -5664,7 +5866,9 @@ function LearningsView({
               onClick={() => void setLviewNav("improvements")}
             >
               <Sparkles size={11} aria-hidden />
-              <strong>{extrasSnap?.banked.improvementsFiled7d ?? "—"}</strong>{" "}
+              <strong>
+                {extrasSnap?.banked.improvementsFiled7d ?? "—"}
+              </strong>{" "}
               improvements filed
               <em>7d</em>
             </button>
@@ -5792,6 +5996,34 @@ type RetainGridRow =
   | { rowType: "item"; row: RetainFeedRow }
   | { rowType: "child"; parentId: string; child: RetainPlanChild };
 
+const retainTitleForFilter = (row: RetainGridRow): string =>
+  row.rowType === "item" ? row.row.title : row.child.title;
+const retainStatusForFilter = (row: RetainGridRow): string =>
+  row.rowType === "item" ? (row.row.status ?? "") : row.child.status;
+const retainLensForFilter = (row: RetainGridRow): string =>
+  row.rowType === "item" ? (row.row.meta.lens ?? "") : "";
+
+/** Stable parser contract for the `rtf` URL param. The rendered grid columns
+ * reuse these accessors, so client chips and server args cannot drift on what
+ * title/status/lens mean. */
+const RETAIN_FILTER_COLUMNS: FilterableColumn<RetainGridRow>[] = [
+  {
+    key: "title",
+    header: "Title",
+    filter: { type: "text", accessor: retainTitleForFilter },
+  },
+  {
+    key: "status",
+    header: "Status",
+    filter: { type: "enum", accessor: retainStatusForFilter },
+  },
+  {
+    key: "lens",
+    header: "Lens",
+    filter: { type: "enum", accessor: retainLensForFilter },
+  },
+];
+
 function retainGridRowId(r: RetainGridRow): string {
   return r.rowType === "item"
     ? `${r.row.kind}:${r.row.id}`
@@ -5846,7 +6078,7 @@ function buildRetainColumns(opts: {
       toCopyText: (r) => (r.rowType === "item" ? r.row.title : r.child.title),
       filter: {
         type: "text",
-        accessor: (r) => (r.rowType === "item" ? r.row.title : r.child.title),
+        accessor: retainTitleForFilter,
       },
       render: ({ row: r }) => {
         if (r.rowType === "child") {
@@ -5920,8 +6152,7 @@ function buildRetainColumns(opts: {
         r.rowType === "item" ? (r.row.status ?? "") : r.child.status,
       filter: {
         type: "enum",
-        accessor: (r) =>
-          r.rowType === "item" ? (r.row.status ?? "") : r.child.status,
+        accessor: retainStatusForFilter,
       },
       render: ({ row: r }) => {
         const status = r.rowType === "item" ? r.row.status : r.child.status;
@@ -5944,7 +6175,7 @@ function buildRetainColumns(opts: {
       toCopyText: (r) => (r.rowType === "item" ? (r.row.meta.lens ?? "") : ""),
       filter: {
         type: "enum",
-        accessor: (r) => (r.rowType === "item" ? (r.row.meta.lens ?? "") : ""),
+        accessor: retainLensForFilter,
       },
       render: ({ row: r }) =>
         r.rowType === "item" && r.row.meta.lens ? (
@@ -6067,11 +6298,7 @@ function RetainDetailAside({
           <SelIcon size={11} aria-hidden />
           {sel.kind}
         </span>
-        <button
-          type="button"
-          aria-label="Close detail"
-          onClick={onClose}
-        >
+        <button type="button" aria-label="Close detail" onClick={onClose}>
           <XCircle size={14} aria-hidden />
         </button>
       </header>
@@ -6182,6 +6409,31 @@ function RetainedLedgerCard({
     "rq",
     parseAsString.withDefault(""),
   );
+  const retainFilterBinding = useColumnFilterState(
+    RETAIN_FILTER_COLUMNS,
+    RETAIN_FILTER_NS,
+  );
+  const retainServerFilters = useMemo<RetainFeedColumnFilters>(() => {
+    const state = retainFilterBinding.state;
+    const title = typeof state.title === "string" ? state.title.trim() : "";
+    const statuses = Array.isArray(state.status)
+      ? state.status.filter(
+          (value): value is string =>
+            typeof value === "string" && value.length > 0,
+        )
+      : [];
+    const lenses = Array.isArray(state.lens)
+      ? state.lens.filter(
+          (value): value is string =>
+            typeof value === "string" && value.length > 0,
+        )
+      : [];
+    return {
+      ...(title ? { title } : {}),
+      ...(statuses.length > 0 ? { statuses } : {}),
+      ...(lenses.length > 0 ? { lenses } : {}),
+    };
+  }, [retainFilterBinding.state]);
   // Deep-link params the Plans board already reads — the same trio the old
   // "Plans from ideas" rows set.
   const [, setTabNav] = useQueryState("tab", parseAsString);
@@ -6198,7 +6450,8 @@ function RetainedLedgerCard({
   // `RETAIN_STATUSFUL_KINDS` the server narrows by, so the control and the
   // query can never disagree about what a click will yield (WI-39900).
   const tabHasOutcomes =
-    rtab === "all" || RETAIN_STATUSFUL_KINDS.includes(RETAIN_KIND_FOR_TAB[rtab]);
+    rtab === "all" ||
+    RETAIN_STATUSFUL_KINDS.includes(RETAIN_KIND_FOR_TAB[rtab]);
   // Owner report 2026-08-19: "for runbooks im seeing 706 but both filters of
   // shipped and in flight are showing 0 … this is an issue with all the tabs
   // except plans and work items". `rship` is a nuqs param, so a filter set on
@@ -6208,22 +6461,45 @@ function RetainedLedgerCard({
   // preserved for when they return to a tab that has outcomes, rather than
   // being silently reset or silently obeyed into an empty list.
   const effectiveFilter: RetainFeedFilter = tabHasOutcomes ? rship : "all";
+  const retainPredicateActive =
+    Boolean((search ?? "").trim()) ||
+    Boolean(retainServerFilters.title) ||
+    Boolean(retainServerFilters.statuses?.length) ||
+    Boolean(retainServerFilters.lenses?.length);
+  const retainBaseArgs = useMemo<RetainFeedQueryArgs & Record<string, unknown>>(
+    () => ({
+      tab: rtab,
+      filter: effectiveFilter,
+      ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
+      ...(Object.keys(retainServerFilters).length > 0
+        ? { filters: retainServerFilters }
+        : {}),
+      ...(hive ? { hive } : {}),
+    }),
+    [effectiveFilter, hive, retainServerFilters, rtab, search],
+  );
+  const retainPredicateKey = JSON.stringify(retainBaseArgs);
 
-  // A tab/filter switch restarts the ledger from page 1.
+  // Every selected scope/predicate switch restarts the ledger from page 1.
+  // Keeping a cursor from the prior predicate can skip the only matching row.
   useEffect(() => {
     setCursor(null);
     setNextCursor(null);
     setRows([]);
-  }, [rtab, effectiveFilter]);
+  }, [retainPredicateKey]);
 
   const feed = useSyncQuery<RetainFeedPage | undefined>({
     queryName: "learning.retainFeed",
     args: {
-      tab: rtab,
-      filter: effectiveFilter,
+      ...retainBaseArgs,
       ...(cursor ? { cursor } : {}),
-      ...(hive ? { hive } : {}),
     },
+    enabled,
+    staleTime: 30_000,
+  });
+  const summaryQ = useSyncQuery<CompanionListSummary>({
+    queryName: "learning.retainFeed.summary",
+    args: retainBaseArgs,
     enabled,
     staleTime: 30_000,
   });
@@ -6255,6 +6531,14 @@ function RetainedLedgerCard({
     setDegraded(Array.isArray(page.degraded) ? page.degraded : []);
   }, [page, loading, cursor]);
   const counts = countsQ.data?.[0] ?? null;
+  const retainSummaryCandidate = summaryQ.data?.[0];
+  const retainSummary =
+    retainSummaryCandidate &&
+    Number.isSafeInteger(retainSummaryCandidate.total) &&
+    Number.isSafeInteger(retainSummaryCandidate.matched) &&
+    Array.isArray(retainSummaryCandidate.facets)
+      ? retainSummaryCandidate
+      : undefined;
 
   // Gated on the SAME readiness gate as every sibling read (the lens-guard
   // enforces one gate per view); an un-expanded ledger sends planSlug '' and
@@ -6314,8 +6598,10 @@ function RetainedLedgerCard({
     } finally {
       detailQ.invalidate();
       feed.invalidate();
+      summaryQ.invalidate();
+      countsQ.invalidate();
     }
-  }, [sel, detail, askPrompt, detailQ, feed]);
+  }, [sel, detail, askPrompt, detailQ, feed, summaryQ, countsQ]);
   const removeMemory = useCallback(async () => {
     if (!sel || !detail || detail.kind !== "memory") return;
     const ok = await askConfirm({
@@ -6333,12 +6619,13 @@ function RetainedLedgerCard({
       void setRsel(null);
       detailQ.invalidate();
       feed.invalidate();
+      summaryQ.invalidate();
+      countsQ.invalidate();
     }
-  }, [sel, detail, askConfirm, setRsel, detailQ, feed]);
+  }, [sel, detail, askConfirm, setRsel, detailQ, feed, summaryQ, countsQ]);
 
   const onTogglePlan = useCallback(
-    (slug: string) =>
-      void setRplanOpen((cur) => (cur === slug ? null : slug)),
+    (slug: string) => void setRplanOpen((cur) => (cur === slug ? null : slug)),
     [setRplanOpen],
   );
   const onOpenPlan = useCallback(
@@ -6367,23 +6654,62 @@ function RetainedLedgerCard({
     () => buildRetainColumns({ rplanOpen, onTogglePlan, onOpenPlan }),
     [rplanOpen, onTogglePlan, onOpenPlan],
   );
-  // SAME filtering machinery as the work queue: per-column filters in ONE nuqs
-  // param (`rtf`), quick-search applied on top.
-  const retainCountEvidence = useMemo<CountEvidence>(
-    () => loading && page === undefined
-      ? { kind: "unknown", reason: "loading" }
-      : {
-          kind: "window",
-          count: rows.length,
-          window: `the ${rows.length.toLocaleString("en-US")}-item loaded Retain cursor window`,
-        },
-    [loading, page, rows.length],
+  // The row and companion-summary reads use the SAME rq/rtf predicate. While
+  // either half refetches, suppress the number instead of mixing adjacent
+  // snapshots; a page length is never a fallback for the exact summary.
+  const retainCountEvidence = useMemo<CountEvidence>(() => {
+    if (feed.error || summaryQ.error)
+      return { kind: "unknown", reason: "failed" };
+    if (!retainSummary) {
+      return {
+        kind: "unknown",
+        reason: loading && page === undefined ? "loading" : "updating",
+      };
+    }
+    if (feed.fetching || summaryQ.fetching) {
+      return { kind: "unknown", reason: "updating" };
+    }
+    return {
+      kind: "corpus",
+      count: retainSummary.matched,
+      total: retainSummary.total,
+      population: "the complete selected Retain corpus",
+    };
+  }, [
+    feed.error,
+    feed.fetching,
+    loading,
+    page,
+    retainSummary,
+    summaryQ.error,
+    summaryQ.fetching,
+  ]);
+  const retainServerEnumOptions = useMemo(() => {
+    if (!retainSummary) return undefined;
+    return new Map(
+      retainSummary.facets.map((facet) => [
+        facet.key,
+        facet.values.map((value) => ({
+          value: value.value,
+          count: value.count,
+        })),
+      ]),
+    );
+  }, [retainSummary]);
+  const cf = useColumnFiltersFromState(
+    columns,
+    gridRows,
+    {
+      ns: RETAIN_FILTER_NS,
+      countEvidence: retainCountEvidence,
+      serverEnumOptions: retainServerEnumOptions,
+    },
+    retainFilterBinding,
   );
-  const cf = useColumnFilters(columns, gridRows, {
-    ns: RETAIN_FILTER_NS,
-    countEvidence: retainCountEvidence,
-  });
   const filtered = useMemo(() => {
+    // Reapply q only to preserve the expanded-plan CHILD behavior. Item rows
+    // already passed this exact server predicate before LIMIT, so this is
+    // idempotent for the paged corpus and cannot erase a server-only field hit.
     const q = (search ?? "").trim().toLowerCase();
     if (!q) return cf.rows;
     return cf.rows.filter((r) => {
@@ -6398,45 +6724,7 @@ function RetainedLedgerCard({
     "pc-colw:learning:retained",
   );
 
-  const shownItems = filtered.filter((r) => r.rowType === "item").length;
-  const isFiltered = cf.hasActive || (search ?? "").trim().length > 0;
-
-  // WI-39675 / D-003: a corpus denominator may only be printed when the list can
-  // actually REACH it. Two independent things can make it unreachable here, and
-  // both were being ignored:
-  //
-  //  1. `rship` (shipped/in-flight) narrows the feed SERVER-side, but the counts
-  //     below are computed WITHOUT that filter (learning-retain-read.ts builds
-  //     them from the corpus, unconditioned by opts.filter). So under a shipped
-  //     filter the corpus number is one the filtered list can never reach.
-  //  2. Any leg can degrade to a null count; summing the rest would silently
-  //     understate the corpus and print a confident wrong total.
-  //
-  // When neither applies we have a true store total and the growing cursor
-  // window converges on it, which is exactly filterCountLabel's precondition.
-  // Otherwise we say "loaded" and claim nothing about the corpus.
-  const corpusTotal = useMemo(() => {
-    if (rship !== "all" || !counts) return null;
-    if (rtab !== "all") return counts[rtab] ?? null;
-    const parts = Object.values(counts);
-    return parts.some((n) => n == null)
-      ? null
-      : parts.reduce((a, n) => a + (n ?? 0), 0);
-  }, [counts, rtab, rship]);
-
-  const displayedRetainCountEvidence = useMemo<CountEvidence>(
-    () => !isFiltered && corpusTotal != null
-      ? { kind: "corpus", count: corpusTotal, population: "the selected Retain corpus" }
-      : {
-          kind: "window",
-          count: isFiltered ? shownItems : rows.length,
-          windowTotal: isFiltered ? rows.length : undefined,
-          window: `the ${rows.length.toLocaleString("en-US")}-item loaded Retain cursor window${nextCursor ? " with more available on scroll" : ""}`,
-          corpusTotal: corpusTotal ?? undefined,
-        },
-    [corpusTotal, isFiltered, nextCursor, rows.length, shownItems],
-  );
-  const countLabel = filterCountLabel(displayedRetainCountEvidence, "retained item");
+  const countLabel = filterCountLabel(retainCountEvidence, "retained item");
 
   // Report the feed's state up to LearningsView (status dot, perf settle,
   // memories chip) — see RetainLedgerCardState.
@@ -6557,7 +6845,11 @@ function RetainedLedgerCard({
           <button
             type="button"
             className="pc-advpanel__iconbtn"
-            onClick={() => feed.invalidate()}
+            onClick={() => {
+              feed.invalidate();
+              summaryQ.invalidate();
+              countsQ.invalidate();
+            }}
             disabled={loading}
             aria-label="Refresh retained ledger"
           >
@@ -6609,7 +6901,8 @@ function RetainedLedgerCard({
                     color: "var(--fg-mute)",
                   }}
                 >
-                  Last attempt: {String(feed.failureReason.message ?? feed.failureReason)}
+                  Last attempt:{" "}
+                  {String(feed.failureReason.message ?? feed.failureReason)}
                 </div>
               ) : null}
             </>
@@ -6619,14 +6912,12 @@ function RetainedLedgerCard({
         </div>
       ) : filtered.length === 0 ? (
         <div className="pc-advpanel__empty">
-          {rows.length === 0
+          {rows.length === 0 && !retainPredicateActive
             ? "Nothing retained yet under this view."
             : "No retained items match the filter."}
         </div>
       ) : (
-        <div
-          className={`pc-learning__retainlayout${sel ? " has-detail" : ""}`}
-        >
+        <div className={`pc-learning__retainlayout${sel ? " has-detail" : ""}`}>
           <div className="pc-learning__retainindex">
             <VirtualGrid<RetainGridRow>
               columns={columns}

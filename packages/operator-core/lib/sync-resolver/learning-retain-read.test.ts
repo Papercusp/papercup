@@ -473,7 +473,12 @@ describe('readRetainFeed', () => {
     });
     const sql = sqlStub(() => [{ n: 0 }]);
 
-    const page = await readRetainFeed(sql, 'ws-1', { ...emptyFeedDeps(), listMemories }, { tab: 'all', withCounts: true });
+    const page = await readRetainFeed(
+      sql,
+      'ws-1',
+      { ...emptyFeedDeps(), listMemories },
+      { tab: 'all', withCounts: true },
+    );
 
     expect(listMemories).toHaveBeenCalledTimes(1);
     expect(page.degraded).toContain('memory');

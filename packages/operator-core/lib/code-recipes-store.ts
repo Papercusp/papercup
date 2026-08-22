@@ -170,13 +170,9 @@ const SELECT_COLS = (sql: postgres.Sql | postgres.TransactionSql) => sql`
  * supplied — re-running without an available embedder must not WIPE a previously
  * computed embedding.
  */
-export async function upsertRecipe(
-  sql: postgres.Sql,
-  input: UpsertCodeRecipeInput,
-): Promise<CodeRecipeRow> {
+export async function upsertRecipe(sql: postgres.Sql, input: UpsertCodeRecipeInput): Promise<CodeRecipeRow> {
   // pgvector wants the textual `[1,2,3]` form; null leaves/keeps it unset.
-  const embeddingLiteral =
-    input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
+  const embeddingLiteral = input.embedding && input.embedding.length > 0 ? `[${input.embedding.join(',')}]` : null;
   const rows = await sql<DbRow[]>`
     INSERT INTO harness_shared.code_recipes
       (id, title, description, script, pot_slug, author_role,
@@ -212,10 +208,7 @@ export async function upsertRecipe(
  * counters are a cheap-read denormalization (migration 349 header). The RUN row
  * carries workspace_id + pot_slug (usage); the recipe itself is global.
  */
-export async function recordRecipeRun(
-  sql: postgres.Sql,
-  input: RecordRecipeRunInput,
-): Promise<void> {
+export async function recordRecipeRun(sql: postgres.Sql, input: RecordRecipeRunInput): Promise<void> {
   const success = input.success ?? true;
   await sql.begin(async (tx) => {
     await tx`
@@ -261,10 +254,7 @@ export interface MergeRecipesResult {
  * Returns the updated survivor plus the ids that were actually merged. Throws if
  * the survivor does not exist (nothing to merge INTO).
  */
-export async function mergeRecipes(
-  sql: postgres.Sql,
-  input: MergeRecipesInput,
-): Promise<MergeRecipesResult> {
+export async function mergeRecipes(sql: postgres.Sql, input: MergeRecipesInput): Promise<MergeRecipesResult> {
   const { survivorId } = input;
   // De-dupe the request + drop self-merge before touching the DB.
   const requested = [...new Set(input.duplicateIds)].filter((id) => id !== survivorId);
@@ -346,10 +336,7 @@ export interface SweepRecipesResult {
  * A recipe with a NULL last_run_at (saved, never run) is NOT swept here — it has
  * no staleness clock yet; it ages in only once it's been run and then idled.
  */
-export async function sweepRecipes(
-  sql: postgres.Sql,
-  input: SweepRecipesInput = {},
-): Promise<SweepRecipesResult> {
+export async function sweepRecipes(sql: postgres.Sql, input: SweepRecipesInput = {}): Promise<SweepRecipesResult> {
   const staleDays = input.staleDays ?? 30;
   const maxRunCount = input.maxRunCount ?? 1;
   const dryRun = input.dryRun ?? false;
@@ -379,10 +366,7 @@ export async function sweepRecipes(
 }
 
 /** Fetch one recipe by id (global). Null when absent. */
-export async function getRecipe(
-  sql: postgres.Sql,
-  id: string,
-): Promise<CodeRecipeRow | null> {
+export async function getRecipe(sql: postgres.Sql, id: string): Promise<CodeRecipeRow | null> {
   const rows = await sql<DbRow[]>`
     SELECT ${SELECT_COLS(sql)} FROM harness_shared.code_recipes
      WHERE id = ${id}
@@ -457,9 +441,7 @@ export async function listRecipes(
  */
 export async function countRecipes(sql: postgres.Sql, opts: { includeTrivial?: boolean } = {}): Promise<number> {
   const whereTrivial =
-    (opts.includeTrivial ?? true)
-      ? sql`TRUE`
-      : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
+    (opts.includeTrivial ?? true) ? sql`TRUE` : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
   const rows = await sql<{ n: number }[]>`
     SELECT count(*)::int AS n FROM harness_shared.code_recipes WHERE ${whereTrivial}`;
   return rows[0]?.n ?? 0;
@@ -502,8 +484,7 @@ export async function listRecipesActivityPage(
       : b.idAfter != null
         ? sql`(x.ts < ${b.ts}::timestamptz OR (x.ts = ${b.ts}::timestamptz AND x.id COLLATE "C" > ${b.idAfter}))`
         : sql`x.ts < ${b.ts}::timestamptz`;
-  const likePattern = (value: string): string =>
-    `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+  const likePattern = (value: string): string => `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
   const q = opts.q?.trim() ? likePattern(opts.q.trim()) : null;
   const title = opts.title?.trim() ? likePattern(opts.title.trim()) : null;
   const rows = await sql<Array<{ id: string; title: string; run_count: number | string; ts: Date | string }>>`
@@ -516,9 +497,7 @@ export async function listRecipesActivityPage(
     ) x
     WHERE ${windowPred}
       AND ${
-        q
-          ? sql`(COALESCE(x.id, '') ILIKE ${q} ESCAPE '\\' OR COALESCE(x.title, '') ILIKE ${q} ESCAPE '\\')`
-          : sql`TRUE`
+        q ? sql`(COALESCE(x.id, '') ILIKE ${q} ESCAPE '\\' OR COALESCE(x.title, '') ILIKE ${q} ESCAPE '\\')` : sql`TRUE`
       }
       AND ${title ? sql`COALESCE(x.title, '') ILIKE ${title} ESCAPE '\\'` : sql`TRUE`}
     ORDER BY x.ts DESC, x.id COLLATE "C" ASC
@@ -547,8 +526,7 @@ export async function summarizeRecipesActivity(
   const whereTrivial = opts.includeTrivial
     ? sql`TRUE`
     : sql`array_length(tools_used, 1) >= 2 AND title NOT ILIKE 'recipe: %'`;
-  const likePattern = (value: string): string =>
-    `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+  const likePattern = (value: string): string => `%${value.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
   const q = opts.q?.trim() ? likePattern(opts.q.trim()) : null;
   const title = opts.title?.trim() ? likePattern(opts.title.trim()) : null;
   const rows = await sql<Array<{ total: number | string; matched: number | string }>>`

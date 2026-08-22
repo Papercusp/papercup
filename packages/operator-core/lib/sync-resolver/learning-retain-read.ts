@@ -251,13 +251,10 @@ const uniqueStrings = (values: readonly string[] | undefined): string[] =>
 
 /** Canonicalize the paired row/summary arguments once. The cursor is part of
  * row paging but never affects the predicate itself or summary selection. */
-export function normalizeRetainFeedArgs(
-  args: RetainFeedQueryArgs | RetainFeedOpts = {},
-): NormalizedRetainFeedArgs {
+export function normalizeRetainFeedArgs(args: RetainFeedQueryArgs | RetainFeedOpts = {}): NormalizedRetainFeedArgs {
   const filters: RetainFeedColumnFilters = args.filters ?? {};
-  const rawLimit = typeof args.limit === 'number' && Number.isFinite(args.limit)
-    ? Math.floor(args.limit)
-    : RETAIN_FEED_PAGE_SIZE;
+  const rawLimit =
+    typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : RETAIN_FEED_PAGE_SIZE;
   return {
     tab: args.tab ?? 'all',
     filter: args.filter ?? 'all',
@@ -267,16 +264,12 @@ export function normalizeRetainFeedArgs(
       statuses: uniqueStrings(filters.statuses),
       lenses: uniqueStrings(filters.lenses),
     },
-    cursor: typeof args.cursor === 'string'
-      ? decodeRetainCursor(args.cursor)
-      : (args.cursor ?? null),
+    cursor: typeof args.cursor === 'string' ? decodeRetainCursor(args.cursor) : (args.cursor ?? null),
     limit: Math.max(1, Math.min(RETAIN_FEED_MAX_PAGE, rawLimit)),
   };
 }
 
-export function buildRetainFeedPredicate(
-  args: NormalizedRetainFeedArgs,
-): RetainFeedCompiledPredicate {
+export function buildRetainFeedPredicate(args: NormalizedRetainFeedArgs): RetainFeedCompiledPredicate {
   return { args, fingerprint: JSON.stringify(args) };
 }
 
@@ -284,17 +277,10 @@ export function retainFeedPredicateIsActive(
   predicate: RetainFeedCompiledPredicate | NormalizedRetainFeedArgs,
 ): boolean {
   const args = 'args' in predicate ? predicate.args : predicate;
-  return Boolean(
-    args.q ||
-      args.filters.title ||
-      args.filters.statuses.length > 0 ||
-      args.filters.lenses.length > 0,
-  );
+  return Boolean(args.q || args.filters.title || args.filters.statuses.length > 0 || args.filters.lenses.length > 0);
 }
 
-export function retainFeedSummarySelection(
-  args: NormalizedRetainFeedArgs,
-): FacetSelection {
+export function retainFeedSummarySelection(args: NormalizedRetainFeedArgs): FacetSelection {
   const entries: Array<[string, ReadonlySet<string>]> = [];
   if (args.filters.statuses.length > 0) {
     entries.push(['status', new Set(args.filters.statuses)]);
@@ -330,12 +316,8 @@ export function matchesRetainFeedPredicate(
  * reachable corpus. */
 export function retainFeedKindsForArgs(args: NormalizedRetainFeedArgs): RetainFeedKind[] {
   const tabKinds: RetainFeedKind[] =
-    args.tab === 'all'
-      ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe']
-      : [RETAIN_KIND_FOR_TAB[args.tab]];
-  return args.filter === 'all'
-    ? tabKinds
-    : tabKinds.filter((kind) => kind === 'plan' || kind === 'wi');
+    args.tab === 'all' ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe'] : [RETAIN_KIND_FOR_TAB[args.tab]];
+  return args.filter === 'all' ? tabKinds : tabKinds.filter((kind) => kind === 'plan' || kind === 'wi');
 }
 
 export interface RetainScalarSummary {
@@ -436,17 +418,12 @@ function legWindowSql(sql: Sql, w: RetainLegWindow | null) {
   return sql`x.ts < ${w.beforeTs}::timestamptz`;
 }
 
-const retainLikePattern = (query: string): string =>
-  `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+const retainLikePattern = (query: string): string => `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
 
 /** One predicate compiler for every SQL-backed Retain leg. Each scoped row is
  * projected to `x.id/title/status/lens`; null status/lens therefore follows
  * the same active-filter semantics as the pure predicate. */
-function retainFeedPredicateSql(
-  sql: Sql,
-  args: NormalizedRetainFeedArgs,
-  omit?: RetainFeedFacetKey,
-) {
+function retainFeedPredicateSql(sql: Sql, args: NormalizedRetainFeedArgs, omit?: RetainFeedFacetKey) {
   const q = args.q ? retainLikePattern(args.q) : null;
   const title = args.filters.title ? retainLikePattern(args.filters.title) : null;
   return sql`
@@ -466,18 +443,12 @@ function retainFeedPredicateSql(
         : sql`TRUE`
     }
     AND ${
-      omit !== 'lens' && args.filters.lenses.length > 0
-        ? sql`x.lens = ANY(${args.filters.lenses}::text[])`
-        : sql`TRUE`
+      omit !== 'lens' && args.filters.lenses.length > 0 ? sql`x.lens = ANY(${args.filters.lenses}::text[])` : sql`TRUE`
     }`;
 }
 
 /** Outcome is part of the selected population, not a column facet. */
-function retainOutcomeSql(
-  sql: Sql,
-  args: NormalizedRetainFeedArgs,
-  kind: 'plan' | 'wi',
-) {
+function retainOutcomeSql(sql: Sql, args: NormalizedRetainFeedArgs, kind: 'plan' | 'wi') {
   if (args.filter === 'all') return sql`TRUE`;
   if (kind === 'plan') {
     return args.filter === 'shipped'
@@ -485,9 +456,7 @@ function retainOutcomeSql(
       : sql`x.status <> ALL(${PLAN_INFLIGHT_EXCLUDED}::text[])`;
   }
   const abandoned = [...ISSUE_ABANDONED_STATUSES];
-  return args.filter === 'shipped'
-    ? sql`x.shipped`
-    : sql`NOT x.shipped AND x.status <> ALL(${abandoned}::text[])`;
+  return args.filter === 'shipped' ? sql`x.shipped` : sql`NOT x.shipped AND x.status <> ALL(${abandoned}::text[])`;
 }
 
 /** The canonical-store population behind Mem0Backend.list() for a set of
@@ -544,9 +513,17 @@ export async function listCanonicalRetainMemoriesPage(
     const metadata = Object.fromEntries(
       Object.entries(payload).filter(
         ([key]) =>
-          !['user_id', 'agent_id', 'run_id', 'hash', 'data', 'createdAt', 'updatedAt', 'textLemmatized', 'attributedTo'].includes(
-            key,
-          ),
+          ![
+            'user_id',
+            'agent_id',
+            'run_id',
+            'hash',
+            'data',
+            'createdAt',
+            'updatedAt',
+            'textLemmatized',
+            'attributedTo',
+          ].includes(key),
       ),
     );
     const ts = toIsoMs(row.ts) ?? '1970-01-01T00:00:00.000Z';
@@ -993,23 +970,22 @@ interface RetainAggregateDbRow {
   matched: number | string | null;
 }
 
-const mapRetainAggregateRows = (
-  rows: readonly RetainAggregateDbRow[],
-): CompanionSummaryAggregateRow[] =>
-  rows.map((row): CompanionSummaryAggregateRow =>
-    row.kind === 'totals'
-      ? {
-          kind: 'totals',
-          total: Number(row.total ?? 0),
-          matched: Number(row.matched ?? 0),
-        }
-      : {
-          kind: 'facet',
-          facet: row.facet ?? '',
-          label: row.label ?? undefined,
-          value: row.value ?? '',
-          count: Number(row.count ?? 0),
-        },
+const mapRetainAggregateRows = (rows: readonly RetainAggregateDbRow[]): CompanionSummaryAggregateRow[] =>
+  rows.map(
+    (row): CompanionSummaryAggregateRow =>
+      row.kind === 'totals'
+        ? {
+            kind: 'totals',
+            total: Number(row.total ?? 0),
+            matched: Number(row.matched ?? 0),
+          }
+        : {
+            kind: 'facet',
+            facet: row.facet ?? '',
+            label: row.label ?? undefined,
+            value: row.value ?? '',
+            count: Number(row.count ?? 0),
+          },
   );
 
 /** Exact totals/facets over a complete JS-backed leg. The selected tab/outcome
@@ -1226,15 +1202,17 @@ export async function readRetainSummaryAggregateRows(
     const source = await deps.listMemories();
     const rows = source.flatMap((entry): RetainFeedRow[] => {
       if (!entry.id || !entry.text) return [];
-      return [{
-        kind: 'memory',
-        id: entry.id,
-        title: retainMemoryTitle(entry.text),
-        ts: retainMemoryTsOf(entry.metadata),
-        status: null,
-        shipped: false,
-        meta: {},
-      }];
+      return [
+        {
+          kind: 'memory',
+          id: entry.id,
+          title: retainMemoryTitle(entry.text),
+          ts: retainMemoryTsOf(entry.metadata),
+          status: null,
+          shipped: false,
+          meta: {},
+        },
+      ];
     });
     return summarizeRetainRows(rows, predicate);
   };
@@ -1242,15 +1220,17 @@ export async function readRetainSummaryAggregateRows(
     const rows = (await deps.listRubrics()).flatMap((rubric): RetainFeedRow[] => {
       const ts = toIsoMs(rubric.updatedAt);
       if (!rubric.slug || !ts) return [];
-      return [{
-        kind: 'rubric',
-        id: rubric.slug,
-        title: rubric.title || rubric.slug,
-        ts,
-        status: rubric.status || null,
-        shipped: false,
-        meta: {},
-      }];
+      return [
+        {
+          kind: 'rubric',
+          id: rubric.slug,
+          title: rubric.title || rubric.slug,
+          ts,
+          status: rubric.status || null,
+          shipped: false,
+          meta: {},
+        },
+      ];
     });
     return summarizeRetainRows(rows, predicate);
   };
@@ -1262,9 +1242,7 @@ export async function readRetainSummaryAggregateRows(
     runbook: async () => scalarSummaryRows(await deps.summarizeRunbooks(predicate)),
     recipe: async () => scalarSummaryRows(await deps.summarizeRecipes(predicate)),
   };
-  const legs = await Promise.all(
-    kinds.map((kind) => withinBudget(readers[kind](), `${kind} summary`)),
-  );
+  const legs = await Promise.all(kinds.map((kind) => withinBudget(readers[kind](), `${kind} summary`)));
   return mergeRetainSummaryLegs(legs);
 }
 
@@ -1299,17 +1277,17 @@ export async function readRetainCounts(
   const listMemories = opts.listMemories ?? deps.listMemories;
   const listRubrics = opts.listRubrics ?? (() => deps.listRubrics());
   const [memories, plans, wi, rubrics, runbooks, recipes] = await Promise.all([
-      deps.countMemories
-        ? withinBudget(deps.countMemories(), 'memories count').catch(() => null)
-        : listMemories
+    deps.countMemories
+      ? withinBudget(deps.countMemories(), 'memories count').catch(() => null)
+      : listMemories
         ? withinBudget(
             listMemories().then((r) => r.length),
             'memories count',
           ).catch(() => null)
         : Promise.resolve(null),
-      withinBudget(
-        (async () => {
-          const r = (await sql`
+    withinBudget(
+      (async () => {
+        const r = (await sql`
           SELECT count(DISTINCT hp.plan_slug)::int AS n
             FROM harness_shared.scout_routed_ideas r
             JOIN harness_shared.harness_plans hp
@@ -1320,22 +1298,22 @@ export async function readRetainCounts(
              AND r.routed_ref LIKE 'plan:%'
              AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
         `) as Array<{ n: number }>;
-          return Number(r[0]?.n ?? 0);
-        })(),
-        'plans count',
-      ).catch((err) => {
-        console.warn('[learning.retainFeed] plans count failed:', err instanceof Error ? err.message : err);
-        return null;
-      }),
-      withinBudget(
-        (async () => {
-          // Same `= ANY(ARRAY(SELECT …))` shape — and for the same reason — as
-          // legWi above (79ms/20,141 buffers as a plain join → index scan here).
-          // `count(DISTINCT issue_id)` is NOT interchangeable with `count(*)`:
-          // 91 issue_ids are duplicated across harnesses inside this workspace,
-          // so a plain count over-reports the badge by exactly those rows
-          // (measured 906 vs the correct 905, 2026-08-19).
-          const r = (await sql`
+        return Number(r[0]?.n ?? 0);
+      })(),
+      'plans count',
+    ).catch((err) => {
+      console.warn('[learning.retainFeed] plans count failed:', err instanceof Error ? err.message : err);
+      return null;
+    }),
+    withinBudget(
+      (async () => {
+        // Same `= ANY(ARRAY(SELECT …))` shape — and for the same reason — as
+        // legWi above (79ms/20,141 buffers as a plain join → index scan here).
+        // `count(DISTINCT issue_id)` is NOT interchangeable with `count(*)`:
+        // 91 issue_ids are duplicated across harnesses inside this workspace,
+        // so a plain count over-reports the badge by exactly those rows
+        // (measured 906 vs the correct 905, 2026-08-19).
+        const r = (await sql`
           SELECT count(DISTINCT ei.issue_id)::int AS n
             FROM harness_shared.engineer_issues ei
            WHERE ei.workspace_id = ${workspaceId}
@@ -1348,20 +1326,20 @@ export async function readRetainCounts(
                       AND r2.routed_ref LIKE 'wi:%'
                  ))
         `) as Array<{ n: number }>;
-          return Number(r[0]?.n ?? 0);
-        })(),
-        'wi count',
-      ).catch((err) => {
-        console.warn('[learning.retainFeed] wi count failed:', err instanceof Error ? err.message : err);
-        return null;
-      }),
-      withinBudget(
-        listRubrics().then((r) => r.length),
-        'rubrics count',
-      ).catch(() => null),
-      withinBudget(deps.countRunbooks(), 'runbooks count').catch(() => null),
-      withinBudget(deps.countRecipes(), 'recipes count').catch(() => null),
-    ]);
+        return Number(r[0]?.n ?? 0);
+      })(),
+      'wi count',
+    ).catch((err) => {
+      console.warn('[learning.retainFeed] wi count failed:', err instanceof Error ? err.message : err);
+      return null;
+    }),
+    withinBudget(
+      listRubrics().then((r) => r.length),
+      'rubrics count',
+    ).catch(() => null),
+    withinBudget(deps.countRunbooks(), 'runbooks count').catch(() => null),
+    withinBudget(deps.countRecipes(), 'recipes count').catch(() => null),
+  ]);
   return { memories, plans, wi, rubrics, runbooks, recipes };
 }
 
