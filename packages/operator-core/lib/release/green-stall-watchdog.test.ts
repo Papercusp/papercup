@@ -1282,6 +1282,28 @@ describe('checkMainBehindStaging DB wiring (EI-10103: workspace_id NOT NULL)', (
     expect(insertCall![5]).toBe('explicit-ws');
   });
 
+  it('labels an active protected checkpoint run as active progress, not a stalled promotion', async () => {
+    resolveWorkspaceForHarnessMock.mockResolvedValueOnce('papercusp-workspace');
+    isCheckpointRunLockHeldCheapMock.mockReturnValueOnce({ held: true, elapsedSec: 1980 });
+    mockStalledGit();
+    const { sql } = makeFakeSql([]);
+
+    const result = await checkMainBehindStaging(sql, { root: '/fake/repo', harnessSlug: 'papercusp' });
+
+    expect(result.alarmed).toBe(true);
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    const notice = notifyAttentionMock.mock.calls[0]![0] as { title: string; body: string };
+    expect(notice.title).toContain('ACTIVE');
+    expect(notice.title).not.toContain('STALLED');
+    expect(notice.body).toContain('IN FLIGHT');
+
+    expect(broadcastSevereEventMock).toHaveBeenCalledTimes(1);
+    const event = broadcastSevereEventMock.mock.calls[0]![0] as { summary: string; body: string };
+    expect(event.summary).toContain('checkpoint run is active');
+    expect(event.summary).not.toContain('promotion pipeline stalled');
+    expect(event.body).toContain('do NOT launch another');
+  });
+
   it('does not insert at all when nothing is stalled (no regression to the happy path)', async () => {
     // in-sync (0 commits behind) — evaluateMainBehindStaging never alarms.
     (vi.mocked(execFileSync) as unknown as { mockReturnValueOnce: (v: string) => void }).mockReturnValueOnce('0\n');

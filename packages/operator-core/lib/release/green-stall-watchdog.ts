@@ -1397,9 +1397,15 @@ export async function checkMainBehindStaging(
         }));
       try {
         const { notifyAttention } = await import('../attention-notify');
+        const activeCheckpointRun = snapshot.runInFlight === true;
         await notifyAttention({
           kind: 'intervention',
-          title: 'Release pipeline STALLED — main is falling behind staging',
+          // A live checkpoint run keeps the alarm's intervention/remedy path, but
+          // its alert classification must not call the promotion pipeline stalled
+          // while the protected producer is still delivering a verdict.
+          title: activeCheckpointRun
+            ? 'Release pipeline ACTIVE — main is falling behind staging while a checkpoint run is in flight'
+            : 'Release pipeline STALLED — main is falling behind staging',
           body: verdict.reason ?? '',
           importance: 'urgent',
           workspaceId,
@@ -1409,7 +1415,10 @@ export async function checkMainBehindStaging(
         console.warn(`[main-behind-staging-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
       }
       await broadcastSevereEvent({
-        summary: `main is ${snapshot.commitsBehind} commits behind staging on ${harnessSlug} — promotion pipeline stalled.`,
+        summary:
+          snapshot.runInFlight === true
+            ? `main is ${snapshot.commitsBehind} commits behind staging on ${harnessSlug} — checkpoint run is active; wait for its verdict before classifying promotion as stalled.`
+            : `main is ${snapshot.commitsBehind} commits behind staging on ${harnessSlug} — promotion pipeline stalled.`,
         body: verdict.reason ?? '',
         category: 'severe-event',
         conditionKey: `main-behind-staging:${harnessSlug}`,
