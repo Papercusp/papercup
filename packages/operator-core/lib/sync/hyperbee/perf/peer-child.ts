@@ -305,6 +305,12 @@ async function main(): Promise<void> {
       swarmOverride: swarm,
       verifyBindingOverride: async () => 'verified',
       applyOverride: apply,
+      // Local perf children run with the no-PG loader above. Explicitly disable
+      // the optional boot-time re-key composition too: otherwise the default
+      // buildHiveRekeyBootDeps path reaches the stub, fail-opens, and records
+      // epoch_gate_skipped on an otherwise usable-looking artifact. Hive-bound
+      // peers retain the production composition because they exercise re-key.
+      ...(cfg.hivePubkey ? {} : { rekeyDepsOverride: null }),
       mergePollMs: cfg.mergePollMs ?? 1000,
       pendingRetryMs: 1000,
       reverifyIntervalMs: 0,

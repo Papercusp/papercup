@@ -18,7 +18,11 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { spawnProcMesh, type PeerChildHandle } from './child-driver';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import createTestnet from 'hyperdht/testnet.js';
+import { spawnPeerChild, spawnProcMesh, type PeerChildHandle } from './child-driver';
 import { MeshFormationError } from './mesh-outcome';
 import type { PeerChildConfig } from './peer-child';
 
@@ -91,5 +95,43 @@ describe('spawnProcMesh formation failure is typed (EI-115)', () => {
     expect(mesh.readers).toHaveLength(1);
     expect(mesh.readers[0].cfg.peerIndex).toBe(1);
     await mesh.teardown();
+  });
+});
+
+describe('local perf peer boot', () => {
+  it('does not record PG-backed re-key invalidation on a usable local child', async () => {
+    const testnet = await createTestnet(3);
+    const root = mkdtempSync(join(tmpdir(), 'p2p-perf-peer-child-'));
+    const logs: string[] = [];
+    const bootstrap = (testnet.bootstrap as Array<{ host: string; port: number }>).map((b) => ({
+      host: b.host,
+      port: b.port,
+    }));
+    const child = spawnPeerChild(
+      {
+        role: 'writer',
+        workspaceId: 'ws-p2p-perf-child-test',
+        harnessSlug: 'perf-proc',
+        root,
+        bootstrap,
+        peerIndex: 0,
+        count: 0,
+      },
+      (line) => logs.push(line),
+    );
+
+    try {
+      await expect(child.waitFor('ready', 30_000)).resolves.toMatchObject({ evt: 'ready' });
+      await expect(child.stopAndCollect(30_000)).resolves.toMatchObject({
+        evt: 'result',
+        role: 'writer',
+        peerIndex: 0,
+      });
+      expect(logs.filter((line) => line.includes('epoch_gate_skipped'))).toEqual([]);
+    } finally {
+      if (!child.exited) child.kill();
+      await testnet.destroy();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
