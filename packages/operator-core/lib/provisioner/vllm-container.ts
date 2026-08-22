@@ -52,6 +52,9 @@
  * entries, the same technique provision.test.ts already uses for its llama-server cases.
  */
 import { execFile } from 'node:child_process';
+import { lstat, readdir } from 'node:fs/promises';
+import type { Dirent, Stats } from 'node:fs';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
 import type { WeightsPlan } from './weights';
 
@@ -83,6 +86,110 @@ async function defaultExec(cmd: string, args: string[], timeoutMs = 5000): Promi
  * AWQ/GPTQ catalog entry exists).
  */
 export const VLLM_PINNED_IMAGE = 'vllm/vllm-openai:v0.24.0';
+
+/**
+ * The container-side HF root. Do not mount a host cache at `/root/.cache/huggingface`:
+ * vLLM images run as root by default, which turns a host user's cache into a root-owned
+ * cleanup trap. The rendered run commands below use a non-root identity and this neutral
+ * mount point together, so both Docker and Podman write with the host user's ownership.
+ */
+export const VLLM_CONTAINER_HF_HOME = '/tmp/papercusp-huggingface';
+
+export interface HfCacheOwnershipCheck {
+  /** False means the cache must not be used until its ownership/access problem is fixed. */
+  healthy: boolean;
+  /** False when the path is absent or the current platform has no numeric uid primitive. */
+  checked: boolean;
+  cacheDir: string;
+  foreignEntries: string[];
+  errors: string[];
+  detail: string;
+}
+
+export interface HfCacheOwnershipDeps {
+  /** Injected in tests; production uses the current process uid. */
+  uid?: number;
+  readdir?: (path: string) => Promise<Dirent[]>;
+  lstat?: (path: string) => Promise<Stats>;
+}
+
+/**
+ * Read-only health assertion for a host-mounted Hugging Face cache. A privileged model
+ * writer can leave `.no_exist` files owned by root even when the cache is otherwise empty;
+ * checking every entry catches that class before a user-scoped reclaim or a new container
+ * start reports a misleading partial success. Missing caches are healthy-but-unchecked.
+ */
+export async function inspectHfCacheOwnership(cacheDir: string, deps: HfCacheOwnershipDeps = {}): Promise<HfCacheOwnershipCheck> {
+  const uid = deps.uid ?? (typeof process.getuid === 'function' ? process.getuid() : undefined);
+  const base: HfCacheOwnershipCheck = {
+    healthy: true,
+    checked: false,
+    cacheDir,
+    foreignEntries: [],
+    errors: [],
+    detail: '',
+  };
+  if (uid === undefined) {
+    return { ...base, detail: 'current platform does not expose a numeric uid; cache ownership check skipped' };
+  }
+
+  const readEntries = deps.readdir ?? ((path: string) => readdir(path, { withFileTypes: true }));
+  const statEntry = deps.lstat ?? lstat;
+  let root: Stats;
+  try {
+    root = await statEntry(cacheDir);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT') return { ...base, detail: 'cache directory does not exist yet' };
+    return {
+      ...base,
+      checked: true,
+      healthy: false,
+      errors: [`${cacheDir}: ${error instanceof Error ? error.message : String(error)}`],
+      detail: 'cache ownership could not be checked',
+    };
+  }
+
+  const foreignEntries: string[] = [];
+  const errors: string[] = [];
+  const visited = new Set<string>();
+  const walk = async (dir: string): Promise<void> => {
+    if (visited.has(dir)) return;
+    visited.add(dir);
+    let entries: Dirent[];
+    try {
+      entries = await readEntries(dir);
+    } catch (error) {
+      errors.push(`${dir}: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      let info: Stats;
+      try {
+        info = await statEntry(path);
+      } catch (error) {
+        errors.push(`${path}: ${error instanceof Error ? error.message : String(error)}`);
+        continue;
+      }
+      if (info.uid !== uid) foreignEntries.push(path);
+      // lstat + the Dirent guard keeps a symlink from escaping the cache root.
+      if (entry.isDirectory() && !entry.isSymbolicLink()) await walk(path);
+    }
+  };
+
+  if (root.uid !== uid) foreignEntries.push(cacheDir);
+  if (root.isDirectory()) await walk(cacheDir);
+  const healthy = foreignEntries.length === 0 && errors.length === 0;
+  return {
+    healthy,
+    checked: true,
+    cacheDir,
+    foreignEntries,
+    errors,
+    detail: healthy ? 'all cache entries are owned by the current user' : 'cache contains foreign-owned or unreadable entries',
+  };
+}
 
 /**
  * Probe for a WORKING container runtime — docker first (the more common default), podman as a
@@ -215,8 +322,9 @@ export interface VllmContainerUnitOptions {
   port: number;
   maxModelLen: number;
   gpuMemoryUtilization: number;
-  /** Host directory bind-mounted to the container's `/root/.cache/huggingface` (so repeated
-   *  restarts/pulls reuse the same on-disk weights cache instead of re-downloading). */
+  /** Host directory bind-mounted to the container-side HF root (so repeated restarts/pulls
+   *  reuse the same on-disk weights cache instead of re-downloading). The host directory is
+   *  health-checked by `planProvision`; it must remain owned/readable by the current user. */
   hfCacheDir: string;
   /** Absolute path to append stdout/stderr to. */
   logPath: string;
@@ -224,7 +332,14 @@ export interface VllmContainerUnitOptions {
    *  function beyond embedding it in the rendered unit file (same trust level as any other
    *  systemd-unit secret — the caller is responsible for the unit file's on-disk permissions). */
   hfToken?: string;
+  /** Numeric host uid:gid for detached Docker runs. Systemd units use `%U:%G` instead. */
+  containerUser?: string;
   description?: string;
+}
+
+function currentHostContainerUser(): string | undefined {
+  if (typeof process.getuid !== 'function' || typeof process.getgid !== 'function') return undefined;
+  return `${process.getuid()}:${process.getgid()}`;
 }
 
 /** Render a systemd user-unit (`[Unit]/[Service]/[Install]`) for a vLLM backend running as a
@@ -238,7 +353,13 @@ export function renderVllmContainerUnit(opts: VllmContainerUnitOptions): string 
     opts.description ?? `vLLM (${opts.runtime}) serving ${opts.servedModelName} (provisioner wizard — local-concurrent-inference-2026-07-02 P-013)`;
   const after = opts.runtime === 'docker' ? 'network.target docker.service' : 'network.target';
   const requires = opts.runtime === 'docker' ? '\nRequires=docker.service' : '';
-  const envLine = opts.hfToken ? ` \\\n  -e HUGGING_FACE_HUB_TOKEN=${opts.hfToken}` : '';
+  const identityLine = opts.runtime === 'podman' ? '  --userns=keep-id \\\n' : '  --user %U:%G \\\n';
+  const envLine = [
+    ` \\\n  -e HF_HOME=${VLLM_CONTAINER_HF_HOME}`,
+    ` \\\n  -e HF_HUB_CACHE=${VLLM_CONTAINER_HF_HOME}/hub`,
+    ` \\\n  -e TRANSFORMERS_CACHE=${VLLM_CONTAINER_HF_HOME}/transformers`,
+    ...(opts.hfToken ? [` \\\n  -e HUGGING_FACE_HUB_TOKEN=${opts.hfToken}`] : []),
+  ].join('');
   return `[Unit]
 Description=${description}
 After=${after}${requires}
@@ -247,9 +368,10 @@ After=${after}${requires}
 Type=simple
 ExecStartPre=-${opts.runtime} rm -f ${opts.containerName}
 ExecStart=${opts.runtime} run --rm --name ${opts.containerName} \\
-  --gpus all \\
-  -p ${opts.host}:${opts.port}:8000 \\
-  -v ${opts.hfCacheDir}:/root/.cache/huggingface${envLine} \\
+${identityLine}\
+ --gpus all \\
+ -p ${opts.host}:${opts.port}:8000 \\
+  -v ${opts.hfCacheDir}:${VLLM_CONTAINER_HF_HOME}${envLine} \\
   ${opts.image} \\
   --model ${opts.hfModelRepo} \\
   --served-model-name ${opts.servedModelName} \\
@@ -277,7 +399,27 @@ export type VllmDetachedRunOptions = Omit<VllmContainerUnitOptions, 'logPath' | 
  *  `applyProvision()` yet (that function is systemd/Linux-only across every backend today, a
  *  pre-existing scope boundary, not new to vLLM) — see this module's header comment. */
 export function renderVllmDetachedRunArgs(opts: VllmDetachedRunOptions): string[] {
-  const args = ['run', '-d', '--restart', 'unless-stopped', '--name', opts.containerName, '--gpus', 'all', '-p', `${opts.host}:${opts.port}:8000`, '-v', `${opts.hfCacheDir}:/root/.cache/huggingface`];
+  const args = ['run', '-d', '--restart', 'unless-stopped', '--name', opts.containerName];
+  if (opts.runtime === 'podman') {
+    args.push('--userns=keep-id');
+  } else {
+    const containerUser = opts.containerUser ?? currentHostContainerUser();
+    if (containerUser) args.push('--user', containerUser);
+  }
+  args.push(
+    '--gpus',
+    'all',
+    '-p',
+    `${opts.host}:${opts.port}:8000`,
+    '-v',
+    `${opts.hfCacheDir}:${VLLM_CONTAINER_HF_HOME}`,
+    '-e',
+    `HF_HOME=${VLLM_CONTAINER_HF_HOME}`,
+    '-e',
+    `HF_HUB_CACHE=${VLLM_CONTAINER_HF_HOME}/hub`,
+    '-e',
+    `TRANSFORMERS_CACHE=${VLLM_CONTAINER_HF_HOME}/transformers`,
+  );
   if (opts.hfToken) args.push('-e', `HUGGING_FACE_HUB_TOKEN=${opts.hfToken}`);
   args.push(
     opts.image,

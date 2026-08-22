@@ -24,8 +24,11 @@ import {
   detectContainerRuntime,
   resolveVllmImage,
   renderVllmContainerUnit,
+  inspectHfCacheOwnership,
   VLLM_PINNED_IMAGE,
   type ContainerRuntimeInfo,
+  type HfCacheOwnershipCheck,
+  type HfCacheOwnershipDeps,
   type VllmImageDeps,
 } from './vllm-container';
 import {
@@ -47,6 +50,8 @@ export interface ProvisionPlan {
    *  hardware where the probe would be moot. Feeds `recommendCombo`'s "downgrade to
    *  llama-server when no working Docker/Podman runtime" gate. */
   containerRuntime: ContainerRuntimeInfo | null;
+  /** Read-only ownership assertion for the host-mounted HF cache. `null` for non-vLLM plans. */
+  hfCacheOwnership: HfCacheOwnershipCheck | null;
   backendId: string;
   unitFileContent: string | null;
   unitFilePath: string;
@@ -79,6 +84,8 @@ export interface PlanProvisionOptions {
   /** Host directory bind-mounted to the vLLM container's `/root/.cache/huggingface`. Defaults
    *  to `${home}/.cache/huggingface`. */
   hfCacheDir?: string;
+  /** Filesystem seams for the read-only HF cache ownership assertion; tests only. */
+  hfCacheOwnershipDeps?: HfCacheOwnershipDeps;
 }
 
 function defaultHome(): string {
@@ -105,6 +112,7 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
       recommendation,
       weights: null,
       containerRuntime,
+      hfCacheOwnership: null,
       backendId: '',
       unitFileContent: null,
       unitFilePath: '',
@@ -126,9 +134,15 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
   const home = opts.home ?? defaultHome();
   const unitFilePath = opts.unitFilePath ?? `${home}/.config/systemd/user/${backendId}.service`;
   const logPath = opts.logPath ?? `${home}/.papercusp/${backendId}.log`;
+  const hfCacheDir = opts.hfCacheDir ?? `${home}/.cache/huggingface`;
+  const hfCacheOwnership =
+    entry.backend === 'vllm' ? await inspectHfCacheOwnership(hfCacheDir, opts.hfCacheOwnershipDeps) : null;
+  const cacheOwnershipBlocked = hfCacheOwnership && !hfCacheOwnership.healthy
+    ? `Hugging Face cache ownership check failed for ${hfCacheDir}: ${hfCacheOwnership.detail}`
+    : null;
 
   const unitFileContent =
-    !weights.needsDownload && weights.weightsPath
+    !cacheOwnershipBlocked && !weights.needsDownload && weights.weightsPath
       ? entry.backend === 'vllm' && containerRuntime?.runtime
         ? renderVllmContainerUnit({
             runtime: containerRuntime.runtime,
@@ -141,7 +155,7 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
             port: entry.serve.portDefault,
             maxModelLen: entry.serve.ctxTotal,
             gpuMemoryUtilization: entry.serve.gpuMemoryUtilization ?? 0.9,
-            hfCacheDir: opts.hfCacheDir ?? `${home}/.cache/huggingface`,
+            hfCacheDir,
             logPath,
           })
         : entry.backend === 'llama-server'
@@ -163,7 +177,7 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
       : null;
 
   const gatewayRegisterInput: RegisterLocalBackendInput | null =
-    !weights.needsDownload && weights.weightsPath
+    !cacheOwnershipBlocked && !weights.needsDownload && weights.weightsPath
       ? {
           id: backendId,
           kind: entry.backend,
@@ -183,11 +197,11 @@ export async function planProvision(opts: PlanProvisionOptions = {}): Promise<Pr
         }
       : null;
 
-  const blocked = weights.needsDownload
+  const blocked = cacheOwnershipBlocked ?? (weights.needsDownload
     ? `${entry.backend === 'vllm' ? 'container image' : 'weights'} not present locally — ${weights.pullHint ?? weights.detail ?? 'a download is required'}`
-    : null;
+    : null);
 
-  return { hardware, recommendation, weights, containerRuntime, backendId, unitFileContent, unitFilePath, gatewayRegisterInput, blocked };
+  return { hardware, recommendation, weights, containerRuntime, hfCacheOwnership, backendId, unitFileContent, unitFilePath, gatewayRegisterInput, blocked };
 }
 
 export interface ApplyProvisionOptions {

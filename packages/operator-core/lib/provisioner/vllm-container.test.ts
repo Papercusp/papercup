@@ -5,9 +5,24 @@ import {
   pullVllmImage,
   renderVllmContainerUnit,
   renderVllmDetachedRunArgs,
+  inspectHfCacheOwnership,
   VLLM_PINNED_IMAGE,
+  VLLM_CONTAINER_HF_HOME,
   type ExecFn,
 } from './vllm-container';
+
+function dirent(name: string, directory: boolean): import('node:fs').Dirent {
+  return {
+    name,
+    isDirectory: () => directory,
+    isFile: () => !directory,
+    isBlockDevice: () => false,
+    isCharacterDevice: () => false,
+    isFIFO: () => false,
+    isSocket: () => false,
+    isSymbolicLink: () => false,
+  } as import('node:fs').Dirent;
+}
 
 describe('detectContainerRuntime', () => {
   it('picks docker when it answers a version query', async () => {
@@ -119,6 +134,43 @@ describe('pullVllmImage', () => {
   });
 });
 
+describe('inspectHfCacheOwnership', () => {
+  it('passes an absent cache without treating it as a health failure', async () => {
+    const result = await inspectHfCacheOwnership('/missing/cache', {
+      uid: 1000,
+      lstat: async () => {
+        const error = new Error('missing') as NodeJS.ErrnoException;
+        error.code = 'ENOENT';
+        throw error;
+      },
+    });
+    expect(result).toMatchObject({ healthy: true, checked: false, foreignEntries: [] });
+  });
+
+  it('finds a root-owned negative-cache entry recursively', async () => {
+    const entries = new Map([
+      ['/cache', [dirent('.no_exist', true)]],
+      ['/cache/.no_exist', [dirent('revision.json', false)]],
+    ]);
+    const result = await inspectHfCacheOwnership('/cache', {
+      uid: 1000,
+      readdir: async (path) => entries.get(path) ?? [],
+      lstat: async (path) => ({ uid: path.endsWith('revision.json') ? 0 : 1000, isDirectory: () => !path.endsWith('.json') } as never),
+    });
+    expect(result.healthy).toBe(false);
+    expect(result.foreignEntries).toEqual(['/cache/.no_exist/revision.json']);
+  });
+
+  it('passes when every cache entry is owned by the current user', async () => {
+    const result = await inspectHfCacheOwnership('/cache', {
+      uid: 1000,
+      readdir: async (path) => (path === '/cache' ? [dirent('hub', true)] : []),
+      lstat: async () => ({ uid: 1000, isDirectory: () => true } as never),
+    });
+    expect(result).toMatchObject({ healthy: true, checked: true, foreignEntries: [], errors: [] });
+  });
+});
+
 describe('renderVllmContainerUnit', () => {
   const baseOpts = {
     runtime: 'docker' as const,
@@ -144,7 +196,11 @@ describe('renderVllmContainerUnit', () => {
     expect(unit).toContain('ExecStart=docker run --rm --name provisioner-ornith-awq-vllm');
     expect(unit).toContain('--gpus all');
     expect(unit).toContain('-p 127.0.0.1:8000:8000');
-    expect(unit).toContain('-v /home/testuser/.cache/huggingface:/root/.cache/huggingface');
+    expect(unit).toContain(`--user %U:%G`);
+    expect(unit).toContain(`-v /home/testuser/.cache/huggingface:${VLLM_CONTAINER_HF_HOME}`);
+    expect(unit).toContain(`-e HF_HOME=${VLLM_CONTAINER_HF_HOME}`);
+    expect(unit).toContain(`-e HF_HUB_CACHE=${VLLM_CONTAINER_HF_HOME}/hub`);
+    expect(unit).toContain(`-e TRANSFORMERS_CACHE=${VLLM_CONTAINER_HF_HOME}/transformers`);
     expect(unit).toContain(VLLM_PINNED_IMAGE);
     expect(unit).toContain('--model maxwell1500/ornith-35b-AWQ');
     expect(unit).toContain('--served-model-name ornith-35b-awq');
@@ -160,6 +216,8 @@ describe('renderVllmContainerUnit', () => {
     expect(unit).not.toContain('Requires=docker.service');
     expect(unit).not.toContain('docker.service');
     expect(unit).toContain('ExecStart=podman run --rm');
+    expect(unit).toContain('--userns=keep-id');
+    expect(unit).not.toContain('--user %U:%G');
   });
 
   it('embeds an HF token env line only when supplied', () => {
@@ -190,11 +248,16 @@ describe('renderVllmDetachedRunArgs', () => {
       maxModelLen: 65536,
       gpuMemoryUtilization: 0.9,
       hfCacheDir: '/Users/test/.cache/huggingface',
+      containerUser: '501:20',
     });
     expect(args[0]).toBe('run');
     expect(args).toContain('-d');
     expect(args).toContain('unless-stopped');
     expect(args).toContain('--gpus');
+    expect(args).toContain('--user');
+    expect(args).toContain('501:20');
+    expect(args).toContain(`HF_HOME=${VLLM_CONTAINER_HF_HOME}`);
+    expect(args).not.toContain('/root/.cache/huggingface');
     expect(args).toContain(VLLM_PINNED_IMAGE);
     expect(args).toContain('--quantization');
     expect(args).toContain('awq');
@@ -217,5 +280,23 @@ describe('renderVllmDetachedRunArgs', () => {
     });
     expect(withToken).toContain('-e');
     expect(withToken).toContain('HUGGING_FACE_HUB_TOKEN=hf_abc');
+  });
+
+  it('uses Podman keep-id rather than a root container identity', () => {
+    const args = renderVllmDetachedRunArgs({
+      runtime: 'podman',
+      containerName: 'x',
+      image: VLLM_PINNED_IMAGE,
+      hfModelRepo: 'r',
+      servedModelName: 's',
+      quantization: 'awq',
+      host: '127.0.0.1',
+      port: 8000,
+      maxModelLen: 4096,
+      gpuMemoryUtilization: 0.8,
+      hfCacheDir: '/hf',
+    });
+    expect(args).toContain('--userns=keep-id');
+    expect(args).not.toContain('--user');
   });
 });
