@@ -131,7 +131,10 @@ describe('work_items:get — checkpoint field', () => {
       kind: 'bug',
       family: 'issue',
       title: 'finished item',
-      state: 'resolved',
+      // `done` is the unified terminal state used by the live issue-family writer.
+      // Keep this exact shape covered: the original production repro was a DONE row,
+      // while the legacy `resolved` alias is covered by the shared terminal-state set.
+      state: 'done',
       terminalCompletionEvidence: { verifiedHow: 'unit', testResult: '3 passed' },
     });
     getWorkItemCheckpointWithMeta.mockResolvedValue({ checkpoint: null, updatedAtMs: null });

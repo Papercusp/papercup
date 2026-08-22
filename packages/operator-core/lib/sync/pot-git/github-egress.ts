@@ -592,13 +592,27 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     );
     if (push.code === 0) {
       res.pushed.push({ remoteRef: spec.remoteRef, from: remoteSha, to: pushSha });
+    } else {
+      // A concurrent writer can land this exact target between the initial
+      // ls-remote and our push. Git then reports the losing CAS as a push
+      // failure (for example, "cannot lock ref ... is at <target> but
+      // expected <old>"), even though the desired state is already true.
+      // Re-read the authoritative remote ref before classifying the failure;
+      // an exact-target match is an idempotent success, not a transport error
+      // or divergence signal. If the proof fails, retain the existing
+      // fail-closed classification below.
+      const afterPush = await lsRemote(input.repoPath, input.remoteUrl, spec.remoteRef, runGit);
+      if (!('error' in afterPush) && afterPush.sha === pushSha) {
+        res.upToDate.push(spec.remoteRef);
+        continue;
+      }
     // `failed to push some refs` is Git's GENERIC trailer for every rejected
     // push (permission/ruleset failures included), not proof of a non-FF. The
     // pre-push ancestry check above already proved this update fast-forwardable;
     // classify only stderr carrying an actual non-FF/fetch-first reason. A
     // permission failure must stay a transport error so metadata preserves the
     // actionable cause instead of falsely escalating divergence.
-    } else if (/non-fast-forward|fetch first/i.test(push.stderr)) {
+      if (/non-fast-forward|fetch first/i.test(push.stderr)) {
       res.rejectedNonFF.push({
         remoteRef: spec.remoteRef,
         remoteSha: null,
@@ -610,6 +624,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       const message = `push ${spec.remoteRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
       res.remoteErrors.push({ message, transient: push.code === -1 });
       res.errors.push(message);
+    }
     }
   }
 

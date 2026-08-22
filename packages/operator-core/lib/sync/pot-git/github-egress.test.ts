@@ -66,4 +66,46 @@ describe('egressCanonicalRefs credential write preflight', () => {
       ['push', REMOTE, `${SHA}:${REF}`],
     ]);
   });
+
+  it('classifies a losing same-target CAS race as up-to-date after re-reading the remote', async () => {
+    const oldSha = 'b'.repeat(40);
+    const calls: string[][] = [];
+    let lsRemoteReads = 0;
+    const runGit: RunGit = async (args) => {
+      calls.push(args);
+      if (args[0] === 'ls-remote') {
+        lsRemoteReads += 1;
+        return {
+          code: 0,
+          stdout: `${lsRemoteReads === 1 ? oldSha : SHA} ${REF}\n`,
+          stderr: '',
+        };
+      }
+      if (args[0] === 'cat-file' || args[0] === 'merge-base') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'push' && args[1] === '--dry-run') return { code: 0, stdout: '', stderr: '' };
+      if (args[0] === 'push') {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: `remote: error: cannot lock ref ${REF}: is at ${SHA} but expected ${oldSha}`,
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+
+    const result = await egressCanonicalRefs({
+      repoPath: '/repo',
+      remoteUrl: REMOTE,
+      refs: [{ sha: SHA, remoteRef: REF }],
+      runGit,
+      scanSecrets: false,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.upToDate).toEqual([REF]);
+    expect(result.pushed).toEqual([]);
+    expect(result.rejectedNonFF).toEqual([]);
+    expect(result.remoteErrors).toEqual([]);
+    expect(calls.filter((args) => args[0] === 'ls-remote')).toHaveLength(2);
+  });
 });
