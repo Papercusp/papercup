@@ -1603,6 +1603,45 @@ export async function listAllIssuesForFileExport(
 }
 
 /**
+ * Run an internal whole-corpus issue read while enforcing a bounded result at
+ * the seam that hands data back to a caller.
+ *
+ * The ordinary {@link listIssues} ceiling protects UI/model transports, while
+ * a few server-side reads genuinely need the complete population to classify,
+ * filter, aggregate, and then return a small projection. Historically the only
+ * complete reader was named for file export, which tempted those callers either
+ * to reuse a misleading surface or to grow the public list limit. This callback
+ * form keeps the unbounded array inside this module's call stack and rejects a
+ * projector that tries to leak more than its declared bound.
+ *
+ * The callback may return rows or a one-row aggregate envelope. It must not
+ * retain the input array after it resolves.
+ */
+export async function projectAllIssuesForBoundedRead<T>(
+  filter: ListIssuesFilter,
+  opts: {
+    /** Maximum number of projected rows allowed to leave this seam. */
+    maxRows: number;
+    project: (issues: readonly EngineerIssue[]) => Promise<readonly T[]> | readonly T[];
+  },
+): Promise<T[]> {
+  if (!Number.isSafeInteger(opts.maxRows) || opts.maxRows < 0) {
+    throw new RangeError('projectAllIssuesForBoundedRead: maxRows must be a non-negative safe integer');
+  }
+  const issues = await listIssuesWithLimit(filter, null);
+  const projected = await opts.project(issues);
+  if (!Array.isArray(projected)) {
+    throw new TypeError('projectAllIssuesForBoundedRead: projector must return an array');
+  }
+  if (projected.length > opts.maxRows) {
+    throw new RangeError(
+      `projectAllIssuesForBoundedRead: projector returned ${projected.length} rows (max ${opts.maxRows})`,
+    );
+  }
+  return [...projected];
+}
+
+/**
  * COUNT companion to {@link listIssues} — the true total for the same filter,
  * minus order/limit. Lets a capped read render "N of TOTAL" instead of the
  * downloaded length. Topic-filtered counts use the indexed coord_links join
