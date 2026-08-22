@@ -1631,15 +1631,17 @@ export async function captureImprovement(
   // observations P-044). Fire-and-forget via a lazy import so the pure, PG-free
   // capture core (+ its unit tests) never statically depend on the SSE layer.
   void trackDetached(
-    import('../../sync-sse').then((m) =>
-      isObservation
-        ? Promise.all([
-            m.notifySyncInvalidate('learning.observations'),
-            m.notifySyncInvalidate('learning.observations.summary'),
-            m.notifySyncInvalidate('learning.observations.counts'),
-          ])
-        : m.notifySyncInvalidate('learning.improvements'),
-    ),
+    import('../../sync-sse').then(async (m): Promise<void> => {
+      if (isObservation) {
+        await Promise.all([
+          m.notifySyncInvalidate('learning.observations'),
+          m.notifySyncInvalidate('learning.observations.summary'),
+          m.notifySyncInvalidate('learning.observations.counts'),
+        ]);
+        return;
+      }
+      await m.notifySyncInvalidate('learning.improvements');
+    }),
   ).catch(() => {});
   // Push-on-write for the Health tab's observations/improvements panels
   // (stop-discarded-dedup-and-audit-server-polling-2026-07-26 P-013 / D-007):
