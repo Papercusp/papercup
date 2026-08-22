@@ -22,7 +22,6 @@ import {
   FACT_SCOPES,
   FACT_BODY_MAX_CHARS,
   FACT_CONFIDENCE_LEVELS,
-  FACT_KINDS,
   CONVENTION_ENFORCEMENT_TIERS,
   FACT_MAX_DEPENDENCIES,
   FACTS_PER_SCOPE_CAP,
@@ -257,7 +256,12 @@ export default defineTool({
   // assertFact write. Do not let the dispatcher hold an ambient workspace txn
   // across those awaits; the write owns a bounded admin-pool transaction below.
   skipWorkspaceTx: true,
-  args: z.object({
+  args: (() => {
+    // Keep the modality relationship representable in the published JSON
+    // Schema. A single object with both fields optional makes compact tool
+    // callers believe `settledBy` is valid for every kind, even though the
+    // store correctly rejects it outside `undecidable` (EI-20194111544678291).
+    const base = {
     scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef; accepted so a snake_case call still resolves the ref instead of silently dropping it.'),
@@ -310,20 +314,6 @@ export default defineTool({
       .optional()
       .describe(
         'ISO timestamp at which a subjectVolatile snapshot was sampled. Required with subjectVolatile:true and refused by the store otherwise.',
-      ),
-    kind: z
-      .enum(FACT_KINDS)
-      .optional()
-      .describe(
-        "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), 'convention' (normative: \"we do X here\"), or 'undecidable' (NOT determinable from the available evidence — recorded so peers STOP RE-DERIVING it; REQUIRES settledBy). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).",
-      ),
-    settledBy: z
-      .string()
-      .min(1)
-      .max(500)
-      .optional()
-      .describe(
-        "P-002: what evidence WOULD settle this question. REQUIRED for kind:'undecidable', and REFUSED on any other kind (on a settled claim it has no referent). Name a concrete probe — a query, a tool, a measurement — not \"more investigation\". The rule mirrors the required insteadRead on refuseAnswer(): an UNKNOWN with no stated exit does not stop re-derivation, it INVITES it, because the next reader cannot distinguish \"nobody COULD determine this\" from \"nobody has tried lately\" and the cheapest way to tell them apart is to try again — which is the exact cost this modality exists to eliminate.",
       ),
     dependsOn: z
       .array(
@@ -393,7 +383,30 @@ export default defineTool({
           `true only when you deliberately want the clipped write to land anyway (P-007: a write is never rejected outright — ` +
           `this is the one way to still get the old lossy-but-never-lost behavior).`,
       ),
-  }),
+    };
+    const kindDescription =
+      "P-008: the claim MODALITY — 'conclusion' (a settled finding), 'assumption' (provisional; pair it with dependsOn so it goes stale on its own terms), 'convention' (normative: \"we do X here\"), or 'undecidable' (NOT determinable from the available evidence — recorded so peers STOP RE-DERIVING it; REQUIRES settledBy). This is NOT `scope`: scope says who the fact is ABOUT, kind says what kind of claim it is. Omit = not declared (never rewritten to 'conclusion' — a modality nobody stated is not one).";
+    const settledByDescription =
+      "P-002: what evidence WOULD settle this question. REQUIRED for kind:'undecidable', and REFUSED on any other kind (on a settled claim it has no referent). Name a concrete probe — a query, a tool, a measurement — not \"more investigation\". The rule mirrors the required insteadRead on refuseAnswer(): an UNKNOWN with no stated exit does not stop re-derivation, it INVITES it, because the next reader cannot distinguish \"nobody COULD determine this\" from \"nobody has tried lately\" and the cheapest way to tell them apart is to try again — which is the exact cost this modality exists to eliminate.";
+
+    const undecidableArgs = z.object({
+      ...base,
+      kind: z.literal('undecidable').describe(kindDescription),
+      settledBy: z.string().min(1).max(500).describe(settledByDescription),
+    });
+    const declaredArgs = z.object({
+      ...base,
+      kind: z
+        .enum(['conclusion', 'assumption', 'convention'])
+        .optional()
+        .describe(kindDescription),
+      settledBy: z
+        .never()
+        .optional()
+        .describe('Only valid when kind is "undecidable"; omit it for conclusions, assumptions, and conventions.'),
+    });
+    return z.union([undecidableArgs, declaredArgs]);
+  })(),
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
     const identity = resolveAgentIdentity(ctx);
