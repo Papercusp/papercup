@@ -415,13 +415,20 @@ vi.mock('./agent-tools/coordination/identity', () => ({
 }));
 
 const resolveOwnerGoalMock = vi.hoisted(() => vi.fn());
+const resolveOwnerGoalWithAssessmentMock = vi.hoisted(() => vi.fn());
 vi.mock('./agent-tools/coordination/agent-goal-sources', () => ({
   resolveOwnerGoal: resolveOwnerGoalMock,
+  resolveOwnerGoalWithAssessment: resolveOwnerGoalWithAssessmentMock,
 }));
 
 describe('P-011: agent.goal declares paths coord:goal ACTUALLY produces', () => {
   async function goalPayload(goal: unknown): Promise<unknown> {
     resolveOwnerGoalMock.mockResolvedValue(goal);
+    resolveOwnerGoalWithAssessmentMock.mockResolvedValue({
+      goal,
+      assessment: goal === null ? 'nothing-held' : (goal as { agreement: string }).agreement,
+      diagnostics: [],
+    });
     const { default: goalTool } = await import('./agent-tools/coordination/tools/goal');
     const res = await (goalTool as { handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }> }).handler(
       { ownerId: 'su-p011' },
