@@ -21971,7 +21971,7 @@
           "POST"
         ]
       },
-      "description": "Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered. Pass `live:true` to reconcile against the kernel first (slower, authoritative).",
+      "description": "Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).",
       "capabilities": [
         "intel:read"
       ],
