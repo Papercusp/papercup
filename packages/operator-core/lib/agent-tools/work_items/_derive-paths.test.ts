@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { deriveRepoPathsFromText } from './_derive-paths';
+import {
+  deriveRepoPathsFromText,
+  explicitRepoPathsWarning,
+  validateExplicitRepoPaths,
+} from './_derive-paths';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
@@ -54,5 +58,48 @@ describe('deriveRepoPathsFromText (EI-16028)', () => {
     const many = Array.from({ length: 20 }, (_, i) => `packages/pkg${i}/lib/file.ts`).join(' ');
     expect(deriveRepoPathsFromText(many)).toHaveLength(12);
     expect(deriveRepoPathsFromText(many, { max: 3 })).toHaveLength(3);
+  });
+});
+
+describe('validateExplicitRepoPaths (EI-20191260047847804)', () => {
+  it('reports an explicit path that is misspelled in the selected tree', () => {
+    const got = validateExplicitRepoPaths(
+      [
+        'packages/operator-core/lib/agent-tools/work-items/complete.ts',
+        'packages/operator-core/lib/agent-tools/work_items/complete.ts',
+      ],
+      { repoRoot },
+    );
+    expect(got).toEqual({
+      missing: ['packages/operator-core/lib/agent-tools/work-items/complete.ts'],
+    });
+  });
+
+  it('is silent for existing paths, globs, outside paths, and an unavailable root', () => {
+    expect(
+      validateExplicitRepoPaths(
+        ['packages/operator-core/lib/agent-tools/work_items/complete.ts', 'packages/**/*.ts', '../outside.ts'],
+        { repoRoot },
+      ),
+    ).toBeUndefined();
+    expect(validateExplicitRepoPaths(['packages/nope.ts'], { repoRoot: null })).toBeUndefined();
+  });
+
+  it('fails open when the existence probe throws', () => {
+    expect(
+      validateExplicitRepoPaths(['packages/operator-core/lib/agent-tools/work_items/complete.ts'], {
+        repoRoot: '/repo',
+        exists: () => {
+          throw new Error('EIO');
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('formats a warn-only advisory that names every missing path', () => {
+    const warning = explicitRepoPathsWarning(['packages/a.ts', 'packages/b.ts']);
+    expect(warning).toMatch(/advisory only/);
+    expect(warning).toContain('packages/a.ts');
+    expect(warning).toContain('packages/b.ts');
   });
 });

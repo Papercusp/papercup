@@ -40,6 +40,17 @@ export interface DeriveRepoPathsOptions {
   repoRoot?: string;
 }
 
+/** Injectable filesystem seam for the warn-only explicit-path check. */
+export interface ExplicitRepoPathValidationOptions {
+  /** The checkout against which repo-relative paths should be judged. */
+  repoRoot?: string | null;
+  /** Override existence checks in unit tests; filesystem failures stay fail-open. */
+  exists?: (absPath: string) => boolean;
+}
+
+/** Keep a malformed or adversarial payload from turning create into a tree walk. */
+export const MAX_EXPLICIT_REPO_PATHS_PROBED = 60;
+
 function realpathOrResolve(path: string): string {
   try {
     return realpathSync(path);
@@ -63,6 +74,76 @@ function isExistingContainedPath(repoRoot: string, candidate: string): boolean {
   const resolvedCandidate = resolve(root, candidate);
   if (!isContainedBy(root, resolvedCandidate) || !existsSync(resolvedCandidate)) return false;
   return isContainedBy(root, realpathOrResolve(resolvedCandidate));
+}
+
+/**
+ * Validate caller-supplied `payload.paths` without changing what gets stored.
+ *
+ * Explicit paths are an affinity hint, not a create precondition: a caller may be
+ * coordinating work in a sibling checkout, naming a deleted file, or passing a glob.
+ * We therefore report only cleanly judged, in-tree paths that do not exist. Missing
+ * roots, outside-tree paths, globs, malformed entries, and filesystem errors are all
+ * treated as "cannot judge" and stay silent. This is deliberately warn-only.
+ */
+export function validateExplicitRepoPaths(
+  paths: readonly unknown[],
+  opts: ExplicitRepoPathValidationOptions = {},
+): { missing: string[] } | undefined {
+  const rawRoot = opts.repoRoot?.trim();
+  if (!rawRoot || paths.length === 0) return undefined;
+
+  try {
+    const root = realpathOrResolve(rawRoot);
+    const exists = opts.exists ?? ((absPath: string) => existsSync(absPath));
+    const missing: string[] = [];
+    const seen = new Set<string>();
+
+    for (const raw of paths.slice(0, MAX_EXPLICIT_REPO_PATHS_PROBED)) {
+      if (typeof raw !== 'string') continue;
+      const declared = raw.trim();
+      // Globs describe a set of files, not one path whose existence this guard can
+      // honestly assert. Keep absolute paths that are inside the selected tree: the
+      // caller may have obtained one from a capability result and it is still useful
+      // to flag a typo in it.
+      if (!declared || declared.includes('*') || declared.includes('?') || seen.has(declared)) continue;
+      seen.add(declared);
+
+      let candidate: string;
+      try {
+        candidate = resolve(root, declared);
+      } catch {
+        continue;
+      }
+      if (!isContainedBy(root, candidate)) continue;
+
+      // A symlink can make a lexical in-tree path point outside the checkout. Do not
+      // probe or warn about a path the caller may legitimately own elsewhere.
+      if (!isContainedBy(root, realpathOrResolve(candidate))) continue;
+      try {
+        if (!exists(candidate)) missing.push(declared);
+      } catch {
+        // An fs failure is not evidence of a bad caller path.
+      }
+    }
+
+    return missing.length > 0 ? { missing } : undefined;
+  } catch {
+    // The creation must never fail because its advisory filesystem read could not run.
+    return undefined;
+  }
+}
+
+/** Human-facing, warn-only message for a create that recorded unresolved paths. */
+export function explicitRepoPathsWarning(missing: readonly string[]): string | undefined {
+  if (missing.length === 0) return undefined;
+  const noun = missing.length === 1 ? 'path' : 'paths';
+  return (
+    `work_items:create recorded explicit payload.paths ${missing.length} ${noun} that do NOT exist in the ` +
+    `selected repository tree: ${missing.join(', ')}. This is an advisory only and does not block creation. ` +
+    `If the path was deleted, belongs to a sibling checkout, or is intentionally illustrative, ignore this; ` +
+    `otherwise re-read the canonical repository spelling and update the work-item. ` +
+    `A common failure is inventing a hyphenated directory when the source uses underscores.`
+  );
 }
 
 /**

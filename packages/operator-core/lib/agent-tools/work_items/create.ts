@@ -520,6 +520,7 @@ export default defineTool({
           // P-008 soft-band advisory: created fine, but these OPEN items are
           // semantically close — check them before splitting the work.
           ...(res.similarOpen !== undefined ? { similarOpen: res.similarOpen } : {}),
+          ...(res.explicitPathsWarning !== undefined ? { explicitPathsWarning: res.explicitPathsWarning } : {}),
           // EI-20075667133396690: goal attribution, and its failure. This row is
           // REBUILT from an allowlist rather than spread from `res`, so a new core
           // outcome field reaches the agent only if it is named here — `goalId` was

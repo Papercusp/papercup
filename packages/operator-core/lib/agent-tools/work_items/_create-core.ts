@@ -32,7 +32,11 @@ import { resolveGoalContext } from '../../modes/goal-context';
 import { getGenericKindDatatype } from '../../datatype-registry-store';
 import { validateDatatypePayload } from '../../datatype-payload-validation';
 import { matchRoutingGateHint, type RoutingGateIntent } from '../../routing-gate-hints';
-import { deriveRepoPathsFromText } from './_derive-paths';
+import {
+  deriveRepoPathsFromText,
+  explicitRepoPathsWarning,
+  validateExplicitRepoPaths,
+} from './_derive-paths';
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { admissionIdentity, type AdmissionIdentity } from '../../harness/improvements/digest';
 import {
@@ -165,6 +169,9 @@ export type CreateOneWorkItemResult =
       /** P-005 exact rolling pressure observation when a soft canonical candidate
        *  made the queue-admission circuit relevant to this create. */
       queueAdmission?: IssueAdmissionPressure;
+      /** EI-20191260047847804: explicit payload.paths that could not be resolved
+       *  against the selected project tree. Warn-only; the item was still created. */
+      explicitPathsWarning?: string;
       /** WI-39604: set when `conditionKey` resolved to an OPEN incumbent —
        *  `workItem` is that incumbent (refreshed to this reading), NOT a new row.
        *  `duplicateLeftOpen` reports a lost-race stand-down that failed. */
@@ -707,6 +714,18 @@ export async function createOneWorkItem(
     const explicitPaths = Array.isArray(payloadWithHint?.paths)
       ? (payloadWithHint.paths as unknown[]).filter((p): p is string => typeof p === 'string')
       : undefined;
+    let explicitPathsWarning: string | undefined;
+    if (explicitPaths !== undefined && explicitPaths.length > 0) {
+      try {
+        const unresolved = validateExplicitRepoPaths(explicitPaths, {
+          repoRoot: resolveAgentWorkspaceRoot(ctx),
+        });
+        explicitPathsWarning = unresolved ? explicitRepoPathsWarning(unresolved.missing) : undefined;
+      } catch {
+        // EI-20191260047847804: this check is an advisory. A root-resolution or fs
+        // failure must never turn a successful create into a failure.
+      }
+    }
     const payloadWithPaths =
       explicitPaths === undefined
         ? (() => {
@@ -820,6 +839,7 @@ export async function createOneWorkItem(
             ...(settled.duplicateLeftOpen ? { duplicateLeftOpen: settled.duplicateLeftOpen } : {}),
           },
           ...(similarOpen ? { similarOpen } : {}),
+          ...(explicitPathsWarning ? { explicitPathsWarning } : {}),
           ...(issueAdmission ? { admissionIdentity: identity, dedupCoverage } : {}),
         };
       }
@@ -944,6 +964,7 @@ export async function createOneWorkItem(
       ...(!issueAdmission && args.goalDedupGate && dedupCoverage ? { dedupCoverage } : {}),
       ...(queueAdmission ? { queueAdmission } : {}),
       ...(stateError ? { stateError } : {}),
+      ...(explicitPathsWarning ? { explicitPathsWarning } : {}),
     };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

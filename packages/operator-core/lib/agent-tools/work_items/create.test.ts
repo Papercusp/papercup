@@ -192,6 +192,26 @@ describe('codeSmellsLikeCode + the task nudge (WI-2874)', () => {
   });
 });
 
+describe('explicit payload.paths advisory (EI-20191260047847804)', () => {
+  it('surfaces the core path warning without changing the successful create result', async () => {
+    createM.mockResolvedValue(
+      okCore('source path spelling drift', {
+        explicitPathsWarning: 'work_items:create recorded explicit payload.paths that do NOT exist',
+      }),
+    );
+    const b = await body({ kind: 'bug', title: 'source path spelling drift' });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      explicitPathsWarning: expect.stringContaining('do NOT exist'),
+    });
+  });
+
+  it('does not invent a warning when the core has none', async () => {
+    const b = await body({ kind: 'bug', title: 'ordinary filing' });
+    expect(b.results[0].explicitPathsWarning).toBeUndefined();
+  });
+});
+
 // EI-18655063958515097: "a residual split off a closing plan item silently leaves
 // the lane — no plan link, not claimable, parent reads done while its acceptance
 // ask is unmet". Non-blocking nudge (never refuses the create) when a residual-
