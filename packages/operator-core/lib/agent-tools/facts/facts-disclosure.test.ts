@@ -23,6 +23,18 @@ import { clampFactBody, FACT_BODY_MAX_CHARS, type AgentFact } from '../../agent-
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
 import { RESULT_DOOR_TOKENS } from '../../result-door';
 
+type AssertSchemaField = {
+  description?: string;
+  safeParse(value: unknown): { success: boolean };
+};
+
+const assertSchemaField = (name: string): AssertSchemaField => {
+  const options = (assertTool.args as unknown as { options: Array<{ shape: Record<string, unknown> }> }).options;
+  const field = options.map((option) => option.shape[name]).find(Boolean);
+  if (!field) throw new Error(`facts:assert schema field missing: ${name}`);
+  return field as AssertSchemaField;
+};
+
 const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   scope: 'harness',
   scopeRef: 'papercusp',
@@ -334,7 +346,7 @@ describe('facts:list key lookup — distinguish projection omission from live ab
 
 describe('facts:assert body schema — declared vs enforced cap must not mislead the caller (EI-18670525043445474)', () => {
   it('front-loads the REAL storage cap (FACT_BODY_MAX_CHARS) in the body description, not just the 4000 transport ceiling', () => {
-    const description = assertTool.args.shape.body.description ?? '';
+    const description = assertSchemaField('body').description ?? '';
     // The real, enforced cap must appear EARLY (before "documents" in the closing
     // clause) — a caller reading only the start of a long description must still
     // see it, not just the bare `maxLength: 4000` in the JSON-schema shape.
@@ -346,13 +358,13 @@ describe('facts:assert body schema — declared vs enforced cap must not mislead
 
   it('the schema still ACCEPTS a body past FACT_BODY_MAX_CHARS (up to the 4000 transport ceiling) — never hard-rejects a real conclusion (P-007 regression guard)', () => {
     const over500 = 'x'.repeat(FACT_BODY_MAX_CHARS + 200);
-    const result = assertTool.args.shape.body.safeParse(over500);
+    const result = assertSchemaField('body').safeParse(over500);
     expect(result.success).toBe(true); // accepted, NOT rejected — clampFactBody truncates it downstream
   });
 
   it('the schema still REJECTS a body past the 4000 transport ceiling (the genuine hard limit)', () => {
     const wayOver = 'x'.repeat(4001);
-    const result = assertTool.args.shape.body.safeParse(wayOver);
+    const result = assertSchemaField('body').safeParse(wayOver);
     expect(result.success).toBe(false);
   });
 });
