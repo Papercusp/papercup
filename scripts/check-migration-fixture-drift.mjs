@@ -54,7 +54,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { stripCommentsAndStrings, stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SQL_DIR_REL = 'libs/papercusp/libs/db/sql';
@@ -272,18 +272,132 @@ function defaultGitLsFiles(root) {
   }
 }
 
+/** Find the matching close delimiter, ignoring delimiters inside literals. */
+function matchingDelimiter(source, openIndex, open, close) {
+  let depth = 0;
+  let quote = null;
+  for (let i = openIndex; i < source.length; i++) {
+    const c = source[i];
+    if (quote !== null) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (c === open) depth++;
+    else if (c === close && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Top-level argument ranges inside a call, preserving offsets into the source. */
+function topLevelArgumentRanges(source, start, end) {
+  const ranges = [];
+  const stack = [];
+  let quote = null;
+  let segmentStart = start;
+  const closes = new Map([
+    [')', '('],
+    [']', '['],
+    ['}', '{'],
+  ]);
+  for (let i = start; i < end; i++) {
+    const c = source[i];
+    if (quote !== null) {
+      if (c === '\\') i++;
+      else if (c === quote) quote = null;
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') {
+      stack.push(c);
+      continue;
+    }
+    if (closes.has(c)) {
+      if (stack.at(-1) === closes.get(c)) stack.pop();
+      continue;
+    }
+    if (c === ',' && stack.length === 0) {
+      ranges.push([segmentStart, i]);
+      segmentStart = i + 1;
+    }
+  }
+  if (segmentStart < end) ranges.push([segmentStart, end]);
+  return ranges;
+}
+
+function hasQuotedMigration(source, migrationFile) {
+  const filename = migrationFile.split(/[\\/]/).pop();
+  if (!filename) return false;
+  return new RegExp(`(['"])${escapeRe(filename)}\\1`).test(source);
+}
+
+/**
+ * Whether a fixture's explicit `applyMigrationsForTest` list contains a migration.
+ * Code and string values are read from two same-length masks: the code mask prevents
+ * prose/template strings from becoming phantom calls, while the comments-only mask
+ * preserves the migration filenames inside the real array literal.
+ */
+export function listsMigrationInApplyMigrationsForTest(sourceText, migrationFile, fileName) {
+  if (!migrationFile) return false;
+  const code = stripCommentsAndStrings(sourceText, fileName);
+  const readable = stripCommentsOnly(sourceText, fileName);
+  const calls = /\bapplyMigrationsForTest\s*\(/g;
+  let call;
+  while ((call = calls.exec(code))) {
+    const open = code.indexOf('(', call.index);
+    const close = matchingDelimiter(code, open, '(', ')');
+    if (close < 0) continue;
+    const args = topLevelArgumentRanges(code, open + 1, close);
+    if (args.length < 2) continue;
+    const [secondStart, secondEnd] = args[1];
+    const second = code.slice(secondStart, secondEnd).trim();
+    if (second.startsWith('[')) {
+      const arrayOpen = code.indexOf('[', secondStart);
+      const arrayClose = matchingDelimiter(code, arrayOpen, '[', ']');
+      if (arrayClose >= 0 && hasQuotedMigration(readable.slice(arrayOpen, arrayClose + 1), migrationFile)) return true;
+      continue;
+    }
+
+    // Several fixtures name a reusable `const migrations = [...]` list instead of
+    // spelling the array at the call site. Resolve only a literal array declaration;
+    // dynamic builders remain unrecognised and therefore fail safe (the checker may
+    // report a finding rather than silently suppressing one).
+    const variable = /^([A-Za-z_$][\w$]*)$/.exec(second)?.[1];
+    if (!variable) continue;
+    const declarations = new RegExp(
+      `\\b(?:const|let|var)\\s+${escapeRe(variable)}(?:\\s*:\\s*[^=;\\n]+)?\\s*=\\s*\\[`,
+      'g',
+    );
+    let declaration;
+    while ((declaration = declarations.exec(code))) {
+      const arrayOpen = code.indexOf('[', declaration.index);
+      const arrayClose = matchingDelimiter(code, arrayOpen, '[', ']');
+      if (arrayClose >= 0 && hasQuotedMigration(readable.slice(arrayOpen, arrayClose + 1), migrationFile)) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Integration-test files (repo-root-relative) that inline-construct `table`
  * WITHOUT `column` — i.e. their `CREATE TABLE harness_shared.<table>` fixture
  * names other columns but not this one. `deps` is injected by tests.
  */
 export function findFixtureGaps(table, column, deps = {}) {
-  const { root = ROOT, files = listIntegrationTestFiles(root), readFile = defaultReadFile } = deps;
+  const { root = ROOT, files = listIntegrationTestFiles(root), readFile = defaultReadFile, migrationFile } = deps;
   const gaps = [];
   for (const relPath of files) {
     const text = readFile(root, relPath);
     if (text === null) continue;
     if (!text.includes(table)) continue; // cheap pre-filter BEFORE the parse below
+    if (migrationFile && listsMigrationInApplyMigrationsForTest(text, migrationFile, relPath)) continue;
     // Mask TS comments so a commented-out fixture cannot be read as a live one. Extension
     // dispatch via relPath (.ts) — NOT the SQL path, and NOT stripCommentsAndStrings: these
     // fixtures hold their `CREATE TABLE` INSIDE a template literal, so blanking strings
@@ -369,7 +483,7 @@ async function main() {
     if (!existsSync(abs)) continue;
     const text = readFileSync(abs, 'utf8');
     const relPath = relative(ROOT, abs).split(sep).join('/');
-    const findings = findDrift(text);
+    const findings = findDrift(text, { migrationFile: relPath });
     if (findings.length) anyFindings = true;
     results.push({ file: relPath, findings });
     if (!json) console.log(formatReport(relPath, findings));
