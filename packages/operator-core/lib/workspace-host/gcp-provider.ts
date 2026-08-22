@@ -28,6 +28,8 @@ import type {
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { GCP_CLOUD_PLATFORM_SCOPE } from '../cloud-workspaces/gcp-preflight';
 
+export { GCP_CLOUD_PLATFORM_SCOPE };
+
 export const GCP_WORKSPACE_HOST_TARGET = 'gcp';
 export const GCP_WORKSPACE_HOST_PROVIDER_VERSION = 'gcp-workspace-host-provider-v1';
 export const GCP_IAP_TCP_FORWARDING_RANGE = '35.235.240.0/20';
@@ -336,6 +338,8 @@ type GcpStepInput =
       hostId: string;
     };
 
+type GcpDeleteStepInput = Extract<GcpStepInput, { resourceName: string }>;
+
 const VM_KIND = 'vm';
 const DISK_KIND = 'disk';
 const NETWORK_KIND = 'network';
@@ -372,6 +376,12 @@ function requireString(value: unknown, label: string): string {
 
 function optionalString(value: unknown, label: string): string | undefined {
   return value === undefined ? undefined : requireString(value, label);
+}
+
+function optionalPayload(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`);
+  return value;
 }
 
 function positiveInteger(value: unknown, label: string): number {
@@ -497,7 +507,7 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     bootDiskType: optionalString(provider.bootDiskType, 'gcp.desired.provider.bootDiskType') ?? 'pd-balanced',
     dataDiskType: optionalString(provider.dataDiskType, 'gcp.desired.provider.dataDiskType') ?? 'pd-balanced',
     kmsKeyName: optionalString(provider.kmsKeyName, 'gcp.desired.provider.kmsKeyName'),
-    startupScript: optionalString(provider.startupScript, 'gcp.desired.provider.startupScript'),
+    startupScript: optionalPayload(provider.startupScript, 'gcp.desired.provider.startupScript'),
     metadata: stringRecord(provider.metadata, 'gcp.desired.provider.metadata'),
   };
 }
@@ -568,6 +578,10 @@ function hostIdFor(request: WorkspaceHostPlanRequest): string {
 
 function refName(value: string): string {
   return value.split('/').filter(Boolean).at(-1) ?? value;
+}
+
+function isDeleteStepInput(input: GcpStepInput): input is GcpDeleteStepInput {
+  return input.op.startsWith('delete-');
 }
 
 export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
@@ -1316,15 +1330,8 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           );
       }
     }
-    if (
-      input.op.startsWith('delete-') &&
-      !(await this.describeDeleteTarget(input as Extract<GcpStepInput, { op: 'delete-instance' }>))
-    ) {
-      return this.destroyed(
-        request,
-        input.hostId,
-        (input as Extract<GcpStepInput, { op: 'delete-instance' }>).resourceName,
-      );
+    if (isDeleteStepInput(input) && !(await this.describeDeleteTarget(input))) {
+      return this.destroyed(request, input.hostId, input.resourceName);
     }
     return this.apply(request, ctx);
   }
@@ -1422,7 +1429,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       disks.map((item) => this.client.getDisk(projectId, requireString(item.zone, 'GCP disk zone'), item.providerId)),
     );
     const drift: string[] = [];
-    if (!vm || !instance || instance.status === 'TERMINATED') drift.push('instance-absent');
+    if (!vm || !instance) drift.push('instance-absent');
     disks.forEach((disk, index) => {
       const observed = observedDisks[index];
       if (!observed) drift.push(`disk-absent:${disk.providerId}`);
@@ -1446,9 +1453,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   }
 
   private lifecycleState(instance: GcpInstanceObservation | undefined): WorkspaceHostObservation['state'] {
-    if (!instance || instance.status === 'TERMINATED') return 'absent';
+    if (!instance) return 'absent';
     if (instance.status === 'RUNNING') return instance.agentOnline === false ? 'degraded' : 'running';
-    if (instance.status === 'SUSPENDED') return 'stopped';
+    if (instance.status === 'SUSPENDED' || instance.status === 'TERMINATED') return 'stopped';
     if (instance.status === 'STOPPING') return 'destroying';
     if (instance.status === 'REPAIRING') return 'repairing';
     return 'provisioning';
