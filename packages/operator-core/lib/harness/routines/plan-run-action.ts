@@ -15,12 +15,12 @@
  * + the Runs-tab rollup work unchanged. The harness's existing dispatcher executes
  * those work_items — no second execution engine.
  *
- * Replay-safety (the durable-step contract): the run token is the routine's
- * `last_fired_at` (stamped once at claim, stable across a recovery replay), so the
- * instance plan slug is deterministic per fire; an existence check + ON CONFLICT DO
- * NOTHING make a replay a no-op rather than a double-mint.
+ * Replay-safety (the durable-step contract): the run token is stable per fire and the
+ * complete instance-plan + run-ledger + frontier-work mint is ONE transaction. A crash
+ * therefore exposes either every artifact or none; a deterministic replay can never
+ * mistake a partial instance-plan insert for a completed run.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -66,31 +66,27 @@ export interface ScheduledPlanFireResult {
   skippedForConcurrency?: boolean;
 }
 
+export interface ScheduledPlanFireOptions {
+  installSlug: string;
+  workspaceId: string;
+  templateSlug: string;
+  /** What kind of fire this is (plan_runs.trigger). Default 'scheduled'; run-now passes 'manual'. */
+  trigger?: 'scheduled' | 'manual' | 'event';
+  /** Stable decimal token for a durable non-manual fire. */
+  runToken?: number | string;
+  /** The resolved, start-gate-validated inputs this run executes with. */
+  inputs?: unknown;
+}
+
 /**
  * Mint one run of a scheduled plan. `sql` is an explicit seam (admin pool in prod,
  * the testcontainers client in tests). Returns null when the template is missing or
  * has no templateSlug; never throws (the durable-step contract is enforced by the
  * handler wrapper).
  */
-export async function runScheduledPlanFire(
-  sql: Sql,
-  opts: {
-    installSlug: string;
-    workspaceId: string;
-    templateSlug: string;
-    /** What kind of fire this is (plan_runs.trigger). Default 'scheduled'; run-now passes 'manual'. */
-    trigger?: 'scheduled' | 'manual' | 'event';
-    /**
-     * The RESOLVED inputs this run executes with (plan-structured-inputs P-010/P-011)
-     * — the template's stored values with any per-invocation override already merged
-     * and VALIDATED by the caller's start-gate check. Passed in rather than re-merged
-     * here so the values persisted are exactly the ones the gate approved. Omitted by
-     * a scheduled fire, which uses the template's stored values (guaranteed complete
-     * at arm time by P-008) — the gate below still re-checks, because arm-time
-     * validity can go stale if the schema or values change afterwards.
-     */
-    inputs?: unknown;
-  },
+async function runScheduledPlanFireTx(
+  sql: Sql | TransactionSql,
+  opts: ScheduledPlanFireOptions,
 ): Promise<ScheduledPlanFireResult | null> {
   const { installSlug, workspaceId, templateSlug, trigger = 'scheduled' } = opts;
 
@@ -172,13 +168,25 @@ export async function runScheduledPlanFire(
     SELECT last_fired_at, concurrency FROM harness_shared.routines
      WHERE install_slug = ${installSlug} AND name = ${planScheduleRoutineName(templateSlug)}
   `;
+  const suppliedToken = opts.runToken === undefined ? null : String(opts.runToken).trim();
+  if (suppliedToken !== null && !/^\d+$/.test(suppliedToken)) {
+    throw new Error('plan_run_token_must_be_decimal');
+  }
   const token =
     trigger === 'manual'
       ? nextManualToken()
+      : suppliedToken !== null
+        ? suppliedToken
       : rt[0]?.last_fired_at
         ? new Date(rt[0].last_fired_at).getTime()
         : Date.now();
   const instanceSlug = planRunInstanceSlug(templateSlug, token);
+
+  // Serialize callers racing on the same deterministic fire before the replay
+  // check. Combined with the transaction wrapper, this makes the mint both atomic
+  // and exactly-once visible even when two workers receive the same event.
+  const fireLockKey = `${workspaceId}:${installSlug}:${instanceSlug}`;
+  await sql`SELECT pg_advisory_xact_lock(hashtextextended(${fireLockKey}, 0))`;
 
   // 3. Idempotency: the instance already existing ⇒ this is a replay ⇒ no-op.
   const existing = await sql<Array<{ run_seq: number | null }>>`
@@ -309,6 +317,14 @@ export async function runScheduledPlanFire(
       `(plan_run ${runId}, ${minted} work-item(s))`,
   );
   return { instanceSlug, runId, runSeq, minted, replayed: false };
+}
+
+/** Mint one complete run atomically; callers never observe partial replay state. */
+export async function runScheduledPlanFire(
+  sql: Sql,
+  opts: ScheduledPlanFireOptions,
+): Promise<ScheduledPlanFireResult | null> {
+  return sql.begin((tx) => runScheduledPlanFireTx(tx, opts));
 }
 
 /** The registered `system:plan-run` handler. Never throws (durable-step contract). */
