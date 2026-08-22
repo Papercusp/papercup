@@ -285,6 +285,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
+  'system:google-calendar-poll': {
+    spend: 'none',
+    why: 'Polls Google Calendar, advances provider cursors, and emits local trigger/vault deliveries',
+  },
   'system:unshipped-plans-audit': {
     spend: 'none',
     why: 'Reads plan/work/blocker/acceptance/presence state and publishes evidence artifacts — no model call',

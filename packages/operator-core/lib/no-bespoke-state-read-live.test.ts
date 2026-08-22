@@ -27,8 +27,8 @@
  * only then is the silence asserted. Same discipline the three legs of
  * `holder-context.test.ts` apply to their tree walk, for the same reason.
  *
- * Measured live, 2026-07-27: 48 candidate tools in scope, 918 + 24 files across the
- * two scan roots, 45 grandfathered, 1 cell lens, 2 reasoned exemptions, 0 offenders.
+ * Measured live, 2026-08-22: 48+ candidate tools in scope across the two scan roots,
+ * 45 grandfathered, 1+ cell lens, 3 reasoned collection/read-door exemptions, 0 offenders.
  * Floors below are set well under those numbers — they exist to catch a COLLAPSE,
  * not to pin a census that legitimately grows as the fleet adds tools.
  */
@@ -52,7 +52,13 @@ interface Scan {
   offenders: { file: string; name: string; rule: string; detail: string }[];
   exemptions: { file: string; name: string; reason: string }[];
   lenses: { file: string; name: string; cell: string }[];
-  definitions: { file: string; name: string; capability: string | null; lens: string | null; exemption: string | null }[];
+  definitions: {
+    file: string;
+    name: string;
+    capability: string | null;
+    lens: string | null;
+    exemption: string | null;
+  }[];
   stale: string[];
   redundant: string[];
   scanned: number;
@@ -75,7 +81,7 @@ function capabilityFailures(s: Scan): string[] {
   const out: string[] = [];
   if (s.scanned <= 30) out.push(`only ${s.scanned} state-read tools classified`);
   if (!s.lenses.some((l) => l.name === 'dev:pipeline_position')) out.push('the @cell-lens marker parser found nothing');
-  if (s.exemptions.length < 2) out.push(`only ${s.exemptions.length} @not-a-cell exemptions parsed`);
+  if (s.exemptions.length < 3) out.push(`only ${s.exemptions.length} @not-a-cell exemptions parsed`);
   if (BASELINE.size === 0) out.push('the grandfather set is empty');
   if (s.definitions.length === 0) out.push('findOffenders() did not expose parsed definitions');
   return out;
@@ -106,9 +112,7 @@ describe('the live gate is actually scanning', () => {
     // the opposite of what happened; the property worth guarding is that some
     // scan root still walks this territory. (That commit updated the sibling
     // assertion in no-bespoke-state-read-guard.test.ts and missed this one.)
-    const covering = (SCAN_DIRS as string[]).filter(
-      (root) => dir === root || dir.startsWith(`${root}/`),
-    );
+    const covering = (SCAN_DIRS as string[]).filter((root) => dir === root || dir.startsWith(`${root}/`));
     expect(
       covering,
       `${dir} is covered by no SCAN_DIRS root — the gate has stopped policing it, and will ` +
@@ -149,7 +153,7 @@ describe('the live gate is actually scanning', () => {
    * source text and so proves only that the parser handles text the test wrote.
    */
   it('still parses the declarations real tools carry', () => {
-    expect(scan.exemptions.map((e) => e.name).sort()).toEqual(['processes:list', 'state:read']);
+    expect(scan.exemptions.map((e) => e.name).sort()).toEqual(['processes:list', 'state:read', 'triggers:status']);
     expect(scan.lenses.map((l) => l.cell)).toContain('git.pipelinePosition');
     expect(scan.definitions.map((definition) => definition.name)).toContain('blender:success-metrics');
   });
@@ -207,8 +211,13 @@ describe('the live offender list is exactly the true positives', () => {
    * a permanent exemption list.
    */
   it('carries no dead weight in the shrink-only baseline', () => {
-    expect(scan.stale, `baseline entries whose tool no longer trips the signature: ${scan.stale.join(', ')}`).toEqual([]);
-    expect(scan.redundant, `tools both grandfathered AND declared — drop the baseline entry: ${scan.redundant.join(', ')}`).toEqual([]);
+    expect(scan.stale, `baseline entries whose tool no longer trips the signature: ${scan.stale.join(', ')}`).toEqual(
+      [],
+    );
+    expect(
+      scan.redundant,
+      `tools both grandfathered AND declared — drop the baseline entry: ${scan.redundant.join(', ')}`,
+    ).toEqual([]);
   });
 });
 
@@ -239,12 +248,20 @@ describe('MUTATION — the capability leg rejects a gate that stopped scanning',
     exemptions: [
       { file: 'a.ts', name: 'processes:list', reason: 'x'.repeat(40) },
       { file: 'b.ts', name: 'state:read', reason: 'y'.repeat(40) },
+      { file: 'd.ts', name: 'triggers:status', reason: 'z'.repeat(40) },
     ],
     lenses: [{ file: 'c.ts', name: 'dev:pipeline_position', cell: 'git.pipelinePosition' }],
     definitions: [
       { file: 'a.ts', name: 'processes:list', capability: 'intel:read', lens: null, exemption: 'x'.repeat(40) },
       { file: 'b.ts', name: 'state:read', capability: 'intel:read', lens: null, exemption: 'y'.repeat(40) },
-      { file: 'c.ts', name: 'dev:pipeline_position', capability: 'intel:read', lens: 'git.pipelinePosition', exemption: null },
+      { file: 'd.ts', name: 'triggers:status', capability: 'intel:read', lens: null, exemption: 'z'.repeat(40) },
+      {
+        file: 'c.ts',
+        name: 'dev:pipeline_position',
+        capability: 'intel:read',
+        lens: 'git.pipelinePosition',
+        exemption: null,
+      },
     ],
     stale: [],
     redundant: [],

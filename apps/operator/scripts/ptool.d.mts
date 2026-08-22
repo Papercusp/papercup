@@ -342,6 +342,7 @@ export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;
 export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS: 60000;
 export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS: 900000;
+export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS: 195000;
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS: 60000;
 /**
  * Automatic reconnect replays after a connected tools/call are disabled.

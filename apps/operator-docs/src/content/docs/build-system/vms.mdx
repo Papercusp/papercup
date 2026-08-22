@@ -4,19 +4,23 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: VMs (Mac + Windows + Linux test)
-description: SSH access, sudo credentials, port maps, disk-sizing notes, the Windows-VM survival kit, and the Linux clean-room test VM.
+title: "VMs (Mac + Windows + Linux test)"
+description: "SSH access, sudo credentials, port maps, disk-sizing notes, the Windows-VM survival kit, and the Linux clean-room test VM."
+type: Insight
+discovered: 2026-08-22
+status: active
+documents:
+  - "papercusp-desktop/scripts/linux-test-vm/vmctl"
+  - "papercusp-desktop/scripts/linux-test-vm/boot-vm.sh"
+  - "papercusp-desktop/bin/vm-federation.sh"
+  - "papercusp-desktop/bin/audit-bundle.sh"
+  - "papercusp-desktop/src-tauri/src/main.rs"
+  - "papercusp-desktop/bin/vm-preflight.sh"
+plans:
+  - "linux-test-vm-and-federation-2026-06-04"
+  - "mac-desktop-release-readiness-2026-06-11"
 sidebar:
   order: 5
-plans:
-  - linux-test-vm-and-federation-2026-06-04
-  - mac-desktop-release-readiness-2026-06-11
-documents:
-  - papercusp-desktop/scripts/linux-test-vm/vmctl
-  - papercusp-desktop/scripts/linux-test-vm/boot-vm.sh
-  - papercusp-desktop/bin/vm-federation.sh
-  - papercusp-desktop/bin/audit-bundle.sh
-  - papercusp-desktop/src-tauri/src/main.rs
 ---
 
 ## Inventory
@@ -243,6 +247,29 @@ The workspace's peer-dep tree has unresolvable conflicts that make `npm install`
 
 - **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_path_env()` builds a `PATH` with the shipped `sidecar/bin/` (node/gh) prepended, and every node-based spawn (currently the `serve.mjs` sidecar) runs through it. **If you add a new spawn**, route it through the same helper.
 - **Gatekeeper**: the DMG is unsigned. First launch will be blocked. The install-mac-dmg `/admin` command strips quarantine via `xattr -dr com.apple.quarantine /Applications/Papercusp.app`. If launching by hand, you'll need to do this too.
+
+## Windows VM preflight: host storage and QEMU state
+
+Before and after a Windows install/relaunch, run the host-side preflight:
+
+```sh
+cd papercusp-desktop
+VM_DISK_PATH=/mnt/data/offload/windows-vm/windows_hdd.qcow2 \
+VM_MONITOR_SOCKET=/mnt/data/offload/windows-vm/qemu-monitor.sock \
+bash bin/vm-preflight.sh --json
+```
+
+The JSON verdict includes `hostFreeGb`, `minHostFreeGb`, `qemuStatus`, and
+`qemuIoStatus`. It fails when the qcow2 filesystem has less than 10 GB free,
+when QEMU reports `paused (io-error)`, or when the disk reports a failing
+I/O status such as `nospace`. Override the image or threshold with
+`--disk-path PATH` and `--min-host-free-gb GB` (or the matching environment
+variables) when a rig uses a different layout.
+
+The HMP probes are read-only: the preflight sends only `info status` and
+`info block`; it never sends `cont` or `quit`. If the check reports a
+paused/io-error VM, first verify the backing filesystem with `df -h` and
+inspect the qcow2 before using the separate, supervised recovery procedure.
 
 ## Windows VM crashes routinely
 

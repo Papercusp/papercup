@@ -105,6 +105,18 @@ describe('pruneStorageCategory — PG', () => {
     expect(r.reclaimedBytes).toBe(400);
   });
 
+  it('describes non-vacuum reclaim as logical reuse, not measured OS shrink', async () => {
+    h.statsQueue = [{ b: 1000, r: 100 }, { b: 1000, r: 100 }];
+    h.deleteQueue = [40];
+    const r = await pruneStorageCategory(REQ());
+    expect(r.reclaimEstimated).toBe(true);
+    expect(r.reclaimedBytes).toBe(400);
+    expect(r.note).toContain('space freed for reuse');
+    expect(r.note).toMatch(/relation\/OS bytes are not guaranteed to shrink/);
+    expect(r.note).toMatch(/table rewrite or truncation/);
+    expect(r.note).not.toContain('returns it to the OS');
+  });
+
   it('vacuums a bloat-queue table and measures actual reclaim', async () => {
     h.statsQueue = [{ b: 1000, r: 100 }, { b: 600, r: 60 }]; // before, after
     h.deleteQueue = [40];

@@ -246,7 +246,7 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
       );
       result.vacuumed = outcome.acquired === true;
       if (!result.vacuumed) {
-        result.note = `rows deleted; VACUUM FULL skipped (db:migrate ${outcome.acquired === false ? outcome.reason : 'busy'}) — autovacuum will reclaim`;
+        result.note = `rows deleted; VACUUM FULL skipped (db:migrate ${outcome.acquired === false ? outcome.reason : 'busy'}) — space is freed for reuse, but relation/OS bytes are not guaranteed to shrink without a table rewrite or truncation`;
       }
     } catch (err) {
       result.note = `rows deleted; VACUUM FULL failed: ${(err as Error)?.message ?? 'error'}`;
@@ -258,12 +258,13 @@ async function prunePg(sql: Sql, cat: PgStorageCategory, req: PruneRequest): Pro
     result.reclaimedBytes = Math.max(0, sizeBefore - sizeAfter);
     result.reclaimEstimated = false;
   } else {
-    // Logical delete: space is freed for REUSE (autovacuum returns it to the OS
-    // over time), so report the proportional estimate, not an OS-measured shrink.
+    // Logical delete: space is freed for reuse within the relation. Ordinary
+    // DELETE/autovacuum does not guarantee relation-file shrink or OS-visible
+    // free bytes, so report the proportional estimate, not measured OS shrink.
     result.reclaimedBytes = Math.round(perRow * removed);
     result.reclaimEstimated = true;
     result.note =
-      result.note ?? `${removed} rows deleted; space freed for reuse (autovacuum returns it to the OS over time)`;
+      result.note ?? `${removed} rows deleted; space freed for reuse (relation/OS bytes are not guaranteed to shrink without a table rewrite or truncation)`;
   }
   return result;
 }

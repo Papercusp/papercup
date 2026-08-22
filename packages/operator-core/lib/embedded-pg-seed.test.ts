@@ -22,6 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   resolveSeedPath,
+  seedKind,
   extractSeed,
   SEED_INITDB_FLAGS,
   PORTABLE_INITDB_LOCALES,
@@ -70,6 +71,19 @@ describe('resolveSeedPath (opts/env precedence + disable kill)', () => {
   });
 });
 
+describe('seedKind (logical current format + legacy physical compatibility)', () => {
+  it('recognises logical pg_dump custom archives by the supported extensions', () => {
+    expect(seedKind('/bundle/db-seed.dump')).toBe('logical');
+    expect(seedKind('/bundle/db-seed.BACKUP')).toBe('logical');
+  });
+
+  it('keeps physical directories/tars on the backwards-compatible path', () => {
+    expect(seedKind('/bundle/db-seed.tar.gz')).toBe('physical');
+    expect(seedKind('/bundle/raw-pgdata')).toBe('physical');
+    expect(seedKind(undefined)).toBeNull();
+  });
+});
+
 describe('extractSeed (directory + tar.gz seed → bootable-shaped data dir)', () => {
   it('recursively copies a DIRECTORY seed and chmods the data dir 0700', async () => {
     const src = makeFakePgdata();
@@ -85,7 +99,8 @@ describe('extractSeed (directory + tar.gz seed → bootable-shaped data dir)', (
   it('extracts a .tar.gz seed (root = PGDATA contents) into the data dir', async () => {
     const src = makeFakePgdata();
     const archive = join(tmp('seed-arc-'), 'db-seed.tar.gz');
-    // Archive CONTENTS at root, mirroring build-seed.mjs (`tar -c -z -C <pgdata> .`).
+    // Legacy compatibility fixture. New builds ship a logical db-seed.dump,
+    // but upgraded runtimes must still boot already-published PGDATA archives.
     execFileSync('tar', ['-c', '-z', '-f', archive, '-C', src, '.']);
 
     const dataDir = tmp('seed-dst-');

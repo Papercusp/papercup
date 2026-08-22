@@ -369,7 +369,7 @@ const cfg: ReleaseConfig = releaseConfig({
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(" ");
 
 describe("EI-21175363643337524: real disk-headroom admission", () => {
-  it("rejects a warning-floor breach on any watched filesystem and preserves every snapshot", async () => {
+  it("admits warning-only byte headroom on a large filesystem and preserves every snapshot", async () => {
     const gib = 1024 ** 3;
     const snapshots = [
       {
@@ -407,14 +407,56 @@ describe("EI-21175363643337524: real disk-headroom admission", () => {
 
     const result = await deps.checkDiskHeadroom?.();
 
-    expect(result?.ok).toBe(false);
+    expect(result?.ok).toBe(true);
     expect(result?.summary).toContain("/tmp 200.0 GiB free");
     expect(result?.summary).toContain("/mnt/data 80.0 GiB free");
-    expect(result?.summary).toContain(
-      "/mnt/data low-bytes breaches the standing warning/reserved headroom floor",
-    );
-    expect(result?.summary).toContain("floor is 5.0 GiB and 10.00% bytes");
     expect(sampleCount).toBe(1);
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a critical byte breach while retaining the ordinary inode floor", async () => {
+    const gib = 1024 ** 3;
+    const snapshots = [
+      {
+        path: "/tmp",
+        totalBytes: 1_000 * gib,
+        freeBytes: 1 * gib,
+        freePct: 0.001,
+        totalInodes: 1_000_000,
+        freeInodes: 500_000,
+        freeInodesPct: 0.5,
+      },
+      {
+        path: "/mnt/data",
+        totalBytes: 1_000 * gib,
+        freeBytes: 200 * gib,
+        freePct: 0.2,
+        totalInodes: 1_000_000,
+        freeInodes: 10_000,
+        freeInodesPct: 0.01,
+      },
+    ];
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(
+      cfg,
+      exec,
+      "disk-headroom-critical-floor-run",
+      undefined,
+      undefined,
+      async () => snapshots,
+    );
+
+    const result = await deps.checkDiskHeadroom?.();
+
+    expect(result?.ok).toBe(false);
+    expect(result?.summary).toContain(
+      "/tmp low-bytes breaches the standing critical write headroom floor",
+    );
+    expect(result?.summary).toContain(
+      "/mnt/data low-inodes breaches the standing critical write headroom floor",
+    );
+    expect(result?.summary).toContain("floor is 2.0 GiB and 2.00% bytes");
+    expect(result?.summary).toContain("5.00% inodes");
     expect(calls).toEqual([]);
   });
 });

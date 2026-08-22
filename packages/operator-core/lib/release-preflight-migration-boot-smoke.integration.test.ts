@@ -142,8 +142,8 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
    * (EI-18892214197928842, 0.0.13 deb, 2026-07-28 — `649 guard: 8 mapped target slug(s)
    * are not real pots`, serve.mjs exit 1, sidecar respawn-loop, 502 forever).
    *
-   * A real install is not an empty database. The packaged app ships a PRE-MIGRATED SEED
-   * (`sidecar/db-seed.tar.gz`) that already contains rows, and the migrations newer than
+   * A real install is not an empty database. The packaged app ships a PRE-MIGRATED LOGICAL SEED
+   * (`sidecar/db-seed.dump`) that already contains rows, and the migrations newer than
    * that seed then apply ON TOP of them. So the shape that actually has to work — and the
    * one nothing tested — is: rows present, backfill pending.
    *

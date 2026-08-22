@@ -13,6 +13,10 @@
  * — the hook runs on this box; agents elsewhere use coord:rebind-identity.
  */
 import { defineTool } from '@papercusp/agent-mcp';
+// The SessionStart recovery hook reaches this loopback route rather than the
+// MCP tool wrapper. Wire the SU-lock side database here too, or a lock held by
+// the predecessor remains stranded until TTL after an identity rebind.
+import { rebindLockOwner } from '../../../agent-tools/locks/su-lock-store';
 
 const rebind = defineTool({
   method: 'POST',
@@ -30,7 +34,7 @@ const rebind = defineTool({
     if (!from || !to) return Response.json({ ok: false, error: 'from and to required' }, { status: 400 });
     try {
       const { rebindIdentity } = await import('../../../agent-tools/coordination/rebind-identity');
-      const result = await rebindIdentity(from, to, { force: body.force === true });
+      const result = await rebindIdentity(from, to, { force: body.force === true, rebindLockOwner });
       return Response.json(result);
     } catch (err) {
       return Response.json(

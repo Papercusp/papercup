@@ -2353,6 +2353,40 @@ describe('fleet:launch-on-plan handler — claim-spec wiring (plan-scoped #4 + c
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
     expect(payload.claimSpecApplied).toMatchObject({ ok: false, errors: ['db unavailable'] });
   });
+
+  // EI-21177728511242093: a relaunch (top-up) of an EXISTING fleet was rewriting the claim
+  // spec with a HARDCODED potSlug:null, which lands as harness_slug=NULL on the stored row —
+  // clobbering a correctly-scoped prior spec (harness_slug='papercusp') even though nothing
+  // about the launch's own harness scope changed. That stranded a live canary member whose
+  // scheduler:get_next filters by harness_slug: the spec existed, but scoped to nothing.
+  it('EI-21177728511242093: threads the launch\'s resolved harness through as the claim-spec potSlug — never a hardcoded null', async () => {
+    const res = await tool.handler(
+      { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, claimKinds: ['bug'] } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+    const call = setClaimSpecMock.mock.calls[0][0] as { potSlug: string | null };
+    // Must be the launch's harness scope, not the hardcoded null that dropped it.
+    expect(call.potSlug).toBe('papercusp');
+  });
+
+  it('EI-21177728511242093: a top-up wave on an ALREADY-EXISTING fleet still threads the harness as potSlug (not null)', async () => {
+    // Simulate the fleet already existing with one live member so this call is a
+    // top-up/relaunch, not a fresh create — the exact shape of the reported bug.
+    const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValueOnce(['su-existing-member']);
+    const res = await tool.handler(
+      { name: 'Drain Fleet', plan: 'my-plan', harness: 'papercusp', count: 2, claimKinds: ['bug'] } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.ok).toBe(true);
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+    const call = setClaimSpecMock.mock.calls[0][0] as { potSlug: string | null };
+    expect(call.potSlug).toBe('papercusp');
+  });
 });
 
 // P-010: the claimKinds launch path is routed through scheduler:set_claim_spec's WI-5212

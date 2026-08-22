@@ -10802,7 +10802,7 @@ export function realCheckpointDeps(
     workspaceRerun,
     runId,
     async checkDiskHeadroom() {
-      const { detectLowSpace, diskPolicyFromEnv } = await import(
+      const { detectCriticalWriteHeadroom, diskPolicyFromEnv } = await import(
         "@papercusp/operator-core/lib/storage/disk-space-alarm"
       );
       const snapshots = await sampleCheckpointDisk();
@@ -10823,26 +10823,29 @@ export function realCheckpointDeps(
             `${(snapshot.freeInodesPct * 100).toFixed(2)}% inodes free`,
         )
         .join("; ");
-      // A checkpoint reserves the standing WARNING floor, not merely the alarm's
-      // tighter critical tier: a long full-suite copy can consume the cleanup
-      // runway before writes are technically at the point of immediate failure.
+      // The standing WARNING floor is an early human-cleanup signal, not a hard
+      // write-admission boundary. On a multi-terabyte shared filesystem, requiring
+      // its percentage floor can reject a checkpoint with hundreds of GiB free.
+      // Reuse the alarm's purpose-built critical-write projection instead: it keeps
+      // the absolute/percentage ENOSPC guard and the ordinary inode floor without
+      // turning a warning-only condition into an indefinitely red release gate.
       // Evaluate every watched filesystem, because any one shared backing volume
       // can exhaust while the others remain healthy.
-      const breaches = detectLowSpace(snapshots, policy);
+      const breaches = detectCriticalWriteHeadroom(snapshots, policy);
       if (breaches.length === 0) return { ok: true, summary: measured };
       const breachDetails = breaches
         .map(
           (breach) =>
             `${breach.path} ${breach.kinds.join("+")} breaches the standing ` +
-            "warning/reserved headroom floor",
+            "critical write headroom floor",
         )
         .join("; ");
       return {
         ok: false,
         summary:
           `${breachDetails}; measured all watched filesystems: ${measured}; ` +
-          `floor is ${(policy.freeBytesMin / gib).toFixed(1)} GiB and ` +
-          `${(policy.freePctMin * 100).toFixed(2)}% bytes, ` +
+          `floor is ${(policy.criticalFreeBytesMin / gib).toFixed(1)} GiB and ` +
+          `${(policy.criticalFreePctMin * 100).toFixed(2)}% bytes, ` +
           `${(policy.freeInodesPctMin * 100).toFixed(2)}% inodes`,
       };
     },

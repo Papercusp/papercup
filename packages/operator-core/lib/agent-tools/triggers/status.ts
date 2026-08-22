@@ -4,6 +4,7 @@ import { loadExternalTriggerAdminSnapshot } from '../../external-triggers/admin'
 import { data, triggerToolContext } from './_shared';
 
 export default defineTool({
+  // @not-a-cell filtered multi-row source/binding/run-history collection; this is the one canonical door over that collection, not a scalar value duplicated outside the state plane
   name: 'triggers:status',
   profile: 'engineer',
   description: 'Read external-trigger health, armed state, failures, and recent plan-launch runs.',

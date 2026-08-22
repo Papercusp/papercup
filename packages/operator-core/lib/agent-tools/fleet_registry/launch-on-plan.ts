@@ -2119,12 +2119,20 @@ export default defineTool({
       // Apply — unless the guard refused (handled after the try) or we preserved an authored
       // no-kinds spec (claimSpecApplied already set, specToApply null).
       if (!claimCollapseRefusal && specToApply) {
+        // EI-21177728511242093: `harness` is this launch's resolved (mandatory) harness
+        // scope — the SAME value already threaded into `countScope` above for the
+        // pool-effect preview. Passing `potSlug: null` here unconditionally overwrote
+        // the claim spec's `harness_slug` column on EVERY relaunch/top-up, even when a
+        // prior launch (or a leader's own scheduler:set_claim_spec) had correctly scoped
+        // it — stranding get_next reads that filter by harness and leaving a live member
+        // with no matching claimable work. Mirror scheduler:set_claim_spec's own
+        // resolution (an explicit/ctx harness always wins) instead of hardcoding null.
         const applied = await setClaimSpec({
           cupId,
           workspaceId: claimSpecWorkspaceId,
           spec: specToApply,
           updatedBy: ownerId,
-          potSlug: null,
+          potSlug: harness,
         });
         const warning =
           applied.ok && applyWarning

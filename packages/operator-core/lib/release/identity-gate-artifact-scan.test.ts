@@ -395,18 +395,18 @@ describe('--scan-artifact recurses into a WRAPPED installer (WI-39458)', () => {
   });
 });
 
-describe('release producers do not stamp the build user into shipped tarballs (WI-39458)', () => {
-  // The gate above is the BACKSTOP. These pin the fix at the SOURCE, so a leak
-  // is not produced in the first place — the same convention stage-source-tree.sh
-  // has always used for source.tar.zst.
-  it('build-seed.mjs tars the PGDATA seed with numeric ownership', () => {
+describe('release producers do not stamp build identity into shipped archives', () => {
+  // The gate above is the BACKSTOP. The database seed now avoids the physical
+  // PGDATA archive class entirely: pg_dump custom format has no tar ownership,
+  // postmaster paths, or pg_control/system_identifier to leak or clone.
+  it('build-seed.mjs emits a logical custom dump without build-box ownership', () => {
     const src = readFileSync(
       path.join(REPO_ROOT, 'libs/papercusp/packages/embedded-postgres-server/bin/build-seed.mjs'),
       'utf8',
     );
-    expect(src).toMatch(/--numeric-owner/);
-    expect(src).toMatch(/--owner=0/);
-    expect(src).toMatch(/--group=0/);
+    expect(src).toMatch(/--format=custom/);
+    expect(src).toMatch(/--no-owner/);
+    expect(src).not.toMatch(/execFileSync\(\s*['"]tar['"]/);
   });
 
   it('build-mac-cross.sh tars the updater .app.tar.gz with numeric ownership', () => {
