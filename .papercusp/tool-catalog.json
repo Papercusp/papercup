@@ -4191,7 +4191,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You need the tier menu (names, specs, backends) or the compaction limit a tier would seed — e.g. before editing it via config:tiers-set or picking a cup:spawn tier.",
+        "when": "You need the tier menu (names, specs, backends) or the compaction limit a tier would seed — e.g. before editing it via config:tiers-set or picking a capability:launch-agent / fleet:launch-on-plan tier.",
         "notWhen": "To change YOUR OWN session’s limit — config:set-compaction-limit. To edit the menu — config:tiers-set."
       }
     },
@@ -10324,7 +10324,7 @@
       "guidance": {
         "when": "You (the Mug) want to reclaim cup slot(s): the occupant has low-priority work, is blocked, or the priorities have shifted. Send a drain cue to give each cup a chance to hand off cleanly. Reclaiming several at once? Pass them all via `bee_ids`.",
         "notWhen": "The bee is running a high-priority task (let it finish). Immediate slot reclaim is critical, or the bee is unresponsive (use fleet:cancel). NEVER to reclaim an owner-directed session (su engineer, sentinel/operator, planner): not part of the maxBees population — the tool refuses them, but don't target them (pausing the Hive Mug ≠ drain your fleet-leader peers).",
-        "chaining": "fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → cup:spawn fresh."
+        "chaining": "fleet:drain { bee_id | bee_ids:[…] } → (later, bounded) fleet:assignments { agent: bee_id } → capability:launch-agent for a fresh ad-hoc agent (or fleet:launch-on-plan for a plan-bound member)."
       }
     },
     {
@@ -10522,7 +10522,7 @@
       ],
       "guidance": {
         "when": "ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan. Prefer this over hand-building agent commands with capability:terminal.",
-        "notWhen": "Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for background cups (cup:spawn), plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
+        "notWhen": "Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.",
         "chaining": "plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake."
       }
     },
@@ -10601,7 +10601,7 @@
           "POST"
         ]
       },
-      "description": "List every persistent fleet in this workspace, each split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees, plus an `available` flag (available = at least one live MEMBER — a desktop driver a plan can be handed to; a bee cannot). Durable fleets with zero live members are listed too. The result also carries `runningBees`: how many background bees are running in the whole workspace — a fleet showing 0 members while runningBees>0 is the tell that cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Use this to pick a fleet to join or hand a plan to.",
+      "description": "List every persistent fleet in this workspace, each split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees, plus an `available` flag (available = at least one live MEMBER — a desktop driver a plan can be handed to; a bee cannot). Durable fleets with zero live members are listed too. The result also carries `runningBees`: how many background bees are running in the whole workspace — a fleet showing 0 members while runningBees>0 has background bees but no visible desktop members; use fleet:launch-on-plan for desktop members. Use this to pick a fleet to join or hand a plan to.",
       "capabilities": [
         "fleet:list"
       ],
@@ -10974,7 +10974,7 @@
           "POST"
         ]
       },
-      "description": "Show one fleet's identity (title, description, current leader plus its liveness/vacancy signal) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.",
+      "description": "Show one fleet's identity (title, description, current leader plus its liveness/vacancy signal) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 has background bees but no visible desktop members; use fleet:launch-on-plan for desktop members. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.",
       "capabilities": [
         "fleet:status"
       ],
@@ -15655,7 +15655,7 @@
       "guidance": {
         "when": "You want to spawn a sub-agent (a helper/specialist) as an autonomous initiative beyond your own role — a spawn worth a brain decision.",
         "notWhen": "You ARE the brain/operator (you allocate directly) OR this is already-decided pipeline work (the pipeline admits its own role progression) OR a human-initiated psu session (no request needed).",
-        "chaining": "new_subagent:request → events:await { event: <await_event> } (end your turn) → on wake, if choice=\"approve\", cup:spawn { role, harness, feature }."
+        "chaining": "new_subagent:request → events:await { event: <await_event> } (end your turn) → on wake, if choice=\"approve\", capability:launch-agent { harness, members:[{ role, feature }] }."
       }
     },
     {
@@ -21423,7 +21423,7 @@
       "guidance": {
         "when": "To inspect the LIVE Mug's per-wake efficiency — is the frozen-prefix cache paying off (cacheHitRatio / cachedWakes) and is the precomputed brief cutting round-trips (avgTurns)? The B-06 measurement read.",
         "notWhen": "For a SCENARIO run’s efficiency score — that is the pot-eval efficiency class (it scores these per run). This tool is the ad-hoc live-Mug read.",
-        "chaining": "pot:status for wake/placement state; pot:survey for the frontier."
+        "chaining": "pot:status for the pot wake state; no Mug placement frontier is available while the Mug/Kettle/Cup tier is retired."
       }
     },
     {
