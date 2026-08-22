@@ -164,6 +164,50 @@ export async function createPersonalGrant(
   return rows[0]!;
 }
 
+/**
+ * Replace the live grant set for one principal with exactly the scopes the
+ * owner just approved. A plain create is intentionally append-friendly for
+ * low-level callers, but the Settings/arming surface must not leave an older,
+ * broader grant live when a template narrows its `personalScopes` declaration.
+ */
+export async function replacePersonalGrant(
+  sql: Sql,
+  input: {
+    workspaceId: string;
+    userId: string;
+    principalType: PersonalPrincipalType;
+    principalId: string;
+    scopes: string[];
+    grantedBy: string;
+    expiresAt?: string | null;
+    metadata?: Record<string, unknown>;
+  },
+): Promise<{ id: string; scopes: string[]; revoked: number }> {
+  const scopes = [...new Set(input.scopes.map(personalScope))].sort();
+  if (!scopes.length) throw new Error('personal_grant_scopes_required');
+  const principalId = input.principalId.trim();
+  if (!principalId) throw new Error('personal_grant_principal_required');
+
+  return sql.begin(async (tx) => {
+    const revoked = await tx<Array<{ id: string }>>`
+      UPDATE harness_shared.personal_grants
+         SET revoked_at = now()
+       WHERE workspace_id = ${input.workspaceId}
+         AND user_id = ${input.userId}
+         AND principal_type = ${input.principalType}
+         AND principal_id = ${principalId}
+         AND revoked_at IS NULL
+         AND scopes IS DISTINCT FROM ${scopes}::text[]
+      RETURNING id`;
+    const grant = await createPersonalGrant(tx, {
+      ...input,
+      principalId,
+      scopes,
+    });
+    return { ...grant, revoked: revoked.length };
+  });
+}
+
 export async function revokePersonalGrant(
   sql: Sql,
   workspaceId: string,
