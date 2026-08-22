@@ -57,6 +57,18 @@ function edit(relPath: string, newString: string) {
 function write(relPath: string, content: string) {
   return { tool_name: 'Write', tool_input: { file_path: resolve(ROOT, relPath), content } };
 }
+function mcpEdit(relPath: string, newString: string, server = 'papercusp-su') {
+  return {
+    tool_name: `mcp__${server}__capability_edit`,
+    tool_input: { file_path: resolve(ROOT, relPath), new_string: newString },
+  };
+}
+function mcpWrite(relPath: string, content: string, server = 'papercusp-su') {
+  return {
+    tool_name: `mcp__${server}__capability_write`,
+    tool_input: { file_path: resolve(ROOT, relPath), content },
+  };
+}
 
 describe('the policy it depends on', () => {
   // THE load-bearing test: the hook fails open, so a broken import disables it silently.
@@ -155,6 +167,25 @@ describe('it fires on the real thing', () => {
     const d = runHook(write('packages/operator-core/lib/x.ts', 'a\x00b'));
     expect(d?.permissionDecision).toBe('deny');
   });
+
+  it('DENIES MCP capability edit/write, including a renamed MCP server', () => {
+    expect(runHook(mcpEdit('packages/operator-core/lib/x.ts', 'a\x00b'))?.permissionDecision).toBe('deny');
+    expect(runHook(mcpWrite('packages/operator-core/lib/x.ts', `a${ESC}b`))?.permissionDecision).toBe('deny');
+    expect(runHook(mcpEdit('packages/operator-core/lib/x.ts', 'a\x00b', 'some-other-server'))?.permissionDecision).toBe(
+      'deny',
+    );
+  });
+
+  it('DENIES every edit in an MCP capability multi-edit', () => {
+    const d = runHook({
+      tool_name: 'mcp__papercusp-su__capability_multi_edit',
+      tool_input: {
+        file_path: resolve(ROOT, 'packages/operator-core/lib/x.ts'),
+        edits: [{ new_string: 'clean' }, { new_string: `dirty${ESC}` }],
+      },
+    });
+    expect(d?.permissionDecision).toBe('deny');
+  });
 });
 
 describe('it does not fire on ordinary edits', () => {
@@ -184,6 +215,7 @@ describe('it does not fire on ordinary edits', () => {
 
   it('ALLOWS tools it does not govern', () => {
     expect(runHook({ tool_name: 'Bash', tool_input: { command: 'ls' } })).toBeNull();
+    expect(runHook({ tool_name: 'mcp__papercusp-su__capability_read', tool_input: { file_path: '/tmp/x.ts' } })).toBeNull();
   });
 });
 

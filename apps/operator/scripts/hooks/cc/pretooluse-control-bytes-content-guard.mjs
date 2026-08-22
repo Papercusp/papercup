@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // pretooluse-control-bytes-content-guard.mjs
 //
-// PreToolUse (Edit|Write|MultiEdit) BLOCKING guard against EI-19478121013052934 —
+// PreToolUse (Edit|Write|MultiEdit and MCP capability writers) BLOCKING guard against
+// EI-19478121013052934 —
 // a raw forbidden control byte written INTO a source file, caught today only by
 // the fleet-wide green-checkpoint leg `lint:no-control-bytes`.
 //
@@ -29,7 +30,7 @@
 //   this guard          : is the content I am about to WRITE legal?
 //
 // CONTRACT
-//   - Scope: Edit | Write | MultiEdit, on paths inside this repo that
+//   - Scope: Edit | Write | MultiEdit and their MCP capability equivalents, on paths inside this repo that
 //     `lint:no-control-bytes` actually scans.
 //   - Policy is IMPORTED from scripts/check-no-control-bytes.mjs
 //     (isForbiddenControlByte / isScannedPath) — never re-derived here. That
@@ -79,7 +80,7 @@ async function main() {
   try {
     const hook = JSON.parse(await readStdin(250));
     const tool = hook.tool_name || '';
-    if (tool !== 'Edit' && tool !== 'Write' && tool !== 'MultiEdit') return done();
+    if (!isFileWritingTool(tool)) return done();
 
     const input = hook.tool_input || {};
     const filePath = input.file_path || '';
@@ -102,10 +103,29 @@ async function main() {
 
 /** Every string this tool call would introduce into the file. */
 function incomingContent(tool, input) {
-  if (tool === 'Write') return [input.content];
-  if (tool === 'Edit') return [input.new_string];
-  if (tool === 'MultiEdit') return (input.edits || []).map((e) => (e || {}).new_string);
+  const operation = capabilityOperation(tool) || String(tool).toLowerCase();
+  if (operation === 'write') return [input.content];
+  if (operation === 'edit') return [input.new_string];
+  if (operation === 'multiedit') return (input.edits || []).map((e) => (e || {}).new_string);
   return [];
+}
+
+/** Native and MCP-projected file writers share the same content contract. */
+function isFileWritingTool(tool) {
+  const normalized = typeof tool === 'string' ? tool.toLowerCase() : '';
+  return (
+    normalized === 'edit' ||
+    normalized === 'write' ||
+    normalized === 'multiedit' ||
+    capabilityOperation(tool) !== null
+  );
+}
+
+/** Extract the operation from names such as mcp__papercusp-su__capability_edit. */
+function capabilityOperation(tool) {
+  if (typeof tool !== 'string') return null;
+  const match = /(?:^|__)capability_(edit|write|multi_?edit)$/i.exec(tool);
+  return match?.[1].toLowerCase().replace('_', '') ?? null;
 }
 
 /** First forbidden byte across the incoming strings, or null. Reports a CHARACTER
