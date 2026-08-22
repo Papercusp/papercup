@@ -167,6 +167,70 @@ describe('loadPluginFromDir', () => {
 });
 
 describe('loadPlugins', () => {
+  it('honors PAPERCUSP_WORKSPACES_ROOT when HOME is remapped', async () => {
+    const canonicalRoot = join(ROOT, 'workspace-root');
+    const remappedHome = join(ROOT, 'remapped-home');
+    const workspaceId = 'workspace-a';
+    const harnessSlug = 'root-env-harness';
+    const pluginDir = join(
+      canonicalRoot,
+      workspaceId,
+      '.papercusp',
+      'harnesses',
+      harnessSlug,
+      'plugins',
+      'root-env-plugin',
+    );
+
+    await fs.mkdir(pluginDir, { recursive: true });
+    await fs.mkdir(join(canonicalRoot, 'empty-global'), { recursive: true });
+    await fs.writeFile(
+      join(canonicalRoot, 'registry.json'),
+      JSON.stringify({ current: workspaceId, workspaces: [] }),
+      'utf8',
+    );
+    await fs.writeFile(
+      join(pluginDir, 'papercusp.json'),
+      JSON.stringify({ name: 'root-env-plugin', version: '0.1.0' }),
+      'utf8',
+    );
+    await fs.writeFile(
+      join(pluginDir, 'index.cjs'),
+      `module.exports = {
+        name: 'root-env-plugin',
+        version: '0.1.0',
+        papercusp: '^0.1.0',
+        capabilities: [],
+        hooks: { afterDone: async () => {} },
+      };`,
+      'utf8',
+    );
+
+    const previousHome = process.env.HOME;
+    const previousRoot = process.env.PAPERCUSP_WORKSPACES_ROOT;
+    const previousPapercuspHome = process.env.PAPERCUSP_HOME;
+    process.env.HOME = remappedHome;
+    process.env.PAPERCUSP_WORKSPACES_ROOT = canonicalRoot;
+    delete process.env.PAPERCUSP_HOME;
+
+    try {
+      const r = await loadPlugins({
+        harnessSlugs: [harnessSlug],
+        globalPluginsDir: join(canonicalRoot, 'empty-global'),
+      });
+      assert.equal(r.errors.length, 0, `got errors: ${JSON.stringify(r.errors)}`);
+      assert.deepEqual(r.loaded.map((plugin) => plugin.plugin.name), ['root-env-plugin']);
+      assert.equal(r.loaded[0]?.source, 'harness');
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousRoot === undefined) delete process.env.PAPERCUSP_WORKSPACES_ROOT;
+      else process.env.PAPERCUSP_WORKSPACES_ROOT = previousRoot;
+      if (previousPapercuspHome === undefined) delete process.env.PAPERCUSP_HOME;
+      else process.env.PAPERCUSP_HOME = previousPapercuspHome;
+    }
+  });
+
   it('walks projectDir/plugins/', async () => {
     const projectDir = join(ROOT, 'walked-project');
     await fs.mkdir(join(projectDir, 'plugins'), { recursive: true });
@@ -227,4 +291,3 @@ describe('loadPlugins', () => {
     assert.equal(r.loaded[0].source, 'project');
   });
 });
-
