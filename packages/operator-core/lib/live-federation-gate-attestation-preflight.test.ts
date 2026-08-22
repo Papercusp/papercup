@@ -33,9 +33,15 @@ const ROOT = repoRoot();
 // An in-tree probe here is unsafe for a reason no `trap` can fix: git-sync sweeps the whole
 // working tree on a schedule, so a mutant held for the duration of a run can be COMMITTED
 // even when nothing goes wrong. Defaults to the real shipping script.
-const GATE_PATH = process.env.PROBE_SCRIPT ?? join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
+const GATE_PATH =
+  process.env.PROBE_SCRIPT ?? join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
 const LOCAL_MATRIX_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'local-matrix.sh');
-const MATRIX_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'two-instance-content-matrix-smoke.sh');
+const MATRIX_PATH = join(
+  ROOT,
+  'papercusp-desktop',
+  'bin',
+  'two-instance-content-matrix-smoke.sh',
+);
 const gate = readFileSync(GATE_PATH, 'utf8');
 const localMatrix = readFileSync(LOCAL_MATRIX_PATH, 'utf8');
 const matrix = readFileSync(MATRIX_PATH, 'utf8');
@@ -50,15 +56,13 @@ function extractFn(name: string): string {
   return extractFnFrom(gate, name);
 }
 
-function runPreflight(
-  opts: {
-    a?: string;
-    b?: string;
-    failUser?: string;
-    mismatchUser?: string;
-    unavailableUser?: string;
-  } = {},
-) {
+function runPreflight(opts: {
+  a?: string;
+  b?: string;
+  failUser?: string;
+  mismatchUser?: string;
+  unavailableUser?: string;
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fed-attestation-preflight-'));
   const calls = join(dir, 'calls');
   const gh = join(dir, 'gh');
@@ -189,7 +193,7 @@ describe('live-federation gate attestation write preflight', () => {
       'Fresh-home P2P gate depends on both GitHub accounts being able to create attestation gists',
     );
     expect(gate).toContain('find_open_duplicate "$wall_prefix" active');
-    expect(gate).toContain('[ "$scope" = active ] && item_filter=\'"notTerminal":true\'');
+    expect(gate).toContain("[ \"$scope\" = active ] && item_filter='\"notTerminal\":true'");
   });
 });
 
@@ -293,7 +297,9 @@ describe('live-federation gate: credential walls preserve only executable covera
     expect(gate).toContain(
       "grep -qE 'code=(token_missing|identity_unavailable|identity_mismatch|same_account)([[:space:]]|$)'",
     );
-    expect(gate).toContain('if local_matrix_due && [ "$ATTESTATION_IDENTITY_BLOCKED" != 1 ]; then');
+    expect(gate).toContain(
+      'if local_matrix_due && [ "$ATTESTATION_IDENTITY_BLOCKED" != 1 ]; then',
+    );
     expect(gate).toContain('local-matrix cannot admit joiners; refusing a vacuous, expensive run');
   });
 
@@ -308,12 +314,10 @@ describe('live-federation gate: credential walls preserve only executable covera
   });
 });
 
-function runLocalMatrixHostPreflight(
-  opts: {
-    mismatchUser?: string;
-    unavailableUser?: string;
-  } = {},
-) {
+function runLocalMatrixHostPreflight(opts: {
+  mismatchUser?: string;
+  unavailableUser?: string;
+} = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'fed-local-matrix-host-preflight-'));
   const desktopDir = join(dir, 'papercusp-desktop');
   const node = join(desktopDir, 'src-tauri', 'sidecar', 'bin', 'node');
