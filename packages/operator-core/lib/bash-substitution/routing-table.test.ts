@@ -18,7 +18,7 @@
  * while being invisible in the table, which is exactly the asymmetry P-019 exists
  * to remove. So the fields are asserted present and sane for every pair.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -208,6 +208,62 @@ describe('a routing cell recommends no weaker a call than cover() verified', () 
   /** Argument keys in a rendered `verb { a: 1, b: 2 }` expression. */
   const argKeysOf = (expression: string): string[] =>
     [...(/\{([\s\S]*)\}/.exec(expression)?.[1] ?? '').matchAll(/(\w+)\s*:/g)].map((m) => m[1]!);
+
+  /**
+   * The whole check, as one pure function, so the control below exercises THIS
+   * logic rather than a copy of it that could drift into agreeing with itself.
+   */
+  const missingUnanimousArgs = (
+    pair: Pick<SubstitutionPair, 'cover' | 'routing'>,
+    atoms: readonly string[],
+  ): string[] => {
+    const coveredKeys = atoms
+      .map((a) => pair.cover(a))
+      .filter((r): r is { covered: true; expression: string } => r.covered && !!r.expression)
+      .map((r) => argKeysOf(r.expression));
+    if (coveredKeys.length === 0) return [];
+    const unanimous = coveredKeys[0]!.filter((k) => coveredKeys.every((keys) => keys.includes(k)));
+    return unanimous.filter((k) => !pair.routing.use.includes(k));
+  };
+
+  /**
+   * FALSIFIABILITY CONTROL — a pair whose cell unanimously omits `installSlug`.
+   *
+   * Without this, a guard that silently stopped detecting anything (a broken
+   * `argKeysOf` regex, a `cover()` shape change) would keep reporting green over
+   * the real registry and be indistinguishable from a registry that is simply
+   * correct. The calibration case beside it fails the control for the OPPOSITE
+   * reason — it proves a passing verdict still means something.
+   */
+  const CONTROL_ATOMS = [
+    "SELECT metadata->'gate_health' FROM harness_shared.routines WHERE install_slug='papercusp'",
+    "SELECT metadata->'gate_health' FROM harness_shared.routines WHERE install_slug='oddsmith'",
+  ];
+  const controlCover = (atom: string) => ({
+    covered: true as const,
+    expression: `routines:list { name: "green-checkpoint", installSlug: "${/install_slug='([^']+)'/.exec(atom)![1]}" }`,
+  });
+
+  it('CONTROL: flags a cell that drops an argument every sampled atom carries', () => {
+    expect(
+      missingUnanimousArgs(
+        { cover: controlCover, routing: { want: '', use: '`routines:list { name: ... }`', insteadOf: '' } },
+        CONTROL_ATOMS,
+      ),
+    ).toEqual(['installSlug']);
+  });
+
+  it('CALIBRATION: passes the same cell once it names the argument', () => {
+    expect(
+      missingUnanimousArgs(
+        {
+          cover: controlCover,
+          routing: { want: '', use: '`routines:list { name: ..., installSlug: ... }`', insteadOf: '' },
+        },
+        CONTROL_ATOMS,
+      ),
+    ).toEqual([]);
+  });
 
   const withFixtures = ALL_PAIRS.filter((p) => existsSync(join(FIXTURES, `${p.id}.sample.json`)));
 
