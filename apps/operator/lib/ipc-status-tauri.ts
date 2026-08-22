@@ -53,3 +53,13 @@ export async function readIpcStatus(): Promise<IpcStatusRead> {
     return { kind: 'error', error: e instanceof Error ? e.message : String(e) };
   }
 }
+
+/** Whether this shell's desktop owns the Server that served this document. */
+export function ipcOwnsContentOrigin(read: IpcStatusRead): boolean {
+  return read.kind === 'ok' && read.status.ownerIsContentOrigin === true;
+}
+
+/** Fail closed for browser, forwarded/hosted Server, ACL, and old-shell paths. */
+export async function canUseContentOriginDesktopActions(): Promise<boolean> {
+  return ipcOwnsContentOrigin(await readIpcStatus());
+}

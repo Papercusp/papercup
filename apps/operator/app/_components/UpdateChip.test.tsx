@@ -11,19 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-const isDesktop = vi.fn(() => true);
+const desktopAllowed = vi.fn(async () => true);
 const appVersion = vi.fn(async () => '1.2.3');
 const checkForUpdate = vi.fn(async () => null as null | Record<string, unknown>);
 const installUpdate = vi.fn(async () => {});
 const revertTo = vi.fn(async (_tag: string) => {});
 
 vi.mock('@papercusp/operator-core/lib/version-tauri', () => ({
-  isDesktop: () => isDesktop(),
   appVersion: () => appVersion(),
   checkForUpdate: () => checkForUpdate(),
   installUpdate: () => installUpdate(),
   revertTo: (tag: string) => revertTo(tag),
 }));
+vi.mock('@/lib/ipc-status-tauri', () => ({ canUseContentOriginDesktopActions: () => desktopAllowed() }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 
@@ -64,7 +64,8 @@ import { toast } from 'sonner';
 import UpdateChip from './UpdateChip';
 
 beforeEach(() => {
-  isDesktop.mockReturnValue(true);
+  desktopAllowed.mockResolvedValue(true);
+  desktopAllowed.mockClear();
   appVersion.mockResolvedValue('1.2.3');
   checkForUpdate.mockResolvedValue(null);
   installUpdate.mockClear();
@@ -84,10 +85,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('UpdateChip', () => {
-  it('renders nothing in web (non-desktop) mode', () => {
-    isDesktop.mockReturnValue(false);
+  it('renders nothing without content-origin desktop authority', async () => {
+    desktopAllowed.mockResolvedValue(false);
     const { container } = render(<UpdateChip />);
+    await act(async () => { await Promise.resolve(); });
     expect(container.firstChild).toBeNull();
+    expect(appVersion).not.toHaveBeenCalled();
   });
 
   it('shows the plain version chip when there is no update available', async () => {

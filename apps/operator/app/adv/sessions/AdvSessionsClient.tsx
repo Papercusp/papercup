@@ -20,6 +20,7 @@ import { Tooltip } from '@/app/harness/Tooltip';
 import { filterCountLabel, type CountEvidence } from '@/app/harness/filters';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { useLexicon } from '@/lib/useLexicon';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { usePlanList, type PlanListRow } from '../../admin/plans/plans-api';
 import {
@@ -684,6 +685,10 @@ export default function AdvSessionsClient() {
       } catch {
         // command absent (older shell) / invoke unavailable → server path.
       }
+    }
+    if (!await canUseContentOriginDesktopActions()) {
+      toast.info('Window focus is available only in the desktop GUI connected to its local Server.');
+      return;
     }
     try {
       const r = await fetch('/api/adv/sessions/focus', {

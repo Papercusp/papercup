@@ -29,6 +29,7 @@
  */
 import { useEffect } from 'react';
 import { onSyncBusEvent } from '@papercusp/sync';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 const CONSOLE_LAUNCH_REQUEST_EVENT = 'console.launch-request';
 
@@ -48,12 +49,6 @@ interface LaunchRequestArgs {
   planSlug?: string | null;
 }
 
-function hasTauriInvoke(): boolean {
-  if (typeof window === 'undefined') return false;
-  const w = window as unknown as { __TAURI_INTERNALS__?: { invoke?: unknown } };
-  return typeof w.__TAURI_INTERNALS__?.invoke === 'function';
-}
-
 async function postJson(path: string, body: unknown): Promise<any> {
   const r = await fetch(path, {
     method: 'POST',
@@ -67,7 +62,7 @@ async function handleLaunchRequest(args: LaunchRequestArgs): Promise<void> {
   const requestId = args.requestId;
   const envelope = args.envelope;
   if (!requestId || !envelope?.cwd || typeof envelope.greetingCmd !== 'string') return;
-  if (!hasTauriInvoke()) return; // browser tab — cannot spawn; leave it for a Tauri webview
+  if (!await canUseContentOriginDesktopActions()) return;
 
   // Single-consumer gate: only the first claimer proceeds.
   const claim = await postJson('/api/agent-mcp/console/launch-claim', { requestId });

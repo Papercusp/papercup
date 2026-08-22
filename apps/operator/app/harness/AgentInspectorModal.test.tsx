@@ -11,6 +11,8 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 type Handlers = Record<string, (data: string, ev?: unknown) => void>;
 let captured: { handlers: Handlers; onError?: (e: Error) => void } | null = null;
 const closeSpy = vi.fn();
+const desktopAuthority = vi.hoisted(() => ({ allowed: true }));
+vi.mock('@/lib/ipc-status-tauri', () => ({ canUseContentOriginDesktopActions: async () => desktopAuthority.allowed }));
 vi.mock('@papercusp/sse', () => ({
   // Mirror the transport ceilings consumed by stream-freshness.ts.
   DEFAULT_ZOMBIE_TIMEOUT_MS: 45_000,
@@ -39,7 +41,7 @@ function renderModal(over: Partial<React.ComponentProps<typeof AgentInspectorMod
   return { ...utils, onClose };
 }
 
-beforeEach(() => { captured = null; closeSpy.mockClear(); });
+beforeEach(() => { captured = null; closeSpy.mockClear(); desktopAuthority.allowed = true; });
 afterEach(cleanup);
 
 describe('AgentInspectorModal (pinned full inspector)', () => {
@@ -149,6 +151,18 @@ describe('AgentInspectorModal (pinned full inspector)', () => {
   it('hides the Focus-window button when no focusTarget is given (never a dead button)', () => {
     renderModal();
     expect(screen.queryByTestId('focus-window-btn')).toBeNull();
+  });
+
+  it('degrades remote/browser focus without calling the Server window manager', async () => {
+    desktopAuthority.allowed = false;
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    renderModal({ focusTarget: { advSessionId: 42, windowId: '0xabc', pid: 999 } });
+    const btn = screen.getByTestId('focus-window-btn');
+    fireEvent.click(btn);
+    await waitFor(() => expect(btn.textContent).toContain('desktop only'));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 
   it('shows a "Resume in new terminal" button (fork:false) that POSTs resumeSessionId to console/launch', async () => {

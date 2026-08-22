@@ -2,7 +2,7 @@
 
 import { useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { isTauri } from '@/app/_components/SetupWizard/tauri-detect';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 /** Hostnames that ARE the app itself (any port) — never externalized. */
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '0.0.0.0', '::1']);
@@ -49,7 +49,8 @@ export function isExternalWebUrl(href: string, currentHref: string): boolean {
  */
 export default function ExternalLinkProvider() {
   useEffect(() => {
-    if (!isTauri()) return;
+    let cancelled = false;
+    let listening = false;
     function handleClickCapture(event: MouseEvent) {
       // Let modified / non-primary clicks and already-handled events through.
       if (event.defaultPrevented || event.button !== 0) return;
@@ -69,8 +70,15 @@ export default function ExternalLinkProvider() {
       });
     }
 
-    document.addEventListener('click', handleClickCapture, { capture: true });
-    return () => document.removeEventListener('click', handleClickCapture, { capture: true });
+    void canUseContentOriginDesktopActions().then((allowed) => {
+      if (cancelled || !allowed) return;
+      document.addEventListener('click', handleClickCapture, { capture: true });
+      listening = true;
+    });
+    return () => {
+      cancelled = true;
+      if (listening) document.removeEventListener('click', handleClickCapture, { capture: true });
+    };
   }, []);
 
   return null;

@@ -14,10 +14,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 
 /* ── Mocks ─────────────────────────────────────────────────────────── */
-const isDesktop = vi.fn(() => true);
-vi.mock('@papercusp/operator-core/lib/version-tauri', () => ({
-  isDesktop: () => isDesktop(),
-}));
+const desktopAllowed = vi.fn(async () => true);
+vi.mock('@/lib/ipc-status-tauri', () => ({ canUseContentOriginDesktopActions: () => desktopAllowed() }));
 
 // Capture each registered listener by event name so a test can fire a
 // synthetic supervisor event, plus a spy unlisten to assert teardown.
@@ -55,7 +53,8 @@ const DEAD = { reason: 'serve.mjs child', respawns: 5, window_secs: 300 };
 beforeEach(() => {
   listeners.clear();
   unlistenSpy.mockClear();
-  isDesktop.mockReturnValue(true);
+  desktopAllowed.mockResolvedValue(true);
+  desktopAllowed.mockClear();
   offlineState = true;
 });
 afterEach(cleanup);
@@ -155,7 +154,7 @@ describe('DesktopSupervisorBanner', () => {
   });
 
   it('renders nothing and registers no listeners in web (non-desktop) mode', async () => {
-    isDesktop.mockReturnValue(false);
+    desktopAllowed.mockResolvedValue(false);
     await mount();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(listeners.size).toBe(0);

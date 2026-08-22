@@ -133,4 +133,12 @@ describe('AdvSessionsClient wiring guard', () => {
     expect(source).toContain('Load older sessions');
     expect(source).toContain('data-testid="sessions-history-count"');
   });
+
+  it('never falls through to the Server window manager without content-origin desktop proof', () => {
+    const proof = source.indexOf('await canUseContentOriginDesktopActions()');
+    const focusPost = source.indexOf('/api/adv/sessions/focus');
+    expect(proof).toBeGreaterThan(-1);
+    expect(focusPost).toBeGreaterThan(proof);
+    expect(source).toContain('Window focus is available only in the desktop GUI connected to its local Server.');
+  });
 });

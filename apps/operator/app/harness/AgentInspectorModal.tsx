@@ -7,6 +7,7 @@ import { TONE } from './theme';
 import { Tooltip } from './Tooltip';
 import { useLexicon } from '../../lib/useLexicon';
 import { agentDisplayLabel } from './agent-display';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 import {
   useAgentThinkingStream,
   Entry,
@@ -206,9 +207,13 @@ export default function AgentInspectorModal({
 
   // "Focus window" — raise the agent's OS terminal via the existing wmctrl-backed
   // endpoint. Only wired when the caller passed a focusTarget (i.e. focus will work).
-  const [focusState, setFocusState] = useState<'idle' | 'busy' | 'err'>('idle');
+  const [focusState, setFocusState] = useState<'idle' | 'busy' | 'err' | 'unsupported'>('idle');
   const focusWindow = useCallback(async () => {
     if (!focusTarget) return;
+    if (!await canUseContentOriginDesktopActions()) {
+      setFocusState('unsupported');
+      return;
+    }
     setFocusState('busy');
     try {
       const res = await fetch('/api/adv/sessions/focus', {
@@ -483,6 +488,7 @@ export default function AgentInspectorModal({
               data-testid="focus-window-btn"
               onClick={focusWindow}
               disabled={focusState === 'busy'}
+              title={focusState === 'unsupported' ? 'Window focus is available only in the desktop GUI connected to its local Server.' : undefined}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: 4,
                 font: 'inherit', fontSize: 11, cursor: focusState === 'busy' ? 'default' : 'pointer',
@@ -492,7 +498,7 @@ export default function AgentInspectorModal({
               }}
             >
               <span aria-hidden>⤢</span>
-              {focusState === 'busy' ? 'focusing…' : focusState === 'err' ? 'focus failed' : 'Focus window'}
+              {focusState === 'busy' ? 'focusing…' : focusState === 'err' ? 'focus failed' : focusState === 'unsupported' ? 'desktop only' : 'Focus window'}
             </button>
           ) : null}
           <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>

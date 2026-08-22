@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
-import { isTauri } from './SetupWizard/tauri-detect';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 // D-004 (operator-chat-sidebar-revival-2026-07-13 P-014): the native
 // zellij/pui dock is TESTING-gated but stays bundled. Rust no longer spawns
@@ -17,10 +17,18 @@ import { FLAGS } from '@papercusp/flags';
 // re-relays. Renders nothing.
 export default function NativeTerminalGate() {
   const testing = useFlag(FLAGS.TESTING);
-  const [tauri] = useState(() => isTauri());
+  const [desktop, setDesktop] = useState(false);
 
   useEffect(() => {
-    if (!tauri) return;
+    let cancelled = false;
+    void canUseContentOriginDesktopActions().then((allowed) => {
+      if (!cancelled) setDesktop(allowed);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!desktop) return;
     void commands.nativeTerminalSetEnabled(testing).then((res) => {
       if (res.status === 'error') {
         // Non-fatal: the dock simply stays in its previous state. Surfaced
@@ -31,7 +39,7 @@ export default function NativeTerminalGate() {
         );
       }
     });
-  }, [tauri, testing]);
+  }, [desktop, testing]);
 
   return null;
 }

@@ -2,9 +2,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { commands, type TerminalLayout } from '@papercusp/operator-core/lib/tauri-bindings';
-import { isTauri } from './SetupWizard/tauri-detect';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 // WI-3388 (owner ask 2026-07-08): the native terminal dock (a NATIVE
 // view/window OUTSIDE this webview, docked LEFT — see
@@ -54,7 +54,7 @@ export default function TerminalDivider() {
   // relays turns both the boot race and the live-flip case into a normal
   // re-render: this effect re-fires exactly when the gate could have opened.
   const testing = useFlag(FLAGS.TESTING);
-  const [tauri] = useState(() => isTauri());
+  const [desktop, setDesktop] = useState(false);
   const [docked, setDocked] = useState(false);
   const [layout, setLayout] = useState<TerminalLayout | null>(null);
   const draggingRef = useRef(false);
@@ -63,7 +63,15 @@ export default function TerminalDivider() {
   const pendingFractionRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (!tauri || !enabled) return;
+    let cancelled = false;
+    void canUseContentOriginDesktopActions().then((allowed) => {
+      if (!cancelled) setDesktop(allowed);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!desktop || !enabled) return;
     let cancelled = false;
     // Bounded retry (belt-and-suspenders on top of the `testing` dependency
     // above): NativeTerminalGate's own `native_terminal_set_enabled` invoke
@@ -92,7 +100,7 @@ export default function TerminalDivider() {
     return () => {
       cancelled = true;
     };
-  }, [tauri, enabled, testing]);
+  }, [desktop, enabled, testing]);
 
   const flushPendingFraction = useCallback(() => {
     rafRef.current = null;
@@ -169,7 +177,7 @@ export default function TerminalDivider() {
     });
   }, [layout]);
 
-  if (!tauri || !enabled || !docked || !layout) return null;
+  if (!desktop || !enabled || !docked || !layout) return null;
 
   return (
     <>

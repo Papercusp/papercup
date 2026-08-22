@@ -30,12 +30,9 @@
 import { useEffect } from 'react';
 import { toast } from 'sonner';
 import { onSyncBusEvent } from '@papercusp/sync';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 const ATTENTION_NOTIFY_EVENT = 'attention.notify';
-
-function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
-}
 
 interface NotifyArgs {
   title?: string;
@@ -48,6 +45,8 @@ interface NotifyArgs {
 export default function DesktopAttentionNotifier() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
+    let desktopAllowed = false;
+    void canUseContentOriginDesktopActions().then((allowed) => { desktopAllowed = allowed; });
 
     return onSyncBusEvent((ev) => {
       if (ev.name !== ATTENTION_NOTIFY_EVENT) return;
@@ -69,7 +68,7 @@ export default function DesktopAttentionNotifier() {
       const osNotificationsEnabled =
         typeof localStorage !== 'undefined' &&
         localStorage.getItem('papercusp:desktopOsNotifications') === '1';
-      if (osNotificationsEnabled && isTauri()) {
+      if (osNotificationsEnabled && desktopAllowed) {
         void (async () => {
           const { invoke } = await import('@tauri-apps/api/core');
           await invoke('show_attention_notification', { title, body });

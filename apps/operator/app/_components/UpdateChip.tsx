@@ -41,8 +41,8 @@ import {
   checkForUpdate,
   installUpdate,
   revertTo,
-  isDesktop,
 } from '@papercusp/operator-core/lib/version-tauri';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 import { useConfirmDialog } from '../harness/useConfirmDialog';
 
 const POLL_INTERVAL_MS = 10 * 60 * 1000; // 10m
@@ -221,7 +221,11 @@ export default function UpdateChip() {
   const { offline } = useSyncConnectivity();
 
   useEffect(() => {
-    setDesktop(isDesktop());
+    let cancelled = false;
+    void canUseContentOriginDesktopActions().then((allowed) => {
+      if (!cancelled) setDesktop(allowed);
+    });
+    return () => { cancelled = true; };
   }, []);
 
   // Subscribe to download-progress events for the lifetime of the chip (not
@@ -255,7 +259,7 @@ export default function UpdateChip() {
   }, []);
 
   const poll = useCallback(async (silent: boolean) => {
-    if (!isDesktop()) return;
+    if (!desktop) return;
     // Skip BACKGROUND (silent) checks while the operator is unreachable. The
     // check would just race a down / not-yet-ready operator and make the
     // tauri_plugin_updater crate log a scary `failed to check for updates:
@@ -324,7 +328,7 @@ export default function UpdateChip() {
     } finally {
       setChecking(false);
     }
-  }, [offline]);
+  }, [desktop, offline]);
 
   // Load the release history for a channel. Passed the channel explicitly so a
   // just-switched channel doesn't read stale state. `installable` is scoped to

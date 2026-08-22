@@ -11,14 +11,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   testingFlag: false,
-  isTauri: true,
+  desktopAllowed: true,
   setEnabledSpy: vi.fn(() => Promise.resolve({ status: 'ok', data: false })),
 }));
 
 vi.mock('@papercusp/operator-core/lib/tauri-bindings', () => ({
   commands: { nativeTerminalSetEnabled: h.setEnabledSpy },
 }));
-vi.mock('./SetupWizard/tauri-detect', () => ({ isTauri: () => h.isTauri }));
+vi.mock('@/lib/ipc-status-tauri', () => ({ canUseContentOriginDesktopActions: async () => h.desktopAllowed }));
 vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => h.testingFlag }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { TESTING: 'papercusp-testing' } }));
 
@@ -27,7 +27,7 @@ import NativeTerminalGate from './NativeTerminalGate';
 describe('NativeTerminalGate (D-004: dock is TESTING-gated)', () => {
   beforeEach(() => {
     h.testingFlag = false;
-    h.isTauri = true;
+    h.desktopAllowed = true;
     h.setEnabledSpy.mockClear();
   });
   afterEach(() => cleanup());
@@ -54,7 +54,7 @@ describe('NativeTerminalGate (D-004: dock is TESTING-gated)', () => {
   });
 
   it('never invokes outside the Tauri webview', async () => {
-    h.isTauri = false;
+    h.desktopAllowed = false;
     render(<NativeTerminalGate />);
     // Give any (wrong) effect a beat to fire before asserting silence.
     await new Promise((r) => setTimeout(r, 20));

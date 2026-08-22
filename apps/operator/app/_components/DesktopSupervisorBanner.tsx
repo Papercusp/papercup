@@ -43,8 +43,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { isDesktop } from '@papercusp/operator-core/lib/version-tauri';
 import { useSyncConnectivity } from '@papercusp/sync';
+import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 /** Mirrors the Rust `OperatorDeadPayload` (main.rs). */
 interface OperatorDeadPayload {
@@ -62,7 +62,11 @@ export function DesktopSupervisorBanner() {
   const { offline } = useSyncConnectivity();
 
   useEffect(() => {
-    setDesktop(isDesktop());
+    let cancelled = false;
+    void canUseContentOriginDesktopActions().then((allowed) => {
+      if (!cancelled) setDesktop(allowed);
+    });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
