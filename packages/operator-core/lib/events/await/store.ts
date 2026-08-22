@@ -314,6 +314,46 @@ export async function retireLifecycleBoundWatchesForOwners(
   });
 }
 
+/**
+ * Retire only fleet-leadership machinery for owners whose loop/session ended.
+ *
+ * `loop:end` knows the owner identity but deliberately does not need to know
+ * which fleet refs that owner led. Keep this inverse narrower than
+ * `retireLifecycleBoundWatchesForOwners`: ending a loop must not cancel an
+ * unrelated bound interest (for example a work-item or escalation watch).
+ */
+export async function retireFleetLeadershipWatchesForOwners(
+  ownerIds: readonly string[],
+  opts: { client?: ReturnType<typeof getOrgPg>['sql'] } = {},
+): Promise<LifecycleRetirementResult> {
+  const owners = [...new Set(ownerIds.map((id) => id.trim()).filter(Boolean))];
+  if (owners.length === 0) return { awaits: 0, predicateWatches: 0 };
+  return boundedOrgTxn(
+    async (tx) => {
+      const awaits = await tx`
+        UPDATE harness_shared.event_awaits
+           SET cancelled_at = now()
+         WHERE subscriber_id = ANY(${owners}::text[])
+           AND bound_to->>'kind' = 'fleet-leadership'
+           AND cancelled_at IS NULL
+           AND (once = false OR fired_at IS NULL)
+        RETURNING id
+      `;
+      const predicateWatches = await tx`
+        UPDATE harness_shared.predicate_watches
+           SET active = false,
+               last_error = coalesce(last_error, 'gc: fleet leadership lifecycle retired')
+         WHERE owner_id = ANY(${owners}::text[])
+           AND bound_to->>'kind' = 'fleet-leadership'
+           AND active
+        RETURNING id
+      `;
+      return { awaits: awaits.length, predicateWatches: predicateWatches.length };
+    },
+    { client: opts.client },
+  );
+}
+
 /** Fold lifecycle provenance without overwriting source payload fields silently. */
 export function withLifecycleBindingProvenance(
   payload: unknown,
@@ -772,11 +812,12 @@ export async function listVerifiedWaitTakeoversForSubscribers(
   const nonTerminal = candidates.filter(
     ({ alert }) => !alert.owner.workItemId || !terminalOwners.has(alert.owner.workItemId),
   );
-  // EI-21139615450004027: a legacy certificate can point an owner-less wait
-  // back at its subscriber. That subscriber cannot wake or take over itself;
-  // without a work item there is no distinct actionable ownership target.
+  // EI-21139615450004027 / WI-40626: a legacy or stale certificate can point
+  // the wait back at its subscriber, sometimes retaining an unrelated work-item
+  // id. That subscriber cannot wake or take over itself; a stale id does not
+  // make the self-referential remedy actionable.
   const actionable = nonTerminal.filter(
-    ({ alert }) => !(alert.owner.workItemId == null && alert.owner.ownerId === alert.subscriberId),
+    ({ alert }) => alert.owner.ownerId !== alert.subscriberId,
   );
   if (actionable.length === 0) return [];
 

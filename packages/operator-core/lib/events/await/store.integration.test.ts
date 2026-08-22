@@ -39,6 +39,7 @@ const {
   insertDeliveries,
   retireLifecycleBoundWatches,
   retireLifecycleBoundWatchesForOwners,
+  retireFleetLeadershipWatchesForOwners,
   listActiveAwaits,
   listActiveAwaitsForKey,
   fireAwaitsForKey,
@@ -229,6 +230,43 @@ describe('await-event store (PG)', () => {
       predicateWatches: 1,
     });
     expect(await listActiveAwaits('leader-b')).toEqual([]);
+  });
+
+  it('retires only fleet-leadership machinery for an owner, preserving other lifecycle watches', async () => {
+    const fleet = { kind: 'fleet-leadership', ref: 'alpha' };
+    const other = { kind: 'work-item-claim', ref: 'WI-1' };
+    const fleetAwait = await registerAwait({
+      subscriberId: 'leader-a',
+      eventKey: 'fleet:member-dead:alpha',
+      once: false,
+      boundTo: fleet,
+    });
+    const otherAwait = await registerAwait({
+      subscriberId: 'leader-a',
+      eventKey: 'work-item:claim:WI-1',
+      once: false,
+      boundTo: other,
+    });
+    await rootSql`
+      INSERT INTO harness_shared.predicate_watches (id, owner_id, bound_to)
+      VALUES ('fleet-owner-a', 'leader-a', ${JSON.stringify(fleet)}::text::jsonb),
+             ('other-owner-a', 'leader-a', ${JSON.stringify(other)}::text::jsonb)`;
+
+    await expect(retireFleetLeadershipWatchesForOwners(['leader-a'])).resolves.toEqual({
+      awaits: 1,
+      predicateWatches: 1,
+    });
+    expect(await listActiveAwaits('leader-a')).toEqual([otherAwait]);
+    expect(fleetAwait.cancelledAt).toBeNull();
+    const predicateRows = await rootSql<{ id: string; active: boolean }[]>`
+      SELECT id, active
+        FROM harness_shared.predicate_watches
+       WHERE owner_id = 'leader-a'
+       ORDER BY id`;
+    expect(predicateRows).toEqual([
+      { id: 'fleet-owner-a', active: false },
+      { id: 'other-owner-a', active: true },
+    ]);
   });
 
   it('registerAwait persists a one-shot watch; listActiveAwaits reads it back', async () => {
@@ -574,6 +612,31 @@ describe('await-event store (PG)', () => {
       nextAction: 'wake-owner-or-takeover',
       producer: { kind: 'green-checkpoint', id: 'run-legacy' },
       owner: { ownerId: 'su-monitor', workItemId: null },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+    };
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'verified-timeout',
+             timeout_verification = ${JSON.stringify(result)}::jsonb
+       WHERE id = ${stalled.id}
+    `;
+
+    expect(await listVerifiedWaitTakeoversForSubscribers(['su-monitor'])).toEqual([]);
+  });
+
+  // WI-40626: migrated/stale verdicts can retain an unrelated work-item id while
+  // still attributing the producer owner to the waiting subscriber. That owner
+  // cannot wake or take over itself, regardless of the stale id being present.
+  it('suppresses self-referential takeover rows even when a stale work-item id is present', async () => {
+    const stalled = await registerAwait({ subscriberId: 'su-monitor', eventKey: 'green-checkpoint:red:papercusp' });
+    const result = {
+      classification: 'absent',
+      nextAction: 'wake-owner-or-takeover',
+      producer: { kind: 'green-checkpoint', id: 'run-stale-lineage' },
+      owner: { ownerId: 'su-monitor', workItemId: 'EI-211707' },
       checkedAtMs: 42,
       verificationDeadlineMs: 40,
       lastProgressAtMs: 1,

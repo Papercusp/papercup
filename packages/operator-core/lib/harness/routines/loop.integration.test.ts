@@ -42,6 +42,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`TRUNCATE harness_shared.routines, harness_shared.carry_notes`;
+  await sql`TRUNCATE harness_shared.event_awaits, harness_shared.predicate_watches`;
 });
 
 async function rawRow(ownerId: string) {
@@ -445,6 +446,69 @@ describe('loop surface round-trip (real PG)', () => {
 
     // Unknown owner ⇒ false.
     expect(await deactivateLoop('su-nobody', { sql })).toBe(false);
+  });
+
+  it('EI-21178284518430314: loop:end retires fleet leadership watches even when already inactive', async () => {
+    const fleet = { kind: 'fleet-leadership', ref: 'fleet-alpha' };
+    const other = { kind: 'work-item-claim', ref: 'WI-1' };
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OWNER,
+      intervalSec: 60,
+      kickoff: 'k',
+      sql,
+    });
+    await sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, once, bound_to)
+      VALUES
+        ('default', ${OWNER}, 'fleet:member-dead:fleet-alpha', false, ${JSON.stringify(fleet)}::text::jsonb),
+        ('default', ${OWNER}, 'work-item:claim:WI-1', false, ${JSON.stringify(other)}::text::jsonb)`;
+    await sql`
+      INSERT INTO harness_shared.predicate_watches
+        (owner_id, event_key, tool, path, op, once, bound_to)
+      VALUES
+        (${OWNER}, 'predicate:fleet-alpha', 'fake:read', 'value', 'gt', false, ${JSON.stringify(fleet)}::text::jsonb),
+        (${OWNER}, 'predicate:WI-1', 'fake:read', 'value', 'gt', false, ${JSON.stringify(other)}::text::jsonb)`;
+
+    expect(await deactivateLoop(OWNER, { sql })).toBe(true);
+    expect(
+      await sql<{ event_key: string; cancelled_at: Date | null }[]>`
+        SELECT event_key, cancelled_at
+          FROM harness_shared.event_awaits
+         WHERE subscriber_id = ${OWNER}
+         ORDER BY event_key`,
+    ).toEqual([
+      { event_key: 'fleet:member-dead:fleet-alpha', cancelled_at: expect.any(Date) },
+      { event_key: 'work-item:claim:WI-1', cancelled_at: null },
+    ]);
+    expect(
+      await sql<{ event_key: string; active: boolean }[]>`
+        SELECT event_key, active
+          FROM harness_shared.predicate_watches
+         WHERE owner_id = ${OWNER}
+         ORDER BY event_key`,
+    ).toEqual([
+      { event_key: 'predicate:fleet-alpha', active: false },
+      { event_key: 'predicate:WI-1', active: true },
+    ]);
+
+    // Re-seed a fleet watch after the row is inactive: loop:end must still clean
+    // the predecessor's residue even though the routine UPDATE returns no row.
+    await sql`
+      INSERT INTO harness_shared.event_awaits
+        (workspace_id, subscriber_id, event_key, once, bound_to)
+      VALUES ('default', ${OWNER}, 'fleet:member-dead:fleet-alpha-2', false,
+              ${JSON.stringify({ kind: 'fleet-leadership', ref: 'fleet-alpha-2' })}::text::jsonb)`;
+    expect(await deactivateLoop(OWNER, { sql })).toBe(false);
+    expect(
+      await sql<{ cancelled_at: Date | null }[]>`
+        SELECT cancelled_at
+          FROM harness_shared.event_awaits
+         WHERE subscriber_id = ${OWNER}
+           AND event_key = 'fleet:member-dead:fleet-alpha-2'`,
+    ).toEqual([{ cancelled_at: expect.any(Date) }]);
   });
 
   it('EI-3748: deactivateLoop clears a stale last_error stamp — the routine can no longer fire, so a residual error is moot', async () => {
