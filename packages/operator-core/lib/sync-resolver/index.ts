@@ -54,6 +54,17 @@ import { attachListMeta } from './list-meta';
 // one and left every panel's error branch unreachable for the data-layer class.
 import { classifyReadFailure, degraded } from './degraded-snapshot';
 import { createReadDeadline } from './read-deadline';
+import { createCompanionListQueryPair } from './bounded-list-read';
+import {
+  WORK_ITEMS_CURSOR_PAGE_LIMIT,
+  WORK_ITEMS_FAIR_STATE_LIMIT,
+  buildWorkItemsPredicate,
+  normalizeWorkItemsListArgs,
+  readWorkItemsPageFromStore,
+  readWorkItemsSummaryFromStore,
+  workItemsSummarySelection,
+  type WorkItemsListWireArgs,
+} from './work-items-list-query';
 
 /**
  * Shared deadline for the fan-outs bounded IN PLACE (WI-39825). 6s — the budget
@@ -101,6 +112,34 @@ const clampedLimitOpt = (cap: number) =>
     .positive()
     .transform((v) => Math.min(v, cap))
     .optional();
+
+const workItemsListFiltersSchema = z.object({
+  id: z.string().max(500).optional(),
+  title: z.string().max(500).optional(),
+  kinds: z.array(z.string().max(80)).max(100).optional(),
+  states: z.array(z.string().max(80)).max(100).optional(),
+  stages: z.array(z.string().max(160)).max(100).optional(),
+  assignees: z.array(z.string().max(300)).max(500).optional(),
+  severities: z.array(z.string().max(80)).max(100).optional(),
+  plans: z.array(z.string().max(300)).max(500).optional(),
+  priorityMin: z.number().finite().optional(),
+  priorityMax: z.number().finite().optional(),
+  rankMin: z.number().finite().optional(),
+  rankMax: z.number().finite().optional(),
+});
+
+const workItemsListArgsSchema = z.object({
+  harnessSlug: z.string().max(200).optional(),
+  harnessSlugs: z.array(z.string().min(1).max(200)).max(500).optional(),
+  kind: z.string().max(80).optional(),
+  state: z.string().max(80).optional(),
+  q: z.string().max(500).optional(),
+  filters: workItemsListFiltersSchema.optional(),
+  cursor: z.string().max(2_000).nullable().optional(),
+  limit: clampedLimit(WORK_ITEMS_CURSOR_PAGE_LIMIT, WORK_ITEMS_CURSOR_PAGE_LIMIT),
+  states: z.array(z.string().max(40)).max(20).optional(),
+  perState: clampedLimitOpt(WORK_ITEMS_FAIR_STATE_LIMIT),
+});
 
 /**
  * A calendar view has no useful reason to request more than three years at once.
