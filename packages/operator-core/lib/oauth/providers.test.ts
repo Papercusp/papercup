@@ -91,12 +91,17 @@ describe('Google Workspace Desktop OAuth provider', () => {
     const provider = makeGoogleProvider(config);
     await expect(provider.exchangeCode('code-without-context')).rejects.toThrow(/PKCE verifier/);
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      access_token: 'access',
-      refresh_token: 'refresh',
-      expires_in: 3600,
-      scope: GOOGLE_WORKSPACE_SCOPES.join(' '),
-    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: 'access',
+          refresh_token: 'refresh',
+          expires_in: 3600,
+          scope: GOOGLE_WORKSPACE_SCOPES.join(' '),
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      ),
+    );
     vi.stubGlobal('fetch', fetchMock);
     const privateContext = { codeVerifier: 'persisted-verifier' };
     const tokens = await provider.exchangeCode('authorization-code', privateContext);
@@ -110,13 +115,19 @@ describe('Google Workspace Desktop OAuth provider', () => {
     const dir = await fs.mkdtemp(join(tmpdir(), 'papercusp-google-oauth-'));
     const path = join(dir, 'client.json');
     try {
-      await fs.writeFile(path, JSON.stringify({ installed: {
-        client_id: config.clientId,
-        client_secret: config.clientSecret,
-        auth_uri: config.authorizeUrl,
-        token_uri: config.tokenUrl,
-        redirect_uris: ['http://localhost'],
-      } }), { mode: 0o600 });
+      await fs.writeFile(
+        path,
+        JSON.stringify({
+          installed: {
+            client_id: config.clientId,
+            client_secret: config.clientSecret,
+            auth_uri: config.authorizeUrl,
+            token_uri: config.tokenUrl,
+            redirect_uris: ['http://localhost'],
+          },
+        }),
+        { mode: 0o600 },
+      );
       const provider = await loadGoogleProviderFromDesktopClientFile(path, config.redirectUri);
       expect(provider?.id).toBe('google');
       expect(provider?.config.clientId).toBe(config.clientId);

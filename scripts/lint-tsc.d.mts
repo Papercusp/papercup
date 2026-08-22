@@ -20,6 +20,8 @@
 /** @type {string} */
 export const TSC_COMMAND: string;
 import { parseTscErrors } from './lib/tsc-baseline-gate.mjs';
+import { normalizeDiagnosticPath } from './lib/tsc-baseline-gate.mjs';
+import { normalizeTscErrorPaths } from './lib/tsc-baseline-gate.mjs';
 import { MID_INSTALL_DIAGNOSTIC_MIN } from './lib/tsc-baseline-gate.mjs';
 import { parseMissingModuleDiagnostics } from './lib/tsc-baseline-gate.mjs';
 import { packageNameFromModuleSpecifier } from './lib/tsc-baseline-gate.mjs';
@@ -56,4 +58,4 @@ import { formatLintTscResultMarker } from './lib/tsc-baseline-gate.mjs';
 import { discoverSiblingTypecheckGates } from './lib/tsc-baseline-gate.mjs';
 import { coveragePrefixesFromGateModule } from './lib/tsc-baseline-gate.mjs';
 import { gateCoveringFile } from './lib/tsc-baseline-gate.mjs';
-export { parseTscErrors, MID_INSTALL_DIAGNOSTIC_MIN, parseMissingModuleDiagnostics, packageNameFromModuleSpecifier, detectUnextractedDependencyDiagnostics, formatMidInstallWarning, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, formatStandingRedFooter, partitionNewFilesByLiveEdit, partitionBrokenFilesByLiveEdit, diagnosticLinesForFiles, formatRegressedFileDiagnostics, REGRESSION_DIAGNOSTIC_MAX_PER_FILE, partitionStandingByCommitRecency, formatLandingRaceCaveat, LANDING_RACE_WINDOW_SEC, projectPrefixFromTscCommand, partitionFilesByCoverage, suggestTypecheckGate, formatUncoveredFilesBanner, coalesceWatermarkFor, declarationFilesFromConfig, mergeRatchetIntoBaseline, lintTscScopeFromArgv, formatLintTscResultMarker, discoverSiblingTypecheckGates, coveragePrefixesFromGateModule, gateCoveringFile };
+export { parseTscErrors, normalizeDiagnosticPath, normalizeTscErrorPaths, MID_INSTALL_DIAGNOSTIC_MIN, parseMissingModuleDiagnostics, packageNameFromModuleSpecifier, detectUnextractedDependencyDiagnostics, formatMidInstallWarning, syntaxBrokenFiles, countByFile, gitChangedFiles, parseExplicitFiles, decidePerFile, effectiveBaselineByFile, exportedTypeNames, filesReferencingTypeNames, formatAttributionHeadline, formatNewFileGuidance, formatStandingRedFooter, partitionNewFilesByLiveEdit, partitionBrokenFilesByLiveEdit, diagnosticLinesForFiles, formatRegressedFileDiagnostics, REGRESSION_DIAGNOSTIC_MAX_PER_FILE, partitionStandingByCommitRecency, formatLandingRaceCaveat, LANDING_RACE_WINDOW_SEC, projectPrefixFromTscCommand, partitionFilesByCoverage, suggestTypecheckGate, formatUncoveredFilesBanner, coalesceWatermarkFor, declarationFilesFromConfig, mergeRatchetIntoBaseline, lintTscScopeFromArgv, formatLintTscResultMarker, discoverSiblingTypecheckGates, coveragePrefixesFromGateModule, gateCoveringFile };

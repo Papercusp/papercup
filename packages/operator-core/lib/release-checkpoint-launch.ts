@@ -269,6 +269,8 @@ export interface ActiveCheckpointCheck {
    * systemd start time has become old enough to look stalled.
    */
   progress_at?: string | null;
+  /** Current phase published by the run in its per-run `phase.json` marker. */
+  current_phase?: string | null;
   /** Seconds remaining before the systemd backstop (CHECKPOINT_MAX_RUNTIME_SEC)
    *  would kill it — a rough "how much longer" estimate, not a promise. Null when the
    *  run has reached `delivering`: the backstop remainder is no longer an honest estimate
@@ -1077,6 +1079,7 @@ export function checkActiveCheckpointRun(
             started_at: lockHeld.started_at ?? null,
             elapsed_sec: lockHeld.elapsed_sec ?? null,
             ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
+            ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
             held_externally: true,
           }
         : {}),
@@ -1119,6 +1122,7 @@ export function checkActiveCheckpointRun(
         started_at: lockHeld.started_at ?? null,
         elapsed_sec: lockHeld.elapsed_sec ?? null,
         ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
+        ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
         ...eta,
         ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
         held_externally: true,
@@ -1192,6 +1196,7 @@ export function checkActiveCheckpointRun(
     started_at: startedAt,
     elapsed_sec: elapsedSec,
     ...(progressAt != null ? { progress_at: isoTimestampOrNull(progressAt) } : {}),
+    ...(runPhase?.phase ? { current_phase: runPhase.phase } : {}),
     ...eta,
     ...(runPhase?.phase ? { delivering: runPhase.phase === 'delivering' } : {}),
   };

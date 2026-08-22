@@ -265,6 +265,34 @@ describe('routeProposals', () => {
     expect(res.decisions.every((d) => d.routedRef === `gym:${d.proposalId}`)).toBe(true);
   });
 
+  it('only emits gym routedRefs for admitted seeds', async () => {
+    const proposals = [
+      fixtureProposal({ id: 'admitted', routeHint: 'gym' }),
+      fixtureProposal({ id: 'noop', routeHint: 'gym' }),
+    ];
+    const { ports } = makeFakePorts({
+      gymDispatch: async (ideas) => ({
+        seeded: ideas.map((idea) => ({
+          ideaId: idea.id,
+          nicheKey: idea.id === 'noop' ? 'noop-cell' : 'admitted-cell',
+          admitted: idea.id !== 'noop',
+          distance: 1,
+        })),
+        newNiches: ['admitted-cell'],
+        skipped: [{ ideaId: 'noop', reason: 'archive unavailable' }],
+      }),
+    });
+
+    const res = await routeProposals(proposals, ports);
+    const admitted = res.decisions.find((d) => d.proposalId === 'admitted')!;
+    const noop = res.decisions.find((d) => d.proposalId === 'noop')!;
+
+    expect(admitted.routedRef).toBe('gym:admitted');
+    expect(noop.routedRef).toBeUndefined();
+    expect(noop.error).toContain('not admitted');
+    expect(res.failed).toEqual(['noop']);
+  });
+
   it('is defensive: one throwing sink fails only its decision, not the batch', async () => {
     const proposals = [
       fixtureProposal({ id: 'ok-imp', routeHint: 'improvement' }),

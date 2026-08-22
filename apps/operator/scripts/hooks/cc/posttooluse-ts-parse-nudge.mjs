@@ -57,6 +57,11 @@
 //     `parseDiagnostics[0] != null` — and __tests__/posttooluse-ts-parse-nudge.test.ts
 //     pins this implementation against the REAL detector over a shared corpus, so
 //     divergence fails a test rather than going unnoticed.
+//   - OPTION-AWARE at the edit-time boundary: `nudgeFor` resolves the nearest
+//     tsconfig.json and passes its compiler options to the grammar phase. Direct
+//     `findParseError` calls retain the detector's safe defaults, while a real edit
+//     is checked under the project's `module`/decorator settings instead of node's
+//     defaults.
 //   - FAILS OPEN on every internal error — bad JSON, missing file, unreadable path,
 //     no resolvable typescript, an oversized file. A bug here must never disturb an
 //     edit that already succeeded.
@@ -65,7 +70,7 @@
 //
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import process from 'node:process';
 
@@ -138,6 +143,60 @@ export function findRepoRoot(filePath, exists = existsSync) {
 }
 
 /**
+ * Resolve the nearest tsconfig inside the edited repository. A config outside the
+ * repository is deliberately ignored: an installed hook may inspect files from
+ * several trees, and borrowing a parent workspace's options is another source of
+ * false diagnostics.
+ */
+export function findNearestTsConfig(ts, filePath, repoRoot, exists = existsSync) {
+  const root = resolve(repoRoot);
+  const start = dirname(resolve(filePath));
+  const found = typeof ts.findConfigFile === 'function'
+    ? ts.findConfigFile(start, exists)
+    : findNearestTsConfigFallback(start, exists);
+  if (!found) return null;
+
+  const rel = relative(root, resolve(found));
+  if (rel === '' || (!isAbsolute(rel) && rel !== '..' && !rel.startsWith('../'))) {
+    return resolve(found);
+  }
+  return null;
+}
+
+function findNearestTsConfigFallback(start, exists) {
+  let dir = start;
+  for (;;) {
+    const candidate = join(dir, 'tsconfig.json');
+    if (exists(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
+/** Read only compiler options; config diagnostics must never make an edit fail. */
+function loadProjectCompilerOptions(ts, filePath, repoRoot, exists) {
+  const configPath = findNearestTsConfig(ts, filePath, repoRoot, exists);
+  if (!configPath || typeof ts.readConfigFile !== 'function' || typeof ts.parseJsonConfigFileContent !== 'function') {
+    return {};
+  }
+  try {
+    const config = ts.readConfigFile(configPath, (path) => readFileSync(path, 'utf8'));
+    if (config.error) return {};
+    const parsed = ts.parseJsonConfigFileContent(
+      config.config,
+      ts.sys,
+      dirname(configPath),
+      undefined,
+      configPath,
+    );
+    return parsed.options ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
  * The highest diagnostic code that is still SYNTACTIC/GRAMMAR rather than type-semantic.
  * Mirrors MAX_GRAMMAR_DIAGNOSTIC_CODE in ts-parse.ts — 1xxx are syntax + grammar errors,
  * 2xxx+ are the type system, and phase 2 runs the checker, so this bound is what stops a
@@ -186,7 +245,7 @@ function isFileBreakingDiagnostic(code) {
  * hook exists to remove, so that case must fail loudly into the caller's fail-open
  * rather than quietly returning null for everything.
  */
-export function findParseError(ts, fileName, text) {
+export function findParseError(ts, fileName, text, compilerOptions = {}) {
   const scriptKind = fileName.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
   const sf = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, /*setParentNodes*/ false, scriptKind);
   const diags = sf.parseDiagnostics;
@@ -195,16 +254,17 @@ export function findParseError(ts, fileName, text) {
   }
   const first = diags[0];
   if (first) return toParseError(ts, sf, first);
-  return findGrammarError(ts, fileName, text, scriptKind);
+  return findGrammarError(ts, fileName, text, scriptKind, compilerOptions);
 }
 
 /**
  * The grammar half — a single-file Program with NO lib and NO module resolution, so
- * nothing is read from disk and no dependency graph is loaded. Returns null on any
- * internal failure: phase 1 has already answered, so a checker that cannot complete
- * must not turn a clean parse into a nudge.
+ * nothing is read from disk and no dependency graph is loaded. Project compiler
+ * options are retained for syntax/grammar switches such as `module` and
+ * `experimentalDecorators`. Returns null on any internal failure: phase 1 has already
+ * answered, so a checker that cannot complete must not turn a clean parse into a nudge.
  */
-function findGrammarError(ts, fileName, text, scriptKind) {
+function findGrammarError(ts, fileName, text, scriptKind, compilerOptions = {}) {
   let sf;
   let diagnostics;
   try {
@@ -222,7 +282,20 @@ function findGrammarError(ts, fileName, text, scriptKind) {
       fileExists: (name) => name === fileName,
       readFile: (name) => (name === fileName ? text : undefined),
     };
-    const program = ts.createProgram([fileName], { noResolve: true, noLib: true }, host);
+    const program = ts.createProgram(
+      [fileName],
+      {
+        ...compilerOptions,
+        // Keep this a single-file check even when the project config enables
+        // resolution or libraries for the real build.
+        noResolve: true,
+        noLib: true,
+        // Preserve the historical fail-open default when no tsconfig exists, but
+        // honor an explicit project setting when one does.
+        experimentalDecorators: compilerOptions.experimentalDecorators ?? true,
+      },
+      host,
+    );
     diagnostics = [...program.getSyntacticDiagnostics(sf), ...program.getSemanticDiagnostics(sf)];
   } catch {
     return null;
@@ -296,7 +369,9 @@ export async function nudgeFor(filePath, deps = {}) {
   const ts = await loadTs(repoRoot);
   if (!ts || typeof ts.createSourceFile !== 'function') return null;
 
-  const hit = findParseError(ts, filePath, text);
+  const compilerOptions = deps.compilerOptions
+    ?? loadProjectCompilerOptions(ts, filePath, repoRoot, exists);
+  const hit = findParseError(ts, filePath, text, compilerOptions);
   if (!hit) return null;
 
   const rel = relative(repoRoot, resolve(filePath)) || filePath;

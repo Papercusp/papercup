@@ -101,6 +101,7 @@ vi.mock("nuqs", () => ({
     }),
   ],
   parseAsStringEnum: () => ({ withDefault: () => ({}) }),
+  createParser: () => ({ withDefault: () => ({}) }),
   parseAsString: { withDefault: () => ({}) },
   parseAsBoolean: { withDefault: () => ({}) },
 }));
@@ -242,6 +243,14 @@ const WORKSPACE_GLOBAL_READS: Record<string, string> = {
     "cross-hive recurrence escalations — table has no pot column (org-global store)",
 };
 
+/** Reads whose `enabled` also carries a non-lens condition. They remain in the
+ * pot-ARG audit above, but comparing their full boolean to the shared readiness
+ * gate would misread an intentional predicate/no-op guard as lens drift. */
+const CONDITIONALLY_ENABLED_READS: Record<string, string> = {
+  "learning.improvements.summary":
+    "the expensive full-corpus summary runs only while an Improve predicate is active",
+};
+
 /**
  * Reads issued by the TAB CHROME rather than by any view — the header's
  * infra-health chip and the Verify stage's readiness strip render OUTSIDE
@@ -316,7 +325,9 @@ describe("Learning views agree with themselves about the pot lens", () => {
     it.each(["POT_PENDING", "ALL_POTS"] as const)(
       "all reads share one readiness gate (%s)",
       (scenario) => {
-        const rs = scoped(readsFor(view, scenario));
+        const rs = scoped(readsFor(view, scenario)).filter(
+          (read) => !(read.queryName in CONDITIONALLY_ENABLED_READS),
+        );
         expect(rs.length).toBeGreaterThan(0);
 
         // `undefined` (no gate supplied) is deliberately NOT collapsed into `true`:

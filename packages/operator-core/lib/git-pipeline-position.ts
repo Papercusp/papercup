@@ -909,6 +909,10 @@ export interface PipelinePosition {
        *  Absent on a marker written before EI-19343532231631821 (⇒ unknown, not zero). */
       totalRefires?: number;
       absoluteCeiling?: number;
+      /** Latest advancing heartbeat observed by the derived-read probe. */
+      progressAtMs?: number | null;
+      /** Current phase published by the active checkpoint run, when readable. */
+      currentPhase?: string | null;
       startedAtMs: number | null;
       elapsedSec: number | null;
       /** How stale this reading is: ms since the cache was last computed. `null`
@@ -3314,6 +3318,11 @@ export function mapCheckpointRunInFlight(
   // Gated on cachedDescribesNow for the same reason candidate/timings are: refire provenance
   // about a run the lock says is over is not provenance about anything current.
   const refireObserved = cachedDescribesNow && cachedRun!.refireObserved === true;
+  // EI-21128357978208107: progress and phase are run detail, not liveness. Carry them only
+  // when the cached detail is joined to the run currently reported above; otherwise a stale
+  // cache can make an old run look like the live run's heartbeat/phase.
+  const progressAtMs = active && cachedDescribesNow ? cachedRun!.progressAtMs : undefined;
+  const currentPhase = active && cachedDescribesNow ? cachedRun!.currentPhase : undefined;
   // The marker only describes a LIVE run; attaching it to an idle probe would assert a refire
   // is in flight for a run that has already finished.
   const marker = active && retriage ? retriage : null;
@@ -3371,6 +3380,8 @@ export function mapCheckpointRunInFlight(
           }),
     startedAtMs,
     elapsedSec,
+    ...(progressAtMs !== undefined ? { progressAtMs } : {}),
+    ...(currentPhase !== undefined ? { currentPhase } : {}),
     // Still the CACHE's age (that is what the field documents), so it stays null when the
     // lock answered with no cache behind it — there is no cache to be stale.
     asOfAgeMs: cacheAgeMs,

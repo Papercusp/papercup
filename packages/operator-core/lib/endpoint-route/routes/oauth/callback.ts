@@ -50,10 +50,7 @@ export default defineTool({
     const { plugin, harness, field, provider: providerId } = verified.claims;
     const provider = getProvider(providerId);
     if (!provider) {
-      return Response.json(
-        { ok: false, error: `provider ${providerId} not registered` },
-        { status: 500 },
-      );
+      return Response.json({ ok: false, error: `provider ${providerId} not registered` }, { status: 500 });
     }
 
     let tokens;

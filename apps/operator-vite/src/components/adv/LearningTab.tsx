@@ -6529,7 +6529,7 @@ function RetainedLedgerCard({
     });
     setNextCursor(page.nextCursor ?? null);
     setDegraded(Array.isArray(page.degraded) ? page.degraded : []);
-  }, [page, loading, cursor]);
+  }, [page, loading, cursor, retainPredicateKey]);
   const counts = countsQ.data?.[0] ?? null;
   const retainSummaryCandidate = summaryQ.data?.[0];
   const retainSummary =

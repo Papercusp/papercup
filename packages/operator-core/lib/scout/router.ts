@@ -712,7 +712,20 @@ export async function routeProposals(
     const views = gymDecisions.map((d) => gymView(byProposal.get(d.proposalId)!));
     try {
       gymSeed = await ports.gymDispatch(views);
-      for (const d of gymDecisions) d.routedRef = `gym:${d.proposalId}`;
+      for (const d of gymDecisions) {
+        const seeded = gymSeed.seeded.find((entry) => entry.ideaId === d.proposalId);
+        if (seeded?.admitted === true) {
+          d.routedRef = `gym:${d.proposalId}`;
+          continue;
+        }
+
+        const skipped = gymSeed.skipped.find((entry) => entry.ideaId === d.proposalId);
+        d.error = seeded
+          ? `gym seed was not admitted for ${d.proposalId} (niche ${seeded.nicheKey})`
+          : skipped
+            ? `gym seed was skipped for ${d.proposalId}: ${skipped.reason}`
+            : `gym dispatch returned no admission result for ${d.proposalId}`;
+      }
     } catch (e) {
       const msg = errMsg(e);
       for (const d of gymDecisions) d.error = msg;

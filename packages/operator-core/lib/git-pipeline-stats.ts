@@ -372,6 +372,8 @@ export interface GitPipelineSnapshot {
     /** Latest advancing checkpoint heartbeat from the run log/phase, falling back to start time.
      * Optional for snapshots persisted before this field was introduced. */
     progressAtMs?: number | null;
+    /** Current phase published by the active checkpoint run, when its phase marker is readable. */
+    currentPhase?: string | null;
     elapsedSec: number | null;
   } | null;
 }
@@ -669,6 +671,7 @@ export interface GitPipelineSnapshotOpts {
     candidate?: string | null;
     started_at?: string | null;
     progress_at?: string | null;
+    current_phase?: string | null;
     elapsed_sec?: number | null;
   };
 }
@@ -694,6 +697,7 @@ export function mapActiveRun(r: {
   refire_observed?: boolean;
   started_at?: string | null;
   progress_at?: string | null;
+  current_phase?: string | null;
   elapsed_sec?: number | null;
 }): NonNullable<GitPipelineSnapshot['activeRun']> {
   const startedAtMs = r.started_at ? Date.parse(r.started_at) : NaN;
@@ -723,6 +727,7 @@ export function mapActiveRun(r: {
       : Number.isFinite(startedAtMs)
         ? startedAtMs
         : null,
+    ...(r.current_phase === undefined ? {} : { currentPhase: r.current_phase ?? null }),
     elapsedSec: r.elapsed_sec ?? null,
   };
 }

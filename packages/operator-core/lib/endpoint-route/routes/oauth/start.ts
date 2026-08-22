@@ -33,10 +33,7 @@ export default defineTool({
     const scopesRaw = url.searchParams.get('scopes') ?? '';
 
     if (!providerId || !plugin || !harness || !field) {
-      return Response.json(
-        { ok: false, error: 'provider, plugin, harness, field all required' },
-        { status: 400 },
-      );
+      return Response.json({ ok: false, error: 'provider, plugin, harness, field all required' }, { status: 400 });
     }
     const provider = getProvider(providerId);
     if (!provider) {
@@ -44,30 +41,32 @@ export default defineTool({
     }
 
     const requestedScopes = scopesRaw
-      ? scopesRaw.split(',').map((s) => s.trim()).filter(Boolean)
+      ? scopesRaw
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [];
     const allowedScopes = provider.allowedScopes ? new Set(provider.allowedScopes) : null;
-    const forbiddenScopes = allowedScopes
-      ? requestedScopes.filter((scope) => !allowedScopes.has(scope))
-      : [];
+    const forbiddenScopes = allowedScopes ? requestedScopes.filter((scope) => !allowedScopes.has(scope)) : [];
     if (forbiddenScopes.length > 0) {
       return Response.json(
         { ok: false, error: `provider ${providerId} does not allow scope(s): ${forbiddenScopes.join(', ')}` },
         { status: 400 },
       );
     }
-    const scopes = requestedScopes.length > 0
-      ? requestedScopes
-      : [...(provider.defaultScopes ?? [])];
+    const scopes = requestedScopes.length > 0 ? requestedScopes : [...(provider.defaultScopes ?? [])];
     const providerHost = new URL(provider.config.authorizeUrl).host;
-    const privateContext = await provider.createFlowContext?.() ?? {};
-    const state = await signState({
-      plugin,
-      harness,
-      field,
-      provider: providerId,
-      providerHost,
-    }, { privateContext });
+    const privateContext = (await provider.createFlowContext?.()) ?? {};
+    const state = await signState(
+      {
+        plugin,
+        harness,
+        field,
+        provider: providerId,
+        providerHost,
+      },
+      { privateContext },
+    );
     return Response.redirect(provider.buildAuthorizeUrl(scopes, state, privateContext), 302);
   },
 });

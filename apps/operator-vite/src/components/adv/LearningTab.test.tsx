@@ -2956,6 +2956,81 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     expect(screen.queryByText("Alpha memory.")).toBeNull();
   });
 
+  it("threads rq/rtf into paired Retain reads and renders the exact companion count", () => {
+    nuqsState.lview = "learnings";
+    nuqsState.rq = "target";
+    nuqsState.rtf = {
+      title: "migration",
+      status: ["done", "open"],
+      lens: ["risk-first"],
+    };
+    retainFeedResult = {
+      data: [
+        {
+          rows: [
+            {
+              kind: "wi",
+              id: "WI-target",
+              title: "Target migration",
+              ts: "2026-08-15T12:00:00.000Z",
+              status: "done",
+              shipped: true,
+              meta: { lens: "risk-first" },
+            },
+          ],
+          counts: null,
+          nextCursor: null,
+          degraded: [],
+          generatedAt: "2026-08-16T00:00:00.000Z",
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    retainSummaryResult = {
+      data: [
+        {
+          total: 10,
+          matched: 1,
+          facets: [
+            {
+              key: "status",
+              values: [
+                { value: "done", count: 4 },
+                { value: "open", count: 6 },
+              ],
+              hiddenValueCount: 0,
+              distinctCount: 2,
+            },
+          ],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+
+    render(<LearningTab />);
+
+    const expected = {
+      tab: "all",
+      filter: "all",
+      q: "target",
+      filters: {
+        title: "migration",
+        statuses: ["done", "open"],
+        lenses: ["risk-first"],
+      },
+      hive: "alpha-hive",
+    };
+    expect(seenArgs["learning.retainFeed"]).toEqual(expected);
+    expect(seenArgs["learning.retainFeed.summary"]).toEqual(expected);
+    expect(screen.getByLabelText(/1 of 10 match in the complete selected Retain corpus/i)).toBeTruthy();
+  });
+
   // WI-39535: the Memories tab is a first-class kind tab on the unified ledger
   // — selecting it narrows SERVER-side (the tab arg) rather than client-side.
   it("the Memories tab narrows the feed server-side and badges the corpus size", () => {

@@ -62,11 +62,7 @@ export interface OAuthProvider {
   allowedScopes?: readonly string[];
   /** Create server-only state for this authorize→callback round trip. */
   createFlowContext?(): OAuthFlowPrivateContext | Promise<OAuthFlowPrivateContext>;
-  buildAuthorizeUrl(
-    scopes: string[],
-    state: string,
-    privateContext?: OAuthFlowPrivateContext,
-  ): string;
+  buildAuthorizeUrl(scopes: string[], state: string, privateContext?: OAuthFlowPrivateContext): string;
   exchangeCode(code: string, privateContext?: OAuthFlowPrivateContext): Promise<TokenResponse>;
   refresh(refreshToken: string): Promise<TokenResponse>;
   introspect?(token: string): Promise<IntrospectionResult>;
@@ -153,7 +149,10 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
       });
       if (!res.ok) throw new Error(`github introspect ${res.status}`);
       const scopeHeader = res.headers.get('x-oauth-scopes') ?? '';
-      const scopes = scopeHeader.split(',').map((s) => s.trim()).filter(Boolean);
+      const scopes = scopeHeader
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
       return { scopes };
     },
   };
@@ -167,12 +166,7 @@ export const GOOGLE_WORKSPACE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.readonly',
 ] as const;
 
-export const GOOGLE_OAUTH_CLIENT_PATH = join(
-  homedir(),
-  '.config',
-  'papercusp',
-  'google-oauth-client.json',
-);
+export const GOOGLE_OAUTH_CLIENT_PATH = join(homedir(), '.config', 'papercusp', 'google-oauth-client.json');
 
 export interface GoogleDesktopClientConfig {
   clientId: string;
@@ -280,8 +274,9 @@ interface GoogleDesktopClientFile {
 }
 
 export function googleOAuthRedirectUri(): string {
-  return process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI
-    ?? new URL('/api/oauth/callback', operatorApiBase()).toString();
+  return (
+    process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI ?? new URL('/api/oauth/callback', operatorApiBase()).toString()
+  );
 }
 
 /**
@@ -384,7 +379,8 @@ function claudeTokenResponse(j: {
  */
 export function makeClaudeProvider(config: ClaudeProviderConfig = {}): OAuthProvider {
   const clientId = config.clientId ?? process.env.CLAUDE_OAUTH_CLIENT_ID ?? CLAUDE_OAUTH_DEFAULTS.clientId;
-  const authorizeUrl = config.authorizeUrl ?? process.env.CLAUDE_OAUTH_AUTHORIZE_URL ?? CLAUDE_OAUTH_DEFAULTS.authorizeUrl;
+  const authorizeUrl =
+    config.authorizeUrl ?? process.env.CLAUDE_OAUTH_AUTHORIZE_URL ?? CLAUDE_OAUTH_DEFAULTS.authorizeUrl;
   const tokenUrl = config.tokenUrl ?? process.env.CLAUDE_OAUTH_TOKEN_URL ?? CLAUDE_OAUTH_DEFAULTS.tokenUrl;
   const redirectUri = config.redirectUri ?? process.env.CLAUDE_OAUTH_REDIRECT_URI ?? CLAUDE_OAUTH_DEFAULTS.redirectUri;
   const cfg: OAuthProviderConfig = { clientId, clientSecret: '', authorizeUrl, tokenUrl, redirectUri };
@@ -565,10 +561,7 @@ export type ScopeVerificationOutcome =
   | { kind: 'superset'; extra: string[] }
   | { kind: 'subset'; missing: string[] };
 
-export function compareScopes(
-  granted: string[],
-  required: string[],
-): ScopeVerificationOutcome {
+export function compareScopes(granted: string[], required: string[]): ScopeVerificationOutcome {
   const g = new Set(granted);
   const missing = required.filter((s) => !g.has(s));
   if (missing.length > 0) return { kind: 'subset', missing };

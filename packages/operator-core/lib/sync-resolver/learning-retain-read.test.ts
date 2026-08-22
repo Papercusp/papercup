@@ -7,17 +7,23 @@ import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, writeFile, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { composeCompanionSummary } from '@papercusp/facets';
 import {
+  buildRetainFeedPredicate,
   countCanonicalRetainMemories,
   countInsightDocs,
   listCanonicalRetainMemoriesPage,
+  matchesRetainFeedPredicate,
+  normalizeRetainFeedArgs,
   parseInsightFrontmatter,
   readInsightDocsPage,
   readRetainDetail,
   readRetainExtras,
   readRetainFeed,
   readRetainPlanChildren,
+  readRetainSummaryAggregateRows,
   RETAIN_FEED_PAGE_SIZE,
+  retainFeedSummarySelection,
   retainMemoryTitle,
   retainMemoryTsOf,
   stripFrontmatter,
@@ -159,6 +165,117 @@ describe('retain cursor + leg windows', () => {
     ];
     const sorted = rows.slice().sort(compareRetainRows);
     expect(sorted.map((r) => `${r.kind}:${r.id}`)).toEqual(['plan:a', 'plan:z', 'wi:b', 'plan:a']);
+  });
+});
+
+describe('Retain paired predicate contract (P-007)', () => {
+  const depsBase = (): RetainFeedDeps => ({
+    listMemories: async () => [],
+    listRubrics: async () => [],
+    listRecipesPage: async () => [],
+    countRecipes: async () => 0,
+    summarizeRecipes: async () => ({ total: 0, matched: 0 }),
+    listRunbooksPage: async () => [],
+    countRunbooks: async () => 0,
+    summarizeRunbooks: async () => ({ total: 0, matched: 0 }),
+  });
+  const row = (id: string, title: string, status: string | null, lens?: string) => ({
+    kind: 'rubric' as const,
+    id,
+    title,
+    ts: '2026-08-15T00:00:00.000Z',
+    status,
+    shipped: false,
+    meta: { ...(lens ? { lens } : {}) },
+  });
+
+  it('normalizes once and applies OR within status/lens, AND across dimensions', () => {
+    const args = normalizeRetainFeedArgs({
+      q: '  target  ',
+      filters: {
+        title: '  migration ',
+        statuses: ['active', 'draft', 'active', ''],
+        lenses: ['risk-first', 'user-value', 'risk-first'],
+      },
+    });
+    expect(args).toMatchObject({
+      q: 'target',
+      filters: {
+        title: 'migration',
+        statuses: ['active', 'draft'],
+        lenses: ['risk-first', 'user-value'],
+      },
+    });
+    const predicate = buildRetainFeedPredicate(args);
+    expect(matchesRetainFeedPredicate(row('r-target', 'Target migration', 'draft', 'user-value'), predicate)).toBe(
+      true,
+    );
+    expect(matchesRetainFeedPredicate(row('r-target', 'Target migration', 'closed', 'user-value'), predicate)).toBe(
+      false,
+    );
+    expect(matchesRetainFeedPredicate(row('r-target', 'Target migration', 'active', 'analogical'), predicate)).toBe(
+      false,
+    );
+  });
+
+  it('finds filtered rubric matches beyond page one and keyset pages neither skip nor duplicate', async () => {
+    const rubrics = Array.from({ length: 150 }, (_, index) => ({
+      slug: `r-${index.toString().padStart(3, '0')}`,
+      title: index % 37 === 0 ? `Needle rubric ${index}` : `Ordinary rubric ${index}`,
+      status: index % 2 === 0 ? 'active' : 'draft',
+      updatedAt: new Date(Date.UTC(2026, 7, 20) - index * 1000).toISOString(),
+    }));
+    const deps = { ...depsBase(), listRubrics: async () => rubrics };
+    const opts = {
+      tab: 'rubrics' as const,
+      q: 'needle',
+      filters: { statuses: ['active', 'draft'] },
+      limit: 2,
+    };
+    const ids: string[] = [];
+    let cursor: string | null = null;
+    for (let pageNo = 0; pageNo < 10; pageNo += 1) {
+      const page = await readRetainFeed(
+        sqlStub(() => []),
+        'ws-1',
+        deps,
+        {
+          ...opts,
+          cursor,
+        },
+      );
+      ids.push(...page.rows.map((item) => item.id));
+      cursor = page.nextCursor;
+      if (!cursor) break;
+    }
+    expect(ids).toContain('r-148');
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(cursor).toBeNull();
+  });
+
+  it('returns exact selected-tab totals, drill-down status counts, and a zero-match selected facet', async () => {
+    const rubrics = [
+      { slug: 'r-a', title: 'Target A', status: 'active', updatedAt: '2026-08-16T00:00:00.000Z' },
+      { slug: 'r-b', title: 'Target B', status: 'draft', updatedAt: '2026-08-15T00:00:00.000Z' },
+      { slug: 'r-c', title: 'Other', status: 'active', updatedAt: '2026-08-14T00:00:00.000Z' },
+    ];
+    const deps = { ...depsBase(), listRubrics: async () => rubrics };
+    const wire = { tab: 'rubrics' as const, q: 'no-such-row', filters: { statuses: ['active'] } };
+    const normalized = normalizeRetainFeedArgs(wire);
+    const aggregate = await readRetainSummaryAggregateRows(
+      sqlStub(() => []),
+      'ws-1',
+      deps,
+      wire,
+    );
+    const summary = composeCompanionSummary(aggregate, {
+      selection: retainFeedSummarySelection(normalized),
+    });
+    expect(summary).toMatchObject({ total: 3, matched: 0 });
+    expect(summary.facets.find((facet) => facet.key === 'status')?.values).toContainEqual({
+      value: 'active',
+      count: 0,
+    });
   });
 });
 

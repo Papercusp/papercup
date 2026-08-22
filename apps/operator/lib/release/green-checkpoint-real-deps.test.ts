@@ -1929,6 +1929,8 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         cpTree,
         "--node-modules",
         "force",
+        "--node-modules-copy",
+        "copy",
       ]),
     );
     expect(setup).toEqual({

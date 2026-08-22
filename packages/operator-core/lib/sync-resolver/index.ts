@@ -4216,6 +4216,10 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   },
 
   'learning.improvements.summary': {
+    // The issue half is table-backed and therefore gets the ordinary work-item
+    // trigger bridge. Routed-idea writes are a separate non-triggered store;
+    // every routed-ledger writer pushes both row+summary keys explicitly.
+    backingTables: ['harness_shared.work_items'],
     argsSchema: z
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),

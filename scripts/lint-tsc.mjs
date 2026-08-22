@@ -61,6 +61,8 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   parseTscErrors,
+  normalizeDiagnosticPath,
+  normalizeTscErrorPaths,
   MID_INSTALL_DIAGNOSTIC_MIN,
   parseMissingModuleDiagnostics,
   packageNameFromModuleSpecifier,
@@ -102,6 +104,8 @@ import {
 
 export {
   parseTscErrors,
+  normalizeDiagnosticPath,
+  normalizeTscErrorPaths,
   MID_INSTALL_DIAGNOSTIC_MIN,
   parseMissingModuleDiagnostics,
   packageNameFromModuleSpecifier,

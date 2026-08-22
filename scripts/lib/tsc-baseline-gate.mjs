@@ -18,9 +18,9 @@
  */
 
 import { execSync, execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, resolve } from 'node:path';
+import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { findUnextractedDeps } from '../check-declared-deps-extracted.mjs';
 import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observations.mjs';
@@ -161,6 +161,69 @@ export function parseTscErrors(tscOutput) {
     if (bare) errors.push({ file: null, code: bare[1] });
   }
   return errors;
+}
+
+/**
+ * Collapse a compiler path into the repo-relative spelling used by the baseline.
+ * A linked worktree can report the same source as both `packages/foo.ts` and
+ * `../../../packages/foo.ts`; this helper is pure so the path rule is unit-testable.
+ *
+ * @param {string | null} file
+ * @param {{root:string, canonicalRoot?:string}} roots
+ * @returns {string | null}
+ */
+export function normalizeDiagnosticPath(file, { root, canonicalRoot = root }) {
+  if (file === null) return null;
+  const absolute = resolve(root, file);
+  const candidates = [...new Set([resolve(root), resolve(canonicalRoot)])];
+  for (const candidate of candidates) {
+    const repoRelative = relative(candidate, absolute);
+    if (repoRelative === '' || (!repoRelative.startsWith('..') && !isAbsolute(repoRelative))) {
+      return repoRelative.replaceAll('\\', '/');
+    }
+  }
+  return file.replaceAll('\\', '/');
+}
+
+function realpathOrResolve(filePath) {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    return resolve(filePath);
+  }
+}
+
+function diagnosticPathRoots(root) {
+  const workingRoot = realpathOrResolve(root);
+  let canonicalRoot = workingRoot;
+  try {
+    const commonDir = execFileSync('git', ['rev-parse', '--git-common-dir'], {
+      cwd: root,
+      encoding: 'utf-8',
+    }).trim();
+    if (commonDir) canonicalRoot = realpathOrResolve(dirname(resolve(root, commonDir)));
+  } catch {
+    // A packaged/non-git checkout has no second root to normalize against.
+  }
+  return { root: workingRoot, canonicalRoot };
+}
+
+function normalizeResolvedDiagnosticPath(file, roots) {
+  const physical = realpathOrResolve(resolve(roots.root, file));
+  return normalizeDiagnosticPath(physical, roots);
+}
+
+/**
+ * @param {TscErrorEntry[]} errors
+ * @param {{root:string, canonicalRoot:string}} roots
+ * @returns {TscErrorEntry[]}
+ */
+export function normalizeTscErrorPaths(errors, roots) {
+  return errors.map((error) =>
+    error.file === null
+      ? error
+      : { ...error, file: normalizeResolvedDiagnosticPath(error.file, roots) },
+  );
 }
 
 /**
@@ -936,22 +999,27 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles, dirtyFil
  *
  * @param {string} tscOutput - Raw compiler output.
  * @param {Iterable<string>} files - Repo-relative paths to quote lines for.
- * @param {{maxPerFile?: number}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
+ * @param {{maxPerFile?: number, root?: string, canonicalRoot?: string}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
  *   cannot bury the guidance underneath it (the report stays readable; the count already told you
  *   the true total).
  * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
  */
-export function diagnosticLinesForFiles(tscOutput, files, { maxPerFile = 3 } = {}) {
+export function diagnosticLinesForFiles(tscOutput, files, { maxPerFile = 3, root, canonicalRoot } = {}) {
   const wanted = new Set(files);
   /** @type {Map<string, string[]>} */
   const byFile = new Map();
   if (wanted.size === 0) return byFile;
+  const roots = root
+    ? { root: realpathOrResolve(root), canonicalRoot: realpathOrResolve(canonicalRoot ?? root) }
+    : null;
   for (const line of String(tscOutput).split('\n')) {
     const m = line.match(LOCATED_DIAGNOSTIC);
-    if (m === null || !wanted.has(m[1])) continue;
-    const acc = byFile.get(m[1]) ?? [];
+    if (m === null) continue;
+    const file = roots ? normalizeResolvedDiagnosticPath(m[1], roots) : m[1];
+    if (!wanted.has(file)) continue;
+    const acc = byFile.get(file) ?? [];
     if (acc.length < maxPerFile) acc.push(line.trim());
-    byFile.set(m[1], acc);
+    byFile.set(file, acc);
   }
   return byFile;
 }
@@ -2122,7 +2190,12 @@ export async function runTscBaselineGate({
     process.exit(1);
   }
 
-  const errors = parseTscErrors(tscOutput);
+  const diagnosticRoots = diagnosticPathRoots(root);
+  const errors = normalizeTscErrorPaths(parseTscErrors(tscOutput), diagnosticRoots);
+  const diagnosticPathOptions = {
+    root: diagnosticRoots.root,
+    canonicalRoot: diagnosticRoots.canonicalRoot,
+  };
 
   // EI-19366483607548056 — a peer's concurrent npm install can remove declared packages while
   // tsc is reading the shared tree. The resulting TS7016/TS2307 flood looks like unrelated code
@@ -2377,7 +2450,7 @@ export async function runTscBaselineGate({
       // The compiler output already contains the location and message for each hard-failing
       // TS1xxx diagnostic. Quote those diagnostics here so a reader does not need a second full
       // compile to learn the actual problem (which is not necessarily a syntax error).
-      const diagnostics = diagnosticLinesForFiles(tscOutput, result.brokenFiles);
+      const diagnostics = diagnosticLinesForFiles(tscOutput, result.brokenFiles, diagnosticPathOptions);
       for (const f of result.brokenFiles) {
         console.error(`   - ${f}`);
         for (const line of diagnostics.get(f) ?? []) console.error(`      ${line}`);
@@ -2395,7 +2468,7 @@ export async function runTscBaselineGate({
       const diagnostics = diagnosticLinesForFiles(
         tscOutput,
         result.regressions.map((r) => r.file),
-        { maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
+        { ...diagnosticPathOptions, maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
       );
       for (const r of result.regressions) {
         console.error(formatRow(r));
@@ -2418,7 +2491,7 @@ export async function runTscBaselineGate({
       const attributedDiagnostics = diagnosticLinesForFiles(
         tscOutput,
         result.attributed.map((r) => r.file),
-        { maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
+        { ...diagnosticPathOptions, maxPerFile: REGRESSION_DIAGNOSTIC_MAX_PER_FILE },
       );
       for (const r of result.attributed) {
         console.error(formatRow(r));
@@ -2467,6 +2540,7 @@ export async function runTscBaselineGate({
       const diagnostics = diagnosticLinesForFiles(
         tscOutput,
         result.newFiles.map((r) => r.file),
+        diagnosticPathOptions,
       );
       const emitRow = (r, suffix = '') => {
         console.error(`${formatRow(r)}${suffix}`);

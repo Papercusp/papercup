@@ -297,6 +297,20 @@ describe('mapActiveRun (overview-tab-expansion P-001)', () => {
     expect(m.progressAtMs).toBe(Date.parse('2026-08-20T09:24:00.000Z'));
   });
 
+  it('carries the run phase alongside its advancing heartbeat', () => {
+    expect(
+      mapActiveRun({
+        active: true,
+        started_at: '2026-08-20T09:00:00.000Z',
+        progress_at: '2026-08-20T09:24:00.000Z',
+        current_phase: 'delivering',
+      }),
+    ).toMatchObject({
+      progressAtMs: Date.parse('2026-08-20T09:24:00.000Z'),
+      currentPhase: 'delivering',
+    });
+  });
+
   /**
    * EI-19327704778173646 / WI-7024. A single green-checkpoint run can re-candidate
    * mid-flight (in-process auto-refire onto tip), so `candidate` can legitimately differ

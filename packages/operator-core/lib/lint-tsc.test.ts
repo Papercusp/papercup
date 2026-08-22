@@ -26,6 +26,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 import {
   parseTscErrors,
+  normalizeDiagnosticPath,
+  normalizeTscErrorPaths,
   syntaxBrokenFiles,
   countByFile,
   parseExplicitFiles,
@@ -697,6 +699,41 @@ describe('parseTscErrors', () => {
   it('returns [] for clean output', () => {
     expect(parseTscErrors('')).toEqual([]);
     expect(parseTscErrors('all good\n')).toEqual([]);
+  });
+});
+
+describe('nested worktree diagnostic paths (EI-21125819548056320)', () => {
+  const canonicalRoot = '/repo';
+  const worktreeRoot = '/repo/.papercusp/worktrees/candidate';
+  const file = 'packages/operator-core/lib/tsc-baseline-gate.ts';
+
+  it('maps both worktree-relative spellings to one repo-relative baseline key', () => {
+    expect(normalizeDiagnosticPath(file, { root: worktreeRoot, canonicalRoot })).toBe(file);
+    expect(normalizeDiagnosticPath(`../../../${file}`, { root: worktreeRoot, canonicalRoot })).toBe(file);
+  });
+
+  it('collapses mixed physical-root diagnostics before per-file counting', () => {
+    const output = [
+      `${file}(1,1): error TS2322: first`,
+      `../../../${file}(2,1): error TS2339: second`,
+    ].join('\n');
+    const errors = normalizeTscErrorPaths(parseTscErrors(output), {
+      root: worktreeRoot,
+      canonicalRoot,
+    });
+    expect(countByFile(errors)).toEqual({ [file]: 2 });
+  });
+
+  it('uses the same canonical key when quoting nested-worktree diagnostics', () => {
+    const output = [
+      `${file}(1,1): error TS2322: first`,
+      `../../../${file}(2,1): error TS2339: second`,
+    ].join('\n');
+    const quoted = diagnosticLinesForFiles(output, [file], {
+      root: worktreeRoot,
+      canonicalRoot,
+    });
+    expect(quoted.get(file)).toHaveLength(2);
   });
 });
 

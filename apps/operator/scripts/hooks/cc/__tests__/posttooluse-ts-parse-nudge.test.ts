@@ -40,7 +40,7 @@ const HOOK = process.env.PROBE_HOOK
 
 type Hit = { line: number | null; col: number | null; code: number; reason: string };
 type HookMod = {
-  findParseError: (ts: unknown, fileName: string, text: string) => Hit | null;
+  findParseError: (ts: unknown, fileName: string, text: string, compilerOptions?: Record<string, unknown>) => Hit | null;
   isCandidateFile: (f: string) => boolean;
   nudgeFor: (f: string, deps?: Record<string, unknown>) => Promise<string | null>;
   formatNudge: (rel: string, hit: Hit) => string;
@@ -67,6 +67,15 @@ const OUTAGE_SHAPE =
  */
 const DUPLICATE_CONST_SHAPE =
   'export function f(ownerId: string) {\n  const sessionId = ownerId ? "a" : null;\n  const sessionId = ownerId ? "b" : null;\n  return sessionId;\n}\n';
+
+function optionSandbox() {
+  const dir = mkdtempSync(join(tmpdir(), 'tsparse-config-'));
+  mkdirSync(join(dir, 'node_modules'), { recursive: true });
+  mkdirSync(join(dir, 'pkg'), { recursive: true });
+  writeFileSync(join(dir, 'package.json'), '{"name":"sandbox"}\n');
+  symlinkSync(resolve(ROOT, 'node_modules/typescript'), join(dir, 'node_modules/typescript'));
+  return dir;
+}
 
 /** Cases the hook and the real detector must agree on, exactly. */
 const CORPUS: Array<[name: string, file: string, text: string]> = [
@@ -175,6 +184,37 @@ describe('posttooluse-ts-parse-nudge', () => {
       loadTs: async () => ts,
     });
     expect(msg, 'noLib artifacts must never produce a nudge').toBeNull();
+  });
+
+  it('honors the nearest tsconfig for decorators and import.meta', async () => {
+    const { nudgeFor } = await hookMod();
+    const ts = (await import('typescript')).default;
+    const dir = optionSandbox();
+    const config = join(dir, 'tsconfig.json');
+    const decoratorText =
+      'declare function Inject(token: unknown): ParameterDecorator;\n' +
+      'declare const TOKEN: unique symbol;\n' +
+      'interface Store {}\n' +
+      'class Service { constructor(@Inject(TOKEN) private readonly store: Store) {} }\n';
+    const importMetaText = 'const api = import.meta.env.VITE_API_URL; export default api;\n';
+    try {
+      writeFileSync(config, JSON.stringify({ compilerOptions: { experimentalDecorators: true, module: 'esnext' } }));
+      writeFileSync(join(dir, 'pkg/decorators.ts'), decoratorText);
+      writeFileSync(join(dir, 'pkg/import-meta.tsx'), importMetaText);
+
+      // Both are valid under the project's actual options. The old standalone
+      // checker falsely reported TS1206/TS1343 before it read tsconfig.json.
+      expect(await nudgeFor(join(dir, 'pkg/decorators.ts'))).toBeNull();
+      expect(await nudgeFor(join(dir, 'pkg/import-meta.tsx'))).toBeNull();
+
+      // Prove the diagnostics are still real when the project config disallows
+      // the syntax; this is not a blanket suppression of option-gated errors.
+      writeFileSync(config, JSON.stringify({ compilerOptions: { experimentalDecorators: false, module: 'commonjs' } }));
+      expect(await nudgeFor(join(dir, 'pkg/decorators.ts'))).toMatch(/TS1206/);
+      expect(await nudgeFor(join(dir, 'pkg/import-meta.tsx'))).toMatch(/TS1343/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('is SILENT on a clean file, a type error, and an unresolved import', async () => {

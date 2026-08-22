@@ -67,18 +67,14 @@ describe('GET /api/oauth/start', () => {
   });
 
   it('rejects unknown providers with 404', async () => {
-    const r = await GET(
-      new Request('http://x/api/oauth/start?provider=xyz&plugin=p&harness=h&field=f'),
-    );
+    const r = await GET(new Request('http://x/api/oauth/start?provider=xyz&plugin=p&harness=h&field=f'));
     expect(r.status).toBe(404);
   });
 
   it('redirects 302 to provider authorize URL with state attached', async () => {
     registerProvider(stubProvider);
     const r = await GET(
-      new Request(
-        'http://x/api/oauth/start?provider=github&plugin=p&harness=h&field=tok&scopes=repo,read:user',
-      ),
+      new Request('http://x/api/oauth/start?provider=github&plugin=p&harness=h&field=tok&scopes=repo,read:user'),
     );
     expect(r.status).toBe(302);
     const loc = r.headers.get('location') ?? '';
@@ -98,19 +94,14 @@ describe('GET /api/oauth/start', () => {
       buildAuthorizeUrl,
     });
 
-    const ok = await GET(
-      new Request('http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok'),
-    );
+    const ok = await GET(new Request('http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok'));
     expect(ok.status).toBe(302);
-    expect(stateMocks.signState).toHaveBeenCalledWith(
-      expect.objectContaining({ provider: 'google' }),
-      { privateContext: { codeVerifier: 'server-only-verifier' } },
-    );
-    expect(buildAuthorizeUrl).toHaveBeenCalledWith(
-      ['scope:mail'],
-      'test-state-token',
-      { codeVerifier: 'server-only-verifier' },
-    );
+    expect(stateMocks.signState).toHaveBeenCalledWith(expect.objectContaining({ provider: 'google' }), {
+      privateContext: { codeVerifier: 'server-only-verifier' },
+    });
+    expect(buildAuthorizeUrl).toHaveBeenCalledWith(['scope:mail'], 'test-state-token', {
+      codeVerifier: 'server-only-verifier',
+    });
 
     const denied = await GET(
       new Request('http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok&scopes=scope:admin'),

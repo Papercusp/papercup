@@ -490,6 +490,7 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     );
 
     expect(r.progress_at).toBe(logProgress);
+    expect(r.current_phase).toBe('suite');
     expect(Date.parse(r.progress_at!)).toBeGreaterThan(Date.parse(startedAt));
   });
 
@@ -526,6 +527,7 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
     expect(r).toMatchObject({
       active: true,
       delivering: true,
+      current_phase: 'delivering',
       eta_sec: null,
       eta_basis: 'delivery-phase',
     });

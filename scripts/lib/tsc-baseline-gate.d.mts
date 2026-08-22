@@ -10,6 +10,28 @@
  */
 export function parseTscErrors(tscOutput: string): TscErrorEntry[];
 /**
+ * Collapse a compiler path into the repo-relative spelling used by the baseline.
+ * A linked worktree can report the same source as both `packages/foo.ts` and
+ * `../../../packages/foo.ts`; this helper is pure so the path rule is unit-testable.
+ *
+ * @param {string | null} file
+ * @param {{root:string, canonicalRoot?:string}} roots
+ * @returns {string | null}
+ */
+export function normalizeDiagnosticPath(file: string | null, { root, canonicalRoot }: {
+    root: string;
+    canonicalRoot?: string;
+}): string | null;
+/**
+ * @param {TscErrorEntry[]} errors
+ * @param {{root:string, canonicalRoot:string}} roots
+ * @returns {TscErrorEntry[]}
+ */
+export function normalizeTscErrorPaths(errors: TscErrorEntry[], roots: {
+    root: string;
+    canonicalRoot: string;
+}): TscErrorEntry[];
+/**
  * Parse only TS7016/TS2307 diagnostics whose message names a module specifier.
  *
  * @param {string} tscOutput
@@ -396,13 +418,15 @@ export function partitionBrokenFilesByLiveEdit(unattributedBrokenFiles: string[]
  *
  * @param {string} tscOutput - Raw compiler output.
  * @param {Iterable<string>} files - Repo-relative paths to quote lines for.
- * @param {{maxPerFile?: number}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
+ * @param {{maxPerFile?: number, root?: string, canonicalRoot?: string}} [opts] - `maxPerFile` bounds the quote so a file with 40 errors
  *   cannot bury the guidance underneath it (the report stays readable; the count already told you
  *   the true total).
  * @returns {Map<string, string[]>} file → its diagnostic lines, in compiler order, capped.
  */
-export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<string>, { maxPerFile }?: {
+export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<string>, { maxPerFile, root, canonicalRoot }?: {
     maxPerFile?: number;
+    root?: string;
+    canonicalRoot?: string;
 }): Map<string, string[]>;
 /**
  * The quoted-diagnostic block under ONE regressed file already present in the baseline.

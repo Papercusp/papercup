@@ -4471,6 +4471,27 @@ describe('mapCheckpointRunInFlight — pure mapper (EI-18793581783459047)', () =
     expect(mapCheckpointRunInFlight({ activeRun: null, computedAtMs: NOW - 1000 }, NOW)).toBeNull();
   });
 
+  it('carries the live run heartbeat and phase through the position projection', () => {
+    const out = mapCheckpointRunInFlight(
+      {
+        activeRun: {
+          active: true,
+          candidate: 'abcdef1234567890',
+          startedAtMs: NOW - 5 * 60_000,
+          progressAtMs: NOW - 15_000,
+          currentPhase: 'delivering',
+          elapsedSec: 300,
+        },
+        computedAtMs: NOW - 4_000,
+      },
+      NOW,
+    );
+    expect(out).toMatchObject({
+      progressAtMs: NOW - 15_000,
+      currentPhase: 'delivering',
+    });
+  });
+
   it('an active run maps every field through, plus a computed asOfAgeMs', () => {
     const out = mapCheckpointRunInFlight(
       {
