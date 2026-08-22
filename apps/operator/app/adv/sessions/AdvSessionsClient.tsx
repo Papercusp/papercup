@@ -5,8 +5,6 @@ import { useSyncQuery } from '@papercusp/sync';
 import type { CompanionListSummary } from '@papercusp/facets';
 import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
 import {
-  NO_SESSION_HARNESS,
-  NO_SESSION_PLAN,
   type AdvSessionFacetMeta,
 } from '@papercusp/operator-core/lib/sync-resolver/adv-sessions-list-query';
 import * as Collapsible from '@radix-ui/react-collapsible';
@@ -30,6 +28,14 @@ import {
   OMP_MODEL_OPTIONS,
   PLAN_SELECT_PLACEHOLDER,
 } from './NewSessionLauncher';
+import {
+  mergeAdvSessionPage,
+  sessionHarnessOptions as buildSessionHarnessOptions,
+  sessionHistoryEvidence,
+  sessionPlanStats,
+} from './sessions-history-model';
+
+export { mergeAdvSessionPage } from './sessions-history-model';
 
 interface ServerRowSummary {
   ompSessionId: string;
@@ -273,18 +279,6 @@ const SU_CONTEXT_OPTIONS = [
 
 const SESSION_HISTORY_PAGE = 100;
 
-/** Page one replaces; cursor pages append idempotently by ledger identity. */
-export function mergeAdvSessionPage(
-  previous: readonly SessionRow[],
-  page: readonly SessionRow[],
-  cursor: string | null,
-): SessionRow[] {
-  if (!cursor) return [...page];
-  const byId = new Map(previous.map((row) => [row.id, row] as const));
-  for (const row of page) byId.set(row.id, row);
-  return [...byId.values()];
-}
-
 export default function AdvSessionsClient() {
   const t = useLexicon();
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
@@ -367,28 +361,17 @@ export default function AdvSessionsClient() {
     sessionsSummaryQuery.loading ||
     sessionsSummaryQuery.fetching
   );
-  const loadedCountEvidence = useMemo<CountEvidence>(() => {
-    if (error) return { kind: 'unknown', reason: 'failed' };
-    if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
-    if (rows === null || !summary) return { kind: 'unknown', reason: 'loading' };
-    return {
-      kind: 'window',
-      count: rows.length,
-      window: 'loaded server-filtered session history',
-      corpusTotal: summary.matched,
-    };
-  }, [error, pairedFetching, rows, summary]);
-  const matchedCountEvidence = useMemo<CountEvidence>(() => {
-    if (error) return { kind: 'unknown', reason: 'failed' };
-    if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
-    if (!summary) return { kind: 'unknown', reason: 'loading' };
-    return {
-      kind: 'corpus',
-      count: summary.matched,
-      total: summary.total,
-      population: 'the workspace session ledger',
-    };
-  }, [error, pairedFetching, summary]);
+  const countEvidence = useMemo(
+    () => sessionHistoryEvidence({
+      error: Boolean(error),
+      updating: pairedFetching,
+      loadedCount: rows?.length ?? null,
+      summary,
+    }),
+    [error, pairedFetching, rows?.length, summary],
+  );
+  const loadedCountEvidence = countEvidence.loaded;
+  const matchedCountEvidence = countEvidence.matched;
   const loadedCountLabel = useMemo(
     () => filterCountLabel(loadedCountEvidence, 'session'),
     [loadedCountEvidence],
@@ -397,15 +380,7 @@ export default function AdvSessionsClient() {
     () => filterCountLabel(matchedCountEvidence, 'session'),
     [matchedCountEvidence],
   );
-  const exactPlanStats = useMemo(() => {
-    const values = summary?.facets.find((facet) => facet.key === 'plan')?.values ?? [];
-    return new Map(
-      values.map((value) => [
-        value.value === NO_SESSION_PLAN ? '_' : value.value,
-        { count: value.count, active: value.meta?.active ?? 0 },
-      ] as const),
-    );
-  }, [summary]);
+  const exactPlanStats = useMemo(() => sessionPlanStats(summary), [summary]);
 
   const activePanel = isSessionPanel(panel) ? panel : 'overview';
 
@@ -816,18 +791,10 @@ export default function AdvSessionsClient() {
   // Option counts come from the independent aggregate, never the downloaded
   // pages. While the pair refetches, retain the option identities but suppress
   // stale numbers until both legs settle.
-  const sessionHarnessOptions = useMemo(() => {
-    const values = summary?.facets.find((facet) => facet.key === 'harness')?.values ?? [];
-    return values
-      .filter((value) => value.value !== NO_SESSION_HARNESS)
-      .map((value) => ({
-        value: value.value,
-        label: pairedFetching
-          ? value.value
-          : `${value.value} · ${value.count.toLocaleString()} sessions`,
-      }))
-      .sort((a, b) => a.value.localeCompare(b.value));
-  }, [summary, pairedFetching]);
+  const sessionHarnessOptions = useMemo(
+    () => buildSessionHarnessOptions(summary, pairedFetching),
+    [summary, pairedFetching],
+  );
 
   // The normalized harness predicate runs before LIMIT on the server. Grouping
   // therefore consumes only matching rows and can grow safely by cursor page.
