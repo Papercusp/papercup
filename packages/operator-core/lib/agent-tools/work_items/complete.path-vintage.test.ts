@@ -6,7 +6,8 @@
  * spawning git or depending on the shared checkout.
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import * as nodePath from 'node:path';
 
 import { preExistingChangedPathsInCompletion } from './complete';
@@ -105,6 +106,37 @@ describe('preExistingChangedPathsInCompletion', () => {
         },
       ),
     ).toBeUndefined();
+  });
+
+  it('reads a submodule path from the submodule repository, not the superproject', () => {
+    const root = mkdtempSync(nodePath.join(tmpdir(), 'completion-vintage-'));
+    const submodule = nodePath.join(root, 'libs', 'testing-shell');
+    try {
+      mkdirSync(nodePath.join(root, '.git'));
+      writeFileSync(nodePath.join(root, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
+      mkdirSync(submodule, { recursive: true });
+      writeFileSync(nodePath.join(submodule, '.git'), 'gitdir: ../../.git/modules/testing-shell\n');
+
+      const calls: Array<{ repoRoot: string; paths: string[] }> = [];
+      const result = preExistingChangedPathsInCompletion(
+        { createdAt: CREATED, payload: { paths: ['libs/testing-shell/package.json'] } },
+        { filesChanged: ['libs/testing-shell/package.json'] },
+        {
+          repoRoot: root,
+          lastCommitTimes: (repoRoot, paths) => {
+            calls.push({ repoRoot, paths: [...paths] });
+            return new Map([['package.json', BEFORE]]);
+          },
+        },
+      );
+
+      expect(result?.paths).toEqual([
+        { path: 'libs/testing-shell/package.json', lastCommitAt: BEFORE },
+      ]);
+      expect(calls).toEqual([{ repoRoot: submodule, paths: ['package.json'] }]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('does not judge an invalid or escaping path', () => {

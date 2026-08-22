@@ -96,6 +96,7 @@ import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-r
 import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
 import { checkoutRootForPath, discoverKnownHiveCheckoutRoots } from '../testing/run';
+import { hasValidGitEntry } from '../locks/valid-git-entry';
 import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-item-dispatch-states';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
@@ -754,6 +755,8 @@ export interface CompletionPathVintageProbe {
   repoRoot?: string | null;
   /** Epoch seconds, an ISO timestamp, or a Date; null/undefined means unobservable. */
   lastCommitAt?: (path: string) => number | string | Date | null | undefined;
+  /** Injectable batch history read; production uses the argv-safe git helper. */
+  lastCommitTimes?: (repoRoot: string, paths: Iterable<string>) => Map<string, number | null>;
 }
 
 export interface CompletionPathVintageHit {
@@ -764,6 +767,34 @@ export interface CompletionPathVintageHit {
 const PATH_VINTAGE_MAX_PATHS = 60;
 const PATH_CLAIM_ALL_RE =
   /\b(?:all|every|each|both|named)\b[\s\S]{0,100}\b(?:path|paths|file|files|site|sites|target|targets)\b[\s\S]{0,100}\b(?:changed|fixed|updated|remediated|correct|verified|covered|replaced|removed)\b/i;
+
+/**
+ * Resolve a completion path to the repository that owns its history. The superproject stores
+ * only a gitlink for a submodule, so `git log -- <submodule>/<file>` from the superproject can
+ * never observe the commit that changed the file. A missing/uninitialized submodule has no
+ * nearer valid git entry and consequently falls back to the superproject, where git's normal
+ * fail-soft `null` result preserves this advisory's fail-open behavior.
+ */
+function completionHistoryPath(
+  repoRoot: string,
+  relativePath: string,
+): { repoRoot: string; path: string } | undefined {
+  const primaryRoot = nodePath.resolve(repoRoot);
+  const absolutePath = nodePath.resolve(primaryRoot, relativePath);
+  if (absolutePath !== primaryRoot && !absolutePath.startsWith(primaryRoot + nodePath.sep)) return undefined;
+
+  let owner = nodePath.dirname(absolutePath);
+  for (let depth = 0; depth < 64; depth += 1) {
+    if (hasValidGitEntry(owner)) {
+      const path = nodePath.relative(owner, absolutePath).split(nodePath.sep).join('/');
+      return path ? { repoRoot: owner, path } : undefined;
+    }
+    const parent = nodePath.dirname(owner);
+    if (parent === owner) break;
+    owner = parent;
+  }
+  return undefined;
+}
 
 function completionTextParts(completion: unknown): string[] {
   if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return [];
@@ -906,10 +937,25 @@ export function preExistingChangedPathsInCompletion(
   if (!repoRoot) return undefined;
   let fallbackTimes: Map<string, number | null> | undefined;
   if (!probe.lastCommitAt) {
-    try {
-      fallbackTimes = lastCommitTimes(repoRoot, claimedPaths);
-    } catch {
-      return undefined;
+    fallbackTimes = new Map();
+    const history = probe.lastCommitTimes ?? lastCommitTimes;
+    const byRepository = new Map<string, Array<{ originalPath: string; repositoryPath: string }>>();
+    for (const path of claimedPaths) {
+      const resolved = completionHistoryPath(repoRoot, path);
+      if (!resolved) continue;
+      const paths = byRepository.get(resolved.repoRoot) ?? [];
+      paths.push({ originalPath: path, repositoryPath: resolved.path });
+      byRepository.set(resolved.repoRoot, paths);
+    }
+    for (const [historyRoot, paths] of byRepository) {
+      try {
+        const times = history(historyRoot, paths.map((entry) => entry.repositoryPath));
+        for (const entry of paths) {
+          fallbackTimes.set(entry.originalPath, times.get(entry.repositoryPath) ?? null);
+        }
+      } catch {
+        // History is advisory: an unavailable repository must not fail completion.
+      }
     }
   }
 
