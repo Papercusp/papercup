@@ -58,7 +58,7 @@ export default defineTool({
 
     let tokens;
     try {
-      tokens = await provider.exchangeCode(code);
+      tokens = await provider.exchangeCode(code, verified.privateContext);
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return Response.redirect(

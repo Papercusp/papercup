@@ -46,6 +46,7 @@ beforeEach(async () => {
       }
       return {
         ok: true,
+        privateContext: { codeVerifier: 'persisted-verifier' },
         claims: {
           plugin: 'github-repo',
           harness: 'demo',
@@ -127,5 +128,34 @@ describe('GET /api/oauth/callback', () => {
     expect(cfg.github_token).toBe('gho_realtoken');
     expect(cfg.github_token_refresh).toBe('gho_refresh');
     expect(typeof cfg.github_token_expires_at).toBe('number');
+  });
+
+  it('passes the server-side flow context to the provider exchange', async () => {
+    const exchangeCode = vi.fn(async () => ({ accessToken: 'google-token' }));
+    const providers = await import('../../oauth/providers');
+    providers.__resetRegistryForTest();
+    providers.registerProvider({
+      id: 'github',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://example.com/authorize',
+        tokenUrl: 'https://example.com/token',
+        redirectUri: 'http://localhost:3055/cb',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode,
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const GET = await loadCallback();
+    const response = await GET(
+      new Request('http://x/api/oauth/callback?code=authorization-code&state=valid.token'),
+    );
+    expect(response.status).toBe(307);
+    expect(exchangeCode).toHaveBeenCalledWith(
+      'authorization-code',
+      { codeVerifier: 'persisted-verifier' },
+    );
   });
 });

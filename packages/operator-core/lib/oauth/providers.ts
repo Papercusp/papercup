@@ -16,9 +16,11 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 
 import { CLAUDE_CODE_CLIENT_ID, CLAUDE_OAUTH_DEFAULTS } from '@papercusp/papercusp-shared/agent';
+import { operatorApiBase } from '../operator-api-base';
+import type { OAuthFlowPrivateContext } from './state';
 
 export interface OAuthProviderConfig {
   clientId: string;
@@ -54,8 +56,18 @@ export interface IntrospectionResult {
 export interface OAuthProvider {
   id: string;
   config: OAuthProviderConfig;
-  buildAuthorizeUrl(scopes: string[], state: string): string;
-  exchangeCode(code: string): Promise<TokenResponse>;
+  /** Curated scopes used when the start route receives no explicit scope list. */
+  defaultScopes?: readonly string[];
+  /** Optional allowlist enforced by the start route before redirecting. */
+  allowedScopes?: readonly string[];
+  /** Create server-only state for this authorize→callback round trip. */
+  createFlowContext?(): OAuthFlowPrivateContext | Promise<OAuthFlowPrivateContext>;
+  buildAuthorizeUrl(
+    scopes: string[],
+    state: string,
+    privateContext?: OAuthFlowPrivateContext,
+  ): string;
+  exchangeCode(code: string, privateContext?: OAuthFlowPrivateContext): Promise<TokenResponse>;
   refresh(refreshToken: string): Promise<TokenResponse>;
   introspect?(token: string): Promise<IntrospectionResult>;
 }
@@ -145,6 +157,170 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
       return { scopes };
     },
   };
+}
+
+/* ─── Google Workspace installed-app provider ─── */
+
+export const GOOGLE_WORKSPACE_SCOPES = [
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/calendar.readonly',
+] as const;
+
+export const GOOGLE_OAUTH_CLIENT_PATH = join(
+  homedir(),
+  '.config',
+  'papercusp',
+  'google-oauth-client.json',
+);
+
+export interface GoogleDesktopClientConfig {
+  clientId: string;
+  clientSecret: string;
+  authorizeUrl: string;
+  tokenUrl: string;
+  redirectUri: string;
+}
+
+function googleTokenResponse(j: {
+  access_token?: string;
+  refresh_token?: string;
+  expires_in?: number;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+}): TokenResponse {
+  if (j.error || !j.access_token) {
+    throw new Error(`google oauth: ${j.error_description ?? j.error ?? 'no access_token in response'}`);
+  }
+  return {
+    accessToken: j.access_token,
+    refreshToken: j.refresh_token,
+    expiresAt: j.expires_in ? Date.now() + j.expires_in * 1000 : undefined,
+    scopes: j.scope ? j.scope.split(/\s+/).filter(Boolean) : undefined,
+  };
+}
+
+function requireGooglePkce(privateContext?: OAuthFlowPrivateContext): string {
+  const verifier = privateContext?.codeVerifier?.trim();
+  if (!verifier) throw new Error('google oauth missing server-side PKCE verifier');
+  return verifier;
+}
+
+/** Google Workspace OAuth for a locally installed desktop client. */
+export function makeGoogleProvider(config: GoogleDesktopClientConfig): OAuthProvider {
+  const cfg: OAuthProviderConfig = { ...config };
+  return {
+    id: 'google',
+    config: cfg,
+    defaultScopes: GOOGLE_WORKSPACE_SCOPES,
+    allowedScopes: GOOGLE_WORKSPACE_SCOPES,
+    createFlowContext() {
+      // 64 base64url characters, within RFC 7636's 43–128 character range.
+      return { codeVerifier: b64url(randomBytes(48)) };
+    },
+    buildAuthorizeUrl(scopes, state, privateContext) {
+      const verifier = requireGooglePkce(privateContext);
+      const u = new URL(config.authorizeUrl);
+      u.searchParams.set('client_id', config.clientId);
+      u.searchParams.set('redirect_uri', config.redirectUri);
+      u.searchParams.set('response_type', 'code');
+      u.searchParams.set('access_type', 'offline');
+      u.searchParams.set('include_granted_scopes', 'true');
+      u.searchParams.set('scope', (scopes.length ? scopes : GOOGLE_WORKSPACE_SCOPES).join(' '));
+      u.searchParams.set('code_challenge', pkceChallenge(verifier));
+      u.searchParams.set('code_challenge_method', 'S256');
+      u.searchParams.set('state', state);
+      return u.toString();
+    },
+    async exchangeCode(code, privateContext) {
+      const verifier = requireGooglePkce(privateContext);
+      const res = await fetch(config.tokenUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code,
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+          redirect_uri: config.redirectUri,
+          code_verifier: verifier,
+        }),
+      });
+      const j = (await res.json().catch(() => ({}))) as Parameters<typeof googleTokenResponse>[0];
+      if (!res.ok && !j.error) throw new Error(`google oauth code exchange ${res.status}`);
+      return googleTokenResponse(j);
+    },
+    async refresh(refreshToken) {
+      const res = await fetch(config.tokenUrl, {
+        method: 'POST',
+        headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token: refreshToken,
+          client_id: config.clientId,
+          client_secret: config.clientSecret,
+        }),
+      });
+      const j = (await res.json().catch(() => ({}))) as Parameters<typeof googleTokenResponse>[0];
+      if (!res.ok && !j.error) throw new Error(`google oauth token refresh ${res.status}`);
+      const out = googleTokenResponse(j);
+      return { ...out, refreshToken: out.refreshToken ?? refreshToken };
+    },
+  };
+}
+
+interface GoogleDesktopClientFile {
+  installed?: {
+    client_id?: string;
+    client_secret?: string;
+    auth_uri?: string;
+    token_uri?: string;
+  };
+}
+
+export function googleOAuthRedirectUri(): string {
+  return process.env.PAPERCUSP_GOOGLE_OAUTH_REDIRECT_URI
+    ?? new URL('/api/oauth/callback', operatorApiBase()).toString();
+}
+
+/**
+ * Read the well-known Google Desktop-client JSON. Absence is an expected setup
+ * wall and returns null; a present but malformed/non-Desktop credential fails
+ * loudly so the operator does not silently expose an unknown provider.
+ */
+export async function loadGoogleProviderFromDesktopClientFile(
+  path = GOOGLE_OAUTH_CLIENT_PATH,
+  redirectUri = googleOAuthRedirectUri(),
+): Promise<OAuthProvider | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path, 'utf8');
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  let parsed: GoogleDesktopClientFile;
+  try {
+    parsed = JSON.parse(raw) as GoogleDesktopClientFile;
+  } catch {
+    throw new Error(`google oauth client JSON is malformed: ${path}`);
+  }
+  const installed = parsed.installed;
+  if (!installed?.client_id || !installed.client_secret) {
+    throw new Error(`google oauth client must be a Desktop app credential: ${path}`);
+  }
+  const redirect = new URL(redirectUri);
+  if (redirect.protocol !== 'http:' || !['localhost', '127.0.0.1', '[::1]'].includes(redirect.hostname)) {
+    throw new Error('google Desktop OAuth redirect must use an HTTP loopback host');
+  }
+  return makeGoogleProvider({
+    clientId: installed.client_id,
+    clientSecret: installed.client_secret,
+    authorizeUrl: installed.auth_uri ?? 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: installed.token_uri ?? 'https://oauth2.googleapis.com/token',
+    redirectUri: redirect.toString(),
+  });
 }
 
 /* ─── Claude (Anthropic subscription) provider ─── */
@@ -322,45 +498,57 @@ async function readClientSecret(entry: OAuthAppsFile[string]): Promise<string> {
  * register each provider. Idempotent — calling again replaces existing
  * registrations.
  */
-export async function loadAndRegisterProvidersFromDisk(rootDir?: string): Promise<string[]> {
+export async function loadAndRegisterProvidersFromDisk(
+  rootDir?: string,
+  googleClientPath: string | null = GOOGLE_OAUTH_CLIENT_PATH,
+): Promise<string[]> {
   const { papercuspRoot } = await import('../papercusp-root');
   const root = rootDir ?? papercuspRoot();
   const path = join(root, 'oauth-apps.json');
-  let raw: string;
+  let raw: string | null = null;
   try {
     raw = await fs.readFile(path, 'utf8');
   } catch {
-    return []; // no providers configured
-  }
-  let parsed: OAuthAppsFile;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
+    // No legacy provider file configured. Google has its own well-known path.
   }
   const registered: string[] = [];
-  for (const [id, entry] of Object.entries(parsed)) {
-    let clientSecret: string;
+  let parsed: OAuthAppsFile = {};
+  if (raw !== null) {
     try {
-      clientSecret = await readClientSecret(entry);
+      parsed = JSON.parse(raw) as OAuthAppsFile;
     } catch {
-      continue;
+      parsed = {};
     }
-    if (id === 'github') {
-      const cfg: OAuthProviderConfig = {
-        clientId: entry.clientId,
-        clientSecret,
-        authorizeUrl: entry.authorizeUrl ?? DEFAULT_GITHUB_ENDPOINTS.authorizeUrl,
-        tokenUrl: entry.tokenUrl ?? DEFAULT_GITHUB_ENDPOINTS.tokenUrl,
-        refreshUrl: entry.refreshUrl,
-        userInfoUrl: entry.userInfoUrl ?? DEFAULT_GITHUB_ENDPOINTS.userInfoUrl,
-        introspectUrl: entry.introspectUrl,
-        redirectUri: entry.redirectUri,
-      };
-      registerProvider(makeGithubProvider(cfg));
-      registered.push('github');
+    for (const [id, entry] of Object.entries(parsed)) {
+      let clientSecret: string;
+      try {
+        clientSecret = await readClientSecret(entry);
+      } catch {
+        continue;
+      }
+      if (id === 'github') {
+        const cfg: OAuthProviderConfig = {
+          clientId: entry.clientId,
+          clientSecret,
+          authorizeUrl: entry.authorizeUrl ?? DEFAULT_GITHUB_ENDPOINTS.authorizeUrl,
+          tokenUrl: entry.tokenUrl ?? DEFAULT_GITHUB_ENDPOINTS.tokenUrl,
+          refreshUrl: entry.refreshUrl,
+          userInfoUrl: entry.userInfoUrl ?? DEFAULT_GITHUB_ENDPOINTS.userInfoUrl,
+          introspectUrl: entry.introspectUrl,
+          redirectUri: entry.redirectUri,
+        };
+        registerProvider(makeGithubProvider(cfg));
+        registered.push('github');
+      }
+      // V2: slack, linear, notion, jira providers.
     }
-    // V2: slack, linear, notion, jira providers.
+  }
+  if (googleClientPath !== null) {
+    const google = await loadGoogleProviderFromDesktopClientFile(googleClientPath);
+    if (google) {
+      registerProvider(google);
+      registered.push('google');
+    }
   }
   return registered;
 }

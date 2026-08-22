@@ -1,5 +1,18 @@
-import { describe, expect, it } from 'vitest';
-import { CLAUDE_OAUTH_DEFAULTS, compareScopes, makeClaudeProvider, makeGithubProvider } from './providers';
+import { promises as fs } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  CLAUDE_OAUTH_DEFAULTS,
+  GOOGLE_WORKSPACE_SCOPES,
+  compareScopes,
+  loadGoogleProviderFromDesktopClientFile,
+  makeClaudeProvider,
+  makeGithubProvider,
+  makeGoogleProvider,
+} from './providers';
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('compareScopes', () => {
   it('flags exact matches', () => {
@@ -50,6 +63,71 @@ describe('GitHub provider authorize URL', () => {
     expect(url.searchParams.get('scope')).toBe('repo read:user');
     expect(url.searchParams.get('state')).toBe('STATE_TOKEN');
     expect(url.searchParams.get('redirect_uri')).toContain('localhost:3055');
+  });
+});
+
+describe('Google Workspace Desktop OAuth provider', () => {
+  const config = {
+    clientId: 'google-client.apps.googleusercontent.com',
+    clientSecret: 'desktop-secret',
+    authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    redirectUri: 'http://127.0.0.1:3070/api/oauth/callback',
+  };
+
+  it('keeps the verifier server-side and sends only its S256 challenge', async () => {
+    const provider = makeGoogleProvider(config);
+    const privateContext = await provider.createFlowContext!();
+    const url = new URL(provider.buildAuthorizeUrl([], 'STATE_TOKEN', privateContext));
+
+    expect(url.searchParams.get('scope')?.split(' ')).toEqual(GOOGLE_WORKSPACE_SCOPES);
+    expect(url.searchParams.get('access_type')).toBe('offline');
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256');
+    expect(url.searchParams.get('code_challenge')).toBeTruthy();
+    expect(url.toString()).not.toContain(privateContext.codeVerifier!);
+  });
+
+  it('requires the persisted verifier and uses it during code exchange', async () => {
+    const provider = makeGoogleProvider(config);
+    await expect(provider.exchangeCode('code-without-context')).rejects.toThrow(/PKCE verifier/);
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'access',
+      refresh_token: 'refresh',
+      expires_in: 3600,
+      scope: GOOGLE_WORKSPACE_SCOPES.join(' '),
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const privateContext = { codeVerifier: 'persisted-verifier' };
+    const tokens = await provider.exchangeCode('authorization-code', privateContext);
+
+    const body = fetchMock.mock.calls[0]?.[1]?.body as URLSearchParams;
+    expect(body.get('code_verifier')).toBe('persisted-verifier');
+    expect(tokens.refreshToken).toBe('refresh');
+  });
+
+  it('loads only the installed credential shape from the well-known JSON format', async () => {
+    const dir = await fs.mkdtemp(join(tmpdir(), 'papercusp-google-oauth-'));
+    const path = join(dir, 'client.json');
+    try {
+      await fs.writeFile(path, JSON.stringify({ installed: {
+        client_id: config.clientId,
+        client_secret: config.clientSecret,
+        auth_uri: config.authorizeUrl,
+        token_uri: config.tokenUrl,
+        redirect_uris: ['http://localhost'],
+      } }), { mode: 0o600 });
+      const provider = await loadGoogleProviderFromDesktopClientFile(path, config.redirectUri);
+      expect(provider?.id).toBe('google');
+      expect(provider?.config.clientId).toBe(config.clientId);
+
+      await fs.writeFile(path, JSON.stringify({ web: { client_id: config.clientId } }));
+      await expect(loadGoogleProviderFromDesktopClientFile(path, config.redirectUri)).rejects.toThrow(
+        /Desktop app credential/,
+      );
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

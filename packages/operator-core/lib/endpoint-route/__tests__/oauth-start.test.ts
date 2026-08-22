@@ -8,6 +8,10 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const stateMocks = vi.hoisted(() => ({
+  signState: vi.fn(async () => 'test-state-token'),
+}));
+
 vi.mock('../../oauth/providers', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../oauth/providers')>();
   return { ...actual, loadAndRegisterProvidersFromDisk: async () => {} };
@@ -16,7 +20,7 @@ vi.mock('../../oauth/providers', async (importOriginal) => {
 // This route test exercises route behaviour, not the nonce store — stub
 // signState so the test is hermetic (no DB).
 vi.mock('../../oauth/state', () => ({
-  signState: async () => 'test-state-token',
+  signState: stateMocks.signState,
 }));
 
 import startRoute from '../routes/oauth/start';
@@ -49,6 +53,7 @@ const stubProvider: OAuthProvider = {
 
 beforeEach(() => {
   __resetRegistryForTest();
+  stateMocks.signState.mockClear();
 });
 
 afterEach(() => {
@@ -80,5 +85,36 @@ describe('GET /api/oauth/start', () => {
     expect(loc).toContain('https://github.com/login/oauth/authorize');
     expect(loc).toContain('scope=repo%20read%3Auser');
     expect(loc).toContain('state=');
+  });
+
+  it('persists private flow context and enforces provider scope policy', async () => {
+    const buildAuthorizeUrl = vi.fn(() => 'https://accounts.google.com/o/oauth2/v2/auth');
+    registerProvider({
+      ...stubProvider,
+      id: 'google',
+      defaultScopes: ['scope:mail'],
+      allowedScopes: ['scope:mail'],
+      createFlowContext: () => ({ codeVerifier: 'server-only-verifier' }),
+      buildAuthorizeUrl,
+    });
+
+    const ok = await GET(
+      new Request('http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok'),
+    );
+    expect(ok.status).toBe(302);
+    expect(stateMocks.signState).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: 'google' }),
+      { privateContext: { codeVerifier: 'server-only-verifier' } },
+    );
+    expect(buildAuthorizeUrl).toHaveBeenCalledWith(
+      ['scope:mail'],
+      'test-state-token',
+      { codeVerifier: 'server-only-verifier' },
+    );
+
+    const denied = await GET(
+      new Request('http://x/api/oauth/start?provider=google&plugin=p&harness=h&field=tok&scopes=scope:admin'),
+    );
+    expect(denied.status).toBe(400);
   });
 });
