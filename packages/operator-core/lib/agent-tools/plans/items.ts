@@ -82,6 +82,18 @@ export function isTerminalPlanHiddenFromCrossPlan(
   );
 }
 
+/**
+ * A stale or standalone harness has no Hive plan scope. Read tools treat that
+ * condition as an empty result with warning metadata; resolver failures for
+ * unrelated causes must still propagate to the caller.
+ */
+export function isUnknownPlanScopeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /resolvePlanScope:\s+(?:harness .* is not registered|plans are Hive-scoped, but .* is not a Hive home)/i.test(
+    message,
+  );
+}
+
 const argsSchema = z.object({
   slug: z
     .string()
@@ -221,13 +233,34 @@ export default defineTool({
         let planRows: PlanRow[] = [];
 
         if (args.slug) {
-          const one = await getPlanRow(args.slug, opts);
-          if (!one) return { notFound: true as const };
+          let one: PlanRow | null;
+          try {
+            one = await getPlanRow(args.slug, opts);
+          } catch (error) {
+            if (isUnknownPlanScopeError(error)) {
+              return {
+                rows: [] as ItemRow[],
+                unknownHarnesses: [opts.harnessSlug],
+              };
+            }
+            throw error;
+          }
+          if (!one) return { notFound: true as const, unknownHarnesses: [] };
           if (!one.archived || includeArchived) {
             planRows = [one];
           }
         } else {
-          planRows = await listPlanRows({ includeArchived, ...opts });
+          try {
+            planRows = await listPlanRows({ includeArchived, ...opts });
+          } catch (error) {
+            if (isUnknownPlanScopeError(error)) {
+              return {
+                rows: [] as ItemRow[],
+                unknownHarnesses: [opts.harnessSlug],
+              };
+            }
+            throw error;
+          }
         }
 
         const rows: ItemRow[] = [];
@@ -306,7 +339,7 @@ export default defineTool({
         };
         rows.sort((a, b) => impRank(a.item) - impRank(b.item));
 
-        return { rows };
+        return { rows, unknownHarnesses: [] };
       },
     );
 
@@ -362,6 +395,9 @@ export default defineTool({
       actionable: !!args.actionable,
       needsHuman: !!args.needsHuman,
       scope: args.slug ?? "all",
+      ...(cached.unknownHarnesses.length > 0
+        ? { unknownHarnesses: cached.unknownHarnesses }
+        : {}),
       ...(truncated ? { truncated: true } : {}),
     });
 
