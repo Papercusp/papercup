@@ -699,6 +699,13 @@ describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING sti
           // passes only by waiting longer, which would hide a regression that
           // made the wait unbounded again.
           PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '800',
+          // A fleet-bound host recolors the visible terminal by writing OSC
+          // probes to stdout at launch. This fixture asserts that the child
+          // emits zero bytes, so keep the test independent of the caller's
+          // fleet color environment.
+          PAPERCUSP_FLEET_BG: '',
+          PAPERCUSP_FLEET_FG: '',
+          PAPERCUSP_FLEET_CURSOR: '',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
           PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
