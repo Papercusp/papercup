@@ -38,10 +38,13 @@ fi
 INPUT=$(cat)
 
 # Fail-open backstop: any uncaught crash classifies nothing and allows the turn.
-python3 - "$PAPERCUSP_SID" "$INPUT" <<'PYEOF' || exit 0
+python3 - "$PAPERCUSP_SID" "$INPUT" "$(dirname "$0")" <<'PYEOF' || exit 0
 import hashlib, json, os, re, sys, time
 
 sid, raw = sys.argv[1], sys.argv[2]
+hook_dir = sys.argv[3] if len(sys.argv) > 3 else os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, hook_dir)
+from mcp_response import parse_mcp_response  # noqa: E402
 try:
     data = json.loads(raw)
 except Exception:
@@ -356,25 +359,10 @@ def _mcp_call(tool, args, timeout=4):
         resp = opener.open(req, timeout=timeout).read().decode('utf-8', 'replace')
     except Exception:
         return None
-    for line in resp.splitlines():
-        line = line.strip()
-        if line.startswith('data:'):
-            line = line[5:].strip()
-        if not line:
-            continue
-        try:
-            cand = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(cand, dict) and 'result' in cand:
-            for item in (cand['result'].get('content') or []):
-                if item.get('type') == 'text':
-                    try:
-                        return json.loads(item['text'])
-                    except Exception:
-                        return {'raw': item['text']}
-            return {}
-    return None
+    inner, _rpc_error, phase = parse_mcp_response(resp)
+    if phase != 'ok':
+        return None
+    return inner
 
 
 def register_owner_mode(text):

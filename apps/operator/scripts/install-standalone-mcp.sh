@@ -1656,14 +1656,17 @@ if [ -f "${CC_HOOK_SRC_DIR}/pretooluse-locks-acquire.sh" ]; then
   # Destination basenames are unchanged: every CC_*_HOOK variable above is defined as
   # "${CC_HOOK_DEST_DIR}/<same basename>", so this loop lands each already-copied file at
   # byte-identical paths and merely stops forgetting the rest.
-  for cc_hook_src in "${CC_HOOK_SRC_DIR}"/*.sh "${CC_HOOK_SRC_DIR}"/*.mjs; do
+  for cc_hook_src in "${CC_HOOK_SRC_DIR}"/*.sh "${CC_HOOK_SRC_DIR}"/*.mjs "${CC_HOOK_SRC_DIR}"/*.py; do
     [ -f "$cc_hook_src" ] || continue  # unmatched glob stays literal; skip it
     cc_hook_name="$(basename "$cc_hook_src")"
     case "$cc_hook_name" in
       *.tmp | *.bak*) continue ;;  # residue from an interrupted install / hand-kept backups
     esac
     cp "$cc_hook_src" "${CC_HOOK_DEST_DIR}/${cc_hook_name}"
-    chmod 755 "${CC_HOOK_DEST_DIR}/${cc_hook_name}"
+    case "$cc_hook_name" in
+      *.py) chmod 644 "${CC_HOOK_DEST_DIR}/${cc_hook_name}" ;;
+      *) chmod 755 "${CC_HOOK_DEST_DIR}/${cc_hook_name}" ;;
+    esac
   done
   echo "✓ Installed Claude/Codex lock + coord hooks to $CC_HOOK_DEST_DIR"
 else

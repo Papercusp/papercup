@@ -67,11 +67,13 @@ INPUT=$(cat)
 # path), ALLOW the edit rather than risk blocking it. The deny path emits
 # its JSON then exits 0, so this guard only fires on an actual crash —
 # never on a legitimate refusal.
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" "$(dirname "$0")" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
 import hashlib, json, os, re, sys, time, urllib.request, urllib.parse
 from datetime import datetime
 
-raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
+raw, operator_url, token, agent_id, cache_dir, hook_dir = sys.argv[1:7]
+sys.path.insert(0, hook_dir)
+from mcp_response import parse_mcp_response  # noqa: E402
 
 
 def write_marker(name, value):
@@ -1186,45 +1188,6 @@ RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _parse_mcp_response(raw_resp):
-    """Return (inner, rpc_error, phase) for a JSON/SSE MCP response."""
-    result = None
-    rpc_error = None
-    for line in raw_resp.splitlines():
-        line = line.strip()
-        if not line or line.startswith('event:'):
-            continue
-        if line.startswith('data:'):
-            line = line[5:].strip()
-        try:
-            cand = json.loads(line)
-            if isinstance(cand, dict):
-                if 'result' in cand:
-                    result = cand['result']
-                    break
-                if 'error' in cand:
-                    rpc_error = cand['error']
-                    break
-        except Exception:
-            pass
-
-    if rpc_error is not None:
-        return None, rpc_error, 'rpc-error'
-    if not isinstance(result, dict):
-        return None, None, 'no-result'
-
-    for item in (result.get('content') or []):
-        if not isinstance(item, dict) or item.get('type') != 'text':
-            continue
-        try:
-            inner = json.loads(item['text'])
-            if isinstance(inner, dict):
-                return inner, None, 'ok'
-        except Exception:
-            continue
-    return None, None, 'no-text'
-
-
 def _best_effort_tool(name, arguments, timeout=3):
     """Call a recovery tool without retrying or changing the hook decision."""
     try:
@@ -1232,7 +1195,7 @@ def _best_effort_tool(name, arguments, timeout=3):
         raw_resp = resp.read().decode('utf-8', errors='replace')
     except Exception as exc:
         return None, None, 'transport', exc
-    inner, rpc_error, phase = _parse_mcp_response(raw_resp)
+    inner, rpc_error, phase = parse_mcp_response(raw_resp)
     return inner, rpc_error, phase, None
 
 
@@ -1267,7 +1230,7 @@ def _locks_acquire_once(request):
             }
         allow()
 
-    inner, rpc_error, phase = _parse_mcp_response(raw_resp)
+    inner, rpc_error, phase = parse_mcp_response(raw_resp)
     if rpc_error is not None:
         compatibility_error = _coordination_domain_rejection(rpc_error)
         if compatibility_error:
@@ -1275,12 +1238,13 @@ def _locks_acquire_once(request):
                 '_hook_compatibility_error': True,
                 '_detail': compatibility_error,
             }
-        mark_error('parse', 'JSON-RPC error in response')
+        detail = 'MCP tool returned isError:true' if phase == 'is-error' else 'JSON-RPC error in response'
+        mark_error('parse', detail)
         _recover_ambiguous_acquire(operation_started_at)
         if batch_info:
             return {
                 '_hook_fail_open': True,
-                '_detail': 'JSON-RPC error in response',
+                '_detail': detail,
             }
         allow()
     if phase != 'ok':

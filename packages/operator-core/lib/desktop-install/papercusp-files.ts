@@ -1053,16 +1053,17 @@ export const CC_HOOK_FILES = [
   // lookahead is exactly what separates a banned `0.04em` from the REQUIRED `letter-spacing: 0`,
   // so a drifted copy would fire on every compliant declaration in the tree.
   'posttooluse-css-design-primitives-nudge.mjs',
-  // Shared python lib, NOT a hook: statusline-fleet.sh + posttooluse-objective-title.sh
-  // `import pc_tty` off their own dirname to resolve the terminal they title. Omit it and
-  // both raise ImportError, fail OPEN, and the packaged app silently stops setting the
-  // terminal title (WI-3665 — the EI-8191 shape: fail-open is indistinguishable from
-  // success). It is imported, never executed, so installClaudeHooks installs it 0644.
+  // Shared python libs, NOT hooks: statusline-fleet.sh + posttooluse-objective-title.sh
+  // import pc_tty, while the MCP response hooks import mcp_response. Omit either and
+  // the importing hooks raise ImportError, fail OPEN, and silently lose their guard,
+  // reporting, or title behavior. They are imported, never executed, so
+  // installClaudeHooks installs them 0644.
   'pc_tty.py',
+  'mcp_response.py',
 ] as const;
 
 /** Hook files that are LIBRARIES, not executables — installed 0644, never chmod +x. */
-const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py']);
+const CC_HOOK_LIB_FILES: ReadonlySet<string> = new Set(['pc_tty.py', 'mcp_response.py']);
 
 /** Match the runtime-vintage unit label used by host-bootstrap in install evidence. */
 function desktopInstallUnit(): string {

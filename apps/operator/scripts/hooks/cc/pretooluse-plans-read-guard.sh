@@ -81,7 +81,7 @@ AGENT_ID=$(cat "$AGENT_ID_PATH" 2>/dev/null || true)
 HARNESS="${PAPERCUSP_HARNESS_SLUG:-}"
 INPUT=$(cat)
 
-python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$HARNESS" "$AGENT_ID" <<'PYEOF' || exit 0
+python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$HARNESS" "$AGENT_ID" "$(dirname "$0")" <<'PYEOF' || exit 0
 import json, os, re, shlex, sys
 import urllib.error, urllib.parse, urllib.request
 
@@ -90,6 +90,9 @@ operator_url = sys.argv[2] if len(sys.argv) > 2 else ''
 token = sys.argv[3] if len(sys.argv) > 3 else ''
 harness = sys.argv[4] if len(sys.argv) > 4 else ''
 client_id = sys.argv[5] if len(sys.argv) > 5 else ''
+hook_dir = sys.argv[6] if len(sys.argv) > 6 else os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, hook_dir)
+from mcp_response import parse_mcp_response  # noqa: E402
 
 
 def allow():
@@ -181,33 +184,8 @@ def plan_exists(slug):
     except Exception:
         return None
 
-    # Parse the first JSON-RPC result out of a JSON or text/event-stream body.
-    result = None
-    for line in raw_resp.splitlines():
-        line = line.strip()
-        if not line or line.startswith('event:'):
-            continue
-        if line.startswith('data:'):
-            line = line[5:].strip()
-        try:
-            cand = json.loads(line)
-            if isinstance(cand, dict) and 'result' in cand:
-                result = cand['result']
-                break
-        except Exception:
-            pass
-    if not result:
-        return None
-
-    inner = None
-    for item in (result.get('content') or []):
-        if item.get('type') == 'text':
-            try:
-                inner = json.loads(item['text'])
-                break
-            except Exception:
-                continue
-    if not inner:
+    inner, _rpc_error, phase = parse_mcp_response(raw_resp)
+    if phase != 'ok' or not isinstance(inner, dict):
         return None
 
     try:

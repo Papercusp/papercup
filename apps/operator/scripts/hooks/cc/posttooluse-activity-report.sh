@@ -87,11 +87,13 @@ AGENT="${PAPERCUSP_AGENT:-}"
 # inside fails open (the `|| true` at the call sites) — a reporting/coord blip
 # must never affect a tool.
 report() {
-  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" <<'PYEOF'
+  python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" "$(dirname "$0")" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
-raw, operator_url, token, owner, agent, cache_dir, coord_fold_flag = sys.argv[1:8]
+raw, operator_url, token, owner, agent, cache_dir, coord_fold_flag, hook_dir = sys.argv[1:9]
+sys.path.insert(0, hook_dir)
+from mcp_response import parse_mcp_response  # noqa: E402
 coord_fold = coord_fold_flag != '0'
 HTTP_TIMEOUT = 4
 STR_CAP = 500
@@ -221,36 +223,8 @@ except Exception:
 if not coord_fold:
     sys.exit(0)  # plain report — no response parsing, no output (legacy contract).
 
-# Parse the first JSON-RPC result from a JSON or text/event-stream body
-# (mirrors the deleted coord-inbox hook's SSE-tolerant parse).
-result = None
-for line in raw_resp.splitlines():
-    line = line.strip()
-    if not line or line.startswith('event:'):
-        continue
-    if line.startswith('data:'):
-        line = line[5:].strip()
-    try:
-        cand = json.loads(line)
-        if isinstance(cand, dict) and 'result' in cand:
-            result = cand['result']
-            break
-    except Exception:
-        pass
-
-if not result:
-    sys.exit(0)
-
-inner = None
-for item in (result.get('content') or []):
-    if item.get('type') == 'text':
-        try:
-            inner = json.loads(item['text'])
-            break
-        except Exception:
-            continue
-
-if not isinstance(inner, dict):
+inner, _rpc_error, phase = parse_mcp_response(raw_resp)
+if phase != 'ok' or not isinstance(inner, dict):
     sys.exit(0)
 
 bundle = inner.get('hook_bundle')
