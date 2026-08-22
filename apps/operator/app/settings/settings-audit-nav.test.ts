@@ -61,3 +61,9 @@ describe('settings nav — WI-3532 audit', () => {
     expect(active).toBe('/settings/plugins/tools');
   });
 });
+
+describe('settings nav — Personal Vault', () => {
+  it('makes the owner-local vault controls reachable', () => {
+    expect(allHrefs).toContain('/settings/personal-vault');
+  });
+});
