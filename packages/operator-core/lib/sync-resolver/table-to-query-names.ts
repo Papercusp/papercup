@@ -96,7 +96,12 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
   // session recorded for a plan (or one ending) live-refreshes the tab. Low
   // write rate + a small per-plan payload keep the broad bust cheap.
-  'harness_shared.adv_sessions': ['advSessions.list', 'advRoster.list', 'planSessions.list'],
+  'harness_shared.adv_sessions': [
+    'advSessions.list',
+    'advSessions.summary',
+    'advRoster.list',
+    'planSessions.list',
+  ],
   /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
      grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
      attached in migration 763.
@@ -242,6 +247,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // notifySyncInvalidate in the 3 tools alone would miss.
     'plans.schedule',
     'plans.scheduledOccurrences',
+    // P-010: historical sessions without launch_spec.harnessSlug inherit an
+    // unambiguous plan→harness mapping. A plan move therefore changes both the
+    // row projection and its exact harness/plan companion facets.
+    'advSessions.list',
+    'advSessions.summary',
     // Rubrics are plan-doc-backed (template = rubric, lib/rubrics.ts
     // queryRubricPlans). A create/ratify/edit changes the overview, history-row
     // completeness projection, and trend dimensions. P-009 keeps the paired

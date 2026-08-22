@@ -88,8 +88,19 @@ describe('queryNamesForTriggerEvent', () => {
     expect(names).toEqual(
       expect.arrayContaining(['plans.schedule', 'plans.scheduledOccurrences']),
     );
+    expect(names).toEqual(
+      expect.arrayContaining(['advSessions.list', 'advSessions.summary']),
+    );
     // and it still busts the directory + per-plan reads it always did
     expect(names).toEqual(expect.arrayContaining(['plans.list', 'plans.get']));
+  });
+
+  it('invalidates Sessions rows and the exact companion together on a ledger write', () => {
+    expect(
+      queryNamesForTriggerEvent('harness_shared.adv_sessions.changed'),
+    ).toEqual(
+      expect.arrayContaining(['advSessions.list', 'advSessions.summary']),
+    );
   });
 
   it('maps the design-write tables (data-sync-push-completion P-003)', () => {

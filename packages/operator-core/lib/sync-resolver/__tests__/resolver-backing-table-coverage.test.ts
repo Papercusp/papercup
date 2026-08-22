@@ -210,7 +210,6 @@ const PUSH_EXEMPT: Record<string, string> = {
 const UNDECLARED_BASELINE: readonly string[] = [
   'adaptiveTelemetry.byHarness',
   'advRoster.list',
-  'advSessions.list',
   'agentChats.byHarness',
   'agentChats.detail',
   'agentConfig.modelTiersBaseline',
@@ -409,7 +408,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
  * a quiet append (the DARK_FLAGS_HIGH_WATERMARK pattern, and for the same reason — that watermark
  * got silently bumped 22→24→25→26 for the same bug class until it was split and pinned).
  */
-const UNDECLARED_CEILING = 200;
+const UNDECLARED_CEILING = 199;
 
 /** Does a write to `table` invalidate `name`, through either invalidation surface? */
 function tableInvalidates(table: string, name: string): boolean {

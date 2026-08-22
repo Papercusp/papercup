@@ -1,0 +1,221 @@
+// @vitest-environment node
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Sql } from 'postgres';
+import {
+  composeCompanionSummary,
+  type CompanionListSummary,
+} from '@papercusp/facets';
+import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  NO_SESSION_HARNESS,
+  advSessionsSummarySelection,
+  buildAdvSessionsPredicate,
+  normalizeAdvSessionsListArgs,
+  readAdvSessionsPageFromStore,
+  readAdvSessionsSummaryFromStore,
+  type AdvSessionsListWireArgs,
+} from './adv-sessions-list-query';
+
+const ROWS = 15_050;
+const workspaceId = 'p10-sessions-ws';
+const foreignWorkspaceId = 'p10-sessions-foreign';
+const deepPlan = 'p10-deep-plan';
+const deepHarness = 'p10-deep-harness';
+const deepId = 15_025;
+const BASE_TS = 1_900_000_000_000;
+let db: FreshPgDb;
+let sql: Sql;
+
+const pageFor = async (args: AdvSessionsListWireArgs, cursor: string | null = null) => {
+  const normalized = normalizeAdvSessionsListArgs({ ...args, cursor });
+  return readAdvSessionsPageFromStore(sql, buildAdvSessionsPredicate(normalized));
+};
+
+const summaryFor = async (
+  args: AdvSessionsListWireArgs,
+): Promise<CompanionListSummary<{ active?: number }>> => {
+  const normalized = normalizeAdvSessionsListArgs(args);
+  const aggregate = await readAdvSessionsSummaryFromStore(
+    sql,
+    buildAdvSessionsPredicate(normalized),
+  );
+  return composeCompanionSummary(aggregate, {
+    selection: advSessionsSummarySelection(normalized),
+  });
+};
+
+beforeAll(async () => {
+  db = await createFreshPgDb('adv-sessions-list-query');
+  sql = db.sql;
+  await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
+  await sql.unsafe(`
+    CREATE TABLE harness_shared.harness_plans (
+      workspace_id text NOT NULL,
+      harness_slug text NOT NULL,
+      plan_slug text NOT NULL,
+      PRIMARY KEY (workspace_id, harness_slug, plan_slug)
+    )`);
+  await sql.unsafe(`
+    CREATE TABLE harness_shared.adv_sessions (
+      id serial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      plan_slug text,
+      agent text,
+      role text,
+      feature text,
+      mode text NOT NULL,
+      terminal_bin text,
+      pid integer,
+      window_id text,
+      omp_thread_id text,
+      label text,
+      cwd text,
+      coord_owner_id text,
+      session_id text,
+      launch_spec jsonb,
+      started_at timestamptz NOT NULL,
+      first_seen_at timestamptz NOT NULL,
+      ended_at timestamptz,
+      exit_code integer,
+      ended_by text,
+      ended_signal text
+    )`);
+  await sql.unsafe(`
+    CREATE INDEX adv_sessions_workspace_first_seen_idx
+      ON harness_shared.adv_sessions (workspace_id, first_seen_at DESC, id DESC)`);
+  await sql`
+    INSERT INTO harness_shared.harness_plans
+      (workspace_id, harness_slug, plan_slug)
+    VALUES
+      (${workspaceId}, 'p10-bulk-harness', 'p10-bulk-plan'),
+      (${workspaceId}, ${deepHarness}, ${deepPlan})`;
+  await sql`
+    INSERT INTO harness_shared.adv_sessions
+      (workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+       window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+       launch_spec, started_at, first_seen_at, ended_at, exit_code, ended_by)
+    SELECT ${workspaceId},
+           CASE WHEN g = ${deepId} THEN ${deepPlan}
+                WHEN g = 15040 THEN NULL
+                ELSE 'p10-bulk-plan' END,
+           'codex',
+           CASE WHEN g % 2 = 0 THEN 'engineer' ELSE 'reviewer' END,
+           NULL,
+           'console',
+           'bash',
+           1000 + (g % 20000),
+           NULL,
+           'p10-thread-' || g,
+           'session ' || g,
+           '/tmp/p10',
+           'p10-owner-' || g,
+           NULL,
+           CASE WHEN g = ${deepId} OR g = 15040 THEN NULL
+                ELSE jsonb_build_object('harnessSlug', 'p10-bulk-harness') END,
+           to_timestamp((${BASE_TS}::bigint - g) / 1000.0),
+           to_timestamp((${BASE_TS}::bigint - g) / 1000.0),
+           CASE WHEN g = ${deepId} OR g % 20 = 0 THEN NULL
+                ELSE to_timestamp((${BASE_TS}::bigint - g + 3_600_000) / 1000.0) END,
+           CASE WHEN g = ${deepId} OR g % 20 = 0 THEN NULL ELSE 0 END,
+           CASE WHEN g = ${deepId} OR g % 20 = 0 THEN NULL ELSE 'self' END
+      FROM generate_series(1, ${ROWS}) AS g`;
+
+  // Excluded dead-on-arrival audit row and a cross-workspace row: neither may
+  // leak into the workspace corpus or its facets.
+  await sql`
+    INSERT INTO harness_shared.adv_sessions
+      (workspace_id, plan_slug, agent, mode, started_at, first_seen_at, ended_at)
+    VALUES
+      (${workspaceId}, 'p10-bulk-plan', 'omp', 'omp',
+       to_timestamp((${BASE_TS}::bigint + 1000) / 1000.0),
+       to_timestamp((${BASE_TS}::bigint + 1000) / 1000.0),
+       to_timestamp((${BASE_TS}::bigint + 2000) / 1000.0)),
+      (${foreignWorkspaceId}, ${deepPlan}, 'codex', 'console',
+       to_timestamp((${BASE_TS}::bigint + 2000) / 1000.0),
+       to_timestamp((${BASE_TS}::bigint + 2000) / 1000.0), NULL)`;
+}, 60_000);
+
+afterAll(async () => {
+  await db?.cleanup();
+}, 300_000);
+
+describe('advSessions list + summary real-PG P-010 contract', () => {
+  it('finds a plan/harness match beyond the old page-200 ceiling with exact facets', async () => {
+    const args: AdvSessionsListWireArgs = {
+      workspaceId,
+      harnessSlugs: [deepHarness],
+      planSlugs: [deepPlan],
+      limit: 25,
+    };
+    const started = performance.now();
+    const [page, summary] = await Promise.all([pageFor(args), summaryFor(args)]);
+
+    expect(page.rows.map((row) => row.id)).toEqual([deepId]);
+    expect(summary).toMatchObject({ total: ROWS, matched: 1 });
+    expect(summary.facets.find((facet) => facet.key === 'plan')?.values).toContainEqual(
+      expect.objectContaining({
+        value: deepPlan,
+        count: 1,
+        meta: { active: 1 },
+      }),
+    );
+    expect(summary.facets.find((facet) => facet.key === 'harness')?.values).toContainEqual(
+      expect.objectContaining({ value: deepHarness, count: 1 }),
+    );
+    expect(Buffer.byteLength(JSON.stringify(page.rows))).toBeLessThan(100_000);
+    expect(performance.now() - started).toBeLessThan(6_000);
+  });
+
+  it('preserves an exact zero match and the selected empty harness option', async () => {
+    const args: AdvSessionsListWireArgs = {
+      workspaceId,
+      harnessSlugs: ['p10-missing-harness'],
+      limit: 25,
+    };
+    const [page, summary] = await Promise.all([pageFor(args), summaryFor(args)]);
+
+    expect(page).toMatchObject({ rows: [], nextCursor: null, hasMore: false });
+    expect(summary).toMatchObject({ total: ROWS, matched: 0 });
+    expect(summary.facets.find((facet) => facet.key === 'harness')?.values).toContainEqual(
+      expect.objectContaining({ value: 'p10-missing-harness', count: 0 }),
+    );
+    expect(summary.facets.find((facet) => facet.key === 'harness')?.values).toContainEqual(
+      expect.objectContaining({ value: NO_SESSION_HARNESS, count: 1 }),
+    );
+  });
+
+  it('keyset-pages more than 15,000 births without skips when started_at mutates mid-walk', async () => {
+    const args: AdvSessionsListWireArgs = { workspaceId, limit: 211 };
+    const ids: number[] = [];
+    let cursor: string | null = null;
+    let pageNo = 0;
+    for (;;) {
+      const page = await pageFor(args, cursor);
+      ids.push(...page.rows.map((row) => row.id));
+      cursor = page.nextCursor;
+      if (pageNo === 0) {
+        await sql`
+          UPDATE harness_shared.adv_sessions
+             SET started_at = to_timestamp((${BASE_TS}::bigint + 50_000) / 1000.0)
+           WHERE workspace_id = ${workspaceId} AND id = 14_000`;
+        await sql`
+          INSERT INTO harness_shared.adv_sessions
+            (workspace_id, plan_slug, agent, mode, omp_thread_id, launch_spec,
+             started_at, first_seen_at)
+          VALUES (${workspaceId}, 'p10-bulk-plan', 'codex', 'console',
+                  'p10-newer-after-cursor',
+                  jsonb_build_object('harnessSlug', 'p10-bulk-harness'),
+                  to_timestamp((${BASE_TS}::bigint + 60_000) / 1000.0),
+                  to_timestamp((${BASE_TS}::bigint + 60_000) / 1000.0))`;
+      }
+      pageNo += 1;
+      if (!cursor) break;
+      expect(pageNo).toBeLessThan(100);
+    }
+
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(ids).toHaveLength(ROWS);
+    expect(ids).toContain(14_000);
+    expect(ids).not.toContain(ROWS + 3); // two excluded fixtures preceded the new row
+  }, 60_000);
+});

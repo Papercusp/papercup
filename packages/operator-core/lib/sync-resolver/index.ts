@@ -84,6 +84,16 @@ import {
   type ScorecardHistoryWireArgs,
 } from './scorecard-history-list-query';
 import {
+  ADV_SESSIONS_DEFAULT_PAGE,
+  ADV_SESSIONS_PAGE_LIMIT,
+  advSessionsSummarySelection,
+  buildAdvSessionsPredicate,
+  normalizeAdvSessionsListArgs,
+  readAdvSessionsPageFromStore,
+  readAdvSessionsSummaryFromStore,
+  type AdvSessionsListWireArgs,
+} from './adv-sessions-list-query';
+import {
   LEARNING_OBSERVATIONS_PAGE_LIMIT,
   buildLearningObservationsPredicate,
   isDefaultLearningObservationsPage,
@@ -187,6 +197,16 @@ const scorecardHistoryArgsSchema = z.object({
   cursor: z.string().max(2_000).nullable().optional(),
   limit: clampedLimit(SCORECARD_HISTORY_PAGE_LIMIT, SCORECARD_HISTORY_DEFAULT_PAGE),
 });
+
+const advSessionsListArgsSchema = z
+  .object({
+    workspaceId: z.string().trim().min(1).max(200).optional(),
+    harnessSlugs: z.array(z.string().trim().min(1).max(300)).max(500).optional(),
+    planSlugs: z.array(z.string().trim().min(1).max(500)).max(500).optional(),
+    cursor: z.string().max(2_000).nullable().optional(),
+    limit: clampedLimit(ADV_SESSIONS_PAGE_LIMIT, ADV_SESSIONS_DEFAULT_PAGE),
+  })
+  .default({});
 
 const learningObservationsFiltersSchema = z.object({
   scopes: z.array(z.string().max(300)).max(500).optional(),
@@ -938,6 +958,58 @@ const scorecardHistoryQueryPair = createCompanionListQueryPair({
   },
 });
 
+const advSessionsListQueryPair = createCompanionListQueryPair({
+  domain: 'advSessions',
+  rowsQueryName: 'advSessions.list',
+  argsSchema: advSessionsListArgsSchema,
+  backingTables: [
+    'harness_shared.adv_sessions',
+    'harness_shared.harness_plans',
+  ] as const,
+  normalizeArgs: (args: AdvSessionsListWireArgs) =>
+    normalizeAdvSessionsListArgs(args),
+  buildPredicate: buildAdvSessionsPredicate,
+  readPage: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }, { getOmpSessionRowSummary }] =
+      await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../omp-sessions'),
+      ]);
+    const scoped = predicate.args.workspaceId
+      ? predicate
+      : buildAdvSessionsPredicate({
+          ...predicate.args,
+          workspaceId: activeWorkspaceId(),
+        });
+    const page = await readAdvSessionsPageFromStore(getOrgPg().sql, scoped);
+    const rows = await Promise.all(
+      page.rows.map(async (row) => ({
+        ...row,
+        summary:
+          row.mode === 'omp' && row.ompThreadId
+            ? getOmpSessionRowSummary({ id: row.ompThreadId })
+            : null,
+      })),
+    );
+    return { ...page, rows };
+  },
+  readSummaryAggregateRows: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+    ]);
+    const scoped = predicate.args.workspaceId
+      ? predicate
+      : buildAdvSessionsPredicate({
+          ...predicate.args,
+          workspaceId: activeWorkspaceId(),
+        });
+    return readAdvSessionsSummaryFromStore(getOrgPg().sql, scoped);
+  },
+  summarySelection: advSessionsSummarySelection,
+});
+
 const learningObservationsQueryPair = createCompanionListQueryPair({
   domain: 'learning.observations',
   rowsQueryName: 'learning.observations',
@@ -1501,38 +1573,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // advSessions.list — /adv Sessions roster rows with OMP summaries attached.
-  // Replaces the UI's 3s `/api/adv/sessions` poll; adv_sessions writes push via
-  // the table bridge.
-  'advSessions.list': {
-    argsSchema: z.object({ limit: clampedLimit(500, 200).optional() }).optional(),
-    resolve: async (args) => {
-      const limit = (args as { limit?: number } | undefined)?.limit ?? 200;
-      const { listAdvSessions } = await import('../adv-sessions');
-      const { getOmpSessionRowSummary } = await import('../omp-sessions');
-      const rows = await listAdvSessions(limit);
-      const STARTUP_GRACE_MS = 60_000;
-      const now = Date.now();
-      const withSummary = await Promise.all(
-        rows.map(async (row) => {
-          if (row.mode !== 'omp') return { row, summary: null };
-          const summary = row.ompThreadId ? getOmpSessionRowSummary({ id: row.ompThreadId }) : null;
-          return { row, summary };
-        }),
-      );
-      return withSummary
-        .filter(({ row, summary }) => {
-          if (row.mode !== 'omp') return true;
-          if (summary && summary.userMessages > 0) return true;
-          if (summary !== null && summary.userMessages === 0) {
-            const startedMs = Date.parse(row.startedAt);
-            return Number.isFinite(startedMs) && now - startedMs < STARTUP_GRACE_MS;
-          }
-          return true;
-        })
-        .map(({ row, summary }) => ({ ...row, summary }));
-    },
-  },
+  // P-010: one server-filtered keyset page plus an independent exact companion
+  // summary. OMP transcript summaries decorate returned rows but never decide
+  // membership in the authoritative session-ledger population.
+  'advSessions.list': advSessionsListQueryPair.rowsEntry as QueryEntry<unknown>,
+  'advSessions.summary': advSessionsListQueryPair.summaryEntry as QueryEntry<unknown>,
 
   // agentDetail.byOwner — Tier-3 dossier detail for the selected Sessions agent.
   'agentDetail.byOwner': {

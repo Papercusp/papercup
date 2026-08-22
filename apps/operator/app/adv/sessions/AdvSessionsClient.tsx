@@ -2,6 +2,13 @@
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import type { CompanionListSummary } from '@papercusp/facets';
+import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import {
+  NO_SESSION_HARNESS,
+  NO_SESSION_PLAN,
+  type AdvSessionFacetMeta,
+} from '@papercusp/operator-core/lib/sync-resolver/adv-sessions-list-query';
 import * as Collapsible from '@radix-ui/react-collapsible';
 import * as Tabs from '@radix-ui/react-tabs';
 import { ChevronRight } from 'lucide-react';
@@ -12,6 +19,7 @@ import { Button } from '@/app/harness/Button';
 import { Combobox } from '@/app/harness/Combobox';
 import { Select } from '@/app/harness/Select';
 import { Tooltip } from '@/app/harness/Tooltip';
+import { filterCountLabel, type CountEvidence } from '@/app/harness/filters';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
 import { useLexicon } from '@/lib/useLexicon';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
@@ -31,9 +39,10 @@ interface ServerRowSummary {
   totalCostUsd: number;
 }
 
-interface SessionRow {
+export interface SessionRow {
   id: number;
   workspaceId: string;
+  harnessSlug?: string | null;
   planSlug: string | null;
   /** Which agent CLI backs this session (psu-launched rows); null for
    *  legacy/pre-*-su rows. More specific than `mode`. */
@@ -262,6 +271,20 @@ const SU_CONTEXT_OPTIONS = [
   { value: 'trimmed', label: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}` },
 ];
 
+const SESSION_HISTORY_PAGE = 100;
+
+/** Page one replaces; cursor pages append idempotently by ledger identity. */
+export function mergeAdvSessionPage(
+  previous: readonly SessionRow[],
+  page: readonly SessionRow[],
+  cursor: string | null,
+): SessionRow[] {
+  if (!cursor) return [...page];
+  const byId = new Map(previous.map((row) => [row.id, row] as const));
+  for (const row of page) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
 export default function AdvSessionsClient() {
   const t = useLexicon();
   const [aliveByPid, setAliveByPid] = useState<Record<number, boolean>>({});
@@ -296,18 +319,105 @@ export default function AdvSessionsClient() {
   const [stateError, setStateError] = useState<string | null>(null);
   const [searchData, setSearchData] = useState<SessionSearchResponse | null>(null);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [sessionHarnessFilter, setSessionHarnessFilter] = useQueryState('h', parseAsString);
+  const [sessionCursor, setSessionCursor] = useState<string | null>(null);
+  const [loadedSessions, setLoadedSessions] = useState<SessionRow[]>([]);
+  const [nextSessionCursor, setNextSessionCursor] = useState<string | null>(null);
+  const [sessionPageReady, setSessionPageReady] = useState(false);
   const planList = usePlanList({ includeArchived: true, includeLegacy: true });
   const sessionsQuery = useSyncQuery<SessionRow>({
     queryName: 'advSessions.list',
-    args: { limit: 200 },
+    args: {
+      limit: SESSION_HISTORY_PAGE,
+      ...(sessionHarnessFilter ? { harnessSlugs: [sessionHarnessFilter] } : {}),
+      ...(sessionCursor ? { cursor: sessionCursor } : {}),
+    },
   });
-  const rows = sessionsQuery.data ?? null;
-  const error = sessionsQuery.error ? String(sessionsQuery.error) : null;
+  const sessionsSummaryQuery = useSyncQuery<CompanionListSummary<AdvSessionFacetMeta>>({
+    queryName: 'advSessions.summary',
+    args: sessionHarnessFilter ? { harnessSlugs: [sessionHarnessFilter] } : {},
+  });
+  const summary = sessionsSummaryQuery.data?.[0] ?? null;
+  const errorValue = sessionsQuery.error ?? sessionsSummaryQuery.error;
+  const error = errorValue ? String(errorValue) : null;
+
+  useEffect(() => {
+    setSessionCursor(null);
+    setLoadedSessions([]);
+    setNextSessionCursor(null);
+    setSessionPageReady(false);
+  }, [sessionHarnessFilter]);
+
+  useEffect(() => {
+    if (sessionsQuery.loading || sessionsQuery.fetching || !sessionsQuery.data) return;
+    setLoadedSessions((previous) =>
+      mergeAdvSessionPage(previous, sessionsQuery.data!, sessionCursor),
+    );
+    const meta = readListMeta(sessionsQuery.data);
+    setNextSessionCursor(
+      typeof meta?.nextCursor === 'string' ? meta.nextCursor : null,
+    );
+    setSessionPageReady(true);
+  }, [sessionsQuery.data, sessionsQuery.loading, sessionsQuery.fetching, sessionCursor]);
+
+  const rows = sessionPageReady ? loadedSessions : null;
+  const pairedFetching = Boolean(
+    sessionsQuery.loading ||
+    sessionsQuery.fetching ||
+    sessionsSummaryQuery.loading ||
+    sessionsSummaryQuery.fetching
+  );
+  const loadedCountEvidence = useMemo<CountEvidence>(() => {
+    if (error) return { kind: 'unknown', reason: 'failed' };
+    if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
+    if (rows === null || !summary) return { kind: 'unknown', reason: 'loading' };
+    return {
+      kind: 'window',
+      count: rows.length,
+      window: 'loaded server-filtered session history',
+      corpusTotal: summary.matched,
+    };
+  }, [error, pairedFetching, rows, summary]);
+  const matchedCountEvidence = useMemo<CountEvidence>(() => {
+    if (error) return { kind: 'unknown', reason: 'failed' };
+    if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
+    if (!summary) return { kind: 'unknown', reason: 'loading' };
+    return {
+      kind: 'corpus',
+      count: summary.matched,
+      total: summary.total,
+      population: 'the workspace session ledger',
+    };
+  }, [error, pairedFetching, summary]);
+  const loadedCountLabel = useMemo(
+    () => filterCountLabel(loadedCountEvidence, 'session'),
+    [loadedCountEvidence],
+  );
+  const matchedCountLabel = useMemo(
+    () => filterCountLabel(matchedCountEvidence, 'session'),
+    [matchedCountEvidence],
+  );
+  const exactPlanStats = useMemo(() => {
+    const values = summary?.facets.find((facet) => facet.key === 'plan')?.values ?? [];
+    return new Map(
+      values.map((value) => [
+        value.value === NO_SESSION_PLAN ? '_' : value.value,
+        { count: value.count, active: value.meta?.active ?? 0 },
+      ] as const),
+    );
+  }, [summary]);
 
   const activePanel = isSessionPanel(panel) ? panel : 'overview';
 
   useEffect(() => {
-    if (refreshTick > 0) sessionsQuery.invalidate?.();
+    if (refreshTick > 0) {
+      setSessionCursor(null);
+      setLoadedSessions([]);
+      setNextSessionCursor(null);
+      setSessionPageReady(false);
+      sessionsQuery.invalidate?.();
+      sessionsSummaryQuery.invalidate?.();
+    }
     // refreshTick is the explicit user/action invalidation signal; the query
     // object identity is intentionally omitted to avoid repeated invalidates.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -688,8 +798,9 @@ export default function AdvSessionsClient() {
     }
   }, [resolveResumeId, t]);
 
-  // P-025: derive the harness slug for each session via its plan.
-  // Sessions don't carry a harness column; the join is plan → harness.
+  // P-010: the server carries the authoritative launch-time harness (with an
+  // unambiguous plan fallback for older rows). Keep the loaded plan directory
+  // only as a compatibility fallback for pre-migration responses.
   const harnessByPlanSlug = useMemo<Map<string, string>>(() => {
     const m = new Map<string, string>();
     for (const p of planList.data?.plans ?? []) {
@@ -699,46 +810,28 @@ export default function AdvSessionsClient() {
   }, [planList.data]);
   const harnessForRow = useCallback(
     (row: SessionRow): string | null =>
-      row.planSlug ? harnessByPlanSlug.get(row.planSlug) ?? null : null,
+      row.harnessSlug ?? (row.planSlug ? harnessByPlanSlug.get(row.planSlug) ?? null : null),
     [harnessByPlanSlug],
   );
-  const [sessionHarnessFilter, setSessionHarnessFilter] = useQueryState('h', parseAsString);
-  // Sessions tab shows all sessions by default. The harness filter
-  // dropdown (`h` param) is the only filtering mechanism — the AdvShell
-  // harness selector drives harness-specific panels (brainstorm, git…)
-  // but should not narrow the session list without an explicit user opt-in.
-  const scopeSlugs = useMemo<Set<string> | null>(() => {
-    if (sessionHarnessFilter) return new Set([sessionHarnessFilter]);
-    return null;
-  }, [sessionHarnessFilter]);
-  const sessionHarnessOptions = useMemo<string[]>(() => {
-    const set = new Set<string>();
-    for (const r of rows ?? []) {
-      const h = harnessForRow(r);
-      if (h) set.add(h);
-    }
-    return [...set].sort();
-  }, [rows, harnessForRow]);
-  // Audit fix (post-2026-05-25): when a harness scope is active, hide
-  // sessions whose plan resolves to a DIFFERENT harness — but always
-  // keep harness-agnostic rows (no plan, or a plan whose harness can't
-  // be resolved) visible per D-010's "(no harness) bucket stays
-  // visible." The prior `h ? scopeSlugs.has(h) : false` form
-  // regressed the sessions tab to empty whenever the active harness
-  // wasn't the one with the plans.
-  const filteredRows = useMemo<SessionRow[]>(() => {
-    if (!scopeSlugs) return rows ?? [];
-    return (rows ?? []).filter((r) => {
-      const h = harnessForRow(r);
-      if (h === null) return true; // no-plan / no-harness rows always visible
-      return scopeSlugs.has(h);
-    });
-  }, [rows, scopeSlugs, harnessForRow]);
+  // Option counts come from the independent aggregate, never the downloaded
+  // pages. While the pair refetches, retain the option identities but suppress
+  // stale numbers until both legs settle.
+  const sessionHarnessOptions = useMemo(() => {
+    const values = summary?.facets.find((facet) => facet.key === 'harness')?.values ?? [];
+    return values
+      .filter((value) => value.value !== NO_SESSION_HARNESS)
+      .map((value) => ({
+        value: value.value,
+        label: pairedFetching
+          ? value.value
+          : `${value.value} · ${value.count.toLocaleString()} sessions`,
+      }))
+      .sort((a, b) => a.value.localeCompare(b.value));
+  }, [summary, pairedFetching]);
 
-  // Server already filtered empty OMP rows out of the response —
-  // see /adv/sessions list handler. Grouping consumes the harness-
-  // filtered rows.
-  const grouped = useMemo(() => groupRows(filteredRows), [filteredRows]);
+  // The normalized harness predicate runs before LIMIT on the server. Grouping
+  // therefore consumes only matching rows and can grow safely by cursor page.
+  const grouped = useMemo(() => groupRows(rows ?? []), [rows]);
   const autoExpandedSelectionRef = React.useRef<string | null>(null);
 
   // Auto-expand a newly-selected deep-linked row once so it becomes
@@ -846,15 +939,15 @@ export default function AdvSessionsClient() {
             >
               Refresh
             </button>
-            {sessionHarnessOptions.length > 1 ? (
+            {sessionHarnessOptions.length > 0 || sessionHarnessFilter ? (
               <Select
                 ariaLabel={`Filter sessions by ${t('pot', { lower: true })}`}
                 triggerClassName="pc-adv-sessions__harness-filter"
-                value={sessionHarnessFilter ?? ''}
+                value={sessionHarnessFilter ?? '_all'}
                 onChange={(value) => void setSessionHarnessFilter(value === '_all' ? null : value)}
                 options={[
                   { value: '_all', label: `All ${t('pot', { plural: true })}` },
-                  ...sessionHarnessOptions.map((h) => ({ value: h, label: h })),
+                  ...sessionHarnessOptions,
                 ]}
               />
             ) : null}
@@ -863,18 +956,54 @@ export default function AdvSessionsClient() {
       </header>
 
       {error ? <p className="pc-adv-sessions__error">Failed to load: {error}</p> : null}
+      <p
+        className="pc-adv-sessions__scope"
+        data-testid="sessions-history-count"
+        data-evidence={loadedCountLabel.evidence}
+        aria-live="polite"
+        aria-label={
+          sessionHarnessFilter && matchedCountLabel.evidence !== 'unknown'
+            ? `${loadedCountLabel.ariaLabel}; ${matchedCountLabel.ariaLabel}`
+            : loadedCountLabel.ariaLabel
+        }
+      >
+        {loadedCountLabel.summary}
+        {sessionHarnessFilter && matchedCountLabel.evidence !== 'unknown'
+          ? ` · ${matchedCountLabel.summary} in workspace history`
+          : ''}
+      </p>
       {rows === null && !error ? <p className="pc-adv-sessions__placeholder">Loading…</p> : null}
       {rows && rows.length === 0 ? (
-        <p className="pc-adv-sessions__placeholder">
-          No agent sessions recorded yet. Launches from the Plans tab will appear here.
-        </p>
+        <div className="pc-adv-sessions__placeholder">
+          <p>
+            {sessionHarnessFilter
+              ? `No sessions match ${sessionHarnessFilter}.`
+              : 'No agent sessions recorded yet. Launches from the Plans tab will appear here.'}
+          </p>
+          {sessionHarnessFilter ? (
+            <Button variant="ghost" onClick={() => void setSessionHarnessFilter(null)}>
+              Show all sessions
+            </Button>
+          ) : null}
+        </div>
       ) : null}
 
       <div className="pc-adv-sessions__layout">
         <div className="pc-adv-sessions__listpane">
           {grouped.map((group) => {
             const isExpanded = expandedGroups.includes(group.key);
-            const activeCount = group.rows.filter((r) => r.endedAt == null).length;
+            const groupStats = pairedFetching ? null : exactPlanStats.get(group.key) ?? null;
+            const groupEvidence: CountEvidence = groupStats
+              ? {
+                  kind: 'corpus',
+                  count: groupStats.count,
+                  population: group.planSlug
+                    ? `the ${group.planSlug} plan group`
+                    : 'the no-plan group',
+                }
+              : { kind: 'unknown', reason: error ? 'failed' : 'updating' };
+            const groupCount = filterCountLabel(groupEvidence, 'session');
+            const activeCount = groupStats?.active ?? null;
             return (
               <Collapsible.Root
                 className="pc-adv-sessions__group"
@@ -894,8 +1023,14 @@ export default function AdvSessionsClient() {
                     <span className="pc-adv-sessions__group-title">
                       {group.planSlug ?? 'No plan · ad-hoc SU sessions'}
                     </span>
-                    <span className="pc-adv-sessions__group-count">{group.rows.length}</span>
-                    {activeCount > 0 ? (
+                    <span
+                      className="pc-adv-sessions__group-count"
+                      data-evidence={groupCount.evidence}
+                      aria-label={groupCount.ariaLabel}
+                    >
+                      {groupCount.title}
+                    </span>
+                    {activeCount !== null && activeCount > 0 ? (
                       <span className="pc-adv-sessions__group-active">
                         {activeCount} active
                       </span>
@@ -1014,6 +1149,16 @@ export default function AdvSessionsClient() {
               </Collapsible.Root>
             );
           })}
+          {nextSessionCursor ? (
+            <Button
+              variant="ghost"
+              className="pc-adv-sessions__load-more"
+              onClick={() => setSessionCursor(nextSessionCursor)}
+              disabled={Boolean(sessionsQuery.fetching)}
+            >
+              {sessionsQuery.fetching ? 'Loading…' : 'Load older sessions'}
+            </Button>
+          ) : null}
         </div>
 
         <SessionDetail
@@ -1213,6 +1358,15 @@ export default function AdvSessionsClient() {
           font-size: 13px;
           line-height: 1.45;
         }
+        .pc-adv-sessions__placeholder p {
+          margin: 0 0 8px;
+        }
+        .pc-adv-sessions__scope {
+          margin: 0;
+          color: var(--fg-mute);
+          font-size: 11px;
+          font-variant-numeric: tabular-nums;
+        }
         .pc-adv-sessions__error {
           color: var(--bad);
           border: 1px solid color-mix(in oklab, var(--bad), transparent 58%);
@@ -1220,6 +1374,10 @@ export default function AdvSessionsClient() {
         }
         .pc-adv-sessions__group + .pc-adv-sessions__group {
           margin-top: 8px;
+        }
+        .pc-adv-sessions__load-more {
+          width: 100%;
+          margin-top: 10px;
         }
         .pc-adv-sessions__group-head {
           all: unset;

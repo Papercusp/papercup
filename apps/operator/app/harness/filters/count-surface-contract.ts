@@ -122,9 +122,14 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "sessions-history",
     label: "Sessions history",
     classification: "active-defect",
-    evidence: "window",
-    pageCap: 200,
+    evidence: "corpus",
+    pageCap: 250,
     sourcePaths: ["apps/operator/app/adv/sessions/AdvSessionsClient.tsx"],
+    behaviorGuard: {
+      planItem: "P-010",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/adv-sessions-list-query.integration.test.ts",
+    },
   },
   {
     id: "design-feature-queue",
@@ -233,5 +238,4 @@ export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
   "design-feature-queue",
   "learning-improve",
   "learning-retain",
-  "sessions-history",
 ] as const;
