@@ -717,16 +717,9 @@ short single-token discriminator that cannot wrap. For deploy/render checks,
 measure both the OLD and NEW text after flattening so a zero is corroborated by
 the expected transition rather than treated as a bare absence.
 
+
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
-
-✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
-process's CGROUP, never a single-shot reading and never a hand-walked tree.** Every
-single-shot CPU probe answers a *different* question than the one you are asking, and each
-fails toward a false "idle": `ps -o %cpu` is a **process-lifetime average** (measured: 208%
-on a VM whose instantaneous load was 200% — right here only by coincidence, and badly wrong
-for anything whose load has changed), and any first-iteration sampler has no prior sample to
-difference against. CPU usage *is* a delta; ask for one:
 
 ⚠ **Measure the whole PROCESS TREE, not the pid you were handed** — a
 service's `MainPID` is often a **wrapper** sitting at `utime=0` while the real
@@ -971,7 +964,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 
 ## Trimmed to fit this client’s budget
 
-> ⚠ **9 part(s) (5,432 chars) did not fit this client's
+> ⚠ **10 part(s) (6,023 chars) did not fit this client's
 > 80,000-char budget and were cut from this file.** They are NOT deleted and NOT
 > deprecated — they are canonical rows in Postgres, and this list is how you find them:
 >
@@ -990,6 +983,7 @@ gen:contract` (root). See `/internal/docs/testing` §1.0a.
 - `before-you-design-or-test-re-two-internaldocs-se` — *Before you design or test — read the docs first* — Two `/internal/docs` sections are **required reading before the corresponding
 - `before-you-design-or-test-re-before-any-design-w` — *Before you design or test — read the docs first* — - **Before ANY design work** — new or changed UI, an API/schema shape, an
 - `read-this-before-changing-co-performance-regress` — *Read this before changing code — performance anti-patterns* — Performance regressions here repeatedly come from the same small set of patterns
+- `long-jobs-background-them-at-is-this-process-act` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ✅ **"Is this process actually DOING WORK right now?" — a two-sample delta over the
 - `long-jobs-background-them-at-bash` — *Long jobs: background them at the LAUNCH, don't poll for them afterwards* — ```bash
 - `browser-checks-use-verdict-ad-hocexploratory-bro` — *Browser checks — use `verdict`* — Ad-hoc/exploratory browser verification → the `verdict` skill, **not** Playwright
 - `use-context7-for-current-lib-before-non-trivial` — *Use Context7 for current library docs* — Before non-trivial APIs from third-party libraries (Tauri 2, Next.js 15, nuqs,
