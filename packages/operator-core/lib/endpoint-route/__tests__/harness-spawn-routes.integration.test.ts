@@ -60,6 +60,16 @@ vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('.
     (markAdvSessionEnded as (...args: unknown[]) => unknown)(...a),
 }));
 
+const { heartbeatSpawns, recordSpawnPid } = vi.hoisted(() => ({
+  heartbeatSpawns: vi.fn(async () => {}),
+  recordSpawnPid: vi.fn(async () => {}),
+}));
+vi.mock('../../fleet/spawn-reclaim', async (orig) => ({
+  ...(await orig<typeof import('../../fleet/spawn-reclaim')>()),
+  heartbeatSpawns: (...a: unknown[]) => (heartbeatSpawns as (...args: unknown[]) => unknown)(...a),
+  recordSpawnPid: (...a: unknown[]) => (recordSpawnPid as (...args: unknown[]) => unknown)(...a),
+}));
+
 // P-059: the `pot/mug-brief-launch` stub is gone with the module. WI-682 put a
 // wake-brief COMPUTE at this route (the one chokepoint every wake path traverses,
 // after EI-995's durable seam bypassed the launcher-side compute); the Mug/Kettle
@@ -301,9 +311,10 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
 
   it('runs a frozen-candidate release-fixer from its validated linked worktree', async () => {
     const repairWorktree = '/proj/.papercusp/worktrees/repair-1';
+    const spawnRecordId = 's-release-fixer-route-1';
     const res = await appWith(invoke).request(
       '/harness/papercup/invoke?role=release-fixer',
-      post({ releaseFixerContext: { repairWorktree } }),
+      post({ spawnRecordId, releaseFixerContext: { repairWorktree } }),
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
@@ -311,6 +322,7 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       expect.objectContaining({
         projectDir: repairWorktree,
         stateDir: `${repairWorktree}/.papercusp`,
+        extraEnv: expect.objectContaining({ PAPERCUSP_SPAWN_ID: spawnRecordId }),
       }),
     );
     expect(spawnMock).toHaveBeenCalledWith(
@@ -318,20 +330,37 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
       ['invoke-once.js', '--role', 'worker'],
       { cwd: repairWorktree, env: { PAPERCUSP_TEST: '1' }, detached: true },
     );
+    expect(recordSpawnPid).toHaveBeenCalledWith(expect.anything(), spawnRecordId, 12345, {
+      handoff: true,
+    });
+    expect(heartbeatSpawns).toHaveBeenCalledTimes(1);
+    const outputWrite = heartbeatSpawns.mock.calls[0] as unknown as [
+      unknown,
+      string[],
+      ReadonlyMap<string, number>,
+    ];
+    expect(outputWrite[1]).toEqual([spawnRecordId]);
+    expect(outputWrite[2]).toBeInstanceOf(Map);
+    expect(outputWrite[2].get(spawnRecordId)).toEqual(expect.any(Number));
   }, 30_000);
 
   it('uses the same validated repair cwd in the tracked session row and child spawn', async () => {
     resolveSpawnBackendModel.mockReturnValue({ backend: 'claude-code', model: '' });
     const repairWorktree = '/proj/.papercusp/worktrees/repair-1';
+    const spawnRecordId = 's-release-fixer-hive-row';
     const res = await appWith(invoke).request(
       '/harness/papercup/invoke?role=release-fixer&bpkind=hive',
-      post({ releaseFixerContext: { repairWorktree } }),
+      post({ spawnRecordId, releaseFixerContext: { repairWorktree } }),
     );
 
     expect(res.status, await res.clone().text()).toBe(200);
     expect(recordAdvSession).toHaveBeenCalledWith(
       expect.objectContaining({ cwd: repairWorktree }),
     );
+    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
+    expect(arg?.extraEnv?.PAPERCUSP_SPAWN_ID).toMatch(/^s-\d+-[0-9a-f]+$/);
+    expect(arg?.extraEnv?.PAPERCUSP_SPAWN_ID).not.toBe(spawnRecordId);
+    expect(heartbeatSpawns).toHaveBeenCalledWith(expect.anything(), [spawnRecordId], expect.any(Map));
     expect(spawnMock).toHaveBeenCalledWith(
       'node',
       ['invoke-once.js', '--role', 'worker'],

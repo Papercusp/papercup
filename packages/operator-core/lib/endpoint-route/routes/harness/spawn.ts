@@ -611,6 +611,10 @@ const invoke = defineTool({
     // wake) can override via bodyExtra.turnTrigger.
     const turnTrigger = typeof (body as any)?.turnTrigger === 'string' ? (body as any).turnTrigger : 'cron';
     env.PAPERCUSP_TURN_TRIGGER = turnTrigger;
+    // WI-40422: plain launch-blueprint invocations already carry the durable
+    // spawned_agents id as spawnRecordId. Thread that exact id into the child so
+    // tool_invocations can join back to the same row. A tracked hive/overwatch
+    // launch owns a distinct coord identity, so its hiveSpawnId keeps precedence.
     if (hiveSpawnId) {
       env.PAPERCUSP_SPAWN_ID = hiveSpawnId;
       if (nativeSessionId) env.PAPERCUSP_NATIVE_SESSION_ID = nativeSessionId;
@@ -622,6 +626,8 @@ const invoke = defineTool({
       if (routeBackend === 'codex' && advSessionRowId != null) {
         env.PAPERCUSP_CODEX_SESSION_KEY = String(advSessionRowId);
       }
+    } else if (spawnRecordId) {
+      env.PAPERCUSP_SPAWN_ID = spawnRecordId;
     }
     // queen-brief-cache-assembly B-03 (P-006) → moved to THIS route (WI-682): the
     // Queen's wake brief (ranked survey floor + carry-note + the @role:queen
@@ -694,6 +700,37 @@ const invoke = defineTool({
         }),
       );
     }
+    // Load the launch-row writers once per correlated invoke. Both callbacks
+    // below must target spawnRecordId (the durable release-fixer row), even when
+    // a tracked hive launch uses hiveSpawnId as the child's coord identity.
+    const spawnTracking = spawnRecordId ? await import('../../../fleet/spawn-reclaim') : null;
+    let lastOutputPersistedAt = 0;
+    const persistSpawnOutputActivity =
+      spawnRecordId && spawnTracking
+        ? () => {
+            const observedAt = Date.now();
+            // Match the nursery heartbeat cadence: stdout/stderr may arrive in
+            // thousands of chunks, while one monotonic write per minute preserves
+            // truthful progress without turning the stream into a write storm.
+            if (
+              lastOutputPersistedAt > 0 &&
+              observedAt - lastOutputPersistedAt < spawnTracking.SPAWN_HEARTBEAT_INTERVAL_MS
+            )
+              return;
+            lastOutputPersistedAt = observedAt;
+            void trackDetached(
+              spawnTracking.heartbeatSpawns(getOrgPg().sql, [spawnRecordId], new Map([[spawnRecordId, observedAt]])),
+            ).catch((error) => {
+              // Let a later chunk retry if this best-effort write failed.
+              if (lastOutputPersistedAt === observedAt) lastOutputPersistedAt = 0;
+              console.warn(
+                `[invoke ${project.slug}/${role}] launch-row output stamp failed for ${spawnRecordId}: ${
+                  error instanceof Error ? error.message : String(error)
+                }`,
+              );
+            });
+          }
+        : undefined;
     const spawnStartMs = Date.now();
     const r = await spawnInvokeOnce(
       invokeProjectDir,
@@ -710,16 +747,21 @@ const invoke = defineTool({
               // pid, so boot/reclaim liveness remains truthful across the
               // handoff (EI-20981156698708733).
               onChildPid: (pid: number) => {
-                void trackDetached(import('../../../fleet/spawn-reclaim'))
-                  .then(({ recordSpawnPid }) => recordSpawnPid(getOrgPg().sql, spawnRecordId, pid, { handoff: true }))
-                  .catch((error) => {
-                    console.warn(
-                      `[invoke ${project.slug}/${role}] launch-row PID stamp failed for ${spawnRecordId}: ${
-                        error instanceof Error ? error.message : String(error)
-                      }`,
-                    );
-                  });
+                void trackDetached(
+                  spawnTracking!.recordSpawnPid(getOrgPg().sql, spawnRecordId, pid, { handoff: true }),
+                ).catch((error) => {
+                  console.warn(
+                    `[invoke ${project.slug}/${role}] launch-row PID stamp failed for ${spawnRecordId}: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                  );
+                });
               },
+              // WI-40422: task_ledger heartbeats prove only that the cgroup
+              // exists. Persist concrete child output against the exact launch
+              // row so pre-turn liveness can distinguish progress from an idle
+              // Node/Claude/socat scope.
+              onOutputActivity: persistSpawnOutputActivity,
             }
           : {}),
       },
