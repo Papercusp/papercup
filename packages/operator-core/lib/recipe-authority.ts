@@ -83,6 +83,20 @@ export interface RecipeAuthorityProof {
   context: RecipeAuthorityContext;
 }
 
+/**
+ * The inspection metadata returned by recipes:get. It deliberately carries the
+ * script's stable refs, not a caller-bound proof. recipes:run may accept this
+ * shape as a compatibility input, but must derive the proof context from these
+ * refs and still validate it against the reuser's live lane.
+ */
+export interface RecipeAuthorityMetadata {
+  version: 1;
+  revision: string;
+  refs: RecipeAuthorityRefs;
+  requiresContext: boolean;
+  runnable: boolean;
+}
+
 export interface RecipeAuthorityRecommendation {
   proof: RecipeAuthorityProof;
   refs: RecipeAuthorityRefs;
@@ -410,6 +424,25 @@ export function normalizeRecipeAuthorityContext(context: RecipeAuthorityContext 
     ...(items ? { items } : {}),
     ...(resources ? { resources } : {}),
   };
+}
+
+/**
+ * Convert recipes:get's stable inspection refs into the proof context accepted
+ * by recipes:run. Scalar refs are only representable when there is one value;
+ * omitting an ambiguous scalar makes recipeAuthorityMatches fail closed. The
+ * set-valued plan/item/resource refs are retained so the run handler can also
+ * re-check that the reuser still holds them.
+ */
+export function recipeAuthorityContextFromRefs(refs: RecipeAuthorityRefs): RecipeAuthorityContext {
+  const one = (values: readonly string[]): string | undefined => (values.length === 1 ? values[0] : undefined);
+  return normalizeRecipeAuthorityContext({
+    workspace: one(refs.workspaces),
+    fleet: one(refs.fleets),
+    plan: one(refs.plans),
+    harness: one(refs.harnesses),
+    items: refs.items,
+    resources: refs.resources,
+  });
 }
 
 /** Build the comparison context for code:run's near-duplicate search from the

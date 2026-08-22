@@ -355,6 +355,34 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(staleBody.results[0]).toMatchObject({ ok: false, error: 'authority_stale_revision' });
   });
 
+  it('accepts the authority metadata emitted by recipes:get and still revalidates the live lane', async () => {
+    const script = `return await tools.workItems.get({ id: 'WI-bound', harness: 'alpha' });`;
+    const updatedAt = '2026-07-13T12:00:00.000Z';
+    getRecipeMock.mockResolvedValue({
+      id: 'metadata-bound', title: 'bound', description: 'd', script, updatedAt,
+      authorRole: 'operator', toolsUsed: ['work_items:get'], runCount: 0,
+      successCount: 0, status: 'active', tags: [],
+    });
+
+    const metadata = {
+      version: 1 as const,
+      revision: recipeRevision(script, updatedAt),
+      refs: (await deriveRecipeAuthority(script)).refs,
+      requiresContext: true,
+      runnable: true,
+    };
+    const parsed = findTool('recipes:run').args.safeParse({ id: 'metadata-bound', authority: metadata });
+    expect(parsed.success).toBe(true);
+
+    const accepted = await findTool('recipes:run').fn(
+      { id: 'metadata-bound', authority: metadata },
+      mkCtx('worker'),
+    );
+    const acceptedBody = JSON.parse((accepted as { content: { text: string }[] }).content[0].text);
+    expect(acceptedBody.results[0]).toMatchObject({ ok: true, id: 'metadata-bound' });
+    expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
+  });
+
   it('fails closed when a coordination recipe hardcodes sender or cursor arguments', async () => {
     const script = `return await tools.coord.inbox({
       from: 'su-stale-leader',

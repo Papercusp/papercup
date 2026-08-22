@@ -42,8 +42,10 @@ import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
 import {
+  recipeAuthorityContextFromRefs,
   recipeAuthorityMatchesLiveRefs,
   validateRecipeAuthorityProof,
+  type RecipeAuthorityMetadata,
   type RecipeAuthorityRefs,
   type RecipeAuthorityProof,
 } from '../../recipe-authority';
@@ -57,7 +59,7 @@ interface RunItem {
   id: string;
   dryRun?: boolean;
   timeoutSec?: number;
-  authority?: RecipeAuthorityProof;
+  authority?: RecipeAuthorityProof | RecipeAuthorityMetadata;
 }
 
 type LiveClaimRow = { plan_slug: string; harness_slug: string; item_id: string };
@@ -113,13 +115,37 @@ const authorityProofSchema = z.object({
   context: authorityContextSchema,
 }).strict();
 
+const authorityMetadataSchema = z.object({
+  version: z.literal(1),
+  revision: z.string().regex(/^[0-9a-f]{64}$/),
+  refs: z.object({
+    workspaces: z.array(z.string().min(1)),
+    fleets: z.array(z.string().min(1)),
+    plans: z.array(z.string().min(1)),
+    harnesses: z.array(z.string().min(1)),
+    items: z.array(z.string().min(1)),
+    resources: z.array(z.string().min(1)),
+  }).strict(),
+  requiresContext: z.boolean(),
+  runnable: z.boolean(),
+}).strict();
+
+const authorityInputSchema = z.union([authorityProofSchema, authorityMetadataSchema]);
+
+function isAuthorityMetadata(
+  authority: RecipeAuthorityProof | RecipeAuthorityMetadata,
+): authority is RecipeAuthorityMetadata {
+  return 'refs' in authority;
+}
+
 export default defineTool({
   name: 'recipes:run',
   description:
     'Run one OR many saved code:run RECIPEs by id — the reuse path. Each recipe\'s script executes under YOUR ' +
     'role-scoped tool envelope (NOT the author\'s — no privilege travels with a recipe); returns ' +
-    'only each script\'s summary. For a recipes:search/code:run recommendation, pass its exact runArgs so ' +
-    'the stored revision and entity authority are revalidated. Use dryRun:true to preview write-effect mutations. Single: { id, authority?, dryRun?, ' +
+    'only each script\'s summary. Pass the exact runArgs from a recipes:search/code:run recommendation, or pass the ' +
+    'authority metadata returned by recipes:get; both are revalidated against the stored revision and YOUR live lane. ' +
+    'Use dryRun:true to preview write-effect mutations. Single: { id, authority?, dryRun?, ' +
     'timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. ' +
     'Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe ' +
     'failing never fails the rest.',
@@ -133,7 +159,7 @@ export default defineTool({
       'When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). ' +
       'Preview a recipe\'s mutations with dryRun before a committing run. On authority_unresolved, read `reason`.',
     chaining:
-      'recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, dryRun:true } → ' +
+      'recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, authority, dryRun:true } → ' +
       'recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest.',
     seeAlso: [
       'recipes:get (inspect the recipe\'s script before running)',
@@ -155,7 +181,7 @@ export default defineTool({
         .optional()
         .describe('Preview: record effect:write tool calls without executing them (reads still run). Applies to the inline id / every id in `ids`.'),
       timeoutSec: z.number().int().min(1).max(120).optional().describe('Wall-clock budget (default 30s). Applies to the inline id / every id in `ids`.'),
-      authority: authorityProofSchema.optional().describe('Exact proof from a recommendation\'s runArgs; required for entity-bound recipes.'),
+      authority: authorityInputSchema.optional().describe('Exact proof from a recommendation\'s runArgs, or authority metadata from recipes:get; required for entity-bound recipes.'),
       ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('run MANY recipes with the same dryRun/timeoutSec (homogeneous)'),
       items: z
         .array(
@@ -163,7 +189,7 @@ export default defineTool({
             id: z.string().min(1),
             dryRun: z.boolean().optional(),
             timeoutSec: z.number().int().min(1).max(120).optional(),
-            authority: authorityProofSchema.optional(),
+            authority: authorityInputSchema.optional(),
           }),
         )
         .min(1)
@@ -252,7 +278,15 @@ export default defineTool({
         const authority = await validateRecipeAuthorityProof({
           script: recipe.script,
           updatedAt: recipe.updatedAt,
-          proof: it.authority,
+          proof: it.authority
+            ? isAuthorityMetadata(it.authority)
+              ? {
+                  version: it.authority.version,
+                  revision: it.authority.revision,
+                  context: recipeAuthorityContextFromRefs(it.authority.refs),
+                }
+              : it.authority
+            : undefined,
           liveContext: liveAuthorityContext,
         });
         if (!authority.ok) {
