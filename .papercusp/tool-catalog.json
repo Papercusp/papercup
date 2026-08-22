@@ -1675,7 +1675,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "List backup snapshots — point-in-time captures of the workspace's PG + filesystem state.",
-        "notWhen": "For HARNESS snapshots (portable artifacts you can publish), use `snapshots:list`. backup:snapshot_list is the full-workspace recovery view."
+        "notWhen": "For publishable per-harness artifacts — this surface lists only full-workspace recovery snapshots, so use the artifact/catalog surface that owns the harness payload instead."
       }
     },
     {
@@ -11863,7 +11863,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "Tune a harness's gym accept strictness — raise epsilon/delta to demand a bigger measured win before a champion is flagged promotable, or raise costCeiling to tolerate a costlier champion.",
-        "notWhen": "To accept/reject a specific proposal use gym:accept (human gate). Judge WEIGHTS live in the blueprint gym rubric, not here. To arm the gym loop itself, see the gym autoloop config.",
+        "notWhen": "To judge a specific proposal use gym:judge. Judge WEIGHTS live in the blueprint gym rubric, not here. To arm the gym loop itself, see the gym autoloop config.",
         "chaining": "config:list-overrides shows active per-harness gate overrides; config:reset-overrides reverts them."
       }
     },
@@ -17931,7 +17931,7 @@
       ],
       "guidance": {
         "when": "You need the raw markdown of a plan to pipe/share, or want a one-off offline dump of all plans as files.",
-        "notWhen": "You want the parsed structure (items/decisions/now) — use plans:get. You want to edit a plan — use the plans:set-* verbs (they write PG).",
+        "notWhen": "You want the parsed structure (items/decisions/now) — use plans:get. You want to edit a plan — use a concrete write verb such as plans:set-content or plans:set-now (they write PG).",
         "chaining": "plans:list → plans:export { slug } for the markdown of any plan."
       }
     },
@@ -18718,7 +18718,7 @@
       "guidance": {
         "when": "You need a plan's edit history with the *why* — what changed at each revision and the rationale behind it. The basis of the Revisions panel and of the context an agent launched from the plan is seeded with.",
         "notWhen": "You want raw git commit history of the file — that is plans:history. The current plan body — plans:get.",
-        "chaining": "plans:revisions → plans:diff for a coarse git patch, or (Phase 2) the per-revision transcript verb for the conversation behind a revision."
+        "chaining": "plans:revisions → plans:revision-diff for one revision patch, or plans:revision-transcript for the conversation behind a revision."
       }
     },
     {

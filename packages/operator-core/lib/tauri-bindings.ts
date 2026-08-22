@@ -239,10 +239,10 @@ export const commands = {
 	 *  WI-4827 — open a same-origin app `route` in the MAIN operator window and
 	 *  dismiss the Quick Panel palette (Spotlight-style). Invoked from the panel
 	 *  webview when a control would otherwise navigate the small palette window into
-	 *  the full app. Branch-1 (dev + the Linux single-bundle install): the `main`
-	 *  window is in THIS process — focus + soft-navigate it. Branch-2 (macOS/Windows
-	 *  two-bundle): the GUI is a separate process — persist the route and launch /
-	 *  focus the GUI bundle, which applies it via `apply_pending_route`.
+	 *  the full app. In dev the `main` window is in THIS process — focus +
+	 *  soft-navigate it. In every packaged Server (Linux/macOS/Windows), the GUI is
+	 *  a separate product process — persist the route and launch/focus the GUI
+	 *  bundle, which applies it via `apply_pending_route`.
 	 */
 	openRouteInApp: (route: string) => __TAURI_INVOKE<void>("open_route_in_app", { route }),
 };

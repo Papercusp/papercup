@@ -26,11 +26,24 @@ const readImprovementItems = vi.fn();
 // point of the pairing is that BOTH calls take the SAME filter — asserting that
 // needs the count's arguments, not just its result.
 const countImprovementItems = vi.fn();
+const projectImprovementItemsForBoundedRead = vi.fn();
 vi.mock('../harness/improvements/read-items', () => ({
   readImprovementItems: (...a: unknown[]) => readImprovementItems(...a),
   countImprovementItems: (...a: unknown[]) => countImprovementItems(...a),
+  projectImprovementItemsForBoundedRead: (...a: unknown[]) => projectImprovementItemsForBoundedRead(...a),
   IMPROVEMENT_TOPIC: 'papercusp-improvement',
 }));
+
+const readLearningImproveRoutedRows = vi.fn();
+vi.mock('./learning-scout-read', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./learning-scout-read')>();
+  return { ...real, readLearningImproveRoutedRows: (...a: unknown[]) => readLearningImproveRoutedRows(...a) };
+});
+
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@papercusp/db-org')>();
+  return { ...real, getOrgPg: () => ({ sql: {} }) };
+});
 
 const readWatchdogFlowTicks = vi.fn();
 vi.mock('../harness/improvements/flow-metrics', async (importOriginal) => {
@@ -91,6 +104,11 @@ beforeEach(() => {
   // pre-WI-39675 assertion in this file testing the contract it was written for;
   // the tests that care about the corpus total set a number explicitly.
   countImprovementItems.mockReset().mockResolvedValue(undefined);
+  projectImprovementItemsForBoundedRead.mockReset().mockImplementation(
+    async (_opts: unknown, projection: { project: (items: unknown[]) => Promise<unknown[]> | unknown[] }) =>
+      projection.project([]),
+  );
+  readLearningImproveRoutedRows.mockReset().mockResolvedValue([]);
   readWatchdogFlowTicks.mockReset();
   loadHarnessRegistry.mockReset();
   readOwnerFullAutonomyGrant.mockReset().mockResolvedValue(false);
@@ -101,6 +119,7 @@ describe('learning.* resolver registration', () => {
   it('registers learning.improvements + learning.gym + learning.apiary in the v2 named-query resolver', () => {
     const names = knownQueryNamesV2();
     expect(names).toContain('learning.improvements');
+    expect(names).toContain('learning.improvements.summary');
     expect(names).toContain('learning.gym');
     expect(names).toContain('learning.apiary');
   });
@@ -470,9 +489,17 @@ describe('learning.improvements — digest.total is the corpus, not the window (
     expect(countImprovementItems.mock.calls[0][0]).toMatchObject({ state: 'open', loopOutputOnly: true });
   });
 
-  it('propagates bounded server filters to both the windowed read and its count', async () => {
-    readImprovementItems.mockResolvedValue([windowRow('EI-filtered')]);
-    countImprovementItems.mockResolvedValue(1);
+  it('classifies the scoped corpus before applying bounded view predicates', async () => {
+    const filtered = {
+      ...windowRow('EI-filtered'),
+      title: 'timeout in the worker',
+      severity: 'critical',
+      scope: 'harness:foo',
+    };
+    projectImprovementItemsForBoundedRead.mockImplementation(
+      async (_opts: unknown, projection: { project: (items: unknown[]) => Promise<unknown[]> | unknown[] }) =>
+        projection.project([filtered]),
+    );
     readWatchdogFlowTicks.mockResolvedValue([]);
     const args = {
       q: 'timeout',
@@ -481,15 +508,14 @@ describe('learning.improvements — digest.total is the corpus, not the window (
       scopes: ['harness:foo'],
     };
 
-    await computeLearningImprovementsSnapshot(args);
+    const rows = await computeLearningImprovementsSnapshot(args);
 
-    expect(readImprovementItems).toHaveBeenCalledWith(
-      expect.objectContaining({ ...args, loopOutputOnly: true }),
-    );
-    expect(countImprovementItems).toHaveBeenCalledWith(
-      expect.objectContaining({ ...args, loopOutputOnly: true }),
-    );
-    expect(countImprovementItems.mock.calls[0][0]).toEqual(readImprovementItems.mock.calls[0][0]);
+    // q/kind/severity/scope stay OUT of the store read: tierReason and the
+    // merged idea half do not exist until classification/join, so applying any
+    // of them before that stage would recreate the beyond-page blind spot.
+    expect(projectImprovementItemsForBoundedRead.mock.calls[0][0]).toEqual({ loopOutputOnly: true });
+    expect(rows[0].returned).toBe(1);
+    expect(rows[0].total).toBe(1);
   });
 
   it('degrades to the returned-row count when the corpus COUNT fails — never sinks the tab', async () => {
