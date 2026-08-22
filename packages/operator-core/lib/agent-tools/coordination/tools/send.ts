@@ -2036,7 +2036,14 @@ export default defineTool({
     // few lines up) now reaches sendOne on BOTH axes from one declaration; there is no
     // second list left to forget.
     const list: SendMsg[] = args.items?.length
-      ? args.items.map((it) => ({ ...it }))
+      ? args.items.map((it) => ({
+          ...it,
+          // Keep the envelope-level wake as the default for each distinct
+          // message, while an item-level wake remains authoritative. Without
+          // this, a valid top-level `wake` is accepted and then silently
+          // disappears on the items[] axis.
+          ...(args.wake !== undefined && it.wake === undefined ? { wake: args.wake } : {}),
+        }))
       : [
           Object.fromEntries(
             Object.keys(itemSpec.shape).map((key) => [key, (args as Record<string, unknown>)[key]]),

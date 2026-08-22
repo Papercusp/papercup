@@ -276,6 +276,29 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b.results.map((r: { msg_id: string }) => r.msg_id)).toEqual(['m1', 'm2']);
   });
 
+  it('EI-21114932435630969: top-level wake defaults items, while an item override wins', async () => {
+    wakeM.mockResolvedValueOnce({
+      targets: ['bee-1'],
+      keys: [],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+    } as never);
+
+    const b = await body({
+      wake: 'required',
+      items: [
+        { to: ['bee-1'], summary: 'wake the first recipient', expects: 'none' },
+        { to: ['bee-2'], summary: 'do not wake the second recipient', expects: 'none', wake: false },
+      ],
+    });
+
+    expect(wakeM).toHaveBeenCalledTimes(1);
+    expect(wakeM).toHaveBeenCalledWith(['bee-1'], expect.anything());
+    expect(b.results[0].wake).toMatchObject({ mode: 'required', woken: 1, wakeOutcome: 'delivered' });
+    expect(b.results[1].wake).toBeUndefined();
+  });
+
   it('an unknown recipient on ONE message fails only that item; the rest land', async () => {
     resolveM.mockImplementation(async (to: readonly string[]) =>
       to.includes('ghost')
