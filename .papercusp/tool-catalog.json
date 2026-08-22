@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 771,
+  "count": 772,
   "tools": [
     {
       "name": "ablation:report",
@@ -15691,6 +15691,39 @@
       "guidance": {
         "when": "Read recent toast notifications shown to the user — for \"did I miss anything?\" / replay.",
         "notWhen": "For PERSISTENT cross-agent messages, use `coord:inbox`. Notifications are ephemeral toasts."
+      }
+    },
+    {
+      "name": "notifications:send_owner",
+      "http": {
+        "path": "/api/agent-tools/notifications/send_owner",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Deliver one replay-safe owner notification through BOTH the durable human inbox and audited mobile/desktop attention channels. A stable dedupeKey is required; retries with the same key do not notify twice.",
+      "capabilities": [
+        "coord:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A plan/event consumer has a result the owner should see now and needs both durable inbox history and a desktop/mobile attention attempt. Use a stable plan-run/delivery key.",
+        "notWhen": "Agent coordination uses coord:send. Conversational replies should be spoken normally. Never generate a fresh dedupeKey when retrying the same delivery.",
+        "chaining": "Build the result first, then call once with dedupeKey = <plan-run-ref>:<delivery-purpose>. The returned inbox.msgId and attention.recordId are the receipts."
       }
     },
     {

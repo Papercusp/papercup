@@ -105,6 +105,14 @@ describe('sendMessage / readInbox', () => {
     expect((await readInbox('B'))[0]?.body).toBe(sent.body);
   });
 
+  it('persists an internal producer-supplied stable msg_id verbatim', async () => {
+    const A = fakeIdentity('A');
+    const msgId = 'ntfy-0-0123456789abcdef0123456789abcdef';
+    const sent = await sendMessage(A, { to: ['B'], msgId, summary: 'stable delivery' });
+    expect(sent.msg_id).toBe(msgId);
+    expect((await readInbox('B'))[0]?.msg_id).toBe(msgId);
+  });
+
   it('persists the sender-declared expectsReply envelope field', async () => {
     const A = fakeIdentity('A');
     const sent = await sendMessage(A, { to: ['B'], summary: 'question', expectsReply: true });
