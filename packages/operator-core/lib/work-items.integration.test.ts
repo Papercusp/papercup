@@ -102,6 +102,18 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  // Terminal work-item transitions synchronously retire lifecycle-bound interest
+  // machinery. Apply the same production schema chain as the sibling
+  // plan-item-convert integration suite; a hand-rolled stub would drift as watch
+  // cardinality and lifecycle columns evolve.
+  for (const migration of [
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '541-predicate-watches.sql',
+    '871-lifecycle-bound-watches.sql',
+  ]) {
+    await db.sql.unsafe(readMigration(migration)).simple();
+  }
   await db.sql.unsafe(HFC_DDL);
   await db.sql.unsafe(USER_TRUST_LIST_DDL); // claim path LEFT-JOINs the trust list (autoPickableWhereSql, migration 276)
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // claim path's P-005 readiness clause reads work_item_deps
@@ -126,7 +138,9 @@ beforeEach(async () => {
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.coord_event_log, harness_shared.watchdog_ticks RESTART IDENTITY`;
+                       harness_shared.coord_event_log, harness_shared.watchdog_ticks,
+                       harness_shared.event_awaits, harness_shared.event_wake_deliveries,
+                       harness_shared.predicate_watches RESTART IDENTITY`;
   // Deterministic WI ids per test (the standalone sequence is not reset by TRUNCATE).
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   planItemLaneBlockReasonMock.mockReset().mockResolvedValue(null);
