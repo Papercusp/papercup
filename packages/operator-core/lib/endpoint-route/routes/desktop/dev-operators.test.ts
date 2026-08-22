@@ -17,6 +17,7 @@ describe('desktop dev-operators vm-release guard', () => {
         method: 'POST',
         body: JSON.stringify({ id: 'staging', enabled: true }),
       }),
+      {} as never,
     );
     expect(response.status).toBe(403);
     expect(await response.json()).toEqual({ ok: false, error: 'vm_release_immutable' });
