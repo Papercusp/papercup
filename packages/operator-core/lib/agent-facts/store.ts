@@ -279,6 +279,17 @@ export const WALL_KEY_PREFIX = 'wall:';
 export const WALL_DEFAULT_TTL_SEC = 90 * 24 * 3600;
 
 /**
+ * EI-21154276512983646 — the GUARD-RAIL fact slot. A settled do-not-repeat
+ * instruction is deterministic safety context, not ordinary cap-churn prose:
+ * once it has prevented a repeated mistake, silently evicting it makes the
+ * next reader indistinguishable from one who never received the ruling.
+ * `facts:assert { slot:'guard-rail' }` (facts/assert.ts normalizeGuardRailSlot)
+ * keys it under this prefix so the cap and monitor fold share one machine-
+ * greppable convention without a schema migration.
+ */
+export const GUARD_RAIL_KEY_PREFIX = 'guard-rail:';
+
+/**
  * P-007 (coord-authority-hardening): the platform-VERIFIED stamp for a TYPED
  * sourceRef (`msg:<id>` / `wi:<id>`/WI-/EI- / `owner-turn`), captured
  * server-side AT ASSERT TIME (H2-tier reuse — see
@@ -1451,7 +1462,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // neighbour to make room for itself.
   //
   // ⚠ That CAP-1 holds only for a write that JOINS the population. An EXEMPT
-  // write (convention / `wall:` / `dead-end:`) does not, and trimming to CAP-1
+  // write (convention / `wall:` / `dead-end:` / `guard-rail:`) does not, and trimming to CAP-1
   // for it destroyed a fact to buy a seat nobody took — EI-20824216187836980.
   // The OFFSET below is therefore computed, not constant; see its note.
   // `IS DISTINCT FROM` (not `<>`) so a NULL id — impossible via the RETURNING
@@ -1492,7 +1503,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
                  updated_at DESC
        -- EI-20824216187836980: CAP-1 is correct only when the row THIS call just
        -- wrote is itself a MEMBER of the cap population. When it is EXEMPT (a
-       -- convention, or a 'wall:'/'dead-end:' safety slot — see
+       -- convention, or a 'wall:'/'dead-end:'/'guard-rail:' safety slot — see
        -- capPopulationPredicate) it never joins that population, so trimming the
        -- incumbents to CAP-1 destroyed a live fact to make room for a row that
        -- was never going to occupy the room. The offset is CAP for such a write.
@@ -1883,7 +1894,7 @@ export interface FactSelector {
  * ⚠ This is NOT {@link liveFactPredicate}. That one describes what a FOLD
  * serves; this one describes what the CAP may destroy, and the two differ by
  * exactly the rows that are exempt from eviction: the typed safety slots
- * (`wall:` / `dead-end:`, WI-6935 (a)) and `kind:'convention'` (P-028 —
+ * (`wall:` / `dead-end:` / `guard-rail:`, WI-6935 (a)) and `kind:'convention'` (P-028 —
  * governance rows; their explicit TTL still controls natural expiry, but the
  * per-scope observation cap must never retract policy). Reading one where you
  * meant the other is the whole bug this fragment exists to prevent.
@@ -1939,6 +1950,7 @@ function capPopulationPredicate(
          -- from the ranking entirely so they neither evict nor consume offset.
          AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
          AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
+         AND key NOT LIKE ${`${GUARD_RAIL_KEY_PREFIX}%`}
          -- P-028: conventions are governance rows, not ordinary cap population.
          AND COALESCE(kind, '') <> 'convention'
          -- EI-20365165629381535: partition by the exact JSONB boolean marker.
@@ -2012,7 +2024,8 @@ export async function previewFactCapImpact(
   const exempt =
     input.kind === 'convention' ||
     key.startsWith(WALL_KEY_PREFIX) ||
-    key.startsWith(DEAD_END_KEY_PREFIX);
+    key.startsWith(DEAD_END_KEY_PREFIX) ||
+    key.startsWith(GUARD_RAIL_KEY_PREFIX);
 
   const population = await sql<
     {
@@ -2243,16 +2256,21 @@ export async function foldDeadEndFacts(
 }
 
 /**
- * The NEVER-DROP fact slots: dead-ends ({@link DEAD_END_KEY_PREFIX}) and walls
- * ({@link WALL_KEY_PREFIX}). Both exist to OVERRIDE a stale plan — a dead-end
- * says "that approach is already falsified", a wall says "this is still gated" —
- * so they are the two slots whose absence actively misleads a reader.
+ * The NEVER-DROP fact slots: dead-ends ({@link DEAD_END_KEY_PREFIX}), walls
+ * ({@link WALL_KEY_PREFIX}), and guard rails ({@link GUARD_RAIL_KEY_PREFIX}).
+ * All exist to OVERRIDE a stale plan — a dead-end says "that approach is already
+ * falsified", a wall says "this is still gated", and a guard rail says "do not
+ * repeat the settled mistake" — so their absence actively misleads a reader.
  *
  * Defined HERE, beside the prefixes themselves, for the same single-source-of-
  * truth reason {@link DEAD_END_KEY_PREFIX} spells out: a caller that hand-listed
  * the prefixes would silently drift from them.
  */
-export const NEVER_DROP_KEY_PREFIXES: readonly string[] = [DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX];
+export const NEVER_DROP_KEY_PREFIXES: readonly string[] = [
+  DEAD_END_KEY_PREFIX,
+  WALL_KEY_PREFIX,
+  GUARD_RAIL_KEY_PREFIX,
+];
 
 /**
  * Fold ONLY the never-drop facts ({@link NEVER_DROP_KEY_PREFIXES}) — the bounded

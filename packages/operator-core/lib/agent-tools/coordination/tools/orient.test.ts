@@ -3243,7 +3243,7 @@ describe('EI-18725816532600240: never-drop facts survive a monitor tick', () => 
 
   describe('the narrowing is DISCLOSED (a bounded read is never rendered as a census)', () => {
     it('marks factsNarrowed on a monitor tick, naming the prefixes from the store constant', async () => {
-      const { NEVER_DROP_KEY_PREFIXES, DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX } =
+      const { NEVER_DROP_KEY_PREFIXES, DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX, GUARD_RAIL_KEY_PREFIX } =
         await import('../../../agent-facts/store');
       foldNeverDropFactsMock.mockResolvedValue([DEAD_END]);
       const { call } = fakeCall({ ...CORE });
@@ -3253,7 +3253,7 @@ describe('EI-18725816532600240: never-drop facts survive a monitor tick', () => 
       // sourced from the store's own constant — a hand-listed copy here would drift
       // silently, which is the failure DEAD_END_KEY_PREFIX's own doc warns about
       expect(r.factsNarrowed?.prefixes).toEqual([...NEVER_DROP_KEY_PREFIXES]);
-      expect(r.factsNarrowed?.prefixes).toEqual([DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX]);
+      expect(r.factsNarrowed?.prefixes).toEqual([DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX, GUARD_RAIL_KEY_PREFIX]);
       expect(r.factsNarrowed?.reason).toMatch(/not evidence they do not exist/);
     });
 

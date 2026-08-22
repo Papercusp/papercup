@@ -45,7 +45,7 @@ describe('parseFactRef — the three live forms', () => {
 
   // REGRESSION: a hand-rolled parse that strips only `owner:` — or that takes
   // split(':')[2] as the key — reads this real fact as dangling. Keys carry
-  // their own colons (`dead-end:`, `wall:` prefixes), so the key is everything
+  // their own colons (`dead-end:`, `wall:`, `guard-rail:` prefixes), so the key is everything
   // after the scope PAIR. This exact false negative was produced live while
   // measuring adoption, and reported 4 of 5 real facts as missing.
   it('keeps a colon-bearing key intact', () => {

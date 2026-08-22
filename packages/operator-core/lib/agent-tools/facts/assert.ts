@@ -27,6 +27,7 @@ import {
   FACTS_PER_SCOPE_CAP,
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
+  GUARD_RAIL_KEY_PREFIX,
   WALL_DEFAULT_TTL_SEC,
   FACT_VOLATILE_MAX_TTL_SEC,
   type AgentFact,
@@ -235,6 +236,24 @@ export function normalizeWallSlot(key: string, body: string): { key: string; bod
   return { key: k, body: b };
 }
 
+/**
+ * EI-21154276512983646 — the GUARD-RAIL fact slot. A settled do-not-repeat
+ * instruction is deterministic safety context, so it must remain recognizable
+ * and survive ordinary fact-cap churn. Encoding it in key + body keeps every
+ * existing fold surface correct without a schema migration.
+ */
+export { GUARD_RAIL_KEY_PREFIX };
+export const GUARD_RAIL_BODY_PREFIX = '🛡️ GUARD RAIL — do not repeat: ';
+
+/** PURE: normalize a slot:'guard-rail' assert's key/body onto its durable
+ *  machine-greppable encoding. Idempotent so re-asserting the same ruling hits
+ *  the same key rather than stacking markers. */
+export function normalizeGuardRailSlot(key: string, body: string): { key: string; body: string } {
+  const k = key.toLowerCase().startsWith(GUARD_RAIL_KEY_PREFIX) ? key : `${GUARD_RAIL_KEY_PREFIX}${key}`;
+  const b = body.startsWith(GUARD_RAIL_BODY_PREFIX) ? body : `${GUARD_RAIL_BODY_PREFIX}${body}`;
+  return { key: k, body: b };
+}
+
 export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
@@ -290,10 +309,10 @@ export default defineTool({
       ),
     sourceRef: z.string().max(200).optional().describe('Anchor that proved it. A TYPED ref — msg:<id>, wi:<id>/WI-/EI- id, or "owner-turn" (the human turn you are answering) — is PLATFORM-VERIFIED at assert time and folds with the verified verbatim quote; anything else (plan slug, prose) stays a plain anchor.'),
     slot: z
-      .enum(['dead-end', 'wall'])
+      .enum(['dead-end', 'wall', 'guard-rail'])
       .optional()
       .describe(
-        "Typed slot. 'dead-end' (P-015) = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. 'wall' (owner-wall-ttl-lapse-hardening) = an OWNER-GATED blocker whose absence must never be read as resolved: the key is normalized under 'wall:' and the body rendered with the ⚠ WALL marker; TTL defaults to 90d instead of the ordinary 7d (still overridable via ttlSec, capped at 90d) and an unretracted lapse is escalated LOUDLY by the wall-lapse watchdog rather than silently vanishing from folds. State the approach AND why it failed / the condition and what remediates it; pair with sourceRef to anchor the evidence.",
+        "Typed slot. 'dead-end' (P-015) = a tried-and-failed approach, recorded so successors never re-try it: the key is normalized under 'dead-end:' and the body rendered with the ⛔ DEAD END marker in every future fold. 'wall' (owner-wall-ttl-lapse-hardening) = an OWNER-GATED blocker whose absence must never be read as resolved: the key is normalized under 'wall:' and the body rendered with the ⚠ WALL marker; TTL defaults to 90d instead of the ordinary 7d (still overridable via ttlSec, capped at 90d) and an unretracted lapse is escalated LOUDLY by the wall-lapse watchdog rather than silently vanishing from folds. 'guard-rail' (EI-21154276512983646) = a settled do-not-repeat instruction: the key is normalized under 'guard-rail:' and the body rendered with the 🛡️ GUARD RAIL marker; it is exempt from cap eviction and included in monitor never-drop folds. State the approach AND why it failed / the condition and what remediates it; pair with sourceRef to anchor the evidence.",
       ),
     audienceScope: z.string().max(160).optional().describe('Restrict WHO receives this fact in folds (v1 grammar: "fleet:<slug>") — it then folds ONLY into orients of that fleet\'s members. Omit = every reader of the scope. Orthogonal to `scope` (what the fact is about). facts:list still shows it to everyone (delivery relevance, not secrecy).'),
     confidence: z
@@ -458,8 +477,8 @@ export default defineTool({
         sourceProvenance = null;
       }
     }
-    // P-015 dead-end slot / owner-wall-ttl-lapse-hardening wall slot: normalize
-    // key/body onto the slot encoding (idempotent).
+    // P-015 dead-end / owner-wall-ttl-lapse-hardening wall / EI-21154276512983646
+    // guard-rail slots: normalize key/body onto the slot encoding (idempotent).
     // EI-19972486772917172: a fact's `body` (and `settledBy`, for kind:'undecidable')
     // fold VERBATIM into every future orient — the exact hazard text-safety.ts was
     // built to defuse for work-item/issue titles+bodies (EI-9262/EI-9267: a fabricated
@@ -479,7 +498,9 @@ export default defineTool({
         ? normalizeDeadEndSlot(args.key, safeBody)
         : args.slot === 'wall'
           ? normalizeWallSlot(args.key, safeBody)
-          : { key: args.key, body: safeBody };
+          : args.slot === 'guard-rail'
+            ? normalizeGuardRailSlot(args.key, safeBody)
+            : { key: args.key, body: safeBody };
     // EI-20191817484694278: a durable fact can carry a moving count/status and
     // age into a confident lie. Detect the shape at the write boundary so the
     // author can tighten it immediately; this is advisory and fail-soft.

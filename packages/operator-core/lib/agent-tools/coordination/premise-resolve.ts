@@ -87,7 +87,7 @@ export const PREMISE_STAMPS_FIELD = 'premiseStamps';
  * Exported because hand-rolling this parse is a live source of FALSE
  * NEGATIVES: a checker that strips only the `owner:` form reads four perfectly
  * real facts as dangling. A key may itself contain `:` (`dead-end:<slug>`,
- * `wall:<slug>` — see FACT_*_KEY_PREFIX), so the key is everything after the
+ * `wall:<slug>`, `guard-rail:<slug>` — see FACT_*_KEY_PREFIX), so the key is everything after the
  * scope pair, never `split(':')[2]`.
  */
 export interface ParsedFactRef {

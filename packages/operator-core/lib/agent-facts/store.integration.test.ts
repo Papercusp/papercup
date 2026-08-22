@@ -37,6 +37,7 @@ import {
   FACTS_VOLATILE_PER_SCOPE_CAP,
   FACT_PERMANENT_EXPIRY,
   FACT_VOLATILE_MAX_TTL_SEC,
+  GUARD_RAIL_KEY_PREFIX,
   listLapsedWallFacts,
   listConventionFacts,
   factCitationRef,
@@ -935,12 +936,12 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(real.evicted ?? []).toEqual([]);
   });
 
-  it('EI-20824216187836980: an EXEMPT write (convention / wall: / dead-end:) evicts NOTHING at cap — it never joins the population it was trimming room for', async () => {
+  it('EI-20824216187836980: an EXEMPT write (convention / wall: / dead-end: / guard-rail:) evicts NOTHING at cap — it never joins the population it was trimming room for', async () => {
     const scopeRef = 'su-exempt-write-takes-no-seat';
     const base = { scope: 'owner' as const, scopeRef, createdBy: 'su-int', workspaceId: WS };
 
     // ── THE DEFECT ─────────────────────────────────────────────────────────
-    // capPopulationPredicate EXCLUDES conventions and the two typed safety
+    // capPopulationPredicate EXCLUDES conventions and the three typed safety
     // slots, so such a row never occupies a cap seat. The sweep nonetheless
     // trimmed incumbents to CAP-1 on every assert — buying a seat for a row
     // that was never going to take one, and destroying a live fact to do it.
@@ -977,6 +978,7 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
       { label: 'convention', input: { key: 'a-convention', kind: 'convention' as const } },
       { label: 'wall', input: { key: 'wall:owner-must-rule-on-the-guard' } },
       { label: 'dead-end', input: { key: 'dead-end:tried-and-failed' } },
+      { label: 'guard-rail', input: { key: 'guard-rail:do-not-refire' } },
     ]) {
       const r = await assertFact(
         { ...base, ...probe.input, body: `exempt ${probe.label}`, confidence: 'verified' },
@@ -1003,7 +1005,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
          AND COALESCE(kind, '') <> 'convention'
-         AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'`;
+         AND key NOT LIKE 'wall:%' AND key NOT LIKE 'dead-end:%'
+         AND key NOT LIKE 'guard-rail:%'`;
     expect(ordinaryLive).toBe(FACTS_PER_SCOPE_CAP);
 
     // ...and all four exempt rows are live alongside it — the cap-bearing
@@ -1016,8 +1019,8 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
          AND source_hive IS NULL AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
          AND (COALESCE(kind, '') = 'convention'
-              OR key LIKE 'wall:%' OR key LIKE 'dead-end:%')`;
-    expect(exemptLive).toBe(3);
+              OR key LIKE 'wall:%' OR key LIKE 'dead-end:%' OR key LIKE 'guard-rail:%')`;
+    expect(exemptLive).toBe(4);
   });
 
   it('EI-20824216187836980: dryRun agrees with the sweep on an exempt write — forecasts no eviction, and reports the refresh as replacing an existing key', async () => {
@@ -2023,7 +2026,7 @@ describe('listLapsedWallFacts', () => {
  * EI-18725816532600240 — the key-prefix narrowing, against real PG.
  *
  * `foldNeverDropFacts` is what lets coord:orient's monitor tick keep delivering the
- * override slots (dead-ends + walls) on a context budget, and it rides a multi-prefix
+ * override slots (dead-ends + walls + guard rails) on a context budget, and it rides a multi-prefix
  * `key LIKE ANY(...)` binding that NO test covered before this one. The property that
  * actually matters is the last case: the filter is applied IN SQL, BEFORE the
  * per-selector LIMIT, so a small never-drop set can never be crowded out by newer
@@ -2037,17 +2040,19 @@ describe('key-prefix narrowing (foldNeverDropFacts / foldDeadEndFacts)', () => {
   async function seed() {
     await assertFact({ ...base, key: 'dead-end:tried-that', body: 'falsified', ttlSec: 3600 }, db.sql);
     await assertFact({ ...base, key: 'wall:needs-owner', body: 'still gated', ttlSec: 3600 }, db.sql);
+    await assertFact({ ...base, key: 'guard-rail:do-not-refire', body: 'already fired', ttlSec: 3600 }, db.sql);
     await assertFact({ ...base, key: 'ordinary-conclusion', body: 'plain', ttlSec: 3600 }, db.sql);
   }
 
   it('folds BOTH never-drop slots in one query and excludes ordinary facts', async () => {
     await seed();
     const keys = (await foldNeverDropFacts(SEL, { workspaceId: WS }, db.sql)).map((f) => f.key).sort();
-    expect(keys).toEqual(['dead-end:tried-that', 'wall:needs-owner']);
+    expect(keys).toEqual(['dead-end:tried-that', 'guard-rail:do-not-refire', 'wall:needs-owner']);
   });
 
-  it('the never-drop prefix set is exactly the two override slots', () => {
-    expect([...NEVER_DROP_KEY_PREFIXES]).toEqual(['dead-end:', 'wall:']);
+  it('the never-drop prefix set is exactly the three override slots', () => {
+    expect([...NEVER_DROP_KEY_PREFIXES]).toEqual(['dead-end:', 'wall:', 'guard-rail:']);
+    expect(NEVER_DROP_KEY_PREFIXES).toContain(GUARD_RAIL_KEY_PREFIX);
   });
 
   it('the single-prefix fold still narrows to dead-ends only', async () => {
@@ -2058,8 +2063,8 @@ describe('key-prefix narrowing (foldNeverDropFacts / foldDeadEndFacts)', () => {
 
   it('no prefixes ⇒ no key filter (the unfiltered branch still selects everything)', async () => {
     await seed();
-    expect((await fold()).length).toBe(3);
-    expect((await fold({ keyPrefixes: [] })).length).toBe(3);
+    expect((await fold()).length).toBe(4);
+    expect((await fold({ keyPrefixes: [] })).length).toBe(4);
   });
 
   it('narrows BEFORE the per-selector LIMIT — newer ordinary facts cannot crowd out a dead-end', async () => {
