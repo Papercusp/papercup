@@ -128,6 +128,79 @@ describe('upsertUnaccounted scope identity', () => {
   });
 });
 
+describe('registerTask detector-placeholder adoption', () => {
+  it('adopts a managed scope placeholder instead of losing its provenance to a duplicate key', async () => {
+    const taskId = 'race1234';
+    const scopeUnit = `pc-${taskId}.scope`;
+    const cgroupPath = `/sys/fs/cgroup/papercusp.slice/${scopeUnit}`;
+
+    await store.upsertUnaccounted(
+      [
+        {
+          taskId,
+          cgroupPath,
+          scopeUnit,
+          pids: [321],
+          sampleCmdline: 'node invoke-once.js',
+        },
+      ],
+      { workspaceId: WS },
+    );
+
+    const row = await store.registerTask(
+      {
+        class: 'sidecar',
+        title: 'invoke-once',
+        argv: ['node', 'invoke-once.js'],
+        launchedBy: 'test',
+      },
+      { workspaceId: WS, taskId, reserveScope: true, unitKind: 'scope' },
+    );
+
+    expect(row).toMatchObject({
+      taskId,
+      class: 'sidecar',
+      title: 'invoke-once',
+      launchedBy: 'test',
+      scopeUnit,
+      cgroupPath,
+      pid: 321,
+      state: 'pending',
+    });
+    expect(row.detail).toMatchObject({ pids: [321], scopeUnit });
+  });
+
+  it('rejects a duplicate registered task id instead of overwriting its provenance', async () => {
+    const taskId = 'duplicate1234';
+    await store.registerTask(
+      {
+        class: 'sidecar',
+        title: 'original',
+        argv: ['node', 'original.js'],
+        launchedBy: 'original-owner',
+      },
+      { workspaceId: WS, taskId, reserveScope: true, unitKind: 'scope' },
+    );
+
+    await expect(
+      store.registerTask(
+        {
+          class: 'agent-session',
+          title: 'replacement',
+          argv: ['node', 'replacement.js'],
+          launchedBy: 'replacement-owner',
+        },
+        { workspaceId: WS, taskId, reserveScope: true, unitKind: 'scope' },
+      ),
+    ).rejects.toThrow(/not an adoptable residue/);
+
+    const [row] = await db.sql`
+      SELECT class, title, launched_by FROM harness_shared.task_ledger WHERE task_id = ${taskId}
+    `;
+    expect(row).toEqual({ class: 'sidecar', title: 'original', launched_by: 'original-owner' });
+  });
+});
+
 describe('registerTask unit identity', () => {
   it('reserves a transient service unit when the caller selects service mode', async () => {
     const row = await store.registerTask(
