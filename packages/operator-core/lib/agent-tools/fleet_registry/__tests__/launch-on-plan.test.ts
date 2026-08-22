@@ -205,6 +205,7 @@ import tool, {
   composeMemberLaunchContext,
   renderMemberBaseline,
   clampFleetTopUpToCapacity,
+  memberSpecIndexForLaunch,
   buildFleetPlanClaimSpec,
   buildFleetKindClaimSpec,
   mergeKindIntoClaimSpec,
@@ -217,6 +218,18 @@ import tool, {
 // The REAL claim-spec validator (NOT the mocked claim-spec-STORE) — #4 specs must pass it.
 import { validateClaimSpec } from '../../../scheduler/claim-spec';
 import { standardValidate } from '@papercusp/tooldef';
+
+describe('memberSpecIndexForLaunch', () => {
+  it('keeps first-launch specs zero-based', () => {
+    expect(memberSpecIndexForLaunch(0, 0)).toBe(0);
+    expect(memberSpecIndexForLaunch(0, 1)).toBe(1);
+  });
+
+  it('appends a deficit wave after the live members', () => {
+    expect(memberSpecIndexForLaunch(1, 0)).toBe(1);
+    expect(memberSpecIndexForLaunch(1, 1)).toBe(2);
+  });
+});
 
 beforeEach(() => {
   assembleRolePromptMock.mockReset();

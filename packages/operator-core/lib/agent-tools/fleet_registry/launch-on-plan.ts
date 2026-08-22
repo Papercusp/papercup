@@ -210,6 +210,17 @@ export function computeFleetTopUpWave(
 }
 
 /**
+ * Map a zero-based launch-wave position to the fleet member-spec index.
+ * Top-up waves append after the members already live; reusing wave position 0
+ * on a deficit relaunch silently gives the new member member 1's brief.
+ */
+export function memberSpecIndexForLaunch(liveMembers: number, waveIndex: number): number {
+  const live = Number.isFinite(liveMembers) ? Math.max(0, Math.floor(liveMembers)) : 0;
+  const wave = Number.isFinite(waveIndex) ? Math.max(0, Math.floor(waveIndex)) : 0;
+  return live + wave;
+}
+
+/**
  * EI-21010422711013687: every visible fleet launch carries a command that must
  * execute. A server-side gnome-terminal client can successfully open a window
  * while its D-Bus factory silently drops that command, leaving only a wrapper
@@ -2501,7 +2512,8 @@ export default defineTool({
     // are the declarative twins of perMemberLaunchContext, so any of the three arms
     // the per-member compose path below. Inline brief text wins over a path entry —
     // the caller supplied the actual words, not a pointer to them.
-    const memberBriefText = (i: number): string | null => args.members?.[i]?.brief?.trim() || null;
+    const memberSpecIndex = (i: number) => memberSpecIndexForLaunch(liveMembers, i);
+    const memberBriefText = (i: number): string | null => args.members?.[memberSpecIndex(i)]?.brief?.trim() || null;
     const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
     // P-004: a per-member `carry` override also forces a DISTINCT composed baseline for that
     // member — the warm/cold loop:arm instruction is baked into the baseline TEXT, so it arms
@@ -2528,7 +2540,8 @@ export default defineTool({
       }
       const resolved: (string | undefined)[] = [];
       for (let i = 0; i < openCount; i++) {
-        const ownPath = perMemberBriefsRaw?.[i]?.trim();
+        const specIndex = memberSpecIndex(i);
+        const ownPath = perMemberBriefsRaw?.[specIndex]?.trim();
         // Inline `members[i].brief` short-circuits the file read entirely.
         let ownBriefText: string | null = memberBriefText(i);
         if (!ownBriefText && ownPath) {
@@ -2549,10 +2562,10 @@ export default defineTool({
             count,
             // P-004: member > fleet precedence for carry (foldMemberSpec's rule) — this member's
             // OWN warm/cold choice shapes ITS baseline, not the fleet-wide default.
-            carry: args.members?.[i]?.carry ?? args.carry,
+            carry: args.members?.[specIndex]?.carry ?? args.carry,
             customBriefText: briefText,
           });
-          const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${i + 1}.md`);
+          const ctxPath = join(ctxDir, `fleet-${fleetSlug}-launch-context-member-${specIndex + 1}.md`);
           writeFileSync(ctxPath, composed, 'utf8');
           resolved.push(ctxPath);
           perMemberLaunchContextPaths!.push(ctxPath);
@@ -2768,7 +2781,7 @@ export default defineTool({
     const launchRequestedAt = Date.now();
     const requestedMemberIds = resumeOwnerIds ?? Array.from({ length: openCount }, () => `su-${randomUUID()}`);
     const memberCommands = Array.from({ length: openCount }, (_v, i) => {
-      const folded = resolvedMemberConfig(i);
+      const folded = resolvedMemberConfig(memberSpecIndex(i));
       return memberLaunchCommand({
         ...folded,
         fleetSlug,
@@ -2783,7 +2796,7 @@ export default defineTool({
       });
     });
     const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from({ length: openCount }, (_v, i) => {
-      const folded = resolvedMemberConfig(i);
+      const folded = resolvedMemberConfig(memberSpecIndex(i));
       const modelSpec = composeModelSpec(folded.model, folded.effort) ?? null;
       return {
         ownerId: requestedMemberIds[i],
@@ -2812,12 +2825,12 @@ export default defineTool({
     // effort) pair already succeeded inside memberLaunchCommand when memberCommands was built.
     const resolvedMembers = memberSpecs.length
       ? Array.from({ length: openCount }, (_v, i) => {
-          const f = resolvedMemberConfig(i);
+          const f = resolvedMemberConfig(memberSpecIndex(i));
           return {
             member: i + 1,
             model: composeModelSpec(f.model, f.effort) ?? null,
             account: f.account ?? null,
-            carry: (memberSpecs[i]?.carry ?? args.carry ?? 'warm') as 'warm' | 'cold',
+            carry: (memberSpecs[memberSpecIndex(i)]?.carry ?? args.carry ?? 'warm') as 'warm' | 'cold',
             compactionLimit: f.compactionLimit ?? null,
             claimKinds: f.claimKinds ?? null,
           };
