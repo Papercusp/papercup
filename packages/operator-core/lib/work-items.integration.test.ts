@@ -768,6 +768,46 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
     expect(await attestations('engineer_issues', 'issue_id', bug.id)).toBeNull();
   });
 
+  it('protects a legacy owner-only terminal row from a richer cross-owner close without manufacturing authority', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
+
+    // This is the historical watchdog/system-sweep shape: it has an owner stamp,
+    // but deliberately no completion ref or authority. Null authority must remain
+    // legacy meaning; it is not a reason to let a later close erase the record.
+    await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'watchdog-auto-close',
+      skipCompletionGate: true,
+    });
+    const legacy = await wi.getWorkItem(bug.id);
+    expect(legacy?.terminalOwner).toBe('watchdog-auto-close');
+    expect(legacy?.terminalCompletionRef).toBeNull();
+    expect(legacy?.completionAuthority).toBeNull();
+
+    const conflicts: string[] = [];
+    const after = await wi.setWorkItemState(bug.id, 'resolved', {
+      by: 'agB',
+      completionRef: 'actually fixed it, with verification',
+      completionEvidence: RICH,
+      onTerminalConflict: (info) => conflicts.push(info.outcome),
+    });
+
+    // A verified close can supersede the evidence-free legacy stamp, but only
+    // after the old record has been archived and the caller is told which path ran.
+    expect(after?.terminalOwner).toBe('agB');
+    expect(after?.terminalCompletionRef).toBe('actually fixed it, with verification');
+    expect(after?.terminalCompletionEvidence).toEqual(RICH);
+    expect(conflicts).toEqual(['upgraded']);
+    const att = await attestations('engineer_issues', 'issue_id', bug.id);
+    expect(att).toHaveLength(1);
+    expect(att![0]).toMatchObject({
+      by: 'watchdog-auto-close',
+      outcome: 'superseded',
+      completionRef: null,
+      completionAuthority: null,
+      evidence: null,
+    });
+  });
+
   // DELIBERATELY EXEMPT, and pinned so the exemption is a decision rather than an
   // oversight: skipCompletionGate is the trusted internal restore / system-sweep bypass
   // ("not completions at all"), and reshaping those writes into attestations would change

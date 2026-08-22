@@ -6039,6 +6039,32 @@ describe('checkCommandVerdict (fail-open transport)', () => {
     });
   });
 
+  it('forwards the shell cwd to locks:check_command', async () => {
+    let requestBody = '';
+    global.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      requestBody = init?.body ?? '';
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [{ type: 'text', text: JSON.stringify({ decision: 'allow' }) }] },
+          }),
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(checkCommandVerdict('npm install', '/tmp/ei-204040-scratch')).resolves.toMatchObject({
+      decision: 'allow',
+    });
+
+    const request = JSON.parse(requestBody) as {
+      params?: { arguments?: Record<string, unknown>; _meta?: Record<string, unknown> };
+    };
+    expect(request.params?.arguments).toEqual({ command: 'npm install', cwd: '/tmp/ei-204040-scratch' });
+    expect(request.params?._meta).toMatchObject({ format: 'json' });
+  });
+
   it('returns null when the operator is unreachable (never throws into the hook)', async () => {
     global.fetch = (async () => {
       throw new Error('ECONNREFUSED');

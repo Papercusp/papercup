@@ -2905,12 +2905,17 @@ export async function setWorkItemState(
   // paths documented as "not completions at all", and reshaping them would change behaviour
   // this change has not audited. That leaves a narrower hole (a system sweep can still
   // reassign credit) tracked separately as WI-6218, rather than widened into here.
+  //
+  // A legacy/system close can still carry a terminalOwner with neither a ref nor an authority
+  // (the watchdog-auto-close and improvement-hygiene shape). Null authority means "legacy
+  // close", not "there is no record to protect". Treat the durable owner stamp as sufficient
+  // to enter this reshape, while leaving the upgrade decision to the evidence comparison below;
+  // this preserves the null-authority semantics and never manufactures an authority.
   const isSecondTerminalClose =
     !opts.force &&
     !opts.skipCompletionGate &&
     Boolean(opts.by?.trim()) &&
     Boolean(wi.terminalOwner) &&
-    Boolean(wi.terminalCompletionRef || wi.completionAuthority) &&
     opts.by !== wi.terminalOwner &&
     isSettledWorkItemState(wi.state) &&
     isSettledWorkItemState(state);

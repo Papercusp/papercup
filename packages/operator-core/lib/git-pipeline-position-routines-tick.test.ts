@@ -89,6 +89,19 @@ describe('WI-6659: routinesTick-dispatched modules are classified bg-host', () =
     expect(owners![0].restartTarget).toBe('bg-host');
   });
 
+  it.each([
+    'packages/operator-core/lib/harness/routines/loop-unreachable-guard.ts',
+    'packages/operator-core/lib/harness/routines/pty-host-wedge-guard.ts',
+    'packages/operator-core/lib/harness/routines/stalled-loops-guard.ts',
+  ])('WI-39787: %s is the implementation behind a bg-host routine action, not a deploy-carried path', (path) => {
+    const owners = classifyRuntimeOwners(path) ?? [];
+    expect(owners).toHaveLength(1);
+    expect(owners[0].host).toBe('bg-host');
+    expect(owners[0].releasePipelineApplies).toBe(false);
+    expect(owners[0].restartTarget).toBe('bg-host');
+    expect(owners[0].activation).toMatch(/dev:restart.*bg-host/s);
+  });
+
   it('keeps BOTH routes for a dual-consumer sweep', () => {
     // pot/watchdog is swept by routinesTick AND read by operator-served surfaces.
     // Collapsing it either way sends half the callers to the wrong lever (WI-5440).

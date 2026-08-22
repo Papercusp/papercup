@@ -510,6 +510,25 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
         'This is a `system:<action>` routine handler, dispatched by routinesTick — which only runs when PAPERCUSP_BACKGROUND_WORKERS=1 (bg-host); :3070/:3170 boot request-only (BACKGROUND_WORKERS=0) and never invoke it. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (EI-11120).',
     },
   },
+  // WI-39787: the thin `system:<action>` file is not the only source module
+  // executed by a routine. These guards are imported by bg-host-only routine
+  // actions (or the bg-host loop reconciler) and therefore need the same
+  // activation verdict as their action seams. Without this explicit dependency
+  // mapping, an edit to e.g. stalled-loops-guard.ts fell through to
+  // DEFAULT_OWNER and looked deploy-carried even though :3070 never loads it.
+  // Keep this list deliberately narrow: the runtime-owner map cannot safely
+  // infer ownership for every static import, since shared helpers also have
+  // operator-served consumers (WI-10671).
+  {
+    match: /^packages\/operator-core\/lib\/harness\/routines\/(loop-unreachable|pty-host-wedge|stalled-loops)-guard\.ts$/,
+    own: {
+      host: 'bg-host',
+      releasePipelineApplies: false,
+      restartTarget: 'bg-host',
+      activation:
+        'This is a guard implementation executed by a bg-host-only routine action or loop reconciler, which runs from the staging tree when PAPERCUSP_BACKGROUND_WORKERS=1. It loads on RESTART: dev:restart { target: "bg-host", confirm: true }. A deploy does not carry it (WI-39787).',
+    },
+  },
   {
     match: /^packages\/operator-core\/lib\/blueprint\/blueprint-run-action\.ts$/,
     own: {

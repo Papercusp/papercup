@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -4861,12 +4861,15 @@ describe('substitution verdict handling', () => {
   let child: ReturnType<typeof spawn>;
   let url = '';
   let replyFile = '';
+  let requestFile = '';
   const setReply = (r: Record<string, unknown>) =>
     writeFileSync(replyFile, JSON.stringify({ ok: true, ...r }));
 
   beforeAll(async () => {
     replyFile = join(fakeHome, 'reply.json');
+    requestFile = join(fakeHome, 'requests.jsonl');
     setReply({ decision: 'allow', matched: [] });
+    writeFileSync(requestFile, '');
     const serverJs = join(fakeHome, 'fake-operator.mjs');
     writeFileSync(
       serverJs,
@@ -4880,11 +4883,12 @@ describe('substitution verdict handling', () => {
       // Replying TOON to an undeclared caller makes the whole describe block
       // below the regression guard: drop the `_meta.format` and these fail.
       `import { createServer } from 'node:http';
-       import { readFileSync } from 'node:fs';
+       import { appendFileSync, readFileSync } from 'node:fs';
        const s = createServer((req, res) => {
          let raw = '';
          req.on('data', (c) => { raw += c; });
          req.on('end', () => {
+           appendFileSync(process.argv[3], raw + '\\n');
            const body = readFileSync(process.argv[2], 'utf8');
            let wantsJson = false;
            try { wantsJson = JSON.parse(raw)?.params?._meta?.format === 'json'; } catch {}
@@ -4899,7 +4903,7 @@ describe('substitution verdict handling', () => {
        s.listen(0, '127.0.0.1', () => console.log('PORT=' + s.address().port));`,
     );
 
-    child = spawn(process.execPath, [serverJs, replyFile], { stdio: ['ignore', 'pipe', 'ignore'] });
+    child = spawn(process.execPath, [serverJs, replyFile, requestFile], { stdio: ['ignore', 'pipe', 'ignore'] });
     url = await new Promise<string>((ok, fail) => {
       const t = setTimeout(() => fail(new Error('fake operator did not start')), 10_000);
       child.stdout!.on('data', (b: Buffer) => {
@@ -4925,6 +4929,28 @@ describe('substitution verdict handling', () => {
     atom: CAT,
   };
   const run = (command = CAT) => runGate(bashCmd(command), { PAPERCUSP_OPERATOR_URL: url });
+
+  it('forwards the shell cwd to locks:check_command for cwd-scoped substitution policy', () => {
+    const scratch = '/tmp/ei-204040-scratch';
+    setReply({ decision: 'allow', matched: [] });
+    const out = runGate(
+      bashCmd('npm install --package-lock-only --ignore-scripts', { cwd: scratch }),
+      { PAPERCUSP_OPERATOR_URL: url },
+    );
+    expect(out.status).toBe(0);
+
+    const requests = readFileSync(requestFile, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown>; _meta?: Record<string, unknown> } });
+    const request = requests.at(-1);
+    expect(request?.params?.arguments).toEqual({
+      command: 'npm install --package-lock-only --ignore-scripts',
+      cwd: scratch,
+    });
+    expect(request?.params?._meta).toMatchObject({ format: 'json' });
+  });
 
   it('allows a read-only ps/grep inspection that mentions heavy tools under load (EI-19299721661084366)', () => {
     // The live operator must answer first so the heavy-admission leg is reached;
