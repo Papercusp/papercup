@@ -97,32 +97,41 @@ export interface BenchQueueVerdict {
 
 /** PURE: the whole park/pull decision, exported for direct unit-testing (no PG/DI). */
 export function benchQueueVerdict(
-  lane: { claimable: number; matchedByFilter: number; spec?: { ref?: string | null } } | null,
+  lane: {
+    claimable: number | null;
+    matchedByFilter: number | null;
+    spec?: { ref?: string | null };
+    effective?: {
+      claimable: number | null;
+      matchedByFilter: number | null;
+    };
+  } | null,
 ): BenchQueueVerdict {
-  if (!lane) {
+  const counts = lane?.effective ?? lane;
+  if (!lane || !counts || counts.claimable == null) {
     // Fails OPEN — see (1) above. An unreadable count is not a drained lane, and it is
     // also not grounds to block the leader.
     return { refuse: false, claimable: null, matchedByFilter: null, specRef: null, reason: 'unknown' };
   }
   const specRef = lane.spec?.ref ?? null;
-  if (lane.claimable > 0) {
+  if (counts.claimable > 0) {
     return {
       refuse: true,
-      claimable: lane.claimable,
-      matchedByFilter: lane.matchedByFilter,
+      claimable: counts.claimable,
+      matchedByFilter: counts.matchedByFilter,
       specRef,
       reason: 'queue-nonempty',
     };
   }
   return {
     refuse: false,
-    claimable: lane.claimable,
-    matchedByFilter: lane.matchedByFilter,
+    claimable: counts.claimable,
+    matchedByFilter: counts.matchedByFilter,
     specRef,
     // See (2) above: 0 claimable with rows still matching the filter is a GATED lane,
     // which is a blocked lane, which is a benchable lane — but the caller is told which
     // of the two it was, because the remedies are completely different.
-    reason: lane.matchedByFilter > 0 ? 'gated' : 'drained',
+    reason: counts.matchedByFilter == null ? 'unknown' : counts.matchedByFilter > 0 ? 'gated' : 'drained',
   };
 }
 

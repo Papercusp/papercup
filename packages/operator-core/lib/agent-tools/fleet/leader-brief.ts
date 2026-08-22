@@ -2465,7 +2465,15 @@ export async function buildLeaderBrief(
       workspaceId: actorWorkspace,
       assignee: ownerId,
     });
-    const fleetClaimableCount = fleetLaneHealth?.claimable ?? null;
+    const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
+    const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
+    const fleetLaneGating =
+      fleetLaneEffective?.matchedByFilter == null
+        ? null
+        : {
+            matchedByFilter: fleetLaneEffective.matchedByFilter,
+            ...(fleetLaneEffective.excluded ? { excluded: fleetLaneEffective.excluded } : {}),
+          };
     // EI-18703234178947959: the fleet's OWN durable control state (mig 575) — the same
     // `winding-down` bit `fleetControlWindDownRefusal` floors every member's claim on.
     // Read it BEFORE projecting members so a paused fleet never emits a wake-me/bench-me
@@ -2541,7 +2549,7 @@ export async function buildLeaderBrief(
         a,
         nowMs,
         fleetClaimableCount,
-        fleetLaneHealth,
+        fleetLaneGating,
         fleetPause.paused,
         concurrencyByOwner.get(a.agentId) ?? null,
         poolCapacity,
@@ -2562,9 +2570,7 @@ export async function buildLeaderBrief(
       speaking: members.filter((m) => m.verdict === 'speaking').length,
       monitoring: members.filter((m) => m.monitorState === 'monitoring').length,
       waiting: members.filter((m) => m.monitorState === 'waiting').length,
-      parked_awaiting_capability: members.filter(
-        (m) => m.monitorState === 'parked-awaiting-capability',
-      ).length,
+      parked_awaiting_capability: members.filter((m) => m.monitorState === 'parked-awaiting-capability').length,
       stalled: members.filter((m) => m.verdict === 'stalled' || m.stalled).length,
       dead: members.filter((m) => m.verdict === 'dead').length,
       unanswered_directed: members.filter((m) => (m.unanswered?.count ?? 0) > 0).length,
@@ -2584,8 +2590,7 @@ export async function buildLeaderBrief(
       // EI-18681259560385029: of those, the ones that must NOT be benched — alive,
       // unclaimed, and idle beside a queue that is NOT empty. `bench_suggested` alone
       // was read as benign (it counts a REMEDY); this counts a STARVATION SYMPTOM.
-      idle_with_claimable: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable')
-        .length,
+      idle_with_claimable: members.filter((m) => m.benchSuggestion?.kind === 'idle-with-claimable').length,
       // EI-18689489507862177: members idle against an EMPTY (or unread) queue. Distinct from
       // idle_with_claimable above, which by construction only counts them when claimable > 0
       // — so in a fully-GATED lane (claimable 0, spec matching plenty) that field reads 0 and
@@ -2621,8 +2626,14 @@ export async function buildLeaderBrief(
       claimable_now_spec: fleetLaneHealth
         ? {
             ...fleetLaneHealth.spec,
+            families: {
+              issue: fleetLaneHealth.issueFamily,
+              feature: fleetLaneHealth.featureFamily,
+              effective: fleetLaneHealth.effective,
+            },
             note:
-              `claimable_now (${fleetLaneHealth.claimable}) counts rows admitted by ` +
+              `claimable_now (${fleetLaneHealth.effective.claimable ?? 'unknown'}) uses the ` +
+              `${fleetLaneHealth.effective.basis} verdict for rows admitted by ` +
               `${fleetLaneHealth.spec.ref} within harness '${fleetLaneHealth.spec.harness}'. ` +
               `work_items:claimable{harness} asks a DIFFERENT question (the default spec, ` +
               `harness-wide) and a larger number there is expected, not a contradiction — ` +
@@ -2645,13 +2656,13 @@ export async function buildLeaderBrief(
       // EI-18693470222331709: orphaned in-flight items (filing is not fixing, same
       // as unowned_criticals above) — >0 means near-complete work stranded by a
       // release/reap, the cheapest claimable win on this brief.
-          // WI-6678: renamed from `orphaned_in_flight`. "Orphan" made every leader reach for
-          // work_items:release (the standing "reclaim orphans" monitor instruction says so) —
-          // but this condition REQUIRES assignee IS NULL, so a release cannot possibly clear
-          // it and returns ok:true having done nothing. Observed live: a leader "reclaimed"
-          // two of these and reported it to the owner, changing nothing. The only resolving
-          // action is a member CLAIMING and finishing the item.
-          abandoned_unclaimed: orphanedInFlight.length,
+      // WI-6678: renamed from `orphaned_in_flight`. "Orphan" made every leader reach for
+      // work_items:release (the standing "reclaim orphans" monitor instruction says so) —
+      // but this condition REQUIRES assignee IS NULL, so a release cannot possibly clear
+      // it and returns ok:true having done nothing. Observed live: a leader "reclaimed"
+      // two of these and reported it to the owner, changing nothing. The only resolving
+      // action is a member CLAIMING and finishing the item.
+      abandoned_unclaimed: orphanedInFlight.length,
       // EI-18680302159738037: DISTINCT (item, member) pairs this fleet's own claim
       // spec refused in the last 24h. Unlike every other advisory here, the blocked
       // party already told you — as inbox mail, which is where it got buried. >0
@@ -2709,9 +2720,9 @@ export async function buildLeaderBrief(
     // ship an alert that can never fire.
     const floorStarvedAlert = computeFloorStarvedFleetAlert({
       claimable: fleetClaimableCount,
-      matchedByFilter: fleetLaneHealth?.matchedByFilter ?? null,
+      matchedByFilter: fleetLaneEffective?.matchedByFilter ?? null,
       idleMemberCount: summary.laneless_idle,
-      excluded: fleetLaneHealth?.excluded ?? null,
+      excluded: fleetLaneEffective?.excluded ?? null,
       fleetPaused: fleetPause.paused,
       harness: args.harness ?? null,
       fleet,
@@ -2723,7 +2734,7 @@ export async function buildLeaderBrief(
       fleetPaused: fleetPause.paused,
       poolCapacity,
       claimable: fleetClaimableCount,
-      matchedByFilter: fleetLaneHealth?.matchedByFilter ?? null,
+      matchedByFilter: fleetLaneEffective?.matchedByFilter ?? null,
       idleMemberCount: summary.idle_with_claimable,
       lanelessIdleCount: summary.laneless_idle,
       harness: args.harness ?? null,

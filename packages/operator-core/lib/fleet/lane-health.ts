@@ -34,12 +34,42 @@
 import { formatSpecRef } from '../scheduler/claim-spec';
 
 export interface FleetLaneHealth {
-  /** Post-floor: what a self-selecting member would actually see as claimable right now. */
+  /**
+   * Legacy ISSUE-family alias. Kept for existing callers and payload compatibility;
+   * new decisions must consume `effective` below.
+   */
   claimable: number;
-  /** Pre-floor: rows the fleet's own view.filter matches. >0 with claimable===0 ⇒ GATED, not drained. */
+  /** Legacy ISSUE-family alias; see `claimable`. */
   matchedByFilter: number;
-  /** Per-floor counts of why matched rows are not claimable. Buckets OVERLAP (not a partition). */
+  /** Legacy ISSUE-family alias; see `claimable`. */
   excluded: Record<string, number>;
+  /** The issue-family oracle behind the legacy aliases above. */
+  issueFamily: {
+    claimable: number;
+    matchedByFilter: number;
+    excluded: Record<string, number>;
+  };
+  /**
+   * Feature-family post-floor count when the issue-family zero is not authoritative
+   * for this spec. The feature helper cannot produce a pre-floor match count or an
+   * exclusion breakdown, so those fields stay null rather than being fabricated.
+   * Null for `featureFamily` means the feature leg was structurally unnecessary.
+   */
+  featureFamily: {
+    claimable: number | null;
+    matchedByFilter: null;
+    excluded: null;
+  } | null;
+  /**
+   * The counts callers may safely make queue/drain decisions from. A failed required
+   * feature read makes these values UNKNOWN (null), never an issue-only false zero.
+   */
+  effective: {
+    claimable: number | null;
+    matchedByFilter: number | null;
+    excluded: Record<string, number> | null;
+    basis: 'issue-family' | 'issue+feature-family';
+  };
   /** EI-19313376980892266 fix B: the scoping that PRODUCED `claimable`/`matchedByFilter`.
    *  Without it the count is not comparable to any other claimable count. */
   spec: {
@@ -61,12 +91,12 @@ export async function readFleetLaneHealth(args: {
   harness?: string;
   workspaceId?: string | null;
   assignee?: string;
+  rigAvailable?: boolean;
 }): Promise<FleetLaneHealth | null> {
   try {
-    const { resolveFleetClaimSpec, resolveClaimSpecWorkspace } = await import(
-      '../scheduler/claim-spec-store'
-    );
+    const { resolveFleetClaimSpec, resolveClaimSpecWorkspace } = await import('../scheduler/claim-spec-store');
     const { aggregateIssueClaimExclusions } = await import('../scheduler/get-next');
+    const { specIsIssueFamilyOnly } = await import('../agent-tools/scheduler/get_next');
     const ws = resolveClaimSpecWorkspace(args.workspaceId ?? undefined);
     const resolved = await resolveFleetClaimSpec({ spec: args.fleet, workspaceId: ws });
     if (!resolved) return null;
@@ -79,11 +109,62 @@ export async function readFleetLaneHealth(args: {
       harness,
       states: resolved.record.spec.states,
       assignee: args.assignee,
+      rigAvailable: args.rigAvailable,
     });
-    return {
+    const issueFamily = {
       claimable: breakdown.claimable,
       matchedByFilter: breakdown.matchedByFilter,
       excluded: breakdown.excluded as unknown as Record<string, number>,
+    };
+    const featureProbeRequired = issueFamily.matchedByFilter === 0 && !specIsIssueFamilyOnly(resolved.record.spec);
+    let featureFamily: FleetLaneHealth['featureFamily'] = null;
+    let effective: FleetLaneHealth['effective'] = {
+      ...issueFamily,
+      basis: 'issue-family',
+    };
+    if (featureProbeRequired) {
+      const featureWorkspaceId = ws;
+      const featureAssignee = args.assignee;
+      const featureClaimable =
+        featureAssignee && featureWorkspaceId
+          ? await (async (): Promise<number | null> => {
+              const { diagnoseFleetScopeFeatureFamilyMatch } = await import('../scheduler/fleet-scope-admission');
+              return diagnoseFleetScopeFeatureFamilyMatch({
+                scope: {
+                  ownerId: featureAssignee,
+                  fleetSlug: resolved.fleetSlug,
+                  fleetRole: 'member',
+                  record: resolved.record,
+                  workspaceId: featureWorkspaceId,
+                },
+                harness,
+                workspaceId: featureWorkspaceId,
+                states: resolved.record.spec.states,
+                rigAvailable: args.rigAvailable,
+              });
+            })()
+          : null;
+      featureFamily = {
+        claimable: featureClaimable,
+        matchedByFilter: null,
+        excluded: null,
+      };
+      effective = {
+        claimable: featureClaimable == null ? null : issueFamily.claimable + featureClaimable,
+        // The feature oracle is post-floor only. Do not fabricate a pre-floor count:
+        // positive proves nonempty, while zero cannot distinguish empty from gated.
+        matchedByFilter: null,
+        excluded: null,
+        basis: 'issue+feature-family',
+      };
+    }
+    return {
+      claimable: issueFamily.claimable,
+      matchedByFilter: issueFamily.matchedByFilter,
+      excluded: issueFamily.excluded,
+      issueFamily,
+      featureFamily,
+      effective,
       // EI-19313376980892266 fix B — PROVENANCE ON A DERIVED NUMBER. `claimable` is
       // produced under THIS spec, THIS harness and THIS assignee scoping; the same
       // question asked under the default spec legitimately returns a different number
@@ -91,10 +172,7 @@ export async function readFleetLaneHealth(args: {
       // contradiction and nearly got the claim oracle reported as broken). Naming the
       // scoping makes the two comparable instead of apparently conflicting.
       spec: {
-        ref: formatSpecRef(
-          resolved.record.spec.specId,
-          resolved.record.spec.revision ?? resolved.record.revision,
-        ),
+        ref: formatSpecRef(resolved.record.spec.specId, resolved.record.spec.revision ?? resolved.record.revision),
         specId: resolved.record.spec.specId,
         revision: resolved.record.spec.revision ?? resolved.record.revision,
         matchedBy: resolved.matchedBy,

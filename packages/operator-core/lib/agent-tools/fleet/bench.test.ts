@@ -72,6 +72,14 @@ const lane = (claimable: number, matchedByFilter = claimable) => ({
   claimable,
   matchedByFilter,
   excluded: {},
+  issueFamily: { claimable, matchedByFilter, excluded: {} },
+  featureFamily: null,
+  effective: {
+    claimable,
+    matchedByFilter,
+    excluded: {},
+    basis: 'issue-family' as const,
+  },
   spec: {
     ref: 'spec-x (spec rev 3)',
     specId: 'spec-x',
@@ -112,6 +120,26 @@ describe('projectBenchRows (pure)', () => {
 
   it('empty input → empty output', () => {
     expect(projectBenchRows([])).toEqual([]);
+  });
+});
+
+describe('benchQueueVerdict — effective family-aware counts (EI-211885)', () => {
+  it('refuses a bench when issue aliases are zero but the feature lane is nonempty', () => {
+    expect(
+      benchQueueVerdict({
+        ...lane(0, 0),
+        effective: { claimable: 4, matchedByFilter: null },
+      }),
+    ).toMatchObject({ refuse: true, claimable: 4, reason: 'queue-nonempty' });
+  });
+
+  it('reports unknown rather than drained when the effective pre-floor count is unavailable', () => {
+    expect(
+      benchQueueVerdict({
+        ...lane(0, 0),
+        effective: { claimable: 0, matchedByFilter: null },
+      }),
+    ).toMatchObject({ refuse: false, claimable: 0, matchedByFilter: null, reason: 'unknown' });
   });
 });
 
