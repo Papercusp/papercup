@@ -119,6 +119,11 @@ export async function registerTask(
       ? new Date(Date.now() + spec.runtimeMaxSec * 1000).toISOString()
       : null;
 
+  // A reconciler tick can observe a managed scope after a fire-and-forget
+  // enrollment write failed or while that write is still in flight. It adopts
+  // the scope under the exact task id, creating an `unaccounted` placeholder;
+  // allow that one narrow conflict to regain provenance. Ordinary duplicate ids
+  // still return no row and fail below rather than overwriting a real task.
   const rows = await sql`
     INSERT INTO harness_shared.task_ledger (
       task_id, workspace_id, harness_slug, parent_task_id, root_task_id,
@@ -133,10 +138,45 @@ export async function registerTask(
       ${spec.fleetSlug ?? null}, ${spec.sessionId ?? null},
       ${scopeUnit}, ${spec.memoryMaxBytes ?? null}, ${spec.cpuWeight ?? null},
       ${spec.tasksMax ?? null}, ${deadlineAt},
-      'pending', ${spec.logPath ?? null}, ${JSON.stringify(spec.detail ?? {})}::jsonb
+      'pending', ${spec.logPath ?? null}, ${JSON.stringify(spec.detail ?? {})}::text::jsonb
     )
+    ON CONFLICT (task_id) DO UPDATE
+      SET workspace_id = EXCLUDED.workspace_id,
+          harness_slug = EXCLUDED.harness_slug,
+          parent_task_id = EXCLUDED.parent_task_id,
+          root_task_id = EXCLUDED.root_task_id,
+          class = EXCLUDED.class,
+          title = EXCLUDED.title,
+          argv = EXCLUDED.argv,
+          cwd = EXCLUDED.cwd,
+          launched_by = EXCLUDED.launched_by,
+          work_item_id = EXCLUDED.work_item_id,
+          plan_slug = EXCLUDED.plan_slug,
+          fleet_slug = EXCLUDED.fleet_slug,
+          session_id = EXCLUDED.session_id,
+          scope_unit = COALESCE(harness_shared.task_ledger.scope_unit, EXCLUDED.scope_unit),
+          memory_max_bytes = EXCLUDED.memory_max_bytes,
+          cpu_weight = EXCLUDED.cpu_weight,
+          tasks_max = EXCLUDED.tasks_max,
+          deadline_at = EXCLUDED.deadline_at,
+          state = 'pending',
+          exit_code = NULL,
+          exit_reason = NULL,
+          ended_at = NULL,
+          log_path = EXCLUDED.log_path,
+          detail = COALESCE(harness_shared.task_ledger.detail, '{}'::jsonb) || EXCLUDED.detail,
+          updated_at = now()
+      WHERE harness_shared.task_ledger.workspace_id = EXCLUDED.workspace_id
+        AND harness_shared.task_ledger.state = 'unaccounted'
+        AND harness_shared.task_ledger.class = 'other'
+        AND harness_shared.task_ledger.launched_by = 'unknown'
+        AND EXCLUDED.scope_unit IS NOT NULL
+        AND harness_shared.task_ledger.scope_unit = EXCLUDED.scope_unit
     RETURNING *
   `;
+  if (rows.length === 0) {
+    throw new Error(`task-manager: task_id ${JSON.stringify(taskId)} already exists and is not an adoptable residue`);
+  }
   return toRow(rows[0]);
 }
 
@@ -469,7 +509,7 @@ export async function upsertUnaccounted(
         ${g.taskId}, ${ws}, ${g.taskId}, 'other',
         ${g.sampleCmdline.slice(0, 200) || '(unknown)'},
         '[]'::jsonb, 'unknown', ${g.scopeUnit}, ${g.cgroupPath}, ${g.pids[0] ?? null}, false, 'unaccounted',
-        ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::jsonb
+        ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb
       )
       ON CONFLICT (task_id) DO UPDATE
         SET scope_unit = COALESCE(EXCLUDED.scope_unit, harness_shared.task_ledger.scope_unit),
@@ -477,7 +517,7 @@ export async function upsertUnaccounted(
             updated_at = now(),
             state = CASE WHEN harness_shared.task_ledger.ended_at IS NULL
                          THEN 'unaccounted' ELSE harness_shared.task_ledger.state END,
-            detail = ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::jsonb
+            detail = ${JSON.stringify({ pids: g.pids, scopeUnit: g.scopeUnit })}::text::jsonb
     `;
     seen.push(g.taskId);
   }
