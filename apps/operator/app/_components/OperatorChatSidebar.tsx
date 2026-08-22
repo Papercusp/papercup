@@ -25,7 +25,15 @@ import { Popover } from '@/app/harness/Popover';
 import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { wsLocalKey } from '@papercusp/operator-core/lib/browser-workspace';
 import { reconcileProfilePref, writeProfileField } from '@papercusp/operator-core/lib/profile-pref';
-import { ChevronLeft, ChevronRight, ClipboardList, SlidersHorizontal, Volume2, VolumeX } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  ClipboardList,
+  Inbox as InboxIcon,
+  SlidersHorizontal,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useRouter } from '@/lib/router-compat/navigation';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
@@ -49,6 +57,9 @@ import { BUILT_IN_CHAT_VIEWS, dedupeChatFaces, type OpChatFace } from './op-chat
 // plan popup + sessions tab — lazy for the boot-lean reason (the boot-critical
 // chat chunk stays lean; it loads on first toggle).
 const PlansPane = lazy(() => import('./plans/PlansPane'));
+// D-009/P-012: the Resolution Inbox is a built-in chat face again. Keep its
+// full attention/detail graph out of the boot-critical chat chunk until picked.
+const InboxPane = lazy(() => import('./inbox/InboxPane'));
 import { LocalCardHost } from './chat/LocalCardHost';
 import { useOperatorConversation } from './OperatorConversationProvider';
 import { useShortcutAction } from '@/lib/hotkeys';
@@ -86,10 +97,9 @@ const AUDIENCE_MODE_OVERFLOW_WIDTH = 620;
  *  Health view (WI-4778) ⇄ the simplified Plans tracker. URL state via nuqs so
  *  agents (ui:get_state / ui:dispatch) can see + drive it.
  *
- *  The human Inbox face (EI-13037) was retired (hud-consolidation-2026-07-26
- *  P-003) — every ask it surfaced is now covered by the HUD board's asks/
- *  unattributed lane (hud-consolidation P-002 proved coverage first), and a
- *  drill-in opens the agent's conversation there instead (P-004, below).
+ *  The human Inbox face was restored as the owner-selected Resolution Inbox
+ *  (owner-inbox-single-pane D-009/P-012). HUD remains a fleet/session view;
+ *  the Inbox is the canonical heterogeneous blocker resolver.
  *
  *  EXTRA faces (WI-5162: [👥 Fleet] [🎧 Peers], mounted right of 🎯) widen this
  *  enum at runtime — their panes live in operator-vite and arrive as `faces`
@@ -325,6 +335,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   const [view, setView] = useQueryState('opcv', viewParser);
   const potOpen = view === 'pot';
   const plansOpen = view === 'plans';
+  const inboxOpen = view === 'inbox';
   // The live attention items, so a drill-in can RESOLVE its ref against a real
   // attention item and read its owning agent (WI-5342). Held in a ref so
   // handleCardDrillIn stays identity-stable (it's memo-keyed into OperatorChat's
@@ -572,9 +583,8 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
             {/* owner-plans-single-pane-2026-07-17 + owner ask 2026-07-17: the
                 Plans face sits LEFT of Papercup — [📋 Plans] [🥤 Papercup]
                 [🎯 Pot Health]. Simplified plan tracking; badge = plans that
-                need YOU. (The Inbox face that used to sit here retired —
-                hud-consolidation-2026-07-26 P-003 — asks now surface on the
-                HUD board instead.) */}
+                need YOU. The restored Inbox face sits between Plans and
+                Papercup as the canonical blocker destination (D-009). */}
             <Tooltip label={plansOpen ? 'Back to chat' : 'Plans — track active plans, open one in a popup, view its agent sessions'}>
               <button
                 type="button"
@@ -595,6 +605,30 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
                     aria-label={attentionUnknown ? UNKNOWN_LABEL : undefined}
                   >
                     {attentionUnknown ? INDETERMINATE : plansBadge}
+                  </span>
+                ) : null}
+              </button>
+            </Tooltip>
+            <Tooltip label={inboxOpen ? 'Back to chat' : 'Resolution Inbox — resolve everything blocked on you'}>
+              <button
+                type="button"
+                className={`op-chat-inbox-toggle${inboxOpen ? ' is-on' : ''}`}
+                onClick={() => void setView(inboxOpen ? 'chat' : 'inbox')}
+                aria-pressed={inboxOpen}
+                aria-label={inboxOpen ? 'Back to chat' : 'Show Resolution Inbox'}
+                data-testid="op-chat-inbox-toggle"
+              >
+                <InboxIcon className="op-chat-inbox-icon" aria-hidden="true" />
+                <span className="op-chat-inbox-toggle-label">Inbox</span>
+                {showInboxBadge ? (
+                  <span
+                    className="op-chat-inbox-badge"
+                    data-testid="op-chat-inbox-badge"
+                    data-degraded={attentionUnknown ? 'true' : undefined}
+                    title={attentionUnknown ? UNKNOWN_LABEL : undefined}
+                    aria-label={attentionUnknown ? UNKNOWN_LABEL : `${inboxPending} inbox items need you`}
+                  >
+                    {attentionUnknown ? INDETERMINATE : inboxBadge}
                   </span>
                 ) : null}
               </button>
@@ -729,6 +763,13 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
           <Suspense fallback={<div className="op-chat-view-loading">Loading plans…</div>}>
             <PlansPane />
           </Suspense>
+        ) : inboxOpen ? (
+          /* owner-inbox-single-pane D-009/P-012: the canonical Resolution
+             Inbox is a built-in face in this same pane. The pane owns its
+             list/detail URL state; Discuss seeds Papercup and returns here. */
+          <Suspense fallback={<div className="op-chat-view-loading">Loading inbox…</div>}>
+            <InboxPane onDiscussInChat={() => void setView('chat')} />
+          </Suspense>
         ) : (
           /* WI-4789 (owner ask 2026-07-14): the ambient Mug/Kettle status
              strip that used to sit here is GONE — the 🎯 Pot Health toggle
@@ -779,10 +820,8 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
 }
 
 const OP_CHAT_SIDEBAR_CSS = `
-/* ── Shared face-pill chrome (originally the EI-13037 Inbox toggle; the
-   Inbox face itself retired hud-consolidation-2026-07-26 P-003 — these
-   classes are named after it but are shared base styling now used by the
-   Plans toggle: [📋 Plans] [🥤 Papercup] [🎯 Pot Health]).
+/* ── Shared face-pill chrome (Inbox + Plans):
+   [📋 Plans] [📥 Inbox] [🥤 Papercup] [🎯 Pot Health].
    Pill chrome mirrors .op-chat-pot-toggle so they read as peers. */
 .op-chat-header-main .op-chat-inbox-toggle {
   flex: 0 1 auto;

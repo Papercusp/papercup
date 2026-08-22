@@ -224,6 +224,13 @@ vi.mock('@/app/admin/plans/plans-api', () => ({
 vi.mock('../plans/PlansPane', () => ({
   default: () => <div data-testid="plans-pane-stub" />,
 }));
+vi.mock('../inbox/InboxPane', () => ({
+  default: ({ onDiscussInChat }: { onDiscussInChat: () => void }) => (
+    <div data-testid="inbox-pane-stub">
+      <button type="button" data-testid="inbox-discuss-stub" onClick={onDiscussInChat} />
+    </div>
+  ),
+}));
 // hud-consolidation-2026-07-26 P-004: a curator card's drill-in now navigates
 // (router.push) to the HUD tab instead of opening the retired Inbox pane.
 const routerPushSpy = vi.fn();
@@ -592,16 +599,28 @@ describe('OperatorChatSidebar collapse behavior', () => {
     expect(document.body.classList.contains('op-chat-collapsed')).toBe(false);
   });
 });
-describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2026-07-26 P-003/P-004)', () => {
-  it('no longer renders an Inbox toggle', () => {
+describe('Resolution Inbox face + attention drill-ins (owner-inbox-single-pane D-009/P-012)', () => {
+  it('renders the Inbox toggle, swaps in the lazy pane, and Discuss returns to chat', async () => {
     render(<OperatorChatSidebar />);
-    expect(screen.queryByTestId('op-chat-inbox-toggle')).toBeNull();
+    const toggle = screen.getByTestId('op-chat-inbox-toggle');
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+
+    fireEvent.click(toggle);
+    expect(await screen.findByTestId('inbox-pane-stub')).toBeTruthy();
+    expect(screen.queryByTestId('operator-chat')).toBeNull();
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+
+    fireEvent.click(screen.getByTestId('inbox-discuss-stub'));
+    await waitFor(() => expect(screen.getByTestId('operator-chat')).toBeTruthy());
+    expect(screen.queryByTestId('inbox-pane-stub')).toBeNull();
   });
 
   it('still shows the live "needs you" badge (99+ cap) on the collapsed rail — the data layer keeps working', () => {
     inboxState.pending = 132;
     render(<OperatorChatSidebar />);
-    expect(screen.getByLabelText('132 inbox items need you').textContent).toBe('99+');
+    expect(screen.getByTestId('op-chat-rail-badge').textContent).toBe('99+');
+    expect(screen.getByTestId('op-chat-rail-badge').getAttribute('aria-label')).toBe('132 inbox items need you');
+    expect(screen.getByTestId('op-chat-inbox-badge').textContent).toBe('99+');
   });
 
   /* WI-39779 — a timed-out attention read must not render as "nothing needs you".
@@ -877,8 +896,9 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
       // Fleet then Peers, and both after the kettle toggle.
       expect(peers).toBe(fleet + 1);
       expect(fleet).toBeGreaterThan(kettle);
-      // …and the Plans + Papercup faces still lead the row (Inbox retired).
+      // …and the built-in Plans + Inbox faces still lead the row.
       expect(pills.indexOf('op-chat-plans-toggle')).toBeLessThan(fleet);
+      expect(pills.indexOf('op-chat-inbox-toggle')).toBeLessThan(fleet);
     });
 
     it('a face swaps the body for its pane and toggles back to the chat', async () => {
@@ -910,18 +930,25 @@ describe('Inbox face retirement + HUD conversation drill-in (hud-consolidation-2
     it('drops a face whose id would shadow a built-in view', () => {
       render(
         <OperatorChatSidebar
-          faces={[{ ...faces[0], id: 'pot' }, { ...faces[1], id: 'peers' }, { ...faces[1], id: 'peers' }]}
+          faces={[
+            { ...faces[0], id: 'pot' },
+            { ...faces[0], id: 'inbox' },
+            { ...faces[1], id: 'peers' },
+            { ...faces[1], id: 'peers' },
+          ]}
         />,
       );
-      // 'pot' would fight the 🫖 toggle for ?opcv; the duplicate 'peers' would
-      // light two pills at once. Both are dropped, the first 'peers' survives.
+      // Built-in pot/inbox ids would fight their host toggles for ?opcv; the
+      // duplicate peers id would light two pills. All collisions are dropped.
       expect(screen.queryByTestId('op-chat-face-pot')).toBeNull();
+      expect(screen.queryByTestId('op-chat-face-inbox')).toBeNull();
       expect(screen.getAllByTestId('op-chat-face-peers')).toHaveLength(1);
     });
 
     it('renders the built-in faces unchanged when no faces are passed', () => {
       render(<OperatorChatSidebar />);
       expect(screen.getByTestId('op-chat-plans-toggle')).toBeTruthy();
+      expect(screen.getByTestId('op-chat-inbox-toggle')).toBeTruthy();
       expect(screen.getByTestId('operator-chat')).toBeTruthy();
       expect(document.querySelector('.op-chat-face-toggle')).toBeNull();
     });
