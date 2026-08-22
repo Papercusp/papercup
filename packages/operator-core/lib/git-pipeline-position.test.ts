@@ -56,6 +56,7 @@ const HEALTHY_GIT_SYNC = {
   lastSyncedAtMs: Date.now(),
   syncAgeMs: 0,
   consecutiveErrorTicks: 0,
+  skippedPaths: [],
   pushedRepos: ['papercusp'],
   mergedRepos: [],
   conflicts: [],

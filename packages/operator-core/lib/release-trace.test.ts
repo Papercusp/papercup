@@ -75,6 +75,7 @@ function position(over: Partial<PipelinePosition> = {}): PipelinePosition {
       lastSyncedAtMs: 1,
       syncAgeMs: 0,
       consecutiveErrorTicks: 0,
+      skippedPaths: [],
       pushedRepos: [],
       mergedRepos: [],
       conflicts: [],
