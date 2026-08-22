@@ -57,6 +57,7 @@ DEST="public/vditor/dist"
 STAMP="public/vditor/.version"
 LOCAL_DEST="public/vditor-local"
 LOCAL_STAMP="$LOCAL_DEST/.versions"
+LOCAL_VERSIONS=$'d3=6.7.0\nmarkmap-view=0.14.3\nwebfontloader=1.6.28'
 
 # Vditor's markmap bundle injects these three scripts itself instead of routing
 # them through its `options.cdn` base. Keep the browser copies beside the
@@ -100,7 +101,7 @@ if [ -f "$STAMP" ] && [ "$(cat "$STAMP")" = "$VERSION" ] \
   && [ -f "$DEST/js/lute/lute.min.js" ] \
   && [ -f "$MARKMAP" ] \
   && [ -f "$LOCAL_STAMP" ] \
-  && [ "$(cat "$LOCAL_STAMP")" = "d3=6.7.0\nmarkmap-view=0.14.3\nwebfontloader=1.6.28" ] \
+  && [ "$(cat "$LOCAL_STAMP")" = "$LOCAL_VERSIONS" ] \
   && [ -f "$LOCAL_DEST/d3.min.js" ] \
   && [ -f "$LOCAL_DEST/markmap-view.min.js" ] \
   && [ -f "$LOCAL_DEST/webfontloader.js" ] \
@@ -150,7 +151,7 @@ if grep -qF 'https://cdn.jsdelivr.net/npm/d3@6.7.0' "$MARKMAP" \
   exit 1
 fi
 
-printf 'd3=6.7.0\nmarkmap-view=0.14.3\nwebfontloader=1.6.28' > "$LOCAL_STAMP"
+printf '%s\n' "$LOCAL_VERSIONS" > "$LOCAL_STAMP"
 
 echo "$VERSION" > "$STAMP"
 echo "vditor-runtime: mirrored vditor v$VERSION and local markmap assets into $DEST/ ($(du -sh "$DEST" | cut -f1))"
