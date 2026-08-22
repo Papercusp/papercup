@@ -82,6 +82,11 @@ describe('sessions:search limit contract', () => {
     expect(argsSchema.safeParse({ query: 'needle', limit: 20 }).success).toBe(true);
     expect(argsSchema.safeParse({ query: 'needle', limit: 21 }).success).toBe(false);
   });
+
+  it('validates the context window cap before handler execution', () => {
+    expect(argsSchema.safeParse({ query: 'needle', context: 5 }).success).toBe(true);
+    expect(argsSchema.safeParse({ query: 'needle', context: 6 }).success).toBe(false);
+  });
 });
 
 describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
