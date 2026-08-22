@@ -469,3 +469,41 @@ describe('current_files pass-through (EI-18776963284535761)', () => {
     expect(filesArg()).toEqual(['a.ts', 'b.ts']);
   });
 });
+
+/**
+ * EI-21096338043071922 — the ambient retrieval fence has the same omission
+ * contract as current_files: coord:orient re-declares intent without this arg,
+ * so omission must preserve the durable session fence; only an explicit []
+ * clears it. Keep this at the handler seam so a future `?? []` cannot silently
+ * erase a blind session's exclusions before the store sees them.
+ */
+describe('ambient_excluded_refs pass-through (EI-21096338043071922)', () => {
+  const ambientExcludedRefsArg = (): unknown => {
+    const call = writePresence.mock.calls.at(-1) as unknown as
+      | [unknown, { ambientExcludedRefs?: unknown }]
+      | undefined;
+    return call?.[1]?.ambientExcludedRefs;
+  };
+
+  it('an OMITTED ambient_excluded_refs reaches the store as undefined (untouched)', async () => {
+    await tool.handler({ intent: 'a routine re-declare without changing the fence' }, ctx);
+    expect(writePresence).toHaveBeenCalled();
+    expect(ambientExcludedRefsArg()).toBeUndefined();
+  });
+
+  it('an EXPLICIT [] reaches the store as [] (a real clear)', async () => {
+    await tool.handler({ intent: 'clear the ambient retrieval fence', ambient_excluded_refs: [] }, ctx);
+    expect(ambientExcludedRefsArg()).toEqual([]);
+  });
+
+  it('a declared exclusion list reaches the store verbatim', async () => {
+    await tool.handler(
+      {
+        intent: 'exclude the held-out answer key',
+        ambient_excluded_refs: ['WI-40293', 'EI-21096338043071922'],
+      },
+      ctx,
+    );
+    expect(ambientExcludedRefsArg()).toEqual(['WI-40293', 'EI-21096338043071922']);
+  });
+});
