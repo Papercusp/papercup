@@ -615,6 +615,7 @@ async function findLatestProducerSnapshot(
     const coversUpTo = payload?.coversUpTo;
     const chunkCount = payload?.chunkCount ?? 1;
     if (
+      typeof coversUpTo !== 'number' ||
       !Number.isInteger(coversUpTo) ||
       coversUpTo < 0 ||
       !Number.isInteger(chunkCount) ||

@@ -20,6 +20,7 @@ import {
   readWorkItemsPageFromStore,
   readWorkItemsSummaryFromStore,
   workItemsSummarySelection,
+  type WorkItemsListRow,
   type WorkItemsListWireArgs,
 } from './work-items-list-query';
 
@@ -97,8 +98,6 @@ const facetDefs: readonly FacetDef<FixtureRow>[] = [
 const matches = (row: FixtureRow, wire: WorkItemsListWireArgs): boolean => {
   const args = normalizeWorkItemsListArgs(wire);
   const f = args.filters;
-  const contains = (value: string | null, query: string | null) =>
-    !query || (value ?? '').toLowerCase().includes(query.toLowerCase());
   return matchesFacetBase(row, wire)
     && (f.kinds.length === 0 || f.kinds.includes(row.kind))
     && (f.states.length === 0 || f.states.includes(row.state))
@@ -122,9 +121,23 @@ const matchesFacetBase = (row: FixtureRow, wire: WorkItemsListWireArgs): boolean
     && (f.rankMax == null || row.rank <= f.rankMax);
 };
 
+const fixtureFromStoredRow = (row: WorkItemsListRow): FixtureRow => ({
+  id: row.id,
+  kind: row.kind,
+  state: row.state,
+  title: row.title,
+  assignee: row.assignee ?? '',
+  severity: row.severity,
+  priority: row.priority ?? 0,
+  rank: row.rank ?? 0,
+  plan: row.planSlug ?? '',
+  stage: row.spineRole,
+});
+
 const pageFor = async (args: WorkItemsListWireArgs, cursor: string | null) => {
   const normalized = normalizeWorkItemsListArgs({ ...args, cursor });
-  return readWorkItemsPageFromStore(sql, workspaceId, buildWorkItemsPredicate(normalized));
+  const page = await readWorkItemsPageFromStore(sql, workspaceId, buildWorkItemsPredicate(normalized));
+  return { ...page, rows: page.rows.map(fixtureFromStoredRow) };
 };
 
 const summaryFor = async (args: WorkItemsListWireArgs): Promise<CompanionListSummary> => {

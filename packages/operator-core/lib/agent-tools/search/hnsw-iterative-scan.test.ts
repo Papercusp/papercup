@@ -2,9 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { PgHandle } from '@papercusp/search';
 import { resetIterativeScanProbe, withIterativeScan } from './hnsw-iterative-scan';
 
-type FakeSql = PgHandle & {
-  begin: ReturnType<typeof vi.fn>;
-};
+type FakeSql = PgHandle;
 
 function makeSql(probeError?: Error & { code?: string }): {
   sql: FakeSql;
@@ -29,7 +27,7 @@ function makeSql(probeError?: Error & { code?: string }): {
       return [];
     }) as unknown as PgHandle;
     return callback(tx);
-  });
+  }) as unknown as PgHandle['begin'];
   return { sql: root, probeCount: () => probeCount, bodyTransactions: () => bodyTransactions };
 }
 

@@ -47,6 +47,10 @@ const fail = (message: string): never => {
   throw new Error(`companion count contract: ${message}`);
 };
 
+function requireCursor(value: string | null, message: string): asserts value is string {
+  if (!value) fail(message);
+}
+
 const sameSet = (left: readonly string[], right: readonly string[]): boolean => {
   if (left.length !== right.length) return false;
   const b = new Set(right);
@@ -90,7 +94,7 @@ export async function assertCompanionPredicateParity<Row, Args>(
     if (!page.hasMore) break;
     if (page.rows.length === 0) fail('pagination claims more after a zero-growth page');
     const nextCursor = page.nextCursor;
-    if (!nextCursor) fail('pagination claims more without a next cursor');
+    requireCursor(nextCursor, 'pagination claims more without a next cursor');
     if (nextCursor === cursor || seenCursors.has(nextCursor)) {
       fail('pagination repeats a cursor while claiming more');
     }
