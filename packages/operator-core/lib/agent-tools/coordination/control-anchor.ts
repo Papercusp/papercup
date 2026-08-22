@@ -156,13 +156,24 @@ export function deriveClaimScope(
   briefPlanSlug: string | null | undefined,
   briefHarnessSlug: string | null | undefined,
 ): DerivedClaimScope {
-  const planClaims = briefPlanSlug
+  // The brief is a durable hint, but a held claim is the live lane authority.
+  // If a stale brief names a control/objective plan that has no matching claim,
+  // following it hides the actual plan and items from the successor. Keep the
+  // brief plan only when there are no claims to contradict it.
+  const briefPlanClaims = briefPlanSlug
     ? claims.filter((c) => c.plan_slug === briefPlanSlug)
-    : claims.filter((c) => c.plan_slug === (claims[0]?.plan_slug ?? null));
+    : [];
+  const claimPlan = claims[0]?.plan_slug ?? null;
+  const selectedPlan = briefPlanClaims.length > 0
+    ? briefPlanSlug!
+    : claimPlan ?? briefPlanSlug ?? null;
+  const planClaims = selectedPlan
+    ? claims.filter((c) => c.plan_slug === selectedPlan)
+    : [];
   const chosen = planClaims[0] ?? claims[0] ?? null;
   return {
     harness: briefHarnessSlug ?? chosen?.harness_slug ?? null,
-    plan: briefPlanSlug ?? chosen?.plan_slug ?? null,
+    plan: selectedPlan,
     items: planClaims.map((c) => c.item_id),
     lapsed: planClaims.filter((c) => !c.lease_valid).map((c) => c.item_id),
   };

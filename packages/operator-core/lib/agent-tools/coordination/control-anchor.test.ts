@@ -266,6 +266,21 @@ describe('deriveClaimScope — an agent must not lose its own lane to a lapsed l
     expect(scope.items).toEqual(['P-034']);
   });
 
+  it('falls back to the held claim lane when a stale brief plan has no matching claim', () => {
+    const scope = deriveClaimScope(
+      [{ ...claim('P-005', true), plan_slug: 'rem-dream-recombination-2026-08-17' }],
+      'dream-cycle-operator-control',
+      'papercusp',
+    );
+
+    expect(scope).toEqual({
+      harness: 'papercusp',
+      plan: 'rem-dream-recombination-2026-08-17',
+      items: ['P-005'],
+      lapsed: [],
+    });
+  });
+
   it('with no brief, the lane is a SINGLE plan — claims across plans do not merge', () => {
     // Before the fix the no-brief branch passed every row through, so an agent
     // holding items on two plans got a lane whose items did not all belong to
