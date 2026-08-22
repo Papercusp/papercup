@@ -229,14 +229,17 @@ disk_trend_line() { # <avail_kb> [history-name] [floor-kb] [floor-label]
   if [ "${line_count:-0}" -gt 240 ] 2>/dev/null; then
     { tail -n 240 "$hist" >"$hist.tmp" 2>/dev/null && mv "$hist.tmp" "$hist" 2>/dev/null; } || true
   fi
+  # Compare against the most recent valid prior sample. An older retained sample can
+  # describe a recovery while the current interval is declining, making the long-window
+  # net change look stable and masking the actionable trend.
   # A malformed/garbage history must degrade to "no baseline", never to a wrong number.
   awk -v now="$now" -v cur="$avail_kb" -v floor="$floor_kb" -v floor_label="$floor_label" '
-    /^[0-9]+ [0-9]+$/ && $1 < now { if (oldest == 0 || $1 < oldest) { oldest = $1; oldest_avail = $2 } }
+    /^[0-9]+ [0-9]+$/ && $1 < now { if (latest == 0 || $1 > latest) { latest = $1; latest_avail = $2 } }
     END {
-      if (oldest == 0) { print "trend: no prior sample yet (this run seeds the baseline)"; exit }
-      span_h = (now - oldest) / 3600.0
+      if (latest == 0) { print "trend: no prior sample yet (this run seeds the baseline)"; exit }
+      span_h = (now - latest) / 3600.0
       if (span_h < 0.5) { printf "trend: baseline too recent (%dm) to extrapolate\n", int(span_h * 60); exit }
-      lost_kb = oldest_avail - cur
+      lost_kb = latest_avail - cur
       rate = lost_kb / 1048576.0 / span_h
       if (rate <= 0.01) {
         printf "trend: NOT shrinking over the last %.1fh (free space changed %+.1f GiB)\n", span_h, -lost_kb / 1048576.0
@@ -659,14 +662,20 @@ if [ "${1:-}" = "--self-test" ]; then
   check_trend "trend over a 2h baseline: reports the rate AND an ETA" \
         "$((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
         "losing 5\.0[0-9] GiB/h .* ETA TO FULL ~[0-9]+h"
-  # 15. Space FREED must never render as a countdown to full.
+  # 15. A stale recovery must not hide a current decline: the newest prior sample
+  # is the actionable baseline, even when the oldest retained sample shows net gain.
+  check_trend "trend uses the newest prior sample after an older recovery" \
+        "$((trend_now_s - 14400)) $((trend_avail_kb - 10485760))
+$((trend_now_s - 7200)) $((trend_avail_kb + 10485760))" \
+        "losing 5\.0[0-9] GiB/h .* ETA TO FULL ~[0-9]+h"
+  # 16. Space FREED must never render as a countdown to full.
   check_trend "trend when the volume is recovering: NOT shrinking, no ETA" \
         "$((trend_now_s - 7200)) $((trend_avail_kb - 10485760))" \
         "NOT shrinking"
-  # 16. A corrupt history degrades to no-baseline, not to a garbage rate.
+  # 17. A corrupt history degrades to no-baseline, not to a garbage rate.
   check_trend "trend with a corrupt history: degrades to no-baseline" \
         "not-a-timestamp garbage" "no prior sample yet"
-  # 17. A baseline minutes old cannot support an hourly extrapolation.
+  # 18. A baseline minutes old cannot support an hourly extrapolation.
   check_trend "trend with a 6-minute baseline: refuses to extrapolate" \
         "$((trend_now_s - 360)) $((trend_avail_kb + 10485760))" \
         "baseline too recent"
