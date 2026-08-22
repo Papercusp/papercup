@@ -641,6 +641,34 @@ describe('getFeedbackCore — archive-first retrieval (P-006)', () => {
     expect(reached).toHaveLength(1);
   });
 
+  it('does not reuse the exact production archive answer for the SideStage rubric', async () => {
+    const ws = 'ws-arch-production-subject-fence';
+    const archivedQuestion =
+      'Critique acceptance rubric acceptance-plan-completion-audit-verdict-2026-08-13 against meta-acceptance-rubric. Subject plan goal: make plan completion require per-item code-truth audit, incremental citation re-verification, a vetted post-implementation rubric, independent grading, and an explicit implementer accept/reject verdict. Proposed criteria cover: (1) per-item provenance/carry-forward/staleness; (2) code-truth ship refusals and scoped force; (3) current vetting → non-implementer grade → author verdict; (4) dropped-reason and forcedPast attribution; (5) default-on flags plus citation spot-check in all four plan classes. Each has a falsification drill and relevant bound Vitest files. Identify overlap, missing failure modes, untraceable scope, weak/irrelevant checks, or diff-restatement wording; recommend exact revisions.';
+    const currentQuestion =
+      'Please independently critique acceptance rubric acceptance-sidestage-web-pagespeed-exceptional-2026-08-21 against every criterion in meta-acceptance-rubric. Identify any outcome-vs-diff restatement, missing trace to the SideStage plan objective or D-001, unfalsifiable criterion, uncovered failure mode, overlap, or objectively checkable criterion that should carry a structured test/instrument binding. Name exact rubric keys and concrete proposed changes; an explicit no-change finding is acceptable only with criterion-by-criterion evidence.';
+    await seedClosedConsult({
+      ws,
+      conv: 'conv-mt3hcpaf-0000-a4050c703a97449785c520397326810a',
+      vec: vecAt(0),
+      question: archivedQuestion,
+      outcome: { answer: 'unrelated acceptance-plan critique', confidence: 'high' },
+    });
+    const { deps, reached } = makeDeps(
+      routeOf([cand('cand-live')], { queryVec: qv }),
+    );
+    const r = asOk(
+      await getFeedbackCore(
+        { ...baseReq, workspaceId: ws, question: currentQuestion },
+        deps,
+      ),
+    );
+
+    expect(r.verdict).toBe('routed');
+    expect(r.archive).toBeUndefined();
+    expect(reached).toHaveLength(1);
+  });
+
   it('reuses a high-similarity archive answer when all named subjects match exactly', async () => {
     const ws = 'ws-arch-subject-match';
     await seedClosedConsult({
