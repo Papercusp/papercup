@@ -23,9 +23,19 @@ const SPAWNED_DDL = `
     status text NOT NULL,
     started_at timestamptz NOT NULL DEFAULT now(),
     heartbeat_at timestamptz,
+    last_output_at timestamptz,
+    session_id text,
     pid integer,
     launcher_host text,
     launcher_boot_id text
+  )`;
+
+const TOOL_INVOCATIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.tool_invocations (
+    id bigserial PRIMARY KEY,
+    workspace_id text NOT NULL,
+    spawn_id text,
+    invoked_at timestamptz NOT NULL DEFAULT now()
   )`;
 
 const TASK_LEDGER_DDL = `
@@ -50,6 +60,7 @@ beforeAll(async () => {
   await sql.unsafe('CREATE SCHEMA IF NOT EXISTS harness_shared');
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(TASK_LEDGER_DDL);
+  await sql.unsafe(TOOL_INVOCATIONS_DDL);
 }, 120_000);
 
 afterAll(async () => {
@@ -57,21 +68,41 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.spawned_agents, harness_shared.task_ledger`;
+  await sql`TRUNCATE harness_shared.spawned_agents, harness_shared.task_ledger, harness_shared.tool_invocations`;
 });
 
 async function seedSpawn(
   spawnId: string,
   status: string,
   heartbeatAgoMin: number | null,
-  identity: { pid?: number | null; launcherHost?: string | null; launcherBootId?: string | null } = {},
+  identity: {
+    pid?: number | null;
+    launcherHost?: string | null;
+    launcherBootId?: string | null;
+    startedAgoMin?: number;
+    lastOutputAgoMin?: number | null;
+    sessionOwner?: string | null;
+  } = {},
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.spawned_agents
-      (spawn_id, workspace_id, session_owner, run_id, status, heartbeat_at, pid, launcher_host, launcher_boot_id)
-    VALUES (${spawnId}, 'papercusp-workspace', ${spawnId}, ${spawnId}, ${status},
+      (spawn_id, workspace_id, session_owner, run_id, status, started_at, heartbeat_at,
+       last_output_at, pid, launcher_host, launcher_boot_id)
+    VALUES (${spawnId}, 'papercusp-workspace', ${identity.sessionOwner === undefined ? spawnId : identity.sessionOwner}, ${spawnId}, ${status},
+            now() - make_interval(mins => ${identity.startedAgoMin ?? 0}),
             ${heartbeatAgoMin == null ? null : sql`now() - make_interval(mins => ${heartbeatAgoMin})`},
+            ${
+              identity.lastOutputAgoMin == null
+                ? null
+                : sql`now() - make_interval(mins => ${identity.lastOutputAgoMin})`
+            },
             ${identity.pid ?? null}, ${identity.launcherHost ?? null}, ${identity.launcherBootId ?? null})`;
+}
+
+async function seedToolInvocation(spawnId: string): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.tool_invocations (workspace_id, spawn_id)
+    VALUES ('papercusp-workspace', ${spawnId})`;
 }
 
 async function seedTaskScope(
@@ -117,15 +148,42 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-dead')).toBe(false);
   });
 
-  it('a terminal spawn row with a live correlated task scope remains covered', async () => {
+  it('a terminal spawn row with a live correlated task scope and concrete output remains covered', async () => {
     await seedSpawn('s-fixer-handed-off', 'failed', 30, {
       launcherHost: hostname(),
       launcherBootId: launcherBootId(),
       pid: 999_999_999,
+      startedAgoMin: 30,
+      lastOutputAgoMin: 1,
     });
     await seedTaskScope('s-fixer-handed-off', 'running');
 
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-handed-off')).toBe(true);
+  });
+
+  it('a live correlated scope remains covered during the pre-turn grace', async () => {
+    await seedSpawn('s-fixer-starting', 'failed', 30, { startedAgoMin: 1 });
+    await seedTaskScope('s-fixer-starting', 'running');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-starting')).toBe(true);
+  });
+
+  it('WI-40422: a heartbeat-only correlated scope past the pre-turn grace does not mask a failed spawn', async () => {
+    await seedSpawn('s-fixer-pre-turn-stalled', 'failed', 30, {
+      startedAgoMin: 30,
+      sessionOwner: null,
+    });
+    await seedTaskScope('s-fixer-pre-turn-stalled', 'running');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-pre-turn-stalled')).toBe(false);
+  });
+
+  it('a correlated tool invocation proves progress after the pre-turn grace', async () => {
+    await seedSpawn('s-fixer-tool-progress', 'failed', 30, { startedAgoMin: 30 });
+    await seedTaskScope('s-fixer-tool-progress', 'running');
+    await seedToolInvocation('s-fixer-tool-progress');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-tool-progress')).toBe(true);
   });
 
   it('a correlated scope stops covering once the task reconciler closes it', async () => {
@@ -166,10 +224,23 @@ describe('releaseFixerSpawnAlive (P-014 / D-009 — the liveness-detection half)
   });
 
   it('a live legacy release-fixer task scope without spawnRecordId keeps a dead spawn covered', async () => {
-    await seedSpawn('s-fixer-legacy-live', 'failed', 30);
+    await seedSpawn('s-fixer-legacy-live', 'failed', 30, {
+      startedAgoMin: 30,
+      lastOutputAgoMin: 1,
+    });
     await seedLegacyTaskScope('s-fixer-legacy-live', 'running');
 
     expect(await releaseFixerSpawnAlive(sql, 's-fixer-legacy-live')).toBe(true);
+  });
+
+  it('WI-40422: a heartbeat-only legacy scope past the pre-turn grace does not mask a failed spawn', async () => {
+    await seedSpawn('s-fixer-legacy-pre-turn-stalled', 'failed', 30, {
+      startedAgoMin: 30,
+      sessionOwner: null,
+    });
+    await seedLegacyTaskScope('s-fixer-legacy-pre-turn-stalled', 'running');
+
+    expect(await releaseFixerSpawnAlive(sql, 's-fixer-legacy-pre-turn-stalled')).toBe(false);
   });
 
   it('a terminal legacy release-fixer task scope does not keep a dead spawn covered', async () => {

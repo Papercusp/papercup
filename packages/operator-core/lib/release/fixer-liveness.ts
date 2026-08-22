@@ -12,7 +12,7 @@
 import type postgres from 'postgres';
 import { hostname } from 'node:os';
 import { STALE_MS } from '../liveness';
-import { isSpawnProcessAlive, launcherBootId } from '../fleet/spawn-reclaim';
+import { FIRST_OUTPUT_STALL_MS, isSpawnProcessAlive, launcherBootId } from '../fleet/spawn-reclaim';
 
 /** The durable escalation phase for a release-fixer that died before its first turn. */
 export const RELEASE_FIXER_NO_TURN_PHASE = 'green-checkpoint-release-fixer-no-turn';
@@ -136,6 +136,7 @@ export async function releaseFixerSpawnAlive(
 ): Promise<boolean | null> {
   if (!spawnId) return null;
   const graceSec = Math.max(1, Math.round(STALE_MS / 1000));
+  const preTurnGraceSec = Math.max(1, Math.round(FIRST_OUTPUT_STALL_MS / 1000));
   try {
     const rows = (await sql.unsafe(
       `SELECT sa.launcher_host, sa.launcher_boot_id, sa.pid,
@@ -162,6 +163,16 @@ export async function releaseFixerSpawnAlive(
                    AND tl.state NOT IN ('pending','running')
                    AND tl.detail->>'spawnRecordId' = sa.spawn_id
               ) AS task_scope_ended
+              ,(
+                sa.started_at >= now() - make_interval(secs => $4)
+                OR sa.last_output_at IS NOT NULL
+                OR EXISTS (
+                  SELECT 1
+                    FROM harness_shared.tool_invocations ti
+                   WHERE ti.workspace_id = sa.workspace_id
+                     AND ti.spawn_id = sa.spawn_id
+                )
+              ) AS task_scope_progress_eligible
               ,legacy_task.candidate_count AS legacy_task_candidate_count,
               legacy_task.live AS legacy_task_live
          FROM harness_shared.spawned_agents sa
@@ -186,7 +197,7 @@ export async function releaseFixerSpawnAlive(
          ) AS legacy_task ON TRUE
         WHERE sa.spawn_id = $1
         LIMIT 1`,
-      [spawnId, graceSec, LEGACY_TASK_LINK_SKEW_SEC],
+      [spawnId, graceSec, LEGACY_TASK_LINK_SKEW_SEC, preTurnGraceSec],
     )) as Array<{
       launcher_host?: string | null;
       launcher_boot_id?: string | null;
@@ -194,16 +205,21 @@ export async function releaseFixerSpawnAlive(
       spawn_lease_live?: boolean;
       live_task_scope?: boolean;
       task_scope_ended?: boolean;
+      task_scope_progress_eligible?: boolean;
       legacy_task_candidate_count?: number | string;
       legacy_task_live?: boolean | null;
     }>;
     const row = rows[0];
     if (!row) return false;
 
-    // The named scope owns the real payload after systemd-run's client handoff.
-    // It outranks a terminal/stale spawn row until the task reconciler proves the
-    // scope ended; otherwise a second fixer can mutate the same frozen candidate.
-    if (row.live_task_scope) return true;
+    // The named scope owns the real payload after systemd-run's client handoff, but
+    // its task_ledger heartbeat proves only that the cgroup exists. Before the
+    // first-output grace expires that is enough to cover normal CLI startup. After
+    // the grace, require concrete child output or a tool call from this exact spawn;
+    // otherwise an idle Node/Claude/socat scope can mask a failed pre-turn spawn
+    // forever and prevent the serialized repair queue from advancing (WI-40422).
+    const taskScopeProgressEligible = row.task_scope_progress_eligible === true;
+    if (row.live_task_scope && taskScopeProgressEligible) return true;
 
     // EI-21019097008328015: the task reconciler already proved THIS spawn's own
     // process ended. That is decisive even though the spawn row itself still
@@ -219,7 +235,12 @@ export async function releaseFixerSpawnAlive(
     // the spawn.
     const legacyCandidateCount = Number(row.legacy_task_candidate_count ?? 0);
     if (legacyCandidateCount > 1) return null;
-    if (legacyCandidateCount === 1) return row.legacy_task_live === true;
+    if (legacyCandidateCount === 1) {
+      if (row.legacy_task_live !== true) return false;
+      if (taskScopeProgressEligible) return true;
+      // A heartbeat-only legacy scope beyond the pre-turn grace does not outrank
+      // the exact spawn lease. Fall through so a failed/stale spawn returns false.
+    }
 
     if (!row.spawn_lease_live) return false;
 
