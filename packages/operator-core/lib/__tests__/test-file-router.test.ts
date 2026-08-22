@@ -17,6 +17,7 @@ import {
   parseTransformFailure,
   transformFailureMarker,
   perGroupVitestArgs,
+  vitestRunFailed,
   warnIfInstallInFlight,
   withoutOutputFileArg,
   REPO_ROOT,
@@ -233,6 +234,31 @@ describe('evaluateMatch — the false-green refusal (P-009)', () => {
   it('accepts a single-file request that resolved', () => {
     const one = [{ absolute: A, requested: 'a.test.ts' }];
     expect(evaluateMatch({ routes: one, matched: [A], listStatus: 0 }).ok).toBe(true);
+  });
+});
+
+describe('vitestRunFailed — exit code and summary must agree (EI-21124682504777505)', () => {
+  it('refuses an exit-0 run whose Vitest summary reports failed files or tests', () => {
+    const output =
+      ' Test Files  2 failed | 3 passed (5)\n' +
+      '      Tests  4 failed | 20 passed (24)\n';
+    expect(vitestRunFailed({ status: 0, output })).toBe(true);
+  });
+
+  it('handles Vitest ANSI-colored failure summaries', () => {
+    const E = String.fromCharCode(27);
+    const output =
+      `${E}[2m Test Files ${E}[22m ${E}[1m${E}[31m1 failed${E}[39m${E}[22m (1)\n` +
+      `${E}[2m      Tests ${E}[22m ${E}[1m${E}[31m1 failed${E}[39m${E}[22m (1)\n`;
+    expect(vitestRunFailed({ status: 0, output })).toBe(true);
+  });
+
+  it('accepts a clean exit-0 summary and preserves nonzero process failures', () => {
+    expect(vitestRunFailed({
+      status: 0,
+      output: ' Test Files  5 passed (5)\n      Tests  24 passed (24)\n',
+    })).toBe(false);
+    expect(vitestRunFailed({ status: 1, output: 'worker crashed before summary\n' })).toBe(true);
   });
 });
 

@@ -18,7 +18,11 @@ import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadavg, availableParallelism } from 'node:os';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
-import { stripVitestAnsi, parseTransformFailure } from './lib/vitest-summary.mjs';
+import {
+  parseSummaryFailedCounts,
+  parseTransformFailure,
+  stripVitestAnsi,
+} from './lib/vitest-summary.mjs';
 
 // Re-exported so this module's own callers and tests (packages/operator-core/lib/__tests__/
 // test-file-router.test.ts) keep importing it from here unchanged. The IMPLEMENTATION moved to
@@ -356,6 +360,22 @@ export function evaluateMatch({ routes, matched, listStatus }) {
   const unmatched = routes.filter((route) => !matchedSet.has(route.absolute));
   const ok = listStatus === 0 && unmatched.length === 0 && matched.length > 0;
   return { ok, unmatched, requested: routes.length, matched: matched.length };
+}
+
+/**
+ * Treat a Vitest run as failed when either its process status or its own summary says so.
+ *
+ * EI-21124682504777505: Vitest 4.1.8 has emitted `Test Files N failed` / `Tests N failed`
+ * while returning status 0. The exit code alone is therefore not a complete verdict; keep the
+ * summary cross-check in this router as well as in affected-tests.mjs so `test:file` cannot
+ * false-green the same red suite.
+ *
+ * @param {{ status: number|null, output: string }} args
+ */
+export function vitestRunFailed({ status, output }) {
+  if (status !== 0) return true;
+  const summary = parseSummaryFailedCounts(output);
+  return Boolean(summary && (summary.testFiles > 0 || summary.tests > 0));
 }
 
 /**
@@ -1444,17 +1464,26 @@ export function main(argv = process.argv.slice(2)) {
       });
       continue;
     }
-    const groupFailed = result.status !== 0;
+    const runOutput = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    const groupFailed = vitestRunFailed({ status: result.status, output: runOutput });
+    if (result.status === 0 && groupFailed) {
+      const summary = parseSummaryFailedCounts(runOutput);
+      console.error(
+        `⚠ Vitest exited 0 but its summary reports ${summary?.testFiles ?? 0} failed test file(s) / ` +
+          `${summary?.tests ?? 0} failed test(s) — treating this group as failed ` +
+          '(EI-21124682504777505: an exit-code/summary mismatch must not read as green)',
+      );
+    }
     if (groupFailed) {
       console.error(`TEST_FILE_GROUP_RESULT cwd=${cwdLabel} executed=${exact.length} status=failed`);
-      if (looksLikeMidInstallCorruption(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
+      if (looksLikeMidInstallCorruption(runOutput)) {
         console.error(MID_INSTALL_HINT);
       }
       // EI-18099113673609528: >=2 files + zero per-suite detail is Vitest 4's silent
       // simultaneous-collection-failure reporter gap — re-run each file alone (where the same
       // failure DOES print in full) so the caller isn't left with an undiagnosable "N failed / no
       // tests" and nothing else.
-      if (exact.length > 1 && looksLikeSilentCollectionFailure(`${result.stdout ?? ''}\n${result.stderr ?? ''}`)) {
+      if (exact.length > 1 && looksLikeSilentCollectionFailure(runOutput)) {
         console.error(
           `TEST_FILE_DETAIL_RECOVERY cwd=${cwdLabel} Vitest printed zero per-suite error detail for ${exact.length} failed files (known Vitest 4 reporter gap when >=2 files fail collection at once) — re-running each file individually to surface the actual error:`,
         );
