@@ -9,6 +9,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { statePlaneForDoor } from '../state-plane-door';
 // Pure, import-free module (see its header) — safe to pull into a tool without dragging the
 // validator's pg/system-action-registry dependencies along.
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
@@ -234,6 +236,7 @@ export default defineTool({
           // untouched and remains the real size control.
           lastFiredAt: r.lastFiredAt ?? null,
           health: r.health ?? null,
+          ...(r.plane ? { plane: r.plane } : {}),
         };
       });
       if (d.routines.length > CAP) {
@@ -257,7 +260,7 @@ export default defineTool({
       return { count: d.count ?? d.routines.length, routines: rows };
     },
   },
-  async handler(args) {
+  async handler(args, ctx) {
     const { sql } = getOrgPg();
     const ws = activeWorkspaceId();
     const iso = (d: Date | null): string | null =>
@@ -358,19 +361,27 @@ export default defineTool({
          AND (${qLike}::text IS NULL OR name ILIKE ${qLike} OR install_slug ILIKE ${qLike})
          AND (NOT ${groupFilterActive}::boolean OR (${groupIsNull}::boolean AND group_slug IS NULL) OR group_slug = ${groupVal})
        ORDER BY install_slug, name`;
-    const routines = rows.map((r) => ({
-      installSlug: r.install_slug,
-      name: r.name,
-      triggerKind: r.trigger_kind,
-      cron: (r.trigger_config as { cron?: string } | null)?.cron ?? null,
-      targetRole: r.target_role,
-      active: r.active,
-      nextFireAt: iso(r.next_fire_at),
-      lastFiredAt: iso(r.last_fired_at),
-      group: r.group_slug,
-      paused: pauseOf(r.metadata),
-      health: healthOf(r.metadata),
-    }));
+    const home = operatorHomeHarnessSlug();
+    const routines = rows.map((r) => {
+      const routine = {
+        installSlug: r.install_slug,
+        name: r.name,
+        triggerKind: r.trigger_kind,
+        cron: (r.trigger_config as { cron?: string } | null)?.cron ?? null,
+        targetRole: r.target_role,
+        active: r.active,
+        nextFireAt: iso(r.next_fire_at),
+        lastFiredAt: iso(r.last_fired_at),
+        group: r.group_slug,
+        paused: pauseOf(r.metadata),
+        health: healthOf(r.metadata),
+      };
+      // Only the operator-home row backs the operator pipeline cells. Other installs
+      // may use the same routine name but have independent gates; stamping them with
+      // Papercusp's cell would turn a correct value into a cross-harness misattribution.
+      const plane = r.install_slug === home ? statePlaneForDoor(routine, 'routines:list', args, ctx) : null;
+      return { ...routine, ...(plane ? { plane } : {}) };
+    });
     // {data} envelope so the payload-tier shaper applies.
     return { data: { count: routines.length, routines } };
   },
