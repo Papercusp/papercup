@@ -2656,8 +2656,10 @@ const coversHostSuite = (queued, wsName) =>
   );
 
 const tasks = [];
+const excludedAffected = new Set();
 for (const ws of affected) {
   if (excludes.has(ws.name)) {
+    excludedAffected.add(ws.name);
     outSync(`(excluded ${ws.name})`);
     continue;
   }
@@ -2923,6 +2925,13 @@ if (!tasks.length) {
     );
     outSync(
       "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces",
+    );
+  } else if (excludedAffected.size === affected.length) {
+    outSync(
+      `Affected: ${affected.map((w) => w.name).join(", ")} — all selected workspaces were excluded.`,
+    );
+    outSync(
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=all-excluded",
     );
   } else {
     outSync(

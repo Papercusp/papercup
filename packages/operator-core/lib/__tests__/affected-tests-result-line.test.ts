@@ -121,9 +121,18 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
         tasks: '0',
       },
       {
-        name: 'no-test-script (workspaces selected, but none contributes a task)',
+        name: 'all-excluded (the selected workspace is explicitly excluded)',
         args: () => {
           const paths = 'papercusp-desktop/package.json';
+          return ['--changed-paths', paths, '--exclude', workspacesInPlay(paths).join(',')];
+        },
+        reason: 'all-excluded',
+        tasks: '0',
+      },
+      {
+        name: 'no-test-script (a selected workspace contributes no task)',
+        args: () => {
+          const paths = 'libs/generic/token-kit/package.json';
           return ['--changed-paths', paths, '--exclude', workspacesInPlay(paths).join(',')];
         },
         reason: 'no-test-script',
