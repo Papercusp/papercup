@@ -1084,7 +1084,7 @@ export default defineTool({
   guidance: {
     when: 'ERGONOMIC N-AGENTS-ON-A-PLAN DOOR: launch a leader-led su fleet whose members auto-join and auto-start the plan. Prefer this over hand-building agent commands with capability:terminal.',
     notWhen:
-      'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for background cups (cup:spawn), plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
+      'Not for: an AD-HOC brief with no plan, RESUMING a dead agent mid-thread, or FORKING a live one — that is capability:launch-agent (the flexible superset; `fleet` optional there, so a non-leader can launch too). Not for the retired background cup/nursery tier, plain command windows (capability:terminal), or fleet registration only (fleet:create). Decision table: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
       'plans:apply-plan-block or plans:new/plans:add-item → plans:start (REQUIRED — items become claimable only through it; skipped, the fleet launches onto an empty backlog; backstopped idempotently here) → fleet:launch-on-plan { name, plan, count }. As leader, loop:arm a lean monitor; avoid polling full rosters every wake.',
   },

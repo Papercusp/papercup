@@ -25,7 +25,7 @@ export default defineTool({
   guidance: {
     when: "To inspect the LIVE Mug's per-wake efficiency — is the frozen-prefix cache paying off (cacheHitRatio / cachedWakes) and is the precomputed brief cutting round-trips (avgTurns)? The B-06 measurement read.",
     notWhen: 'For a SCENARIO run’s efficiency score — that is the pot-eval efficiency class (it scores these per run). This tool is the ad-hoc live-Mug read.',
-    chaining: 'pot:status for wake/placement state; pot:survey for the frontier.',
+    chaining: 'pot:status for the pot wake state; no Mug placement frontier is available while the Mug/Kettle/Cup tier is retired.',
   },
   capability: 'harness:read',
   requirePrincipal: false,
