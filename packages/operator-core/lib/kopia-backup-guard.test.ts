@@ -1,13 +1,17 @@
 /** Regression coverage for serialize-and-slow-kopia-backups-2026-08-20. */
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  ftruncateSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   rmSync,
   symlinkSync,
+  writeSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,6 +60,14 @@ function run(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
+async function waitForPath(path: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${path}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
@@ -79,6 +91,72 @@ describe('Kopia global backup guard', () => {
     expect(result.status, result.stderr).toBe(0);
     expect(readFileSync(marker, 'utf8')).toBe('');
     expect(result.stdout).toContain('result=started mode=scheduled');
+  });
+
+  it('parses the complete guard before starting work so a live source update cannot tear it', async () => {
+    const { dir, env } = fixture();
+    const canonicalGuard = join(dir, 'canonical-guard.sh');
+    const installedGuard = join(dir, 'installed-guard.sh');
+    const ready = join(dir, 'ready');
+    const source = readFileSync(guard, 'utf8');
+    const commandTail = '"$@"\nrc=$?';
+    expect(source).toContain(commandTail);
+
+    // Make the still-unparsed tail much larger than Bash's read buffer. A
+    // top-level implementation starts the child before this tail is parsed;
+    // the parse-sealed main() implementation must parse it before any child
+    // can create READY.
+    const padding = Array.from(
+      { length: 8_192 },
+      (_, index) => `: # LIVE_SOURCE_PAD_${index.toString().padStart(5, '0')}\n`,
+    ).join('');
+    const paddedSource = source.replace(commandTail, `"$@"\n${padding}rc=$?`);
+    const mutationOffset = paddedSource.lastIndexOf(': # LIVE_SOURCE_PAD_');
+    expect(mutationOffset).toBeGreaterThan(0);
+
+    writeFileSync(canonicalGuard, paddedSource, { mode: 0o755 });
+    symlinkSync(canonicalGuard, installedGuard);
+
+    const child = spawn(
+      'bash',
+      [
+        installedGuard,
+        '--mode',
+        'wait',
+        '--label',
+        'live-source-update',
+        '--',
+        'bash',
+        '-c',
+        'touch "$1"; sleep 0.4',
+        '_',
+        ready,
+      ],
+      { env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20_000 },
+    );
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    const closed = new Promise<number | null>((resolve) => child.once('close', resolve));
+
+    await waitForPath(ready);
+    const fd = openSync(canonicalGuard, 'r+');
+    try {
+      const brokenTail = Buffer.from('broken="');
+      writeSync(fd, brokenTail, 0, brokenTail.length, mutationOffset);
+      ftruncateSync(fd, mutationOffset + brokenTail.length);
+    } finally {
+      closeSync(fd);
+    }
+
+    const status = await closed;
+    expect(status, `${stdout}\n${stderr}`).toBe(0);
+    expect(stdout).toContain('result=finished mode=wait rc=0');
   });
 
   it.each([

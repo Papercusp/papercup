@@ -3,6 +3,13 @@
 # pressured host. See serialize-and-slow-kopia-backups-2026-08-20#D-001.
 set -uo pipefail
 
+# Parse the complete runtime before starting work. These scripts are installed as
+# symlinks to this canonical file, so a repository update can replace the source
+# while a multi-hour child is running. Top-level code would resume parsing the
+# changed file after that child exits and can observe a torn old/new program. A
+# function body is parsed as one compound command before main starts; keep the
+# invocation and exit in one parsed list for the same reason.
+main() {
 usage() {
   echo "usage: $0 --mode scheduled|wait [--label NAME] -- COMMAND [ARG ...]" >&2
   exit 64
@@ -121,4 +128,7 @@ guard_log "result=started mode=$mode"
 "$@"
 rc=$?
 guard_log "result=finished mode=$mode rc=$rc"
-exit "$rc"
+return "$rc"
+}
+
+main "$@"; exit $?
