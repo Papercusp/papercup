@@ -567,6 +567,22 @@ describe('unverified-action-claim: the ACTOR decides the kind (P-014)', () => {
     expect(kinds('su-6dc49b99 replied about WI-37162 [turn:abc123@2026-08-09T10:00:00.000Z]')).toEqual([]);
   });
 
+  it('clears a namespaced Codex turn ref on the action line', () => {
+    expect(
+      kinds(
+        'Posted evidence to EI-21165235642497045 [turn:codex:01a029f0-dec6-7022-871d-92e4ca8f28ed@2026-08-22T14:51:07.729Z]',
+      ),
+    ).toEqual([]);
+  });
+
+  it('flags only the retained unanchored history, not the newly anchored action', () => {
+    const retained = 'Posted evidence to EI-21165235642497045';
+    const current =
+      'Posted evidence to EI-21165235642497045 [turn:codex:01a029f0-dec6-7022-871d-92e4ca8f28ed@2026-08-22T14:51:07.729Z]';
+    const r = lintCarrySurfaceProvenance(`${retained}\n\n---\n${current}`);
+    expect(r.matches).toEqual([{ line: retained, kind: 'unverified-action-claim' }]);
+  });
+
   it('softens the NOTE when every match is downgraded, but not when one is loud', () => {
     const soft = provenanceLintField('su-6dc49b99 replied that my defect is fixed, see WI-37162');
     expect(soft?.note).toBe(PROVENANCE_LINT_DOWNGRADED_NOTE);

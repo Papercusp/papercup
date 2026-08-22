@@ -34,7 +34,9 @@ import { hasMachineSurfaceMarker, hasSyntheticMarker } from './machine-surface-c
 /* ------------------------------------------------------------------ */
 
 /** How much of the native session id a ref carries — enough to disambiguate
- *  the sessions one owner realistically touches, short enough to hand-copy. */
+ *  the sessions one owner realistically touches, short enough to hand-copy.
+ *  A native id may include its client namespace (`codex:` / `claude:`), so the
+ *  parser below accepts that namespace as part of the prefix too. */
 const SESSION_PREFIX_CHARS = 8;
 
 export interface TurnRef {
@@ -55,7 +57,7 @@ export function formatTurnRef(sessionId: string, tsIso: string): string {
 }
 
 /** Global by design — a carry note can cite several turns. */
-const TURN_REF_RE = /\[turn:([0-9a-f]{4,36})@([0-9T:.+Z-]{10,40})\]/gi;
+const TURN_REF_RE = /\[turn:([A-Za-z0-9][A-Za-z0-9:_-]{3,79})@([0-9T:.+Z-]{10,40})\]/gi;
 
 /** How far around a `[turn:…]` ref to look for its associated quoted claim —
  *  wide enough to span a trailing "owner-typed]: " label, narrow enough that

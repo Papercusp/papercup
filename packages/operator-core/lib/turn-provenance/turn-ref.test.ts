@@ -40,6 +40,17 @@ describe('formatTurnRef / parseTurnRefs', () => {
     expect(parseTurnRefs(null)).toEqual([]);
   });
 
+  it('parses namespaced Codex refs emitted by the current session surface', () => {
+    const ref = '[turn:codex:01a029f0-dec6-7022-871d-92e4ca8f28ed@2026-08-22T14:51:07.729Z]';
+    expect(parseTurnRefs(`posted evidence ${ref}`)).toEqual([
+      expect.objectContaining({
+        sessionPrefix: 'codex:01a029f0-dec6-7022-871d-92e4ca8f28ed',
+        ts: '2026-08-22T14:51:07.729Z',
+        raw: ref,
+      }),
+    ]);
+  });
+
   // EI-12890: the ref alone only proves a turn EXISTS — the attached quote is
   // what a fabricated citation gets wrong, so it must be extracted too.
   it('captures the quote immediately following a ref (the documented `[turn:…]: "…"` shape)', () => {

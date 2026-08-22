@@ -42,8 +42,13 @@ const SOURCE_TAG_RE =
 /** P-014 (deterministic-context-carry): a turn ref `[turn:<session>@<ts>]` is the
  *  VERIFIABLE anchor for a directive — the stamper (carry-surface-provenance-stamp)
  *  resolves it against the writer's own transcript and classifies the referenced
- *  turn owner-vs-agent mechanically. A line carrying one is never lint-flagged. */
-const TURN_REF_LINE_RE = /\[turn:[0-9a-f]{4,36}@[0-9T:.+Z-]{10,40}\]/i;
+ *  turn owner-vs-agent mechanically. A line carrying one is never lint-flagged.
+ *
+ *  Session ids on the wire can carry a client namespace (`codex:<uuid>` or
+ *  `claude:<uuid>`), while older refs contain only the hexadecimal prefix. Keep
+ *  this recognizer in step with turn-ref.ts so a valid Codex/Claude anchor is not
+ *  mistaken for an unverified action claim (EI-21165235642497045). */
+const TURN_REF_LINE_RE = /\[turn:[A-Za-z0-9][A-Za-z0-9:_-]{3,79}@[0-9T:.+Z-]{10,40}\]/i;
 
 /**
  * EI-19988211953593959: the separator between the `owner` keyword and the tag's
