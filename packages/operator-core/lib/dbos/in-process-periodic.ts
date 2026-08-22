@@ -305,6 +305,7 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
     const { getOrgPg } = await import('@papercusp/db-org');
     const {
       reclaimOrphanedSpawns,
+      reapTerminalSpawnResultArtifacts,
       reclaimWedgedSpawns,
       WEDGE_REAP_SILENT_MS,
       reclaimFirstOutputStalledSpawns,
@@ -333,6 +334,20 @@ const spawnReclaimSweepCheck: PeriodicCheck = {
       } catch {
         /* best-effort — waiters fall back to their await timeout */
       }
+    }
+
+    // EI-19425373640931996: terminal paths can leave their restart-safe result
+    // artifact behind after the active-row harvest has stopped seeing them.
+    // Keep seven days of forensic evidence, then reap the bounded backlog.
+    try {
+      const ar = await reapTerminalSpawnResultArtifacts(sql);
+      if (ar.reaped > 0) {
+        console.warn(
+          `[spawn-reclaim] removed ${ar.reaped} terminal spawn result artifact(s): ${ar.spawnIds.join(', ')}`,
+        );
+      }
+    } catch (err) {
+      console.warn('[spawn-reclaim] terminal result artifact reaper failed (non-fatal — retries next tick):', err);
     }
 
     // EI-7204/EI-7197: the spawn-ceiling-jam class — a stale admission debit

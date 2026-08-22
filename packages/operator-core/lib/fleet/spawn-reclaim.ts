@@ -68,9 +68,72 @@ export function readCompletedSpawnArtifact(resultPath: string | null | undefined
   }
 }
 
-export function removeSpawnResultArtifact(resultPath: string | null | undefined): void {
-  if (!resultPath) return;
-  try { unlinkSync(resultPath); } catch { /* absent/locked artifact is harmless */ }
+export function removeSpawnResultArtifact(resultPath: string | null | undefined): boolean {
+  if (!resultPath) return true;
+  try {
+    unlinkSync(resultPath);
+    return true;
+  } catch (error) {
+    // A missing artifact is already clean. Keep the DB pointer for other
+    // failures (permissions, transient filesystem errors) so the next sweep
+    // can retry instead of silently losing the cleanup handle.
+    return (error as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+}
+
+/** Keep terminal invoke-once artifacts available for post-mortem inspection,
+ * then remove them once their owning spawn has been terminal for seven days. */
+export const SPAWN_RESULT_ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+
+export interface TerminalSpawnResultArtifactReapResult {
+  reaped: number;
+  spawnIds: string[];
+}
+
+/**
+ * Remove result artifacts left behind by terminal paths that never pass through
+ * `settleCompletedSpawnArtifacts` (cancel/reclaim/normal completion). The DB
+ * row is the authority for ownership and terminal age; the bounded batch keeps
+ * a large historic backlog from turning the periodic sweep into an unbounded
+ * filesystem loop. A terminal row's pointer is cleared only after unlinking
+ * succeeds (or the file is already absent), so transient filesystem failures
+ * remain retryable on the next tick.
+ */
+export async function reapTerminalSpawnResultArtifacts(
+  sql: Db,
+  opts: { retentionMs?: number; limit?: number } = {},
+): Promise<TerminalSpawnResultArtifactReapResult> {
+  const retentionSec = Math.max(
+    1,
+    Math.ceil((opts.retentionMs ?? SPAWN_RESULT_ARTIFACT_RETENTION_MS) / 1_000),
+  );
+  const limit = Math.max(1, Math.min(500, Math.floor(opts.limit ?? 500)));
+  const candidates = await sql<{ spawn_id: string; result_path: string }[]>`
+    SELECT spawn_id, result_path
+      FROM harness_shared.spawned_agents
+     WHERE status NOT IN ('running', 'restarting')
+       AND result_path IS NOT NULL
+       AND finished_at IS NOT NULL
+       AND finished_at < now() - ${retentionSec}::int * interval '1 second'
+     ORDER BY finished_at ASC
+     LIMIT ${limit}`;
+
+  const spawnIds: string[] = [];
+  for (const candidate of candidates) {
+    if (!removeSpawnResultArtifact(candidate.result_path)) continue;
+    const cleared = await sql<{ spawn_id: string }[]>`
+      UPDATE harness_shared.spawned_agents
+         SET result_path = NULL
+       WHERE spawn_id = ${candidate.spawn_id}
+         AND result_path = ${candidate.result_path}
+         AND status NOT IN ('running', 'restarting')
+         AND finished_at IS NOT NULL
+         AND finished_at < now() - ${retentionSec}::int * interval '1 second'
+       RETURNING spawn_id`;
+    if (cleared.length > 0) spawnIds.push(candidate.spawn_id);
+  }
+
+  return { reaped: spawnIds.length, spawnIds };
 }
 
 /** Cadence the live host bumps `heartbeat_at` for its in-flight spawns. */

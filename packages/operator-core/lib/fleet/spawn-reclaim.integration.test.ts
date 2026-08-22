@@ -29,6 +29,8 @@ import {
   sweepStaleSpawnClaims,
   reclaimCeilingJamDebits,
   spawnRowKind,
+  reapTerminalSpawnResultArtifacts,
+  SPAWN_RESULT_ARTIFACT_RETENTION_MS,
 } from './spawn-reclaim';
 
 const SPAWNED_AGENTS_DDL = `
@@ -130,6 +132,13 @@ async function statusOf(spawnId: string): Promise<string> {
   const rows = await db.sql<{ status: string }[]>`
     SELECT status FROM harness_shared.spawned_agents WHERE spawn_id = ${spawnId}`;
   return rows[0]?.status ?? '(none)';
+}
+
+async function ageTerminalSpawn(spawnId: string, ageSec: number): Promise<void> {
+  await db.sql`
+    UPDATE harness_shared.spawned_agents
+       SET finished_at = now() - ${ageSec}::int * interval '1 second'
+     WHERE spawn_id = ${spawnId}`;
 }
 
 async function runningCount(): Promise<number> {
@@ -311,6 +320,56 @@ describe('restart-safe scoped-spawn completion artifacts (WI-4894)', () => {
     const r = await reclaimOrphanedSpawns(db.sql, STALE_FAKE);
     expect(r.recovered).toEqual([]);
     expect(await statusOf('partial')).toBe('failed');
+  });
+});
+
+describe('terminal spawn-result artifact reaper (EI-19425373640931996)', () => {
+  let dir = '';
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'spawn-result-reaper-')); });
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }); });
+
+  it('removes a terminal artifact after the seven-day forensic retention window', async () => {
+    const resultPath = join(dir, 'old-terminal.log');
+    writeFileSync(resultPath, 'terminal failure evidence\n');
+    await insertSpawn('old-terminal', 'failed', 60, { resultPath });
+    await ageTerminalSpawn('old-terminal', Math.ceil(SPAWN_RESULT_ARTIFACT_RETENTION_MS / 1_000) + 3_600);
+
+    const r = await reapTerminalSpawnResultArtifacts(db.sql);
+
+    expect(r).toEqual({ reaped: 1, spawnIds: ['old-terminal'] });
+    expect(existsSync(resultPath)).toBe(false);
+    const [row] = await db.sql<{ result_path: string | null }[]>`
+      SELECT result_path FROM harness_shared.spawned_agents WHERE spawn_id = 'old-terminal'`;
+    expect(row.result_path).toBeNull();
+  });
+
+  it('preserves recent terminal and active artifacts', async () => {
+    const recentPath = join(dir, 'recent-terminal.log');
+    const activePath = join(dir, 'active.log');
+    writeFileSync(recentPath, 'keep recent evidence\n');
+    writeFileSync(activePath, 'still active\n');
+    await insertSpawn('recent-terminal', 'cancelled', 60, { resultPath: recentPath });
+    await insertSpawn('active', 'running', 60, { resultPath: activePath });
+    await ageTerminalSpawn('recent-terminal', 60 * 60);
+
+    const r = await reapTerminalSpawnResultArtifacts(db.sql);
+
+    expect(r).toEqual({ reaped: 0, spawnIds: [] });
+    expect(existsSync(recentPath)).toBe(true);
+    expect(existsSync(activePath)).toBe(true);
+  });
+
+  it('clears an old pointer when its artifact is already absent', async () => {
+    const resultPath = join(dir, 'already-absent.log');
+    await insertSpawn('already-absent', 'done', 60, { resultPath });
+    await ageTerminalSpawn('already-absent', Math.ceil(SPAWN_RESULT_ARTIFACT_RETENTION_MS / 1_000) + 3_600);
+
+    const r = await reapTerminalSpawnResultArtifacts(db.sql);
+
+    expect(r).toEqual({ reaped: 1, spawnIds: ['already-absent'] });
+    const [row] = await db.sql<{ result_path: string | null }[]>`
+      SELECT result_path FROM harness_shared.spawned_agents WHERE spawn_id = 'already-absent'`;
+    expect(row.result_path).toBeNull();
   });
 });
 
