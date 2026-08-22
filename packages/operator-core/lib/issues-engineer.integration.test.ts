@@ -28,6 +28,7 @@ import {
 } from '@papercusp/coordination/capabilities';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from './../test/_work-items-schema';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -179,6 +180,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  resetAgentStateStamps();
   await db.sql`TRUNCATE harness_shared.work_items, harness_shared.coord_entity_subscriptions, harness_shared.coord_threads, harness_shared.coord_thread_posts, harness_shared.coord_links, harness_shared.coord_topics, harness_shared.coord_event_log  RESTART IDENTITY`;
 });
 
@@ -348,11 +350,17 @@ describe('engineer issues surface (real PG)', () => {
     // 48 dispatched bugs (learning-system-audit-improvements-2026-06-09 D-010).
     expect(claimed?.assignedAt).toBeTruthy();
     expect(Math.abs(Date.now() - Date.parse(claimed!.assignedAt!))).toBeLessThan(60_000);
+    noteGoalClaimed('agB', id);
+    expect(readAgentStateStamp('agB').goalRef).toBe(id);
     const mySubs = await subs.listSubscriptions('agB');
     expect(mySubs.map((s) => s.target_ref)).toContain(`issue:${id}`);
     const released = await issues.releaseIssue(id);
     expect(released?.assignee).toBeNull();
     expect(released?.assignedAt).toBeNull();
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(row?.taken_by).toBeNull();
+    expect(readAgentStateStamp('agB').goalRef).toBeNull();
   });
 
   it('EI-7150: setIssueState to a non-terminal state (e.g. open) PRESERVES the claim — only resolved/closed clear it', async () => {
@@ -383,6 +391,8 @@ describe('engineer issues surface (real PG)', () => {
   it('terminal issue transitions clear the progress anchor with the released claim', async () => {
     const { id } = await issues.createIssue({ title: 'clear progress on close', createdBy: 'agA' });
     await issues.claimIssue(id, 'agB');
+    noteGoalClaimed('agB', id);
+    expect(readAgentStateStamp('agB').goalRef).toBe(id);
     expect(await issues.markIssueProgress(id)).toBe(true);
     expect((await issues.getIssue(id))?.lastProgressAt).not.toBeNull();
 
@@ -391,6 +401,7 @@ describe('engineer issues surface (real PG)', () => {
     expect(resolved?.assignee).toBeNull();
     expect(resolved?.assignedAt).toBeNull();
     expect(resolved?.lastProgressAt).toBeNull();
+    expect(readAgentStateStamp('agB').goalRef).toBeNull();
 
     const [row] = await db.sql<{
       state: string;

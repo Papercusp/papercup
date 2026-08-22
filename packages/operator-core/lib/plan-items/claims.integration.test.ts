@@ -27,6 +27,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type postgres from 'postgres';
 import { createFreshPgDb, applyPlanItemClaimMigrations, type FreshPgDb } from '../../test/_pg-helpers';
 import type { AcquireOpts } from './claims';
+import { noteGoalClaimed, readAgentStateStamp, resetAgentStateStamps } from '../agent-state-stamp';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 
@@ -66,6 +67,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  resetAgentStateStamps();
   await db.sql`DELETE FROM harness_shared.plan_item_claims`;
   await db.sql`DELETE FROM harness_shared.agent_activity`;
 });
@@ -205,19 +207,37 @@ describe('release', () => {
   it('owner+claim_id checked: the wrong owner frees nothing; the right one frees the row', async () => {
     const a = await acquire();
     if (!a.ok) throw new Error('setup');
+    noteGoalClaimed('su-alice', `${PLAN}#P-001`);
     expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', a.claim.claimId, 'su-bob')).toBe(false);
     expect(await claims.getClaim(WS, HARNESS, PLAN, 'P-001')).not.toBeNull();
     expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', a.claim.claimId, 'su-alice')).toBe(true);
     expect(await claims.getClaim(WS, HARNESS, PLAN, 'P-001')).toBeNull();
+    expect(readAgentStateStamp('su-alice').goalRef).toBeNull();
+  });
+
+  it('releasing an older claim does not clear a newer plan-item goal', async () => {
+    const old = await acquire({ itemId: 'P-001' });
+    const newer = await acquire({ itemId: 'P-002' });
+    if (!old.ok || !newer.ok) throw new Error('setup');
+    noteGoalClaimed('su-alice', `${PLAN}#P-002`);
+
+    expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-001', old.claim.claimId, 'su-alice')).toBe(true);
+    expect(await claims.getClaim(WS, HARNESS, PLAN, 'P-001')).toBeNull();
+    expect(readAgentStateStamp('su-alice').goalRef).toBe(`${PLAN}#P-002`);
+
+    expect(await claims.releaseClaim(WS, HARNESS, PLAN, 'P-002', newer.claim.claimId, 'su-alice')).toBe(true);
+    expect(readAgentStateStamp('su-alice').goalRef).toBeNull();
   });
 
   it('releaseAllClaimsForOwner sweeps exactly the owner set', async () => {
     await acquire({ itemId: 'P-001' });
     await acquire({ itemId: 'P-002' });
     await acquire({ itemId: 'P-003', owner: 'su-bob' });
+    noteGoalClaimed('su-alice', `${PLAN}#P-002`);
     expect(await claims.releaseAllClaimsForOwner(WS, 'su-alice')).toBe(2);
     const left = await claims.listClaimsForPlan(WS, HARNESS, PLAN);
     expect(left.map((c) => c.owner)).toEqual(['su-bob']);
+    expect(readAgentStateStamp('su-alice').goalRef).toBeNull();
   });
 });
 

@@ -30,8 +30,14 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
-import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WATCHDOG_TICKS_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables, PgLinkStore } from '@papercusp/coordination/capabilities';
+import { readAgentStateStamp, resetAgentStateStamps } from './agent-state-stamp';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -113,7 +119,21 @@ beforeAll(async () => {
   h.sql = db.sql;
   await ensureCoordCapabilityTables(db.sql);
   await db.sql.unsafe(COORD_EVENT_LOG_DDL);
+  // Terminal work-item transitions cancel lifecycle-bound awaits. Keep this
+  // fixture on the same production schema chain as work-items.integration.test
+  // so a missing event table cannot masquerade as a lifecycle regression.
+  for (const migration of [
+    '163-await-event-subscriptions.sql',
+    '175-watch-floor-coalesce-cols.sql',
+    '541-predicate-watches.sql',
+    '871-lifecycle-bound-watches.sql',
+  ]) {
+    await db.sql.unsafe(readMigration(migration)).simple();
+  }
   await db.sql.unsafe(HFC_DDL);
+  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  await db.sql.unsafe(WATCHDOG_TICKS_DDL).simple();
   // Per-assignee rank columns (local-hive P-020, migration 178 §1) — FEATURE_COLS/ISSUE_COLS select them.
   await db.sql.unsafe(`
     ALTER TABLE harness_shared.work_items
@@ -131,11 +151,15 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  resetAgentStateStamps();
   await db.sql`TRUNCATE harness_shared.work_items,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
                        harness_shared.coord_links, harness_shared.coord_topics,
-                       harness_shared.coord_event_log RESTART IDENTITY`;
+                       harness_shared.coord_event_log, harness_shared.event_awaits,
+                       harness_shared.event_wake_deliveries, harness_shared.predicate_watches,
+                       harness_shared.work_item_deps, harness_shared.work_item_blocked,
+                       harness_shared.watchdog_ticks RESTART IDENTITY`;
   await db.sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
   fh.spy.mockClear();
 });
@@ -240,6 +264,48 @@ describe('work_item change fan-out — notify_kind mapping + actor exclusion', (
     expect(reopened?.state).toBe('open');
     const call = fanoutCalls()[0];
     expect(call.ev.notify_kind).toBe('issue_updated');
+  });
+});
+
+describe('P-009 — terminal/release lifecycle retires cached goal refs', () => {
+  it('clears the feature holder goal only after the real terminal write releases the DB claim', async () => {
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'goal cleanup', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(feature.id, 'agB', { harness: 'papercup' }))?.assignee).toBe('agB');
+    expect(readAgentStateStamp('agB').goalRef).toBe(feature.id);
+
+    const closed = await wi.setWorkItemState(feature.id, 'passed', {
+      harness: 'papercup', by: 'agB', completionRef: 'integration-test completion',
+    });
+    expect(closed?.assignee).toBeNull();
+
+    const [row] = await db.sql<{ status: string; taken_by: string | null }[]>`
+      SELECT status, taken_by
+        FROM harness_shared.harness_features_consolidated
+       WHERE harness_slug = 'papercup' AND feature_id = ${feature.id}`;
+    // The unified work-item surface normalizes legacy feature `passed` to the
+    // canonical terminal `done` state before the base-table write.
+    expect(row).toEqual({ status: 'done', taken_by: null });
+    expect(readAgentStateStamp('agB').goalRef).toBeNull();
+  });
+
+  it('voluntary release clears the matching goal and leaves a newer goal intact', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'release goal cleanup', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(bug.id, 'agB'))?.assignee).toBe('agB');
+    expect(readAgentStateStamp('agB').goalRef).toBe(bug.id);
+
+    const released = await wi.releaseWorkItem(bug.id);
+    expect(released?.assignee).toBeNull();
+    const [row] = await db.sql<{ taken_by: string | null }[]>`
+      SELECT taken_by FROM harness_shared.work_items WHERE feature_id = ${bug.id}`;
+    expect(row?.taken_by).toBeNull();
+    expect(readAgentStateStamp('agB').goalRef).toBeNull();
+
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'newer goal', harness: 'papercup', createdBy: 'agA' });
+    expect((await wi.claimWorkItem(feature.id, 'agB', { harness: 'papercup' }))?.assignee).toBe('agB');
+    // A delayed release callback for the old bug must not erase this newer claim.
+    expect(readAgentStateStamp('agB').goalRef).toBe(feature.id);
+    await wi.releaseWorkItem(feature.id);
+    expect(readAgentStateStamp('agB').goalRef).toBeNull();
   });
 });
 
