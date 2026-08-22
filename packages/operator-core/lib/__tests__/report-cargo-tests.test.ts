@@ -21,6 +21,8 @@ import {
   ensureCargoCacheTag,
   formatCargoDiskRefusal,
   formatCargoResultLine,
+  parseCargoTestResultLines,
+  stripCargoTerminalControlSequences,
 // @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
 
@@ -75,6 +77,33 @@ describe('cargo result classification (EI-20041922041407287)', () => {
         resultCount: 351,
       }),
     ).toEqual({ status: 'passed', termination: null });
+  });
+});
+
+describe('cargo test result parsing', () => {
+  it('keeps result counts and names aligned when terminal control output prefixes lines', () => {
+    const output = [
+      'running 3 tests',
+      'test native_console::tests::plain ... ok',
+      '\u001b]0;cargo test\u0007\u001b[2Ktest native_console::tests::oneliner_keeps_quoted_greeting_parseable ... ok',
+      '\u001b[32mtest native_console::tests::ignored_case ... ignored\u001b[0m',
+      'test result: ok. 2 passed; 0 failed; 1 ignored',
+    ].join('\n');
+
+    expect(stripCargoTerminalControlSequences(output)).not.toContain('\u001b');
+    const results = parseCargoTestResultLines(output) as Array<{
+      name: string;
+      outcome: 'ok' | 'FAILED' | 'ignored';
+    }>;
+
+    expect(results).toHaveLength(3);
+    expect(results.map(({ name }) => name)).toEqual([
+      'native_console::tests::plain',
+      'native_console::tests::oneliner_keeps_quoted_greeting_parseable',
+      'native_console::tests::ignored_case',
+    ]);
+    expect(results.map(({ outcome }) => outcome)).toEqual(['ok', 'ok', 'ignored']);
+    expect(REPORTER_SOURCE).toContain('const results = parseCargoTestResultLines(combined);');
   });
 });
 

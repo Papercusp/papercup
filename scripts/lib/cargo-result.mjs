@@ -127,6 +127,48 @@ export function formatCargoDiskRefusal(admission) {
   );
 }
 
+// Cargo test output can inherit terminal title/color control sequences from a
+// child test. Strip the complete sequence before parsing result lines so an
+// OSC title (BEL or ST terminated) or CSI color/erase prefix cannot hide a
+// `test ... ... ok` record from the anchored parser.
+const OSC_SEQUENCE_RE = /\u001B\][\s\S]*?(?:\u0007|\u001B\\)/g;
+const CSI_SEQUENCE_RE = /\u001B\[[0-?]*[ -/]*[@-~]/g;
+const ESC_SEQUENCE_RE = /\u001B[ -/]*[@-~]/g;
+
+/**
+ * @typedef {'ok' | 'FAILED' | 'ignored'} CargoTestOutcome
+ * @typedef {{ name: string, outcome: CargoTestOutcome }} CargoTestResult
+ */
+
+/**
+ * @param {string} output
+ * @returns {string}
+ */
+export function stripCargoTerminalControlSequences(output) {
+  return output
+    .replace(OSC_SEQUENCE_RE, '')
+    .replace(CSI_SEQUENCE_RE, '')
+    .replace(ESC_SEQUENCE_RE, '');
+}
+
+/**
+ * Parse Cargo's `test <name> ... ok|FAILED|ignored` result lines.
+ *
+ * @param {string} output
+ * @returns {CargoTestResult[]}
+ */
+export function parseCargoTestResultLines(output) {
+  /** @type {CargoTestResult[]} */
+  const results = [];
+  const re = /^test (\S+) \.\.\. (ok|FAILED|ignored)\s*$/gm;
+  let match;
+  const normalized = stripCargoTerminalControlSequences(output);
+  while ((match = re.exec(normalized))) {
+    results.push({ name: match[1], outcome: match[2] });
+  }
+  return results;
+}
+
 /**
  * @typedef {{ signal: number, signalName: string }} CargoTermination
  */
