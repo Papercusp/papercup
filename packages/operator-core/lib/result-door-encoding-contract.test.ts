@@ -70,6 +70,7 @@ type SpillCursor = {
   uri?: string;
   encoding?: unknown;
   dataEncoding?: string;
+  bodyByteOffset?: number;
 };
 
 /** Drive a payload over the door and return its recovery cursor + prose. */
@@ -172,6 +173,24 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     // the header carries characters that cannot occur in base64 at all.
     expect(text.slice(0, 200)).toMatch(/[#\s]/);
     expect(/^[A-Za-z0-9+/\r\n=]*$/.test(text)).toBe(false);
+  });
+
+  it('exposes the exact JSON body byte offset after the plaintext spill prefix', () => {
+    const { cursor, next } = doorOversizedResult();
+
+    expect(cursor.bodyByteOffset).toEqual(expect.any(Number));
+    expect(cursor.bodyByteOffset).toBeGreaterThan(0);
+    expect(next).toContain('skip cursor.bodyByteOffset bytes for JSON.');
+
+    const bytes = spillBytes();
+    const body = bytes.subarray(cursor.bodyByteOffset!).toString('utf8');
+
+    // The offset must land exactly at the serialized tool body, not in the
+    // Markdown header or list index. Parsing the suffix proves the prefix can
+    // be skipped without guessing at the spill format.
+    const parsed = JSON.parse(body) as { ok: boolean; rows: unknown[] };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.rows).toHaveLength(400);
   });
 
   it('follows the emitted cursor end-to-end through the real capability:read', async () => {
