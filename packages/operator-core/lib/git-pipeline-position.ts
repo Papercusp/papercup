@@ -27,6 +27,7 @@ import * as path from 'node:path';
 import { hostname } from 'node:os';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
+import type { GitSyncSkippedPath } from './harness/git-sync/run-git-sync';
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
 // never git-pipeline-POSITION, so this does not close an import cycle.
 import { readDeployInFlight, type DeployInFlight } from './release-deploy-launch';
@@ -1177,6 +1178,8 @@ export interface GitSyncLegs {
   syncAgeMs: number | null;
   /** >0 means the routine is FAULTING, not merely idle. */
   consecutiveErrorTicks: number;
+  /** Dirty paths whose live edit locks deferred their entire repo commit group. */
+  skippedPaths: GitSyncSkippedPath[];
   /**
    * Repos the last tick actually PUSHED. Empty with status 'synced' is the trap —
    * BUT only when this member is supposed to push at all. Read `pushMode` first:
@@ -4734,6 +4737,7 @@ export async function gitPipelinePosition(
       mergedRepos: snap.gitSync?.lastMerged ?? [],
       conflicts: snap.gitSync?.lastConflicts ?? [],
       errors: snap.gitSync?.lastErrors ?? [],
+      skippedPaths: snap.gitSync?.skippedPaths ?? [],
       pushMode: snap.gitSync?.pushMode ?? null,
       ownHeadPublish: snap.gitSync?.ownHeadPublish ?? null,
     },

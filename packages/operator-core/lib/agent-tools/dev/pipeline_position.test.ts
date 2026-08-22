@@ -107,6 +107,10 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
       },
       loadedIdentityUnknown: null, activationLever: 'restart', unknownReason: null,
     }],
+    gitSync: {
+      status: 'skipped-locked',
+      skippedPaths: [{ scope: 'superproject', path: PATH, owner: 'su-test', intent: 'editing the pipeline' }],
+    },
     summary: 'stub summary',
     notes: [],
   } as unknown as PipelinePosition;
@@ -128,6 +132,10 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
       loadedIdentity: { source: 'runtime-vintage', treeSha: 'abc123', host: 'tower' },
       loadedIdentityUnknown: null,
     }]);
+    expect(out.data.gitSync).toMatchObject({
+      status: 'skipped-locked',
+      skippedPaths: [{ scope: 'superproject', path: PATH, owner: 'su-test', intent: 'editing the pipeline' }],
+    });
     expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
   };
 

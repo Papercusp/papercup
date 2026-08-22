@@ -188,7 +188,7 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
 
   const gitSync = pickPipelineFields(
     source.gitSync,
-    ['status', 'lastSyncedAtMs', 'syncAgeMs', 'consecutiveErrorTicks', 'pushedRepos', 'mergedRepos', 'conflicts', 'errors', 'pushMode', 'ownHeadPublish'],
+    ['status', 'lastSyncedAtMs', 'syncAgeMs', 'consecutiveErrorTicks', 'skippedPaths', 'pushedRepos', 'mergedRepos', 'conflicts', 'errors', 'pushMode', 'ownHeadPublish'],
     opts,
   );
   if (gitSync) out.gitSync = gitSync;

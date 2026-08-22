@@ -352,6 +352,26 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.serving.startedSinceCodeChange).toBe(true);
   });
 
+  it('projects structured git-sync skipped-path provenance into the pipeline position', async () => {
+    const skippedPaths = [{
+      scope: 'superproject',
+      path: 'packages/operator-core/lib/example.ts',
+      owner: 'su-test',
+      intent: 'editing the source file',
+    }];
+    const snapshot = snap();
+    snapshot.gitSync = {
+      ...snapshot.gitSync,
+      lastStatus: 'skipped-locked',
+      skippedPaths,
+    };
+    const res = await gitPipelinePosition(
+      { path: 'packages/operator-core/lib/example.ts' },
+      { git: fakeGit({ pathCommit: 'abc1234567', contains: { HEAD: ['abc1234567'] } }), loadDeploy: async () => deploy(), loadSnapshot: async () => snapshot },
+    );
+    expect(res.gitSync).toMatchObject({ status: 'skipped-locked', skippedPaths });
+  });
+
   /**
    * D-038 axis 2 + D-039's hoist — and the defect P-006 found in THIS cell while
    * trying to register it as the contract's exemplar.

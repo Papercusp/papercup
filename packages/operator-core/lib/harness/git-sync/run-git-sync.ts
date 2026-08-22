@@ -3328,7 +3328,10 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const mergeCompleted = [...sub.mergeCompleted, ...supr.mergeCompleted];
   const oversized = [...sub.oversized, ...supr.oversized];
   const contentErrors = [...sub.contentErrors, ...supr.contentErrors];
-  const skippedPaths = [...sub.skippedPaths, ...supr.skippedPaths];
+  // Older in-flight checkpoints predate the skipped-path census. Replay must
+  // reconstruct those phase outputs as an empty census rather than throwing or
+  // turning a clean replay into an error.
+  const skippedPaths = [...(sub.skippedPaths ?? []), ...(supr.skippedPaths ?? [])];
   const didSomething = sub.didSomething || supr.didSomething;
 
   if (conflicts.length > 0)

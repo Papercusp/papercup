@@ -193,6 +193,31 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     expect(revCount(superOrigin)).toBe(superCount);
   });
 
+  it('replays a pre-skipped-path PhaseCollect checkpoint as an empty census', async () => {
+    writeFileSync(join(repo, 'libs/sub', 'sub-work.txt'), 'sub work\n');
+    writeFileSync(join(repo, 'super-work.txt'), 'super work\n');
+
+    const outputs = new Map<string, unknown>();
+    const first = await runGitSync('ckpt', { repoPath: repo, step: makeStepRunner({ names: [], outputs }) });
+    expect(first.status).toBe('synced');
+
+    // A checkpoint written before skippedPaths was added has the older PhaseCollect
+    // shape. Keep the other phase outputs intact and replay every step without git.
+    const oldSubmoduleCheckpoint = { ...(outputs.get('git-sync:submodules') as Record<string, unknown>) };
+    delete oldSubmoduleCheckpoint.skippedPaths;
+    const replay = new Map(outputs);
+    replay.set('git-sync:submodules', oldSubmoduleCheckpoint);
+    const forbiddenRunGit: RunGit = async (args) => {
+      throw new Error(`replay must not execute git (got: git ${args.join(' ')})`);
+    };
+    const resumed = await runGitSync('ckpt', {
+      repoPath: repo,
+      runGit: forbiddenRunGit,
+      step: makeStepRunner({ names: [], replay }),
+    });
+    expect(resumed).toEqual(first);
+  });
+
   it('ACCEPTANCE: a PARTIAL resume (commit checkpointed, push re-executed) never double-commits — the re-run push is a no-op', async () => {
     writeFileSync(join(repo, 'libs/sub', 'sub-work.txt'), 'sub work\n');
     writeFileSync(join(repo, 'super-work.txt'), 'super work\n');
