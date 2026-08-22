@@ -9671,7 +9671,7 @@
       ],
       "guidance": {
         "when": "You reached a durable CONCLUSION that should shape future turns — yours or your role's: \"X is owner-residue, exclude it\", \"plan Y stalls on Z\", \"this harness's tests need Docker\". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.",
-        "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under 1200 chars; the per-scope cap 200 evicts the lowest-ranked live fact. A fact is not a live measurement: do not pin changing counts/statuses — store the invariant conclusion plus a pointer to the live source a reader can remeasure. For a necessary moving sample, pass subjectVolatile:true and measuredAt; it becomes a ≤15-minute SNAPSHOT. Label intentional history as historical.",
+        "notWhen": "Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under 1200 chars; the per-scope cap 200 evicts the lowest-ranked live fact. A fact is not a live measurement: do not pin changing counts/statuses — store the invariant conclusion plus a pointer to the live source a reader can remeasure. For a necessary moving sample, pass measuredAt (prefer subjectVolatile:true for clarity); the store infers subjectVolatile:true when measuredAt is supplied and makes it a ≤15-minute SNAPSHOT. Label intentional history as historical.",
         "chaining": "facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none."
       }
     },
@@ -14762,7 +14762,7 @@
       "profile": "engineer",
       "guidance": {
         "when": "You need what a service actually logged: diagnosing why a unit failed, restarted, or went quiet; finding a specific marker line in a window; confirming a deploy/tick/job ran. Pass `grep` with the needle you would have piped to grep — that is the point of the tool.",
-        "notWhen": "NOT \"is the service up\" (dev:service_health) and NOT \"did MY background job finish\" (capability:bash_output). A live streaming follow (`journalctl -f`) has no tool form — keep using bash for that. Reading a *.log FILE is capability:read.",
+        "notWhen": "NOT \"is the service up\" (dev:service_health) and NOT \"did MY background job finish\" (capability:bash_output). A live streaming follow (`journalctl -f`) has no tool form — keep using bash for that. Reading a *.log FILE is capability:read — for a `release:deploy` log path, call `capability:read { file_path: <logPath>, tail: N }` (optionally add result projection `grep`), not `logs:read` with the path as a journal unit.",
         "chaining": "dev:service_health says a unit is down → logs:read { unit, grep:\"error|failed\" } says why. Widen by loosening `grep` or `since`, not by dropping to raw journalctl."
       }
     },
@@ -18274,7 +18274,7 @@
           "POST"
         ]
       },
-      "description": "List SU plans under apps/operator/docs/plans/. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status=\"draft\" (flagged via isLegacy).",
+      "description": "List SU plans from the PG-canonical plan store. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status=\"draft\" (flagged via isLegacy).",
       "capabilities": [
         "plans:read"
       ],
@@ -19072,7 +19072,7 @@
           "POST"
         ]
       },
-      "description": "Replace an existing decision's body — preserves the `### D-NNN — title` head and the `Date:` line, replaces everything else with the new body. Inside the plan lock, records a revision. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
+      "description": "Replace an existing decision's body — preserves the `### D-NNN — title` head, the `Date:` line, and existing generated `Related:` refs by default. Pass refs to replace them or [] to clear them. Inside the plan lock, records a revision. The structured editor decisions lacked (plans:add-decision could only append; editing meant a plans:edit string-replace).",
       "capabilities": [
         "plans:write"
       ],
@@ -19133,7 +19133,7 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, and date. The structured alternative to a plans:edit on the decision block.",
+        "when": "A decision's body needs revising — a correction, a clarification, an added caveat — keeping its id, title, date, and related item refs. Pass refs only when intentionally changing those refs. The structured alternative to a plans:edit on the decision block.",
         "notWhen": "Recording a NEW decision (plans:add-decision). Changing a decision title (plans:edit — title lives on the head line). A whole-document rewrite (plans:set-content).",
         "chaining": "plans:get (the decision body) → plans:set-decision-body → plans:get to confirm."
       }
@@ -22919,7 +22919,7 @@
           "POST"
         ]
       },
-      "description": "Manually FIRE / TRIGGER / RUN-NOW / deploy-on-demand: the manual lever to push a committed, green change LIVE to :3070 now instead of waiting for the ~half-hourly timer, plus \"why isn't my change live?\" diagnosis. (This is the DEPLOY trigger; git-sync, the auto-commit/push routine, has no fire-now verb.) op:status (read-only — gate red/green/stalled, release-fixer status, how far :3070 is behind the green pin, + a recommendation; call FIRST when a gate-clean change isn't live). op:trigger (expedite a GREEN-but-stalled deploy; refuses unless green code is ahead; dry-run unless confirm:true; audited). op:force (operator/queen/architect ONLY, loud+audited: deploy an UN-GREEN commit past a red gate — needs acknowledgeRedTests + reason; rare no-users-window escape). Fired DETACHED.",
+      "description": "Manual deploy lever and diagnosis for a committed change that is not live on :3070. op:status reads gate/deploy state and recommends the next action; op:trigger expedites a green-but-stalled deploy (confirm:true); op:force is an audited operator/queen/architect-only escape for an un-green commit (acknowledgeRedTests + reason). Actions fire detached; git-sync has its own run verb.",
       "capabilities": [
         "operator:write"
       ],
@@ -22942,7 +22942,7 @@
       "guidance": {
         "when": "A committed, gate-clean change isn't live on :3070 — {op:status} to see why. GREEN-but-stalled → {op:trigger,confirm:true} (safe; only ships the green pin). Gate RED on UNRELATED tests → FIX the reds first (even out of lane).",
         "notWhen": "Never force as a reflex to \"get my change out\" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.",
-        "chaining": "dev:pipeline_position{path} → release:deploy{op:status} → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds."
+        "chaining": "dev:pipeline_position{path} → release:deploy{op:status}; read status.gate.lastVerdict.read, status.checkpointRunInFlight.read, or status.deployInFlight.read with capability:read when you need the corresponding file log (these are files, not logs:read journal units) → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds."
       }
     },
     {
