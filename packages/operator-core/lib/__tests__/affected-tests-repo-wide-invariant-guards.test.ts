@@ -1475,6 +1475,50 @@ describe('affected-tests: declarations freshness guard (WI-38089)', () => {
 });
 
 /**
+ * WI-7025 — the `.mjs` enrollment guard must travel with every TS importer it scans.
+ *
+ * `check-unenrolled-mjs-imports.test.ts` is a real-tree ratchet, but it lives in
+ * operator-core. Without the repo-wide registration, an import added in another workspace
+ * stays invisible to `test:affected` until the later fleet typecheck. These probes pin both
+ * directions of the routing predicate and the three non-TS inputs that can change its verdict.
+ */
+describe('affected-tests: unenrolled .mjs import guard (WI-7025)', () => {
+  const SCRIPT = 'lint:no-unenrolled-mjs-imports';
+  const TASK = `${HOST_WORKSPACE} :: ${SCRIPT}`;
+  const OUTSIDE_TS = 'apps/operator/lib/release/deploy-cli.ts';
+  const INSIDE_TS = 'packages/operator-core/lib/terminal-spawn.ts';
+  const NON_SOURCE = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
+  const DECLARATIONS_CONFIG = 'tsconfig.declarations.json';
+
+  it('attaches for a TS change OUTSIDE the host workspace', () => {
+    expect(dryTasks(OUTSIDE_TS)).toContain(TASK);
+  });
+
+  it('does NOT double-run when the host workspace is already affected', () => {
+    const out = dryTasks(INSIDE_TS);
+    expect(out).toContain(`${HOST_WORKSPACE} :: test`);
+    expect(out).not.toContain(TASK);
+  });
+
+  it('attaches when the declarations config changes', () => {
+    expect(dryTasks(DECLARATIONS_CONFIG)).toContain(TASK);
+  });
+
+  it('does NOT attach for a non-source path', () => {
+    expect(dryTasks(NON_SOURCE)).not.toContain(TASK);
+  });
+
+  it('keeps the guard script defined and pointed at the detector', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(pkg.scripts?.[SCRIPT]).toBeTruthy();
+    expect(pkg.scripts?.[SCRIPT]).toContain('check-unenrolled-mjs-imports.mjs');
+    expect(pkg.scripts?.[SCRIPT]).not.toContain('vitest');
+  });
+});
+
+/**
  * EI-20822558150340173 / D-046 — the same class again, on the registry that decides what
  * every agent's PreToolUse gate ENFORCES.
  *

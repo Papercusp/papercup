@@ -1063,6 +1063,9 @@ function declarationMjsInputs() {
   return declarationInputsCache;
 }
 
+const UNENROLLED_MJS_IMPORTS_DETECTOR = "scripts/check-unenrolled-mjs-imports.mjs";
+const UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR = "scripts/lib/tracked-files.mjs";
+
 const REPO_WIDE_INVARIANT_GUARDS = [
   {
     // EI-20822558150340173 / D-046 — the substitution registry's DB projection had no
@@ -1317,6 +1320,33 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f.endsWith(".d.mts") && declared.has(f.replace(/\.d\.mts$/, ".mjs"))
       );
     },
+  },
+  {
+    // WI-7025 — a TypeScript import of a real `.mjs` with neither a generated declaration
+    // nor an explicit suppression is TS7016. `check-unenrolled-mjs-imports.mjs` already
+    // scans the whole tree and its test contains a real-tree ratchet, but before this entry
+    // it ran only when operator-core happened to be affected. A new import in apps/ or a
+    // checked-out submodule therefore stayed green through test:affected and first red the
+    // shared gate's later typecheck.
+    //
+    // The detector's subject is every non-retired TS/TSX source, not only files that currently
+    // import `.mjs`: a new import can be introduced in any one of them. The config and both
+    // files that define the detector's inputs/coverage also attach because changing either can
+    // alter the verdict without changing a TS importer.
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-unenrolled-mjs-imports",
+    // check-unenrolled-mjs-imports.test.ts runs scan() over the real tree, so a host suite run
+    // genuinely re-executes this invariant and should not pay for the narrow task twice.
+    hostSuiteRatchet:
+      "packages/operator-core/lib/__tests__/check-unenrolled-mjs-imports.test.ts",
+    appliesTo: (f) =>
+      ((f.endsWith(".ts") || f.endsWith(".tsx")) &&
+        !f.endsWith(".d.ts") &&
+        !f.includes("node_modules/") &&
+        !f.includes("_retired/")) ||
+      f === DECLARATIONS_CONFIG ||
+      f === UNENROLLED_MJS_IMPORTS_DETECTOR ||
+      f === UNENROLLED_MJS_IMPORTS_FILE_ENUMERATOR,
   },
   {
     // WI-38239 — the drift detector for the PG-canonical authored-doc corpus (plan

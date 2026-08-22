@@ -183,7 +183,10 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   ['lint:generic-independence', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:no-raw-spawn', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:no-retired-style', 'logic-test only; deepen to a real-tree assertion'],
-  ['lint:no-unenrolled-mjs-imports', 'logic-test only; deepen to a real-tree assertion'],
+  // `lint:no-unenrolled-mjs-imports` USED TO SIT HERE and is now GONE from this set — WI-7025
+  // graduated it by registering the existing real-tree ratchet in affected-tests.mjs, so a
+  // TS importer outside operator-core gets a local blocking signal instead of waiting for the
+  // later fleet typecheck.
   ['lint:optional-seam-strands', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:typeless-reexport', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:vitest-mock-paths', 'logic-test only; deepen to a real-tree assertion'],
@@ -308,7 +311,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * and is never by itself a reason to retire. Do not substitute a generator's header comment
  * for that probe: three of them were measured wrong here, mutually citing each other.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 13;
+export const UNREACHABLE_HIGH_WATERMARK = 12;
 
 /**
  * Guards that CANNOT be gated, by design — a DIFFERENT population from the debt above,
@@ -1249,7 +1252,10 @@ function main() {
         console.log(`  ${r.name}  —  ${r.coverage.reason}`);
       }
     }
-    process.exit(0);
+    // Let Node drain any output written above before ending. `process.exit()` can
+    // truncate a machine-readable report when stdout is a pipe (EI-19455452259628697).
+    process.exitCode = 0;
+    return;
   }
 
   let failed = false;
@@ -1364,7 +1370,12 @@ function main() {
     console.error('   This set is SHRINK-ONLY. Wire or retire a guard instead of appending here.');
   }
 
-  if (failed) process.exit(1);
+  if (failed) {
+    // The JSON report was written before the diagnostics. Preserve the failure
+    // status without aborting the asynchronous stdout write (EI-19455452259628697).
+    process.exitCode = 1;
+    return;
+  }
   // State the acknowledged debt in the PASS line. A green that reads "everything is
   // enforced" while 13 guards are not is the same quotable-green this script exists to
   // stop — the number has to be visible in the ordinary output, not only on failure.
@@ -1374,36 +1385,40 @@ function main() {
   // down `lint:cell-matrix` means wiring it, which red-pins the fleet (WI-39832).
   const ungateable = census.notEnforced.filter((r) => ACKNOWLEDGED_UNGATEABLE.has(r.name)).length;
   const debt = census.notEnforced.length - ungateable;
-  console.log(
-    `\n✓ no NEW unenforced lint guard. ${enforced}/${census.rows.length} enforced; ` +
-      `${debt} acknowledged-unenforced (ceiling ${UNREACHABLE_HIGH_WATERMARK}, shrink-only)` +
-      (ungateable ? `; ${ungateable} ungateable by design (never wire these)` : '') +
-      '.',
-  );
-  if (census.notEnforced.length) {
-    console.log('  Burn it down: `node scripts/check-lint-guard-reachability.mjs --census` lists each one and why.');
-  }
-  // The KNOWN LIMITATION at the top of this file has to travel WITH the number, not sit in a
-  // source comment the reader of the number never opens. "68/82 enforced" invites exactly one
-  // wrong conclusion — "the tree is protected" — and that conclusion has already been drawn
-  // and already cost an outage: on 2026-08-03 a parse-breaking edit crash-looped :3170 for
-  // 17min while every guard that could have caught it was, by THIS measure, fully enforced.
-  // The coverage axis has to appear on the SAME line as the enforced count, not below it.
-  // "68/82 enforced" was read as "the tree is protected" while a guard covering 1 of its 4
-  // scanned roots sat inside that numerator (EI-19461064447747454) — a per-GUARD boolean
-  // rendered as if it were a per-SCOPE one. Any reader of the number sees the qualifier now.
-  if (census.partiallyCovered.length || census.coverageUnmeasured.length) {
+  if (!json) {
     console.log(
-      `  ⚠ of those ${enforced}: ${census.partiallyCovered.length} enforced over only PART of what they scan, ` +
-        `${census.coverageUnmeasured.length} with coverage NOT measured.\n` +
-        '    ENFORCED is a per-GUARD boolean, never a per-SCOPE one — `--census` breaks it down.',
+      `\n✓ no NEW unenforced lint guard. ${enforced}/${census.rows.length} enforced; ` +
+        `${debt} acknowledged-unenforced (ceiling ${UNREACHABLE_HIGH_WATERMARK}, shrink-only)` +
+        (ungateable ? `; ${ungateable} ungateable by design (never wire these)` : '') +
+        '.',
+    );
+    if (census.notEnforced.length) {
+      console.log('  Burn it down: `node scripts/check-lint-guard-reachability.mjs --census` lists each one and why.');
+    }
+    // The KNOWN LIMITATION at the top of this file has to travel WITH the number, not sit in a
+    // source comment the reader of the number never opens. "68/82 enforced" invites exactly one
+    // wrong conclusion — "the tree is protected" — and that conclusion has already been drawn
+    // and already cost an outage: on 2026-08-03 a parse-breaking edit crash-looped :3170 for
+    // 17min while every guard that could have caught it was, by THIS measure, fully enforced.
+    // The coverage axis has to appear on the SAME line as the enforced count, not below it.
+    // "68/82 enforced" was read as "the tree is protected" while a guard covering 1 of its 4
+    // scanned roots sat inside that numerator (EI-19461064447747454) — a per-GUARD boolean
+    // rendered as if it were a per-SCOPE one. Any reader of the number sees the qualifier now.
+    if (census.partiallyCovered.length || census.coverageUnmeasured.length) {
+      console.log(
+        `  ⚠ of those ${enforced}: ${census.partiallyCovered.length} enforced over only PART of what they scan, ` +
+          `${census.coverageUnmeasured.length} with coverage NOT measured.\n` +
+          '    ENFORCED is a per-GUARD boolean, never a per-SCOPE one — `--census` breaks it down.',
+      );
+    }
+    console.log(
+      '  ⚠ ENFORCED = a blocking path RUNS it, never that it runs BEFORE the damage. Hosts that\n' +
+        '    bundle the WORKING TREE (:3170, bg-host) are past every commit-time guard by construction.',
     );
   }
-  console.log(
-    '  ⚠ ENFORCED = a blocking path RUNS it, never that it runs BEFORE the damage. Hosts that\n' +
-      '    bundle the WORKING TREE (:3170, bg-host) are past every commit-time guard by construction.',
-  );
-  process.exit(0);
+  // Keep the JSON path machine-readable and let Node drain it before the process ends.
+  process.exitCode = 0;
+  return;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
