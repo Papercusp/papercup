@@ -164,10 +164,7 @@ p014_capture logs 'JSON.stringify({ route: location.pathname + location.search, 
 # Conversations feed. It must state the returned latest-match population and
 # its fixed 200-row ceiling in the visible text.
 p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/coord", search: { panel: "history" } })'
-"$P014_TAURI_TOOL" wait \
-  --pid "$P014_TAURI_PID" \
-  --strict \
-  --timeout 30000 \
+"$P014_TAURI_POLL" \
   --eval '[...document.querySelectorAll("span")].some((e) => /^\d[\d,]* latest matches · up to 200$/.test((e.textContent || "").trim()))'
 p014_assert '(() => { const e = [...document.querySelectorAll("span")].find((n) => /^\d[\d,]* latest matches · up to 200$/.test((n.textContent || "").trim())); return !!e; })()'
 p014_console_clean
