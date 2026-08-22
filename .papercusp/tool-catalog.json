@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 765,
+  "count": 771,
   "tools": [
     {
       "name": "ablation:report",
@@ -25901,6 +25901,192 @@
       "guidance": {
         "when": "A topic you followed is no longer relevant and its updates are noise. Drop several at once via topics:[…].",
         "notWhen": "You want to mute briefly — re-register at mention mode via watch:create { pattern: topic, targetKind:\"topic\", wake:false, mode:\"mention\" } instead of dropping it."
+      }
+    },
+    {
+      "name": "triggers:arm",
+      "http": {
+        "path": "/api/agent-tools/triggers/arm",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Arm an installed external-event binding so matching events may launch its plan.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Activate a reviewed binding returned by triggers:bind. Pass confirm:true because this starts autonomous plan runs.",
+        "notWhen": "To install/edit the binding use triggers:bind. To pause it use triggers:disarm. For time triggers use plans:arm-schedule.",
+        "chaining": "triggers:bind → triggers:arm { bindingId, confirm:true } → triggers:status."
+      }
+    },
+    {
+      "name": "triggers:bind",
+      "http": {
+        "path": "/api/agent-tools/triggers/bind",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a disarmed external-event binding from one source to one plan, with an optional payload filter and storm policy.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Attach an existing external source event pattern (ext:<source>:<event>) to a plan. The new binding is installed but DISARMED.",
+        "notWhen": "To activate it use triggers:arm separately. For schedules use plans:set-schedule then plans:arm-schedule. For manual starts use plans:run-now.",
+        "chaining": "triggers:list → triggers:bind → inspect the returned disarmed binding → triggers:arm { bindingId, confirm:true }."
+      }
+    },
+    {
+      "name": "triggers:create",
+      "http": {
+        "path": "/api/agent-tools/triggers/create",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Create a workspace external-trigger source definition with non-secret config and an optional opaque credential reference.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Install a Slack, Gmail, Calendar, or other external source before attaching it to a plan.",
+        "notWhen": "Never pass raw tokens, passwords, or client secrets in config; store them outside the repo and pass only credentialRef. To attach an existing source use triggers:bind.",
+        "chaining": "triggers:create → provider connect flow stores the credential → triggers:bind → triggers:arm."
+      }
+    },
+    {
+      "name": "triggers:disarm",
+      "http": {
+        "path": "/api/agent-tools/triggers/disarm",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Disarm an external-event binding so new matching events cannot launch its plan.",
+      "capabilities": [
+        "plans:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Pause an armed external binding while preserving its source, filter, storm policy, and history.",
+        "notWhen": "To activate it use triggers:arm. This does not cancel a plan run that already launched.",
+        "chaining": "triggers:status → triggers:disarm { bindingId, confirm:true } → triggers:status."
+      }
+    },
+    {
+      "name": "triggers:list",
+      "http": {
+        "path": "/api/agent-tools/triggers/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List configured external trigger sources and installed plan bindings in the current workspace.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Discover trigger source ids before triggers:bind, or inspect which plans already have external-event bindings.",
+        "notWhen": "For run/failure health and recent activity use triggers:status. To create a source use triggers:create.",
+        "chaining": "triggers:list → triggers:bind { sourceId, harness, plan, eventPattern } → triggers:arm { bindingId, confirm:true }."
+      }
+    },
+    {
+      "name": "triggers:status",
+      "http": {
+        "path": "/api/agent-tools/triggers/status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read external-trigger health, armed state, failures, and recent plan-launch runs.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Verify a source/binding after connect, bind, arm, or disarm; diagnose failed deliveries or plan launches.",
+        "notWhen": "For a compact discovery list use triggers:list. This is read-only and does not reconnect a provider.",
+        "chaining": "triggers:status → fix source/filter/policy → triggers:arm or triggers:disarm → triggers:status."
       }
     },
     {
