@@ -52,6 +52,7 @@ import { FLAGS } from '@papercusp/flags';
 
 import {
   DEFAULT_RESOURCE_BUDGET,
+  RIPGREP_SCOPE_GUIDANCE,
   type BackendHealth,
   type CodeIntelAnswer,
   type CodeIntelIntent,
@@ -239,7 +240,7 @@ export async function lspFacade(
       op,
       args.file,
       `no pinned language server handles ${args.file}. Route this question to ` +
-        `gitnexus (graph) or ripgrep (text) instead of assuming there are no results.`,
+        `gitnexus (graph) or ${RIPGREP_SCOPE_GUIDANCE} instead of assuming there are no results.`,
       'unknown',
       started,
     );

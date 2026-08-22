@@ -17,6 +17,7 @@ import {
   astGrepFacade,
   type AstGrepLanguage,
 } from '../../code-intelligence/ast-grep-facade.ts';
+import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 
 const LANGS = Object.keys(AST_GREP_LANGUAGES) as [AstGrepLanguage, ...AstGrepLanguage[]];
 
@@ -27,7 +28,7 @@ export default defineTool({
   guidance: {
     when: 'The question is about FORM: where an idiom or anti-pattern occurs, the blast radius of a codemod, a lint-shaped sweep. Also when the code does not typecheck — this parses, it does not compile.',
     notWhen:
-      'The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is ripgrep.',
+      `The answer depends on which declaration a name RESOLVES to (shadowing, re-exports, generics) — that is lsp:query. Call chains and impact are gitnexus.query. Plain text/regex is ${RIPGREP_SCOPE_GUIDANCE}.`,
     chaining:
       'code:structural to find candidate sites by shape → lsp:query op:"symbol" on one to confirm it resolves where you think. A structural match set is a SUPERSET of the type-correct one.',
   },

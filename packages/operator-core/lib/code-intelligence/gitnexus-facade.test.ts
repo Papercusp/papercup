@@ -27,7 +27,7 @@ import {
   MAX_SITES_PER_ANSWER,
   truncationNotice,
 } from './gitnexus-facade.ts';
-import { isTrustworthyEmpty, toOneIndexed } from './contracts.ts';
+import { isTrustworthyEmpty, RIPGREP_SCOPE_GUIDANCE, toOneIndexed } from './contracts.ts';
 import { ACCEPTANCE_CORPUS } from './acceptance-corpus.ts';
 
 /** The exact `context` envelope gitnexus returned for `pinModuleState`. */
@@ -185,6 +185,13 @@ describe('refusals name the alternative (D-021)', () => {
     expect(GITNEXUS_NOT_ROUTABLE['text-search']).toBeDefined();
     expect(GITNEXUS_NOT_ROUTABLE.references).toBeDefined();
     expect(GITNEXUS_NOT_ROUTABLE['text-search']?.useInstead).toMatch(/ripgrep|rg/i);
+  });
+
+  it('text-search fallback names source scope and generated-public exclusions', () => {
+    expect(RIPGREP_SCOPE_GUIDANCE).toMatch(/apps\/operator\/lib/);
+    expect(RIPGREP_SCOPE_GUIDANCE).toMatch(/packages\/operator-core\/lib/);
+    expect(RIPGREP_SCOPE_GUIDANCE).toMatch(/apps\/operator\/public\/internal\/docs/);
+    expect(GITNEXUS_NOT_ROUTABLE['text-search']?.useInstead).toBe(RIPGREP_SCOPE_GUIDANCE);
   });
 
   it('a routable intent is NOT refused', () => {

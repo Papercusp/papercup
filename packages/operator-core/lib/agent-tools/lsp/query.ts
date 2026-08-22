@@ -34,6 +34,7 @@ import {
   lspFacade,
   type LspFacadeOp,
 } from '../../code-intelligence/lsp-facade.ts';
+import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 
 // Zod needs a non-empty tuple; derived from the facade so the two cannot drift.
 const OP_VALUES = [...LSP_FACADE_OPS] as [LspFacadeOp, ...LspFacadeOp[]];
@@ -44,7 +45,7 @@ export default defineTool({
     'Compiler-accurate, READ-ONLY code intelligence from the pinned language server (TypeScript/Rust). `op`: symbol | references | implementations | diagnostics | workspace_symbols | refactor_preview | health. Returns { sites:[{path,line1,kind,detail}], truncation, freshness:{health}, latencyMs, error }; `line1` is ALWAYS one-indexed (the LSP wire is zero-indexed — this converts, so a cited line matches grep). NEVER writes: refactor_preview reports the sites a rename would touch and applies nothing. CRITICAL: an empty `sites` proves absence ONLY when error===null AND freshness.health==="healthy" — a disabled flag, a still-loading project, an unhandled file type and a dead server each return sites:[] WITH an error naming which.',
   guidance: {
     when: 'You need the truth about TS/Rust code rather than a text match: where a symbol is really declared (across package boundaries and re-exports), every reference, implementations of an interface, a file\'s diagnostics, or the exact sites a rename would hit.',
-    notWhen: 'Exhaustive text/regex search (ripgrep) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.',
+    notWhen: `Exhaustive text/regex search (${RIPGREP_SCOPE_GUIDANCE}) or call-graph/impact questions (gitnexus.context). For a file no pinned server handles, this refuses and names the alternative instead of answering empty.`,
     chaining:
       'op:"workspace_symbols" { name } to find a position → op:"symbol"/"references" { file, line1, character }. On a degraded answer, op:"health" reports each server + the taskId processes:kill takes.',
   },

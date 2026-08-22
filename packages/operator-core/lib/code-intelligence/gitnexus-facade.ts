@@ -44,6 +44,7 @@ import {
   type BackendHealth,
   type CodeIntelAnswer,
   type CodeIntelIntent,
+  RIPGREP_SCOPE_GUIDANCE,
   type SymbolSite,
   toOneIndexed,
 } from './contracts.ts';
@@ -94,7 +95,7 @@ export const GITNEXUS_NOT_ROUTABLE: Readonly<
       'Its `query` tool looks like a text search and is not one: measured ' +
       '2026-08-21, a nonsense symbol returns 20 confident-looking results ' +
       '(plan D-021).',
-    useInstead: 'ripgrep (`rg`) for exhaustive text/regex search.',
+    useInstead: RIPGREP_SCOPE_GUIDANCE,
   },
   references: {
     reason:

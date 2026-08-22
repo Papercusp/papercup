@@ -23,6 +23,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 
 import { resolveAgentWorkspaceRoot } from '../capability/base-dir';
 import { PACK_TEMPLATES, packerFacade, type PackTemplate } from '../../code-intelligence/packer-facade.ts';
+import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 
 const TEMPLATES = Object.keys(PACK_TEMPLATES) as [PackTemplate, ...PackTemplate[]];
 
@@ -33,7 +34,7 @@ export default defineTool({
   guidance: {
     when: 'You need a whole subsystem in one document for a human reviewer or another model to reason over — a review request, an audit, a refactor brief. op:"diff" when only what CHANGED matters.',
     notWhen:
-      'You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ripgrep (text) first, and pack only once you know what a reader needs to see.',
+      `You are answering a question about the code. Packing is POST-retrieval: find the answer with lsp:query (types), gitnexus.query (call chains), code:structural (shape) or ${RIPGREP_SCOPE_GUIDANCE} first, and pack only once you know what a reader needs to see.`,
     chaining:
       'gitnexus.query for the impact radius → code:pack include:<that radius>, so the pack is scoped by a measured answer rather than a guess. Quote provenance.commit + dirty whenever you cite a pack as evidence.',
     returns:

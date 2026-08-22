@@ -29,6 +29,17 @@ export type CodeIntelBackend =
   | 'code2prompt';
 
 /**
+ * Safe fallback guidance for the text-search route.
+ *
+ * A repository-wide `rg --hidden` search is particularly noisy here because
+ * generated public documentation contains large rendered snapshots of the
+ * source tree. Keep the scope rule in one place so every code-intelligence
+ * refusal and tool-routing hint gives the same actionable fallback.
+ */
+export const RIPGREP_SCOPE_GUIDANCE =
+  'ripgrep (`rg`) for text/regex search; scope it to source roots (for example, `apps/operator/lib` and `packages/operator-core/lib`) or exclude generated `apps/operator/public/internal/docs`, `dist`, `node_modules`, and `.git`.';
+
+/**
  * Line-index base per backend, MEASURED not assumed.
  *
  * gitnexus: verified 2026-08-21 at gitnexus@1.6.9 against three independent
