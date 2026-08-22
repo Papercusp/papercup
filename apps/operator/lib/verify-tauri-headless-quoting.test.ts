@@ -83,7 +83,7 @@ case "$command" in
     ;;
   list-windows)
     [ "\${DISPLAY:-}" = :91 ] || exit 33
-    printf '%s\\n' '[{"windowId":"4242001","pid":4242,"name":"helper","width":10,"height":10},{"windowId":"4242002","pid":4242,"name":"Papercusp","width":1280,"height":800},{"windowId":"9999","pid":9999,"name":"Papercusp dev (npm run dev)","width":1600,"height":900}]'
+    printf '%s\\n' '[{"windowId":"4242001","pid":4242,"name":"helper","width":10,"height":10,"bridge":{"port":41001,"token":"p014-secret-helper-token"}},{"windowId":"4242002","pid":4242,"name":"Papercusp","width":1280,"height":800,"tauri":true,"bridge":{"port":41002,"token":"p014-secret-bridge-token"},"authorization":"p014-secret-authorization"},{"windowId":"9999","pid":9999,"name":"Papercusp dev (npm run dev)","width":1600,"height":900,"bridge":{"port":49999,"token":"p014-secret-foreign-token"}}]'
     ;;
   capture)
     [ "\${DISPLAY:-}" = :91 ] || exit 33
@@ -315,6 +315,31 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
         Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
       );
     }
+  });
+
+  it('drops live bridge credentials from persisted window evidence', () => {
+    const { output, result } = runFakeCountSurfacesAcceptance('success');
+
+    expect(result.status, result.stderr).toBe(0);
+    const inventoryText = readFileSync(join(output, 'windows.json'), 'utf8');
+    const selectedText = readFileSync(join(output, 'window-selected.json'), 'utf8');
+    for (const evidence of [inventoryText, selectedText]) {
+      expect(evidence).not.toContain('p014-secret-');
+      expect(evidence).not.toContain('"bridge"');
+      expect(evidence).not.toContain('"authorization"');
+      expect(evidence).not.toContain('"token"');
+    }
+    const inventory = JSON.parse(inventoryText) as Array<Record<string, unknown>>;
+    expect(inventory).toContainEqual(
+      expect.objectContaining({
+        windowId: '4242002',
+        pid: 4242,
+        name: 'Papercusp',
+        width: 1280,
+        height: 800,
+        tauri: true,
+      }),
+    );
   });
 
   it('writes route-specific captures and one unambiguous terminal marker', () => {

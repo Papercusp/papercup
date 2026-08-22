@@ -39,29 +39,42 @@ mkdir -p "$P014_ACCEPTANCE_OUTPUT"
 
 P014_WINDOW_INVENTORY="$P014_ACCEPTANCE_OUTPUT/windows.json"
 P014_SELECTED_WINDOW="$P014_ACCEPTANCE_OUTPUT/window-selected.json"
-DISPLAY="$P014_TAURI_DISPLAY" \
-  "$P014_TAURI_TOOL" list-windows --json >"$P014_WINDOW_INVENTORY"
 P014_TAURI_WINDOW_ID="$(
-  node - "$P014_WINDOW_INVENTORY" "$P014_TAURI_PID" "$P014_SELECTED_WINDOW" <<'NODE'
+  DISPLAY="$P014_TAURI_DISPLAY" \
+    "$P014_TAURI_TOOL" list-windows --json |
+    node - "$P014_TAURI_PID" "$P014_WINDOW_INVENTORY" "$P014_SELECTED_WINDOW" 3<&0 <<'NODE'
 const fs = require('node:fs');
 
-const [inventoryFile, pidText, selectedFile] = process.argv.slice(2);
+const [pidText, inventoryFile, selectedFile] = process.argv.slice(2);
 const targetPid = Number(pidText);
+const SAFE_WINDOW_KEYS = ['windowId', 'pid', 'name', 'x', 'y', 'width', 'height', 'tauri'];
 
 function fail(reason) {
   console.error(`P014_TAURI_WINDOW_INVALID pid=${pidText} reason=${reason}`);
   process.exit(1);
 }
 
-let windows;
+let rawWindows;
 try {
-  windows = JSON.parse(fs.readFileSync(inventoryFile, 'utf8'));
+  rawWindows = JSON.parse(fs.readFileSync(3, 'utf8'));
 } catch (error) {
   fail(`inventory-json:${error instanceof Error ? error.message : String(error)}`);
 }
-if (!Array.isArray(windows) || !Number.isInteger(targetPid)) {
+if (!Array.isArray(rawWindows) || !Number.isInteger(targetPid)) {
   fail('inventory-shape');
 }
+
+// list-windows includes a live bridge token used by tauri-agent-tools itself.
+// Acceptance artifacts are durable forensic bundles, so persist only the
+// non-credential fields this selector and its reviewers actually consume.
+const windows = rawWindows.map((window) => {
+  const projected = {};
+  for (const key of SAFE_WINDOW_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(window, key)) projected[key] = window[key];
+  }
+  return projected;
+});
+fs.writeFileSync(inventoryFile, JSON.stringify(windows, null, 2));
 
 const candidates = windows
   .filter((window) => Number(window?.pid) === targetPid)
