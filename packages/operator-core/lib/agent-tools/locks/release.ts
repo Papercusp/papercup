@@ -25,7 +25,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
-import { domainsHoldingLocks } from './owner-lock-domains';
+import { domainsHoldingLocks, ownedLocksForPaths, type OwnedLockPaths } from './owner-lock-domains';
 import { releaseAllOwnedLocks } from './release-all-owned';
 
 const lockIdSchema = z.string().uuid({
@@ -45,9 +45,9 @@ const lockIdSchema = z.string().uuid({
 export default defineTool({
   name: 'locks:release',
   description:
-    'Release one or many held lock sets. Single: pass lock_id (with optional paths filter) or all_mine=true. Many: pass lock_ids:[…]. `paths` only filters a selected lock_id; it cannot select a lock by itself. Fires the grant cascade for waiting agents.',
+    'Release one or many held lock sets. Single: pass lock_id (with optional paths filter), paths to select your active locks across every coordination domain, or all_mine=true. Many: pass lock_ids:[…]. Path-only selection is caller-owned and grouped by lock_id before release. Fires the grant cascade for waiting agents.',
   guidance: {
-    when: 'Immediately after the edit is committed. Release several selected lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id; paths is only an optional filter.',
+    when: 'Immediately after the edit is committed. Pass paths to release your active rows when the lock_id is unavailable; this resolves across coordination domains and releases only the requested paths. Release several known lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
     chaining: 'locks:acquire → edit → locks:release { lock_id } or { lock_ids:[…] }. If the lock id was lost, locks:queue → select your active row\'s lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }.',
     seeAlso: [
@@ -70,7 +70,7 @@ export default defineTool({
     paths: z
       .array(z.string())
       .optional()
-      .describe('optional path filter applied to the selected lock_id; paths alone cannot select a lock'),
+      .describe('path filter for a selected lock_id, or a path-only selector for your active locks across all coordination domains'),
     coordination_domain: z
       .string()
       .min(1)
@@ -86,7 +86,15 @@ export default defineTool({
       .string()
       .regex(/^[0-9a-f]{40,64}$/)
       .optional(),
-  }),
+  })
+    .refine(
+      (a) => Boolean(a.lock_id) || (a.lock_ids?.length ?? 0) > 0 || Boolean(a.all_mine) || (a.paths?.length ?? 0) > 0,
+      { message: 'pass lock_id, lock_ids, all_mine=true, or one or more paths' },
+    )
+    .refine(
+      (a) => !a.all_mine || ((a.lock_ids?.length ?? 0) === 0 && !a.lock_id && (a.paths?.length ?? 0) === 0),
+      { message: 'all_mine=true cannot be combined with lock_id(s) or paths' },
+    ),
   async handler(args, ctx) {
     const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
     let coordinationDomain: string;
@@ -99,27 +107,28 @@ export default defineTool({
     }
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
 
-    if (lockIds.length === 0 && !args.all_mine) {
+    const hasPathSelector = (args.paths?.length ?? 0) > 0;
+    if (lockIds.length === 0 && !args.all_mine && !hasPathSelector) {
       return {
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify({
               ok: false,
-              error: 'locks:release requires lock_id or all_mine=true; paths is only a filter and cannot select a lock by itself',
+              error: 'locks:release requires lock_id, all_mine=true, or one or more paths to select caller-owned locks',
             }),
           },
         ],
       };
     }
-    if (args.all_mine && lockIds.length > 0) {
+    if (args.all_mine && (lockIds.length > 0 || hasPathSelector)) {
       return {
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify({
               ok: false,
-              error: 'locks:release accepts either all_mine=true or selected lock_id(s), not both',
+              error: 'locks:release accepts either all_mine=true or selected lock_id(s)/paths, not both',
             }),
           },
         ],
@@ -179,6 +188,7 @@ export default defineTool({
       domain: string,
       lockId: string | undefined,
       allMine: boolean,
+      paths: string[] | undefined = args.paths,
     ): Promise<ReleaseOutcome> {
       const localRelease = (): Promise<ReleaseOutcome> =>
         inWorkspaceTxn(domain, ownerId, async (tx) =>
@@ -186,10 +196,10 @@ export default defineTool({
             coordinationDomain: domain,
             owner: ownerId,
             lockId,
-            paths: args.paths,
+            paths,
             allMine,
           }),
-          { paths: args.paths },
+          { paths },
         );
 
       /**
@@ -223,7 +233,7 @@ export default defineTool({
                 payload: {
                   owner: ownerId,
                   lockId,
-                  paths: args.paths,
+                  paths,
                   allMine,
                   coordinationDomain: domain,
                   publishedSha: args.published_sha ?? null,
@@ -289,8 +299,12 @@ export default defineTool({
      * nothing" — and the lock sat until TTL while peers stayed blocked. It also
      * meant `all_mine:true` at session end could not clear hive locks AT ALL.
      */
-    async function releaseFileLocks(lockId: string | undefined, allMine = false): Promise<ReleaseOutcome> {
-      const primary = await releaseInDomain(coordinationDomain, lockId, allMine);
+    async function releaseFileLocks(
+      lockId: string | undefined,
+      allMine = false,
+      paths: string[] | undefined = args.paths,
+    ): Promise<ReleaseOutcome> {
+      const primary = await releaseInDomain(coordinationDomain, lockId, allMine, paths);
       if (primary.released.length > 0) return primary;
 
       let others: string[];
@@ -306,7 +320,7 @@ export default defineTool({
       const released = [...primary.released];
       let heldBefore = primary.heldBefore;
       for (const domain of others) {
-        const extra = await releaseInDomain(domain, lockId, allMine);
+        const extra = await releaseInDomain(domain, lockId, allMine, paths);
         if (extra.released.length > 0) {
           crossDomainReleases.push({ coordination_domain: domain, released: extra.released });
           released.push(...extra.released);
@@ -317,6 +331,44 @@ export default defineTool({
         else if (extra.heldBefore === null) heldBefore = null;
       }
       return { released, heldBefore };
+    }
+
+    if (lockIds.length === 0 && hasPathSelector) {
+      let selected: OwnedLockPaths[];
+      try {
+        selected = await ownedLocksForPaths({ ownerId, paths: args.paths ?? [] });
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: `locks:release could not resolve caller-owned locks for paths: ${err instanceof Error ? err.message : String(err)}`,
+              }),
+            },
+          ],
+        };
+      }
+
+      const env = await runBulk(
+        selected,
+        async (item) => {
+          const before = crossDomainReleases.length;
+          const result = await releaseFileLocks(item.lockId, false, item.paths);
+          const crossed = crossDomainReleases.slice(before);
+          return {
+            ok: true as const,
+            lock_id: item.lockId,
+            requested_paths: item.paths,
+            released: result.released,
+            ...(crossed.length > 0 ? { cross_domain_released: crossed } : {}),
+            held_before: result.heldBefore,
+          };
+        },
+        { keyOf: (item) => ({ lock_id: item.lockId }) },
+      );
+      return bulkContent(env);
     }
 
     if (lockIds.length > 0) {

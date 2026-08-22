@@ -101,10 +101,15 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
   };
 
   /** A COMPLETE ActiveLockRow, so a new required column fails here at compile time. */
-  const activeLock = (lockId: string, domain: string): ActiveLockRow => ({
+  const activeLock = (
+    lockId: string,
+    domain: string,
+    path = 'f.ts',
+    owner = 'me',
+  ): ActiveLockRow => ({
     lock_id: lockId,
-    path: 'f.ts',
-    owner: 'me',
+    path,
+    owner,
     owner_label: 'Me',
     intent: 'test',
     acquired_ts: new Date(0),
@@ -182,6 +187,60 @@ describe('locks:release cross-domain fallback (EI-20405390083792304)', () => {
     const b = body(await call({ lock_id: LOCK }));
     expect(b.results[0].held_before).toBeNull();
   });
+
+  it('resolves path-only releases across domains, groups paths by lock_id, and keeps owner scope', async () => {
+    const OTHER = '/hives/other';
+    const OTHER_LOCK = '44444444-4444-4444-4444-444444444444';
+    routeByDomain((domain) => {
+      if (domain === HIVE) return { value: { released: ['a.ts'], heldBefore: 1 }, via: 'local-authority' };
+      if (domain === OTHER) return { value: { released: ['c.ts'], heldBefore: 1 }, via: 'local-authority' };
+      return { value: { released: [], heldBefore: 0 }, via: 'local-authority' };
+    });
+    heldIn(
+      activeLock(LOCK, HIVE, 'a.ts'),
+      activeLock(LOCK, HIVE, 'not-requested.ts'),
+      activeLock(OTHER_LOCK, OTHER, 'c.ts'),
+      activeLock('55555555-5555-5555-5555-555555555555', HIVE, 'c.ts', 'peer'),
+    );
+
+    const b = body(await call({ paths: ['a.ts', 'c.ts'] }));
+
+    expect(readQueueM.mock.calls[0]?.[1]).toMatchObject({
+      coordinationDomain: null,
+      owner: 'me',
+      paths: ['a.ts', 'c.ts'],
+    });
+    expect(b).toMatchObject({
+      ok: true,
+      counts: { ok: 2, failed: 0 },
+      results: [
+        {
+          ok: true,
+          lock_id: LOCK,
+          requested_paths: ['a.ts'],
+          released: ['a.ts'],
+          cross_domain_released: [{ coordination_domain: HIVE, released: ['a.ts'] }],
+        },
+        {
+          ok: true,
+          lock_id: OTHER_LOCK,
+          requested_paths: ['c.ts'],
+          released: ['c.ts'],
+          cross_domain_released: [{ coordination_domain: OTHER, released: ['c.ts'] }],
+        },
+      ],
+    });
+    expect(routeM.mock.calls.map((call) => call[0])).toEqual(['dom', HIVE, 'dom', OTHER]);
+  });
+
+  it('returns an empty keyed envelope when no requested path is held by the caller', async () => {
+    heldIn(activeLock(LOCK, HIVE, 'other.ts'));
+
+    const b = body(await call({ paths: ['missing.ts'] }));
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 0 }, results: [] });
+    expect(routeM).not.toHaveBeenCalled();
+  });
 });
 
 describe('locks:release handler', () => {
@@ -229,12 +288,17 @@ describe('locks:release handler', () => {
     expect(String(b.error)).toMatch(/either all_mine=true or selected/);
   });
 
-  it('rejects paths without a lock selector before touching the store', async () => {
-    const b = body(await call({ paths: ['src/a.ts'] }));
+  it('rejects an empty path selector before touching the store', async () => {
+    const b = body(await call({ paths: [] }));
     expect(b).toMatchObject({ ok: false });
-    expect(String(b.error)).toMatch(/requires lock_id or all_mine=true/);
-    expect(String(b.error)).toMatch(/paths is only a filter/);
+    expect(String(b.error)).toMatch(/requires lock_id, all_mine=true, or one or more paths/);
     expect(routeM).not.toHaveBeenCalled();
+  });
+
+  it('rejects combining all_mine with a path selector', async () => {
+    const b = body(await call({ all_mine: true, paths: ['src/a.ts'] }));
+    expect(b).toMatchObject({ ok: false });
+    expect(String(b.error)).toMatch(/either all_mine=true or selected lock_id\(s\)\/paths/);
   });
 
   it('retries a transient workspace contention before returning the release result', async () => {

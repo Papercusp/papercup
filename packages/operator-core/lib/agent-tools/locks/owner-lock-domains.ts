@@ -64,3 +64,54 @@ export async function domainsHoldingLocks({
   }
   return [...domains];
 }
+
+export type OwnedLockPaths = {
+  /** The release handle shared by every selected row in this group. */
+  lockId: string;
+  /** Only the requested paths held by this owner under this lock id. */
+  paths: string[];
+};
+
+/**
+ * Resolve path-only release requests to the caller's active lock sets.
+ *
+ * The read is deliberately cross-domain: the operator handling a release can
+ * run from a different checkout than the edit hook that acquired the lock.
+ * `owner` is the access boundary, and the returned rows are grouped by
+ * lock_id so the caller can reuse the normal owner-checked release path without
+ * widening a partial release into a whole lock-set release.
+ */
+export async function ownedLocksForPaths({
+  ownerId,
+  paths,
+}: {
+  ownerId: string;
+  paths: readonly string[];
+}): Promise<OwnedLockPaths[]> {
+  const requestedPaths = [...new Set(paths)];
+  if (requestedPaths.length === 0) return [];
+
+  await ensureBootstrap();
+  const snapshot = await acquireWithContentionRetry(() =>
+    readQueue(getTxPool(), {
+      coordinationDomain: null,
+      owner: ownerId,
+      paths: requestedPaths,
+    }),
+  );
+  const requested = new Set(requestedPaths);
+  const grouped = new Map<string, OwnedLockPaths>();
+  for (const row of snapshot.active_locks) {
+    // `owner` and `paths` are also enforced by readQueue's SQL. Keep the
+    // checks here because test seams and older authorities may return a wider
+    // diagnostic snapshot than the requested filter.
+    if (row.owner !== ownerId || !requested.has(row.path)) continue;
+    const existing = grouped.get(row.lock_id);
+    if (existing) {
+      if (!existing.paths.includes(row.path)) existing.paths.push(row.path);
+      continue;
+    }
+    grouped.set(row.lock_id, { lockId: row.lock_id, paths: [row.path] });
+  }
+  return [...grouped.values()];
+}

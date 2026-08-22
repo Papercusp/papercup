@@ -13,7 +13,7 @@ surface that matches the thing being protected:
 | Tool | Scope and behavior |
 |---|---|
 | `locks:acquire` | Exclusive locks for a deliberate set of repository files (or authorized home-directory configuration files). Supports an immediate result, a same-turn `wait.max_sec` drain, or `wake_on_grant:true` for a queued one-shot wake. |
-| `locks:release` | Release selected file-lock sets by `lock_id`/`lock_ids`, or release all of the caller's locks with `all_mine:true`; `paths` only filters a selected lock. |
+| `locks:release` | Release selected file-lock sets by `lock_id`/`lock_ids`, release the caller's active rows for requested `paths` across all coordination domains, or release all of the caller's locks with `all_mine:true`. Path-only requests group rows by `lock_id` and release only the requested paths. |
 | `locks:heartbeat` | Extend a held file-lock lease; `extended:false` means the lock is gone, stolen, expired, or not found in the requested domain. |
 | `locks:cancel_wait` | Cancel a queued `locks:acquire` waiter ticket. If a grant raced, cancel returns false and the caller must release the lock it received. |
 | `locks:queue` | Read-only inspection of file locks and pending waiters; use it to recover a lost `lock_id`. |

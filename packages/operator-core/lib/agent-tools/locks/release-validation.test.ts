@@ -36,12 +36,25 @@ describe('locks:release UUID validation', () => {
     });
   });
 
-  it('documents that paths is only a filter for an explicit lock id', () => {
+  it('documents that paths can select caller-owned locks across domains', () => {
     const jsonSchema = tool.args.toJSONSchema();
 
     expect(jsonSchema.properties?.paths).toMatchObject({
-      description: expect.stringContaining('paths alone cannot select a lock'),
+      description: expect.stringContaining('path-only selector'),
     });
-    expect(tool.description).toContain('`paths` only filters a selected lock_id');
+    expect(tool.description).toContain('paths to select your active locks across every coordination domain');
+  });
+
+  it('accepts a path-only selector and rejects an empty selector', () => {
+    expect(tool.args.safeParse({ paths: ['src/a.ts'] }).success).toBe(true);
+    expect(tool.args.safeParse({ paths: [] }).success).toBe(false);
+  });
+
+  it('does not allow all_mine to silently ignore a path filter', () => {
+    const result = tool.args.safeParse({ all_mine: true, paths: ['src/a.ts'] });
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues[0]?.message).toContain('cannot be combined');
   });
 });
