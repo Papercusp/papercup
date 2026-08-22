@@ -10,6 +10,7 @@ import { buildKey } from '../../events/await/catalog';
 import { inspectEventKey } from '../../events/await/store';
 import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { statePlaneForDoor } from '../state-plane-door';
 
 /**
  * Keep the composite diagnostic below the MCP transport deadline even when one
@@ -246,49 +247,49 @@ export default defineTool({
       })),
     );
 
-    return {
-      data: buildReleaseTrace({
-        position,
-        deploy,
-        pipeline,
-        inspectedKeys: keys,
-        awaits,
-        wakes,
-        snapshotGeneration: snapshot.generatedAtMs,
-        consumerGeneration: args.after_generation,
-        requesterId: identity.ownerId,
-        workItem: args.work_item,
-        gate: {
-          state: deploy.state,
-          authoritative: !snapshot.gate.verdictStale && !candidateInconclusive,
-          consecutiveReds: snapshot.gate.consecutiveReds,
-          failingTests: snapshot.gate.verdictStale || candidateInconclusive ? [] : snapshot.gate.failingTests,
-          recordedVerdict: snapshot.gate.recordedVerdict,
-          inheritedRepairQueueFailingTests,
-          inheritedRepairQueueFailingTestsSource: repairQueueInconclusive ? 'prior-gate-verdict' : null,
-          fireStale: snapshot.gate.fireStale,
-          fireStaleReason: snapshot.gate.fireStaleReason,
-          verdictStale: snapshot.gate.verdictStale,
-          verdictStaleReason: snapshot.gate.verdictStaleReason,
-          // The checkpoint judges the local integration root. Preserve the exact
-          // candidate so release:trace can distinguish gate eligibility from the
-          // separate origin/GitHub publication leg.
-          observedCandidate: snapshot.gate.observedCandidate,
-          // Preserve the live run projection from gitPipelinePosition. The terminal
-          // observedCandidate can legitimately name an older verdict while this run
-          // is judging a newer candidate.
-          checkpointRunInFlight: position.gate?.checkpointRunInFlight,
-          // EI-21103060581352507: preserve the gate's terminal no-verdict
-          // authority so release:trace can refuse an await for a cancelled
-          // candidate whose measured producer is already gone.
-          inconclusive: snapshot.gate.inconclusive,
-          // EI-18672078222841101: who already owns this red. Unlike `failingTests` above
-          // this is NOT blanked on a stale verdict — `describeGateRedOwnership` renders the
-          // staleness itself ('verdict-stale'), which is exactly the case that misled a
-          // reader of this tool into diagnosing an already-fixed leg.
-          redOwner: snapshot.gate.redOwner,
-        },
-      }),
-    };
+    const trace = buildReleaseTrace({
+      position,
+      deploy,
+      pipeline,
+      inspectedKeys: keys,
+      awaits,
+      wakes,
+      snapshotGeneration: snapshot.generatedAtMs,
+      consumerGeneration: args.after_generation,
+      requesterId: identity.ownerId,
+      workItem: args.work_item,
+      gate: {
+        state: deploy.state,
+        authoritative: !snapshot.gate.verdictStale && !candidateInconclusive,
+        consecutiveReds: snapshot.gate.consecutiveReds,
+        failingTests: snapshot.gate.verdictStale || candidateInconclusive ? [] : snapshot.gate.failingTests,
+        recordedVerdict: snapshot.gate.recordedVerdict,
+        inheritedRepairQueueFailingTests,
+        inheritedRepairQueueFailingTestsSource: repairQueueInconclusive ? 'prior-gate-verdict' : null,
+        fireStale: snapshot.gate.fireStale,
+        fireStaleReason: snapshot.gate.fireStaleReason,
+        verdictStale: snapshot.gate.verdictStale,
+        verdictStaleReason: snapshot.gate.verdictStaleReason,
+        // The checkpoint judges the local integration root. Preserve the exact
+        // candidate so release:trace can distinguish gate eligibility from the
+        // separate origin/GitHub publication leg.
+        observedCandidate: snapshot.gate.observedCandidate,
+        // Preserve the live run projection from gitPipelinePosition. The terminal
+        // observedCandidate can legitimately name an older verdict while this run
+        // is judging a newer candidate.
+        checkpointRunInFlight: position.gate?.checkpointRunInFlight,
+        // EI-21103060581352507: preserve the gate's terminal no-verdict
+        // authority so release:trace can refuse an await for a cancelled
+        // candidate whose measured producer is already gone.
+        inconclusive: snapshot.gate.inconclusive,
+        // EI-18672078222841101: who already owns this red. Unlike `failingTests` above
+        // this is NOT blanked on a stale verdict — `describeGateRedOwnership` renders the
+        // staleness itself ('verdict-stale'), which is exactly the case that misled a
+        // reader of this tool into diagnosing an already-fixed leg.
+        redOwner: snapshot.gate.redOwner,
+      },
+    });
+    const plane = statePlaneForDoor(trace, 'release:trace', { path: args.path, sha: args.sha }, ctx);
+    return { data: { ...trace, ...(plane ? { plane } : {}) } };
   },
 });

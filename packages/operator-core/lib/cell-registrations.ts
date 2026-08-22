@@ -323,6 +323,9 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   visibility: OPERATOR_PIPELINE_VISIBILITY,
   federation: { kind: 'local' },
   changeSignal: { kind: 'poll', tool: 'dev:pipeline_position', path: 'changeInCandidate.judgingSha' },
+  // release:trace returns the same exact candidate under target.sha; keep that
+  // alternate door tied to this cell instead of making callers transcribe it.
+  doorProjections: [{ tool: 'release:trace', path: 'target.sha' }],
 
   /**
    * WI-36259 — THE RUNTIME PROVENANCE, and this cell is why the field exists.

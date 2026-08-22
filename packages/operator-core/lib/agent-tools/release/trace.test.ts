@@ -22,6 +22,7 @@ import tool, {
   RELEASE_TRACE_POSITION_TIMEOUT_MS,
   RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
 } from './trace';
+import '../cell-registrations-wiring';
 
 afterEach(() => {
   vi.useRealTimers();
@@ -80,6 +81,35 @@ describe('release:trace tool contract', () => {
     await tool.handler({ path: 'packages/operator-core/lib/agent-tools/release/trace.ts' } as never, {} as never);
 
     expect(mocks.gitPipelineSnapshot).toHaveBeenCalledWith(undefined, { useSpawnerSidecar: false });
+  });
+
+  it('stamps the exact target SHA with a candidate-cell re-read handle', async () => {
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: 'abcd1234', input: { path: 'apps/x.ts', sha: null } });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true, target: { sha: 'abcd1234' } });
+
+    const out = (await tool.handler(
+      { path: 'apps/x.ts' } as never,
+      { role: 'cup', harnessSlug: 'papercusp' } as never,
+    )) as { data: { plane?: { cells: Array<Record<string, unknown>> } } };
+
+    expect(out.data.plane?.cells).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: 'target.sha',
+          cell: 'gate.greenCheckpoint.candidate',
+          reread: { tool: 'state:read', args: { cell: 'gate.greenCheckpoint.candidate', as: 'apps/x.ts' } },
+        }),
+      ]),
+    );
   });
 
   it('preserves the active checkpoint candidate separately from the terminal observed candidate', async () => {

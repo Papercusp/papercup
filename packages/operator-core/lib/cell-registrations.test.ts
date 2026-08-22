@@ -211,6 +211,10 @@ describe('P-007: the four verdict cells', () => {
     expect(pointer?.when).not.toMatch(/^`judgingContainsPath` is true/);
   });
 
+  it('projects release:trace target.sha through the candidate cell', () => {
+    expect(GATE_CANDIDATE_CELL.doorProjections).toEqual([{ tool: 'release:trace', path: 'target.sha' }]);
+  });
+
   /**
    * D-014, asserted rather than trusted: ownership stays a CELL with its own falsifier,
    * and the pointer is only a route to it. If someone ever "simplifies" this by folding

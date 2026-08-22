@@ -101,6 +101,30 @@ describe('stampStatePlane — which cells are stamped', () => {
     ]);
   });
 
+  it('projects release:trace target.sha back to the path-scoped candidate cell', () => {
+    const cells = [
+      cell({
+        cell: 'gate.greenCheckpoint.candidate',
+        callerRelativity: { kind: 'parameter', param: 'path' },
+        changeSignal: { kind: 'poll', tool: DOOR, path: 'changeInCandidate.judgingSha' },
+        doorProjections: [{ tool: 'release:trace', path: 'target.sha' }],
+      }),
+    ];
+    const out = stampStatePlane({
+      payload: { target: { sha: 'abc123' } },
+      tool: 'release:trace',
+      args: { path: 'apps/x.ts' },
+      cells,
+    });
+    expect(out?.cells).toEqual([
+      {
+        path: 'target.sha',
+        cell: 'gate.greenCheckpoint.candidate',
+        reread: { tool: 'state:read', args: { cell: 'gate.greenCheckpoint.candidate', as: 'apps/x.ts' } },
+      },
+    ]);
+  });
+
   it('skips event-signalled cells — they have no poll path into this payload', () => {
     const cells = [cell({ changeSignal: { kind: 'event', key: 'coord:presence-changed' } as never })];
     expect(stampStatePlane({ payload: { a: { b: 1 } }, tool: DOOR, cells })).toBeNull();
