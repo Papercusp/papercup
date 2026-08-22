@@ -153,6 +153,61 @@ describe('composeDispatch', () => {
     expect(calls.map((c) => c.name)).toContain('coord:send');
   });
 
+  it('all-refused assignment is a failed dispatch, but the note and wake evidence remain', async () => {
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-winding-down', sessionState: 'parked', wakeable: true }]),
+      // The shared bulk envelope is execution-successful even though its only
+      // item was refused — this is the shape coord:dispatch must interpret.
+      'plan_items:assign': {
+        ok: true,
+        results: [{ ok: false, plan: baseArgs.planSlug, item: 'P-001', refused: 'fleet_winding_down' }],
+        counts: { ok: 0, failed: 1 },
+      },
+      'coord:send': sendEnv('su-winding-down', { mode: 'required', targets: ['su-winding-down'], woken: 1 }),
+    });
+
+    const res = await composeDispatch({ ...baseArgs, to: 'su-winding-down', items: ['P-001'] }, call);
+
+    expect(res.ok).toBe(false);
+    expect(res.assigned).toMatchObject({
+      ok: false,
+      requested: 1,
+      assigned: 0,
+      failed: 1,
+      partial: false,
+    });
+    expect(res.woken).toBe(1);
+    expect(res.delivered).toBe('m-1');
+    expect(res.warning).toMatch(/assigned 0 of 1 requested/);
+  });
+
+  it('mixed assignment remains a successful dispatch with an explicit partial summary', async () => {
+    const { call } = mockCall({
+      'coord:presence': presence([{ ownerId: 'su-partial', sessionState: 'parked', wakeable: true }]),
+      'plan_items:assign': {
+        ok: true,
+        results: [
+          { ok: true, plan: baseArgs.planSlug, item: 'P-001' },
+          { ok: false, plan: baseArgs.planSlug, item: 'P-002', refused: 'fleet_winding_down' },
+        ],
+        counts: { ok: 1, failed: 1 },
+      },
+      'coord:send': sendEnv('su-partial', { mode: 'required', targets: ['su-partial'], woken: 1 }),
+    });
+
+    const res = await composeDispatch({ ...baseArgs, to: 'su-partial' }, call);
+
+    expect(res.ok).toBe(true);
+    expect(res.assigned).toMatchObject({
+      ok: false,
+      requested: 2,
+      assigned: 1,
+      failed: 1,
+      partial: true,
+    });
+    expect(res.woken).toBe(1);
+  });
+
   it('EI-5957: a MANUAL-mode target (staged, woken 0) gets the LOUD "STAGED not delivered" warning', async () => {
     // The member is ALIVE (parked) but in manual wake-mode, so coord:send stages
     // the directed note instead of delivering it: woken:0, staged:1, NOT dead/absent.
