@@ -33,29 +33,32 @@ const ROOT = repoRoot();
 // An in-tree probe here is unsafe for a reason no `trap` can fix: git-sync sweeps the whole
 // working tree on a schedule, so a mutant held for the duration of a run can be COMMITTED
 // even when nothing goes wrong. Defaults to the real shipping script.
-const GATE_PATH =
-  process.env.PROBE_SCRIPT ?? join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
-const MATRIX_PATH = join(
-  ROOT,
-  'papercusp-desktop',
-  'bin',
-  'two-instance-content-matrix-smoke.sh',
-);
+const GATE_PATH = process.env.PROBE_SCRIPT ?? join(ROOT, 'papercusp-desktop', 'bin', 'live-federation-gate.sh');
+const LOCAL_MATRIX_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'local-matrix.sh');
+const MATRIX_PATH = join(ROOT, 'papercusp-desktop', 'bin', 'two-instance-content-matrix-smoke.sh');
 const gate = readFileSync(GATE_PATH, 'utf8');
+const localMatrix = readFileSync(LOCAL_MATRIX_PATH, 'utf8');
 const matrix = readFileSync(MATRIX_PATH, 'utf8');
 
-function extractFn(name: string): string {
-  const match = gate.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?\\n\\}$`, 'm'));
+function extractFnFrom(source: string, name: string): string {
+  const match = source.match(new RegExp(`^${name}\\(\\) \\{[\\s\\S]*?\\n\\}$`, 'm'));
   expect(match?.[0], `could not extract ${name}() from the shipping gate`).toBeTruthy();
   return match![0];
 }
 
-function runPreflight(opts: {
-  a?: string;
-  b?: string;
-  failUser?: string;
-  mismatchUser?: string;
-} = {}) {
+function extractFn(name: string): string {
+  return extractFnFrom(gate, name);
+}
+
+function runPreflight(
+  opts: {
+    a?: string;
+    b?: string;
+    failUser?: string;
+    mismatchUser?: string;
+    unavailableUser?: string;
+  } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'fed-attestation-preflight-'));
   const calls = join(dir, 'calls');
   const gh = join(dir, 'gh');
@@ -71,6 +74,10 @@ if [ "\${1:-}" = auth ] && [ "\${2:-}" = token ] && [ "\${3:-}" = --user ]; then
 fi
 if [ "\${1:-}" = api ] && [ "\${2:-}" = user ]; then
   login="\${GH_TOKEN#tok-}"
+  if [ "\${UNAVAILABLE_USER:-}" = "$login" ]; then
+    printf '{"message":"API rate limit exceeded"}\\n'
+    exit 1
+  fi
   [ "\${MISMATCH_USER:-}" = "$login" ] && login="wrong-account"
   printf '%s\\n' "$login"
   exit 0
@@ -111,6 +118,7 @@ printf '{"user":"%s","ok":true,"cleanedUp":true}\\n' "$PAPERCUSP_ATTEST_LOGIN"
       CALLS_FILE: calls,
       FAIL_USER: opts.failUser ?? '',
       MISMATCH_USER: opts.mismatchUser ?? '',
+      UNAVAILABLE_USER: opts.unavailableUser ?? '',
     },
   });
   return {
@@ -154,6 +162,14 @@ describe('live-federation gate attestation write preflight', () => {
     expect(result.stdout).toContain('actual=wrong-account');
   });
 
+  it('treats a non-zero identity probe with a JSON error body as unavailable, not as a login', () => {
+    const result = runPreflight({ unavailableUser: 'aviynw' });
+    expect(result.status).toBe(1);
+    expect(result.calls).toEqual(['papercupai']);
+    expect(result.stdout).toContain('user=aviynw code=identity_unavailable');
+    expect(result.stdout).not.toContain('code=identity_mismatch actual={');
+  });
+
   it('runs before sidecar build and is not bypassed by GATE_FORCE', () => {
     const call = gate.indexOf('ATTESTATION_PREFLIGHT_OUTPUT="$(preflight_attestation_write_accounts');
     const build = gate.indexOf('# ── 2. fresh artifact:');
@@ -173,18 +189,19 @@ describe('live-federation gate attestation write preflight', () => {
       'Fresh-home P2P gate depends on both GitHub accounts being able to create attestation gists',
     );
     expect(gate).toContain('find_open_duplicate "$wall_prefix" active');
-    expect(gate).toContain("[ \"$scope\" = active ] && item_filter='\"notTerminal\":true'");
+    expect(gate).toContain('[ "$scope" = active ] && item_filter=\'"notTerminal":true\'');
   });
 });
 
 /**
- * WI-39359 — the credential wall must not blind the attestation-INDEPENDENT leg.
+ * WI-39359 / WI-40008 — the credential wall must not blind coverage that can
+ * still authenticate, and must not launch a vacuous matrix when identity auth
+ * itself is unavailable.
  *
- * Measured 2026-08-16: local-matrix.sh has zero functional attestation dependency (its only
- * three gist/attest matches are comments), while the content-matrix smoke has 37 and the
- * from-repo smoke 45. Between 2026-08-14 and 2026-08-16 the preflight's unconditional early
- * exit voided ~50 consecutive runs of p2p coverage over a credential fault none of the local
- * matrix scenarios touch: every leg reported '?' — UNMEASURED, which reads exactly like a red.
+ * Measured 2026-08-16: local-matrix.sh does not need attestation GIST WRITES, while the
+ * content-matrix and from-repo smokes do. WI-40008 tightened the boundary after a later live
+ * run proved that local-matrix still needs each token to authenticate as its requested GitHub
+ * identity: a write-only wall may preserve the leg, but an identity/auth wall cannot.
  *
  * The rule these pin: run what CAN be run, name what CANNOT, and never call the result green.
  */
@@ -226,7 +243,7 @@ function runDuePredicate(opts: {
   return result.status ?? -1;
 }
 
-describe('live-federation gate: a credential wall must not void attestation-independent coverage', () => {
+describe('live-federation gate: credential walls preserve only executable coverage', () => {
   it('reports the local-matrix leg DUE when it has never gone green', () => {
     // The real state on 2026-08-16: last-matrix-green predated the TTL by weeks.
     expect(runDuePredicate({})).toBe(0);
@@ -271,6 +288,15 @@ describe('live-federation gate: a credential wall must not void attestation-inde
     );
   });
 
+  it('refuses the local matrix when the failed preflight is an identity/authentication wall', () => {
+    expect(gate).toContain('ATTESTATION_IDENTITY_BLOCKED=0');
+    expect(gate).toContain(
+      "grep -qE 'code=(token_missing|identity_unavailable|identity_mismatch|same_account)([[:space:]]|$)'",
+    );
+    expect(gate).toContain('if local_matrix_due && [ "$ATTESTATION_IDENTITY_BLOCKED" != 1 ]; then');
+    expect(gate).toContain('local-matrix cannot admit joiners; refusing a vacuous, expensive run');
+  });
+
   it('can NEVER stamp a green while attestation-dependent legs went unexercised (D-018)', () => {
     // The single most important invariant here. A green in this state asserts coverage nobody
     // produced. The guard must precede the last-green write, not merely exist somewhere.
@@ -279,5 +305,89 @@ describe('live-federation gate: a credential wall must not void attestation-inde
     expect(guard).toBeGreaterThan(-1);
     expect(green).toBeGreaterThan(guard);
     expect(gate).toContain('GATE: PARTIAL (attestation-blocked)');
+  });
+});
+
+function runLocalMatrixHostPreflight(
+  opts: {
+    mismatchUser?: string;
+    unavailableUser?: string;
+  } = {},
+) {
+  const dir = mkdtempSync(join(tmpdir(), 'fed-local-matrix-host-preflight-'));
+  const desktopDir = join(dir, 'papercusp-desktop');
+  const node = join(desktopDir, 'src-tauri', 'sidecar', 'bin', 'node');
+  const deb = join(dir, 'Papercusp.deb');
+  const gh = join(dir, 'gh');
+  spawnSync('mkdir', ['-p', dirname(node)]);
+  writeFileSync(node, '#!/usr/bin/env bash\\nexit 0\\n');
+  chmodSync(node, 0o755);
+  writeFileSync(deb, 'test-deb');
+  writeFileSync(
+    gh,
+    `#!/usr/bin/env bash
+set -u
+if [ "\${1:-}" = auth ] && [ "\${2:-}" = token ] && [ "\${3:-}" = --user ]; then
+  printf 'tok-%s\\n' "\${4:-}"
+  exit 0
+fi
+if [ "\${1:-}" = api ] && [ "\${2:-}" = user ]; then
+  login="\${GH_TOKEN#tok-}"
+  if [ "\${UNAVAILABLE_USER:-}" = "$login" ]; then
+    printf '{"message":"API rate limit exceeded"}\\n'
+    exit 1
+  fi
+  [ "\${MISMATCH_USER:-}" = "$login" ] && login="wrong-account"
+  printf '%s\\n' "$login"
+  exit 0
+fi
+exit 97
+`,
+  );
+  chmodSync(gh, 0o755);
+
+  const script = [
+    'set -uo pipefail',
+    `DESKTOP_DIR=${JSON.stringify(desktopDir)}`,
+    `DEB=${JSON.stringify(deb)}`,
+    `STATE_FILE=${JSON.stringify(join(dir, 'state'))}`,
+    'REUSE=0',
+    'NET=test-rig',
+    'FRAMES=2',
+    'P_A_USER=papercupai',
+    'P_B_USER=aviynw',
+    'log() { printf "%s\\n" "$*"; }',
+    extractFnFrom(localMatrix, 'preflight_host_preconditions'),
+    'preflight_host_preconditions',
+  ].join('\n');
+  return spawnSync('bash', ['-c', script], {
+    encoding: 'utf8',
+    timeout: 30_000,
+    env: {
+      ...process.env,
+      PATH: `${dir}:${process.env.PATH ?? ''}`,
+      MISMATCH_USER: opts.mismatchUser ?? '',
+      UNAVAILABLE_USER: opts.unavailableUser ?? '',
+    },
+  });
+}
+
+describe('local-matrix host preflight authenticates every frame identity before provisioning', () => {
+  it('accepts two usable tokens that resolve to their requested accounts', () => {
+    const result = runLocalMatrixHostPreflight();
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(result.stdout).toContain('authenticated gh identities');
+  });
+
+  it('fails before provisioning when a token cannot resolve identity', () => {
+    const result = runLocalMatrixHostPreflight({ unavailableUser: 'aviynw' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("gh token for 'aviynw' cannot authenticate GitHub GET /user");
+  });
+
+  it('fails before provisioning when a requested token authenticates as another account', () => {
+    const result = runLocalMatrixHostPreflight({ mismatchUser: 'aviynw' });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("gh token requested for 'aviynw' authenticates as 'wrong-account'");
   });
 });
