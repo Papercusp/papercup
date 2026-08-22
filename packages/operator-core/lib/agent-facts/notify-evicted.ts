@@ -133,7 +133,7 @@ export function renderEvictionNotice(
     `so prefer re-asserting only what is still load-bearing.\n\n` +
     `HOW VICTIMS ARE CHOSEN (so this is predictable rather than mysterious): the cap keeps the ` +
     `most valuable and drops the tail, ranked by confidence first ('verified' survives longest, ` +
-    `'suspected' dies first), then by the FRACTION of your declared TTL that remains, then ` +
+    `'suspected' dies first), then by the remaining fraction of your declared TTL, then ` +
     `write-recency. A long absolute TTL does not automatically survive: a fact near the end ` +
     `of its own life can rank below a shorter-lived fact that was asserted recently.\n\n` +
     decidingKeyParagraph(args.ranking);

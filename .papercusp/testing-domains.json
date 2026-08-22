@@ -1719,6 +1719,22 @@
               "kind": "shell",
               "cmd": "bash",
               "args": [
+                "papercusp-desktop/bin/lib/b5-restart.selftest.sh"
+              ],
+              "label": "restart durability: failing runs retain every passing assertion in the transcript (EI-21115093867849562)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
+                "papercusp-desktop/bin/lib/matrix-scenario-adapters.selftest.sh"
+              ],
+              "label": "live-matrix sibling adapters: failing runs retain every passing assertion in the transcript (EI-21116501794646084)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
                 "papercusp-desktop/bin/lib/replication-soak-diagnostics.selftest.sh"
               ],
               "label": "replication-soak failed-leg detector window + row/outbox/announce high-water diagnostics (WI-38376)"
