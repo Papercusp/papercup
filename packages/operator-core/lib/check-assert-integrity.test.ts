@@ -19,7 +19,13 @@ import { describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs lint script, no type declarations
-import { scan, scriptsInScope, ROOT, orphanedAsserts } from '../../../scripts/check-assert-integrity.mjs';
+import {
+  scan,
+  scriptsInScope,
+  ROOT,
+  orphanedAsserts,
+  discardedReadings,
+} from '../../../scripts/check-assert-integrity.mjs';
 
 type Finding = { file: string; line: number; rule: string; msg: string };
 
@@ -418,6 +424,120 @@ describe('check-assert-integrity: R6 orphaned assert', () => {
     };
     expect(assertCount).toBeGreaterThanOrEqual(10); // a zero-assert scan is not a pass
     expect(findings.map((f) => `${f.file}:${f.line} ${f.msg.match(/^"([^"]+)"/)?.[1]}`).join('\n')).toBe('');
+  });
+});
+
+describe('check-assert-integrity: R7 discarded reading', () => {
+  const r7 = (body: string): Finding[] =>
+    discardedReadings('f.sh', `scn_x() {\n${body}\n}\n`) as Finding[];
+
+  it('fires when a measured diagnostic is only reported past a return', () => {
+    // The b9-attestation.sh LEG3 shape: measured, then an UNMEASURED bail returns
+    // before the one message that would have printed it.
+    const out = r7(
+      [
+        '  probe_on_b="$(drv_psql b "SELECT count(*) ...;")"',
+        '  [ "$measured" = 1 ] || { echo "FAIL — post-probe UNMEASURED"; return 1; }',
+        '  echo "FAIL — probe-on-b=${probe_on_b:-<unmeasured>}"',
+      ].join('\n'),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].rule).toBe('R7-discarded-reading');
+    expect(out[0].msg).toContain('probe_on_b');
+  });
+
+  it('fires when the OK path also drops it (discarded on green runs too)', () => {
+    const out = r7(
+      [
+        '  probe_on_b="$(drv_psql b "SELECT count(*) ...;")"',
+        '  if [ "$rc" -gt 0 ]; then echo "OK (no probe-on-b here)"; return 0; fi',
+        '  echo "FAIL — probe-on-b=$probe_on_b"',
+      ].join('\n'),
+    );
+    expect(out).toHaveLength(1);
+  });
+
+  // ── FAIL-CLOSED NEGATIVE CONTROLS ────────────────────────────────────────
+  // Each looks like an exempt shape. If an edit to R7 ever quiets one of the
+  // first two, or starts firing on the rest, that is the regression.
+
+  it('FAIL-CLOSED: a report added AFTER the return is not a fix — still fires', () => {
+    // The tempting non-fix: "I added a rig_reading, so it's covered." It is not —
+    // the reading is still unreachable on the bail path. This is the control that
+    // matters most, because the shape looks exactly like the real fix.
+    const out = r7(
+      [
+        '  probe_on_b="$(drv_psql b "SELECT count(*) ...;")"',
+        '  [ "$measured" = 1 ] || { echo "FAIL — UNMEASURED"; return 1; }',
+        '  rig_reading "LEG4.probe-on-b" "$probe_on_b"',
+        '  echo "FAIL — probe-on-b=$probe_on_b"',
+      ].join('\n'),
+    );
+    expect(out).toHaveLength(1);
+  });
+
+  it('stays green when the reading is reported AT the measurement point', () => {
+    // The real fix: every exit path inherits it, so no return can discard it.
+    const out = r7(
+      [
+        '  probe_on_b="$(drv_psql b "SELECT count(*) ...;")"',
+        '  rig_reading "LEG4.probe-on-b" "$probe_on_b"',
+        '  [ "$measured" = 1 ] || { echo "FAIL — UNMEASURED"; return 1; }',
+        '  echo "FAIL — probe-on-b=$probe_on_b"',
+      ].join('\n'),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('does NOT fire when the value also feeds logic (an intervening return is control flow)', () => {
+    // Deliberate narrowing. Without it the rule emits 27 findings across the rig —
+    // $ts, $tmp, $tries, $measured — almost all ordinary working variables. That
+    // volume of noise trains authors to blanket-suppress, costing more than the class.
+    const out = r7(
+      [
+        '  n="$(drv_psql a "SELECT count(*) ...;")"',
+        '  [ -n "$n" ] || return 1',
+        '  [ "$n" -gt 0 ] || return 1',
+        '  echo "OK n=$n"',
+      ].join('\n'),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('does NOT fire when no return can pre-empt the report', () => {
+    const out = r7(
+      [
+        '  probe_on_b="$(drv_psql b "SELECT count(*) ...;")"',
+        '  echo "probe-on-b=$probe_on_b"',
+        '  return 0',
+      ].join('\n'),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('does NOT fire on a longer identifier that merely starts with the var name', () => {
+    // $probe_on_b_extra must not count as a reference to $probe_on_b, or the rule
+    // would read a discarded value as reported and go quietly green.
+    const out = r7(
+      [
+        '  probe_on_b="$(drv_psql b "SELECT 1;")"',
+        '  [ "$measured" = 1 ] || return 1',
+        '  echo "unrelated=$probe_on_b_extra"',
+      ].join('\n'),
+    );
+    // probe_on_b is never actually referenced → dead assignment, a different defect.
+    expect(out).toEqual([]);
+  });
+
+  it('the real rig scripts are clean under R7', () => {
+    const tracked: string[] = scriptsInScope();
+    // An empty scan would report "clean" because it never looked — the exact
+    // can-falsely-pass shape this whole lint exists to prevent.
+    expect(tracked.length).toBeGreaterThanOrEqual(10);
+    const findings = tracked.flatMap((f) =>
+      discardedReadings(f, readFileSync(resolve(ROOT, f), 'utf8')),
+    ) as Finding[];
+    expect(findings.map((f) => `${f.file}:${f.line}`).join('\n')).toBe('');
   });
 });
 

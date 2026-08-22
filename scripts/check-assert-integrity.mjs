@@ -316,6 +316,104 @@ function segmentFunctions(rawLines) {
   return { fns, top: top.join('\n') };
 }
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * R7 — DISCARDED READING (WI-40549). Per-FUNCTION, so it cannot live in scan(),
+ * which is line-based and has no function scope.
+ *
+ *     A MEASUREMENT REPORTED ONLY PAST A `return` IS NOT EVIDENCE.
+ *
+ * The third member of this file's family. R1–R5 catch an assert that runs and
+ * cannot fail; R6 catches an assert nobody calls; R7 catches a DIAGNOSTIC that
+ * was measured correctly and then thrown away before anyone could read it.
+ *
+ * THE SHAPE. A leg measures a diagnostic ("did the probe actually land on frame
+ * b?"), then reaches its scoring message through one of SEVERAL exit paths — but
+ * only ONE of those paths interpolates the value. Every other path returns having
+ * silently discarded it. The reading is most valuable in exactly the paths that
+ * drop it: when a leg bails early, "did the probe ever land?" is the question
+ * separating a rig fault from a real product failure, and it is unrecoverable
+ * afterwards because the frames are torn down.
+ *
+ * Live instances, both in b9-attestation.sh — the same file that motivated R1–R5:
+ *   - $wrong_on_b measured at LEG3, printed only in the final FAIL message; the
+ *     post-probe-UNMEASURED bail returned without it.
+ *   - $probe_on_b measured at LEG4, discarded by BOTH the UNMEASURED return AND
+ *     the OK path — so it was lost on green runs and dead-probe runs alike.
+ *
+ * WHY POSITIONAL, NOT PER-EXIT-PATH. The fix is to report AT the measurement
+ * (`rig_reading`, bin/lib/deb-hetzner-rig.sh), so every exit path inherits the
+ * reading for free. Patching each scoring message instead leaves the class armed:
+ * the next early-return added to the leg silently re-breaks it. That is why this
+ * rule keys off the FIRST reference rather than auditing each return.
+ *
+ * DELIBERATELY NARROW — fires only on the diagnostic-only class: EVERY reference
+ * to the value must sit inside a reporting command (echo/printf/rig_reading). A
+ * value that also feeds a conditional or an assert is excluded, because there an
+ * intervening `return` is ordinary control flow, not a lost reading. Over-firing
+ * on normal branching would train authors to blanket-suppress the rule, which
+ * costs more than the class does.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+const REPORTING_CMD = /(?:^|[;&|]|\bthen\b|\{)\s*(?:echo|printf|rig_reading)\b/;
+const RETURN_STMT = /(?:^|[;&|]|\bthen\b|\{)\s*return\b/;
+
+function discardedReadings(file, text) {
+  const rawLines = text.split('\n');
+  const { fns } = segmentFunctions(rawLines);
+  const out = [];
+
+  for (const fn of fns) {
+    const body = fn.body.split('\n');
+    for (let i = 0; i < body.length; i++) {
+      const m = body[i].match(
+        /^\s*(?:local\s+|declare\s+-\w+\s+)?([A-Za-z_][A-Za-z0-9_]*)=(?:"?\$\()/,
+      );
+      if (!m) continue;
+      const v = m[1];
+
+      // Reference = $v or ${v...}, but NOT a longer identifier merely starting with v.
+      const refRe = new RegExp(`\\$\\{${v}[^A-Za-z0-9_]|\\$${v}(?![A-Za-z0-9_])`);
+      const refs = [];
+      for (let j = i + 1; j < body.length; j++) if (refRe.test(body[j])) refs.push(j);
+
+      // Never referenced at all is a DIFFERENT defect (dead assignment), not this one.
+      if (refs.length === 0) continue;
+
+      // Diagnostic-only gate: if the value is ALSO consumed by logic, an
+      // intervening return is legitimate control flow, not a discarded reading.
+      if (!refs.every((j) => REPORTING_CMD.test(body[j]))) continue;
+
+      // Can a `return` pre-empt the FIRST place this value is reported?
+      let preempt = -1;
+      for (let j = i + 1; j < refs[0]; j++) {
+        if (RETURN_STMT.test(body[j])) {
+          preempt = j;
+          break;
+        }
+      }
+      if (preempt < 0) continue;
+
+      const absIdx = fn.defLine - 1 + i;
+      if (suppressed(rawLines, absIdx)) continue;
+      out.push({
+        file,
+        line: absIdx + 1,
+        rule: 'R7-discarded-reading',
+        msg:
+          `"${v}" is measured here but is only ever REPORTED at line ${fn.defLine + refs[0]}, ` +
+          `and the \`return\` at line ${fn.defLine + preempt} can be taken first — so on that path ` +
+          `the reading is measured and then silently discarded. That is the path where it matters ` +
+          `most: an early bail is exactly when "did the probe actually land?" separates a rig fault ` +
+          `from a product failure, and the frames are gone afterwards. Report AT the measurement ` +
+          `instead — \`rig_reading "<label>" "$${v}"\` immediately after the assignment ` +
+          `(bin/lib/deb-hetzner-rig.sh) — so every exit path inherits it and the next early-return ` +
+          `added here cannot re-break it.`,
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Assert helpers that no execution path can reach.
  *
@@ -444,6 +542,7 @@ function main() {
       continue;
     }
     findings.push(...scan(f, text));
+    findings.push(...discardedReadings(f, text));
   }
 
   const orphans = orphanedAsserts(tracked);
@@ -475,7 +574,8 @@ function main() {
 
   console.error('✗ assert-integrity: assert(s) that are not evidence.\n');
   console.error('  R1-R5 (P-411):  every "couldn\'t measure" must be a FAIL, never a pass.');
-  console.error('  R6   (WI-7000): an assert nobody calls is not evidence.\n');
+  console.error('  R6   (WI-7000): an assert nobody calls is not evidence.');
+  console.error('  R7  (WI-40549): a measurement reported only past a `return` is not evidence.\n');
   for (const f of findings) {
     console.error(`    ${f.file}:${f.line}  [${f.rule}]`);
     console.error(`      ${f.msg}\n`);
@@ -491,4 +591,12 @@ function main() {
 const invokedPath = process.argv[1] ? pathToFileURL(realpathSync(process.argv[1])).href : '';
 if (import.meta.url === invokedPath) main();
 
-export { scan, scriptsInScope, ROOT, orphanedAsserts, segmentFunctions, stripShellComments };
+export {
+  scan,
+  scriptsInScope,
+  ROOT,
+  orphanedAsserts,
+  segmentFunctions,
+  stripShellComments,
+  discardedReadings,
+};
