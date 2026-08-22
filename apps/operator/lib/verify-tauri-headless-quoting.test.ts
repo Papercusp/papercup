@@ -188,6 +188,15 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
       '--selector\nbody\n--text\nPeer\n--no-errors\n',
     );
   });
+
+  it('removes the per-run bridge token only after stopping the owned process tree', () => {
+    const stopIndex = src.indexOf('"$WORK/stop.sh" >/dev/null 2>&1 || true');
+    const tokenCleanupIndex = src.indexOf(
+      'rm -f -- "/tmp/tauri-dev-bridge-$BRIDGE_PID.token"',
+    );
+    expect(stopIndex).toBeGreaterThan(0);
+    expect(tokenCleanupIndex).toBeGreaterThan(stopIndex);
+  });
 });
 
 describe('P-014 corpus-count Tauri acceptance recipe', () => {
