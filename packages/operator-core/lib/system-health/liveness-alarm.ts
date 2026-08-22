@@ -59,7 +59,7 @@
  * dead-routines keeps firing/recovering) remains its own, separate open bug —
  * this only stops the ALARM SYSTEM from amplifying it into a broadcast storm.
  */
-import { PANEL_LABELS, type SystemHealth, type PanelKey } from './types';
+import { PANEL_LABELS, type SystemHealth, type PanelKey, type InfraHealth } from './types';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { computeSystemHealth, lastSystemHealth } from './compute';
 import {
@@ -84,6 +84,7 @@ import {
   readD026QuiescenceEvidence,
   type D026QuiescenceEvidence,
 } from './single-primary-check';
+import { infraCritAmbientOnly } from './thresholds';
 
 export const INFRA_LIVENESS_IDENTITY: AgentIdentity = {
   ownerId: 'system:infra-liveness-alarm',
@@ -709,6 +710,24 @@ export function evaluateLivenessAlarm(
     // `policySuppressedLivenessSignatures` below, so "we did not fire this" and
     // "we must not auto-resolve this" cannot drift apart.
     if (panel.key === 'bees' && beesSignalSuppressed(health, opts.beesLiveness)) continue;
+    // EI-21025158485847408: an infra crit caused ONLY by ambient host pressure
+    // (D-007's `ambientHost` attribution — ordinary multi-tenant PSI load from
+    // peer agents, never an operator defect) downgrades to a visible, non-paging
+    // `advisory` instead of a `blocker`. See `infraCritAmbientOnly`'s doc for why:
+    // without this, ordinary fleet-load PSI crossing the threshold repeatedly
+    // opens/resolves a `panel:infra` blocker as it oscillates — the recurring
+    // "PSI thrashing" this item reports, distinct from WI-5471 (a real bg-host
+    // event-loop/PG-pool bug that this alarm correctly still pages for). A crit
+    // for any OTHER reason — or a mix that ALSO carries an operator-defect leg —
+    // still pages exactly as before.
+    if (panel.key === 'infra' && panel.data && infraCritAmbientOnly(panel.data as InfraHealth)) {
+      signals.push({
+        key: 'panel:infra',
+        severity: 'advisory',
+        summary: `${panel.label} (ambient host pressure, non-blocking): ${panel.summary}`,
+      });
+      continue;
+    }
     signals.push({ key: `panel:${panel.key}`, severity: 'blocker', summary: `${panel.label}: ${panel.summary}` });
   }
 
