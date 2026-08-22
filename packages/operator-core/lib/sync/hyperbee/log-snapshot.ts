@@ -555,6 +555,103 @@ interface FoldLogRangeOptions {
 }
 
 /**
+ * The producer-side view of a COMPLETE prior snapshot set. The reader exposes
+ * the same seed discovery through `read-merge.ts`, but importing that module
+ * here would create a runtime cycle (`read-merge` already imports this module).
+ * Keep this small local mirror so the writer can reuse the verified chunk reads
+ * when it seeds its folder.
+ */
+interface ProducerSnapshotSeed {
+  coversUpTo: number;
+  chunkCount: number;
+  chunks: PeerLogOp[];
+}
+
+/**
+ * Keep seed discovery bounded when a log has never been snapshotted. The reader
+ * uses the same four-compaction-window bound; a producer snapshot is expected
+ * to be within one cadence window of the tail, while a missing/old seed safely
+ * falls back to the full fold below.
+ */
+const PRODUCER_SNAPSHOT_SCAN_LOOKBACK = SNAPSHOT_COMPACT_EVERY_OPS * 4;
+
+/**
+ * Find and read the newest complete snapshot set near the own-log tail.
+ *
+ * A complete set is the contiguous span `[coversUpTo, coversUpTo + chunkCount)`
+ * whose every block is a snapshot op carrying the same set metadata. A torn or
+ * malformed candidate is skipped, and a read failure simply disables seeding
+ * for this invocation: folding from zero remains correct and is preferable to
+ * guessing that a partial set summarizes history.
+ */
+async function findLatestProducerSnapshot(
+  log: Pick<OwnLog, 'length' | 'get'>,
+): Promise<ProducerSnapshotSeed | null> {
+  const length = log.length;
+  const floor = Math.max(0, length - PRODUCER_SNAPSHOT_SCAN_LOOKBACK);
+  const cache = new Map<number, PeerLogOp | null>();
+
+  const readAt = async (index: number): Promise<PeerLogOp | null> => {
+    const cached = cache.get(index);
+    if (cached !== undefined || cache.has(index)) return cached ?? null;
+    try {
+      const op = await log.get(index);
+      cache.set(index, op);
+      return op;
+    } catch {
+      // The producer is local, but a transient read failure must not turn a
+      // safe full fold into a false forward seed. The fold itself will surface
+      // a persistent failure if the block cannot actually be read.
+      cache.set(index, null);
+      return null;
+    }
+  };
+
+  for (let index = length - 1; index >= floor; index--) {
+    const candidate = await readAt(index);
+    if (!candidate || !isSnapshotOp(candidate)) continue;
+
+    const payload = candidate.value as SnapshotPayload | undefined;
+    const coversUpTo = payload?.coversUpTo;
+    const chunkCount = payload?.chunkCount ?? 1;
+    if (
+      !Number.isInteger(coversUpTo) ||
+      coversUpTo < 0 ||
+      !Number.isInteger(chunkCount) ||
+      chunkCount < 1 ||
+      coversUpTo + chunkCount > length
+    ) {
+      continue;
+    }
+
+    const chunks: PeerLogOp[] = [];
+    let complete = true;
+    for (let chunkIdx = 0; chunkIdx < chunkCount; chunkIdx++) {
+      const chunk = await readAt(coversUpTo + chunkIdx);
+      const chunkPayload = chunk?.value as SnapshotPayload | undefined;
+      if (
+        !chunk ||
+        !isSnapshotOp(chunk) ||
+        !chunkPayload ||
+        chunkPayload.coversUpTo !== coversUpTo ||
+        (chunkPayload.chunkCount ?? 1) !== chunkCount ||
+        (chunkPayload.chunkIdx ?? 0) !== chunkIdx
+      ) {
+        complete = false;
+        break;
+      }
+      chunks.push(chunk);
+    }
+    if (complete) return { coversUpTo, chunkCount, chunks };
+
+    // Skip the rest of a known candidate span when it is torn. Keep the loop
+    // strictly moving backward even for malformed metadata that points ahead.
+    index = Math.min(index - 1, coversUpTo - 1);
+  }
+  return null;
+}
+
+/**
  * Watch one monotonically advancing source cursor. The alarm is edge-triggered
  * for each cursor value: a scan that keeps advancing can run for hours without
  * a wall-clock false positive, while a read that never completes produces one
@@ -643,8 +740,9 @@ export interface ProduceSnapshotResult {
  * append that, for a large own log, blew the block ceiling (`BAD_ARGUMENT`) → the
  * snapshot never landed → the cursor never seeded → every restart replayed from 0.
  *
- * Reads `[0, length)` of the own log once per compaction (the writer paying
- * O(history) once, vs every joiner paying it forever — the whole point). Chunk 0
+ * Seeds from the newest complete prior snapshot when one is available, then
+ * reads only the post-snapshot tail. On the first compaction (or when no recent
+ * complete set can be verified) it safely falls back to `[0, length)`. Chunk 0
  * lands at index `length` and every chunk carries `coversUpTo = length`.
  *
  * GATED: callers MUST flag-gate this (`papercusp-substrate-log-snapshot`) until
@@ -755,14 +853,29 @@ export async function produceLogSnapshot(
   // (live keys + one window of SNAPSHOT_READ_CONCURRENCY blocks). See `SnapshotRowFolder`.
   const folder = new SnapshotRowFolder({ excludeTables: opts.excludeTables });
 
+  // A prior complete snapshot already represents every op before its anchor.
+  // Seed those rows directly and start the streaming fold after the entire
+  // chunk span, so the producer's second invocation is O(new tail), not
+  // O(history). If no complete set is discoverable in the bounded scan window,
+  // foldedUpTo remains zero and the existing full-fold behavior is preserved.
+  const priorSnapshot = await findLatestProducerSnapshot(ownLog);
+  let foldedUpTo = 0;
+  if (priorSnapshot) {
+    for (const chunk of priorSnapshot.chunks) folder.add(chunk);
+    foldedUpTo = priorSnapshot.coversUpTo + priorSnapshot.chunkCount;
+  }
+
   /**
    * Fold `[from, to)` into the folder. Factored out of the main loop so the ANCHOR
    * CONVERGENCE below can reuse it for the (tiny) delta that arrives mid-read.
    */
   const foldRange = (from: number, to: number): Promise<void> => foldLogRangeInto(ownLog, folder, from, to);
 
-  await foldRange(0, coversUpTo);
-  let foldedUpTo = coversUpTo;
+  await foldRange(foldedUpTo, coversUpTo);
+  // The initial target was captured before seed discovery. A concurrent append
+  // can therefore make the verified seed span newer than that target; never
+  // move the cursor backward in that case.
+  foldedUpTo = Math.max(foldedUpTo, coversUpTo);
 
   // ── ANCHOR CONVERGENCE (WI-37526) ────────────────────────────────────────────
   //

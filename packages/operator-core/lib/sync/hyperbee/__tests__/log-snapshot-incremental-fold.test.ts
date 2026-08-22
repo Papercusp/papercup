@@ -68,17 +68,27 @@ interface FoldProbe {
   /** Peak count of ops READ but not yet FOLDED — the memory property, made observable. */
   maxOutstanding: number;
   reads: number;
+  /** Every `get` call, including bounded seed discovery and appended chunks. */
+  getCalls: number;
   folds: number;
 }
 
 function foldProbeLog(historyLength: number): FoldProbe {
-  const probe: FoldProbe = { log: null as unknown as OwnLog, maxOutstanding: 0, reads: 0, folds: 0 };
+  const probe: FoldProbe = {
+    log: null as unknown as OwnLog,
+    maxOutstanding: 0,
+    reads: 0,
+    getCalls: 0,
+    folds: 0,
+  };
   const history = Array.from({ length: historyLength }, (_, i) =>
     observableOp(i, () => {
       probe.folds += 1;
     }),
   );
   const appended: PeerLogOp[] = [];
+  let inFlight = 0;
+  let pipelineObserved = false;
   probe.log = {
     get keyHex() {
       return 'k'.repeat(64);
@@ -93,11 +103,30 @@ function foldProbeLog(historyLength: number): FoldProbe {
       appended.push(...batch);
     },
     async get(i: number) {
+      inFlight += 1;
+      if (i < historyLength && inFlight > 1) {
+        // Seed discovery probes the tail serially and discards non-snapshot
+        // blocks. Count only the first genuinely concurrent fold window so the
+        // retention metric measures decoded ops held for folding, not the
+        // bounded metadata scan that intentionally does not retain them.
+        if (!pipelineObserved) {
+          pipelineObserved = true;
+          probe.reads += inFlight - 1;
+        }
+        probe.reads += 1;
+        probe.maxOutstanding = Math.max(probe.maxOutstanding, probe.reads - probe.folds);
+      } else if (i < historyLength && pipelineObserved) {
+        probe.reads += 1;
+        probe.maxOutstanding = Math.max(probe.maxOutstanding, probe.reads - probe.folds);
+      }
       await new Promise((r) => setTimeout(r, 0));
-      if (i >= historyLength) return appended[i - historyLength] ?? null;
-      probe.reads += 1;
-      probe.maxOutstanding = Math.max(probe.maxOutstanding, probe.reads - probe.folds);
-      return history[i];
+      probe.getCalls += 1;
+      try {
+        if (i >= historyLength) return appended[i - historyLength] ?? null;
+        return history[i];
+      } finally {
+        inFlight -= 1;
+      }
     },
   };
   return probe;
@@ -176,6 +205,33 @@ describe('produceLogSnapshot incremental fold (P-014 half 2)', () => {
 
     expect(big.folds).toBe(4000);
     expect(big.maxOutstanding).toBeLessThanOrEqual(small.maxOutstanding);
+  });
+
+  it('folds forward from the latest complete snapshot instead of rereading history', async () => {
+    const historyLength = SNAPSHOT_READ_CONCURRENCY * 2 + 17;
+    const probe = foldProbeLog(historyLength);
+
+    const first = await produceLogSnapshot(probe.log, { now: 5, schemaVersion: 1 });
+    expect(first.appended).toBe(true);
+    const callsBeforeSecond = probe.getCalls;
+
+    await probe.log.append({
+      type: 'put',
+      table: 'queue',
+      hbKey: 'K0',
+      value: { i: historyLength + 1 },
+      ts: 6,
+      schema_version: 1,
+      author_pubkey: 'me',
+    });
+
+    const second = await produceLogSnapshot(probe.log, { now: 7, schemaVersion: 1 });
+    expect(second.appended).toBe(true);
+    // Seed discovery verifies the prior snapshot set, folds only the one new
+    // source op, and performs the final anchor check. It must not approach the
+    // original history length even though the log now contains that history.
+    expect(probe.getCalls - callsBeforeSecond).toBeLessThan(historyLength / 2);
+    expect(second.rowCount).toBe(DISTINCT_KEYS);
   });
 
   it('streams to the SAME rows the pure builder produces (puts, dels, prior snapshot, GC)', async () => {
