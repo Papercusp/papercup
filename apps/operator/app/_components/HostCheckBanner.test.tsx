@@ -4,11 +4,12 @@
  *
  * Covers: primes the passwordless session via GET /api/auth/me BEFORE firing
  * /api/provision/host-check (the auth-bootstrap race fix — see the docstring
- * in HostCheckBanner.tsx); renders only on `decision: 'gate'` (and only when
- * the payload is `ok`); shows the larger of the active/configured user
- * counts; the acknowledge POST flips to allow-acked and hides the banner;
- * and silent fallbacks (non-ok / reject / non-gate / auth/me itself failing
- * → nothing throws, host-check still fires).
+ * in HostCheckBanner.tsx); probes only after a verified or passwordless
+ * auth/me result; renders only on `decision: 'gate'` (and only when the
+ * payload is `ok`); shows the larger of the active/configured user counts;
+ * the acknowledge POST flips to allow-acked and hides the banner; and
+ * silent fallbacks (non-ok / reject / non-gate / degraded auth → nothing
+ * throws or reaches the trust-gated endpoint).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react';
@@ -35,10 +36,10 @@ function gate(active: string[], configured: string[]) {
     signals: { activeUsers: active, configuredUsers: configured, isShared: true },
   });
 }
-/** Generic stand-in for the priming GET /api/auth/me response — its body is
- * never read by the component, only its settling order matters. */
+/** Generic stand-in for a passwordless auto-login GET /api/auth/me response.
+ * This is the browser-cookie or desktop-bearer path that authorizes probing. */
 function authMeOk(): Response {
-  return okJson({ user: { id: 'default' }, autoLogin: true, available: [] });
+  return okJson({ user: { id: 'default', has_password: false }, autoLogin: true, available: [] });
 }
 
 describe('HostCheckBanner', () => {
@@ -61,6 +62,36 @@ describe('HostCheckBanner', () => {
     const { container } = render(<HostCheckBanner />);
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
     expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
+  it('allows a verified session even when the account has a password', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({ user: { id: 'alice', has_password: true }, autoLogin: false, available: [] }),
+    );
+    mockFetch.mockResolvedValueOnce(gate(['a'], ['a', 'b']));
+    render(<HostCheckBanner />);
+    expect(await screen.findByRole('alert')).toBeTruthy();
+    expect(mockFetch.mock.calls.map(([url]) => url)).toEqual([
+      '/api/auth/me',
+      '/api/provision/host-check',
+    ]);
+  });
+
+  it('does not probe for a password-protected auto-login fallback', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({ user: { id: 'default', has_password: true }, autoLogin: true, available: [] }),
+    );
+    render(<HostCheckBanner />);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(mockFetch.mock.calls[0][0]).toBe('/api/auth/me');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not probe when auth/me reports no user', async () => {
+    mockFetch.mockResolvedValueOnce(okJson({ user: null, autoLogin: false, available: [] }));
+    render(<HostCheckBanner />);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('renders the banner on a gate decision with the larger user count', async () => {
@@ -106,14 +137,32 @@ describe('HostCheckBanner', () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('still fires host-check even when the /api/auth/me priming call itself rejects', async () => {
-    // Regression guard for the race fix: a failed priming fetch must not
-    // block the host-check request behind it (best-effort priming only).
+  it('does not fire host-check when the /api/auth/me priming call rejects', async () => {
     mockFetch.mockRejectedValueOnce(new Error('auth/me down'));
-    mockFetch.mockResolvedValueOnce(gate(['a'], ['a', 'b']));
     render(<HostCheckBanner />);
-    const banner = await screen.findByRole('alert');
-    expect(banner.textContent).toContain('Shared host detected.');
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(mockFetch.mock.calls[0][0]).toBe('/api/auth/me');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not fire host-check when auth/me is non-ok', async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 403 } as unknown as Response);
+    render(<HostCheckBanner />);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not fire host-check for a degraded passwordless fallback', async () => {
+    mockFetch.mockResolvedValueOnce(
+      okJson({
+        user: { id: 'synthetic', has_password: false },
+        autoLogin: true,
+        degraded: true,
+        pgUnavailable: true,
+      }),
+    );
+    render(<HostCheckBanner />);
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 });

@@ -29,7 +29,11 @@
  * but real console noise. Fix: prime the session for whichever backend
  * is currently active by awaiting `/api/auth/me` first — cheap (each
  * sibling already fires the same call; the browser dedupes nothing here
- * but the endpoint is trivial) and fully order-independent.
+ * but the endpoint is trivial) and fully order-independent. The probe is
+ * also conditional: a password-protected auto-login fallback (or a degraded
+ * auth response) proves that no verified user session is available, so it
+ * must not call the trust-gated endpoint at all. A passwordless auto-login
+ * response is the intentional browser-cookie or desktop-bearer path.
  */
 'use client';
 
@@ -38,6 +42,25 @@ import { useEffect, useState } from 'react';
 interface HostCheckResult {
   decision: 'allow' | 'allow-acked' | 'gate';
   signals: { activeUsers: string[]; configuredUsers: string[]; isShared: boolean };
+}
+
+interface AuthMeResult {
+  user?: { has_password?: boolean } | null;
+  autoLogin?: boolean;
+  degraded?: boolean;
+  pgUnavailable?: boolean;
+}
+
+/**
+ * Host-check is trust-gated. Only a real session (`autoLogin: false`) or the
+ * passwordless auto-login path may reach it; the latter covers both a browser
+ * cookie mint and the passwordless desktop sys:http bearer. Degraded auth and
+ * password-protected fallback users are not evidence of either path.
+ */
+function canRunHostCheck(auth: AuthMeResult): boolean {
+  if (!auth.user || auth.degraded === true || auth.pgUnavailable === true) return false;
+  if (auth.autoLogin === false) return true;
+  return auth.autoLogin === true && auth.user.has_password === false;
 }
 
 export function HostCheckBanner() {
@@ -49,17 +72,23 @@ export function HostCheckBanner() {
     // Ensure the passwordless auto-session is established (and, crucially,
     // established against whichever backend the env-switcher currently
     // targets) BEFORE the trust-gated host-check fetch — see the race
-    // explained in the docstring above. Best-effort: a failure here just
-    // means host-check falls back to its own silent-catch below.
-    fetch('/api/auth/me', { cache: 'no-store' })
-      .catch(() => { /* best-effort priming — host-check below still runs */ })
-      .then(() => {
-        if (cancelled) return undefined;
-        return fetch('/api/provision/host-check', { cache: 'no-store' });
-      })
-      .then((r) => (r?.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d?.ok) setResult(d); })
-      .catch(() => { /* endpoint may not be available — silent */ });
+    // explained in the docstring above. Do not probe when auth cannot prove
+    // that a verified or passwordless desktop-bearer path is available.
+    void (async () => {
+      try {
+        const authResponse = await fetch('/api/auth/me', { cache: 'no-store' });
+        if (!authResponse.ok) return;
+        const auth = (await authResponse.json()) as AuthMeResult;
+        if (cancelled || !canRunHostCheck(auth)) return;
+
+        const hostCheck = await fetch('/api/provision/host-check', { cache: 'no-store' });
+        if (!hostCheck.ok) return;
+        const data = (await hostCheck.json()) as HostCheckResult & { ok?: boolean };
+        if (!cancelled && data.ok) setResult(data);
+      } catch {
+        /* auth or endpoint may not be available — stay silent */
+      }
+    })();
     return () => { cancelled = true; };
   }, []);
 
