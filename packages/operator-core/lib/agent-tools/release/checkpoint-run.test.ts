@@ -66,6 +66,26 @@ const NO_CONTAINMENT = vi.fn(async () => ({
 beforeEach(() => {
   vi.resetModules();
   NO_CONTAINMENT.mockClear();
+  // Keep the broad handler suite hermetic: queue-specific cases below opt into the real
+  // helper after installing their routine/DB mocks.
+  vi.doMock('../../release/checkpoint-required-ancestor', async () => {
+    const actual = await vi.importActual<typeof import('../../release/checkpoint-required-ancestor')>(
+      '../../release/checkpoint-required-ancestor',
+    );
+    return {
+      ...actual,
+      assessFrozenRepairQueuePreflight: vi.fn(async () => ({
+        proceed: true,
+        reason: 'clear' as const,
+        candidate: null,
+        repairQueue: null,
+        queueDecision: 'run-normal-gate' as const,
+        nextAttempt: null,
+        fixerSpawnId: null,
+        fixerAlive: null,
+      })),
+    };
+  });
 });
 afterEach(() => {
   vi.doUnmock('../../release-checkpoint-launch');
@@ -79,6 +99,7 @@ afterEach(() => {
   vi.doUnmock('../../harness/operator-home-harness');
   vi.doUnmock('../../harness/routines/release-actions');
   vi.doUnmock('@papercusp/db-org');
+  vi.doUnmock('../../release/checkpoint-required-ancestor');
 });
 
 /**
@@ -978,6 +999,11 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
   const CURRENT = 'b8360abde13b0000000000000000000000000000';
 
   function mockQueue(queue: Record<string, unknown> | null | 'throws', fixerAlive: boolean | null = true) {
+    vi.doMock('../../release/checkpoint-required-ancestor', async () =>
+      vi.importActual<typeof import('../../release/checkpoint-required-ancestor')>(
+        '../../release/checkpoint-required-ancestor',
+      ),
+    );
     vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
     vi.doMock('@papercusp/db-org', async (orig) => ({
@@ -1011,6 +1037,65 @@ describe('EI-21047439235631660: required ancestor is checked against the frozen-
       ...overrides,
     };
   }
+
+  it('EI-21137440735672596: refuses an ordinary launch when the queue would dispatch a fixer', async () => {
+    mockQueue({
+      ...awaitingFixerQueue({ attempts: 2, fixerSpawnId: null }),
+      repairHead: QUEUE_HEAD,
+    });
+    const launchSpy = vi.fn(async () => ({ launched: true, unit: 'must-not-launch', argv: [], logPath: '/tmp/x' }));
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({ force: true }, MAKE_CTX())) as never);
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'repair-in-progress',
+      candidate: QUEUE_HEAD,
+      repair_candidate: QUEUE_HEAD,
+      queue_decision: 'dispatch-fixer',
+      fixer_spawn_id: null,
+      fixer_alive: null,
+      next_attempt: 3,
+      repair_queue: { phase: 'awaiting-fixer', attempts: 2, repairHead: QUEUE_HEAD },
+    });
+    expect(String(b.note)).toMatch(/without running a suite/);
+    expect(String(b.note)).toMatch(/force:true does not bypass/);
+  });
+
+  it('fails closed with the live fixer identity when the queue is waiting for a fixer', async () => {
+    mockQueue(awaitingFixerQueue({ fixerSpawnId: 's-live' }), true);
+    const launchSpy = vi.fn();
+    vi.doMock('../../release-checkpoint-launch', async (orig) => ({
+      ...(await orig()),
+      assessPreLaunchExclusion: PRELAUNCH_OPEN,
+      checkpointCandidateContainment: NO_CONTAINMENT,
+      launchDetachedCheckpoint: launchSpy,
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const b = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'repair-in-progress',
+      repair_candidate: QUEUE_HEAD,
+      queue_decision: 'wait-for-fixer',
+      fixer_spawn_id: 's-live',
+      fixer_alive: true,
+      repair_queue: { fixerSpawnId: 's-live', repairHead: QUEUE_HEAD },
+    });
+  });
 
   it('refuses before spawn when queue.repairHead does not contain the required repair — force cannot bypass', async () => {
     mockQueue({

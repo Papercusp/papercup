@@ -708,6 +708,15 @@ state the scope you actually searched. For "where is this symbol defined" use
 `gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL
 exist", `tools:find`.
 
+⚠ **Line-oriented matching cannot see a phrase split by hard wrapping.** Generated
+or rendered prose may insert a newline inside a multi-word phrase, so
+`grep -c 'IN THIS SAME TURN' rendered.md` → 0 does **not** prove the clause is
+absent. Inspect the surrounding lines; flatten newlines before matching, for
+example with a newline-flattening `tr` transform, or use a
+short single-token discriminator that cannot wrap. For deploy/render checks,
+measure both the OLD and NEW text after flattening so a zero is corroborated by
+the expected transition rather than treated as a bare absence.
+
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 

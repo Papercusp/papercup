@@ -562,6 +562,20 @@ export default defineTool({
             requiredAncestorFixerAlive: requiredAncestorPreflight.fixerAlive,
           }
         : {}),
+      ...(frozenRepairQueuePreflight
+        ? {
+            frozenRepairQueuePreflight: frozenRepairQueuePreflight.proceed
+              ? 'passed'
+              : frozenRepairQueuePreflight.reason === 'queue-unreadable'
+                ? 'unreadable'
+                : 'refused',
+            frozenRepairQueueDecision: frozenRepairQueuePreflight.queueDecision,
+            frozenRepairCandidate: frozenRepairQueuePreflight.candidate,
+            frozenRepairFixerSpawnId: frozenRepairQueuePreflight.fixerSpawnId,
+            frozenRepairFixerAlive: frozenRepairQueuePreflight.fixerAlive,
+            frozenRepairNextAttempt: frozenRepairQueuePreflight.nextAttempt,
+          }
+        : {}),
       ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       ...(preflight.refuse
         ? {
@@ -645,6 +659,32 @@ export default defineTool({
                 `NOT launched yet — durable eligibility waiter ${waitReceipt.workflowId} will ` +
                 `recheck after ~${preflight.waitSec ?? 0}s and launch only if the declared paths are eligible. ` +
                 'Use checkpoint:await with one of completion_events for the detached verdict.',
+            }),
+          },
+        ],
+      };
+    }
+    if (frozenRepairQueuePreflight && !frozenRepairQueuePreflight.proceed) {
+      const queueReadFailed = frozenRepairQueuePreflight.reason === 'queue-unreadable';
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: false,
+              launched: false,
+              reason: queueReadFailed ? 'repair_queue_unreadable' : 'repair-in-progress',
+              candidate: frozenRepairQueuePreflight.candidate,
+              repair_candidate: frozenRepairQueuePreflight.candidate,
+              repair_queue: frozenRepairQueuePreflight.repairQueue,
+              queue_decision: frozenRepairQueuePreflight.queueDecision,
+              fixer_spawn_id: frozenRepairQueuePreflight.fixerSpawnId,
+              fixer_alive: frozenRepairQueuePreflight.fixerAlive,
+              next_attempt: frozenRepairQueuePreflight.nextAttempt,
+              detail: frozenRepairQueuePreflight.detail ?? null,
+              note: queueReadFailed
+                ? `NOT launched: the persisted frozen-repair queue could not be read (${frozenRepairQueuePreflight.detail ?? 'unknown error'}). The detached writer fails closed on the same condition, so no suite was started; repair the queue read and retry.`
+                : `NOT launched: the persisted frozen-repair queue chose ${frozenRepairQueuePreflight.queueDecision ?? 'an unresolved repair state'} for candidate ${frozenRepairQueuePreflight.candidate?.slice(0, 12) ?? 'unknown'}; the detached writer would return repair-in-progress without running a suite. Current fixer: ${frozenRepairQueuePreflight.fixerSpawnId ?? 'unassigned'} (${frozenRepairQueuePreflight.fixerAlive === true ? 'live' : frozenRepairQueuePreflight.fixerAlive === false ? 'dead' : 'unknown'}). ${frozenRepairQueuePreflight.nextAttempt ? `Next fixer attempt: ${frozenRepairQueuePreflight.nextAttempt}. ` : ''}Wait for the queue to advance or reconcile it, then retry; force:true does not bypass this queue guard.`,
             }),
           },
         ],
