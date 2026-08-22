@@ -53,13 +53,21 @@ const h = vi.hoisted(() => ({
   deactivateLoopForGoal: vi.fn(async (..._args: unknown[]) => false),
   assertFact: vi.fn(async (_input: unknown) => ({ ok: true })),
   retractFact: vi.fn(async (_args: unknown) => true),
-  wakeRecipients: vi.fn(async (..._args: unknown[]) => ({
-    woken: 0,
-    staged: 0,
-    stagedTargets: [],
-    fanoutCapped: [],
-    timedOutTargets: [],
-  })),
+  wakeRecipients: vi.fn(
+    async (..._args: unknown[]): Promise<{
+      woken: number;
+      staged: number;
+      stagedTargets: string[];
+      fanoutCapped: string[];
+      timedOutTargets: string[];
+    }> => ({
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+      timedOutTargets: [],
+    }),
+  ),
   // EI-20015592992797890: set.ts reads the INCUMBENT subject before refusing a
   // subject-requiring mode, so this binding must exist on the mock or the named
   // import breaks at module load rather than in a test.

@@ -36,7 +36,7 @@
  *    ⇒ the follow-up still posts + delivers by subscription, it just does
  *    not wake the responder. Debited ON THE ATTEMPT.
  */
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeEventKind } from './cascade-core';
@@ -97,7 +97,7 @@ export interface ConsultVerbDeps {
     answer?: string;
     postId: number;
     now: string;
-  }, tx?: Sql) => Promise<void>;
+  }, tx?: Sql | TransactionSql) => Promise<void>;
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent; best-effort there (never breaks the verb). */
   emitReplyEvent: (input: {

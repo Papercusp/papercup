@@ -15,7 +15,7 @@
  * ensureSchema (schema is migrations-only — repo storage policy).
  */
 
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import type { LifecycleState } from '@papercusp/coordination/capabilities';
 
@@ -27,6 +27,8 @@ export type ConversationScope = 'operator' | 'harness';
 // this extra state because a retracted question must be visible as such rather
 // than looking like an unresolved gate.
 export type ConversationState = LifecycleState | 'superseded';
+
+type QuerySql = Sql | TransactionSql;
 
 export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'discussion', 'consult'];
 
@@ -90,7 +92,7 @@ export interface ListConversationsOpts {
 
 export interface ConversationStoreOptions {
   /** The org Postgres handle (postgres-js tagged template). Called per use. */
-  getSql: () => Sql;
+  getSql: () => QuerySql;
   /** Ensure coord_conversations exists before first use (no-op in the operator;
    *  ensureConversationsTable on the package test rig). */
   ensureSchema: () => Promise<void>;

@@ -63,6 +63,8 @@ describe('requirePrincipal — resolver order', () => {
       username: 'alice',
       display_name: 'Alice',
       has_password: true,
+      workspace_id: 'ws-cookie',
+      capabilities: ['*'],
     });
     vi.mocked(verifyDeviceToken).mockReturnValue({
       sub: 'device_1',

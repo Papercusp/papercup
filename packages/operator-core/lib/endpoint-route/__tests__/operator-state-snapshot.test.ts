@@ -80,6 +80,8 @@ describe('GET /api/operator/state-snapshot', () => {
       username: 'alice',
       display_name: 'Alice',
       has_password: true,
+      workspace_id: ws,
+      capabilities: ['*'],
     });
     vi.mocked(getSessionUserOrDefault).mockResolvedValue({
       id: 'u0',

@@ -198,15 +198,13 @@ const scorecardHistoryArgsSchema = z.object({
   limit: clampedLimit(SCORECARD_HISTORY_PAGE_LIMIT, SCORECARD_HISTORY_DEFAULT_PAGE),
 });
 
-const advSessionsListArgsSchema = z
-  .object({
-    workspaceId: z.string().trim().min(1).max(200).optional(),
-    harnessSlugs: z.array(z.string().trim().min(1).max(300)).max(500).optional(),
-    planSlugs: z.array(z.string().trim().min(1).max(500)).max(500).optional(),
-    cursor: z.string().max(2_000).nullable().optional(),
-    limit: clampedLimit(ADV_SESSIONS_PAGE_LIMIT, ADV_SESSIONS_DEFAULT_PAGE),
-  })
-  .default({});
+const advSessionsListArgsSchema = z.object({
+  workspaceId: z.string().trim().min(1).max(200).optional(),
+  harnessSlugs: z.array(z.string().trim().min(1).max(300)).max(500).optional(),
+  planSlugs: z.array(z.string().trim().min(1).max(500)).max(500).optional(),
+  cursor: z.string().max(2_000).nullable().optional(),
+  limit: clampedLimit(ADV_SESSIONS_PAGE_LIMIT, ADV_SESSIONS_DEFAULT_PAGE),
+});
 
 const learningObservationsFiltersSchema = z.object({
   scopes: z.array(z.string().max(300)).max(500).optional(),

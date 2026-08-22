@@ -7,7 +7,14 @@ vi.mock('../auth', () => ({
 import { getSessionUser, getSessionUserOrDefault } from '../auth';
 import { getSessionUserOrLocalDefault } from './session-or-local';
 
-const user = (id: string) => ({ id, username: 'u', display_name: 'U', has_password: false });
+const user = (id: string) => ({
+  id,
+  username: 'u',
+  display_name: 'U',
+  has_password: false,
+  workspace_id: 'ws-session',
+  capabilities: ['*'],
+});
 
 /** The helper only reads req.headers — a headers-bearing stub suffices. */
 function reqWithHost(host: string | null): Request {

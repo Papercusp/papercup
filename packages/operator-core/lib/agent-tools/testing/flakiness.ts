@@ -83,7 +83,9 @@ export default defineTool({
             },
             { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug },
           );
-          return res.ok ? { filePath: c.filePath, id: res.workItem.id } : { filePath: c.filePath, skipped: res.error };
+          return res.ok
+            ? { filePath: c.filePath, id: res.workItem.id }
+            : { filePath: c.filePath, skipped: res.error ?? 'create_failed' };
         }),
       );
     }

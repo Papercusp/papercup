@@ -20,7 +20,14 @@ import { _resetCardResponseRateLimitForTests } from '../../card-response-rate-li
 import { registerAllRoutes } from '../register';
 
 const ws = 'workspace-T';
-const fakeUser = { id: 'u1', username: 'alice', display_name: 'Alice', has_password: true };
+const fakeUser = {
+  id: 'u1',
+  username: 'alice',
+  display_name: 'Alice',
+  has_password: true,
+  workspace_id: ws,
+  capabilities: ['*'],
+};
 let app: Hono;
 
 function post(body: unknown) {

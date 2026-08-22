@@ -15,7 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import type { Sql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import {
   PgEntitySubscriptionStore,
   PgTaggableStore,
@@ -281,7 +281,7 @@ export async function settleConsultConversation(
     postId: number;
     now: string;
   },
-  tx?: Sql,
+  tx?: Sql | TransactionSql,
 ): Promise<void> {
   await withConversationsIdentityScope(identity, undefined, () =>
     settleConsultConversationCore(

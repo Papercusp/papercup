@@ -41,6 +41,7 @@ describe('POST /run-cancel', () => {
     vi.mocked(getSessionUser).mockReset();
     vi.mocked(getSessionUser).mockResolvedValue({
       id: 'u1', username: 'alice', display_name: 'Alice', has_password: true,
+      workspace_id: ws, capabilities: ['*'],
     });
     app = new Hono().basePath('/api');
     registerAllRoutes(app);

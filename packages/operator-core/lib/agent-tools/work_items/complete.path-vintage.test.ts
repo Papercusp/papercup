@@ -125,7 +125,7 @@ describe('preExistingChangedPathsInCompletion', () => {
           repoRoot: root,
           lastCommitTimes: (repoRoot, paths) => {
             calls.push({ repoRoot, paths: [...paths] });
-            return new Map([['package.json', BEFORE]]);
+            return new Map([['package.json', Date.parse(BEFORE) / 1000]]);
           },
         },
       );

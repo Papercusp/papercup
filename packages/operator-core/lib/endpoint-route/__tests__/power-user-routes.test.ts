@@ -79,6 +79,8 @@ vi.mock(import('../../auth'), async (importOriginal) => {
     username: 'tester',
     display_name: 'Tester',
     has_password: true,
+    workspace_id: 'workspace-active',
+    capabilities: ['*'],
   };
   return {
     ...actual,
