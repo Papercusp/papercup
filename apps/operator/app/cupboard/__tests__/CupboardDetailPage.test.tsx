@@ -77,6 +77,18 @@ function pluginListing(overrides: Partial<HarnessListing> = {}): HarnessListing 
   });
 }
 
+function rubricListing(overrides: Partial<HarnessListing> = {}): HarnessListing {
+  return listingBase({
+    slug: 'release-readiness',
+    title: 'Release readiness',
+    description: 'Grades whether a release is ready to ship.',
+    listing_kind: 'rubric',
+    listing_ref: 'release-readiness',
+    github_repo: 'acme/rubrics',
+    ...overrides,
+  });
+}
+
 const realFetch = globalThis.fetch;
 afterEach(() => {
   cleanup();
@@ -287,6 +299,91 @@ describe('CupboardDetailPage — the event axis (P-008)', () => {
     const rows = screen.getAllByTestId('cupboard-detail-required-event');
     expect(rows).toHaveLength(1);
     expect(rows[0].getAttribute('data-family')).toBe('ok:done');
+  });
+});
+
+/**
+ * A rubric changes how future work is judged, so its grading contract must be
+ * inspectable before install (cupboard-plan-rubric-recipe-sharing P-005).
+ * The listing row is intentionally only a pointer; the detail page reads the
+ * public self-describing directory that the installer will consume.
+ */
+describe('CupboardDetailPage — rubric criteria + METHOD.md (P-005)', () => {
+  const contentsUrl = 'https://api.github.com/repos/acme/rubrics/contents/release-readiness';
+  const rubricUrl = 'https://raw.example/release-readiness/rubric.json';
+  const methodUrl = 'https://raw.example/release-readiness/METHOD.md';
+
+  function mockRubricFetch(opts: { contentsStatus?: number; malformed?: boolean } = {}) {
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes('/api/cupboard/listings/')) {
+        return new Response(JSON.stringify({ listing: rubricListing() }), { status: 200 });
+      }
+      if (u === contentsUrl) {
+        if (opts.contentsStatus && opts.contentsStatus !== 200) {
+          return new Response('{}', { status: opts.contentsStatus });
+        }
+        return new Response(JSON.stringify([
+          { name: 'rubric.json', type: 'file', download_url: rubricUrl },
+          { name: 'METHOD.md', type: 'file', download_url: methodUrl },
+        ]), { status: 200 });
+      }
+      if (u === rubricUrl) {
+        return new Response(JSON.stringify(opts.malformed ? { title: 'broken' } : {
+          title: 'Release readiness',
+          characteristic: 'safe, verified releases',
+          description: 'Checks the release gate and operator evidence.',
+          ratingScale: ['pass', 'fail'],
+          criteria: [{
+            key: 'gate-green',
+            title: 'Green checkpoint',
+            model: 'The current release candidate has a green gate verdict.',
+            method: 'Read the checkpoint verdict for the exact candidate SHA.',
+            driftMarkers: 'A newer candidate or a red/unknown verdict.',
+            replication: 'Re-read the candidate SHA and rerun the checkpoint query.',
+          }],
+        }), { status: 200 });
+      }
+      if (u === methodUrl) {
+        return new Response('# Release method\n\nVerify the candidate, then grade every criterion.', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return fetchMock;
+  }
+
+  it('renders every criterion and the published METHOD.md before install', async () => {
+    const fetchMock = mockRubricFetch();
+    render(<CupboardDetailPage />);
+
+    const criteria = await screen.findByTestId('cupboard-rubric-criteria');
+    expect(criteria.textContent).toContain('Green checkpoint');
+    expect(criteria.textContent).toContain('gate-green');
+    expect(criteria.textContent).toContain('current release candidate has a green gate verdict');
+    expect(criteria.textContent).toContain('Read the checkpoint verdict');
+    expect(criteria.textContent).toContain('A newer candidate');
+    expect(criteria.textContent).toContain('Re-read the candidate SHA');
+    expect(criteria.textContent).toContain('pass · fail');
+
+    const method = screen.getByTestId('cupboard-rubric-method');
+    expect(method.textContent).toContain('METHOD.md runbook');
+    expect(method.textContent).toContain('Verify the candidate, then grade every criterion.');
+    expect(fetchMock.mock.calls.map((call) => String(call[0]))).toEqual(
+      expect.arrayContaining([contentsUrl, rubricUrl, methodUrl]),
+    );
+  });
+
+  it('fails soft to the exact source directory when GitHub content is unavailable', async () => {
+    mockRubricFetch({ contentsStatus: 503 });
+    render(<CupboardDetailPage />);
+
+    const error = await screen.findByTestId('cupboard-rubric-contents-error');
+    expect(error.textContent).toContain('GitHub contents → 503');
+    const link = error.querySelector('a');
+    expect(link?.getAttribute('href')).toBe('https://github.com/acme/rubrics/tree/HEAD/release-readiness');
+    // The content miss degrades this panel, not the whole listing or its install action.
+    expect(screen.getByTestId('cupboard-detail-action')).toBeTruthy();
   });
 });
 

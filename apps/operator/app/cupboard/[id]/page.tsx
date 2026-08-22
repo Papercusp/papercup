@@ -69,6 +69,26 @@ interface RequiredEvent { family: string; optional: boolean }
 /** One entry of a `plan` listing's `requires_rubrics` (worker migration 015 /
  *  cupboard-plan-rubric-recipe-sharing P-012). */
 interface RequiredRubric { rubricRef: string; optional: boolean }
+/** The public, self-describing subset of rubric.json rendered before install
+ *  (cupboard-plan-rubric-recipe-sharing P-005). Kept local to the storefront:
+ *  the operator-core store reader is Node/fs-backed and must not enter this
+ *  client bundle. */
+interface PublicRubricCriterion {
+  key: string;
+  title: string;
+  model: string;
+  method: string;
+  driftMarkers: string;
+  replication: string | null;
+  ratingScale: string[];
+}
+interface PublicRubricManifest {
+  title: string;
+  characteristic: string;
+  description: string;
+  ratingScale: string[];
+  criteria: PublicRubricCriterion[];
+}
 
 /**
  * Parse a listing's JSON-TEXT array column, dropping any entry the mapper
@@ -631,6 +651,13 @@ export default function CupboardDetailPage() {
           <KnowledgePackContents repoSlug={repoSlug} listingRef={listing.listing_ref ?? null} />
         )}
 
+        {/* rubric: the criteria + METHOD.md are the instruction-carrying trust
+            surface. A user must be able to inspect both BEFORE installing the
+            rubric that will grade their work (P-005 / D-002). */}
+        {kind === 'rubric' && repoSlug && (
+          <RubricContents repoSlug={repoSlug} listingRef={listing.listing_ref ?? null} />
+        )}
+
         {/* knowledge-pack install-into-pot with the per-item conflict review, in
             place (P-016). Owns the Install action for this kind — the generic
             primary button below is suppressed for knowledge packs. */}
@@ -1034,6 +1061,212 @@ function KnowledgePackContents({ repoSlug, listingRef }: { repoSlug: string; lis
       )}
     </div>
   );
+}
+
+/**
+ * RubricContents — render the rubric's actual grading contract before install
+ * (cupboard-plan-rubric-recipe-sharing P-005).
+ *
+ * A rubric listing is a pointer, deliberately not a second copy of its criteria
+ * (publish-rubric-core). Read the same public self-describing directory the
+ * installer consumes: rubric.json + optional METHOD.md. This follows the
+ * existing KnowledgePackContents GitHub-contents pattern and fails soft to a
+ * source link when GitHub is unavailable or a third-party manifest is invalid.
+ */
+function RubricContents({ repoSlug, listingRef }: { repoSlug: string; listingRef: string | null }) {
+  const [manifest, setManifest] = useState<PublicRubricManifest | null>(null);
+  const [method, setMethod] = useState<string | null>(null);
+  const [contentsError, setContentsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const dir = listingRef ? encodeURIComponent(listingRef) : '';
+        const listRes = await fetch(
+          `https://api.github.com/repos/${repoSlug}/contents/${dir}`,
+          { headers: { Accept: 'application/vnd.github+json' } },
+        );
+        if (!listRes.ok) throw new Error(`GitHub contents → ${listRes.status}`);
+        const files = (await listRes.json()) as Array<{
+          name: string;
+          download_url: string | null;
+          type: string;
+        }>;
+        const rubricFile = files.find(
+          (f) => f.type === 'file' && f.name === 'rubric.json' && f.download_url,
+        );
+        if (!rubricFile?.download_url) throw new Error('rubric.json missing');
+
+        const rubricRes = await fetch(rubricFile.download_url);
+        if (!rubricRes.ok) throw new Error(`rubric.json → ${rubricRes.status}`);
+        const parsed = parsePublicRubricManifest(await rubricRes.json());
+        if (!parsed) throw new Error('rubric.json is not a valid rubric manifest');
+
+        const methodFile = files.find(
+          (f) => f.type === 'file' && f.name === 'METHOD.md' && f.download_url,
+        );
+        let methodText: string | null = null;
+        if (methodFile?.download_url) {
+          const methodRes = await fetch(methodFile.download_url);
+          if (methodRes.ok) methodText = await methodRes.text();
+        }
+        if (!cancelled) {
+          setManifest(parsed);
+          setMethod(methodText);
+        }
+      } catch (e) {
+        if (!cancelled) setContentsError((e as Error).message ?? String(e));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [repoSlug, listingRef]);
+
+  const sourcePath = listingRef ? `/tree/HEAD/${encodeURIComponent(listingRef)}` : '';
+
+  return (
+    <div
+      data-testid="cupboard-rubric-contents"
+      style={{
+        marginTop: SIZES.md,
+        background: COLORS.surface,
+        border: `1px solid ${COLORS.border}`,
+        borderRadius: RADIUS.lg,
+        padding: SIZES.md,
+      }}
+    >
+      <div style={{ fontFamily: FONTS.ui, fontSize: SIZES.sm, fontWeight: 600, color: COLORS.text }}>
+        Rubric criteria
+      </div>
+      <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0' }}>
+        This rubric will grade work after install. Review its criteria and runbook before trusting its verdicts.
+      </p>
+
+      {contentsError ? (
+        <p data-testid="cupboard-rubric-contents-error" style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>
+          Couldn&rsquo;t fetch the rubric contents ({contentsError}) —{' '}
+          <a
+            href={`https://github.com/${repoSlug}${sourcePath}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ color: 'var(--accent-soft)' }}
+          >
+            browse it on GitHub
+          </a>
+          .
+        </p>
+      ) : manifest === null ? (
+        <p style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.textMuted }}>Loading rubric…</p>
+      ) : (
+        <>
+          <div style={{ marginTop: 10 }}>
+            <div style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.text }}>
+              <strong>{manifest.title}</strong> · {manifest.characteristic}
+            </div>
+            {manifest.description && (
+              <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '4px 0 0' }}>
+                {manifest.description}
+              </p>
+            )}
+          </div>
+          <ol
+            data-testid="cupboard-rubric-criteria"
+            style={{ margin: '10px 0 0', paddingLeft: 20, display: 'flex', flexDirection: 'column', gap: 10 }}
+          >
+            {manifest.criteria.map((criterion) => (
+              <li key={criterion.key} data-testid="cupboard-rubric-criterion" data-criterion-key={criterion.key}>
+                <div style={{ fontFamily: FONTS.ui, fontSize: 12, color: COLORS.text }}>
+                  <strong>{criterion.title}</strong>{' '}
+                  <code style={{ fontFamily: FONTS.mono, fontSize: 10.5, color: COLORS.textMuted }}>
+                    {criterion.key}
+                  </code>
+                </div>
+                <div style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, marginTop: 3 }}>
+                  <strong>Measure:</strong> {criterion.model}
+                </div>
+                <div style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>
+                  <strong>Method:</strong> {criterion.method}
+                </div>
+                <div style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>
+                  <strong>Drift markers:</strong> {criterion.driftMarkers}
+                </div>
+                {criterion.replication && (
+                  <div style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>
+                    <strong>Replication:</strong> {criterion.replication}
+                  </div>
+                )}
+                {(criterion.ratingScale.length > 0 || manifest.ratingScale.length > 0) && (
+                  <div style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, marginTop: 2 }}>
+                    <strong>Scale:</strong>{' '}
+                    {(criterion.ratingScale.length > 0 ? criterion.ratingScale : manifest.ratingScale).join(' · ')}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ol>
+          <details data-testid="cupboard-rubric-method" style={{ marginTop: 12 }}>
+            <summary style={{ cursor: 'pointer', fontFamily: FONTS.ui, fontSize: 12, color: COLORS.text }}>
+              METHOD.md runbook
+            </summary>
+            {method ? (
+              <pre style={{ whiteSpace: 'pre-wrap', fontFamily: FONTS.mono, fontSize: 11.5, color: COLORS.textMuted, margin: '6px 0 0' }}>
+                {method}
+              </pre>
+            ) : (
+              <p style={{ fontFamily: FONTS.ui, fontSize: 11.5, color: COLORS.textMuted, margin: '6px 0 0' }}>
+                No METHOD.md runbook was published with this rubric.
+              </p>
+            )}
+          </details>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Strict-enough client reader for the public rubric trust surface. A malformed
+ * third-party manifest degrades this one panel rather than crashing the page. */
+function parsePublicRubricManifest(value: unknown): PublicRubricManifest | null {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const o = value as Record<string, unknown>;
+  const title = typeof o.title === 'string' && o.title ? o.title : null;
+  const characteristic = typeof o.characteristic === 'string' && o.characteristic ? o.characteristic : null;
+  if (!title || !characteristic || !Array.isArray(o.criteria) || o.criteria.length === 0) return null;
+
+  const criteria: PublicRubricCriterion[] = [];
+  for (const valueCriterion of o.criteria) {
+    if (valueCriterion == null || typeof valueCriterion !== 'object' || Array.isArray(valueCriterion)) return null;
+    const c = valueCriterion as Record<string, unknown>;
+    const key = typeof c.key === 'string' && c.key ? c.key : null;
+    const criterionTitle = typeof c.title === 'string' && c.title ? c.title : null;
+    const model = typeof c.model === 'string' && c.model ? c.model : null;
+    const criterionMethod = typeof c.method === 'string' && c.method ? c.method : null;
+    const driftMarkers = typeof c.driftMarkers === 'string' && c.driftMarkers ? c.driftMarkers : null;
+    if (!key || !criterionTitle || !model || !criterionMethod || !driftMarkers) return null;
+    criteria.push({
+      key,
+      title: criterionTitle,
+      model,
+      method: criterionMethod,
+      driftMarkers,
+      replication: typeof c.replication === 'string' && c.replication ? c.replication : null,
+      ratingScale: Array.isArray(c.ratingScale)
+        ? c.ratingScale.filter((rating): rating is string => typeof rating === 'string')
+        : [],
+    });
+  }
+
+  return {
+    title,
+    characteristic,
+    description: typeof o.description === 'string' ? o.description : '',
+    ratingScale: Array.isArray(o.ratingScale)
+      ? o.ratingScale.filter((rating): rating is string => typeof rating === 'string')
+      : [],
+    criteria,
+  };
 }
 
 /** `span` = take the full width of the 2-up metadata grid (for list-shaped values). */
