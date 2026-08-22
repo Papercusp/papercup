@@ -207,6 +207,8 @@ export interface WorkItem {
   state: string;
   /** Claimable (D-003): feature → taken_by; issue → assignee. */
   assignee: string | null;
+  /** Lifecycle-scoped, machinery-armed wake registrations created with this claim. */
+  interestWatch?: import('./interest-auto-arm').InterestAutoArmHandle;
   /** When the item was claimed (feature → taken_at; issue → assigned_at; ISO). null when unclaimed.
    *  The grace anchor for {@link ./item-activity}.classifyItemActivity. */
   takenAt: string | null;
@@ -1859,6 +1861,42 @@ function maybeFireClaimedEvent(assignTo: string | null, wi: WorkItem): void {
     .catch(() => {});
 }
 
+/** Arm only the concrete claim/blocker edges D-018 permits; callers fail soft. */
+export async function armWorkItemHolderInterests(
+  wi: WorkItem,
+  ownerId: string,
+): Promise<import('./interest-auto-arm').InterestAutoArmHandle | undefined> {
+  try {
+    const { reconcileInterestEventAwaits } = await import('./interest-auto-arm');
+    const claim = await reconcileInterestEventAwaits({
+      ownerId,
+      eventKeys: [`claim:released:${wi.id}`],
+      boundTo: { kind: 'work-item-claim', ref: wi.id },
+      note: `claim-holder auto-arm for ${wi.id}`,
+    });
+    const blockers = await readUnresolvedDepBlockers(wi.id, wi.harness ?? undefined);
+    const blockerIds = blockers.map(({ ref }) => ref.slice(ref.lastIndexOf('#') + 1));
+    const blocked = await reconcileInterestEventAwaits({
+      ownerId,
+      eventKeys:
+        blockerIds.length > 0
+          ? [...blockerIds.map((id) => `work-item:done:${id}`), `work-item:unblocked:${wi.id}`]
+          : [],
+      boundTo: { kind: 'work-item-blocked', ref: wi.id },
+      note: `blocked-item-holder auto-arm for ${wi.id}`,
+    });
+    const awaitIds = [...new Set([...claim.await_ids, ...blocked.await_ids])];
+    return {
+      event_keys: [...new Set([...claim.event_keys, ...blocked.event_keys])],
+      await_ids: awaitIds,
+      cancel: awaitIds.length > 0 ? { tool: 'events:cancel', args: { await_ids: awaitIds } } : null,
+      handle_note: claim.handle_note,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Fire `work-item:created[:<severity>]` for EVERY new work item (EI-8296) —
  * lazy import (work-items-events imports this module statically) +
@@ -1919,6 +1957,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
     for (const topic of input.topics ?? []) {
       await mirrorTopicTagToClaimTags(created, topic);
     }
+    if (assignTo) created.interestWatch = await armWorkItemHolderInterests(created, assignTo);
     maybeFireUrgentWake(input, created);
     maybeFireClaimedEvent(assignTo, created);
     maybeFireCreatedEvent(created);
@@ -2127,6 +2166,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       created_ts: nowIso(),
     });
   }
+  if (assignTo) wi.interestWatch = await armWorkItemHolderInterests(wi, assignTo);
   maybeFireUrgentWake(input, wi);
   maybeFireClaimedEvent(assignTo, wi);
   maybeFireCreatedEvent(wi);
@@ -3859,7 +3899,9 @@ export async function claimWorkItem(
   const issueWs = resolveIssuesScopeWorkspace();
   const issue = await getIssueInWorkspace(issueWs, id);
   let claimed: WorkItem | null;
+  let prior: WorkItem | null = null;
   if (issue) {
+    prior = issueToWorkItem(issue);
     const updated = await claimIssue(id, assignee, {
       workspaceId: issueWs,
       fromHolder: opts.fromHolder,
@@ -3869,6 +3911,7 @@ export async function claimWorkItem(
   } else {
     const wi = await getFeatureWorkItemOnly(id, opts.harness);
     if (!wi) return null;
+    prior = wi;
     const { sql } = getOrgPg();
     const expectedAssignee = opts.expectedAssignee?.trim() || null;
     // ws scopes the P-010 trust subquery in autoPickableWhereSql (D-004 — explicit,
@@ -3904,6 +3947,17 @@ export async function claimWorkItem(
   // (events:await leg; reaction rules observe the claim tools via postInvoke).
   if (claimed) {
     const won = claimed;
+    const priorHolder = prior?.assignee?.trim() || null;
+    if (priorHolder && priorHolder !== assignee) {
+      const events = await import('./work-items-events');
+      await events.emitClaimReleasedEventAwaited(prior!, { announceClaimable: false });
+      await import('./interest-auto-arm')
+        .then(({ retireInterestEventAwaits }) =>
+          retireInterestEventAwaits({ kind: 'work-item-claim', ref: won.id }, priorHolder),
+        )
+        .catch(() => {});
+    }
+    won.interestWatch = await armWorkItemHolderInterests(won, assignee);
     void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemClaimedEvent(won, assignee))
       .catch(() => {});
@@ -5583,6 +5637,7 @@ export async function claimNextWorkItem(filter: ClaimNextFilter): Promise<WorkIt
   }
   // plugin-system-hive-port P-004: same claimed-event as claimWorkItem.
   if (claimed) {
+    claimed.interestWatch = await armWorkItemHolderInterests(claimed, filter.assignee);
     void trackDetached(import('./work-items-events'))
       .then((m) => m.emitWorkItemClaimedEvent(claimed!, filter.assignee))
       .catch(() => {});
@@ -6493,7 +6548,11 @@ export async function observeWorkItem(
 export function lifecycleBindingsForWorkItem(
   wi: Pick<WorkItem, 'id' | 'sourcePlanSlug' | 'sourcePlanItemIds'>,
 ): Array<{ kind: string; ref: string }> {
-  const bindings: Array<{ kind: string; ref: string }> = [{ kind: 'work-item', ref: wi.id }];
+  const bindings: Array<{ kind: string; ref: string }> = [
+    { kind: 'work-item', ref: wi.id },
+    { kind: 'work-item-claim', ref: wi.id },
+    { kind: 'work-item-blocked', ref: wi.id },
+  ];
   if (wi.sourcePlanSlug) {
     for (const itemId of wi.sourcePlanItemIds ?? []) {
       bindings.push({ kind: 'plan-lane', ref: `${wi.sourcePlanSlug}#${itemId}` });
@@ -6557,7 +6616,7 @@ export async function releaseWorkItem(
   // moment it returns to the pool (both the voluntary work_items:release tool AND the
   // stale-claim reaper route through here). Fire-and-forget + lazy import (work-items-
   // events imports THIS module statically — the lazy import breaks the cycle).
-  const emitReleased = (released: WorkItem | null): void => {
+  const emitReleased = async (released: WorkItem | null): Promise<void> => {
     if (released && wasClaimed) {
       // P-009: the agent has put this work DOWN — clear its goal stamp so later
       // calls are not attributed to a goal it no longer holds. Only when the
@@ -6572,8 +6631,8 @@ export async function releaseWorkItem(
       // for a row that returned to a claimable state — one hook here. EI-15019:
       // thread announceClaimable through so an internal quarantine release can
       // suppress that broad co-fire.
-      void trackDetached(import('./work-items-events'))
-        .then((m) => m.emitClaimReleasedEvent(released, { announceClaimable: opts.announceClaimable }))
+      await import('./work-items-events')
+        .then((m) => m.emitClaimReleasedEventAwaited(released, { announceClaimable: opts.announceClaimable }))
         .catch(() => {});
       // P-009 / D-008: the FLEET-scoped counterpart. `claim:released:<id>` above is
       // id-scoped, so it only serves someone already waiting on THIS id — a leader
@@ -6632,8 +6691,8 @@ export async function releaseWorkItem(
   if (wi.family === 'issue') {
     const updated = await releaseIssue(id, { expectedAssignee: opts.expectedAssignee });
     const released = updated ? issueToWorkItem(updated) : null;
+    await emitReleased(released);
     if (released) await retireLifecycleBindingsForWorkItem(released);
-    emitReleased(released);
     return released;
   }
   const { sql } = getOrgPg();
@@ -6670,8 +6729,8 @@ export async function releaseWorkItem(
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR taken_by IS NULL OR taken_by = ${opts.expectedAssignee ?? null})
     RETURNING ${sql.unsafe(FEATURE_COLS)}`;
   const released = rows[0] ? featureRowToWorkItem(rows[0]) : null;
+  await emitReleased(released);
   if (released) await retireLifecycleBindingsForWorkItem(released);
-  emitReleased(released);
   return released;
 }
 
@@ -7077,6 +7136,13 @@ export async function linkWorkItem(
     }
   }
   if (rel === 'blocks') await syncDerivedBlockerSubscriptions(dst);
+  if (rel === 'blocks') {
+    const dependentRef = await import('./work-items-events').then((m) => m.workItemIdFromRef(dst));
+    if (dependentRef) {
+      const dependent = await getWorkItem(dependentRef.id, dependentRef.harness);
+      if (dependent?.assignee) dependent.interestWatch = await armWorkItemHolderInterests(dependent, dependent.assignee);
+    }
+  }
   return { ok: true };
 }
 

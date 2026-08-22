@@ -236,12 +236,12 @@ export function emitWorkItemClaimableEvent(
  * each time. `claim:released:<id>` (the id-scoped, targeted key) still always fires —
  * suppressing only the broad pool-wide co-fire never drops a targeted waiter.
  */
-export function emitClaimReleasedEvent(
+export async function emitClaimReleasedEventAwaited(
   wi: WorkItem,
   deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
-): void {
+): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
-  void Promise.resolve()
+  await Promise.resolve()
     .then(() =>
       emit({
         key: `claim:released:${wi.id}`,
@@ -266,6 +266,14 @@ export function emitClaimReleasedEvent(
   if (deps.announceClaimable !== false && shouldFireClaimableRelease(wi.id)) {
     emitWorkItemClaimableEvent(wi, 'released', deps);
   }
+}
+
+/** Compatibility wrapper for callers that deliberately do not await delivery. */
+export function emitClaimReleasedEvent(
+  wi: WorkItem,
+  deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
+): void {
+  void emitClaimReleasedEventAwaited(wi, deps);
 }
 
 /** In-process per-item throttle for the broad `work-item:claimable` co-fire on a
@@ -567,6 +575,11 @@ async function emitUnblockedForClearedEdges(
       to: dependent.assignee ? [dependent.assignee] : [],
       source: 'work-items',
     });
+    await import('./interest-auto-arm')
+      .then(({ retireInterestEventAwaits }) =>
+        retireInterestEventAwaits({ kind: 'work-item-blocked', ref: dependent.id }),
+      )
+      .catch(() => {});
     // P-007: an unblocked dependent may have just become pool-claimable — the
     // canonical key co-fires here so BOTH unblock paths (settle + unlink) are
     // covered; the emitter's own guard drops assigned / non-claimable items.
