@@ -65,7 +65,7 @@ describe('ScenarioMeter', () => {
     meter.note('hello');
     await new Promise((r) => setTimeout(r, 30));
     const a = meter.finish();
-    expect(a.schema).toBe(1);
+    expect(a.schema).toBe(2);
     expect(a.scenario).toBe('test.meter');
     expect(a.tier).toBe(1);
     expect(a.params).toEqual({ x: 1 });

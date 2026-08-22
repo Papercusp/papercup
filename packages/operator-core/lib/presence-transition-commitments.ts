@@ -127,6 +127,7 @@ async function gatherAwaitingHeldItem(subjectIds: readonly string[]): Promise<Co
           ON w.feature_id = split_part(a.event_key, ':', 3)
        WHERE a.fired_at IS NULL
          AND a.cancelled_at IS NULL
+         AND a.superseded_at IS NULL
          AND (a.expires_ts IS NULL OR a.expires_ts > now())
          AND (a.event_key LIKE 'work-item:%' OR a.event_key LIKE 'claim:%')
          AND w.taken_by = ANY(${[...subjectIds]}::text[])

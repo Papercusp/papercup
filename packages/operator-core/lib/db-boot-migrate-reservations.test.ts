@@ -23,11 +23,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { ENFORCED_FROM } from '../../../scripts/lint-migrations.mjs';
-import {
-  RESERVATION_ENFORCED_FROM,
-  migrationNumberOf,
-  missingReservationRows,
-} from './db-boot-migrate';
+import { RESERVATION_ENFORCED_FROM, migrationNumberOf, missingReservationRows } from './db-boot-migrate';
+import { migrationReservationGuardSql, reservationFilenameConflicts } from './migration-reservation';
 
 describe('RESERVATION_ENFORCED_FROM', () => {
   it('equals the linter it mirrors — the two cannot drift apart silently', () => {
@@ -48,6 +45,26 @@ describe('migrationNumberOf', () => {
     expect(migrationNumberOf('000-baseline.sql')).toBe(0);
     expect(migrationNumberOf('baseline.sql')).toBeNull();
     expect(migrationNumberOf('')).toBeNull();
+  });
+});
+
+describe('migration reservation filename guard', () => {
+  it('detects the applied-file/reserved-file collision and embeds a fail-closed db:migrate check', () => {
+    expect(
+      reservationFilenameConflicts(
+        ['880-session-turn-parts-backfill.sql'],
+        [{ num: 880, filename: '880-oauth-flow-private-context.sql' }],
+      ),
+    ).toEqual([
+      {
+        num: 880,
+        file: '880-session-turn-parts-backfill.sql',
+        reservedFilename: '880-oauth-flow-private-context.sql',
+      },
+    ]);
+    const guard = migrationReservationGuardSql('882-oauth-flow-private-context.sql');
+    expect(guard).toContain('WHERE num = 882');
+    expect(guard).toContain("reserved_filename <> '882-oauth-flow-private-context.sql'");
   });
 });
 

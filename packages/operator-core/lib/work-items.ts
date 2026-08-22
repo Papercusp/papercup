@@ -3596,6 +3596,13 @@ export async function setWorkItemStateWithAliasInfo(
   const appliedLower = (appliedState ?? '').trim().toLowerCase();
   if (workItem && workItem.family === 'issue') {
     try {
+      console.error('[EI-204903-debug]', {
+        id,
+        priorState: wi.state,
+        appliedState,
+        family: workItem.family,
+        payload: wi.payload,
+      });
       if (appliedLower === 'needs-human') {
         await mergeIssuePayload(id, { needsOwnerAction: true }, { unset: ['needsHuman'] });
         autoGateNote =
@@ -3613,6 +3620,22 @@ export async function setWorkItemStateWithAliasInfo(
         if (held?.applicable) {
           autoGateNote =
             ' It has been auto-parked (claim hold) out of claim_next/scheduler:get_next self-selection until released — see work_items:release{claimHold:false}.';
+        }
+      } else if (
+        // The blocked auto-gate is a temporary lease, not a durable park. Once the
+        // applied state leaves blocked, remove only that lease so an intentional
+        // claim_hold_* park can continue to exclude the item from self-selection.
+        wi.state === 'blocked' &&
+        appliedLower !== 'blocked' &&
+        (wi.payload as Record<string, unknown> | null)?.held_open_reason === 'blocked'
+      ) {
+        const cleared = await setWorkItemClaimHold(id, false, { harness: opts.harness, leaseOnly: true });
+        if (cleared?.applicable) {
+          // setWorkItemState returned the row before this best-effort cleanup. Re-read
+          // so callers do not receive a stale `_claimHold`/held_open_* projection after
+          // the blocked gate was cleared (or after a durable park was preserved).
+          const refreshed = await getWorkItem(id, opts.harness);
+          if (refreshed) workItem = refreshed;
         }
       }
     } catch {

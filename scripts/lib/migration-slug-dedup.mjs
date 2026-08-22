@@ -71,10 +71,10 @@ export const DEFAULT_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
  * @returns {string}
  */
 export function slugOfMigrationFilename(filename) {
-  return String(filename ?? '')
+  return String(filename ?? "")
     .trim()
-    .replace(/^\d+-/, '')
-    .replace(/\.sql(\..*)?$/i, '')
+    .replace(/^\d+-/, "")
+    .replace(/\.sql(\..*)?$/i, "")
     .toLowerCase();
 }
 
@@ -86,7 +86,7 @@ export function slugOfMigrationFilename(filename) {
  */
 export function slugTokens(slug) {
   return new Set(
-    String(slug ?? '')
+    String(slug ?? "")
       .toLowerCase()
       .split(/[^a-z0-9]+/)
       .filter(Boolean),
@@ -168,13 +168,14 @@ export function judgeRedundantReservation({
   appliedWindowMs = DEFAULT_APPLIED_WINDOW_MS,
   lookbackMs = DEFAULT_LOOKBACK_MS,
 }) {
-  const target = String(slug ?? '').trim();
+  const target = String(slug ?? "").trim();
   /** @type {RedundancyMatch[]} */
   const matches = [];
-  if (!target || !Array.isArray(candidates)) return { verdict: 'clear', matches };
+  if (!target || !Array.isArray(candidates))
+    return { verdict: "clear", matches };
 
   for (const c of candidates) {
-    const candSlug = slugOfMigrationFilename(c?.filename ?? '');
+    const candSlug = slugOfMigrationFilename(c?.filename ?? "");
     const similarity = slugSimilarity(target, candSlug);
     if (similarity < threshold) continue;
 
@@ -186,24 +187,26 @@ export function judgeRedundantReservation({
 
     /** @type {'block'|'warn'|null} */
     let severity = null;
-    let reason = '';
+    let reason = "";
     if (applied && ageMs != null && ageMs <= appliedWindowMs) {
-      severity = 'block';
-      reason = 'a near-identical migration is ALREADY APPLIED — this repair has landed';
+      severity = "block";
+      reason =
+        "a near-identical migration is ALREADY APPLIED — this repair has landed";
     } else if (!applied && ageMs != null && ageMs <= raceWindowMs) {
-      severity = 'block';
-      reason = 'a peer reserved a near-identical migration moments ago — you are racing them';
+      severity = "block";
+      reason =
+        "a peer reserved a near-identical migration moments ago — you are racing them";
     } else if (ageMs == null || ageMs <= lookbackMs) {
-      severity = 'warn';
+      severity = "warn";
       reason = applied
-        ? 'a near-identical migration was applied earlier'
-        : 'a near-identical migration is reserved but unapplied';
+        ? "a near-identical migration was applied earlier"
+        : "a near-identical migration is reserved but unapplied";
     }
     if (!severity) continue;
 
     matches.push({
       num: Number(c.num),
-      filename: String(c.filename ?? ''),
+      filename: String(c.filename ?? ""),
       slug: candSlug,
       similarity,
       reservedBy: c?.reservedBy ?? null,
@@ -216,11 +219,11 @@ export function judgeRedundantReservation({
   }
 
   matches.sort((a, b) => b.similarity - a.similarity || b.num - a.num);
-  const verdict = matches.some((m) => m.severity === 'block')
-    ? 'block'
+  const verdict = matches.some((m) => m.severity === "block")
+    ? "block"
     : matches.length > 0
-      ? 'warn'
-      : 'clear';
+      ? "warn"
+      : "clear";
   return { verdict, matches };
 }
 
@@ -242,7 +245,10 @@ export function judgeRedundantReservation({
  * @param {{ lookbackMs?: number, limit?: number }} [opts]
  * @returns {Promise<ReservationCandidate[]>}
  */
-export async function fetchRedundancyCandidates(tx, { lookbackMs = DEFAULT_LOOKBACK_MS, limit = 500 } = {}) {
+export async function fetchRedundancyCandidates(
+  tx,
+  { lookbackMs = DEFAULT_LOOKBACK_MS, limit = 500 } = {},
+) {
   const lookbackSecs = Math.max(1, Math.round(lookbackMs / 1000));
   const rows = await tx`
     SELECT num, filename, reserved_by, intent, reserved_at_ms, applied_at_ms FROM (
@@ -253,7 +259,7 @@ export async function fetchRedundancyCandidates(tx, { lookbackMs = DEFAULT_LOOKB
              (EXTRACT(EPOCH FROM r.reserved_at) * 1000)::bigint AS reserved_at_ms,
              (SELECT (EXTRACT(EPOCH FROM m.applied_at) * 1000)::bigint
                 FROM harness_shared.schema_migrations m
-               WHERE m.filename LIKE r.num || '-%'
+               WHERE m.filename = r.filename
                LIMIT 1) AS applied_at_ms
         FROM harness_shared.migration_reservations r
        WHERE r.reserved_at > now() - make_interval(secs => ${lookbackSecs})
@@ -268,13 +274,13 @@ export async function fetchRedundancyCandidates(tx, { lookbackMs = DEFAULT_LOOKB
        WHERE m.filename ~ '^[0-9]+-'
          AND m.applied_at > now() - make_interval(secs => ${lookbackSecs})
          AND NOT EXISTS (SELECT 1 FROM harness_shared.migration_reservations r2
-                          WHERE r2.num = substring(m.filename FROM '^([0-9]+)-')::int)
+                          WHERE r2.filename = m.filename)
     ) candidates
     ORDER BY num DESC
     LIMIT ${limit}`;
   return rows.map((r) => ({
     num: Number(r.num),
-    filename: String(r.filename ?? ''),
+    filename: String(r.filename ?? ""),
     reservedBy: r.reserved_by ?? null,
     intent: r.intent ?? null,
     reservedAtMs: r.reserved_at_ms == null ? null : Number(r.reserved_at_ms),
@@ -284,7 +290,7 @@ export async function fetchRedundancyCandidates(tx, { lookbackMs = DEFAULT_LOOKB
 
 /** @param {number|null} ms */
 function humanAge(ms) {
-  if (ms == null) return 'unknown age';
+  if (ms == null) return "unknown age";
   const s = Math.max(0, Math.round(ms / 1000));
   if (s < 90) return `${s}s ago`;
   const m = Math.round(s / 60);
@@ -305,9 +311,17 @@ function humanAge(ms) {
  * @param {{ slug: string, forceFlag?: string }} opts
  * @returns {string|null}
  */
-export function formatRedundancyMessage(judgement, { slug, forceFlag = '--force' }) {
-  if (!judgement || judgement.verdict === 'clear' || judgement.matches.length === 0) return null;
-  const blocking = judgement.verdict === 'block';
+export function formatRedundancyMessage(
+  judgement,
+  { slug, forceFlag = "--force" },
+) {
+  if (
+    !judgement ||
+    judgement.verdict === "clear" ||
+    judgement.matches.length === 0
+  )
+    return null;
+  const blocking = judgement.verdict === "block";
   const lines = [];
   lines.push(
     blocking
@@ -316,10 +330,10 @@ export function formatRedundancyMessage(judgement, { slug, forceFlag = '--force'
   );
   lines.push(`  your slug: ${slug}`);
   for (const m of judgement.matches.slice(0, 5)) {
-    const who = m.reservedBy ? ` by ${m.reservedBy}` : '';
-    const state = m.applied ? 'APPLIED' : 'reserved, unapplied';
+    const who = m.reservedBy ? ` by ${m.reservedBy}` : "";
+    const state = m.applied ? "APPLIED" : "reserved, unapplied";
     lines.push(
-      `  ${String(m.num).padStart(3, '0')}  ${m.filename}  [${state}${who}, ${humanAge(m.ageMs)}, similarity ${m.similarity.toFixed(2)}]`,
+      `  ${String(m.num).padStart(3, "0")}  ${m.filename}  [${state}${who}, ${humanAge(m.ageMs)}, similarity ${m.similarity.toFixed(2)}]`,
     );
     lines.push(`       ${m.reason}`);
     if (m.intent) lines.push(`       intent: ${m.intent}`);
@@ -332,5 +346,5 @@ export function formatRedundancyMessage(judgement, { slug, forceFlag = '--force'
       `If this really is distinct work that merely reads alike, re-run with ${forceFlag} to reserve anyway.`,
     );
   }
-  return lines.join('\n');
+  return lines.join("\n");
 }

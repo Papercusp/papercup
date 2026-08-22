@@ -84,6 +84,9 @@ import {
  *  project into the first release's "what shipped" list. */
 const FIRST_RELEASE_LOOKBACK_DAYS = 14;
 
+/** This recorder writes Papercusp's workspace-level registry and public bucket/page. */
+export const PAPERCUSP_RELEASE_PRODUCT_NAME = 'Papercusp';
+
 export interface RecordOpts {
   version: string;
   channel: string;
@@ -750,7 +753,7 @@ export function scanProvenancedAndroidArtifactSources(
   version: string,
   productName = 'Papercusp',
 ): Array<{ src: string; outName: string }> {
-  const artifactStem = validateMobileProductName(productName);
+  const artifactStem = assertPapercuspMobileProductName(productName);
   const manifestFile = path.join(mobileRoot, ANDROID_RELEASE_PROVENANCE_PATH);
   const rawAndroidPaths = [
     ANDROID_RELEASE_APK_PATH,
@@ -872,6 +875,25 @@ export function validateMobileProductName(productName: string): string {
 }
 
 /**
+ * The release registry and public release bucket/page are Papercusp-owned. A
+ * product name is allowed to reach the mobile scanner only when it names this
+ * product; otherwise a foreign app can be recorded as a Papercusp release.
+ * Keep the generic syntax validator separate so callers can still validate a
+ * product stem before handing it to a product-specific release pipeline.
+ */
+export function assertPapercuspMobileProductName(productName: string): string {
+  const value = validateMobileProductName(productName);
+  if (value !== PAPERCUSP_RELEASE_PRODUCT_NAME) {
+    throw new Error(
+      `[record-release] REFUSING NON-PAPERCUSP MOBILE PRODUCT ${JSON.stringify(value)}: ` +
+        `the Papercusp release registry and public bucket/page accept only ` +
+        `"${PAPERCUSP_RELEASE_PRODUCT_NAME}". Use a product-specific release pipeline for other apps.`,
+    );
+  }
+  return value;
+}
+
+/**
  * Where the "the releases page is currently held back" bit lives.
  *
  * It is STATE, not an argument, on purpose. If holding were only a flag on the
@@ -986,6 +1008,10 @@ export async function generateSite(
 }
 
 export async function run(opts: RecordOpts): Promise<number> {
+  // Keep direct callers subject to the same product boundary as the CLI and
+  // --scan-mobile path. The registry is workspace-level, so harness filtering
+  // cannot isolate a foreign product once this function records the row.
+  assertPapercuspMobileProductName(opts.mobileProductName);
   const sql = postgres(getHarnessAdminUrl(), { max: 1 });
   try {
     const tag = releaseTag(opts.version, opts.channel);
@@ -1318,7 +1344,7 @@ export function buildRunOpts(argv: string[]): RecordOpts {
   // Optional: null root → no mobile artifacts recorded (a legal desktop-only cut).
   const mobileRoot =
     arg(argv, '--mobile-root') ?? process.env.PAPERCUSP_MOBILE_ROOT ?? resolveMobileRoot();
-  const mobileProductName = validateMobileProductName(
+  const mobileProductName = assertPapercuspMobileProductName(
     arg(argv, '--mobile-product-name') ?? process.env.PAPERCUSP_MOBILE_PRODUCT_NAME ?? 'Papercusp',
   );
   const skipAndroid =

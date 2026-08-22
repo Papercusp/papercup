@@ -306,6 +306,7 @@ export default function ChromeShell({ chatFaces }: { chatFaces?: readonly OpChat
               AdvShell harness bar (AdvNowRunning), not here. */}
         </div>
         <nav className="pc-header-right" aria-label="Primary navigation">
+          <RouteLink href="/cloud-workspaces" aria-label="Cloud Workspaces" {...navLinkProps('/cloud-workspaces')}>Cloud</RouteLink>
           {testingFlag ? (
             <RouteLink href="/installed/plugins" {...navLinkProps('/installed/plugins')}>Plugins</RouteLink>
           ) : null}

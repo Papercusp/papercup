@@ -114,6 +114,7 @@ describe('ChromeShell', () => {
     pathname = '/';
     render(<ChromeShell />);
     expect(screen.getByText('OPS')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Cloud Workspaces' }).getAttribute('href')).toBe('/cloud-workspaces');
     expect(screen.getByRole('link', { name: 'Support' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Settings' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'DEV' })).toBeTruthy();

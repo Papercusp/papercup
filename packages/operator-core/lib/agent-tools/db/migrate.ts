@@ -21,16 +21,12 @@ import { guardResource } from '../locks/resource-lock-guard';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
 import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from '../../migration-deploy-guard';
+import { migrationReservationGuardSql } from '../../migration-reservation';
 // Local bindings for this module's own use — the `export { … } from` below
 // re-exports the same names for existing importers but creates no local binding.
 import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-failure';
 import { openEscalation } from '../coordination/escalations';
-import {
-  checkResourceAction,
-  recordResourceAction,
-  getTxPool,
-  type ResourceHolder,
-} from '../locks/su-lock-store';
+import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder } from '../locks/su-lock-store';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 60;
@@ -115,11 +111,7 @@ function sleep(ms: number): Promise<void> {
 const CONNECTION_RETRY_MAX_ATTEMPTS = 3;
 const CONNECTION_RETRY_BASE_DELAY_MS = 1000;
 const CONNECTION_RETRY_MAX_DELAY_MS = 8000;
-const TRANSIENT_CONNECTION_ERROR_CODES = new Set([
-  'CONNECTION_CLOSED',
-  'CONNECTION_DESTROYED',
-  'CONNECT_TIMEOUT',
-]);
+const TRANSIENT_CONNECTION_ERROR_CODES = new Set(['CONNECTION_CLOSED', 'CONNECTION_DESTROYED', 'CONNECT_TIMEOUT']);
 
 /** True iff `err` is one of postgres-js's own transient connection-layer errors
  *  (see TRANSIENT_CONNECTION_ERROR_CODES above) rather than a real SQL/logic
@@ -181,10 +173,7 @@ function checkSchemaMigrationsRecorded(
  *  attempts. A non-transient error (including a genuine SQL/logic failure)
  *  rethrows immediately, unretried — same contract as runMigrationWithLockRetry
  *  above, at the connection layer instead of the lock-contention layer. */
-async function withConnectionRetry<T>(
-  fn: () => Promise<T>,
-  maxAttempts = CONNECTION_RETRY_MAX_ATTEMPTS,
-): Promise<T> {
+async function withConnectionRetry<T>(fn: () => Promise<T>, maxAttempts = CONNECTION_RETRY_MAX_ATTEMPTS): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await fn();
@@ -230,7 +219,10 @@ const json = (payload: unknown) => ({
 });
 
 const holderJson = (h: ResourceHolder) => ({
-  owner: h.owner, owner_label: h.owner_label, mode: h.mode, status: h.status,
+  owner: h.owner,
+  owner_label: h.owner_label,
+  mode: h.mode,
+  status: h.status,
 });
 
 export default defineTool({
@@ -376,8 +368,7 @@ export default defineTool({
     // indistinguishable from a wedge to an MCP client watching for "response
     // or progress".
     const emitProgress =
-      (ctx as { progress?: (pct: number | undefined, msg?: string) => void }).progress ??
-      (() => undefined);
+      (ctx as { progress?: (pct: number | undefined, msg?: string) => void }).progress ?? (() => undefined);
 
     const outcome = await withConnectionRetry(() =>
       guardResource(
@@ -402,223 +393,236 @@ export default defineTool({
               }),
             );
           },
-      },
-      async (fence) => {
-        if (!enabled) {
-          // EI-6879: PAPERCUSP_ALLOW_DB_MIGRATE is a deliberate host-level opt-in
-          // (same rail as PAPERCUSP_ALLOW_DEV_RESTART) — an agent cannot set it
-          // remotely, so on a dev box without it configured this withheld branch
-          // is the ONLY path every migration takes. Every agent that hit this
-          // previously had to reverse-engineer the sanctioned fallback (a raw
-          // `psql -f` + a same-transaction schema_migrations INSERT, mirroring
-          // embedded-postgres-server's migration-runner.js) from scratch — the
-          // note below spells it out inline so that rediscovery cost is zero.
-          // CAUTION per CLAUDE.md § storage policy: a bare `psql -f` WITHOUT the
-          // same-txn INSERT leaves schema_migrations un-recorded, so every future
-          // deploy re-runs the file (a lock-contending re-run can trip a
-          // deploy's lock_timeout) — always include the INSERT in the same BEGIN/COMMIT.
-          const url = getHarnessAdminUrl();
-          const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${args.file}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(args.file)}', '<sha256 of the file bytes, e.g. sha256sum ${args.file}>');\nCOMMIT;\nSQL`;
-          // EI-13299: escalate:true is the sanctioned fast path when the caller
-          // (typically a cup with no shell/PG access at all) has no other way to
-          // get an urgent, already-committed migration applied while the deploy
-          // gate is red. Fail-soft — a notification hiccup must never turn an
-          // otherwise-successful drain+withhold response into an error, mirroring
-          // attention-notify.ts's "each channel independently fail-safe" contract.
-          let escalation: { escalated: boolean; msg_id?: string; ts?: string; error?: string } = {
-            escalated: false,
-          };
-          if (args.escalate) {
-            try {
-              const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
-              const harnessSlug =
-                typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
-              const rec = await openEscalation(coordIdentity, {
-                severity: 'blocker',
-                summary: `db:migrate withheld for ${path.basename(args.file)} — ${ownerLabel} needs a human/su to apply it (no PAPERCUSP_ALLOW_DB_MIGRATE, no shell/PG access of their own)`,
-                body:
-                  `Requester: ${ownerId} (${ownerLabel})\n` +
-                  `File: ${args.file}\n` +
-                  `exclusive(db-schema) is ALREADY held + drained under this request (safe to apply now).\n\n` +
-                  `Ready-to-run command (fill in the sha256 first — sha256sum ${args.file}):\n${readyCommand}\n\n` +
-                  `Why this fired: the requester called db:migrate with escalate:true, meaning the normal apply ` +
-                  `path (PAPERCUSP_ALLOW_DB_MIGRATE, or the release deploy pipeline's boot-apply) is unavailable ` +
-                  `or blocked (e.g. the deploy gate is red) and the migration is urgent.`,
-                ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
-                meta: {
-                  subjectSignature: `db-migrate-withheld:${path.basename(args.file)}`,
-                  ...(harnessSlug ? { harnessSlug } : {}),
-                },
-              });
-              escalation = { escalated: true, msg_id: rec.msg_id, ts: rec.ts };
-            } catch (e) {
-              escalation = { escalated: false, error: e instanceof Error ? e.message : String(e) };
+        },
+        async (fence) => {
+          if (!enabled) {
+            // EI-6879: PAPERCUSP_ALLOW_DB_MIGRATE is a deliberate host-level opt-in
+            // (same rail as PAPERCUSP_ALLOW_DEV_RESTART) — an agent cannot set it
+            // remotely, so on a dev box without it configured this withheld branch
+            // is the ONLY path every migration takes. Every agent that hit this
+            // previously had to reverse-engineer the sanctioned fallback (a raw
+            // `psql -f` + a same-transaction schema_migrations INSERT, mirroring
+            // embedded-postgres-server's migration-runner.js) from scratch — the
+            // note below spells it out inline so that rediscovery cost is zero.
+            // CAUTION per CLAUDE.md § storage policy: a bare `psql -f` WITHOUT the
+            // same-txn INSERT leaves schema_migrations un-recorded, so every future
+            // deploy re-runs the file (a lock-contending re-run can trip a
+            // deploy's lock_timeout) — always include the INSERT in the same BEGIN/COMMIT.
+            const url = getHarnessAdminUrl();
+            const readyCommand = `psql "${url}" -v ON_ERROR_STOP=1 <<'SQL'\nBEGIN;\nSET LOCAL statement_timeout = 0;\n\\i ${args.file}\nINSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${path.basename(args.file)}', '<sha256 of the file bytes, e.g. sha256sum ${args.file}>');\nCOMMIT;\nSQL`;
+            // EI-13299: escalate:true is the sanctioned fast path when the caller
+            // (typically a cup with no shell/PG access at all) has no other way to
+            // get an urgent, already-committed migration applied while the deploy
+            // gate is red. Fail-soft — a notification hiccup must never turn an
+            // otherwise-successful drain+withhold response into an error, mirroring
+            // attention-notify.ts's "each channel independently fail-safe" contract.
+            let escalation: { escalated: boolean; msg_id?: string; ts?: string; error?: string } = {
+              escalated: false,
+            };
+            if (args.escalate) {
+              try {
+                const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+                const harnessSlug =
+                  typeof ctxHarness === 'string' && ctxHarness && ctxHarness !== '*' ? ctxHarness : undefined;
+                const rec = await openEscalation(coordIdentity, {
+                  severity: 'blocker',
+                  summary: `db:migrate withheld for ${path.basename(args.file)} — ${ownerLabel} needs a human/su to apply it (no PAPERCUSP_ALLOW_DB_MIGRATE, no shell/PG access of their own)`,
+                  body:
+                    `Requester: ${ownerId} (${ownerLabel})\n` +
+                    `File: ${args.file}\n` +
+                    `exclusive(db-schema) is ALREADY held + drained under this request (safe to apply now).\n\n` +
+                    `Ready-to-run command (fill in the sha256 first — sha256sum ${args.file}):\n${readyCommand}\n\n` +
+                    `Why this fired: the requester called db:migrate with escalate:true, meaning the normal apply ` +
+                    `path (PAPERCUSP_ALLOW_DB_MIGRATE, or the release deploy pipeline's boot-apply) is unavailable ` +
+                    `or blocked (e.g. the deploy gate is red) and the migration is urgent.`,
+                  ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
+                  meta: {
+                    subjectSignature: `db-migrate-withheld:${path.basename(args.file)}`,
+                    ...(harnessSlug ? { harnessSlug } : {}),
+                  },
+                });
+                escalation = { escalated: true, msg_id: rec.msg_id, ts: rec.ts };
+              } catch (e) {
+                escalation = { escalated: false, error: e instanceof Error ? e.message : String(e) };
+              }
             }
+            return json({
+              ok: true,
+              drained: true,
+              applied: false,
+              note: 'Drain complete, but apply WITHHELD — set PAPERCUSP_ALLOW_DB_MIGRATE=1 on the operator host to enable the real psql apply.',
+              escalation,
+              fallback: {
+                why: 'PAPERCUSP_ALLOW_DB_MIGRATE is a deliberate owner-authority safety rail (like PAPERCUSP_ALLOW_DEV_RESTART) — it cannot be set by an agent call, only by the host operator process env.',
+                caution:
+                  'You already hold exclusive(db-schema) + the drain completed, so applying by hand here is coordinated and safe AS LONG AS you record the schema_migrations row in the SAME transaction as the DDL — a bare `psql -f` without it leaves the migration unrecorded, so every future deploy/boot re-applies the file (a lock-contending re-run can trip a deploy lock_timeout).',
+                command: readyCommand,
+                note: "sha256 must match createHash('sha256').update(<raw file text>).digest('hex') (embedded-postgres-server/src/migration-runner.js) — `sha256sum <file>` on the exact file bytes gives the same value.",
+                escalateHint:
+                  'No shell/PG access to run this yourself (a cup) and it is genuinely urgent? Re-call db:migrate with escalate:true instead of improvising a hand-off.',
+              },
+            });
           }
-          return json({
-            ok: true,
-            drained: true,
-            applied: false,
-            note: 'Drain complete, but apply WITHHELD — set PAPERCUSP_ALLOW_DB_MIGRATE=1 on the operator host to enable the real psql apply.',
-            escalation,
-            fallback: {
-              why: 'PAPERCUSP_ALLOW_DB_MIGRATE is a deliberate owner-authority safety rail (like PAPERCUSP_ALLOW_DEV_RESTART) — it cannot be set by an agent call, only by the host operator process env.',
-              caution:
-                'You already hold exclusive(db-schema) + the drain completed, so applying by hand here is coordinated and safe AS LONG AS you record the schema_migrations row in the SAME transaction as the DDL — a bare `psql -f` without it leaves the migration unrecorded, so every future deploy/boot re-applies the file (a lock-contending re-run can trip a deploy lock_timeout).',
-              command: readyCommand,
-              note: 'sha256 must match createHash(\'sha256\').update(<raw file text>).digest(\'hex\') (embedded-postgres-server/src/migration-runner.js) — `sha256sum <file>` on the exact file bytes gives the same value.',
-              escalateHint:
-                'No shell/PG access to run this yourself (a cup) and it is genuinely urgent? Re-call db:migrate with escalate:true instead of improvising a hand-off.',
-            },
-          });
-        }
-        // D-001 fencing: re-verify we still hold the effective exclusive at our
-        // fence before the irreversible DDL apply. A paused/zombie holder whose
-        // lease lapsed and was re-granted is rejected — no merge un-corrupts a
-        // double-migrate, so this is correctness-class.
-        const fc = await fence.assertCurrent();
-        if (!fc.current) {
-          return json({
-            ok: false,
-            applied: false,
-            reason: `stale_fence_${fc.reason}`,
-            fence_seq: fence.seq,
-            live_fence_seq: fc.live_fence_seq,
-            note: 'Migration ABORTED — our exclusive(db-schema) lease was superseded while we held it. Re-acquire before retrying.',
-          });
-        }
-        // D-001 resource-side idempotency: make the su_meta migration-name check
-        // EXPLICIT. A retried / zombie re-apply of the SAME file short-circuits
-        // here as a checked no-op even if fencing were somehow bypassed.
-        const actionKey = `migrate:${path.basename(args.file)}`;
-        const prior = await checkResourceAction(getTxPool(), coordinationDomain, actionKey);
-        if (prior.applied) {
-          return json({
-            ok: true,
-            applied: false,
-            already_applied: true,
-            action_key: actionKey,
-            prior_fence_seq: prior.fence_seq,
-            note: 'This migration file was already applied (resource-side idempotency ledger) — no-op.',
-          });
-        }
-        const url = getHarnessAdminUrl();
-        // EI-6962: the previous version ran the file bare (`psql -f <file>`)
-        // and only recorded success in the su_meta coordination-domain
-        // idempotency ledger (recordResourceAction below) — NEVER in
-        // harness_shared.schema_migrations, the table every deploy/boot
-        // actually reads to decide what's already applied. That left the
-        // enabled path (this branch) exactly as unsafe as the withheld
-        // path's own fallback warns against: a future deploy/boot re-runs
-        // the "applied" file, and a lock-contending re-run can trip the
-        // deploy's lock_timeout (the 2026-06-09 ~1h wedge this tool exists
-        // to prevent). Fix: wrap the file in the SAME BEGIN/COMMIT as the
-        // schema_migrations INSERT, mirroring both the withheld-branch's own
-        // documented fallback command above and
-        // embedded-postgres-server/src/migration-runner.js's boot-apply path
-        // — `\i` (not `-f`) so the file still runs through psql's full
-        // meta-command interpreter (dollar-quotes, DO blocks, COPY), keeping
-        // the perf:allow A4 rationale below intact.
-        const sha256 = createHash('sha256').update(sqlText).digest('hex');
-        const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
-        // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
-        // description above) — falls back to the EI-9417 default when omitted,
-        // producing the exact same script text as before this change.
-        const lockTimeoutSec = args.lock_timeout_sec ?? DEFAULT_LOCK_TIMEOUT_SEC;
-        const migrationMaxAttempts = args.lock_timeout_sec != null ? CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS : LOCK_RETRY_MAX_ATTEMPTS;
-        const script =
-          `BEGIN;\n` +
-          `SET LOCAL statement_timeout = 0;\n` +
-          // EI-9417: fail FAST on lock contention (was unset — could hang
-          // indefinitely against a hot table) instead of waiting it out; the
-          // retry loop below is what actually rides out the contention.
-          // WI-6381: caller-widened when riding out a known long-lived
-          // non-operator holder instead (see migrationMaxAttempts above).
-          `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
-          `\\i ${args.file}\n` +
-          `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
-          `COMMIT;\n`;
-        // perf:allow A4 — this tool IS the sanctioned dev-only migration
-        // applier: psql's meta-command interpreter runs full .sql files
-        // (dollar-quoted functions, DO blocks, COPY, \meta-commands) that
-        // postgres-js can't, and it's gated behind PAPERCUSP_ALLOW_DB_MIGRATE
-        // + the db-schema lock. Not runtime/shipped data-plane code. Mirrored
-        // in @papercusp/export-state's no-psql-shellout ALLOW set.
-        // EI-18769559897594065: the drain is over (onTick above stops firing
-        // the moment guardResource's run() starts) — emit one more tick so a
-        // caller watching progress sees the phase change instead of silence
-        // resuming right as the (potentially multi-attempt, backoff-retried)
-        // apply begins.
-        emitProgress(undefined, JSON.stringify({ phase: 'applying', file: path.basename(args.file) }));
-        // EI-9417: retries automatically on "canceling statement due to lock
-        // timeout" against a hot coordination table (coord_presence et al) —
-        // see runMigrationWithLockRetry above.
-        const { result: r, attempts } = await runMigrationWithLockRetry(url, script, undefined, migrationMaxAttempts, (attempt, maxAttempts) => {
-          if (attempt > 1) {
-            emitProgress(
-              undefined,
-              JSON.stringify({ phase: 'applying', retry_attempt: attempt, max_attempts: maxAttempts }),
-            );
+          // D-001 fencing: re-verify we still hold the effective exclusive at our
+          // fence before the irreversible DDL apply. A paused/zombie holder whose
+          // lease lapsed and was re-granted is rejected — no merge un-corrupts a
+          // double-migrate, so this is correctness-class.
+          const fc = await fence.assertCurrent();
+          if (!fc.current) {
+            return json({
+              ok: false,
+              applied: false,
+              reason: `stale_fence_${fc.reason}`,
+              fence_seq: fence.seq,
+              live_fence_seq: fc.live_fence_seq,
+              note: 'Migration ABORTED — our exclusive(db-schema) lease was superseded while we held it. Re-acquire before retrying.',
+            });
           }
-        });
-        if (r.status !== 0) {
-          // WI-6002: before trusting this failure, check whether it's actually
-          // the schema_migrations duplicate-key guard tripping on a migration
-          // an EARLIER attempt already committed (see the comment above
-          // checkSchemaMigrationsRecorded). Only bother with the extra psql
-          // round-trip when the stderr shape matches — a genuine syntax/logic
-          // error skips straight to the real failure report, unchanged.
-          if (isDuplicateMigrationLedgerFailure(r.stderr ?? '') && checkSchemaMigrationsRecorded(url, path.basename(args.file))) {
+          // D-001 resource-side idempotency: make the su_meta migration-name check
+          // EXPLICIT. A retried / zombie re-apply of the SAME file short-circuits
+          // here as a checked no-op even if fencing were somehow bypassed.
+          const actionKey = `migrate:${path.basename(args.file)}`;
+          const prior = await checkResourceAction(getTxPool(), coordinationDomain, actionKey);
+          if (prior.applied) {
             return json({
               ok: true,
               applied: false,
               already_applied: true,
-              file: args.file,
-              note:
-                'psql reported a failure (schema_migrations duplicate-key guard), but harness_shared.schema_migrations ' +
-                'already records this file as applied — verified via a FRESH connection, independent of whatever ' +
-                'connection dropped on the earlier attempt. Treating this as a redundant retry, not a real failure.',
+              action_key: actionKey,
+              prior_fence_seq: prior.fence_seq,
+              note: 'This migration file was already applied (resource-side idempotency ledger) — no-op.',
+            });
+          }
+          const url = getHarnessAdminUrl();
+          // EI-6962: the previous version ran the file bare (`psql -f <file>`)
+          // and only recorded success in the su_meta coordination-domain
+          // idempotency ledger (recordResourceAction below) — NEVER in
+          // harness_shared.schema_migrations, the table every deploy/boot
+          // actually reads to decide what's already applied. That left the
+          // enabled path (this branch) exactly as unsafe as the withheld
+          // path's own fallback warns against: a future deploy/boot re-runs
+          // the "applied" file, and a lock-contending re-run can trip the
+          // deploy's lock_timeout (the 2026-06-09 ~1h wedge this tool exists
+          // to prevent). Fix: wrap the file in the SAME BEGIN/COMMIT as the
+          // schema_migrations INSERT, mirroring both the withheld-branch's own
+          // documented fallback command above and
+          // embedded-postgres-server/src/migration-runner.js's boot-apply path
+          // — `\i` (not `-f`) so the file still runs through psql's full
+          // meta-command interpreter (dollar-quotes, DO blocks, COPY), keeping
+          // the perf:allow A4 rationale below intact.
+          const sha256 = createHash('sha256').update(sqlText).digest('hex');
+          const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
+          const reservationGuard = migrationReservationGuardSql(path.basename(args.file));
+          // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
+          // description above) — falls back to the EI-9417 default when omitted,
+          // producing the exact same script text as before this change.
+          const lockTimeoutSec = args.lock_timeout_sec ?? DEFAULT_LOCK_TIMEOUT_SEC;
+          const migrationMaxAttempts =
+            args.lock_timeout_sec != null ? CUSTOM_LOCK_TIMEOUT_MAX_ATTEMPTS : LOCK_RETRY_MAX_ATTEMPTS;
+          const script =
+            `BEGIN;\n` +
+            `SET LOCAL statement_timeout = 0;\n` +
+            // EI-9417: fail FAST on lock contention (was unset — could hang
+            // indefinitely against a hot table) instead of waiting it out; the
+            // retry loop below is what actually rides out the contention.
+            // WI-6381: caller-widened when riding out a known long-lived
+            // non-operator holder instead (see migrationMaxAttempts above).
+            `SET LOCAL lock_timeout = '${lockTimeoutSec}s';\n` +
+            reservationGuard +
+            `\\i ${args.file}\n` +
+            `INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES ('${filenameLiteral}', '${sha256}');\n` +
+            `COMMIT;\n`;
+          // perf:allow A4 — this tool IS the sanctioned dev-only migration
+          // applier: psql's meta-command interpreter runs full .sql files
+          // (dollar-quoted functions, DO blocks, COPY, \meta-commands) that
+          // postgres-js can't, and it's gated behind PAPERCUSP_ALLOW_DB_MIGRATE
+          // + the db-schema lock. Not runtime/shipped data-plane code. Mirrored
+          // in @papercusp/export-state's no-psql-shellout ALLOW set.
+          // EI-18769559897594065: the drain is over (onTick above stops firing
+          // the moment guardResource's run() starts) — emit one more tick so a
+          // caller watching progress sees the phase change instead of silence
+          // resuming right as the (potentially multi-attempt, backoff-retried)
+          // apply begins.
+          emitProgress(undefined, JSON.stringify({ phase: 'applying', file: path.basename(args.file) }));
+          // EI-9417: retries automatically on "canceling statement due to lock
+          // timeout" against a hot coordination table (coord_presence et al) —
+          // see runMigrationWithLockRetry above.
+          const { result: r, attempts } = await runMigrationWithLockRetry(
+            url,
+            script,
+            undefined,
+            migrationMaxAttempts,
+            (attempt, maxAttempts) => {
+              if (attempt > 1) {
+                emitProgress(
+                  undefined,
+                  JSON.stringify({ phase: 'applying', retry_attempt: attempt, max_attempts: maxAttempts }),
+                );
+              }
+            },
+          );
+          if (r.status !== 0) {
+            // WI-6002: before trusting this failure, check whether it's actually
+            // the schema_migrations duplicate-key guard tripping on a migration
+            // an EARLIER attempt already committed (see the comment above
+            // checkSchemaMigrationsRecorded). Only bother with the extra psql
+            // round-trip when the stderr shape matches — a genuine syntax/logic
+            // error skips straight to the real failure report, unchanged.
+            if (
+              isDuplicateMigrationLedgerFailure(r.stderr ?? '') &&
+              checkSchemaMigrationsRecorded(url, path.basename(args.file))
+            ) {
+              return json({
+                ok: true,
+                applied: false,
+                already_applied: true,
+                file: args.file,
+                note:
+                  'psql reported a failure (schema_migrations duplicate-key guard), but harness_shared.schema_migrations ' +
+                  'already records this file as applied — verified via a FRESH connection, independent of whatever ' +
+                  'connection dropped on the earlier attempt. Treating this as a redundant retry, not a real failure.',
+                exit_code: r.status,
+                stderr: (r.stderr ?? '').slice(-2000),
+                attempts,
+              });
+            }
+            return json({
+              ok: false,
+              applied: false,
               exit_code: r.status,
               stderr: (r.stderr ?? '').slice(-2000),
               attempts,
+              // EI-18747087108453188: was isLockTimeoutFailure-only, so a deadlock
+              // or serialization-failure exhaustion (both now retried above)
+              // silently reported false here. Widened to match the same
+              // predicate the retry loop itself uses. WI-6381: compares against
+              // migrationMaxAttempts (2 when lock_timeout_sec was set), not the
+              // hardcoded default — otherwise a caller who opted into the
+              // 2-attempt long-wait path would see this flag stick at false
+              // forever (attempts never reaches 5).
+              lock_timeout_retries_exhausted:
+                attempts >= migrationMaxAttempts && isRetryableLockFailure(r.stderr ?? ''),
             });
           }
+          // Record only on a successful apply (first writer wins). This is the
+          // su_meta coordination-domain idempotency ledger (a DIFFERENT record
+          // from the schema_migrations row the script above just committed) —
+          // it backstops a retried/zombie re-apply of the SAME file even when
+          // this tool's own fencing were somehow bypassed (D-001 above).
+          await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+            recordResourceAction(tx, coordinationDomain, actionKey, fence.seq),
+          );
           return json({
-            ok: false,
-            applied: false,
-            exit_code: r.status,
-            stderr: (r.stderr ?? '').slice(-2000),
+            ok: true,
+            drained: true,
+            applied: true,
+            file: args.file,
+            fence_seq: fence.seq,
+            schema_migrations_recorded: true,
+            sha256,
             attempts,
-            // EI-18747087108453188: was isLockTimeoutFailure-only, so a deadlock
-            // or serialization-failure exhaustion (both now retried above)
-            // silently reported false here. Widened to match the same
-            // predicate the retry loop itself uses. WI-6381: compares against
-            // migrationMaxAttempts (2 when lock_timeout_sec was set), not the
-            // hardcoded default — otherwise a caller who opted into the
-            // 2-attempt long-wait path would see this flag stick at false
-            // forever (attempts never reaches 5).
-            lock_timeout_retries_exhausted: attempts >= migrationMaxAttempts && isRetryableLockFailure(r.stderr ?? ''),
           });
-        }
-        // Record only on a successful apply (first writer wins). This is the
-        // su_meta coordination-domain idempotency ledger (a DIFFERENT record
-        // from the schema_migrations row the script above just committed) —
-        // it backstops a retried/zombie re-apply of the SAME file even when
-        // this tool's own fencing were somehow bypassed (D-001 above).
-        await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-          recordResourceAction(tx, coordinationDomain, actionKey, fence.seq),
-        );
-        return json({
-          ok: true,
-          drained: true,
-          applied: true,
-          file: args.file,
-          fence_seq: fence.seq,
-          schema_migrations_recorded: true,
-          sha256,
-          attempts,
-        });
-      },
+        },
       ),
     );
 

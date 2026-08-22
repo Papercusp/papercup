@@ -572,13 +572,11 @@ describe('provenanced Android artifacts — requested version + current source +
     fs.rmSync(fixture.root, { recursive: true, force: true });
   });
 
-  it('uses an explicit mobile product identity without changing the Papercusp default', () => {
+  it('rejects a foreign mobile product before it can produce Papercusp upload names', () => {
     const fixture = makeAndroidFixture();
-    expect(
-      scanMobileArtifactSources(fixture.root, '0.0.9', { productName: 'SideStage' }).map(
-        ({ outName }) => outName,
-      ),
-    ).toEqual(['SideStage_0.0.9_android.apk', 'SideStage_0.0.9_android.aab']);
+    expect(() =>
+      scanMobileArtifactSources(fixture.root, '0.0.9', { productName: 'SideStage' }),
+    ).toThrow(/only "Papercusp"/);
     expect(scanMobileArtifactSources(fixture.root, '0.0.9').map(({ outName }) => outName)).toEqual([
       'Papercusp_0.0.9_android.apk',
       'Papercusp_0.0.9_android.aab',
@@ -654,14 +652,14 @@ describe('buildRunOpts — the mobileRoot-drop regression guard', () => {
     expect(Array.isArray(opts.bundleDirs)).toBe(true);
   });
 
-  it('wires an explicit mobile product identity through argv and env', () => {
-    expect(
-      buildRunOpts(['--version', '1.2.3', '--mobile-product-name', 'SideStage']).mobileProductName,
-    ).toBe('SideStage');
+  it('rejects a foreign mobile product identity through argv and env', () => {
+    expect(() =>
+      buildRunOpts(['--version', '1.2.3', '--mobile-product-name', 'SideStage']),
+    ).toThrow(/only "Papercusp"/);
     const previous = process.env.PAPERCUSP_MOBILE_PRODUCT_NAME;
     process.env.PAPERCUSP_MOBILE_PRODUCT_NAME = 'EnvStage';
     try {
-      expect(buildRunOpts(['--version', '1.2.3']).mobileProductName).toBe('EnvStage');
+      expect(() => buildRunOpts(['--version', '1.2.3'])).toThrow(/only "Papercusp"/);
     } finally {
       if (previous === undefined) delete process.env.PAPERCUSP_MOBILE_PRODUCT_NAME;
       else process.env.PAPERCUSP_MOBILE_PRODUCT_NAME = previous;

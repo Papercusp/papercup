@@ -25,6 +25,20 @@ import {
   slugSimilarity,
 } from '../../../scripts/lib/migration-slug-dedup.mjs';
 
+describe('fetchRedundancyCandidates filename identity', () => {
+  it('never marks a reservation applied merely because another filename shares its number', async () => {
+    let query = '';
+    const tx = async (strings: TemplateStringsArray) => {
+      query = strings.join('?');
+      return [];
+    };
+    await fetchRedundancyCandidates(tx as never);
+    expect(query).toContain('WHERE m.filename = r.filename');
+    expect(query).toContain('WHERE r2.filename = m.filename');
+    expect(query).not.toContain("m.filename LIKE r.num || '-%'");
+  });
+});
+
 const ms = (iso: string) => Date.parse(iso);
 
 /**
@@ -115,9 +129,7 @@ describe('slug similarity discriminates same-work from distinct-work', () => {
     for (const [a, b] of SAME_WORK_PAIRS) {
       expect(alwaysIdentical()).toBeGreaterThanOrEqual(DEFAULT_SIMILARITY_THRESHOLD);
     }
-    const calibrationHolds = DISTINCT_WORK_PAIRS.every(
-      () => alwaysIdentical() < DEFAULT_SIMILARITY_THRESHOLD,
-    );
+    const calibrationHolds = DISTINCT_WORK_PAIRS.every(() => alwaysIdentical() < DEFAULT_SIMILARITY_THRESHOLD);
     expect(calibrationHolds, 'a degenerate always-block scorer must not satisfy calibration').toBe(false);
   });
 
@@ -125,9 +137,7 @@ describe('slug similarity discriminates same-work from distinct-work', () => {
     for (const [a, b] of DISTINCT_WORK_PAIRS) {
       expect(neverSimilar()).toBeLessThan(DEFAULT_SIMILARITY_THRESHOLD);
     }
-    const incidentHolds = SAME_WORK_PAIRS.every(
-      () => neverSimilar() >= DEFAULT_SIMILARITY_THRESHOLD,
-    );
+    const incidentHolds = SAME_WORK_PAIRS.every(() => neverSimilar() >= DEFAULT_SIMILARITY_THRESHOLD);
     expect(incidentHolds, 'a degenerate never-block scorer must not satisfy the incident property').toBe(false);
   });
 });

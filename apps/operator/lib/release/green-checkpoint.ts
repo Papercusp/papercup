@@ -848,7 +848,7 @@ export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
  *  whether selection had chosen badly or the age had accumulated afterwards.
  *
  *  20m is generous against what actually runs in that stretch: setupTree (git checkout +
- *  `cp -al` hardlink copy + a forced node_modules re-copy), the migration preflight, the
+ *  an isolated node_modules copy + a forced dependency re-copy), the migration preflight, the
  *  tree-drift preflight, and a pc-heavy slot wait that is itself capped at
  *  HEAVY_SLOT_WAIT_SEC=120s and fails OPEN. A healthy run clears all of it in single-digit
  *  minutes, so crossing 20m means something in there is genuinely blocked — and the one
@@ -858,7 +858,7 @@ export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;
 export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
 
 /** WI-7069 root-fix (the run-bounding half): `setupTree`'s `bash setup-release-checkout.sh`
- *  (git checkout + `cp -al` hardlink copy + a forced node_modules re-copy) was the ONE
+ *  (git checkout + an isolated node_modules copy + a forced dependency re-copy) was the ONE
  *  unbounded call on the candidate-selection→suite path — see CANDIDATE_SELECTION_TO_SUITE_WARN_MS
  *  above for the incident this closes: a run stalled here (or somewhere on this stretch) for
  *  ~10.5h with nothing to stop it, silently producing a 12:53Z verdict that judged a candidate
@@ -10861,7 +10861,7 @@ export function realCheckpointDeps(
     },
     // EI-18666996942859193: real wiring for the tree-drift preflight (see
     // CheckpointDeps.checkTreeDrift doc) — scoped to `cfg.checkpointRoot`, the ISOLATED
-    // tree this run actually judges (a hardlink copy of the integration tree taken by
+    // tree this run actually judges (an independent dependency copy of the integration tree taken by
     // setupTree, which has already run by the time this is called).
     async checkTreeDrift() {
       const { checkLockTreeDrift } =
@@ -11020,7 +11020,8 @@ export function realCheckpointDeps(
       // (astro check "no export readTsconfig"; native-addon-preflight better-sqlite3) that
       // red the gate for the WHOLE fleet while PASSING on the real integration tree
       // (EI-2699). A throwaway, correctness-critical tree must always re-copy from
-      // integration; the hardlink (cp -al) copy is cheap. The DEPLOY keeps `auto` + the
+      // integration; the independent copy is required to prevent a concurrent npm install
+      // from mutating the checkpoint inputs. The DEPLOY keeps `auto` + the
       // verify-before-cutover preflight (mcp-host-availability-resilience-2026-06-22).
       //
       // WI-7069: BOUNDED — this used to be the one unbounded call on the candidate-selection→
@@ -11039,6 +11040,8 @@ export function realCheckpointDeps(
           cfg.checkpointRoot,
           "--node-modules",
           "force",
+          "--node-modules-copy",
+          "copy",
         ],
         {
           timeoutMs: SETUP_TREE_TIMEOUT_MS,

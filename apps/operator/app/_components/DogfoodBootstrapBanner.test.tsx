@@ -116,4 +116,17 @@ describe('DogfoodBootstrapBanner (public-release)', () => {
     expect(banner.style.left).not.toBe('0px');
     expect(banner.style.left).not.toBe('0');
   });
+
+  // EI-20500569364275377: the fixed banner must not intercept browser pointer
+  // hit-testing for controls underneath it. Its dismiss button is the sole
+  // intentional hit target and explicitly opts back in.
+  it('EI-20500569364275377: is pointer-transparent except for its dismiss button', () => {
+    progress = errorProgress();
+    render(<DogfoodBootstrapBanner />);
+    const banner = screen.getByTestId('dogfood-bootstrap-banner');
+    const dismiss = screen.getByTestId('dogfood-bootstrap-dismiss');
+
+    expect(banner.style.pointerEvents).toBe('none');
+    expect(dismiss.style.pointerEvents).toBe('auto');
+  });
 });

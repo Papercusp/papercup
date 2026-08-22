@@ -35,7 +35,10 @@ const h = vi.hoisted(() => ({
   checkResourceAction: vi.fn(async (): Promise<ResourceActionResult> => ({ applied: false })),
   recordResourceAction: vi.fn(async () => undefined),
   inWorkspaceTxn: vi.fn(async (_domain: unknown, _owner: unknown, fn: (tx: unknown) => unknown) => fn({})),
-  openEscalation: vi.fn(async (_identity: unknown, _input: EscalationInputLike) => ({ msg_id: 'msg-esc-1', ts: '2026-07-17T00:00:00.000Z' })),
+  openEscalation: vi.fn(async (_identity: unknown, _input: EscalationInputLike) => ({
+    msg_id: 'msg-esc-1',
+    ts: '2026-07-17T00:00:00.000Z',
+  })),
   // EI-18159491440495603: default behavior mirrors the original inline mock (acquire +
   // run the callback); individual tests override with mockImplementationOnce to throw
   // a transient connection error before eventually resolving.
@@ -49,9 +52,7 @@ const h = vi.hoisted(() => ({
     async (
       _spec: unknown,
       run: (fence: unknown) => Promise<unknown>,
-    ): Promise<
-      { acquired: true; result: unknown } | { acquired: false; reason: string; holders: unknown[] }
-    > => ({
+    ): Promise<{ acquired: true; result: unknown } | { acquired: false; reason: string; holders: unknown[] }> => ({
       acquired: true,
       result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }),
     }),
@@ -163,17 +164,22 @@ describe('db:migrate — dry run', () => {
 });
 
 describe('db:migrate — skipWorkspaceTx (EI-18733783500981433)', () => {
-  it('opts out of the ambient workspace tx — the handler drains + shells out to psql for up ' +
-    'to minutes and never reads ctx.tx, so holding one open the whole time hits Postgres\'s ' +
-    'idle_in_transaction_session_timeout (60s) and surfaces as a bare CONNECTION_CLOSED even ' +
-    'though the migration completed. Same fix as capability:bash (EI-18666279107998059).', () => {
-    expect((migrateTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
-  });
+  it(
+    'opts out of the ambient workspace tx — the handler drains + shells out to psql for up ' +
+      "to minutes and never reads ctx.tx, so holding one open the whole time hits Postgres's " +
+      'idle_in_transaction_session_timeout (60s) and surfaces as a bare CONNECTION_CLOSED even ' +
+      'though the migration completed. Same fix as capability:bash (EI-18666279107998059).',
+    () => {
+      expect((migrateTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+    },
+  );
 });
 
 describe('db:migrate — withheld (PAPERCUSP_ALLOW_DB_MIGRATE unset)', () => {
   it('drains but withholds the apply, and the fallback command still records schema_migrations by hand', async () => {
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.applied).toBe(false);
     expect(out.drained).toBe(true);
     expect(out.fallback.command).toContain('INSERT INTO harness_shared.schema_migrations');
@@ -183,7 +189,9 @@ describe('db:migrate — withheld (PAPERCUSP_ALLOW_DB_MIGRATE unset)', () => {
   });
 
   it('EI-13299: a routine withheld confirm (no escalate) never raises a coord:escalate', async () => {
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.escalation).toEqual({ escalated: false });
     expect(h.openEscalation).not.toHaveBeenCalled();
   });
@@ -223,7 +231,9 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
   });
 
   it('EI-6962: wraps the file in the SAME BEGIN/COMMIT as a schema_migrations INSERT, fed to psql via stdin (not -f)', async () => {
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(true);
     expect(out.applied).toBe(true);
     expect(out.schema_migrations_recorded).toBe(true);
@@ -237,6 +247,8 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
     expect(cmdArgs).not.toContain(FILE); // it's `\i`-included inside the piped script
     const script = (opts as { input: string }).input;
     expect(script).toContain('BEGIN;');
+    expect(script).toContain('papercusp_migration_reservation_guard');
+    expect(script).toContain("reserved_filename <> '999-fake.sql'");
     expect(script).toContain(`\\i ${FILE}`);
     expect(script).toContain('INSERT INTO harness_shared.schema_migrations (filename, sha256) VALUES');
     expect(script).toContain('999-fake.sql');
@@ -253,7 +265,9 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
 
   it('a failed psql apply is reported and never records either ledger', async () => {
     h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'ERROR: syntax error' });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(false);
     expect(out.applied).toBe(false);
     expect(out.exit_code).toBe(1);
@@ -262,7 +276,9 @@ describe('db:migrate — enabled (PAPERCUSP_ALLOW_DB_MIGRATE=1)', () => {
 
   it('an already-applied file (su_meta idempotency ledger) short-circuits without touching psql', async () => {
     h.checkResourceAction.mockResolvedValue({ applied: true, fence_seq: 3 });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.already_applied).toBe(true);
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
@@ -278,10 +294,16 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
     const { ctx, progress } = progressCtx();
     h.guardResource.mockImplementation(async (spec: unknown, run: (fence: unknown) => Promise<unknown>) => {
       const s = spec as { onTick?: (info: { waited_sec: number; holders: unknown[] }) => void };
-      s.onTick?.({ waited_sec: 12, holders: [{ owner: 'su-peer', owner_label: 'peer', mode: 'shared', status: 'draining' }] });
+      s.onTick?.({
+        waited_sec: 12,
+        holders: [{ owner: 'su-peer', owner_label: 'peer', mode: 'shared', status: 'draining' }],
+      });
       return { acquired: true, result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }) };
     });
-    await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true, max_drain_sec: 45 }, ctx);
+    await (migrateTool as never as { handler: Function }).handler(
+      { file: FILE, confirm: true, max_drain_sec: 45 },
+      ctx,
+    );
     expect(progress).toHaveBeenCalled();
     const draining = progress.mock.calls.map((c) => JSON.parse(c[1] as string)).find((p) => p.phase === 'draining');
     expect(draining).toMatchObject({ phase: 'draining', elapsed_sec: 12, max_drain_sec: 45, remaining_sec: 33 });
@@ -294,7 +316,9 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
       s.onTick?.({ waited_sec: 5, holders: [] });
       return { acquired: true, result: await run({ seq: 7, assertCurrent: async () => ({ current: true }) }) };
     });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(true);
   });
 
@@ -302,7 +326,9 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
     process.env.PAPERCUSP_ALLOW_DB_MIGRATE = '1';
     const { ctx, progress } = progressCtx();
     await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, ctx);
-    const applying = progress.mock.calls.map((c) => JSON.parse(c[1] as string)).find((p) => p.phase === 'applying' && !('retry_attempt' in p));
+    const applying = progress.mock.calls
+      .map((c) => JSON.parse(c[1] as string))
+      .find((p) => p.phase === 'applying' && !('retry_attempt' in p));
     expect(applying).toMatchObject({ phase: 'applying', file: '999-fake.sql' });
   });
 
@@ -330,7 +356,9 @@ describe('db:migrate — drain/apply progress + timeout safety note (EI-18769559
       reason: 'drain_timeout',
       holders: [{ owner: 'su-peer', owner_label: 'peer', mode: 'shared', status: 'draining' }],
     });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(false);
     expect(out.reason).toBe('resource_drain_timeout');
     expect(out.note).toContain('No DDL was applied');
@@ -349,7 +377,9 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
   const LOCK_TIMEOUT_STDERR = 'ERROR:  canceling statement due to lock timeout';
 
   it('sets an explicit lock_timeout so a stuck attempt fails fast instead of hanging indefinitely', async () => {
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.applied).toBe(true);
     expect(out.attempts).toBe(1);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
@@ -375,7 +405,9 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
 
   it('does NOT retry a non-lock-timeout failure — fails fast on a single attempt', async () => {
     h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'ERROR: syntax error' });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(false);
     expect(out.attempts).toBe(1);
     expect(out.lock_timeout_retries_exhausted).toBe(false);
@@ -465,7 +497,9 @@ describe('db:migrate — caller-widened lock_timeout_sec (WI-6381)', () => {
   const LOCK_TIMEOUT_STDERR = 'ERROR:  canceling statement due to lock timeout';
 
   it('omitting lock_timeout_sec keeps the EI-9417 default (10s) unchanged', async () => {
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.applied).toBe(true);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
     expect(script).toContain("SET LOCAL lock_timeout = '10s';");
@@ -543,7 +577,9 @@ describe('db:migrate — false-failure guard on the schema_migrations ledger (WI
     h.spawnSync
       .mockReturnValueOnce({ status: 1, stdout: '', stderr: DUP_KEY_STDERR }) // the migration script attempt
       .mockReturnValueOnce({ status: 0, stdout: '1\n', stderr: '' }); // the fresh verification SELECT
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(true);
     expect(out.applied).toBe(false);
     expect(out.already_applied).toBe(true);
@@ -561,7 +597,9 @@ describe('db:migrate — false-failure guard on the schema_migrations ledger (WI
     h.spawnSync
       .mockReturnValueOnce({ status: 1, stdout: '', stderr: DUP_KEY_STDERR })
       .mockReturnValueOnce({ status: 0, stdout: '', stderr: '' }); // verification finds no row
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(false);
     expect(out.applied).toBe(false);
     expect(out.already_applied).toBeUndefined();
@@ -569,7 +607,9 @@ describe('db:migrate — false-failure guard on the schema_migrations ledger (WI
 
   it('a genuine syntax/logic error never triggers the verification round-trip', async () => {
     h.spawnSync.mockReturnValue({ status: 1, stdout: '', stderr: 'ERROR: syntax error at or near "FOO"' });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(false);
     expect(out.already_applied).toBeUndefined();
     expect(h.spawnSync).toHaveBeenCalledTimes(1); // no second (verification) call
@@ -579,7 +619,9 @@ describe('db:migrate — false-failure guard on the schema_migrations ledger (WI
     h.spawnSync
       .mockReturnValueOnce({ status: 1, stdout: '', stderr: DUP_KEY_STDERR })
       .mockReturnValueOnce({ status: 2, stdout: '', stderr: 'psql: could not connect to server' });
-    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX));
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
     expect(out.ok).toBe(false);
     expect(out.already_applied).toBeUndefined();
   });
@@ -745,7 +787,8 @@ describe('db:migrate — connection-drop retry around guardResource (EI-18159491
     h.guardResource.mockImplementation(async () => {
       throw connErr('CONNECTION_CLOSED');
     });
-    const promise = (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX)
+    const promise = (migrateTool as never as { handler: Function })
+      .handler({ file: FILE, confirm: true }, CTX)
       .catch((e: unknown) => e);
     await vi.advanceTimersByTimeAsync(1000); // backoff after attempt 1
     await vi.advanceTimersByTimeAsync(2000); // backoff after attempt 2

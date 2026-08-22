@@ -40,6 +40,21 @@ vi.mock('./learning-scout-read', async (importOriginal) => {
   return { ...real, readLearningImproveRoutedRows: (...a: unknown[]) => readLearningImproveRoutedRows(...a) };
 });
 
+// The learned ranker features have graduated to default-ON, but this suite
+// verifies the resolver's digest/wire contract rather than their PG-backed
+// models. Pin the optional features OFF and give the always-on blocking-impact
+// feature a deterministic zero-edge view so this stays a hermetic unit test.
+vi.mock('@papercusp/flags/server', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/flags/server')>()),
+  getFlag: vi.fn(async () => false),
+}));
+vi.mock('../issues-engineer', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../issues-engineer')>()),
+  issueLinkCounts: vi.fn(async (ids: readonly string[]) =>
+    new Map(ids.map((id) => [id, { blocksOut: 0, inboundRefs: 0 }])),
+  ),
+}));
+
 vi.mock('@papercusp/db-org', async (importOriginal) => {
   const real = await importOriginal<typeof import('@papercusp/db-org')>();
   return { ...real, getOrgPg: () => ({ sql: {} }) };

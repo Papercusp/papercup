@@ -382,6 +382,39 @@ function sideOf(c: DivergenceCall): DivergenceSide {
   };
 }
 
+/**
+ * `goal_ref` is the process-wide resolved goal at dispatch time. When an owner
+ * holds two work-items, that resolver can select the dependency even while an
+ * explicit `work_items:checkpoint` payload targets the primary item. Prefer
+ * that one-item action target for this tool only; it is typed evidence of what
+ * the call acted on, not prose inference. Ambiguous batches stay on the
+ * retrospective stamp so this correction cannot silently pick a goal.
+ */
+function explicitCheckpointGoalRef(c: DivergenceCall): string | null {
+  if (c.toolName !== 'work_items:checkpoint' || !c.goalRef || typeof c.args !== 'object' || c.args === null) {
+    return null;
+  }
+
+  const args = c.args as Record<string, unknown>;
+  const refs: string[] = [];
+  if (typeof args.id === 'string' && args.id.trim()) refs.push(args.id.trim());
+  if (Array.isArray(args.items)) {
+    for (const item of args.items) {
+      if (typeof item !== 'object' || item === null) continue;
+      const id = (item as Record<string, unknown>).id;
+      if (typeof id === 'string' && id.trim()) refs.push(id.trim());
+    }
+  }
+
+  const unique = [...new Set(refs)];
+  return unique.length === 1 ? unique[0]! : null;
+}
+
+function normalizeIntentGoal(c: DivergenceCall): DivergenceCall {
+  const explicit = explicitCheckpointGoalRef(c);
+  return explicit && explicit !== c.goalRef ? { ...c, goalRef: explicit } : c;
+}
+
 function timeOf(c: DivergenceCall): number {
   const t = Date.parse(c.invokedAt);
   return Number.isFinite(t) ? t : 0;
@@ -498,7 +531,9 @@ export function detectIntentActionDivergence(
 
   let comparableBuckets = 0;
   for (const bucket of buckets.values()) {
-    const allWithGoal = bucket.filter((c) => c.goalRef != null && c.goalRef !== '');
+    const allWithGoal = bucket
+      .map(normalizeIntentGoal)
+      .filter((c) => c.goalRef != null && c.goalRef !== '');
 
     // Drop calls whose goal is already finished. A drift BETWEEN two closed goals
     // is unactionable by construction: there is no re-declaration the recipient

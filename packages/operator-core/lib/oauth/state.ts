@@ -8,7 +8,9 @@
  *   { plugin, harness, field, providerHost, exp, nonce }
  *
  * The nonce is server-side single-use: the first callback consumes it
- * and subsequent callbacks with the same nonce are rejected.
+ * and subsequent callbacks with the same nonce are rejected. Per-flow private
+ * context (for example a PKCE verifier) is stored on that nonce row and never
+ * serialized into the browser-visible state token.
  *
  * Storage: `harness_shared.oauth_nonces` (PG, migration 030). Was
  * previously a process-local Map, lost across restarts and incompatible
@@ -23,6 +25,14 @@ import { getOrgPg } from '@papercusp/db-org';
 
 const STATE_VERSION = 1 as const;
 const DEFAULT_TTL_MS = 5 * 60 * 1000; // 5 min
+
+/** Server-only values carried from authorize start to callback. */
+export type OAuthFlowPrivateContext = Readonly<Record<string, string>>;
+
+export interface SignStateOptions {
+  ttlMs?: number;
+  privateContext?: OAuthFlowPrivateContext;
+}
 
 export interface StateClaims {
   plugin: string;
@@ -63,12 +73,14 @@ function b64urlDecode(s: string): Buffer {
   return Buffer.from(s.replace(/-/g, '+').replace(/_/g, '/') + pad, 'base64');
 }
 
-async function rememberNonce(nonce: string, exp: number): Promise<void> {
+async function rememberNonce(nonce: string, exp: number, privateContext: OAuthFlowPrivateContext): Promise<void> {
   const { sql } = getOrgPg();
   const now = Date.now();
+  const privateContextJson = JSON.stringify(privateContext);
   await sql`
-    INSERT INTO harness_shared.oauth_nonces (nonce, exp_ms, consumed, created_at)
-    VALUES (${nonce}, ${exp}, false, ${now})
+    INSERT INTO harness_shared.oauth_nonces
+      (nonce, exp_ms, consumed, created_at, private_context)
+    VALUES (${nonce}, ${exp}, false, ${now}, ${privateContextJson}::jsonb)
     ON CONFLICT (nonce) DO NOTHING
   `;
   // Opportunistic GC: if the table is larger than 1000 rows, sweep expired
@@ -83,7 +95,12 @@ async function rememberNonce(nonce: string, exp: number): Promise<void> {
  * Sign a state token. The returned string is opaque from a security
  * perspective — caller treats it as a single token, not parseable.
  */
-export async function signState(claims: StateClaims, ttlMs = DEFAULT_TTL_MS): Promise<string> {
+export async function signState(
+  claims: StateClaims,
+  ttlOrOptions: number | SignStateOptions = DEFAULT_TTL_MS,
+): Promise<string> {
+  const options = typeof ttlOrOptions === 'number' ? { ttlMs: ttlOrOptions } : ttlOrOptions;
+  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const payload: SignedState = {
     ...claims,
     v: STATE_VERSION,
@@ -92,14 +109,21 @@ export async function signState(claims: StateClaims, ttlMs = DEFAULT_TTL_MS): Pr
   };
   const body = b64url(Buffer.from(JSON.stringify(payload), 'utf8'));
   const sig = b64url(createHmac('sha256', getSecret()).update(body).digest());
-  await rememberNonce(payload.nonce, payload.exp);
+  await rememberNonce(payload.nonce, payload.exp, options.privateContext ?? {});
   return `${body}.${sig}`;
 }
 
 export interface VerifyStateResult {
   ok: boolean;
   claims?: StateClaims;
+  privateContext?: OAuthFlowPrivateContext;
   error?: 'malformed' | 'bad-signature' | 'expired' | 'unknown-nonce' | 'already-consumed';
+}
+
+function normalizePrivateContext(value: unknown): OAuthFlowPrivateContext {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string');
+  return Object.fromEntries(entries);
 }
 
 /**
@@ -136,21 +160,29 @@ export async function verifyAndConsumeState(token: string): Promise<VerifyStateR
   // Single round-trip atomic claim. CTE first checks existence; UPDATE
   // claims if not yet consumed. The two RETURNING paths let us
   // distinguish unknown-nonce from already-consumed.
-  const claimed = await sql<{ status: 'claimed' | 'already' | 'unknown' }[]>`
+  const claimed = await sql<
+    {
+      status: 'claimed' | 'already' | 'unknown';
+      privateContext: unknown;
+    }[]
+  >`
     WITH lookup AS (
-      SELECT consumed FROM harness_shared.oauth_nonces WHERE nonce = ${payload.nonce}
+      SELECT consumed, private_context
+        FROM harness_shared.oauth_nonces
+       WHERE nonce = ${payload.nonce}
     ),
     upd AS (
       UPDATE harness_shared.oauth_nonces
          SET consumed = true
        WHERE nonce = ${payload.nonce} AND consumed = false
-       RETURNING true AS ok
+       RETURNING private_context
     )
     SELECT CASE
       WHEN NOT EXISTS (SELECT 1 FROM lookup) THEN 'unknown'::text
       WHEN EXISTS (SELECT 1 FROM upd) THEN 'claimed'::text
       ELSE 'already'::text
-    END AS status
+    END AS status,
+    (SELECT private_context FROM upd LIMIT 1) AS "privateContext"
   `;
   const status = claimed[0]?.status ?? 'unknown';
   if (status === 'unknown') return { ok: false, error: 'unknown-nonce' };
@@ -165,6 +197,7 @@ export async function verifyAndConsumeState(token: string): Promise<VerifyStateR
       providerHost: payload.providerHost,
       provider: payload.provider,
     },
+    privateContext: normalizePrivateContext(claimed[0]?.privateContext),
   };
 }
 

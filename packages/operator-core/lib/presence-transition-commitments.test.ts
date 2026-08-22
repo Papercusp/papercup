@@ -98,6 +98,7 @@ describe('gatherCommitmentsOn — the awaiting-held-item leg', () => {
     const q = queries.find((t) => t.includes('event_awaits')) ?? '';
     expect(q).toMatch(/fired_at IS NULL/);
     expect(q).toMatch(/cancelled_at IS NULL/);
+    expect(q).toMatch(/superseded_at IS NULL/);
     expect(q).toMatch(/expires_ts/);
   });
 

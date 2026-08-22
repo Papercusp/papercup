@@ -73,6 +73,36 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     ]);
     expect(out.divergences).toHaveLength(0);
   });
+
+  it('uses an explicit primary checkpoint target when the aggregate goal stamp names a held dependency', () => {
+    const out = detectIntentActionDivergence([
+      call({ id: 1, toolName: 'coord:glance', intentEventId: 100, goalRef: 'WI-primary' }),
+      call({
+        id: 2,
+        toolName: 'work_items:checkpoint',
+        intentEventId: 100,
+        goalRef: 'EI-dependency',
+        args: { items: [{ id: 'WI-primary', append: true, checkpoint: 'evidence' }] },
+      }),
+    ]);
+    expect(out.divergences).toHaveLength(0);
+    expect(out.coverage.comparableBuckets).toBe(1);
+  });
+
+  it('still flags an explicit checkpoint that actually targets the secondary goal', () => {
+    const out = detectIntentActionDivergence([
+      call({ id: 1, toolName: 'coord:glance', intentEventId: 100, goalRef: 'WI-primary' }),
+      call({
+        id: 2,
+        toolName: 'work_items:checkpoint',
+        intentEventId: 100,
+        goalRef: 'WI-primary',
+        args: { items: [{ id: 'EI-dependency', append: true, checkpoint: 'evidence' }] },
+      }),
+    ]);
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0].b.goalRef).toBe('EI-dependency');
+  });
 });
 
 describe('what is deliberately NOT a divergence', () => {

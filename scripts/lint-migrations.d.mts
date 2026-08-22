@@ -180,6 +180,15 @@ export function findUniqueIndexShapeSwap(sqlText: any): {
 }[];
 /** NNN ≥ enforcedFrom present on disk but absent from the reservations set. */
 export function unreservedNumbers(fileNums: any, reservedNums: any, enforcedFrom?: number): any;
+/** Files whose numeric reservation exists but names a DIFFERENT migration. */
+export function reservationFilenameMismatches(files: any, reservations: any, { appliedFilenames, enforcedFrom }?: {
+    appliedFilenames?: Set<any> | undefined;
+    enforcedFrom?: number | undefined;
+}): {
+    num: number;
+    file: any;
+    reservedFilename: any;
+}[];
 /**
  * Reservation discipline starts here. Originally 215 (2026-06 dispatch), but
  * this lint's own SCAN was never wired into an automated gate (EI-6843) — only

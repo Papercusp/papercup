@@ -858,6 +858,15 @@ export function renderCarryBriefColdExtras(
       });
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';
+      // EI-20467754551087390: checkpoint prose commonly names files relative to
+      // the held item's harness repository. A cold successor may be running from
+      // a different harness/workspace root, so state the path scope next to the
+      // checkpoint instead of leaving `apps/...` looking like a current-root
+      // path. The slug is authoritative; the resolver supplies the actual path.
+      const pathScope = h.checkpoint
+        ? `\n    path scope: checkpoint paths are repository-relative to the ${h.harness ? `${h.harness} harness` : 'current'} repository root` +
+          (h.harness ? ` (resolve with harness:get before shelling out)` : '')
+        : '';
       let ckpt: string;
       if (!h.checkpoint) {
         ckpt = '\n    (no checkpoint written — read the item via work_items:get before acting)';
@@ -879,7 +888,7 @@ export function renderCarryBriefColdExtras(
             `${excerptCheckpoint(h)}`
           : `\n    checkpoint: ${excerptCheckpoint(h)}`;
       }
-      return `  • ${h.id}${title}${ckpt}`;
+      return `  • ${h.id}${title}${pathScope}${ckpt}`;
     });
     sections.push(
       `You HELD these work-items as of just before this respawn (the full checkpoint re-injects on the item's next invocation; refresh it before ending). ` +

@@ -170,3 +170,73 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
     expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBeUndefined();
   });
 });
+
+describe('blocked auto-gate lease cleanup (EI-20490353465054928)', () => {
+  async function payloadOf(id: string) {
+    const rows = await db.sql<{ status: string; payload: Record<string, unknown> | null }[]>`
+      SELECT status, payload
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS} AND feature_id = ${id}`;
+    return rows[0];
+  }
+
+  it('clears the temporary blocked hold when no durable park exists', async () => {
+    await seedIssue('EI-blocked-lease-no-park', { kind: 'change', status: 'open' });
+
+    await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-no-park', 'blocked', { harness: H, by: 'tester' });
+    expect(await payloadOf('EI-blocked-lease-no-park')).toMatchObject({
+      status: 'blocked',
+      payload: { _claimHold: true, held_open_by: 'tester', held_open_reason: 'blocked' },
+    });
+
+    const reopened = await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-no-park', 'open', {
+      harness: H,
+      by: 'tester',
+    });
+    const row = await payloadOf('EI-blocked-lease-no-park');
+
+    expect(reopened.workItem?.state).toBe('open');
+    expect(reopened.workItem?.payload).not.toHaveProperty('_claimHold');
+    expect(row?.status).toBe('open');
+    expect(row?.payload).not.toHaveProperty('_claimHold');
+    expect(row?.payload).not.toHaveProperty('held_open_by');
+    expect(row?.payload).not.toHaveProperty('held_open_reason');
+  });
+
+  it('clears only the temporary lease and preserves a coexisting durable park', async () => {
+    await seedIssue('EI-blocked-lease-durable-park', { kind: 'change', status: 'open' });
+
+    await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-durable-park', 'blocked', {
+      harness: H,
+      by: 'tester',
+    });
+    await wi.setWorkItemClaimHold('EI-blocked-lease-durable-park', true, {
+      harness: H,
+      parkedBy: 'park-owner',
+      parkedReason: 'deliberate retry hold',
+    });
+
+    const reopened = await wi.setWorkItemStateWithAliasInfo('EI-blocked-lease-durable-park', 'open', {
+      harness: H,
+      by: 'tester',
+    });
+    const row = await payloadOf('EI-blocked-lease-durable-park');
+
+    expect(reopened.workItem?.state).toBe('open');
+    expect(reopened.workItem?.payload).toMatchObject({
+      _claimHold: true,
+      claim_hold_by: 'park-owner',
+      claim_hold_reason: 'deliberate retry hold',
+    });
+    expect(reopened.workItem?.payload).not.toHaveProperty('held_open_by');
+    expect(reopened.workItem?.payload).not.toHaveProperty('held_open_reason');
+    expect(row?.status).toBe('open');
+    expect(row?.payload).toMatchObject({
+      _claimHold: true,
+      claim_hold_by: 'park-owner',
+      claim_hold_reason: 'deliberate retry hold',
+    });
+    expect(row?.payload).not.toHaveProperty('held_open_by');
+    expect(row?.payload).not.toHaveProperty('held_open_reason');
+  });
+});

@@ -103,8 +103,9 @@ export function DogfoodBootstrapBanner() {
         boxShadow: isError
           ? '0 2px 10px rgba(239,68,68,0.25)'
           : '0 2px 10px rgba(0,0,0,0.45)',
-        // Non-blocking: the bar never traps pointer/scroll for the rest of the app.
-        // It is fixed at the very top; routes scroll underneath.
+        // Non-blocking: the fixed wrapper never traps pointer/scroll for the rest
+        // of the app. Interactive descendants opt back in explicitly below.
+        pointerEvents: 'none',
       }}
     >
       <style>{`@keyframes pc-dogfood-spin { to { transform: rotate(360deg); } }`}</style>
@@ -186,6 +187,9 @@ export function DogfoodBootstrapBanner() {
           fontSize: 15,
           lineHeight: 1,
           padding: '0 2px',
+          // The wrapper is intentionally pointer-transparent; keep dismissal
+          // as the one browser hit target inside it.
+          pointerEvents: 'auto',
         }}
       >
         ×

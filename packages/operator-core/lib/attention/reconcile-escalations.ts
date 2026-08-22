@@ -112,7 +112,9 @@ export const SELF_RECONCILING_META_KEY = 'selfReconciling';
  * is anchored to the property that DEFINES membership (this row is an alarm's
  * own suppressor), never to how a summary happens to read.
  */
-function isEmitterOwnedRow(e: StaleEscalationInput): boolean {
+export function isEmitterOwnedRow(
+  e: Pick<StaleEscalationInput, 'livenessSignature' | 'selfReconciling'>,
+): boolean {
   if (e.selfReconciling === true) return true;
   return typeof e.livenessSignature === 'string' && e.livenessSignature.length > 0;
 }

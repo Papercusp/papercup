@@ -564,6 +564,31 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
   });
 
+  it('labels checkpoint paths with the held harness root after a cold resume', () => {
+    const brief: CarryBrief = {
+      ownerId: 'x',
+      loop: null,
+      heldItems: [{
+        id: 'EI-20467754551087390',
+        title: 'Carry checkpoints',
+        body: null,
+        harness: 'sidestage',
+        checkpoint: 'Inspect apps/web/src/auction.css and apps/web/src/auction.test.tsx.',
+      }],
+      directives: [],
+      directivesTotalOpen: 0,
+      walls: [],
+      facts: [],
+      awaits: [],
+      fleet: null,
+    };
+
+    const out = renderCarryBriefColdExtras(brief);
+    expect(out).toContain('path scope: checkpoint paths are repository-relative to the sidestage harness repository root');
+    expect(out).toContain("(resolve with harness:get before shelling out)");
+    expect(out).toContain('apps/web/src/auction.css');
+  });
+
   describe('EI-19952485326105760 — a SUPERSEDING owner directive past the cut must not be lost', () => {
     // The real shape: an older plan, followed by a LATER block that REVOKES it.
     // Both are real content; only the second is still operative. A plain

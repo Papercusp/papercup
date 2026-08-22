@@ -5,29 +5,34 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // nonce store that honours the three query shapes the SUT issues (INSERT,
 // the claim CTE, and the reset DELETE) so the consume/replay logic is exercised
 // deterministically without a live PG.
-const __nonces = new Map<string, boolean>(); // nonce → consumed
+const __nonces = new Map<string, { consumed: boolean; privateContext: Record<string, string> }>();
 vi.mock('@papercusp/db-org', async (orig) => {
-  const sql: any = Object.assign((strings: TemplateStringsArray, ...values: unknown[]) => {
-    const q = strings.join(' ');
-    if (q.includes('INSERT INTO harness_shared.oauth_nonces')) {
-      const n = values[0] as string;
-      if (!__nonces.has(n)) __nonces.set(n, false);
+  const sql: any = Object.assign(
+    (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const q = strings.join(' ');
+      if (q.includes('INSERT INTO harness_shared.oauth_nonces')) {
+        const n = values[0] as string;
+        const privateContext = JSON.parse(values[3] as string) as Record<string, string>;
+        if (!__nonces.has(n)) __nonces.set(n, { consumed: false, privateContext });
+        return Promise.resolve([]);
+      }
+      if (q.includes('count(*)')) return Promise.resolve([{ n: __nonces.size }]);
+      if (q.includes('WITH lookup')) {
+        const n = values[0] as string;
+        if (!__nonces.has(n)) return Promise.resolve([{ status: 'unknown' }]);
+        const row = __nonces.get(n)!;
+        if (row.consumed) return Promise.resolve([{ status: 'already' }]);
+        row.consumed = true;
+        return Promise.resolve([{ status: 'claimed', privateContext: row.privateContext }]);
+      }
+      if (q.includes('DELETE FROM harness_shared.oauth_nonces')) {
+        if (!q.includes('exp_ms <')) __nonces.clear(); // reset (not the GC sweep)
+        return Promise.resolve([]);
+      }
       return Promise.resolve([]);
-    }
-    if (q.includes('count(*)')) return Promise.resolve([{ n: __nonces.size }]);
-    if (q.includes('WITH lookup')) {
-      const n = values[0] as string;
-      if (!__nonces.has(n)) return Promise.resolve([{ status: 'unknown' }]);
-      if (__nonces.get(n)) return Promise.resolve([{ status: 'already' }]);
-      __nonces.set(n, true);
-      return Promise.resolve([{ status: 'claimed' }]);
-    }
-    if (q.includes('DELETE FROM harness_shared.oauth_nonces')) {
-      if (!q.includes('exp_ms <')) __nonces.clear(); // reset (not the GC sweep)
-      return Promise.resolve([]);
-    }
-    return Promise.resolve([]);
-  }, { begin: vi.fn() });
+    },
+    { begin: vi.fn() },
+  );
   return { ...((await orig()) as object), getOrgPg: () => ({ sql, db: {} }) };
 });
 
@@ -94,5 +99,16 @@ describe('OAuth state token', () => {
     expect(rb.ok).toBe(true);
     expect(ra.claims?.plugin).toBe('plugin-a');
     expect(rb.claims?.plugin).toBe('plugin-b');
+  });
+
+  it('returns server-side private context once without serializing it into state', async () => {
+    const token = await signState(baseClaims, {
+      privateContext: { codeVerifier: 'private-pkce-verifier' },
+    });
+    expect(Buffer.from(token.split('.')[0]!, 'base64url').toString('utf8')).not.toContain('private-pkce-verifier');
+
+    const result = await verifyAndConsumeState(token);
+    expect(result.privateContext).toEqual({ codeVerifier: 'private-pkce-verifier' });
+    expect((await verifyAndConsumeState(token)).error).toBe('already-consumed');
   });
 });
