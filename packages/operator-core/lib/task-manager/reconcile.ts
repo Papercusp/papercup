@@ -22,7 +22,7 @@ import {
   type TaskRow,
   type TaskState,
 } from './types';
-import { isConsoleWindowScope } from './scope-class';
+import { isConsoleWindowScope, isVerifierScope } from './scope-class';
 import type { ExemptReason, ProcessScope } from './scope-class';
 
 /** One process as the scanner observed it. */
@@ -137,6 +137,8 @@ export interface ReconcileResult {
    * documented route. Reads "a human has a window open", never "an escape".
    */
   consoleWindow: ResidueGroup[];
+  /** Named verifier systemd scopes: visible, but not unaccounted bypass residue. */
+  verifierScope: ResidueGroup[];
   /** A papercusp-tree process outside our slice — the owner's own terminal, a
    *  peer's session. Visible, never controlled: visibility != control. */
   foreign: ResidueGroup[];
@@ -388,12 +390,14 @@ export function reconcile(
   const unaccountedProcs: ScannedProcess[] = [];
   const abandonedWindowProcs: ScannedProcess[] = [];
   const consoleWindowProcs: ScannedProcess[] = [];
+  const verifierScopeProcs: ScannedProcess[] = [];
   const foreignProcs: ScannedProcess[] = [];
   for (const p of kernel) {
     if (claimedPids.has(p.pid)) continue;
     const scope = scopeUnitOf(p);
     if (scope && claimedScopes.has(scope)) continue;
-    if (p.scope === 'abandoned-window') abandonedWindowProcs.push(p);
+    if (isVerifierScope(p.cgroupPath)) verifierScopeProcs.push(p);
+    else if (p.scope === 'abandoned-window') abandonedWindowProcs.push(p);
     // Before the `owned` test, because a console scope IS owned — that is exactly why
     // it fell through to `unaccounted` and stuck there. Checked by scope NAME, which
     // only our own builder mints; `scopeUnitOf` cannot see it (it resolves `pc-*` only).
@@ -426,6 +430,7 @@ export function reconcile(
     unaccounted: groupResidue(unaccountedProcs),
     abandonedWindow: groupResidue(abandonedWindowProcs),
     consoleWindow: groupResidue(consoleWindowProcs),
+    verifierScope: groupResidue(verifierScopeProcs),
     foreign: groupResidue(foreignProcs),
     overdue,
     tooYoung,
@@ -459,6 +464,8 @@ export function summarizeReconcile(r: ReconcileResult): {
    *  whose nonzero count is what the 30-minute notifier fires on. */
   consoleWindow: number;
   consoleWindowPids: number;
+  verifierScope: number;
+  verifierScopePids: number;
   foreign: number;
   overdue: number;
   tooYoung: number;
@@ -473,6 +480,8 @@ export function summarizeReconcile(r: ReconcileResult): {
     abandonedWindowPids: r.abandonedWindow.reduce((n, g) => n + g.pids.length, 0),
     consoleWindow: r.consoleWindow.length,
     consoleWindowPids: r.consoleWindow.reduce((n, g) => n + g.pids.length, 0),
+    verifierScope: r.verifierScope.length,
+    verifierScopePids: r.verifierScope.reduce((n, g) => n + g.pids.length, 0),
     foreign: r.foreign.length,
     overdue: r.overdue.length,
     tooYoung: r.tooYoung.length,

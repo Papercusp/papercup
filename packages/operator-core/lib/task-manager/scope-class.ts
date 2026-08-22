@@ -44,12 +44,14 @@
  *     withdraws the exemption; see `terminal-window` for how it is observed and why
  *     "we could not tell" must never withdraw it.
  *
- *   systemd-unit — the leaf is a `.service`, or systemd-run's auto-generated
- *     `run-r<32 hex>.scope`, so systemd owns its lifecycle: it has a journal and a
- *     stop verb (plus a restart policy for non-transient services). It is accounted
- *     for by a different accountant, not unaccounted for. Guard allowlist:
- *     `dev/restart.ts` ("already supervised by SUPERVISED_PROCESSES + unit-reconciler")
- *     and `release-actions.ts` ("must survive the operator restart it performs").
+ *   systemd-unit — the leaf is a `.service`, systemd-run's auto-generated
+ *     `run-r<32 hex>.scope`, or one of the verifier's explicitly named scopes, so
+ *     systemd owns its lifecycle: it has a journal and a stop verb (plus a restart
+ *     policy for non-transient services). It is accounted for by a different
+ *     accountant, not unaccounted for. Guard allowlist: `dev/restart.ts` ("already
+ *     supervised by SUPERVISED_PROCESSES + unit-reconciler"), `release-actions.ts`
+ *     ("must survive the operator restart it performs"), and
+ *     `verify-tauri-headless.sh` (the verifier owns and tears down these scopes).
  *
  * Everything else outside our slice is genuinely `unaccounted` — and that residue is
  * small and actionable rather than alarming-and-ignored. On this box it is dominated
@@ -97,6 +99,12 @@ const VTE_SCOPE_RE = /^vte-spawn-[0-9a-fA-F-]+\.scope$/;
 // narrower than `*.scope`: named application scopes such as `papercup-headless-*`
 // are exactly the unaccounted population this classifier must continue exposing.
 const SYSTEMD_RUN_SCOPE_RE = /^run-r[0-9a-f]{32}\.scope$/;
+// `verify-tauri-headless.sh` gives each sidecar a stable, role-specific unit so
+// teardown can stop exactly the scope it started. Keep this tied to the script's
+// complete shape: matching every `papercup-*` scope would hide the genuine
+// `papercup-headless-*` enrollment gap from the residue alarm.
+const VERIFIER_SCOPE_RE =
+  /^papercup-tauri-verify-[0-9]+-[0-9]+-(?:openbox|xvfb|tauri-[0-9]+|probe)\.scope$/;
 
 function segments(cgroupPath: string): string[] {
   return cgroupPath.split('/').filter(Boolean);
@@ -166,6 +174,19 @@ export function isConsoleWindowScope(cgroupPath: string): boolean {
   return leaf.startsWith(CONSOLE_SCOPE_PREFIX) && leaf.endsWith('.scope');
 }
 
+/**
+ * Is this one of the named systemd scopes owned by `verify-tauri-headless.sh`?
+ *
+ * These scopes are deliberately outside the ledger when the verifier is launched
+ * directly, but they are still supervised: the script records each unit and stops
+ * it during teardown. The reconciler keeps them visible in `verifierScope` while
+ * excluding them from the `unaccounted` bypass alarm.
+ */
+export function isVerifierScope(cgroupPath: string): boolean {
+  const segs = segments(cgroupPath);
+  return VERIFIER_SCOPE_RE.test(segs[segs.length - 1] ?? '');
+}
+
 export interface ClassifyScopeOptions {
   /**
    * Is the terminal window that owns this scope still open? `undefined`/`null` mean
@@ -208,7 +229,7 @@ export function classifyScope(
     }
     return { scope: 'exempt', exemptReason: 'human-terminal' };
   }
-  if (leaf.endsWith('.service') || SYSTEMD_RUN_SCOPE_RE.test(leaf)) {
+  if (leaf.endsWith('.service') || SYSTEMD_RUN_SCOPE_RE.test(leaf) || VERIFIER_SCOPE_RE.test(leaf)) {
     return { scope: 'exempt', exemptReason: 'systemd-unit' };
   }
   return { scope: 'unaccounted', exemptReason: null };
@@ -222,6 +243,6 @@ export const EXEMPT_REASON_LABEL: Record<ExemptReason, { label: string; why: str
   },
   'systemd-unit': {
     label: 'systemd unit',
-    why: 'a .service unit — systemd owns its lifecycle (journal, stop, restart policy)',
+    why: 'a systemd-supervised unit — systemd owns its lifecycle (journal, stop, restart policy)',
   },
 };

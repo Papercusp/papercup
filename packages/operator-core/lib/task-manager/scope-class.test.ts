@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyScope,
   isConsoleWindowScope,
+  isVerifierScope,
   isTerminalWindowScope,
   EXEMPT_REASON_LABEL,
   type ExemptReason,
@@ -75,6 +76,29 @@ describe('classifyScope', () => {
     expect(classifyScope(`${APP_SLICE}/run-not-a-systemd-generated-unit.scope`, false).scope).toBe(
       'unaccounted',
     );
+  });
+
+  it('recognizes only the verifier-owned systemd scope family', () => {
+    for (const unit of [
+      'papercup-tauri-verify-90-3416089-openbox.scope',
+      'papercup-tauri-verify-90-3416089-xvfb.scope',
+      'papercup-tauri-verify-90-3416089-tauri-1.scope',
+    ]) {
+      expect(isVerifierScope(`${APP_SLICE}/${unit}`)).toBe(true);
+      expect(classifyScope(`${APP_SLICE}/${unit}`, false)).toEqual({
+        scope: 'exempt',
+        exemptReason: 'systemd-unit',
+      });
+    }
+
+    for (const unit of [
+      'papercup-tauri-verify-90-3416089-shell.scope',
+      'papercup-tauri-verify-90-openbox.scope',
+      'papercup-tauri-verify-90-3416089-tauri.scope',
+    ]) {
+      expect(isVerifierScope(`${APP_SLICE}/${unit}`)).toBe(false);
+      expect(classifyScope(`${APP_SLICE}/${unit}`, false).scope).toBe('unaccounted');
+    }
   });
 
   it('never returns an exemptReason without exempt, or exempt without a reason', () => {

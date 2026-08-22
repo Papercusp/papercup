@@ -145,6 +145,16 @@ describe('processes:list structured output', () => {
             sampleCmdline: 'node orphan',
           },
         ],
+        verifierScope: [
+          {
+            cgroupPath:
+              '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/' +
+              'papercup-tauri-verify-90-3416089-tauri-1.scope',
+            scopeUnit: 'papercup-tauri-verify-90-3416089-tauri-1.scope',
+            pids: [21, 22],
+            sampleCmdline: 'npm run tauri dev',
+          },
+        ],
         foreign: [],
       },
       scan: { processes: 2, foreignTruncated: false },
@@ -179,12 +189,21 @@ describe('processes:list structured output', () => {
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
     const structured = dispatched.result?.structuredContent as {
-      live: { unaccountedGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }> };
+      live: {
+        unaccountedGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
+        verifierGroups: Array<{ scopeUnit: string; cgroupPath: string; pids: number[] }>;
+      };
     };
     expect(structured.live.unaccountedGroups[0]).toMatchObject({
       scopeUnit: 'pc-orphan123.scope',
       cgroupPath: '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/pc-orphan123.scope',
       pids: [11, 12],
     });
+    expect(structured.live.verifierGroups).toEqual([
+      expect.objectContaining({
+        scopeUnit: 'papercup-tauri-verify-90-3416089-tauri-1.scope',
+        pids: [21, 22],
+      }),
+    ]);
   });
 });

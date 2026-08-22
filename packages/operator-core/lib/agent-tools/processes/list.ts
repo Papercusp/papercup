@@ -81,7 +81,7 @@ export default defineTool({
   // removing one — the D-010 failure this gate exists to prevent (see WI-6464 and the exemption's
   // reason-class (ii)). Revisit the moment a SECOND surface derives the inventory independently.
   description:
-    'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
+    'Ledger-backed inventory of tasks this operator launched, with PROVENANCE `ps` cannot give: who launched each one, its work-item/plan, budget + deadline, log path, live RSS/CPU/pid-count, and whether it is cgroup-confined. Also surfaces `unaccounted` rows — processes inside our slice that no chokepoint registered — and verifier-owned systemd scopes in `live.verifierGroups`. Pass `live:true` to reconcile against the kernel first (slower, authoritative).',
   capability: 'intel:read',
   guidance: {
     when: 'You want to know WHAT IS RUNNING AND WHY — which agent started a job, what a work-item is costing, which task is eating memory, or whether anything bypassed the spawn chokepoint. Also the honest answer to "is my background job still alive" for anything started through managedSpawn.',
@@ -90,7 +90,7 @@ export default defineTool({
     chaining:
       'Read `taskId`, then act with `processes:kill { taskId }` (kills the whole cgroup subtree). For an unaccounted live group, read its `scopeUnit` from `live.unaccountedGroups` and pass `processes:kill { scopeUnit }`; `processes:freeze` pauses a ledger task without losing work, and `processes:limit` retunes its budget live.',
     returns:
-      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
+      '{ ok, counts:{ byState, byClass }, tasks:[{ taskId, class, title, state, launchedBy, workItemId, planSlug, ageSec, rssMb, peakRssMb, cpuSec, pids, confined, scopeUnit, deadlineAt, logPath }], live? } — `live.verifierGroups` keeps verifier-owned systemd scopes visible without treating them as unaccounted bypasses. `confined:false` means the task is ledgered but NOT cgroup-isolated, so a kill falls back to a pid signal and freeze is unavailable.',
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
@@ -160,6 +160,12 @@ export default defineTool({
         })),
         foreignGroups: tick.result.foreign.map((g) => ({
           cgroupPath: g.cgroupPath,
+          pids: g.pids,
+          sample: g.sampleCmdline.slice(0, 160),
+        })),
+        verifierGroups: tick.result.verifierScope.map((g) => ({
+          cgroupPath: g.cgroupPath,
+          scopeUnit: g.scopeUnit,
           pids: g.pids,
           sample: g.sampleCmdline.slice(0, 160),
         })),

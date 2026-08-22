@@ -535,3 +535,35 @@ describe('reconcile — console windows are accounted by the window, not the led
     expect(r.unaccounted).toHaveLength(1);
   });
 });
+
+describe('reconcile — verifier scopes are systemd-supervised, not bypass residue', () => {
+  const VERIFIER =
+    `${OUR_SLICE}/papercusp-agent.slice/papercusp-agent-session.slice/` +
+    'papercup-tauri-verify-90-3416089-tauri-1.scope';
+
+  it('files the named verifier scope as verifierScope, never as unaccounted', () => {
+    const r = reconcile(
+      [],
+      [proc({ pid: 10, cgroupPath: VERIFIER }), proc({ pid: 11, cgroupPath: VERIFIER })],
+      { now: NOW },
+    );
+
+    expect(r.unaccounted).toHaveLength(0);
+    expect(r.verifierScope).toHaveLength(1);
+    expect(r.verifierScope[0]).toMatchObject({ cgroupPath: VERIFIER, pids: [10, 11] });
+    expect(summarizeReconcile(r)).toMatchObject({
+      unaccounted: 0,
+      unaccountedPids: 0,
+      verifierScope: 1,
+      verifierScopePids: 2,
+    });
+  });
+
+  it('keeps lookalike verifier scopes in unaccounted', () => {
+    const lookalike = VERIFIER.replace('tauri-1.scope', 'shell.scope');
+    const r = reconcile([], [proc({ pid: 12, cgroupPath: lookalike })], { now: NOW });
+
+    expect(r.verifierScope).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(1);
+  });
+});
