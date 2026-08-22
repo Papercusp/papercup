@@ -7,7 +7,16 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  writeSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -84,37 +93,65 @@ export class WorkspaceRegistryUnreadableError extends Error {
  * point — any answer we could invent here is a guess wearing a valid-looking
  * workspace id.
  *
- * The retry covers a reader racing a writer on a filesystem where `rename` is
- * not atomic; `writeRegistry` makes that race impossible on POSIX.
+ * `writeRegistry` makes a reader-races-a-writer torn read impossible on POSIX
+ * (temp file + fsync + atomic `rename`, unique per WRITE). Even so, this
+ * retries a BOUNDED handful of times with a short backoff rather than once —
+ * EI-21148378726402614: two concurrent MCP calls both hit "Unexpected end of
+ * JSON input" against this file, and it "self-recovered and [was] valid"
+ * seconds later, meaning the transient window sometimes outlasts a single
+ * immediate re-read (heavy concurrent-write load on this fleet, another
+ * process's OS-level read scheduling, a filesystem this file happens to sit
+ * on — the exact producer doesn't matter). A few retries a few ms apart cost
+ * nothing on the happy path (they only run once the first read has already
+ * failed to parse) and absorb that window; a GENUINELY corrupt registry still
+ * exhausts the budget and throws — this is resilience against a transient
+ * read, never a license to treat real corruption as empty (WI-6734).
  */
+const REGISTRY_READ_RETRIES = 5;
+const REGISTRY_READ_RETRY_DELAY_MS = 4;
+
+/**
+ * Bounded synchronous sleep for the read-retry backoff below. Blocks the
+ * event loop briefly, which is acceptable here because it runs ONLY on the
+ * rare exception path (a read/parse failure), never on the happy path.
+ * Mirrors the Atomics.wait sync-sleep idiom already used elsewhere in this
+ * repo (scripts/pg-autotune.ts, tools/perf-test/wdio/wdio.conf.ts).
+ */
+function sleepSyncMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 export function readRegistry(): WorkspaceRegistry {
   const p = registryPath();
   if (!existsSync(p)) return { workspaces: [] };
 
-  let raw: string;
-  try {
-    raw = readFileSync(p, 'utf8');
-  } catch (err) {
-    // ABSENT is not CORRUPT. The file can vanish between the existsSync check
-    // and this read (a workspace switch racing us, a torn-down temp root in
-    // tests) — that is the legitimately-empty case, same as never having had a
-    // registry. Only a file we cannot read *while it is there* (EACCES, EIO) is
-    // the dangerous one, because then we genuinely do not know what it says.
-    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return { workspaces: [] };
-    throw new WorkspaceRegistryUnreadableError(p, err);
-  }
-
-  try {
-    return JSON.parse(raw) as WorkspaceRegistry;
-  } catch (firstErr) {
-    // A torn read: we got bytes, but not a whole document. `writeRegistry`
-    // below makes that impossible for OUR writes, but the Rust shell also owns
-    // this file, so retry once against a settled file before declaring it
-    // corrupt.
+  let firstErr: unknown;
+  for (let attempt = 0; ; attempt++) {
+    let raw: string;
     try {
-      return JSON.parse(readFileSync(p, 'utf8')) as WorkspaceRegistry;
-    } catch {
-      throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      raw = readFileSync(p, 'utf8');
+    } catch (err) {
+      // ABSENT is not CORRUPT. The file can vanish between the existsSync check
+      // and this read (a workspace switch racing us, a torn-down temp root in
+      // tests) — that is the legitimately-empty case, same as never having had a
+      // registry. Only a file we cannot read *while it is there* (EACCES, EIO) is
+      // the dangerous one, because then we genuinely do not know what it says.
+      if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return { workspaces: [] };
+      if (firstErr === undefined) firstErr = err;
+      if (attempt >= REGISTRY_READ_RETRIES) throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      sleepSyncMs(REGISTRY_READ_RETRY_DELAY_MS);
+      continue;
+    }
+
+    try {
+      return JSON.parse(raw) as WorkspaceRegistry;
+    } catch (err) {
+      // A torn/garbage read: we got bytes, but not a whole document. Retry
+      // against a freshly re-read (not re-parsed-from-cache) file before
+      // declaring it corrupt — see the retry-budget rationale above.
+      if (firstErr === undefined) firstErr = err;
+      if (attempt >= REGISTRY_READ_RETRIES) throw new WorkspaceRegistryUnreadableError(p, firstErr);
+      sleepSyncMs(REGISTRY_READ_RETRY_DELAY_MS);
     }
   }
 }
@@ -140,12 +177,28 @@ export function readRegistry(): WorkspaceRegistry {
  * instead of a module-scoped counter because module-scoped state in this package
  * can split across duplicate module records and hand two writers the same
  * sequence, reintroducing exactly the collision this removes.
+ *
+ * `fsync`s the temp file's contents before the rename, mirroring the Rust
+ * writer's `file.sync_all()` (`workspaces.rs`). `writeFileSync` alone already
+ * makes the write fully visible to concurrent READERS on this host the moment
+ * it returns (same page cache); the fsync's job is DURABILITY — a crash or
+ * host restart between rename and disk flush must not resurrect the OLD
+ * content or leave the new one only half-written to storage. Keeping both
+ * writers' on-disk contract identical also removes any doubt when diagnosing
+ * a future registry incident: neither implementation is the odd one out.
  */
 export function writeRegistry(reg: WorkspaceRegistry): void {
   const p = registryPath();
   mkdirSync(workspacesRoot(), { recursive: true });
   const tmp = `${p}.${process.pid}.${randomUUID()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(reg, null, 2));
+  const data = JSON.stringify(reg, null, 2);
+  const fd = openSync(tmp, 'w');
+  try {
+    writeSync(fd, data);
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, p);
 }
 
