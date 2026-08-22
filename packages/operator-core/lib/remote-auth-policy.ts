@@ -8,8 +8,10 @@
  * of a complete, fail-fast listener contract.
  */
 import { isLoopbackHost } from './endpoint-route/loopback-guard';
+import { resolveBindHost } from './resolve-bind-host';
 
 export const REMOTE_ORIGINS_ENV = 'PAPERCUSP_REMOTE_ORIGINS';
+export const REMOTE_OPERATOR_CAPABILITY = 'operator:remote';
 
 export interface RemoteAuthPolicy {
   remote: boolean;
@@ -68,6 +70,13 @@ export function assertRemoteAuthReady(
   return { remote: true, origins };
 }
 
+/** Resolve and validate the policy for the listener this process will use. */
+export function currentRemoteAuthPolicy(
+  env: NodeJS.ProcessEnv = process.env,
+): RemoteAuthPolicy {
+  return assertRemoteAuthReady(resolveBindHost(env), env);
+}
+
 /** Whether an Origin is one of the configured direct-remote browser origins. */
 export function isConfiguredRemoteOrigin(
   origin: string,
@@ -80,13 +89,66 @@ export function isConfiguredRemoteOrigin(
   }
 }
 
+/** Explicit request workspace; header wins over the stream-compatible query. */
+export function requestWorkspaceId(req: Request): string | null {
+  const header = req.headers.get('x-papercusp-workspace')?.trim();
+  if (header) return header;
+  try {
+    return new URL(req.url).searchParams.get('ws')?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Canonical external HTTPS origin/authority seen by a direct remote browser. */
+export function requestExternalOrigin(req: Request): string | null {
+  try {
+    const url = new URL(req.url);
+    const forwardedProto = req.headers.get('x-forwarded-proto')?.split(',')[0]?.trim().toLowerCase();
+    const forwardedHost = req.headers.get('x-forwarded-host')?.split(',')[0]?.trim();
+    const protocol = forwardedProto ?? url.protocol.slice(0, -1).toLowerCase();
+    const host = forwardedHost || url.host;
+    if (protocol !== 'https' || !host) return null;
+    return new URL(`https://${host}`).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Socket-address loopback check, including IPv4-mapped IPv6 addresses. */
+export function isLoopbackRemoteAddress(address: string | null | undefined): boolean {
+  if (!address) return false;
+  const normalized = address.trim().toLowerCase().replace(/^::ffff:/, '');
+  return isLoopbackHost(normalized);
+}
+
 /** True for requests arriving through the direct remote surface. */
-export function isRemoteRequest(req: Request): boolean {
+export function isRemoteRequest(
+  req: Request,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!currentRemoteAuthPolicy(env).remote) return false;
   try {
     return !isLoopbackHost(new URL(req.url).host);
   } catch {
     return !isLoopbackHost(req.headers.get('host'));
   }
+}
+
+/**
+ * A remote listener plus either a non-loopback socket peer or an external
+ * request authority is the direct-remote surface. The authority fallback is
+ * what keeps reverse-proxy unit contexts testable and catches proxy ingress;
+ * an SSH local forward keeps both peer and request authority loopback.
+ */
+export function isDirectRemoteRequest(
+  req: Request,
+  remoteAddress?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (!currentRemoteAuthPolicy(env).remote) return false;
+  if (remoteAddress && !isLoopbackRemoteAddress(remoteAddress)) return true;
+  return isRemoteRequest(req, env);
 }
 
 /** Remote cookies are always Secure; forwarded HTTPS also opts in explicitly. */

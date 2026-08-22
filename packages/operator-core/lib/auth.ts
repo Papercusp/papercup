@@ -19,6 +19,7 @@
 import { randomBytes } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { TtlMap } from './ttl-map';
+import { activeWorkspaceId } from './workspace-registry';
 
 export const SESSION_COOKIE = 'papercusp_session';
 export const DEFAULT_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
@@ -47,6 +48,12 @@ export interface User {
   username: string;
   display_name: string;
   has_password: boolean;
+}
+
+/** Authorization claims fixed when an opaque browser session is minted. */
+export interface SessionUser extends User {
+  workspace_id: string;
+  capabilities: string[];
 }
 
 export interface Session {
@@ -108,7 +115,7 @@ async function resolveSessionToken(headers?: Headers): Promise<string | undefine
  * Pass `headers` from a `defineTool` handler (`req.headers`); omit it
  * only from legacy Next `route.ts` handlers (ambient-cookie fallback).
  */
-export async function getSessionUser(headers?: Headers): Promise<User | null> {
+export async function getSessionUser(headers?: Headers): Promise<SessionUser | null> {
   const { sql } = getOrgPg();
   const token = await resolveSessionToken(headers);
   if (!token) return null;
@@ -120,13 +127,17 @@ export async function getSessionUser(headers?: Headers): Promise<User | null> {
     username: string;
     display_name: string;
     password_hash: string | null;
+    workspace_id: string;
+    capabilities: string[];
   }[]>`
     SELECT s.user_id, s.expires_at,
+           s.workspace_id, s.capabilities,
            u.id, u.username, u.display_name, u.password_hash
       FROM harness_shared.user_sessions s
       JOIN harness_shared.users u ON u.id = s.user_id
      WHERE s.token = ${token}
        AND s.expires_at > now()
+       AND s.workspace_id IS NOT NULL
        AND u.is_active = true
      LIMIT 1
   `;
@@ -150,6 +161,8 @@ export async function getSessionUser(headers?: Headers): Promise<User | null> {
     username: row.username,
     display_name: row.display_name,
     has_password: row.password_hash !== null,
+    workspace_id: row.workspace_id,
+    capabilities: [...row.capabilities],
   };
 }
 
@@ -186,8 +199,14 @@ export async function getSessionUserOrDefault(headers?: Headers): Promise<User> 
 export async function login(
   username: string,
   password: string | null,
-  meta?: { user_agent?: string; remote_addr?: string; ttl_ms?: number },
-): Promise<{ token: string; user: User; expires_at: Date }> {
+  meta?: {
+    user_agent?: string;
+    remote_addr?: string;
+    ttl_ms?: number;
+    workspace_id?: string;
+    capabilities?: readonly string[];
+  },
+): Promise<{ token: string; user: SessionUser; expires_at: Date }> {
   const { sql } = getOrgPg();
   const rows = await sql<{ id: string; display_name: string; password_hash: string | null; is_active: boolean }[]>`
     SELECT id, display_name, password_hash, is_active
@@ -223,11 +242,27 @@ export async function login(
   const token = newToken();
   const ttl = meta?.ttl_ms ?? DEFAULT_SESSION_TTL_MS;
   const expires = new Date(Date.now() + ttl);
+  // Local callers may bind at mint time from their request-scoped active
+  // workspace. Remote callers pass an explicit request claim from login.ts.
+  // Resolution never falls back to mutable process state (getSessionUser
+  // rejects legacy rows whose claim is NULL).
+  const workspaceId = (meta?.workspace_id ?? activeWorkspaceId()).trim();
+  if (!workspaceId) {
+    throw Object.assign(new Error('workspace required'), { code: 'workspace_required' });
+  }
+  const capabilities = [...new Set(meta?.capabilities ?? ['*'])]
+    .map((capability) => capability.trim())
+    .filter(Boolean);
+  if (capabilities.length === 0) {
+    throw Object.assign(new Error('capabilities required'), { code: 'capabilities_required' });
+  }
   // postgres.js in this version doesn't accept Date instances directly
   // for timestamptz params — pass ISO string.
   await sql`
-    INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, user_agent, remote_addr)
-    VALUES (${token}, ${u.id}, ${expires.toISOString()}, ${meta?.user_agent ?? null}, ${meta?.remote_addr ?? null})
+    INSERT INTO harness_shared.user_sessions
+      (token, user_id, expires_at, user_agent, remote_addr, workspace_id, capabilities)
+    VALUES
+      (${token}, ${u.id}, ${expires.toISOString()}, ${meta?.user_agent ?? null}, ${meta?.remote_addr ?? null}, ${workspaceId}, ${capabilities})
   `;
   await sql`
     UPDATE harness_shared.users SET last_login_at = now() WHERE id = ${u.id}
@@ -240,6 +275,8 @@ export async function login(
       username,
       display_name: u.display_name,
       has_password: u.password_hash !== null,
+      workspace_id: workspaceId,
+      capabilities,
     },
     expires_at: expires,
   };

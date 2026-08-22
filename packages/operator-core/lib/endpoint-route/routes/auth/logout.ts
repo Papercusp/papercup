@@ -8,6 +8,7 @@ import { logout, SESSION_COOKIE, getSessionUser } from '../../../auth';
 import { recordAuthEvent } from '../../../auth-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 import { readCookie, serializeDeleteCookie } from '../../cookies';
+import { requestNeedsSecureCookie } from '../../../remote-auth-policy';
 
 export default defineTool({
   method: 'POST',
@@ -30,7 +31,15 @@ export default defineTool({
     });
     return Response.json(
       { ok: true },
-      { headers: { 'set-cookie': serializeDeleteCookie(SESSION_COOKIE) } },
+      {
+        headers: {
+          'set-cookie': serializeDeleteCookie(SESSION_COOKIE, '/', {
+            httpOnly: true,
+            sameSite: 'Strict',
+            secure: requestNeedsSecureCookie(req),
+          }),
+        },
+      },
     );
   },
 });

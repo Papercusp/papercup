@@ -53,6 +53,7 @@ import {
 import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
 import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
+import { assertRemoteAuthReady } from '@papercusp/operator-core/lib/remote-auth-policy';
 import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
 import { startConditionStalenessAlarm } from '@papercusp/operator-core/lib/system-health/condition-staleness-alarm';
 import { startEscalationAgingAlarm } from '@papercusp/operator-core/lib/overwatch/escalation-aging-alarm';
@@ -182,6 +183,12 @@ const port = Number(
   process.env.PAPERCUSP_HONO_PORT ?? process.env.PORT ?? 3070,
 );
 const hostname = resolveBindHost();
+// P-016 / D-025: an off-loopback listener is never allowed to become reachable
+// before its exact HTTPS origin policy exists. This runs before any listen().
+const remoteAuthPolicy = assertRemoteAuthReady(hostname);
+if (remoteAuthPolicy.remote) {
+  console.log(`[hono-host] remote auth policy armed for ${remoteAuthPolicy.origins.length} exact HTTPS origin(s)`);
+}
 
 // EI-18734124566158657: a straggling peer process that recently held this exact
 // port (another verify-tauri-headless.sh instance mid-teardown, a dev-restart

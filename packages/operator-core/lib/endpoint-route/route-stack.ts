@@ -15,13 +15,23 @@
  */
 
 import type { Context } from 'hono';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import type { ZodTypeAny } from 'zod';
 import type { Principal } from '@papercusp/agent-mcp';
 import { PrincipalCheckError, requirePrincipal } from '../auth/require-principal';
+import { principalFromCookie } from '../auth/principal/from-cookie';
 import type { RouteDefinition } from './define-route';
 import { requireLoopbackOr403 } from './loopback-guard';
 import { recordRouteInvocation } from './telemetry';
 import { recordHttpTraffic } from '../coverage-census/attribution/sink';
+import {
+  currentRemoteAuthPolicy,
+  isConfiguredRemoteOrigin,
+  isDirectRemoteRequest,
+  REMOTE_OPERATOR_CAPABILITY,
+  requestExternalOrigin,
+  requestWorkspaceId,
+} from '../remote-auth-policy';
 
 /* ─── Step names ─────────────────────────────────────────────────────── */
 
@@ -123,9 +133,112 @@ async function endpointAuthTiersEnabled(): Promise<boolean> {
   }
 }
 
+const SAFE_BROWSER_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+function remotePeerAddress(hono: Context): string | null {
+  try {
+    return getConnInfo(hono).remote.address ?? null;
+  } catch {
+    // Hono's in-process app.request() has no Node socket bindings. The remote
+    // policy falls back to the request authority in that unit context.
+    return null;
+  }
+}
+
+function isRemoteAuthBootstrap(def: RouteDefinition<ZodTypeAny | undefined>): boolean {
+  return (
+    (def.method === 'POST' && def.path === '/auth/login') ||
+    (def.method === 'GET' && def.path === '/auth/me') ||
+    (def.method === 'POST' && def.path === '/auth/logout')
+  );
+}
+
+/**
+ * Native off-loopback authorization choke point. Local and SSH-forwarded
+ * requests retain their existing public/loopback compatibility. A direct
+ * remote browser must use an exact configured HTTPS authority/origin; every
+ * non-bootstrap route additionally needs an explicitly workspace-bound,
+ * verified cookie with the dedicated remote-operator capability.
+ */
+async function enforceRemoteAuth(exec: RouteExecution): Promise<{ remote: boolean; denial: Response | null }> {
+  const peer = remotePeerAddress(exec.hono);
+  if (!isDirectRemoteRequest(exec.req, peer)) return { remote: false, denial: null };
+
+  const policy = currentRemoteAuthPolicy();
+  const authority = requestExternalOrigin(exec.req);
+  if (!authority || !policy.origins.includes(authority)) {
+    return {
+      remote: true,
+      denial: errorResponse(403, 'remote_authority_denied', 'request authority is not an allowed HTTPS origin'),
+    };
+  }
+
+  const origin = exec.req.headers.get('origin');
+  const originAllowed = Boolean(
+    origin &&
+    origin === authority &&
+    isConfiguredRemoteOrigin(origin),
+  );
+  if ((origin && !originAllowed) || (!SAFE_BROWSER_METHODS.has(exec.req.method) && !originAllowed)) {
+    return {
+      remote: true,
+      denial: errorResponse(403, 'remote_origin_denied', 'unsafe remote requests require the exact configured Origin'),
+    };
+  }
+
+  if (isRemoteAuthBootstrap(exec.def)) return { remote: true, denial: null };
+
+  const workspaceId = requestWorkspaceId(exec.req);
+  if (!workspaceId) {
+    return {
+      remote: true,
+      denial: errorResponse(400, 'workspace_required', 'remote requests require an explicit workspace'),
+    };
+  }
+
+  const principal = await principalFromCookie(exec.req.headers);
+  if (!principal) {
+    return {
+      remote: true,
+      denial: errorResponse(401, 'unauthorized', 'a verified remote operator session is required'),
+    };
+  }
+  if (
+    principal.kind !== 'user' ||
+    principal.trust !== 'verified' ||
+    !principal.capabilities.has(REMOTE_OPERATOR_CAPABILITY)
+  ) {
+    return {
+      remote: true,
+      denial: errorResponse(403, 'remote_capability_denied', `missing capability: ${REMOTE_OPERATOR_CAPABILITY}`),
+    };
+  }
+  if (principal.workspaceId !== workspaceId) {
+    return {
+      remote: true,
+      denial: errorResponse(403, 'workspace_mismatch', 'session workspace does not match the request workspace'),
+    };
+  }
+  exec.principal = principal;
+  return { remote: true, denial: null };
+}
+
 const authStep: RouteStep = {
   name: 'auth',
   async run(exec) {
+    const remote = await enforceRemoteAuth(exec);
+    if (remote.denial) {
+      exec.status = remote.denial.status === 401 ? 'unauthorized' : 'forbidden';
+      return remote.denial;
+    }
+    // Direct-remote public/loopback declarations are local compatibility
+    // metadata, not authorization. The central verified-cookie gate above is
+    // authoritative for them.
+    if (remote.remote && !isRemoteAuthBootstrap(exec.def) && (
+      exec.def.auth === 'public' || exec.def.auth === 'loopback'
+    )) {
+      return null;
+    }
     if (exec.def.auth === 'public') {
       exec.principal = null;
       return null;

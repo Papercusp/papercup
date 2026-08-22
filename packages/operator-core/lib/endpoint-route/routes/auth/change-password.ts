@@ -28,6 +28,7 @@ import { recordAuthEvent } from '../../../auth-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { requestNeedsSecureCookie } from '../../../remote-auth-policy';
 
 export default defineTool({
   method: 'POST',
@@ -86,6 +87,7 @@ export default defineTool({
               sameSite: 'Strict',
               path: '/',
               expires: session.expires_at,
+              secure: requestNeedsSecureCookie(req),
             }),
           },
         },

@@ -7,6 +7,7 @@
 import { signup, login, listUsers, SESSION_COOKIE } from '../../../auth';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
+import { requestNeedsSecureCookie } from '../../../remote-auth-policy';
 
 export default defineTool({
   method: 'POST',
@@ -49,6 +50,7 @@ export default defineTool({
           sameSite: 'Strict',
           path: '/',
           expires: session.expires_at,
+          secure: requestNeedsSecureCookie(req),
         });
       }
       return Response.json({ ok: true, user }, { headers });

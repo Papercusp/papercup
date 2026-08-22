@@ -18,6 +18,12 @@ import {
 import { recordAuthEvent } from '../../../auth-audit';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
+import {
+  isRemoteRequest,
+  REMOTE_OPERATOR_CAPABILITY,
+  requestNeedsSecureCookie,
+  requestWorkspaceId,
+} from '../../../remote-auth-policy';
 
 export default defineTool({
   method: 'POST',
@@ -30,6 +36,15 @@ export default defineTool({
     const ttl_ms = typeof body?.ttl_ms === 'number' ? body.ttl_ms : DEFAULT_SESSION_TTL_MS;
     const userAgent = req.headers.get('user-agent') ?? undefined;
     const ip = req.headers.get('x-forwarded-for') ?? '127.0.0.1';
+    const remote = isRemoteRequest(req);
+    const workspaceId = requestWorkspaceId(req);
+
+    if (remote && !workspaceId) {
+      return Response.json({ error: 'workspace_required' }, { status: 400 });
+    }
+    if (remote && !password) {
+      return Response.json({ error: 'password_required' }, { status: 403 });
+    }
 
     if (!username) {
       // Audit malformed attempts too — missing-username probes shouldn't
@@ -81,6 +96,8 @@ export default defineTool({
         user_agent: userAgent,
         remote_addr: ip,
         ttl_ms,
+        workspace_id: workspaceId ?? undefined,
+        capabilities: remote ? ['*', REMOTE_OPERATOR_CAPABILITY] : ['*'],
       });
       // Refund the soft bucket so an earlier-failed typo isn't held
       // against the legitimate user. Reset the hard bucket so the
@@ -101,6 +118,7 @@ export default defineTool({
               sameSite: 'Strict',
               path: '/',
               expires: result.expires_at,
+              secure: requestNeedsSecureCookie(req),
             }),
           },
         },

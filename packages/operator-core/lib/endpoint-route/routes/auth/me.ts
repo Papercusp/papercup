@@ -19,6 +19,7 @@ import {
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeSetCookie } from '../../cookies';
 import { requireAllowedOriginOr403 } from '../../cors';
+import { isRemoteRequest, requestNeedsSecureCookie } from '../../../remote-auth-policy';
 
 const get = defineTool({
   method: 'GET',
@@ -43,6 +44,13 @@ const get = defineTool({
         console.error('[auth/me] listUsers threw (non-fatal):', err);
       }
       return Response.json({ user: sessionUser, autoLogin: false, available });
+    }
+
+    // Never expose the passwordless local default-user fallback or account
+    // enumeration to an unauthenticated off-loopback browser. The login form
+    // remains usable with an empty username field.
+    if (isRemoteRequest(req)) {
+      return Response.json({ user: null, autoLogin: false, available: [] });
     }
 
     try {
@@ -73,6 +81,7 @@ const get = defineTool({
             sameSite: 'Lax',
             path: '/',
             maxAge: Math.floor(DEFAULT_SESSION_TTL_MS / 1000),
+            secure: requestNeedsSecureCookie(req),
           });
         } catch (err) {
           console.error('[auth/me] auto-session establish failed (non-fatal):', err);

@@ -17,6 +17,7 @@ import { cors } from 'hono/cors';
 import { registerRouteLiterals, registerRouteCatchalls } from '@papercusp/operator-core/lib/endpoint-route/register';
 import { installMethodNotAllowed } from '@papercusp/operator-core/lib/endpoint-route/method-not-allowed';
 import { workspaceContextMiddleware } from '@papercusp/operator-core/lib/workspace-context-middleware';
+import { configuredRemoteOrigins } from '@papercusp/operator-core/lib/remote-auth-policy';
 
 const app = new Hono().basePath('/api');
 
@@ -29,11 +30,12 @@ const app = new Hono().basePath('/api');
 // credentials:true: ACAO:* + ACAC:true is spec-invalid and WebKitGTK rejects
 // the response with "Fetch API cannot load due to access control checks".
 const tauriApiCors = cors({
-  origin: [
+  origin: (origin) => [
     'http://localhost:1420',
     'http://tauri.localhost',
     'https://tauri.localhost',
-  ],
+    ...configuredRemoteOrigins(),
+  ].includes(origin) ? origin : null,
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowHeaders: [
     'authorization',
