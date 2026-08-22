@@ -1200,6 +1200,14 @@ export default defineTool({
           'but a malformed alias (a versioned shorthand like `sonnet-5`, or a typo) is caught + corrected.',
       ),
     feature: z.string().optional().describe('psu --feature: a feature id each member should pick up.'),
+    brief: z
+      .string()
+      .min(1)
+      .max(8000)
+      .optional()
+      .describe(
+        "Shared inline first-turn brief for every member. Unlike `launchContext`, this is always treated as text, never as a file path; it is layered below the universal member baseline.",
+      ),
     launchContext: z
       .string()
       .optional()
@@ -1329,7 +1337,8 @@ export default defineTool({
       args.headless ??= profile.headless ?? true;
       args.carry ??= profile.carry;
       args.role ??= profile.role;
-      args.launchContext ??= profile.brief ?? profile.launchContext;
+      args.brief ??= profile.brief;
+      args.launchContext ??= profile.launchContext;
       args.contextSize ??= profile.contextSize;
       args.compactionLimit ??= profile.compactionLimit;
       args.extraArgs ??= profile.extraArgs;
@@ -2441,9 +2450,9 @@ export default defineTool({
     let memberLaunchContextPath: string | null = null;
     let baselineApplied = false;
     let briefReadError: string | null = null;
-    let sharedBriefText: string | null = null;
+    let sharedBriefText: string | null = args.brief?.trim() || null;
     try {
-      if (effectiveLaunchContext) {
+      if (!sharedBriefText && effectiveLaunchContext) {
         if (looksLikeInlineLaunchContextText(effectiveLaunchContext)) {
           // EI-19276371920501216: this is brief TEXT, not a path — use it directly
           // instead of handing it to readFileSync (ENAMETOOLONG). It still lands in

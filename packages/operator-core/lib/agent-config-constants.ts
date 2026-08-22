@@ -603,6 +603,8 @@ export function isLaunchAccountValue(v: string): boolean {
  * imports it back from here, so there is one definition, not two.
  */
 export const FLEET_MAX_MEMBERS = 12;
+/** Persisted fleet targets may span several capacity-clamped launch waves. */
+export const FLEET_MAX_TARGET_MEMBERS = 64;
 
 /** Result of {@link validateCloudModelSpec}: ok, plus a corrective `message` on reject. */
 export interface CloudModelSpecResult {

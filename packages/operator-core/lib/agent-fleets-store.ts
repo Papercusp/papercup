@@ -118,10 +118,16 @@ export interface FleetHeadcountConfig {
   harness: string;
   agent: 'claude' | 'omp' | 'codex';
   model?: string;
+  effort?: string;
   account?: string;
+  /** Background drain fleets default headless; false explicitly preserves visible placement. */
+  headless?: boolean;
   role?: string;
+  /** Inline fleet-specific first-turn brief, composed with the member baseline at launch. */
+  brief?: string;
   launchContext?: string;
   contextSize?: 'full' | 'trimmed';
+  compactionLimit?: number;
   carry?: 'warm' | 'cold';
   extraArgs?: string[];
 }
@@ -643,6 +649,23 @@ export async function listFleetHeadcountTargets(workspaceId: string, sql?: Sql):
     [workspaceId],
   )) as unknown as Parameters<typeof headcountRowToTarget>[0][];
   return rows.map(headcountRowToTarget);
+}
+
+/** Read one fleet's persisted launch profile without scanning every enabled target. */
+export async function getFleetHeadcountTarget(
+  workspaceId: string,
+  fleetSlug: string,
+  sql?: Sql,
+): Promise<FleetHeadcountTarget | null> {
+  const s = pg(sql);
+  const rows = (await s.unsafe(
+    `SELECT ${HEADCOUNT_COLS} FROM harness_shared.agent_fleets
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND headcount_target IS NOT NULL AND headcount_config IS NOT NULL
+      LIMIT 1`,
+    [workspaceId, fleetSlug],
+  )) as unknown as Parameters<typeof headcountRowToTarget>[0][];
+  return rows[0] ? headcountRowToTarget(rows[0]) : null;
 }
 
 /** Claim one retry lease. The lease is the duplicate-suppression barrier between ticks. */

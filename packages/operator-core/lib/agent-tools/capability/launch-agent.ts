@@ -457,6 +457,7 @@ export default defineTool({
       }
       if (persistedHeadcountProfile) {
         const profile = persistedHeadcountProfile.config;
+        args.agent ??= profile.agent;
         args.headless ??= profile.headless ?? true;
         args.account ??= profile.account;
         args.model ??= composeModelSpec(profile.model, profile.effort);

@@ -228,6 +228,8 @@ beforeEach(() => {
   launchTransaction.persist.mockClear();
   getFleetHeadcountTargetMock.mockReset();
   getFleetHeadcountTargetMock.mockResolvedValue(null);
+  promotePlanItemsMock.mockClear();
+  promotePlanItemsMock.mockResolvedValue({ promoted: 0, skipped: 3 });
   createFleetIfAbsentMock.mockReset();
   createFleetIfAbsentMock.mockResolvedValue({
     record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },

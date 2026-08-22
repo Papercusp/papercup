@@ -4,6 +4,7 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getFleet, setFleetHeadcountTarget, type FleetHeadcountConfig } from '../../agent-fleets-store';
+import { FLEET_MAX_TARGET_MEMBERS } from '../../agent-config-constants';
 import { resolveHarnessPlansDir, readPlanBySlug } from '../plans/source';
 import { json, resolveFleetCaller } from './_shared';
 
@@ -20,15 +21,19 @@ export default defineTool({
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     fleet: z.string().min(1).describe('Existing fleet slug.'),
-    target: z.number().int().min(1).max(12).nullable().describe('Desired live member count, or null to disable the governor.'),
+    target: z.number().int().min(1).max(FLEET_MAX_TARGET_MEMBERS).nullable().describe('Desired live member count, or null to disable the governor.'),
     harness: z.string().min(1).describe('Harness containing the plan.'),
     plan: z.string().min(1).describe('Plan whose work the top-up members should pull.'),
     agent: z.enum(['claude', 'omp', 'codex']).default('claude'),
     model: z.string().min(1).optional(),
+    effort: z.string().min(1).max(40).optional(),
     account: z.string().min(1).optional(),
+    headless: z.boolean().optional().describe('Persisted placement. Defaults true for background restoration.'),
     role: z.string().min(1).optional(),
+    brief: z.string().min(1).max(4000).optional(),
     launchContext: z.string().min(1).optional(),
     contextSize: z.enum(['full', 'trimmed']).optional(),
+    compactionLimit: z.number().int().min(20_000).max(900_000).optional(),
     carry: z.enum(['warm', 'cold']).optional(),
     extraArgs: z.array(z.string()).max(20).optional(),
   }),
@@ -52,10 +57,14 @@ export default defineTool({
       harness: args.harness,
       agent: args.agent,
       ...(args.model ? { model: args.model } : {}),
+      ...(args.effort ? { effort: args.effort } : {}),
       ...(args.account ? { account: args.account } : {}),
+      headless: args.headless ?? true,
       ...(args.role ? { role: args.role } : {}),
+      ...(args.brief ? { brief: args.brief } : {}),
       ...(args.launchContext ? { launchContext: args.launchContext } : {}),
       ...(args.contextSize ? { contextSize: args.contextSize } : {}),
+      ...(args.compactionLimit ? { compactionLimit: args.compactionLimit } : {}),
       ...(args.carry ? { carry: args.carry } : {}),
       ...(args.extraArgs?.length ? { extraArgs: args.extraArgs } : {}),
     };

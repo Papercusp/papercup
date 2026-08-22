@@ -1,4 +1,6 @@
 /** WI-2479: durable, dark-by-default fleet headcount repair action. */
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import {
@@ -10,9 +12,9 @@ import {
   type FleetHeadcountConfig,
 } from '../../agent-fleets-store';
 import { buildConsoleEnvelope } from '../../console-launcher';
-import { spawnHeadless } from '../../console-spawn';
+import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
-import { memberLaunchCommand } from '../../agent-launch-core';
+import { composeMemberLaunchContext, memberLaunchCommand } from '../../agent-launch-core';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
@@ -27,6 +29,14 @@ export function computeHeadcountDeficit(target: number, liveMembers: number): nu
 
 export function nextHeadcountBackoff(currentMs: number): number {
   return Math.min(15 * 60_000, Math.max(60_000, Math.max(0, currentMs) * 2));
+}
+
+/** Legacy target rows predate explicit placement. Fleet restoration is headless
+ * unless a persisted profile deliberately requests visible terminals. */
+export function resolveFleetHeadcountProfile(
+  config: FleetHeadcountConfig,
+): FleetHeadcountConfig & { headless: boolean } {
+  return { ...config, headless: config.headless ?? true };
 }
 
 // WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
@@ -60,7 +70,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       });
       return;
     }
-    const config: FleetHeadcountConfig = attempt.config;
+    const config = resolveFleetHeadcountProfile(attempt.config);
 
     // ── The goal ceilings bind the GOVERNOR too (P-004/D-009) ─────────────────
     // This is the path that most needs them. Every other launch door is driven by
@@ -103,31 +113,57 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       operatorBaseUrl: operatorBaseUrl(),
       skipMcpJson: true,
     });
+    let launchContext = config.launchContext;
+    if (config.brief) {
+      const contextDir = join(papercuspPathForWorkspace(workspaceId), 'launch-context');
+      mkdirSync(contextDir, { recursive: true });
+      launchContext = join(contextDir, `fleet-${fleetSlug}-headcount-context.md`);
+      writeFileSync(
+        launchContext,
+        composeMemberLaunchContext({
+          fleetSlug,
+          plan: config.plan,
+          count: attempt.target,
+          carry: config.carry,
+          customBriefText: config.brief,
+        }),
+        'utf8',
+      );
+    }
     const command = memberLaunchCommand({
       fleetSlug,
       agent: config.agent,
       harness: config.harness,
       plan: config.plan,
-      headless: true,
+      headless: config.headless,
       // The goal's profile applies to a governor top-up exactly as it does to the
       // leader's own launches — otherwise a replaced member silently comes back
       // on a different model/account than the one the goal pinned.
       model: goalLaunch.effective.model ?? config.model,
-      effort: goalLaunch.effective.effort,
+      effort: goalLaunch.effective.effort ?? config.effort,
       account: goalLaunch.effective.account ?? config.account,
       role: config.role,
-      launchContext: config.launchContext,
+      launchContext,
       contextSize: config.contextSize,
+      compactionLimit: config.compactionLimit,
+      carry: config.carry,
       extraArgs: config.extraArgs,
     });
-    const logDir = `${papercuspPathForWorkspace(workspaceId)}/fleet-logs`;
+    const logDir = config.headless ? `${papercuspPathForWorkspace(workspaceId)}/fleet-logs` : null;
     const results = await Promise.all(
       Array.from({ length: deficit }, (_v, i) =>
-        spawnHeadless({
-          envelope: { ...envelope, greetingCmd: command, cwd: envelope.cwd },
-          label: `${fleetSlug} · governor member ${i + 1}/${deficit} (${config.plan})`,
-          logDir,
-        }),
+        config.headless
+          ? spawnHeadless({
+              envelope: { ...envelope, greetingCmd: command, cwd: envelope.cwd },
+              label: `${fleetSlug} · governor member ${i + 1}/${deficit} (${config.plan})`,
+              logDir: logDir!,
+            })
+          : spawnConsole({
+              envelope: { ...envelope, greetingCmd: command, cwd: envelope.cwd },
+              label: `${fleetSlug} · governor member ${i + 1}/${deficit} (${config.plan})`,
+              writeMcpJson: false,
+              allowDesktopBridge: true,
+            }),
       ),
     );
     const failed = results.filter((r) => r.status !== 'ok');
@@ -138,7 +174,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         workspaceId,
         fleetSlug,
         succeeded: false,
-        error: `${failed.length}/${results.length} headless top-up spawns failed`,
+        error: `${failed.length}/${results.length} ${config.headless ? 'headless' : 'visible'} top-up spawns failed`,
       });
     }
   } catch (error) {

@@ -78,6 +78,8 @@ beforeAll(async () => {
       headcount_backoff_ms bigint DEFAULT 0 NOT NULL,
       headcount_last_error text,
       last_launch_transaction jsonb,
+      CONSTRAINT agent_fleets_headcount_target_positive
+        CHECK (headcount_target IS NULL OR headcount_target BETWEEN 1 AND 64),
       CONSTRAINT agent_fleets_pkey PRIMARY KEY (workspace_id, fleet_slug)
     )
   `);
@@ -272,14 +274,19 @@ describe('releaseFleetLaunchSlot (all-spawns-failed retry path)', () => {
 });
 
 describe('fleet headcount target (WI-2479)', () => {
-  const config = { plan: 'drain', harness: 'papercusp', agent: 'claude' as const };
+  const config = {
+    plan: 'drain', harness: 'papercusp', agent: 'codex' as const,
+    model: 'gpt-5.6-luna', effort: 'max', account: 'default', headless: true,
+    carry: 'warm' as const, contextSize: 'full' as const, compactionLimit: 825_000,
+    role: 'su', brief: 'drain bugs',
+  };
 
   it('persists a target recipe and grants only one concurrent retry lease', async () => {
     await insertFleet('headcount-fleet');
-    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-fleet', target: 3, config, sql: rootSql });
-    expect(await listFleetHeadcountTargets(WS, rootSql)).toMatchObject([{ fleetSlug: 'headcount-fleet', target: 3, config }]);
+    await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-fleet', target: 30, config, sql: rootSql });
+    expect(await listFleetHeadcountTargets(WS, rootSql)).toMatchObject([{ fleetSlug: 'headcount-fleet', target: 30, config }]);
     const first = await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-fleet', now: 8_000_000, sql: rootSql });
-    expect(first).toMatchObject({ fleetSlug: 'headcount-fleet', target: 3, claimedAt: 8_000_000 });
+    expect(first).toMatchObject({ fleetSlug: 'headcount-fleet', target: 30, claimedAt: 8_000_000 });
     expect(await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-fleet', now: 8_000_001, sql: rootSql })).toBeNull();
   });
 
