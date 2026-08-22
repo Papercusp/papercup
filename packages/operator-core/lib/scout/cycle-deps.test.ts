@@ -238,6 +238,47 @@ describe('buildScoutCycleDeps — route wiring (ctx-bound plan creator)', () => 
     expect(goalDispatch).not.toHaveBeenCalled();
     expect(goalFeedbackConsult).toHaveBeenCalledWith({ proposal, targetGoalId: 'goal-existing' });
   });
+
+  it('shares the one-goal creation cap across continuation and fresh route calls', async () => {
+    getFlag.mockResolvedValue(true);
+    const goalDispatch = vi.fn(async ({ proposal }: { proposal: ReturnType<typeof fixtureProposal> }) => ({
+      goalId: `goal-${proposal.id}`,
+    }));
+    const resumed = fixtureProposal({
+      id: 'consulted:old-cycle:resumed-goal',
+      routeHint: 'goal',
+      consultation: {
+        originCycleId: 'old-cycle',
+        originalProposalId: 'resumed-goal',
+        conversationId: 'conv-resumed',
+        status: 'unavailable',
+        state: 'expired',
+        verdict: 'failed',
+        reason: 'review window expired',
+      },
+    });
+    const fresh = fixtureProposal({ id: 'fresh-goal', routeHint: 'goal' });
+    const { deps, planDrafts } = build({
+      goalDispatch,
+      resolvedGoalConsultReader: async () => [resumed],
+    });
+
+    const continuation = await deps.route([]);
+    const freshResult = await deps.route([fresh]);
+
+    expect(continuation[0]).toMatchObject({
+      proposalId: resumed.id,
+      rail: 'goal',
+      routedRef: `goal:goal-${resumed.id}`,
+    });
+    expect(freshResult[0]).toMatchObject({
+      proposalId: fresh.id,
+      rail: 'plan',
+    });
+    expect(freshResult[0].reason).toContain('goal cap reached (0/cycle)');
+    expect(goalDispatch).toHaveBeenCalledTimes(1);
+    expect(planDrafts).toHaveLength(1);
+  });
 });
 
 describe('buildScoutCycleDeps — ideate priming concat (C-4, scout-idea-grading P-005)', () => {

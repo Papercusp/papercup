@@ -32,6 +32,7 @@ import { runIdeators, ScoutIdeatorsTransportError } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
 import {
+  DEFAULT_MAX_GOALS_PER_CYCLE,
   routeProposals,
   makeGoalScaleOverride,
   makeWholeSystemInstanceOverride,
@@ -386,6 +387,11 @@ export function buildScoutCycleDeps(
         workspaceId: activeWorkspaceId(),
       }));
   let goalConsultContinuationDrained = false;
+  // P-011: runScoutCycle routes twice — resolved consult continuations first,
+  // then fresh proposals. Keep the creation decision budget on the deps instance
+  // so those calls share the documented one-goal-per-cycle ceiling instead of
+  // each resetting decideRoutes' batch-local counter.
+  let remainingGoalCreations = DEFAULT_MAX_GOALS_PER_CYCLE;
   const routerPorts: RouterPorts = {
     plansNew: buildPlansNewPort(opts.createPlanDraft),
     gymDispatch: buildGymDispatchPort(opts.archive),
@@ -912,14 +918,23 @@ export function buildScoutCycleDeps(
           );
         }
       }
-      const result = await routeProposals([...resumedGoalProposals, ...proposals], routerPorts, {
+      const routedProposals = [...resumedGoalProposals, ...proposals];
+      const creationProposalIds = new Set(
+        routedProposals.filter((proposal) => !proposal.targetGoalId?.trim()).map((proposal) => proposal.id),
+      );
+      const result = await routeProposals(routedProposals, routerPorts, {
         override: (p) => goalOverride(p) ?? instanceOverride(p),
         defaultRail: scoutConfig.routing.defaultRail,
         gymEnabled,
         goalEnabled,
+        maxGoalsPerCycle: remainingGoalCreations,
         goalBudgetCentsCap: scoutConfig.routing.goalBudgetCentsCap,
         cycleId: opts.cycleId,
       });
+      const creationDecisions = result.decisions.filter(
+        (decision) => decision.rail === 'goal' && creationProposalIds.has(decision.proposalId),
+      ).length;
+      remainingGoalCreations = Math.max(0, remainingGoalCreations - creationDecisions);
       // Dark Scout→experiment rail (SCOUT_EXPERIMENT_RAIL, default OFF — #2 "close the
       // loop"): ADDITIVELY express each testable (gym-rail) proposal as a DRY-RUN
       // experiment spec — proves the Scout→experiment:run loop with NO spend + NO change
