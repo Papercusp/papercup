@@ -86,13 +86,56 @@ const rows: CloudWorkspacesControlRow[] = [
     endpoint: 'ssh://10.0.0.8',
     recoverability: { kind: 'snapshot', label: 'snapshot-20260822', updatedAt: '2026-08-22T04:50:00.000Z' },
     capabilities: { start: false, stop: true, repair: true, snapshot: true, destroy: true },
+    resources: [
+      {
+        logicalKey: 'vm',
+        kind: 'vm',
+        state: 'applied',
+        providerId: 'projects/papercusp-prod/zones/us-central1-a/instances/research-control',
+        providerRequestId: 'request-1',
+        attempts: 1,
+        updatedAt: '2026-08-22T05:08:00.000Z',
+      },
+    ],
+    health: {
+      status: 'healthy',
+      attestedAt: '2026-08-22T05:09:00.000Z',
+      checks: [{ name: 'systemd', ok: true }],
+      bootstrapVersion: '1.4.0',
+    },
+    versionDrift: [{ component: 'agent', desired: '1.4.0', observed: '1.3.0' }],
+    tunnel: { state: 'connected', transport: 'gcp-iap-ssh' },
+    costSignals: [{ estimatedMonthlyUsd: 72.9 }],
+    quotaSignals: [{ resource: 'CPUS', remaining: 8 }],
+    logs: [
+      {
+        id: 'log-1',
+        operationId: 'op-1',
+        observedAt: '2026-08-22T05:09:30.000Z',
+        stream: 'systemd',
+        unit: 'papercusp-agent',
+        level: 'info',
+        message: 'Agent ready',
+      },
+    ],
     operation: {
       id: 'op-1',
       action: 'provision',
       status: 'succeeded',
       percent: 100,
       message: 'Host attested',
-      events: [{ id: 'evt-1', ts: '2026-08-22T05:09:00.000Z', phase: 'attest', status: 'succeeded', message: 'Bootstrap healthy' }],
+      request: { image: 'ubuntu-2404', credentialRef: 'env:GCP_APPLICATION_CREDENTIALS' },
+      events: [
+        {
+          id: 'evt-1',
+          ts: '2026-08-22T05:09:00.000Z',
+          phase: 'attest',
+          status: 'succeeded',
+          level: 'info',
+          source: 'controller',
+          message: 'Bootstrap healthy',
+        },
+      ],
     },
   },
 ];
@@ -118,6 +161,15 @@ describe('CloudWorkspacesPage', () => {
     expect(screen.getByLabelText('Desired running; observed running')).toBeTruthy();
     expect(screen.getByRole('list', { name: 'Progress for research-control' }).textContent).toContain('Bootstrap healthy');
     expect(screen.getByText(/Recoverability · snapshot/)).toBeTruthy();
+    expect(screen.getByLabelText('Health and attestation for research-control').textContent).toContain('healthy');
+    expect(screen.getByLabelText('Provider resources for research-control').textContent).toContain('request-1');
+    expect(screen.getByLabelText('Drift and connectivity for research-control').textContent).toContain('gcp-iap-ssh');
+    expect(screen.getByLabelText('Cost and quota signals for research-control').textContent).toContain('CPUS');
+    expect(screen.getByLabelText('Recent host logs for research-control').textContent).toContain('Agent ready');
+    expect(screen.getByText('Redacted request').parentElement?.textContent).toContain('ubuntu-2404');
+    expect(screen.getByRole('link', { name: 'Audit export' }).getAttribute('href')).toBe(
+      '/api/workspace-hosts/host-1/audit',
+    );
   });
 
   it('routes connection and lifecycle actions through the sync mutation seam', async () => {

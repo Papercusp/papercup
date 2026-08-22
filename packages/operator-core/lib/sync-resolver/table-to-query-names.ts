@@ -70,6 +70,16 @@ export type QueryNameTarget = string | { name: string; scope: ScopeKeyBuilder };
  * a bare string full-busts; `{ name, scope }` opts into per-row scoping.
  */
 export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTarget[]>> = {
+  // Cloud Workspaces (WI-40483 / P-023): all low-volume durable control
+  // tables push the single provider-neutral projection. workspace_host_logs
+  // is intentionally absent because appendWorkspaceHostLogs emits one scoped
+  // producer invalidation after each batch instead of one PG NOTIFY per line.
+  'harness_shared.workspace_host_connections': ['workspaceHosts.control'],
+  'harness_shared.workspace_hosts': ['workspaceHosts.control'],
+  'harness_shared.workspace_host_operations': ['workspaceHosts.control'],
+  'harness_shared.workspace_host_resources': ['workspaceHosts.control'],
+  'harness_shared.workspace_host_events': ['workspaceHosts.control'],
+
   // The harness registry is one JSONB row per workspace (mig 025); its
   // trigger (mig 222) is what defeats the bus's 90s source-side dedupe for
   // back-to-back registry changes (EI-206 — a create followed by a delete
@@ -96,12 +106,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
   // session recorded for a plan (or one ending) live-refreshes the tab. Low
   // write rate + a small per-plan payload keep the broad bust cheap.
-  'harness_shared.adv_sessions': [
-    'advSessions.list',
-    'advSessions.summary',
-    'advRoster.list',
-    'planSessions.list',
-  ],
+  'harness_shared.adv_sessions': ['advSessions.list', 'advSessions.summary', 'advRoster.list', 'planSessions.list'],
   /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
      grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
      attached in migration 763.

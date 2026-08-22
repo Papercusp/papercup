@@ -1,0 +1,210 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const H = vi.hoisted(() => ({
+  withWorkspace: vi.fn(),
+  notify: vi.fn(),
+  rows: new Map<string, unknown[]>(),
+}));
+
+vi.mock('@papercusp/db-org', () => ({ withWorkspace: H.withWorkspace }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: H.notify }));
+
+import {
+  WORKSPACE_HOST_CONTROL_QUERY,
+  appendWorkspaceHostLogs,
+  exportWorkspaceHostAudit,
+  readWorkspaceHostControl,
+  redactWorkspaceHostValue,
+} from './observability-store';
+
+function fakeTx(strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> {
+  const sql = strings.join(' ').replace(/\s+/g, ' ').trim();
+  const match = [...H.rows]
+    .filter(([needle]) => sql.includes(needle))
+    .sort(([left], [right]) => right.length - left.length)[0];
+  return Promise.resolve(match?.[1] ?? []);
+}
+
+Object.assign(fakeTx, { json: (value: unknown) => value });
+
+beforeEach(() => {
+  H.rows.clear();
+  H.notify.mockReset().mockResolvedValue(undefined);
+  H.withWorkspace.mockReset().mockImplementation(async (_workspaceId, run) => run(fakeTx));
+});
+
+describe('workspace-host observability store', () => {
+  it('redacts secret-shaped fields and secret-bearing text recursively', () => {
+    expect(
+      redactWorkspaceHostValue({
+        authorization: 'Bearer abc.def.ghi',
+        credentialRef: 'env:GCP_APPLICATION_CREDENTIALS',
+        nested: { url: 'https://alice:password@example.test/?token=secret' },
+        accessKey: 'AKIA1234567890ABCDEF',
+      }),
+    ).toEqual({
+      authorization: '[REDACTED]',
+      credentialRef: 'env:GCP_APPLICATION_CREDENTIALS',
+      nested: { url: 'https://alice:[REDACTED]@example.test/?token=[REDACTED]' },
+      accessKey: '[REDACTED]',
+    });
+  });
+
+  it('projects the latest operation, resource ids, health, signals, logs, and timeline', async () => {
+    H.rows.set('FROM harness_shared.workspace_host_connections', [
+      {
+        id: 'connection-1',
+        target: 'gcp',
+        label: 'Production',
+        credential_ref: 'env:GCP',
+        status: 'connected',
+        status_detail: null,
+        last_validated_at: '2026-08-22T00:00:00Z',
+        scopes: [],
+        regions: [],
+        sizes: [],
+        images: [],
+        networks: [],
+        disk_price_per_gib_month: '0.12',
+      },
+    ]);
+    H.rows.set('FROM harness_shared.workspace_hosts', [
+      {
+        id: 'host-1',
+        name: 'research',
+        connection_id: 'connection-1',
+        target: 'gcp',
+        scope_label: 'project-1',
+        region: 'us-central1',
+        size: 'e2-standard-4',
+        image: 'ubuntu',
+        disk_gib: 100,
+        network: 'default',
+        estimated_monthly_usd: '72.9',
+        desired_state: 'running',
+        observed_state: 'running',
+        observed_at: '2026-08-22T00:03:00Z',
+        endpoint: 'ssh://host-1',
+        recoverability_kind: 'snapshot',
+        recoverability_label: 'snap-1',
+        recoverability_updated_at: null,
+        health_status: 'healthy',
+        health_attested_at: '2026-08-22T00:02:00Z',
+        health_checks: [{ name: 'agent', ok: true }],
+        bootstrap_version: '1.4.0',
+        version_drift: [{ component: 'agent', desired: '1.4.0', observed: '1.3.0' }],
+        tunnel_status: { connected: true },
+        cost_signals: [{ monthlyUsd: 72.9 }],
+        quota_signals: [{ name: 'cpu', remaining: 8 }],
+      },
+    ]);
+    H.rows.set('FROM harness_shared.workspace_host_operations', [
+      {
+        id: 'op-1',
+        host_id: 'host-1',
+        action: 'provision',
+        status: 'succeeded',
+        percent: 100,
+        message: 'attested',
+        request: { image: 'ubuntu' },
+        error: null,
+        created_at: '2026-08-22T00:00:00Z',
+        started_at: '2026-08-22T00:00:10Z',
+        finished_at: '2026-08-22T00:03:00Z',
+        updated_at: '2026-08-22T00:03:00Z',
+      },
+    ]);
+    H.rows.set('FROM harness_shared.workspace_host_resources', [
+      {
+        host_id: 'host-1',
+        logical_key: 'vm',
+        operation_id: 'op-1',
+        state: 'applied',
+        attempts: 1,
+        retry_class: null,
+        target: 'gcp',
+        kind: 'vm',
+        provider_id: 'projects/p/zones/z/instances/research',
+        parent_provider_id: null,
+        region: 'us-central1',
+        zone: 'us-central1-a',
+        provider_request_id: 'request-1',
+        error: null,
+        updated_at: '2026-08-22T00:01:00Z',
+      },
+    ]);
+    H.rows.set('FROM harness_shared.workspace_host_events e JOIN (', [
+      {
+        id: 'event-1',
+        host_id: 'host-1',
+        operation_id: 'op-1',
+        occurred_at: '2026-08-22T00:02:00Z',
+        phase: 'attest',
+        status: 'succeeded',
+        level: 'info',
+        source: 'controller',
+        message: 'healthy',
+        details: null,
+      },
+    ]);
+    H.rows.set('FROM ( SELECT l.*', [
+      {
+        id: 'log-1',
+        host_id: 'host-1',
+        operation_id: 'op-1',
+        observed_at: '2026-08-22T00:02:30Z',
+        stream: 'systemd',
+        unit: 'papercusp-agent',
+        level: 'info',
+        message: 'ready',
+        metadata: null,
+      },
+    ]);
+
+    const rows = await readWorkspaceHostControl('ws-1');
+    expect(H.withWorkspace).toHaveBeenCalledWith('ws-1', expect.any(Function));
+    expect(rows).toHaveLength(2);
+    expect(rows[1]).toMatchObject({
+      kind: 'workspace',
+      id: 'host-1',
+      providerResourceId: 'projects/p/zones/z/instances/research',
+      health: { status: 'healthy', bootstrapVersion: '1.4.0' },
+      tunnel: { connected: true },
+      operation: {
+        id: 'op-1',
+        request: { image: 'ubuntu' },
+        events: [{ id: 'event-1', source: 'controller', level: 'info' }],
+      },
+      resources: [{ logicalKey: 'vm', providerRequestId: 'request-1' }],
+      logs: [{ id: 'log-1', stream: 'systemd', unit: 'papercusp-agent' }],
+    });
+  });
+
+  it('pushes exactly once after a committed diagnostics batch', async () => {
+    const ids = await appendWorkspaceHostLogs('ws-1', 'host-1', [
+      { id: 'log-1', stream: 'cloud-init', message: 'booting' },
+      { id: 'log-2', stream: 'systemd', unit: 'papercusp-agent', message: 'ready' },
+    ]);
+    expect(ids).toEqual(['log-1', 'log-2']);
+    expect(H.notify).toHaveBeenCalledTimes(1);
+    expect(H.notify).toHaveBeenCalledWith(WORKSPACE_HOST_CONTROL_QUERY);
+  });
+
+  it('re-redacts a complete audit bundle before export', async () => {
+    H.rows.set('FROM harness_shared.workspace_hosts WHERE', [
+      { id: 'host-1', endpoint: 'https://alice:pw@example.test' },
+    ]);
+    H.rows.set('FROM harness_shared.workspace_host_operations WHERE', [{ id: 'op-1', request: { token: 'secret' } }]);
+    H.rows.set('FROM harness_shared.workspace_host_resources WHERE', []);
+    H.rows.set('FROM harness_shared.workspace_host_events WHERE', []);
+    H.rows.set('FROM harness_shared.workspace_host_logs WHERE', [{ message: 'Authorization: Bearer abc.def.ghi' }]);
+
+    const audit = await exportWorkspaceHostAudit('ws-1', 'host-1');
+    expect(audit).toMatchObject({
+      schemaVersion: 'papercusp-workspace-host-audit-v1',
+      host: { endpoint: 'https://alice:[REDACTED]@example.test' },
+      operations: [{ request: { token: '[REDACTED]' } }],
+      logs: [{ message: 'Authorization: Bearer [REDACTED]' }],
+    });
+  });
+});
