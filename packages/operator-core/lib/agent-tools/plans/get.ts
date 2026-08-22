@@ -78,6 +78,14 @@ const argsSchema = z
       .describe(
         "Plan slugs to fetch in one call. Equivalent to calling this tool once per slug.",
       ),
+    items: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        "Return only these P-NNN records from the structured items array. Counts still describe the whole plan; itemSelection reports requested/matched/missing ids. Use this instead of pulling a large plan or querying harness_plans directly when you need one item.",
+      ),
     mode: z
       .enum(["meta", "sections", "full"])
       .optional()
@@ -346,6 +354,12 @@ export default defineTool({
     const sctx = harnessScopedCtx(args.harness, ctx);
     const opts = await ctxToPlanSourceOpts(sctx);
     const slugs = mergeIds(args.slug, args.slugs);
+    const requestedItemIds = args.items
+      ? [...new Set(args.items)]
+      : null;
+    const requestedItemIdSet = requestedItemIds
+      ? new Set(requestedItemIds)
+      : null;
     const env = await runBulk(
       slugs,
       async (slug) =>
@@ -354,7 +368,7 @@ export default defineTool({
           {
             tool: "plans:get",
             // Folds EVERY output-determining dimension: slug + resolved harness +
-            // mode + heading + includeRaw. workspace scope is added by cachedRead
+            // mode + heading + includeRaw + item selection. workspace scope is added by cachedRead
             // from ctx. includeRaw MUST be here — else a slim agent-cached entry
             // (no `raw`) would be served to a UI caller that asked for raw, and
             // the editor would break intermittently on cache state.
@@ -364,6 +378,7 @@ export default defineTool({
               mode: args.mode ?? "sections",
               heading: args.heading ?? null,
               includeRaw: args.includeRaw ?? false,
+              items: requestedItemIds,
             },
             tags: ["harness_plans", "plan_revisions", "plan_runs", "plan_audits"],
             softTtlMs: PLANS_GET_SOFT_TTL_MS,
@@ -427,6 +442,23 @@ export default defineTool({
             // @papercusp/plan-parser resolver is unchanged; the merge lives only here.
             const { items: resolvedItems, blockingIssues } =
               await overlayIssueBlocksForPlan(slug, resolved.items);
+            const responseItems = requestedItemIdSet
+              ? resolvedItems.filter((item) => requestedItemIdSet.has(item.id))
+              : resolvedItems;
+            const responseItemIds = new Set(responseItems.map((item) => item.id));
+            const itemSelection = requestedItemIds
+              ? {
+                  requested: requestedItemIds,
+                  matched: responseItems.map((item) => item.id),
+                  missing: requestedItemIds.filter((id) => !responseItemIds.has(id)),
+                }
+              : null;
+            const selectItemMap = <T>(value: Record<string, T>): Record<string, T> =>
+              requestedItemIdSet
+                ? Object.fromEntries(
+                    Object.entries(value).filter(([id]) => responseItemIds.has(id)),
+                  )
+                : value;
 
             // P-006: Build a map of plan-item-id → { featureId, status } so the UI
             // can show live feature status badges next to each P-NNN item.
@@ -560,6 +592,7 @@ export default defineTool({
                 decisions: parsed.decisions.length,
                 sections: sections.length,
               },
+              ...(itemSelection ? { itemSelection } : {}),
             };
 
             // `heading`: the requested section plus IDENTITY/CAS fields only —
@@ -626,8 +659,8 @@ export default defineTool({
               ...(latestAudit ? { latestAudit } : {}),
               items:
                 mode === "full"
-                  ? resolvedItems
-                  : resolvedItems.map(({ rawLine: _rawLine, ...rest }) => rest),
+                  ? responseItems
+                  : responseItems.map(({ rawLine: _rawLine, ...rest }) => rest),
               decisions: boundedDecisions,
               ...(decisionBodiesTruncated
                 ? {
@@ -638,9 +671,9 @@ export default defineTool({
                 : {}),
               missingRefs: resolved.missingRefs,
               cycleMembers: resolved.cycleMembers,
-              linkedFeatures,
-              planItemTests,
-              blockingIssues,
+              linkedFeatures: selectItemMap(linkedFeatures),
+              planItemTests: selectItemMap(planItemTests),
+              blockingIssues: selectItemMap(blockingIssues),
             };
             const payload =
               mode === "full"

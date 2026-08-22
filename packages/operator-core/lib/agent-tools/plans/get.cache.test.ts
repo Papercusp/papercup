@@ -22,7 +22,30 @@ const M = vi.hoisted(() => ({
       frontmatter: { slug },
       now: { state: "s", next: "n" },
       decisions: [],
-      items: [],
+      items: [
+        {
+          id: "P-001",
+          text: "first item",
+          storedStatus: "todo",
+          importance: "normal",
+          blockedBy: [],
+          decisionRefs: [],
+          phase: null,
+          lineNumber: 1,
+          rawLine: "- **P-001** `todo` — first item",
+        },
+        {
+          id: "P-009",
+          text: "the item requested from a large plan",
+          storedStatus: "todo",
+          importance: "normal",
+          blockedBy: [],
+          decisionRefs: [],
+          phase: null,
+          lineNumber: 2,
+          rawLine: "- **P-009** `todo` — the item requested from a large plan",
+        },
+      ],
     },
     archived: false,
     row: {
@@ -274,6 +297,25 @@ describe("plans:get — cache wiring", () => {
   it("different mode does NOT share an entry (mode is in the key)", async () => {
     await run({ slug: "alpha", mode: "meta" });
     await run({ slug: "alpha", mode: "full" });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns only requested plan items and reports missing ids without hiding the plan total", async () => {
+    const body = await run({ slug: "alpha", items: ["P-009", "P-404"] });
+    expect(body.results[0]).toMatchObject({
+      counts: { items: 2 },
+      itemSelection: {
+        requested: ["P-009", "P-404"],
+        matched: ["P-009"],
+        missing: ["P-404"],
+      },
+      items: [{ id: "P-009", text: "the item requested from a large plan" }],
+    });
+  });
+
+  it("keeps item selections in separate cache entries", async () => {
+    await run({ slug: "alpha", items: ["P-001"] });
+    await run({ slug: "alpha", items: ["P-009"] });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
   });
 
