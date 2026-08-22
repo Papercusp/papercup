@@ -4,8 +4,8 @@
  *
  * The orchestrator layer over the build-agents' primitives (their D-001): it composes
  * `papercusp-desktop/bin/release-local.sh` (the build/sign/provenance cut) and points at
- * the RELEASE-RUNBOOK verify recipes (release-verify-provenance / release-vm-preflight /
- * release-install-and-relaunch-verify) as the ship-gate sequence. It gives the cut what
+ * the RELEASE-RUNBOOK verification scripts (bin/verify-provenance.sh / bin/vm-preflight.sh /
+ * bin/install-and-relaunch-verify.sh) as the ship-gate sequence. It gives the cut what
  * `release:deploy` gives the deploy: a preflight go/no-go, a DETACHED launch (a 35–60 min
  * build can't be an awaited tool call), status polling, and a structured hand-off.
  *
@@ -440,7 +440,7 @@ export default defineTool({
       'Cutting a desktop release. Brand-new version: preflight → prepare-tag{sourceSha,confirm:true} → run{sourceSha,confirm:true} → poll status → verify → handoff. Fleet-split (one agent per leg): prepare the tag once, then each agent gate-status first (agree on ONE buildSha) → run-leg{platform,confirm:true} → poll status{platform} → once every leg is done, handoff (collects across all legs).',
     notWhen: "Not the web operator (:3070 — release:deploy) or the green-checkpoint verdict (release:checkpoint-run). Never publish to GitHub.",
     seeAlso: [
-      'recipes:run release-verify-provenance / release-vm-preflight / release-install-and-relaunch-verify (the RELEASE-RUNBOOK ship-gate this cut composes)',
+      'papercusp-desktop/bin/verify-provenance.sh, papercusp-desktop/bin/vm-preflight.sh, and papercusp-desktop/bin/install-and-relaunch-verify.sh (the RELEASE-RUNBOOK ship-gates this cut composes)',
       'release:deploy (deploy the WEB operator to :3070 — a different target)',
       'release:checkpoint-run (the green-checkpoint verdict producer)',
     ],
@@ -670,7 +670,7 @@ export default defineTool({
         status.state === 'running'
           ? `A cut is in flight (${legNote}). Poll again; the log tail is above. Do NOT start a second cut${args.platform ? ' for this leg' : ''}.`
           : status.state === 'done'
-            ? `The last ${legNote} finished OK. ${args.platform ? "Once every leg is done, verify (recipes:run release-verify-provenance) then release:cut{op:handoff,version}." : 'Verify it (recipes:run release-verify-provenance), then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
+            ? `The last ${legNote} finished OK. ${args.platform ? "Once every leg is done, run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed, then release:cut{op:handoff,version}." : 'Run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed for each leg, then release:cut{op:handoff,version} to collect the artifacts for the owner.'}`
             : status.state === 'failed'
               ? `The last ${legNote} FAILED (exit ${status.exitCode}). Inspect the log tail above / ${status.logPath}; fix and re-run.`
               : status.state === 'interrupted'
@@ -720,7 +720,7 @@ export default defineTool({
         shipGate:
           h.unsignedNames.length > 0
             ? `⚠ ${h.unsignedNames.length} UPDATER artifact(s) are UNSIGNED (${h.unsignedNames.join(', ')}) — the updater can't verify them. Do NOT hand these over; re-cut with the signing key present.${sigInfo}`
-            : `All updater artifacts are signed.${sigInfo} Run the ship-gate before hand-off: recipes:run release-verify-provenance for a dev-box cut, or bin/verify-provenance.sh <leg-out-dir> --health-sha <leg sha> per leg for a release cut (the recipe feeds the DEV :3070 health sha, which is wrong for release-cut legs).`,
+            : `All updater artifacts are signed.${sigInfo} Run the ship-gate before hand-off: papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <leg sha> --require-signed per leg for a release cut (use the leg's own health sha; never substitute the DEV :3070 health sha).`,
         note: 'LOCAL-only hand-off: give the OWNER these local paths + sha256 to upload. ⚠ Windows Inno *-setup-N.bin payload slices MUST be uploaded into the same directory as their setup.exe. Never publish to GitHub.',
       });
     }
@@ -896,7 +896,7 @@ export default defineTool({
         logPath: launch.logPath,
         ...(launch.reason ? { reason: launch.reason } : {}),
         note: launch.launched
-          ? `LOCAL ${platform} leg started (detached). Poll release:cut{op:status,platform:'${platform}'}. Once EVERY leg is done: recipes:run release-verify-provenance → release:cut{op:handoff,version} (handoff already collects across every leg's artifacts under the shared target tree).`
+          ? `LOCAL ${platform} leg started (detached). Poll release:cut{op:status,platform:'${platform}'}. Once EVERY leg is done: run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed per leg → release:cut{op:handoff,version} (handoff already collects across every leg's artifacts under the shared target tree).`
           : `Leg NOT launched — likely already in flight (see reason). Re-check release:cut{op:status,platform:'${platform}'}.`,
       });
     }
@@ -1014,7 +1014,7 @@ export default defineTool({
       logPath: launch.logPath,
       ...(launch.reason ? { reason: launch.reason } : {}),
       note: launch.launched
-        ? 'LOCAL cut started (detached, ~35–60 min). Poll release:cut{op:status}; this connection is not tied to the build. When done: recipes:run release-verify-provenance → release:cut{op:handoff,version}.'
+        ? 'LOCAL cut started (detached, ~35–60 min). Poll release:cut{op:status}; this connection is not tied to the build. When done: run papercusp-desktop/bin/verify-provenance.sh <leg-out-dir> --health-sha <sha> --require-signed per leg → release:cut{op:handoff,version}.'
         : 'Cut NOT launched — likely a cut is already in flight (see reason). Re-check release:cut{op:status}.',
     });
   },

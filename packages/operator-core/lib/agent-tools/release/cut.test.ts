@@ -467,7 +467,7 @@ describe('release:cut — handoff (LOCAL deliverable)', () => {
     const b = body(await tool.handler({ op: 'handoff', version: '0.0.8' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'handoff', found: true });
     expect(b.artifacts[0]).toMatchObject({ sha256: 'deadbeef', signed: true });
-    expect(b.shipGate).toMatch(/release-verify-provenance/);
+    expect(b.shipGate).toMatch(/bin\/verify-provenance\.sh/);
     expect(b.note).toMatch(/Never publish to GitHub/i);
   });
   it('loudly blocks hand-off when an UPDATER artifact is unsigned', async () => {
