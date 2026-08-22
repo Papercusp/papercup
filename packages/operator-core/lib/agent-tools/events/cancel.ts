@@ -105,10 +105,14 @@ export default defineTool({
           if (!cancelled) out.ok = false;
         }
         if (item.delivery_id != null) {
-          const acked = await ackDelivery({ deliveryId: item.delivery_id, subscriberId: identity.ownerId });
+          const ack = await ackDelivery({ deliveryId: item.delivery_id, subscriberId: identity.ownerId });
           out.delivery_id = item.delivery_id;
-          out.acked = acked;
-          if (!acked && item.await_id == null && item.root_id == null) out.ok = false;
+          out.acked = ack.acked;
+          if (ack.alreadySettled) {
+            out.already_settled = true;
+            out.status = ack.status;
+          }
+          if (!ack.acked && !ack.alreadySettled && item.await_id == null && item.root_id == null) out.ok = false;
         }
         if (out.ok !== true) out.error = 'not_found_or_not_yours_or_already_settled';
         return out as { ok: boolean; await_id?: number; delivery_id?: number; root_id?: number; error?: string };

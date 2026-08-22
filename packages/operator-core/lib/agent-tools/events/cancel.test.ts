@@ -51,7 +51,7 @@ describe('events:cancel dual-path result', () => {
   });
 
   it('ack-only success → ok:true, acked:true', async () => {
-    vi.mocked(ackDelivery).mockResolvedValue(true);
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ delivery_id: 3 });
     expect(ackDelivery).toHaveBeenCalledWith({ deliveryId: 3, subscriberId: 'su-canceller' });
     expect(cancelAwait).not.toHaveBeenCalled();
@@ -60,14 +60,25 @@ describe('events:cancel dual-path result', () => {
   });
 
   it('ack-only miss (await_id==null) → ok:false + reason', async () => {
-    vi.mocked(ackDelivery).mockResolvedValue(false);
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false });
     const out = await call({ delivery_id: 3 });
     expect(out).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 }, results: [{ ok: false, delivery_id: 3, acked: false, error: 'not_found_or_not_yours_or_already_settled' }] });
   });
 
+  it('ack-only already-settled delivery → ok:true with an explicit settled result', async () => {
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: true, status: 'delivered' });
+    const out = await call({ delivery_id: 3 });
+    expect(out).toMatchObject({
+      ok: true,
+      counts: { ok: 1, failed: 0 },
+      results: [{ ok: true, delivery_id: 3, acked: false, already_settled: true, status: 'delivered' }],
+    });
+    expect(out.results[0].error).toBeUndefined();
+  });
+
   it('both success → ok:true with both halves reported', async () => {
     vi.mocked(cancelAwait).mockResolvedValue(true);
-    vi.mocked(ackDelivery).mockResolvedValue(true);
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: true, await_id: 7, cancelled: true, delivery_id: 3, acked: true });
     expect(out.results[0].error).toBeUndefined();
@@ -75,7 +86,7 @@ describe('events:cancel dual-path result', () => {
 
   it('asymmetric: ack-miss + cancel-success → ok STAYS true (the miss does not flip when await_id != null)', async () => {
     vi.mocked(cancelAwait).mockResolvedValue(true);
-    vi.mocked(ackDelivery).mockResolvedValue(false);
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: false, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: true, cancelled: true, acked: false });
     expect(out.results[0].error).toBeUndefined();
@@ -83,14 +94,14 @@ describe('events:cancel dual-path result', () => {
 
   it('symmetric counter-case: cancel-miss + ack-success → ok flips false (cancel always flips)', async () => {
     vi.mocked(cancelAwait).mockResolvedValue(false);
-    vi.mocked(ackDelivery).mockResolvedValue(true);
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ await_id: 7, delivery_id: 3 });
     expect(out.results[0]).toMatchObject({ ok: false, cancelled: false, acked: true, error: 'not_found_or_not_yours_or_already_settled' });
   });
 
   it('await_ids + delivery_ids are handled as one keyed batch', async () => {
     vi.mocked(cancelAwait).mockResolvedValue(true);
-    vi.mocked(ackDelivery).mockResolvedValue(true);
+    vi.mocked(ackDelivery).mockResolvedValue({ acked: true, alreadySettled: false });
     const out = await call({ await_ids: [7, 8], delivery_ids: [3] });
     expect(out.counts).toEqual({ ok: 3, failed: 0 });
     expect(out.results.map((r: any) => r.await_id ?? r.delivery_id)).toEqual([7, 8, 3]);

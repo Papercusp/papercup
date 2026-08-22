@@ -1338,17 +1338,39 @@ export async function expireLapsedAwaits(): Promise<number> {
  * via the inbox channel (which is how it actually reached the acker). The
  * D-007 cost saver: an acked wake never burns a resume turn.
  */
-export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<boolean> {
+export type AckDeliveryResult = {
+  /** The call changed an active delivery to inbox-delivered. */
+  acked: boolean;
+  /** The caller owns an existing delivery that was already terminal. */
+  alreadySettled: boolean;
+  status?: string;
+};
+
+export async function ackDelivery(input: { deliveryId: number; subscriberId: string }): Promise<AckDeliveryResult> {
   const { sql } = getOrgPg();
+  const ws = eventsWs();
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = COALESCE(channel, 'inbox'), delivered_at = now(),
            last_error = 'acked by subscriber while awake'
-     WHERE id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
+     WHERE workspace_id = ${ws} AND id = ${input.deliveryId} AND subscriber_id = ${input.subscriberId}
        AND status IN ('pending', 'parked', 'delivering')
     RETURNING id
   `;
-  return rows.length > 0;
+  if (rows.length > 0) return { acked: true, alreadySettled: false };
+
+  // A wake can be settled by the inbox/wake path between the nudge and the
+  // caller's acknowledgement. Distinguish that benign race from a missing or
+  // peer-owned delivery so events:cancel can report an explicit outcome.
+  const settled = await sql<{ status: string }[]>`
+    SELECT status
+      FROM harness_shared.event_wake_deliveries
+     WHERE workspace_id = ${ws} AND id = ${input.deliveryId}
+       AND subscriber_id = ${input.subscriberId}
+     LIMIT 1
+  `;
+  if (settled.length > 0) return { acked: false, alreadySettled: true, status: settled[0].status };
+  return { acked: false, alreadySettled: false };
 }
 
 /**

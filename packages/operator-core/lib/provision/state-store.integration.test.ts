@@ -160,6 +160,21 @@ describe('provision state store (PG)', () => {
     expect(s.outputs).toEqual({ a: 3, b: 'two' });
   });
 
+  it('serializes concurrent resource and output mutations without losing updates', async () => {
+    await Promise.all([
+      appendWalEntry('h', 'p', { kind: 'aws.iam.role', externalId: 'arn:role:concurrent', recordedAt: 'now' }),
+      appendWalEntry('h', 'p', { kind: 'aws.lambda.function', externalId: 'arn:fn:concurrent', recordedAt: 'now' }),
+    ]);
+    await Promise.all([
+      appendStateOutput('h', 'p', 'first', 1),
+      appendStateOutput('h', 'p', 'second', 2),
+    ]);
+
+    const s = await readState('h', 'p');
+    expect(s.createdResources.map((r) => r.externalId).sort()).toEqual(['arn:fn:concurrent', 'arn:role:concurrent']);
+    expect(s.outputs).toMatchObject({ first: 1, second: 2 });
+  });
+
   it('clearState drops the row', async () => {
     await appendWalEntry('h', 'p', { kind: 'k', externalId: 'i', recordedAt: 'now' });
     await clearState('h', 'p');

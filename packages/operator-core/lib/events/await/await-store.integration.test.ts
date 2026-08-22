@@ -190,12 +190,22 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     await store.insertDeliveries({ awaits: fired });
     const [w] = await store.claimDueDeliveries({ limit: 5 });
     await store.markDeliveryParked(w.id, 'alive, no pty', 60_000);
-    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-imposter' })).toBe(false);
-    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toBe(true);
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-imposter' })).toEqual({
+      acked: false,
+      alreadySettled: false,
+    });
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toEqual({
+      acked: true,
+      alreadySettled: false,
+    });
     const recent = await store.listRecentDeliveries('su-ack');
     expect(recent[0]).toMatchObject({ status: 'delivered', channel: 'inbox' });
     // Idempotence: a second ack is a no-op (already settled).
-    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toBe(false);
+    expect(await store.ackDelivery({ deliveryId: w.id, subscriberId: 'su-ack' })).toEqual({
+      acked: false,
+      alreadySettled: true,
+      status: 'delivered',
+    });
   });
 
   it('settleCaughtUpInboxWakeDeliveries (EI-9389): settles MY pre-cutoff pending/parked standing-inbox-wake deliveries as coalesced; a post-cutoff row and a peer\'s row are left alone', async () => {

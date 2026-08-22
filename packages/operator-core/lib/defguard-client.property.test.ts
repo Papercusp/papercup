@@ -20,6 +20,8 @@
  */
 import fc from 'fast-check';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import type { DefguardAuditStore } from './defguard-client';
 
 const fetchMock = vi.fn();
 
@@ -32,7 +34,19 @@ const ORIGINAL_URL = process.env.DEFGUARD_URL;
 
 // Load the module once, with a token set + a fixed control URL, so revoke
 // actually fetches and the URL is fully predictable.
-let revokeDefguardUser: (deviceId: string) => Promise<void>;
+let revokeDefguardUser: typeof import('./defguard-client').revokeDefguardUser;
+const audit: DefguardAuditStore = {
+  recordEnrollment: async () => undefined,
+  assertRevocationBinding: async () => undefined,
+  recordRevocation: async () => undefined,
+};
+const WORKSPACE = 'ws-property';
+const USER_EMAIL = 'owner@example.test';
+const SCOPE = createHash('sha256').update(WORKSPACE).digest('hex').slice(0, 8);
+
+async function revoke(deviceId: string): Promise<void> {
+  await revokeDefguardUser({ deviceId, workspaceId: WORKSPACE, userEmail: USER_EMAIL }, { audit });
+}
 
 beforeEach(async () => {
   fetchMock.mockReset();
@@ -68,7 +82,7 @@ describe('deviceUsername slug — properties (via revokeDefguardUser URL)', () =
     return fc.assert(
       fc.asyncProperty(fc.string(), async (deviceId) => {
         fetchMock.mockClear();
-        await revokeDefguardUser(deviceId);
+        await revoke(deviceId);
         const username = usernameFromLastCall();
         // The whole username is pcusp- followed by safe chars only.
         expect(username).toMatch(/^pcusp-[A-Za-z0-9-]*$/);
@@ -81,9 +95,9 @@ describe('deviceUsername slug — properties (via revokeDefguardUser URL)', () =
     return fc.assert(
       fc.asyncProperty(fc.string(), async (deviceId) => {
         fetchMock.mockClear();
-        await revokeDefguardUser(deviceId);
+        await revoke(deviceId);
         const username = usernameFromLastCall();
-        const tail = username.slice('pcusp-'.length);
+        const tail = username.slice(`pcusp-${SCOPE}-`.length);
         const expected = deviceId.slice(0, 12).replace(/[^a-zA-Z0-9-]/g, '');
         expect(tail).toBe(expected);
         // Sanitizing only removes — never lengthens past the 12-char window.
@@ -97,7 +111,7 @@ describe('deviceUsername slug — properties (via revokeDefguardUser URL)', () =
     return fc.assert(
       fc.asyncProperty(fc.string({ unit: 'grapheme' }), async (deviceId) => {
         fetchMock.mockClear();
-        await revokeDefguardUser(deviceId);
+        await revoke(deviceId);
         const username = usernameFromLastCall();
         expect(username).toMatch(/^pcusp-[A-Za-z0-9-]*$/);
         // URL-encoding the username must be a no-op — it is already path-safe.

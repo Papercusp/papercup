@@ -17,10 +17,18 @@
  * Hermetic: global `fetch` is stubbed; no network, no real Defguard.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash } from 'node:crypto';
+import type { DefguardAuditStore } from './defguard-client';
 
 type Mod = typeof import('./defguard-client');
 
 const fetchMock = vi.fn();
+const audit: DefguardAuditStore = {
+  recordEnrollment: vi.fn(async () => undefined),
+  assertRevocationBinding: vi.fn(async () => undefined),
+  recordRevocation: vi.fn(async () => undefined),
+};
+const scope = (workspaceId: string) => createHash('sha256').update(workspaceId).digest('hex').slice(0, 8);
 
 /** A Response-ish stub for the `dg()` helper (reads res.ok/.status/.text()). */
 function res(opts: { ok?: boolean; status?: number; body?: unknown }): Response {
@@ -50,6 +58,9 @@ const ORIGINAL_CTRL = process.env.DEFGUARD_CONTROL_URL;
 
 beforeEach(() => {
   fetchMock.mockReset();
+  vi.mocked(audit.recordEnrollment).mockClear();
+  vi.mocked(audit.assertRevocationBinding).mockClear();
+  vi.mocked(audit.recordRevocation).mockClear();
   vi.stubGlobal('fetch', fetchMock);
 });
 
@@ -90,7 +101,7 @@ describe('no DEFGUARD_API_TOKEN → null / no-op, never fetches', () => {
 
   it('revokeDefguardUser is a no-op (resolves, no fetch) without a token', async () => {
     const { revokeDefguardUser } = await loadWith({ token: '' });
-    await expect(revokeDefguardUser('dev-123')).resolves.toBeUndefined();
+    await expect(revokeDefguardUser({ deviceId: 'dev-123', userEmail: 'a@b.c', workspaceId: 'ws' })).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
@@ -116,13 +127,15 @@ describe('mintDefguardEnrollment — happy path + slug in URL/return', () => {
       deviceId: 'ABCDEF0123456789extra', // 21 chars; slice(0,12) = ABCDEF012345
       userEmail: 'owner@example.com',
       workspaceId: 'ws-9',
-    });
+    }, { audit });
+
+    const username = `pcusp-${scope('ws-9')}-ABCDEF012345`;
 
     expect(out).toEqual({
       controlUrl: 'https://mesh.example',
       enrollmentUrl: 'https://mesh/enroll',
       enrollmentToken: 'tok-xyz',
-      defguardUsername: 'pcusp-ABCDEF012345',
+      defguardUsername: username,
     });
 
     // Two fetches: user create, then enrollment — both bear the slug + bearer.
@@ -136,7 +149,13 @@ describe('mintDefguardEnrollment — happy path + slug in URL/return', () => {
       'content-type': 'application/json',
     });
     // start_enrollment path embeds the slugged username.
-    expect(enrolUrl).toBe('https://mesh.example/api/v1/user/pcusp-ABCDEF012345/start_enrollment');
+    expect(enrolUrl).toBe(`https://mesh.example/api/v1/user/${username}/start_enrollment`);
+    expect(audit.recordEnrollment).toHaveBeenCalledWith({
+      deviceId: 'ABCDEF0123456789extra',
+      workspaceId: 'ws-9',
+      userEmail: 'owner@example.com',
+      defguardUsername: username,
+    });
   });
 
   it('strips unsafe characters out of the slug (only [A-Za-z0-9-] survive)', async () => {
@@ -150,11 +169,11 @@ describe('mintDefguardEnrollment — happy path + slug in URL/return', () => {
     // deviceId with dots/slashes/spaces in the first 12 chars.
     const out = await mintDefguardEnrollment({
       deviceId: 'a.b/c d:e_f!ghijk',
-      userEmail: '',
+      userEmail: 'owner@example.com',
       workspaceId: 'w',
-    });
+    }, { audit });
     // slice(0,12) = "a.b/c d:e_f!" → strip non [A-Za-z0-9-] → "abcdef"
-    expect(out?.defguardUsername).toBe('pcusp-abcdef');
+    expect(out?.defguardUsername).toBe(`pcusp-${scope('w')}-abcdef`);
     expect(out?.defguardUsername).toMatch(/^pcusp-[A-Za-z0-9-]*$/);
   });
 
@@ -172,7 +191,7 @@ describe('mintDefguardEnrollment — happy path + slug in URL/return', () => {
       deviceId: 'dev0',
       userEmail: 'x@y.z',
       workspaceId: 'w',
-    });
+    }, { audit });
     expect(out?.enrollmentToken).toBe('t2');
     expect(out?.enrollmentUrl).toBe('u2');
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -183,7 +202,7 @@ describe('mintDefguardEnrollment — happy path + slug in URL/return', () => {
 
     const { mintDefguardEnrollment } = await loadWith({ token: 'tk' });
     await expect(
-      mintDefguardEnrollment({ deviceId: 'dev0', userEmail: '', workspaceId: 'w' }),
+      mintDefguardEnrollment({ deviceId: 'dev0', userEmail: 'owner@example.com', workspaceId: 'w' }, { audit }),
     ).rejects.toThrow(/500/);
     // Only the create was attempted; enrollment never reached.
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -195,26 +214,36 @@ describe('revokeDefguardUser — with token', () => {
     fetchMock.mockResolvedValueOnce(res({ ok: true }));
 
     const { revokeDefguardUser } = await loadWith({ token: 'tk', url: 'https://m' });
-    await expect(revokeDefguardUser('Device#99zz!!')).resolves.toBeUndefined();
+    await expect(revokeDefguardUser({ deviceId: 'Device#99zz!!', userEmail: 'owner@example.com', workspaceId: 'ws' }, { audit })).resolves.toBeUndefined();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     // slice(0,12) = "Device#99zz!" → strip → "Device99zz"
-    expect(url).toBe('https://m/api/v1/user/pcusp-Device99zz');
+    expect(url).toBe(`https://m/api/v1/user/pcusp-${scope('ws')}-Device99zz`);
     expect((init as RequestInit).method).toBe('DELETE');
+    expect(audit.assertRevocationBinding).toHaveBeenCalledOnce();
+    expect(audit.recordRevocation).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws', userEmail: 'owner@example.com' }), 'deleted');
   });
 
   it('swallows a 404 on delete (already gone)', async () => {
     fetchMock.mockResolvedValueOnce(res({ ok: false, status: 404, body: { error: 'gone' } }));
 
     const { revokeDefguardUser } = await loadWith({ token: 'tk' });
-    await expect(revokeDefguardUser('dev')).resolves.toBeUndefined();
+    await expect(revokeDefguardUser({ deviceId: 'dev', userEmail: 'owner@example.com', workspaceId: 'ws' }, { audit })).resolves.toBeUndefined();
+    expect(audit.recordRevocation).toHaveBeenCalledWith(expect.any(Object), 'already_absent');
   });
 
   it('propagates a non-404 delete failure', async () => {
     fetchMock.mockResolvedValueOnce(res({ ok: false, status: 500, body: { error: 'x' } }));
 
     const { revokeDefguardUser } = await loadWith({ token: 'tk' });
-    await expect(revokeDefguardUser('dev')).rejects.toThrow(/500/);
+    await expect(revokeDefguardUser({ deviceId: 'dev', userEmail: 'owner@example.com', workspaceId: 'ws' }, { audit })).rejects.toThrow(/500/);
+  });
+
+  it('refuses deletion when the workspace/operator/device binding does not match', async () => {
+    vi.mocked(audit.assertRevocationBinding).mockRejectedValueOnce(new Error('binding mismatch'));
+    const { revokeDefguardUser } = await loadWith({ token: 'tk' });
+    await expect(revokeDefguardUser({ deviceId: 'dev', userEmail: 'other@example.com', workspaceId: 'other' }, { audit })).rejects.toThrow(/binding mismatch/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

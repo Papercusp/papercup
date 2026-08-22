@@ -74,6 +74,10 @@ const EMPTY_STATE: ProvisionState = {
   setupFailed: false,
 };
 
+function emptyState(): ProvisionState {
+  return { ...EMPTY_STATE, createdResources: [], outputs: {} };
+}
+
 async function readRow(harness: string, plugin: string): Promise<ProvisionState | null> {
   const { db } = getOrgPg();
   const ws = activeWorkspaceId();
@@ -99,12 +103,48 @@ async function upsertRow(harness: string, plugin: string, state: ProvisionState)
 }
 
 /**
+ * Apply one state mutation while holding the row lock. The insert-before-lock
+ * step is required for first writers: SELECT ... FOR UPDATE cannot lock a row
+ * that does not exist, so two concurrent first writes would otherwise both
+ * start from EMPTY_STATE and one would overwrite the other.
+ */
+async function updateState(
+  harness: string,
+  plugin: string,
+  mutate: (current: ProvisionState) => ProvisionState,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  const ws = activeWorkspaceId();
+  await sql.begin(async (tx) => {
+    await tx`
+      INSERT INTO harness_shared.provision_state
+        (workspace_id, harness_slug, plugin_slug, payload, updated_at)
+      VALUES (${ws}, ${harness}, ${plugin}, ${JSON.stringify(EMPTY_STATE)}::text::jsonb, ${Date.now()})
+      ON CONFLICT (workspace_id, harness_slug, plugin_slug) DO NOTHING
+    `;
+    const rows = await tx<{ payload: ProvisionState }[]>`
+      SELECT payload
+        FROM harness_shared.provision_state
+       WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND plugin_slug = ${plugin}
+       FOR UPDATE
+    `;
+    const current = rows[0]?.payload ? { ...EMPTY_STATE, ...rows[0].payload } : emptyState();
+    const next = mutate(current);
+    await tx`
+      UPDATE harness_shared.provision_state
+         SET payload = ${JSON.stringify(next)}::text::jsonb, updated_at = ${Date.now()}
+       WHERE workspace_id = ${ws} AND harness_slug = ${harness} AND plugin_slug = ${plugin}
+    `;
+  });
+}
+
+/**
  * Read state for (harness, plugin), returning the empty state when no
  * row exists. WAL-folding is gone — the row IS the authoritative state.
  */
 export async function readState(harness: string, plugin: string): Promise<ProvisionState> {
   const row = await readRow(harness, plugin);
-  if (!row) return { ...EMPTY_STATE, createdResources: [], outputs: {} };
+  if (!row) return emptyState();
   return { ...EMPTY_STATE, ...row };
 }
 
@@ -119,26 +159,26 @@ export async function writeState(
 /**
  * Append a single resource record to (harness, plugin)'s state. Idempotent
  * on (kind, externalId) — duplicates collapse. Replaces the prior
- * append-to-WAL behavior; the read-modify-write happens inside one PG
- * round-trip but the call is still safe under concurrent writers because
- * Postgres serializes the row update.
+ * append-to-WAL behavior; the read-modify-write happens inside one row-locked
+ * transaction so concurrent writers cannot lose each other's resources.
  */
 export async function appendWalEntry(
   harness: string,
   plugin: string,
   entry: RecordedResource,
 ): Promise<void> {
-  const cur = await readState(harness, plugin);
-  const k = `${entry.kind}\0${entry.externalId}`;
-  const map = new Map<string, RecordedResource>();
-  for (const r of cur.createdResources) map.set(`${r.kind}\0${r.externalId}`, r);
-  const existing = map.get(k);
-  if (existing) {
-    map.set(k, { ...existing, ...entry, recordedAt: existing.recordedAt });
-  } else {
-    map.set(k, entry);
-  }
-  await writeState(harness, plugin, { ...cur, createdResources: [...map.values()] });
+  await updateState(harness, plugin, (cur) => {
+    const k = `${entry.kind}\0${entry.externalId}`;
+    const map = new Map<string, RecordedResource>();
+    for (const r of cur.createdResources) map.set(`${r.kind}\0${r.externalId}`, r);
+    const existing = map.get(k);
+    if (existing) {
+      map.set(k, { ...existing, ...entry, recordedAt: existing.recordedAt });
+    } else {
+      map.set(k, entry);
+    }
+    return { ...cur, createdResources: [...map.values()] };
+  });
 }
 
 /**
@@ -150,8 +190,10 @@ export async function appendStateOutput(
   key: string,
   value: unknown,
 ): Promise<void> {
-  const cur = await readState(harness, plugin);
-  await writeState(harness, plugin, { ...cur, outputs: { ...cur.outputs, [key]: value } });
+  await updateState(harness, plugin, (cur) => ({
+    ...cur,
+    outputs: { ...cur.outputs, [key]: value },
+  }));
 }
 
 /**
