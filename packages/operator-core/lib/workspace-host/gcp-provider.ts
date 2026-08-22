@@ -28,6 +28,10 @@ import type {
 } from '@papercusp/deployment-driver';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { GCP_CLOUD_PLATFORM_SCOPE } from '../cloud-workspaces/gcp-preflight';
+import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
+
+export { createGcpWorkspaceHostApiClient, GoogleComputeWorkspaceHostApiClient } from './gcp-api-client';
+export type { GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
 
 export { GCP_CLOUD_PLATFORM_SCOPE };
 
@@ -52,6 +56,7 @@ export type GcpOperationScope = 'global' | 'region' | 'zone';
 
 export interface GcpOperationRef {
   name: string;
+  projectId: string;
   scope: GcpOperationScope;
   location?: string;
   requestId: string;
@@ -222,7 +227,12 @@ export interface GcpWorkspaceHostApiClient {
     input: GcpInstanceInsertInput,
     requestId: string,
   ): Promise<GcpOperationRef>;
-  createSnapshot(projectId: string, input: GcpSnapshotInsertInput, requestId: string): Promise<GcpOperationRef>;
+  createSnapshot(
+    projectId: string,
+    zone: string,
+    input: GcpSnapshotInsertInput,
+    requestId: string,
+  ): Promise<GcpOperationRef>;
 
   startInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
   stopInstance(projectId: string, zone: string, name: string, requestId: string): Promise<GcpOperationRef>;
@@ -1689,7 +1699,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         const sourceDisk = await this.client.getDisk(input.projectId, input.zone, input.request.sourceDisk);
         if (!sourceDisk) throw new Error(`GCP snapshot source disk '${input.request.sourceDisk}' is absent`);
         assertManagedHostResource(sourceDisk, input.hostId, 'snapshot source disk');
-        const operation = await this.client.createSnapshot(input.projectId, input.request, input.requestId);
+        const operation = await this.client.createSnapshot(input.projectId, input.zone, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
         const found = await this.client.getSnapshot(input.projectId, input.request.name);
         if (found?.status !== 'READY') return this.inProgress(request, operation.name);
@@ -2060,4 +2070,11 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
 export function createGcpWorkspaceHostProvider(options: GcpWorkspaceHostProviderOptions): GcpWorkspaceHostProvider {
   if (!options?.client) throw new Error('GCP workspace-host provider requires an injected Compute Engine client');
   return new GcpWorkspaceHostProvider(options.client, { now: options.now });
+}
+
+/** Explicit production composition: ADC and Google REST are never selected implicitly. */
+export function createAdcGcpWorkspaceHostProvider(
+  options: GcpWorkspaceHostApiClientOptions = {},
+): GcpWorkspaceHostProvider {
+  return new GcpWorkspaceHostProvider(createGcpWorkspaceHostApiClient(options), { now: options.now });
 }

@@ -285,8 +285,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     });
   }
 
-  async createSnapshot(_projectId: string, input: GcpSnapshotInsertInput, requestId: string) {
-    return this.mutation(requestId, 'global', undefined, () => {
+  async createSnapshot(_projectId: string, zone: string, input: GcpSnapshotInsertInput, requestId: string) {
+    return this.mutation(requestId, 'zone', zone, () => {
       this.snapshotCalls.push({ input, requestId });
       this.snapshots.set(input.name, { name: input.name, status: 'READY', observedAt: NOW });
     });
@@ -369,6 +369,7 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     effect();
     const operation = {
       name: `operation-${++this.operationNumber}`,
+      projectId: 'papercusp-dev-123',
       scope,
       ...(location ? { location } : {}),
       requestId,

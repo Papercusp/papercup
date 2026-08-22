@@ -313,7 +313,8 @@ export async function inspectGcpLocalCredentialOnboarding(
   };
 }
 
-async function defaultAcquireAuth(): Promise<GcpResolvedAuth> {
+/** Resolve one short-lived ADC access token without retaining credential material. */
+export async function acquireGcpAdcAuth(): Promise<GcpResolvedAuth> {
   const { GoogleAuth } = requireCjs('google-auth-library') as typeof import('google-auth-library');
   const auth = new GoogleAuth({ scopes: [GCP_CLOUD_PLATFORM_SCOPE] });
   const client = await auth.getClient();
@@ -345,7 +346,17 @@ async function gcloudProject(deps: GcpPreflightDeps): Promise<string | undefined
   }
 }
 
-async function apiJson<T>(fetchImpl: typeof fetch, token: string, url: string, init: RequestInit = {}): Promise<T> {
+/**
+ * Shared authenticated Google API JSON transport. Error bodies are deliberately
+ * not copied into the thrown error so bearer tokens and provider diagnostics
+ * cannot leak through logs or persisted workflow failures.
+ */
+export async function fetchGcpApiJson<T>(
+  fetchImpl: typeof fetch,
+  token: string,
+  url: string,
+  init: RequestInit = {},
+): Promise<T> {
   const response = await fetchImpl(url, {
     ...init,
     headers: {
@@ -438,7 +449,7 @@ export async function runGcpWorkspaceHostPreflight(
 
   let auth: GcpResolvedAuth;
   try {
-    auth = await (deps.acquireAuth ?? defaultAcquireAuth)();
+    auth = await (deps.acquireAuth ?? acquireGcpAdcAuth)();
     checks.push({ id: 'credential', status: 'pass', summary: `ADC resolved through ${credential.credentialType}.` });
   } catch {
     checks.push(
@@ -475,7 +486,7 @@ export async function runGcpWorkspaceHostPreflight(
   let quotas: GcpQuotaSnapshot[] = [];
 
   try {
-    const project = await apiJson<{ state?: string }>(
+    const project = await fetchGcpApiJson<{ state?: string }>(
       fetchImpl,
       token,
       `https://cloudresourcemanager.googleapis.com/v3/projects/${encodedProject}`,
@@ -494,7 +505,7 @@ export async function runGcpWorkspaceHostPreflight(
   }
 
   try {
-    const billing = await apiJson<{ billingEnabled?: boolean }>(
+    const billing = await fetchGcpApiJson<{ billingEnabled?: boolean }>(
       fetchImpl,
       token,
       `https://cloudbilling.googleapis.com/v1/projects/${encodedProject}/billingInfo`,
@@ -520,7 +531,7 @@ export async function runGcpWorkspaceHostPreflight(
   const serviceResults = await Promise.all(
     requiredServices.map(async (service) => {
       try {
-        const result = await apiJson<{ state?: string }>(
+        const result = await fetchGcpApiJson<{ state?: string }>(
           fetchImpl,
           token,
           `https://serviceusage.googleapis.com/v1/projects/${encodedProject}/services/${encodeURIComponent(service)}`,
@@ -551,7 +562,7 @@ export async function runGcpWorkspaceHostPreflight(
 
   const requiredPermissions = [...new Set(input.requiredPermissions ?? GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS)];
   try {
-    const granted = await apiJson<{ permissions?: string[] }>(
+    const granted = await fetchGcpApiJson<{ permissions?: string[] }>(
       fetchImpl,
       token,
       `https://cloudresourcemanager.googleapis.com/v1/projects/${encodedProject}:testIamPermissions`,
@@ -591,7 +602,7 @@ export async function runGcpWorkspaceHostPreflight(
   const runtimeServiceAccount = normalizeServiceAccount(input.runtimeServiceAccount, 'runtime_service_account');
   if (runtimeServiceAccount) {
     try {
-      const result = await apiJson<{ permissions?: string[] }>(
+      const result = await fetchGcpApiJson<{ permissions?: string[] }>(
         fetchImpl,
         token,
         `https://iam.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(runtimeServiceAccount)}:testIamPermissions`,
@@ -628,7 +639,9 @@ export async function runGcpWorkspaceHostPreflight(
   }
 
   try {
-    const computeProject = await apiJson<{ quotas?: Array<{ metric?: string; limit?: number; usage?: number }> }>(
+    const computeProject = await fetchGcpApiJson<{
+      quotas?: Array<{ metric?: string; limit?: number; usage?: number }>;
+    }>(
       fetchImpl,
       token,
       `https://compute.googleapis.com/compute/v1/projects/${encodedProject}?fields=quotas(metric,limit,usage)`,
@@ -655,7 +668,7 @@ export async function runGcpWorkspaceHostPreflight(
   }
 
   try {
-    const result = await apiJson<{ items?: Array<{ name?: string; status?: string }> }>(
+    const result = await fetchGcpApiJson<{ items?: Array<{ name?: string; status?: string }> }>(
       fetchImpl,
       token,
       `https://compute.googleapis.com/compute/v1/projects/${encodedProject}/regions?maxResults=500&fields=items(name,status)`,
@@ -676,14 +689,16 @@ export async function runGcpWorkspaceHostPreflight(
 
   try {
     if (input.zone && input.machineType) {
-      const machine = await apiJson<{ name?: string }>(
+      const machine = await fetchGcpApiJson<{ name?: string }>(
         fetchImpl,
         token,
         `https://compute.googleapis.com/compute/v1/projects/${encodedProject}/zones/${encodeURIComponent(input.zone)}/machineTypes/${encodeURIComponent(input.machineType)}`,
       );
       machineTypeCount = machine.name ? 1 : 0;
     } else {
-      const result = await apiJson<{ items?: Record<string, { machineTypes?: Array<{ name?: string }> }> }>(
+      const result = await fetchGcpApiJson<{
+        items?: Record<string, { machineTypes?: Array<{ name?: string }> }>;
+      }>(
         fetchImpl,
         token,
         `https://compute.googleapis.com/compute/v1/projects/${encodedProject}/aggregated/machineTypes?maxResults=500&fields=items/*/machineTypes/name`,
@@ -717,7 +732,7 @@ export async function runGcpWorkspaceHostPreflight(
 
   const image = input.image ?? GCP_DEFAULT_WORKSPACE_HOST_IMAGE;
   try {
-    const result = await apiJson<{ name?: string }>(
+    const result = await fetchGcpApiJson<{ name?: string }>(
       fetchImpl,
       token,
       `https://compute.googleapis.com/compute/v1/projects/${encodeURIComponent(image.project)}/global/images/family/${encodeURIComponent(image.family)}`,
