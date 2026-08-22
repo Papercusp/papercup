@@ -299,6 +299,26 @@ const ABSENCE_PATTERNS: ReadonlyArray<{ re: RegExp; subject: (m: RegExpMatchArra
 ];
 
 /**
+ * Ordinary English has a second `no <noun phrase>` shape that is NOT an
+ * absence claim: "there is no excuse for waiting" is an argument about
+ * effort, not a claim that a repository object named "excuse for waiting"
+ * is missing. These constructions are deliberately enumerated rather than
+ * treating every abstract noun as rhetoric — a genuine claim such as "there
+ * is no reader for it" has no identifier either, but is exactly what this
+ * lint must retain.
+ *
+ * Keep this list high-precision and construction-based. The subject has
+ * already been normalized by `detectAbsencePremises`, so the expressions can
+ * describe the words immediately following `no` without parsing a whole
+ * sentence or guessing whether an abstract noun is important.
+ */
+const RHETORICAL_ABSENCE_SUBJECT = /^(?:(?:[a-z-]+\s+)?(?:excuse|reason)\s+(?:for|to)\b|(?:any\s+)?need\s+(?:for|to)\b|(?:any\s+)?point\s+in\b|(?:any\s+)?sense\s+in\b|(?:a\s+)?coincidence\s+required\b|(?:a\s+)?justification\s+for\b)/i;
+
+function isRhetoricalAbsenceSubject(subject: string): boolean {
+  return RHETORICAL_ABSENCE_SUBJECT.test(subject.trim());
+}
+
+/**
  * Deictic subjects. "…and IT does not exist" is a genuine, load-bearing absence
  * premise in the corpus (WI-7187 prescribes building the very guard it says is
  * absent), so dropping it would be a false negative on a real case. But its
@@ -495,6 +515,11 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       // A subject that was ENTIRELY code redacts to blanks — still skipped, deliberately:
       // P-014 restores code to the QUOTE, it does not make code detectable as a claim.
       if (!subj) continue;
+      // EI-19406990448803963: a rhetorical `no <noun phrase>` construction is
+      // about effort or justification, not a missing code referent. Do this
+      // after code redaction but before building the claim so the false-positive
+      // cannot leak into either the rendered claim or its recheck.
+      if (isRhetoricalAbsenceSubject(subj)) continue;
       // EI-19399570274386816 (1): "…I claimed did not exist" captures the verb, not a
       // subject — a report OF a claim, not a claim.
       if (REPORTED_SPEECH.has(subj.toLowerCase())) continue;

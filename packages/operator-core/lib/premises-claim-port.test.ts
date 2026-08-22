@@ -79,6 +79,21 @@ describe('detectAbsencePremises', () => {
     expect(derive('We have no reader for the offers table, so one must be written.')).toHaveLength(1);
   });
 
+  it('stays quiet for rhetorical `no X` prose while retaining real absence referents', () => {
+    for (const sentence of [
+      'Cheap enough that there is no excuse for relaying.',
+      'There is no reason to wait for a calmer window.',
+      'There is no need to add another module.',
+      'There is no point in grepping for a rhetorical phrase.',
+      'There is no coincidence required to explain this result.',
+    ]) {
+      expect(derive(sentence), sentence).toEqual([]);
+    }
+
+    expect(derive('There is no exported reader for harness_shared.work_items.')).toHaveLength(1);
+    expect(derive('The ledger exists, but there is no reader for it.')).toHaveLength(1);
+  });
+
   it('dedups repeated claims and bounds the row count', () => {
     const many = Array.from({ length: 9 }, (_, i) => `There is no helper number ${i} anywhere.`).join('\n');
     expect(derive(many).length).toBeLessThanOrEqual(4);

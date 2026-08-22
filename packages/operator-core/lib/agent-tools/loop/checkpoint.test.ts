@@ -343,6 +343,12 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       expect(b.absenceLint).toBeUndefined();
     });
 
+    it('stays quiet for rhetorical `no X` prose', async () => {
+      const b = body(await call({ did: 'Cheap enough that there is no excuse for relaying.', next: 'continue' }));
+      expect(b.ok).toBe(true);
+      expect(b.absenceLint).toBeUndefined();
+    });
+
     it('stays quiet when the author already parked the falsifier as a check', async () => {
       const b = body(
         await call({
