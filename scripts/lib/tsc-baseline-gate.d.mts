@@ -78,9 +78,8 @@ export function formatMidInstallWarning({ label, diagnostics, dependencies }: {
     dependencies: string[];
 }): string[];
 /**
- * Files carrying TS1xxx hard-fail diagnostics. Most TS1xxx diagnostics are parser errors, but
- * the range also contains semantic/type errors such as TS1320; keep the legacy helper name and
- * hard-fail policy while letting the compiler message explain the actual problem.
+ * Files carrying parser/scanner diagnostics. This is the syntax projection only;
+ * the gate's hard-fail policy intentionally remains broader (see hardFailFiles).
  *
  * @param {TscErrorEntry[]} errors
  * @returns {string[]}
