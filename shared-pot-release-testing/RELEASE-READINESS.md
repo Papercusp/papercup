@@ -930,10 +930,19 @@ GO/NO-GO fact.**
    pause was never recorded on any work-item, Decision or coord message.
 
    Flip condition — timer re-armed and producing verdicts. Originally THREE things; **(iii) is
-   now CLEARED, so TWO remain:**
-   (i) `replication_soak` (`WI-5481`, 5/5 runs, load hypothesis falsified by frame PSI
-   `avg10=0.00` against host loadavg 42-51); (ii) `restart_durability` (new, untriaged) — both so a
-   re-armed gate is readable rather than permanently noisy; and ~~(iii) **`WI-37464`: a RED gate
+   now CLEARED, so TWO remain.** The `restart_durability` basis is now narrowed by `WI-40388`'s
+   signed 2026-08-21T18:29Z run: the 17 failure bundles contain **16 scored restart modes** —
+   11 `OWNER-CONTENT`, 5 `NO-RE-EMIT`, and 1 `BASELINE` setup miss excluded from the denominator.
+   `OWNER-CONTENT` is the sole current mode. In that signed run, exhaustive failure capture plus
+   straight-line control flow proves the no-re-emit assert ran and passed (`drained_at` survived);
+   this is bounded to runs that provably executed the assert because the fail bank records
+   failures only. `replication_soak` passed 5 kill/restart cycles in both directions with the
+   detector quiet and is the load-bearing leg; `restart_settle_barrier` is single-sample
+   corroboration only. Neither leg measures the owner's own post-restart origin classification,
+   so do not turn either into a user-facing latency or convergence claim. The remaining two
+   conditions are therefore (i) `replication_soak` (`WI-5481`, 5/5 runs, load hypothesis falsified
+   by frame PSI `avg10=0.00` against host loadavg 42-51) and (ii) the narrowed `restart_durability`
+   mode above — both so a re-armed gate is readable rather than permanently noisy; and ~~(iii) **`WI-37464`: a RED gate
    has no firing suppression at all**~~ → **✅ CLEARED 2026-08-12.** The three-tier fresh-exit
    backoff shipped 2026-08-09T12:17Z and was live-verified 2026-08-12T19:30Z (fresh red ⇒
    `GATE: FRESH-RED` rc 0 sub-second; a 7h-old red correctly takes NO fresh exit — the control that
