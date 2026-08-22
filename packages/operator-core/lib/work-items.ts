@@ -1414,6 +1414,74 @@ export type QueryEmbedderResolver = () => Promise<{
   embed: (t: string) => Promise<number[]>;
 } | null>;
 
+type ResolvedWorkItemQueryEmbedder = Awaited<ReturnType<QueryEmbedderResolver>>;
+
+/**
+ * Process-local query-embedder warm state for `searchWorkItems`.
+ *
+ * The resolver can discover and construct a local ONNX pipeline on its first
+ * call. That work must never sit on an interactive search's 4s query-embed
+ * budget: a cold request reports the semantic leg as blocked, returns its
+ * lexical results immediately, and leaves one warmup running for the next
+ * request. The promise is the single-flight latch; the resolved embedder is
+ * only published after a real warmup embed succeeds.
+ */
+const WORK_ITEM_EMBEDDER_WARMUP_TEXT = 'work-items search embedder warmup';
+let warmWorkItemEmbedder: ResolvedWorkItemQueryEmbedder = null;
+let workItemEmbedderWarmupInFlight: Promise<void> | null = null;
+let workItemEmbedderWarmupFailure: string | null = null;
+let workItemEmbedderWarmupGeneration = 0;
+
+async function resolveWorkItemQueryEmbedder(
+  resolver?: QueryEmbedderResolver,
+): Promise<ResolvedWorkItemQueryEmbedder> {
+  const resolve = resolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
+  return await resolve();
+}
+
+function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<void> {
+  if (workItemEmbedderWarmupInFlight) return workItemEmbedderWarmupInFlight;
+
+  const generation = workItemEmbedderWarmupGeneration;
+  workItemEmbedderWarmupFailure = null;
+  const started = (async () => {
+    try {
+      const resolved = await resolveWorkItemQueryEmbedder(resolver);
+      if (generation !== workItemEmbedderWarmupGeneration) return;
+      if (!resolved) {
+        workItemEmbedderWarmupFailure = 'no query embedder resolved (unavailable or disabled)';
+        return;
+      }
+      if (!fitsProseColumns(resolved.dims)) {
+        workItemEmbedderWarmupFailure = `query embedder dims ${resolved.dims} do not fit the prose embedding columns`;
+        return;
+      }
+
+      // Acquiring the resolver is not enough for local ONNX: the first real
+      // embed can still pay model/session initialization. Pay that cost here,
+      // outside the request's query-embed budget.
+      await resolved.embed(WORK_ITEM_EMBEDDER_WARMUP_TEXT);
+      if (generation === workItemEmbedderWarmupGeneration) warmWorkItemEmbedder = resolved;
+    } catch (err) {
+      if (generation === workItemEmbedderWarmupGeneration) {
+        workItemEmbedderWarmupFailure = `query embedder warmup failed: ${(err as Error)?.message ?? String(err)}`;
+      }
+    } finally {
+      if (generation === workItemEmbedderWarmupGeneration) workItemEmbedderWarmupInFlight = null;
+    }
+  })();
+  workItemEmbedderWarmupInFlight = started;
+  return started;
+}
+
+/** Test seam: clear process-local warm state between search-work-item cases. */
+export function resetWorkItemEmbedderWarmup(): void {
+  workItemEmbedderWarmupGeneration += 1;
+  warmWorkItemEmbedder = null;
+  workItemEmbedderWarmupInFlight = null;
+  workItemEmbedderWarmupFailure = null;
+}
+
 /** Domain filters both work-item search sources honour — applied IN SQL, so the
  *  per-source `limit` is spent on rows that can actually be returned. */
 interface WorkItemSearchFilters {
@@ -1714,25 +1782,20 @@ export async function searchWorkItems(
      * sets `legs.semantic.blocked = 'query embed failed: <reason>'`, which
      * IS flagged, and carries the reason to the caller.
      */
-    const unavailable = (why: string) => async (): Promise<number[]> => {
-      throw new Error(why);
-    };
-    try {
-      const resolve =
-        opts.embedderResolver ?? (await import('./agent-tools/search/embedder')).buildQueryEmbedderResolved;
-      const resolved = await resolve();
-      if (!resolved) {
-        embedder = unavailable('no query embedder resolved (unavailable or disabled)');
-      } else if (!fitsProseColumns(resolved.dims)) {
-        // The embedding columns have a fixed width; a query vector in another
-        // (harrier@1024) can't rank against them — say so rather than SQL-error.
-        embedder = unavailable(`query embedder dims ${resolved.dims} do not fit the prose embedding columns`);
-      } else {
-        embedder = resolved.embed;
-        embeddingMode = resolved.mode;
-      }
-    } catch (err) {
-      embedder = unavailable(`query embedder resolution threw: ${(err as Error).message}`);
+    if (warmWorkItemEmbedder) {
+      embedder = warmWorkItemEmbedder.embed;
+      embeddingMode = warmWorkItemEmbedder.mode;
+    } else {
+      // Cold acquisition and the first model embed run behind this request.
+      // Every concurrent cold caller shares the same promise and returns its
+      // lexical result without awaiting it.
+      void warmWorkItemQueryEmbedder(opts.embedderResolver);
+      embedder = async (): Promise<number[]> => {
+        throw new Error(
+          workItemEmbedderWarmupFailure ??
+            'query embedder warming up (cold start; retry for semantic results)',
+        );
+      };
     }
   }
 

@@ -121,6 +121,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  wi.resetWorkItemEmbedderWarmup();
   await db.sql`TRUNCATE harness_shared.work_items,
                        harness_shared.coord_entity_subscriptions,
                        harness_shared.coord_threads, harness_shared.coord_thread_posts,
@@ -1828,7 +1829,8 @@ describe('unified work_items surface (real PG)', () => {
   it('a WANTED semantic leg that cannot run reports BLOCKED + degraded — not a healthy lexical-only search', async () => {
     await wi.createWorkItem({ kind: 'bug', title: 'quilzar blocked leg', harness: 'papercup', createdBy: 'agA' });
 
-    // The embedder outage case: semantic asked for, resolver yields nothing.
+    // The cold-start case: semantic was asked for, but the request must not
+    // wait for the resolver to prove that no embedder is available.
     const res = await wi.searchWorkItems('quilzar', { semantic: true, embedderResolver: async () => null });
 
     // Lexical still answers — fail-open is preserved, the hits are real.
@@ -1838,9 +1840,74 @@ describe('unified work_items surface (real PG)', () => {
     // whole point: without it this response is byte-indistinguishable from
     // the healthy lexical-only one above.
     expect(res.legs.semantic.status).not.toBe('not-run');
-    expect(res.legs.semantic.blocked).toMatch(/no query embedder resolved/);
+    expect(res.legs.semantic.blocked).toMatch(/query embedder warming up/);
     expect(res.legs.degraded).toBe(true);
     expect(res.legs.warning).toContain('semantic leg blocked');
+  });
+
+  it('cold semantic search returns lexical results, single-flights warmup, and reuses the warm embedder', async () => {
+    await wi.createWorkItem({
+      kind: 'bug',
+      title: 'warmup singleflight work item',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+
+    let releaseResolver!: () => void;
+    let resolverStartedResolve!: () => void;
+    const resolverGate = new Promise<void>((resolve) => {
+      releaseResolver = resolve;
+    });
+    const resolverStarted = new Promise<void>((resolve) => {
+      resolverStartedResolve = resolve;
+    });
+    let warmupEmbedStartedResolve!: () => void;
+    const warmupEmbedStarted = new Promise<void>((resolve) => {
+      warmupEmbedStartedResolve = resolve;
+    });
+    const vector = Array.from({ length: 768 }, () => 0.01);
+    const embed = vi.fn(async (text: string) => {
+      if (text === 'work-items search embedder warmup') warmupEmbedStartedResolve();
+      return vector;
+    });
+    const resolver = vi.fn(async () => {
+      resolverStartedResolve();
+      await resolverGate;
+      return { mode: 'gemma', dims: 768, embed };
+    });
+
+    const firstPromise = wi.searchWorkItems('warmup singleflight', {
+      semantic: true,
+      embedderResolver: resolver,
+    });
+    await resolverStarted;
+    const secondPromise = wi.searchWorkItems('warmup singleflight', {
+      semantic: true,
+      embedderResolver: resolver,
+    });
+
+    // The resolver is deliberately still blocked. Both searches must finish
+    // lexically instead of inheriting the resolver/model cold-start latency.
+    const [first, second] = await Promise.all([firstPromise, secondPromise]);
+    expect(first.items.some((w) => w.title === 'warmup singleflight work item')).toBe(true);
+    expect(second.items.some((w) => w.title === 'warmup singleflight work item')).toBe(true);
+    expect(first.legs.semantic.blocked).toMatch(/warming up/);
+    expect(second.legs.semantic.blocked).toMatch(/warming up/);
+    expect(resolver).toHaveBeenCalledTimes(1);
+
+    releaseResolver();
+    await warmupEmbedStarted;
+    // Let the warmup continuation publish the resolved embedder before the
+    // next request; the request itself never waits on this continuation.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const warm = await wi.searchWorkItems('warmup singleflight', {
+      semantic: true,
+      embedderResolver: resolver,
+    });
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(embed).toHaveBeenCalledWith('warmup singleflight');
+    expect(warm.legs.semantic.blocked).toBeNull();
   });
 
   it('a query matching NOTHING reports a ran-but-empty lexical leg, not a failure', async () => {
