@@ -110,7 +110,7 @@ export function resolveOperatorUrl(opts?: {}): any;
  * connect budget on it and failed ("operator unreachable") while a healthy
  * operator sat one operator.json read away.
  */
-export function resolveFallbackOperatorTargets({ env, home, excludeUrls, }?: {
+export function resolveFallbackOperatorTargets({ env, home, excludeUrls }?: {
     env?: NodeJS.ProcessEnv | undefined;
     home?: string | undefined;
     excludeUrls?: never[] | undefined;
@@ -283,7 +283,7 @@ export function subagentGatewayRiskNotice(agent: any, allowSubagents: any, envel
  * @returns {string[]}
  */
 export function ompLspArgs(allowNativeLsp?: boolean): string[];
-export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model, allowNativeLsp, }?: {}): {
+export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, model, allowNativeLsp }?: {}): {
     bin: string;
     args: any[];
 };
@@ -312,7 +312,7 @@ export function roleLaunchArgs(backend: any, { promptFile, mcpJsonPath, coordExt
  * ours) + the approvals/sandbox bypass Papercusp still uses for managed
  * Codex launches pending a current MCP-under-sandbox live smoke.
  */
-export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, allowNativeLsp, }?: {}): {
+export function suLaunchArgs(backend: any, { promptFile, coordExtPath, injectHookPath, nativeSessionId, replaceClaudeBase, allowSubagents, allowNativeLsp }?: {}): {
     bin: string;
     args: any[];
 };
@@ -450,7 +450,7 @@ export function resumeKickoffText(args: any, env?: NodeJS.ProcessEnv): any;
  * and codex via its own config; passing --hook to either is meaningless.
  */
 export function resolveOmpInjectHookPath(agent: any, home?: string): string | undefined;
-export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model, }?: {
+export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork, forkSessionId, addDir, allowSubagents, model }?: {
     fork?: boolean | undefined;
     forkSessionId?: null | undefined;
     addDir?: never[] | undefined;
@@ -634,7 +634,7 @@ export function recordSessionOwner(nativeSessionId: any, coordOwnerId: any, { ho
  * }} [opts]
  * @returns {{ path: string, uninstall: () => void } | null}
  */
-export function installBootLogCapture(ownerId: string | null | undefined, { home, maxBytes, stream, argv, now, }?: {
+export function installBootLogCapture(ownerId: string | null | undefined, { home, maxBytes, stream, argv, now }?: {
     home?: string;
     maxBytes?: number;
     stream?: {
@@ -1044,7 +1044,7 @@ export function ompDirectModelForRoute(model: any): any;
 /** Apply a selected OMP route to the exact per-session registry used by resume.
  * Auto/pin replace models.yml with the generated gateway provider; default
  * restores the global direct registry so switching modes is reversible. */
-export function applyOmpResumeAccountRoute({ session, env, accountRoute, model, home, }: {
+export function applyOmpResumeAccountRoute({ session, env, accountRoute, model, home }: {
     session: any;
     env: any;
     accountRoute: any;
@@ -1343,7 +1343,7 @@ export function rehealResumeCredentials(configDir: any, { home }?: {
  * no gh / not logged in → env untouched (the plugin then fails exactly as before, never worse).
  * Mutates + returns env. `runGh` injectable for tests.
  */
-export function applyGithubTokenEnv(env: any, { runGh, }?: {
+export function applyGithubTokenEnv(env: any, { runGh }?: {
     runGh?: (() => import("child_process").SpawnSyncReturns<string>) | undefined;
 }): any;
 /** Persist the default-account Claude OAuth token (0600); creates ~/.papercusp. */
@@ -1482,7 +1482,7 @@ export function validateModelSpec(spec: any): {
  *   - ≥35% → warn loudly, proceed.
  * Pure + exported for tests; the caller decides how to surface it.
  */
-export function preflightWindowGuard({ personaBytes, contextSize, model, agent, budget, }: {
+export function preflightWindowGuard({ personaBytes, contextSize, model, agent, budget }: {
     personaBytes: any;
     contextSize: any;
     model: any;
@@ -1523,7 +1523,7 @@ export function assertCodexToolTransport({ agent, contextSize }: {
     contextSize: any;
 }): void;
 /** Run both preflight guards before a launch; exits/throws per policy. */
-export function runLaunchPreflight({ promptFile, contextSize, model, agent, budget, force, }: {
+export function runLaunchPreflight({ promptFile, contextSize, model, agent, budget, force }: {
     promptFile: any;
     contextSize: any;
     model: any;
@@ -1630,7 +1630,7 @@ export function chooseResumeAccount(session: any, args: any): Promise<{
     auto?: undefined;
     forward?: undefined;
 }>;
-export function usePtyHost({ env, stdin, stdout, }?: {
+export function usePtyHost({ env, stdin, stdout }?: {
     env?: NodeJS.ProcessEnv | undefined;
     stdin?: (NodeJS.ReadStream & {
         fd: 0;
@@ -1739,7 +1739,7 @@ export function reExecSafePermissionsFromArgs(args: any): {
  * Fail-open: a write failure warns and the launch continues on argv flags
  * alone — exactly the pre-P-002 behavior. Exported for tests.
  */
-export function persistReExecSafePermissions({ env, args, log, }: {
+export function persistReExecSafePermissions({ env, args, log }: {
     env: any;
     args: any;
     log?: ((m: any) => boolean) | undefined;
@@ -1858,7 +1858,7 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * Fire-and-forget, bounded, never rejects — a resume must never wait on it.
  * Exported with injectables for tests.
  */
-export function reportSessionResumed(advSessionId: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function reportSessionResumed(advSessionId: any, { fetchImpl, operatorUrl, token, timeoutMs }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -1904,7 +1904,7 @@ export function reportSessionRespawned(advSessionId: any, sessionId: any, { coor
  * respawn's own kill timeout so a wedged operator delays a respawn rather than
  * stalling it. Exported with injectables for tests.
  */
-export function refreshPersonaRender(coordOwnerId: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function refreshPersonaRender(coordOwnerId: any, { fetchImpl, operatorUrl, token, timeoutMs }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -1924,7 +1924,7 @@ export function refreshPersonaRender(coordOwnerId: any, { fetchImpl, operatorUrl
  * reconcile through the status route before deciding whether acknowledgement
  * failed; killing a successfully-delivered target on a network ambiguity would
  * be as wrong as accepting PTY output as persistence. */
-export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function reportSessionPortDelivery(sessionPort: any, proof: any, { fetchImpl, operatorUrl, token, timeoutMs }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -2155,7 +2155,7 @@ export function freshSuBootstrapBody(selections: any, args: any, { brain }?: {
     plan_slug: any;
     launch_argv: string[];
 };
-export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model, fleet, fleetRole, fleetName, fleetScheme, }?: {}): {
+export function roleBootstrapBody({ role, agent, workspace, harness, feature, plan, account, model, fleet, fleetRole, fleetName, fleetScheme }?: {}): {
     fleet_scheme?: any;
     fleet_name?: any;
     fleet_role?: any;
@@ -2352,7 +2352,7 @@ export function isClaudeConfigDirLaunchReady(configDir: any): boolean;
  * mirror tryRematerializeFromArchive so this is unit-testable without a live
  * operator.
  */
-export function ensureInteractiveConfigViaOperator(owner: any, configDir: any, { fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function ensureInteractiveConfigViaOperator(owner: any, configDir: any, { fetchImpl, operatorUrl, token, timeoutMs }?: {
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
     token?: null | undefined;
@@ -2391,7 +2391,7 @@ export function isCodexHomeLaunchReady(codexHome: any): boolean;
  * Idempotent and non-destructive: a healthy home is left byte-identical and the
  * call reports `repaired: false`.
  */
-export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, fetchImpl, operatorUrl, token, timeoutMs, }?: {
+export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessionId: any, { requireGatewayProvider, fetchImpl, operatorUrl, token, timeoutMs }?: {
     requireGatewayProvider?: boolean | undefined;
     fetchImpl?: typeof fetch | undefined;
     operatorUrl?: any;
@@ -2763,4 +2763,4 @@ export namespace AGENT_LABELS {
     let codex: string;
     let omp: string;
 }
-import { spawn } from "node:child_process";
+import { spawn } from 'node:child_process';
