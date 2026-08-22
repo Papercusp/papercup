@@ -40,6 +40,7 @@ import { buildGymOperatorBootSpec, scrubLauncherClaudeSessionEnv } from './boot-
 import { createGymRunnerPorts } from './runner-ports';
 import { buildLoopDeps, type LoopTask } from './loop-deps';
 import { materialisePapercuspSubstrate } from './papercusp-corpus-tasks';
+import { createGymSubstrateRoot, sweepOrphanedGymSubstrates } from './gym-substrate-orphan-sweep';
 import { runOptimizationLoop, type LoopResult } from './loop';
 import { makeLoopProposalRecorder, setAutoloop, getAutoloop } from './control-plane';
 import { gatherChampionOutcomeEntries } from './post-acceptance-outcomes';
@@ -293,6 +294,18 @@ export async function runOneAutoloopCycle(
   let pgContainer: StartedPostgreSqlContainer | undefined;
   let operator: ChildProcess | undefined;
   let logFd: number | undefined;
+
+  // WI-40255: `finally` cannot run after SIGKILL/OOM/host restart, so reclaim
+  // prior multi-GB hard-linked substrate roots before creating another one.
+  // The owner sentinel makes this safe when multiple cycles share this process.
+  const substrateSweep = sweepOrphanedGymSubstrates({ parentDir: dirname(REPO_ROOT) });
+  if (substrateSweep.swept.length > 0) {
+    log(`substrate orphan sweep: reclaimed ${substrateSweep.swept.length} root(s) (${substrateSweep.swept.join(', ')})`);
+  }
+  if (substrateSweep.errors.length > 0) {
+    log(`substrate orphan sweep: ${substrateSweep.errors.length} non-fatal error(s)`);
+  }
+
   const scratch = mkdtempSync(join(tmpdir(), 'gym-loop-'));
   // ⚠ NOT under `scratch`. The substrate is a `--local` clone of the real repo,
   // which HARDLINKS the object store instead of copying ~9.9G — and hardlinks
@@ -300,7 +313,7 @@ export async function runOneAutoloopCycle(
   // workspace, so a /tmp dest fails with "Invalid cross-device link". Placed
   // next to the checkout (outside it, so git-sync never sees it) and torn down
   // alongside `scratch`.
-  const substrateRoot = mkdtempSync(join(REPO_ROOT, '..', 'gym-substrate-'));
+  const substrateRoot = createGymSubstrateRoot(dirname(REPO_ROOT)).root;
   const substrateDir = join(substrateRoot, 'substrate');
   // The runner's clones (gymbaseline*/gymcand*) are themselves `--local`
   // hardlinked clones OF THE SUBSTRATE, so they hit the same cross-device wall
