@@ -1295,6 +1295,12 @@ import './cupboard/install-app';
 // plan row, not a file the store reads directly.
 import './cupboard/publish-rubric';
 import './cupboard/install-rubric';
+// cupboard-plan-rubric-recipe-sharing-2026-08-21 P-009/P-010/P-011 — the plan kind.
+// publish-plan SANITIZES before it lists (a plan fuses a reusable shape with a run
+// log; only the shape may travel). install-plan gates on the listing's
+// requires_rubrics BEFORE downloading, then seeds a status:'draft' TEMPLATE row.
+import './cupboard/publish-plan';
+import './cupboard/install-plan';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).
