@@ -78,6 +78,8 @@ export interface UseColumnFiltersResult<TRow> {
   hasActive: boolean;
   /** Same explicit population evidence carried by the controller. */
   countEvidence: CountEvidence;
+  /** Canonical URL-backed filter state, exposed for server predicate args. */
+  state: ColumnFilterState;
 }
 
 export interface UseColumnFiltersOptions {
@@ -91,6 +93,19 @@ export interface UseColumnFiltersOptions {
    * page can never silently present its option counts as corpus facets.
    */
   countEvidence: CountEvidence;
+  /**
+   * Authoritative enum option counts supplied by a server companion summary.
+   * A key present with an empty array is intentionally empty; absent keys keep
+   * the legacy locally-derived behavior.
+   */
+  serverEnumOptions?: ReadonlyMap<string, EnumOption[]>;
+}
+
+export interface ColumnFilterStateBinding {
+  state: ColumnFilterState;
+  setValue: (colKey: string, value: ColumnFilterValue) => void;
+  remove: (colKey: string) => void;
+  clearAll: () => void;
 }
 
 /**
@@ -107,29 +122,22 @@ export function parseAsColumnFilters<TRow>(cols: readonly FilterableColumn<TRow>
   }).withDefault({});
 }
 
-export function useColumnFilters<TRow>(
+/**
+ * Read/write the one URL-backed filter state independently of any row page.
+ * Server-filtered panels use this first, compile it into query args, then pass
+ * the same binding to {@link useColumnFiltersFromState}; ordinary panels keep
+ * using {@link useColumnFilters}, which composes both steps.
+ */
+export function useColumnFilterState<TRow>(
   cols: readonly FilterableColumn<TRow>[],
-  rows: readonly TRow[],
-  opts: UseColumnFiltersOptions,
-): UseColumnFiltersResult<TRow> {
-  const { ns, countEvidence } = opts;
-
+  ns: string,
+): ColumnFilterStateBinding {
   // The parser closes over `cols` (decode needs each key's spec type). cols is a
   // fresh array literal per render in most panels, but the decoded value only
   // depends on the keys+specs, so a referentially-new parser is harmless —
   // useQueryState re-parses the same URL string to the same state.
   const parser = useMemo(() => parseAsColumnFilters(cols), [cols]);
   const [state, setState] = useQueryState(ns + 'f', parser);
-
-  const filterableColumns = useMemo(
-    () => cols.filter((c): c is FilterableColumn<TRow> => Boolean(c.filter)),
-    [cols],
-  );
-
-  const filteredRows = useMemo(
-    () => applyColumnFilters(rows, state, cols),
-    [rows, state, cols],
-  );
 
   const setValue = useCallback(
     (colKey: string, value: ColumnFilterValue) => {
@@ -155,17 +163,45 @@ export function useColumnFilters<TRow>(
     void setState(null);
   }, [setState]);
 
+  return { state: state ?? {}, setValue, remove, clearAll };
+}
+
+/** Build the row/filter-bar result from an already-owned filter state. */
+export function useColumnFiltersFromState<TRow>(
+  cols: readonly FilterableColumn<TRow>[],
+  rows: readonly TRow[],
+  opts: UseColumnFiltersOptions,
+  binding: ColumnFilterStateBinding,
+): UseColumnFiltersResult<TRow> {
+  const { countEvidence, serverEnumOptions } = opts;
+  const { state, setValue, remove, clearAll } = binding;
+
+  const filterableColumns = useMemo(
+    () => cols.filter((c): c is FilterableColumn<TRow> => Boolean(c.filter)),
+    [cols],
+  );
+
+  const filteredRows = useMemo(
+    () => applyColumnFilters(rows, state, cols),
+    [rows, state, cols],
+  );
+
   // Per-column enum options, derived from the live rows. Memoized as a Map so the
   // bar's `optionsFor` is a cheap lookup rather than a re-derive per call.
   const optionsByKey = useMemo(() => {
     const map = new Map<string, EnumOption[]>();
     for (const col of filterableColumns) {
       if (col.filter?.type === 'enum') {
-        map.set(col.key, deriveEnumOptions(rows, col));
+        map.set(
+          col.key,
+          serverEnumOptions?.has(col.key)
+            ? (serverEnumOptions.get(col.key) ?? [])
+            : deriveEnumOptions(rows, col),
+        );
       }
     }
     return map;
-  }, [filterableColumns, rows]);
+  }, [filterableColumns, rows, serverEnumOptions]);
 
   const controller = useMemo<ColumnFilterController<TRow>>(
     () => ({
@@ -200,5 +236,15 @@ export function useColumnFilters<TRow>(
     clearAll,
     hasActive: activeChips.length > 0,
     countEvidence,
+    state,
   };
+}
+
+export function useColumnFilters<TRow>(
+  cols: readonly FilterableColumn<TRow>[],
+  rows: readonly TRow[],
+  opts: UseColumnFiltersOptions,
+): UseColumnFiltersResult<TRow> {
+  const binding = useColumnFilterState(cols, opts.ns);
+  return useColumnFiltersFromState(cols, rows, opts, binding);
 }

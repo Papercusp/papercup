@@ -2,12 +2,18 @@
 // the nuqs-backed STATE hook + the flag-gated visual FILTER BAR, composing the
 // pure @papercusp/grid-core engine (Phase 1). Panels import from here.
 
-export { useColumnFilters, parseAsColumnFilters } from './useColumnFilters';
+export {
+  useColumnFilters,
+  useColumnFilterState,
+  useColumnFiltersFromState,
+  parseAsColumnFilters,
+} from './useColumnFilters';
 export type {
   UseColumnFiltersResult,
   UseColumnFiltersOptions,
   ColumnFilterController,
   ActiveChip,
+  ColumnFilterStateBinding,
 } from './useColumnFilters';
 
 export { ColumnFilterBar } from './ColumnFilterBar';
