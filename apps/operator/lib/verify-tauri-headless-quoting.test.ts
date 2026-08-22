@@ -108,7 +108,11 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
         /if \(\/\^Count \(\?:loading…\|updating…\|unavailable\)\$\/\.test\(visible\)\) return aria === visible;/g,
       ),
     ).toHaveLength(2);
-    expect(countSurfacesSrc).not.toContain('if (visible === "—")');
+    expect(
+      countSurfacesSrc.match(
+        /if \(visible === "—"\) return \/\^Count \(\?:loading…\|updating…\|unavailable\)\$\/\.test\(aria\);/g,
+      ),
+    ).toHaveLength(2);
     expect(countSurfacesSrc).toContain(
       'P014_TAURI_DIAG learning-improve did not converge',
     );
