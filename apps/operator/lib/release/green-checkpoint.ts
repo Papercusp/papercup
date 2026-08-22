@@ -6906,11 +6906,13 @@ export async function runGreenCheckpoint(
                 .filter(Boolean),
             ),
           ].sort();
-          const operatorCoreChanged = files.some((file) =>
+          const operatorCoreFiles = files.filter((file) =>
             file.startsWith("packages/operator-core/"),
           );
-          const commaPath = files.find((file) => file.includes(","));
-          if (!operatorCoreChanged) {
+          const commaPath = operatorCoreFiles.find((file) =>
+            file.includes(","),
+          );
+          if (operatorCoreFiles.length === 0) {
             deps.log(
               `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
                 `(${files.length} changed file(s), none under packages/operator-core/) — full gate retained`,
@@ -6924,13 +6926,14 @@ export async function runGreenCheckpoint(
             );
           } else {
             const preflight =
-              await deps.runChangedFileTypecheckPreflight(files);
+              await deps.runChangedFileTypecheckPreflight(operatorCoreFiles);
             if (preflight.status === "failed") {
               const failingSignatures = preflight.failingSignatures?.length
                 ? [...new Set(preflight.failingSignatures)]
                 : ["lint:tsc"];
               deps.log(
-                `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${files.length} changed file(s) — ` +
+                `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${operatorCoreFiles.length} operator-core file(s) ` +
+                  `(${files.length} total changed file(s)) — ` +
                   `rejecting before the affected-test sweep; the full post-suite checks remain required for every later passing candidate`,
               );
               if (preflight.summary.trim())
@@ -6947,7 +6950,8 @@ export async function runGreenCheckpoint(
             } else {
               deps.log(
                 `early changed-file typecheck preflight: ${preflight.status.toUpperCase()} in ${elapsed()} across ` +
-                  `${files.length} changed file(s) — continuing to the full affected-test sweep and post-suite checks`,
+                  `${operatorCoreFiles.length} operator-core file(s) (${files.length} total changed file(s)) — ` +
+                  `continuing to the full affected-test sweep and post-suite checks`,
               );
             }
           }

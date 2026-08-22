@@ -1997,7 +1997,7 @@ describe("runGreenCheckpoint", () => {
     expect(calls).toContain("advance");
   });
 
-  it("WI-38422: a passing changed-file typecheck runs before the affected sweep and the full gate still runs", async () => {
+  it("WI-38422: a passing changed-file typecheck scopes a mixed-workspace diff to operator-core before the full gate", async () => {
     const c1 = await commit(
       "packages/operator-core/lib/a.ts",
       "export const a = 1;\n",
@@ -2017,10 +2017,7 @@ describe("runGreenCheckpoint", () => {
     };
     deps.runChangedFileTypecheckPreflight = async (files) => {
       calls.push("runChangedFileTypecheckPreflight");
-      expect(files).toEqual([
-        "docs/note.md",
-        "packages/operator-core/lib/a.ts",
-      ]);
+      expect(files).toEqual(["packages/operator-core/lib/a.ts"]);
       return { status: "passed", summary: "LINT_TSC_RESULT status=clean" };
     };
 
