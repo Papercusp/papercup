@@ -70,11 +70,13 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "observations",
     label: "Observations",
     classification: "active-defect",
-    evidence: "window",
-    pageCap: 2_000,
+    evidence: "corpus",
+    pageCap: 200,
     sourcePaths: ["apps/operator/app/adv/create/ObservationsPanel.tsx"],
-    columnFilterCalls: {
-      "apps/operator/app/adv/create/ObservationsPanel.tsx": 1,
+    behaviorGuard: {
+      planItem: "P-005",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/learning-observations-query.integration.test.ts",
     },
   },
   {
@@ -230,7 +232,6 @@ export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
   "design-feature-queue",
   "learning-improve",
   "learning-retain",
-  "observations",
   "rubric-history",
   "sessions-history",
 ] as const;

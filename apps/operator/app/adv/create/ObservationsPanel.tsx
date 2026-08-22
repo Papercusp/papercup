@@ -12,24 +12,25 @@
  * an observation to actual work is Scout clustering a RECURRING one and
  * promoting it to a real idea — never from this surface.
  *
- * WI-4374: Real COUNT query (learning.observations.counts) replaces the
- * loaded-list-length fallback, with "500+" render guard when count >= 500,
- * and staleness tone based on newest-age (createdAt of the newest observation).
+ * P-005: a paired learning.observations.summary query supplies exact corpus
+ * totals plus drill-down facets; row payloads stay on 200-row keyset pages.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, Table2, Layers, Search } from "lucide-react";
 import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
 import { useSyncQuery } from "@papercusp/sync";
+import type { CompanionListSummary } from "@papercusp/facets";
 import {
   VirtualGrid,
   type ColumnDef,
   type FilterableColumn,
 } from "@papercusp/grid-core";
-import { readListTotal } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
+import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
 import type { PanelComponentProps } from "@/app/harness/dock/panel-registry";
 import {
-  useColumnFilters,
+  useColumnFilterState,
+  useColumnFiltersFromState,
   ColumnFilterBar,
   filterCountLabel,
   type CountEvidence,
@@ -40,6 +41,12 @@ import { OBSERVATION_KIND_COLOR } from "@/app/harness/theme";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { PERF_INTERACTIONS } from "@/app/_components/perf/perf-marks";
 import { useInteractionSettle } from "@/app/_components/perf/use-interaction-settle";
+import {
+  mergeObservationPage,
+  observationFacetOptions,
+  observationServerFilters,
+  observationSignalCounts,
+} from "./observation-list-query";
 
 // Mirrors LearningObservationRow (sync-resolver/learning-observations-read.ts).
 // The optional fields are OMITTED from the wire when null (D-025, WI-7303) — every
@@ -55,11 +62,6 @@ interface ObservationRow {
   refs: string[];
   sourceRole?: string;
   createdAt: string;
-}
-
-interface CountRow {
-  kind: string;
-  count: number;
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -156,7 +158,6 @@ export default function ObservationsPanel({
   active?: boolean;
 } = {}) {
   const [itemPlans] = useItemPlanFilter();
-  const [limit, setLimit] = useState(OBSERVATIONS_PAGE);
   const [signalFilter, setSignalFilter] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   // #4: shared filter/search libs, mirroring the Working → Work Queue pane.
@@ -172,34 +173,9 @@ export default function ObservationsPanel({
     "obsview",
     parseAsStringEnum(["table", "stacks"]).withDefault("table"),
   );
-  const itemPlanKey = itemPlans.join("\0");
-  useEffect(() => setLimit(OBSERVATIONS_PAGE), [itemPlanKey]);
 
-  const query = useSyncQuery<ObservationRow>({
-    queryName: "learning.observations",
-    args: { limit },
-    staleTime: 30_000,
-  });
-
-  // Fetch the real counts from the database
-  const countsQuery = useSyncQuery<CountRow>({
-    queryName: "learning.observations.counts",
-    args: {},
-    staleTime: 30_000,
-  });
-
-  // Keep cached rows painted while a larger window or push invalidation refetches.
-  const allRows = query.data ?? NO_ROWS;
-  const scopedRows = useMemo(
-    () =>
-      itemPlans.length
-        ? allRows.filter((row) => observationMatchesPlan(row, itemPlans))
-        : allRows,
-    [allRows, itemPlans],
-  );
-  // Shared column filters (scope / role / confidence) over the plan-scoped rows
-  // — the same engine + bar the Work Queue uses (#4). Kind stays on the count
-  // chips below (they carry authoritative DB counts the enum bar can't).
+  // The URL filter state exists before either query so rows, totals and facets
+  // compile from the same server predicate. Kind keeps its compact chip UI.
   const filterColumns = useMemo<FilterableColumn<ObservationRow>[]>(
     () => [
       {
@@ -220,21 +196,92 @@ export default function ObservationsPanel({
     ],
     [],
   );
-  const facetCountEvidence = useMemo<CountEvidence>(
-    () => query.data == null
-      ? { kind: "unknown", reason: query.error ? "failed" : "loading" }
-      : {
-          kind: "window",
-          count: scopedRows.length,
-          window: `latest ${allRows.length.toLocaleString("en-US")} loaded observations`,
-          corpusTotal: readListTotal(query.data),
-        },
-    [allRows.length, query.data, query.error, scopedRows.length],
+  const filterBinding = useColumnFilterState(filterColumns, "obs");
+  const itemPlanKey = itemPlans.join("\0");
+  const serverFilters = useMemo(
+    () =>
+      observationServerFilters(
+        filterBinding.state,
+        itemPlans,
+        signalFilter,
+      ),
+    [filterBinding.state, itemPlanKey, signalFilter],
   );
-  const cf = useColumnFilters(filterColumns, scopedRows, {
-    ns: "obs",
-    countEvidence: facetCountEvidence,
+  const filterFingerprint = JSON.stringify(serverFilters);
+  const serverPredicateActive =
+    search.trim() !== "" || Object.keys(serverFilters).length > 0;
+
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loadedRows, setLoadedRows] = useState<ObservationRow[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  useEffect(() => {
+    setCursor(null);
+    setNextCursor(null);
+    setLoadedRows([]);
+  }, [search, filterFingerprint]);
+
+  const sharedArgs = useMemo(
+    () => ({ q: search, filters: serverFilters }),
+    [search, serverFilters],
+  );
+  const query = useSyncQuery<ObservationRow>({
+    queryName: "learning.observations",
+    args: {
+      ...sharedArgs,
+      limit: OBSERVATIONS_PAGE,
+      ...(cursor ? { cursor } : {}),
+    },
+    staleTime: 30_000,
   });
+  const summaryQuery = useSyncQuery<CompanionListSummary>({
+    queryName: "learning.observations.summary",
+    args: sharedArgs,
+    staleTime: 30_000,
+  });
+  useEffect(() => {
+    if (query.loading || !query.data) return;
+    setLoadedRows((previous) =>
+      mergeObservationPage(previous, query.data, cursor),
+    );
+    const meta = readListMeta(query.data);
+    setNextCursor(
+      typeof meta?.nextCursor === "string" ? meta.nextCursor : null,
+    );
+  }, [query.data, query.loading, cursor]);
+
+  // Keep cached pages painted while either member of the pair refetches.
+  const allRows = loadedRows.length > 0 ? loadedRows : (query.data ?? NO_ROWS);
+  const summary = summaryQuery.data?.[0] ?? null;
+  const pairedFetching = Boolean(query.fetching || summaryQuery.fetching);
+  const facetCountEvidence = useMemo<CountEvidence>(() => {
+    if (!summary) {
+      return {
+        kind: "unknown",
+        reason: summaryQuery.error ? "failed" : "loading",
+      };
+    }
+    if (pairedFetching) return { kind: "unknown", reason: "updating" };
+    return {
+      kind: "corpus",
+      count: summary.matched,
+      ...(serverPredicateActive ? { total: summary.total } : {}),
+      population: "the observation corpus",
+    };
+  }, [summary, summaryQuery.error, pairedFetching, serverPredicateActive]);
+  const facetOptions = useMemo(
+    () => observationFacetOptions(summary),
+    [summary],
+  );
+  const cf = useColumnFiltersFromState(
+    filterColumns,
+    allRows,
+    {
+      ns: "obs",
+      countEvidence: facetCountEvidence,
+      serverEnumOptions: facetOptions,
+    },
+    filterBinding,
+  );
   const rows = useMemo(() => {
     const q = search.trim().toLowerCase();
     return cf.rows.filter((row) => {
@@ -245,52 +292,24 @@ export default function ObservationsPanel({
         .includes(q);
     });
   }, [cf.rows, search, signalFilter]);
-  const total = readListTotal(query.data);
-  const hasMore = allRows.length < total;
-  const isFiltered =
-    cf.hasActive || search.trim() !== "" || signalFilter !== null;
-  // The ONE shared count label (D-001: mimic the Work Queue). This pane may
-  // adopt it because it satisfies the helper's precondition — it grows its
-  // fetch window at the scroll edge (onEndReached → loadMore → limit +=
-  // OBSERVATIONS_PAGE), so a filter can actually reach `total`.
-  //
-  // This deliberately RETIRES the old "N loaded / total" unfiltered form. That
-  // form reported how many rows happened to be in memory, which is an artifact
-  // of scroll position, not an answer to any question a user has — and it read
-  // as a shortfall ("200 / 36,096") on a pane that was working correctly.
-  const displayedCountEvidence = useMemo<CountEvidence>(
-    () => isFiltered
-      ? {
-          kind: "window",
-          count: rows.length,
-          windowTotal: allRows.length,
-          window: `latest ${allRows.length.toLocaleString("en-US")} loaded observations`,
-          corpusTotal: total,
-        }
-      : { kind: "corpus", count: total, population: "the observation corpus" },
-    [allRows.length, isFiltered, rows.length, total],
+  const hasMore = nextCursor !== null;
+  const isFiltered = serverPredicateActive;
+  const counts = filterCountLabel(facetCountEvidence, "observation");
+  const signalCounts = useMemo(
+    () => observationSignalCounts(summary),
+    [summary],
   );
-  const counts = filterCountLabel(displayedCountEvidence, "observation");
-
-  // Build signal counts from the real database counts, not loaded rows
-  const signalCounts = useMemo(() => {
-    const realCounts = countsQuery.data ?? [];
-    const counts = new Map<string, number>();
-    for (const row of realCounts) {
-      counts.set(row.kind || "other", row.count);
-    }
-    return [...counts.entries()].sort((a, b) => {
-      if (a[0] === "other") return 1;
-      if (b[0] === "other") return -1;
-      return b[1] - a[1] || a[0].localeCompare(b[0]);
-    });
-  }, [countsQuery.data]);
 
   useEffect(() => {
-    if (signalFilter && !signalCounts.some(([kind]) => kind === signalFilter)) {
+    if (
+      summary &&
+      !pairedFetching &&
+      signalFilter &&
+      !signalCounts.some(([kind]) => kind === signalFilter)
+    ) {
       setSignalFilter(null);
     }
-  }, [signalCounts, signalFilter]);
+  }, [summary, pairedFetching, signalCounts, signalFilter]);
   useEffect(() => {
     if (selectedId && !rows.some((row) => row.id === selectedId)) {
       setSelectedId(null);
@@ -303,19 +322,16 @@ export default function ObservationsPanel({
 
   useEffect(() => {
     onStatus?.(
-      query.error ? "bad" : scopedRows.length > 0 ? "good" : "neutral",
+      query.error ? "bad" : allRows.length > 0 ? "good" : "neutral",
     );
-  }, [onStatus, query.error, scopedRows.length]);
+  }, [onStatus, query.error, allRows.length]);
 
   // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — LearningTab
   // renders this panel as its "observations" view and begins the interaction on
   // the view change (EI-19375505819043214).
   //
-  // Gated on the OBSERVATIONS read only, deliberately NOT on countsQuery: the
-  // counts are a secondary read for the signal chips, and on the live operator
-  // learning.observations.counts currently 500s on every call, so waiting for
-  // it would never settle and this interaction would measure nothing on the one
-  // surface it was added to watch.
+  // The summary is now a first-class member of the pair, so the interaction
+  // settles only when both row and count/facet evidence have reached a verdict.
   //
   // endInteraction is measure-once and no-ops without a matching begin, so this
   // stays inert when the panel mounts outside a Learning-tab view switch.
@@ -325,13 +341,15 @@ export default function ObservationsPanel({
   // never changes — an effect keyed on it alone would never re-run and the
   // switch would measure nothing (EI-19383745196363732).
   const settled = Boolean(
-    !query.loading && (query.data !== undefined || query.error),
+    !query.loading &&
+      !summaryQuery.loading &&
+      (query.data !== undefined || query.error) &&
+      (summaryQuery.data !== undefined || summaryQuery.error),
   );
   useInteractionSettle(PERF_INTERACTIONS.learningViewSwitch, settled, active);
-  const loadMore = useCallback(
-    () => setLimit((current) => current + OBSERVATIONS_PAGE),
-    [],
-  );
+  const loadMore = useCallback(() => {
+    if (nextCursor) setCursor(nextCursor);
+  }, [nextCursor]);
 
   const columns = useMemo<ColumnDef<ObservationRow>[]>(
     () => [
@@ -495,7 +513,7 @@ export default function ObservationsPanel({
             ))}
           </div>
         ) : null}
-        {total > 0 ? (
+        {counts ? (
           <span
             data-testid="observations-count"
             aria-label={counts.ariaLabel}
@@ -539,10 +557,10 @@ export default function ObservationsPanel({
           type="button"
           className="pc-advpanel__iconbtn"
           aria-label="Refresh observations"
-          disabled={query.fetching}
+          disabled={pairedFetching}
           onClick={() => {
             query.invalidate();
-            countsQuery.invalidate();
+            summaryQuery.invalidate();
           }}
         >
           <RefreshCw size={13} aria-hidden />
@@ -786,25 +804,4 @@ function ObservationCard({
       ) : null}
     </button>
   );
-}
-
-function observationMatchesPlan(
-  row: ObservationRow,
-  planSlugs: readonly string[],
-): boolean {
-  if (planSlugs.length === 0) return true;
-  const refs = row.refs.map((r) => r.toLowerCase());
-  return planSlugs.some((slug) => {
-    const s = slug.toLowerCase();
-    const token = new RegExp(
-      `(^|[^a-z0-9_-])${escapeRegExp(s)}($|[^a-z0-9_-])`,
-    );
-    return refs.some(
-      (ref) => ref === s || ref === `plan:${s}` || token.test(ref),
-    );
-  });
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
