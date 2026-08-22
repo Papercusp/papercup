@@ -13,6 +13,9 @@ Covered:
   unknown target throws a descriptive error; `isLocalDeployment` placement logic
   (local/absent/unregistered → true, registered-remote → false); a fake remote
   driver is driven through the full provision→install→join→teardown lifecycle.
+- **`workspace-host-registry.test.ts`** — full durable-host lifecycle coverage,
+  type-distinct credential channels, fresh-read destroy proof, no implicit local
+  provider, and open-target register/configure/replace/resolve behavior.
 
 Not covered here (lives with the consumers): the harness:create threading of
 `deployment` (operator-core), the orchestrator placement gate, and the concrete

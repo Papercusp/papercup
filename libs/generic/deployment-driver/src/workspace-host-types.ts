@@ -1,0 +1,356 @@
+/**
+ * Provider-neutral contract for durable Papercusp workspace hosts.
+ *
+ * This is deliberately separate from `DeploymentDriver`. A deployment frame is
+ * disposable execution-plane cattle with four coarse lifecycle verbs. A
+ * workspace host owns durable user data and is reconciled as a graph of
+ * provider resources, so it needs discovery, planning, per-resource apply,
+ * observation, repair, retained-data lifecycle operations, and confirmed
+ * deletion.
+ */
+
+/** Open provider discriminator (`gcp`, `aws`, `azure`, or a future backend). */
+export type WorkspaceHostProviderTarget = string;
+/** Provider scope kind (`project`, `account`, `subscription`, or provider-defined). */
+export type WorkspaceHostScopeKind = string;
+/** Provider resource kind (`network`, `firewall`, `disk`, `vm`, or provider-defined). */
+export type WorkspaceHostResourceKind = string;
+
+/** A typed reference into a host-owned resolver. `ref` is never a secret value. */
+export interface WorkspaceHostCredentialReference<Kind extends 'cloud' | 'git' | 'agent'> {
+  readonly kind: Kind;
+  readonly ref: string;
+}
+export type CloudCredentialRef = WorkspaceHostCredentialReference<'cloud'>;
+export type GitCredentialRef = WorkspaceHostCredentialReference<'git'>;
+export type AgentCredentialRef = WorkspaceHostCredentialReference<'agent'>;
+
+/** Cloud, Git, and agent authorization remain separate channels. */
+export interface WorkspaceHostCredentialRefs {
+  cloudCredentialRef: CloudCredentialRef;
+  gitCredentialRef?: GitCredentialRef;
+  agentCredentialRef?: AgentCredentialRef;
+}
+
+export interface WorkspaceHostProviderConnection {
+  target: WorkspaceHostProviderTarget;
+  cloudCredentialRef: CloudCredentialRef;
+  scope?: WorkspaceHostScopeRef;
+  /** Non-secret provider-specific connection options. */
+  provider?: Record<string, unknown>;
+}
+
+export interface WorkspaceHostScopeRef {
+  kind: WorkspaceHostScopeKind;
+  id: string;
+}
+export interface WorkspaceHostScope extends WorkspaceHostScopeRef {
+  label: string;
+  parent?: WorkspaceHostScopeRef;
+}
+export interface WorkspaceHostRegion {
+  id: string;
+  label: string;
+  available: boolean;
+  zones?: readonly string[];
+  constraints?: readonly string[];
+}
+export interface WorkspaceHostSize {
+  id: string;
+  label: string;
+  cpuCount: number;
+  memoryMiB: number;
+  diskGiB?: number;
+  architectures?: readonly string[];
+  available: boolean;
+  constraints?: readonly string[];
+}
+export interface WorkspaceHostImageRef {
+  id: string;
+  version?: string;
+}
+export interface WorkspaceHostImage extends WorkspaceHostImageRef {
+  label: string;
+  architecture?: string;
+  signed: boolean;
+  publishedAt?: string;
+  deprecated?: boolean;
+}
+export interface WorkspaceHostPriceLineItem {
+  kind: string;
+  description: string;
+  hourlyAmount: number;
+}
+/** Estimate only; provider billing remains authoritative. */
+export interface WorkspaceHostPriceEstimate {
+  currency: string;
+  hourlyAmount: number;
+  monthlyAmount?: number;
+  observedAt: string;
+  confidence: 'exact' | 'estimated' | 'unknown';
+  lineItems?: readonly WorkspaceHostPriceLineItem[];
+}
+export interface WorkspaceHostConnectionValidation {
+  ok: boolean;
+  checkedAt: string;
+  identity?: string;
+  warnings: readonly string[];
+  errors: readonly string[];
+}
+
+export const WORKSPACE_HOST_LIFECYCLE_ACTIONS = [
+  'provision',
+  'start',
+  'stop',
+  'restart',
+  'snapshot',
+  'restore',
+  'upgrade',
+  'repair',
+  'destroy',
+] as const;
+export type WorkspaceHostLifecycleAction = (typeof WORKSPACE_HOST_LIFECYCLE_ACTIONS)[number];
+
+export interface WorkspaceHostDiscoveryCapabilities {
+  scopes: boolean;
+  regions: boolean;
+  sizes: boolean;
+  images: boolean;
+  priceEstimates: boolean;
+}
+export interface WorkspaceHostLifecycleCapabilities {
+  start: boolean;
+  stop: boolean;
+  restart: boolean;
+  snapshot: boolean;
+  restore: boolean;
+  upgrade: boolean;
+  repair: boolean;
+  /** Destroy is confirmed by a fresh provider read, never only by request acceptance. */
+  confirmedDestroy: boolean;
+}
+export interface WorkspaceHostProviderCapabilities {
+  discovery: WorkspaceHostDiscoveryCapabilities;
+  lifecycle: WorkspaceHostLifecycleCapabilities;
+  transportKinds: readonly string[];
+  constraints?: readonly string[];
+}
+
+export interface WorkspaceHostTransportFeatureSet {
+  command: boolean;
+  pty: boolean;
+  tcpForward: boolean;
+  fileTransfer: boolean;
+  clipboard?: boolean;
+}
+/** A concrete profile declares real abilities and constraints; it does not promise false SSH parity. */
+export interface WorkspaceHostTransportProfile {
+  kind: string;
+  endpoint?: string;
+  supportedClientPlatforms: readonly string[];
+  features: WorkspaceHostTransportFeatureSet;
+  prerequisites: readonly string[];
+  constraints: readonly string[];
+  reconnect: 'resume' | 'recreate' | 'unsupported';
+  sessionLimit?: number;
+  throughputMbps?: number;
+  audited: boolean;
+}
+
+export interface WorkspaceHostDataPolicy {
+  /** Stop/start retains this data resource; it is never implicitly ephemeral. */
+  volumeGiB: number;
+  encrypted: boolean;
+  backupPolicyRef?: string;
+}
+export interface WorkspaceHostDesiredSpec {
+  /** Stable Papercusp identity, distinct from any provider resource id. */
+  hostId: string;
+  target: WorkspaceHostProviderTarget;
+  scope: WorkspaceHostScopeRef;
+  region: string;
+  zone?: string;
+  size: string;
+  image: WorkspaceHostImageRef;
+  data: WorkspaceHostDataPolicy;
+  credentials: WorkspaceHostCredentialRefs;
+  transportPreference?: string;
+  labels?: Readonly<Record<string, string>>;
+  /** Non-secret provider-specific desired state. */
+  provider?: Readonly<Record<string, unknown>>;
+}
+
+/** Stable identity of one external resource; persist before applying dependent steps. */
+export interface WorkspaceHostResourceRef {
+  target: WorkspaceHostProviderTarget;
+  kind: WorkspaceHostResourceKind;
+  providerId: string;
+  parentProviderId?: string;
+  region?: string;
+  zone?: string;
+}
+export interface WorkspaceHostRef {
+  hostId: string;
+  target: WorkspaceHostProviderTarget;
+  resources: readonly WorkspaceHostResourceRef[];
+}
+export interface WorkspaceHostSnapshotRef {
+  target: WorkspaceHostProviderTarget;
+  providerId: string;
+  hostId: string;
+  createdAt?: string;
+}
+
+interface WorkspaceHostOperationBase {
+  /** Stable across retries and process restarts. */
+  operationId: string;
+  /** Passed to provider request-id/idempotency facilities where available. */
+  idempotencyKey: string;
+}
+export type WorkspaceHostPlanRequest =
+  | (WorkspaceHostOperationBase & { action: 'provision'; desired: WorkspaceHostDesiredSpec })
+  | (WorkspaceHostOperationBase & { action: 'start' | 'stop' | 'restart' | 'repair'; host: WorkspaceHostRef })
+  | (WorkspaceHostOperationBase & { action: 'snapshot'; host: WorkspaceHostRef; name?: string })
+  | (WorkspaceHostOperationBase & { action: 'restore'; host: WorkspaceHostRef; snapshot: WorkspaceHostSnapshotRef })
+  | (WorkspaceHostOperationBase & {
+      action: 'upgrade';
+      host: WorkspaceHostRef;
+      image: WorkspaceHostImageRef;
+      rollbackImage?: WorkspaceHostImageRef;
+    })
+  | (WorkspaceHostOperationBase & {
+      action: 'destroy';
+      host: WorkspaceHostRef;
+      disposition: 'snapshot' | 'backup' | 'discard';
+      confirmation: { expectedHostId: string; confirmedBy: string; confirmedAt: string };
+    });
+
+/**
+ * One durable-workflow unit. A step creates or mutates at most one external
+ * resource; the caller persists its result before running dependent steps.
+ */
+export interface WorkspaceHostPlanStep {
+  id: string;
+  action: WorkspaceHostLifecycleAction;
+  resourceKind: WorkspaceHostResourceKind;
+  dependsOn: readonly string[];
+  idempotencyKey: string;
+  destructive: boolean;
+  input: Readonly<Record<string, unknown>>;
+}
+export interface WorkspaceHostPlan {
+  planId: string;
+  operationId: string;
+  target: WorkspaceHostProviderTarget;
+  hostId: string;
+  generatedAt: string;
+  steps: readonly WorkspaceHostPlanStep[];
+  warnings: readonly string[];
+}
+export interface WorkspaceHostApplyRequest {
+  planId: string;
+  operationId: string;
+  step: WorkspaceHostPlanStep;
+  /** Provider resources already persisted by the host workflow. */
+  knownResources: readonly WorkspaceHostResourceRef[];
+}
+interface WorkspaceHostApplyResultBase {
+  operationId: string;
+  stepId: string;
+  providerRequestId?: string;
+  observedAt: string;
+}
+export type WorkspaceHostApplyResult =
+  | (WorkspaceHostApplyResultBase & {
+      state: 'applied' | 'unchanged';
+      /** Newly created/observed identity to persist before dependent work. */
+      resource?: WorkspaceHostResourceRef;
+      snapshot?: WorkspaceHostSnapshotRef;
+    })
+  | (WorkspaceHostApplyResultBase & { state: 'in-progress'; retryAfterMs?: number })
+  | (WorkspaceHostApplyResultBase & {
+      state: 'destroyed';
+      /** Valid only after a fresh provider read observes absence. */
+      confirmation: WorkspaceHostDestroyConfirmation;
+    });
+export interface WorkspaceHostReconcileRequest extends WorkspaceHostApplyRequest {
+  reason: 'ambiguous-timeout' | 'resume' | 'drift';
+  previousProviderRequestId?: string;
+}
+export interface WorkspaceHostDestroyConfirmation {
+  hostId: string;
+  providerResourceId: string;
+  confirmedAbsentAt: string;
+  source: 'provider-read';
+  providerRequestId?: string;
+}
+
+export type WorkspaceHostLifecycleState =
+  | 'provisioning'
+  | 'running'
+  | 'stopped'
+  | 'degraded'
+  | 'repairing'
+  | 'destroying'
+  | 'absent';
+export interface WorkspaceHostObservation {
+  host: WorkspaceHostRef;
+  state: WorkspaceHostLifecycleState;
+  resources: readonly WorkspaceHostResourceRef[];
+  image?: WorkspaceHostImageRef;
+  observedAt: string;
+  drift: readonly string[];
+}
+export interface WorkspaceHostHealthCheck {
+  name: string;
+  ok: boolean;
+  detail?: string;
+}
+export interface WorkspaceHostHealthAttestation {
+  hostId: string;
+  observedAt: string;
+  status: 'healthy' | 'degraded' | 'unreachable';
+  image?: WorkspaceHostImageRef;
+  bootstrapVersion?: string;
+  checks: readonly WorkspaceHostHealthCheck[];
+  attestation?: string;
+}
+
+export type WorkspaceHostLogLevel = 'info' | 'warn' | 'error';
+export interface WorkspaceHostProviderContext {
+  workspaceId: string;
+  requestId: string;
+  connection: WorkspaceHostProviderConnection;
+  actorId?: string;
+  signal?: AbortSignal;
+  log?: (level: WorkspaceHostLogLevel, message: string, extra?: Record<string, unknown>) => void;
+}
+export interface WorkspaceHostCatalogQuery {
+  scope: WorkspaceHostScopeRef;
+  region?: string;
+  architecture?: string;
+}
+
+/**
+ * Provider contract for a durable workspace host. `apply` handles exactly one
+ * planned step. After an ambiguous timeout, `reconcile` uses the same operation
+ * and idempotency identity instead of issuing an uncorrelated retry.
+ */
+export interface WorkspaceHostProvider {
+  readonly target: WorkspaceHostProviderTarget;
+  readonly capabilities: WorkspaceHostProviderCapabilities;
+
+  validateConnection(ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostConnectionValidation>;
+  listScopes(ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostScope[]>;
+  listRegions(query: WorkspaceHostCatalogQuery, ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostRegion[]>;
+  listSizes(query: WorkspaceHostCatalogQuery, ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostSize[]>;
+  listImages(query: WorkspaceHostCatalogQuery, ctx: WorkspaceHostProviderContext): Promise<readonly WorkspaceHostImage[]>;
+  estimatePrice(desired: WorkspaceHostDesiredSpec, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPriceEstimate>;
+
+  plan(request: WorkspaceHostPlanRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostPlan>;
+  apply(request: WorkspaceHostApplyRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostApplyResult>;
+  observe(host: WorkspaceHostRef, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostObservation>;
+  reconcile(request: WorkspaceHostReconcileRequest, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostApplyResult>;
+  getTransportProfile(host: WorkspaceHostRef, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostTransportProfile>;
+  attestHealth(host: WorkspaceHostRef, ctx: WorkspaceHostProviderContext): Promise<WorkspaceHostHealthAttestation>;
+}

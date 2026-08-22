@@ -4,6 +4,11 @@ Provider-agnostic deployment abstraction. "Deploying" a harness moves its
 **execution plane** onto a **frame** (a machine the driver controls) that joins
 the harness/Pot as a headless federated peer.
 
+The package also exposes a deliberately separate `WorkspaceHostProvider`
+contract for durable cloud workspace hosts. A workspace host contains the full
+operator and user data; it is not a renamed deployment frame and never inherits
+frame cattle semantics.
+
 ```ts
 import {
   resolveDeploymentDriver,
@@ -40,6 +45,19 @@ if (!isLocalDeployment(cfg)) {
 - **`Frame`** — a handle to a provisioned machine; persisted host-side so
   teardown survives process restarts.
 
-Generic + host-clean: names no provider except `local`, zero runtime deps. Each
-backend narrows + validates its own `provider` block host-side. Part of
-`cloud-deployment-layer-2026-06-06` (P-001/D-002).
+### Durable workspace hosts
+
+`WorkspaceHostProvider` reuses the open target and injected-registry pattern,
+without extending the old four-verb lifecycle. It specifies connection and
+catalog discovery, price estimates, three separate typed credential references,
+`plan` → one-resource `apply` → `reconcile`, the full retained-data lifecycle,
+capability-declaring transport profiles, and health attestation. Stop preserves
+data; destroy requires a disposition and a fresh provider-read absence proof.
+
+There is no implicit local workspace-host provider. Concrete backends register
+through `configureWorkspaceHostProviders({ providers })` at host bootstrap.
+
+Generic + host-clean: the frame surface names no provider except `local`; the
+workspace-host surface names none. Each backend narrows and validates its own
+provider state host-side. The contracts stay separate because their ownership
+and lifecycle guarantees differ.
