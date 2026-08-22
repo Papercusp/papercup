@@ -15,14 +15,14 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
 import {
   findMdxCompileError,
   blankFrontmatter,
   listMdxFiles,
   selectMdxFiles,
   scanMdxFiles,
+  // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+  // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
 } from '../../../../scripts/check-mdx.mjs';
 
 const FM = '---\ntitle: x\n---\n';

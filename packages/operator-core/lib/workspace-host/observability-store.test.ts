@@ -6,7 +6,10 @@ const H = vi.hoisted(() => ({
   rows: new Map<string, unknown[]>(),
 }));
 
-vi.mock('@papercusp/db-org', () => ({ withWorkspace: H.withWorkspace }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  withWorkspace: H.withWorkspace,
+}));
 vi.mock('../sync-sse', () => ({ notifySyncInvalidate: H.notify }));
 
 import {
