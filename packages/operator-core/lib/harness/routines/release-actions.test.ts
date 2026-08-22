@@ -1003,7 +1003,15 @@ describe('shouldDispatchReleaseFixer (EI-8740: no fixer for a held gate with not
   });
 
   it('does NOT dispatch on other statuses (advanced, up-to-date, error, ...) even with failing tests', () => {
-    for (const status of ['advanced', 'up-to-date', 'error', 'create-failed', 'not-fast-forward', 'skipped-locked']) {
+    for (const status of [
+      'advanced',
+      'up-to-date',
+      'error',
+      'create-failed',
+      'not-fast-forward',
+      'skipped-locked',
+      'infra-inconclusive',
+    ]) {
       expect(shouldDispatchReleaseFixer(status, 'cafe1234', ['a.test.ts'])).toBe(false);
     }
   });
