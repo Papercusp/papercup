@@ -62,7 +62,10 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { sendMessage } from './messages';
 import { wakeRecipients } from './inbox-wake';
+import { fetchDirectiveActuations } from './directive-effect';
+import { parseEffectStamp } from './directive-effect-read';
 import { detectBodyRefs } from './ref-hydrate';
+import type { DirectiveActuation, DirectiveEffectSpec } from './directive-effect';
 import type { AgentIdentity } from './identity';
 
 /** Resolver identity stamped on auto-fired deadline nudges (audit trail). */
@@ -96,6 +99,8 @@ export interface DueReplyDeadline {
   /** The original message body text (EI-13610: fed into detectBodyRefs alongside
    *  `summary` to find WI-/EI- ids the reply-equivalent-activity check probes). */
   body?: string;
+  /** P-013: an explicitly declared side effect this directive expected. */
+  expectEffect?: DirectiveEffectSpec;
   /** When the original message was sent (epoch ms) — the reply-equivalent-activity
    *  check only counts a thread post AFTER this (EI-13610). */
   sentAtMs: number;
@@ -109,6 +114,7 @@ interface DueReplyDeadlineRow {
   summary: string | null;
   body: string | null;
   plan_slug: string | null;
+  expect_effect: unknown;
   deadline_at: string; // bigint comes back as text over the pg driver
   sent_at_ms: string; // bigint comes back as text over the pg driver
 }
@@ -130,6 +136,7 @@ async function findDueReplyDeadlines(nowMs: number, limit: number): Promise<DueR
            e1.body->>'summary' AS summary,
            e1.body->>'body' AS body,
            e1.body->>'plan_slug' AS plan_slug,
+           e1.body->'expectEffect' AS expect_effect,
            e1.body->>'replyDeadlineAt' AS deadline_at,
            (extract(epoch FROM e1.ts) * 1000)::bigint AS sent_at_ms
       FROM harness_shared.coord_event_log e1
@@ -169,6 +176,7 @@ async function findDueReplyDeadlines(nowMs: number, limit: number): Promise<DueR
         to,
         summary: r.summary ?? undefined,
         body: r.body ?? undefined,
+        expectEffect: parseEffectStamp(r.expect_effect) ?? undefined,
         planSlug: r.plan_slug ?? undefined,
         overdueMinutes: Number.isFinite(deadlineMs) ? (nowMs - deadlineMs) / 60_000 : 0,
         sentAtMs: Number.isFinite(sentAtMs) ? sentAtMs : 0,
@@ -297,6 +305,14 @@ export interface ReplyEquivalentActivity {
   authorId: string;
   /** When they posted (epoch ms). */
   postedAtMs: number;
+}
+
+/** P-013 / EI-20330285752095560: a declared or inferred work-item effect that
+ *  happened after the original ask. It is reply-equivalent evidence: the
+ *  recipient completed the requested ledger change even though no coord reply
+ *  or thread post was written. */
+interface DirectiveReplyEquivalent {
+  actuation: DirectiveActuation;
 }
 
 /** issue-thread-<id> (issue-family: bug/change) or work-item-thread-<id>
@@ -482,6 +498,53 @@ export async function runReplyDeadlineSweepOnce(
         continue;
       }
 
+      // P-013 / EI-20330285752095560: an explicit expectEffect is the strongest
+      // declaration of what the recipient was asked to do. When no explicit
+      // effect was stamped, treat cited WI-/EI- ids as terminal expectations;
+      // resolveDirectiveEffect still compares the observed close timestamp to
+      // this message's sentAtMs, so a pre-existing terminal item cannot suppress
+      // a real deadline alarm. The shared directive reader fails soft and returns
+      // `unknown` on an unreadable/missing row; only `satisfied` suppresses.
+      const workItemIds = detectBodyRefs(`${d.summary ?? ''} ${d.body ?? ''}`)
+        .filter((r): r is Extract<typeof r, { kind: 'work-item' }> => r.kind === 'work-item')
+        .map((r) => r.id);
+      const effectSpecs: Array<DirectiveEffectSpec & { sentAtMs: number }> = d.expectEffect
+        ? [{ ...d.expectEffect, sentAtMs: d.sentAtMs }]
+        : workItemIds.map((itemId) => ({ kind: 'terminal' as const, itemId, sentAtMs: d.sentAtMs }));
+      let directiveEffect: DirectiveReplyEquivalent | null = null;
+      if (effectSpecs.length) {
+        try {
+          const actuations = await fetchDirectiveActuations(effectSpecs, { workspaceId: d.workspaceId });
+          const satisfied = actuations.find((a) => a.verdict === 'satisfied');
+          if (satisfied) directiveEffect = { actuation: satisfied };
+        } catch (e) {
+          console.warn(
+            `[reply-deadline-sweep] directive-effect probe for ${d.msgId} failed: ${e instanceof Error ? e.message : e}`,
+          );
+        }
+      }
+
+      if (directiveEffect) {
+        const { actuation } = directiveEffect;
+        const observedAtMs = actuation.observedAtMs;
+        await sendMessage(RECONCILE_IDENTITY, {
+          to: [d.from],
+          summary:
+            `✅ reply deadline auto-resolved: expected ${actuation.spec.kind} on ${actuation.spec.itemId} ` +
+            `was satisfied (${d.summary ?? d.msgId})`,
+          body:
+            `Your message ${d.msgId}${d.to.length ? ` to ${d.to.join(', ')}` : ''}` +
+            `${d.planSlug ? ` (plan ${d.planSlug})` : ''} had a reply deadline with no coord reply, but the ` +
+            `expected ${actuation.spec.kind} effect on ${actuation.spec.itemId} was observed` +
+            `${observedAtMs == null ? '' : ` at ${new Date(observedAtMs).toISOString()}`}. ` +
+            `${actuation.evidence} No action needed unless the effect does not answer the original ask.`,
+          plan_slug: d.planSlug,
+          related_msg_id: d.msgId,
+        });
+        autoResolved += 1;
+        continue;
+      }
+
       // EI-13610: probe for reply-equivalent thread activity BEFORE alarming.
       // Fail-soft by design — a probe failure just falls through to the
       // ordinary alarm path (never silently swallows a genuinely-overdue one).
@@ -489,9 +552,6 @@ export async function runReplyDeadlineSweepOnce(
       // detectBodyRefs is narrow (WI-/EI- ids only, per its own docstring), so
       // every hit is already `kind: 'work-item'` — the filter+narrow is just
       // to satisfy the HydratableRef union's type, not a real runtime filter.
-      const workItemIds = detectBodyRefs(`${d.summary ?? ''} ${d.body ?? ''}`)
-        .filter((r): r is Extract<typeof r, { kind: 'work-item' }> => r.kind === 'work-item')
-        .map((r) => r.id);
       if (workItemIds.length && d.to.length) {
         try {
           const hits = await findReplyEquivalentActivity(d.workspaceId, workItemIds, d.to, d.sentAtMs);

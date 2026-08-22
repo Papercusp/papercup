@@ -27,6 +27,10 @@ const h = vi.hoisted(() => ({
    *  reply-equivalent answer, queried from coord_event_log separately from
    *  the due-row and sender-side supersede fixtures. */
   recipientReplyRows: [] as unknown[],
+  /** P-013 / EI-20330285752095560: the shared directive-effect reader probes
+   *  harness_shared.work_items; keep those ledger rows separate from the due
+   *  coord_event_log fixtures. */
+  effectRows: [] as unknown[],
   sqlCalls: [] as unknown[][],
   /** Per-test override of the whole dispatch (e.g. to simulate a probe
    *  failure) — null means "use the default rows/threadRows/supersedeRows
@@ -45,6 +49,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
         if (text.includes('coord_thread_posts')) return Promise.resolve(h.threadRows);
         if (text.includes('recipient-reply-check')) return Promise.resolve(h.recipientReplyRows);
         if (text.includes('supersede-check')) return Promise.resolve(h.supersedeRows);
+        if (text.includes('harness_shared.work_items')) return Promise.resolve(h.effectRows);
         return Promise.resolve(h.rows);
       },
       { begin: vi.fn(), unsafe: vi.fn() },
@@ -74,6 +79,7 @@ function row(
     summary: string | null;
     body: string | null;
     plan_slug: string | null;
+    expect_effect: unknown;
     deadline_at: string;
     sent_at_ms: string;
   }> = {},
@@ -86,8 +92,35 @@ function row(
     summary: 'original summary',
     body: null,
     plan_slug: null,
+    expect_effect: null,
     deadline_at: String(NOW - 5 * 60_000), // 5m overdue by default
     sent_at_ms: String(NOW - 20 * 60_000), // sent 20m ago by default
+    ...over,
+  };
+}
+
+/** Exact `fetchDirectiveActuations` work-item row shape (P-013). */
+function effectRow(
+  over: Partial<{
+    feature_id: string;
+    harness_slug: string;
+    status: string | null;
+    taken_by: string | null;
+    last_released_ms: string | number | null;
+    closed_ts: string | number | null;
+    updated_ts: string | number | null;
+    checkpoint_ms: string | number | null;
+  }> = {},
+) {
+  return {
+    feature_id: 'EI-20275359435606597',
+    harness_slug: 'papercusp',
+    status: 'open',
+    taken_by: null,
+    last_released_ms: null,
+    closed_ts: null,
+    updated_ts: null,
+    checkpoint_ms: null,
     ...over,
   };
 }
@@ -119,6 +152,7 @@ beforeEach(() => {
   h.threadRows = [];
   h.supersedeRows = [];
   h.recipientReplyRows = [];
+  h.effectRows = [];
   h.sqlCalls = [];
   h.sqlImpl = null;
 });
@@ -209,6 +243,72 @@ describe('runReplyDeadlineSweepOnce', () => {
     expect(h.sqlCalls.length).toBeGreaterThan(0);
     expect(h.sqlCalls[0]).toContain(NOW);
     expect(REPLY_DEADLINE_SWEEP_BATCH_LIMIT).toBeGreaterThan(0);
+  });
+
+  describe('directive effects and terminal references (P-013 / EI-20330285752095560)', () => {
+    it.each([
+      {
+        kind: 'terminal' as const,
+        effect: { status: 'done', closed_ts: String(NOW - 2 * 60_000) },
+        label: 'terminal',
+      },
+      {
+        kind: 'checkpoint' as const,
+        effect: { checkpoint_ms: String(NOW - 2 * 60_000) },
+        label: 'checkpoint',
+      },
+    ])('auto-resolves a due deadline when an explicit $label expectEffect is satisfied', async ({ kind, effect }) => {
+      h.rows = [
+        row({
+          summary: 'please carry out the requested effect',
+          expect_effect: { kind, itemId: 'EI-20275359435606597', harness: 'papercusp' },
+        }),
+      ];
+      h.effectRows = [effectRow(effect)];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 1, superseded: 0, truncated: false });
+
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+      const [, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(opts.summary).toContain(`expected ${kind}`);
+      expect(opts.body).toContain('EI-20275359435606597');
+      expect(opts.body).toContain('after the directive');
+      expect(opts.related_msg_id).toBe('m1');
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('auto-resolves when a referenced work item reached terminal after the ask, even without expectEffect', async () => {
+      h.rows = [row({ summary: 'the requested EI-20275359435606597 completion is the answer' })];
+      h.effectRows = [
+        effectRow({
+          status: 'done',
+          closed_ts: String(NOW - 2 * 60_000),
+        }),
+      ];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 0, autoResolved: 1, superseded: 0, truncated: false });
+
+      const [, opts] = (sendMessage as ReturnType<typeof vi.fn>).mock.calls[0];
+      expect(opts.summary).toContain('expected terminal');
+      expect(opts.body).toContain('EI-20275359435606597');
+      expect(wakeRecipients).not.toHaveBeenCalled();
+    });
+
+    it('does not auto-resolve from a terminal state that predates the original ask', async () => {
+      h.rows = [row({ summary: 'the requested EI-20275359435606597 completion is the answer' })];
+      h.effectRows = [
+        effectRow({
+          status: 'done',
+          closed_ts: String(NOW - 30 * 60_000), // before the default ask (20m ago)
+        }),
+      ];
+
+      const result = await runReplyDeadlineSweepOnce({ nowMs: NOW });
+      expect(result).toEqual({ due: 1, nudged: 1, autoResolved: 0, superseded: 0, truncated: false });
+      expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    });
   });
 
   // EI-20760420701985610: a recipient's fresh, unthreaded coord response
