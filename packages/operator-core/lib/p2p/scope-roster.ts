@@ -33,7 +33,10 @@
  * statement ago is enforced on the very next disclose/serve check.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+// LAZY on purpose — see the note at the `await import('@papercusp/db-org')`
+// call site below and plan harden-shared-hive-to-256-peers-2026-06-29 / D-024.
+// This module is reached from the substrate boot path via pot-git/serve-wiring;
+// a static edge here charges every peer process ~125MB of drizzle it never uses.
 import type { OrgSql } from '../work-items';
 import { resolveP2pGrantWorkspace } from './grant-store';
 import type { ScopeId } from '../sync/pot-git/scope-repo';
@@ -120,7 +123,7 @@ export class GrantBackedScopeRoster implements ScopeRoster {
   async currentEpoch(scope: ScopeId): Promise<number> {
     const ws = resolveP2pGrantWorkspace(this.deps.workspaceId);
     if (!ws) return 0; // unresolvable partition ⇒ epoch 0 (fail-closed: no disclosure widening)
-    const sql = this.deps.sqlOverride ?? getOrgPg().sql;
+    const sql = this.deps.sqlOverride ?? (await import('@papercusp/db-org')).getOrgPg().sql;
     const rows = (await sql`
       SELECT high_water_epoch
         FROM harness_shared.p2p_grantor_epochs

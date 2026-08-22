@@ -15,7 +15,10 @@
  */
 
 import type { DeploymentConfig, Frame } from '@papercusp/deployment-driver';
-import { getOrgPg } from '@papercusp/db-org';
+// LAZY on purpose — see the `await import('@papercusp/db-org')` call site below
+// and plan harden-shared-hive-to-256-peers-2026-06-29 / D-024. This module is
+// reached from the substrate boot path via pot-git/serve-wiring; a static edge
+// here charges every peer process ~125MB of drizzle module graph it never uses.
 import { PLATFORM_POT_SLUG } from './platform-pot-slug';
 import { readOperatorState, updateOperatorState, writeOperatorState } from './operator-state-pg';
 import { activeWorkspaceId } from './workspace-registry';
@@ -409,7 +412,7 @@ async function auditRegistryWrite(
   nextCount: number,
 ): Promise<void> {
   try {
-    const { sql } = getOrgPg();
+    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
     const id = `hreg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     await sql.unsafe(
       `INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id)

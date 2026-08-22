@@ -62,7 +62,15 @@
  * DIALER's log alone.
  */
 import type { Sql } from 'postgres';
-import { getOrgPg } from '@papercusp/db-org';
+// `getOrgPg` is imported LAZILY at its one call site, not statically. Plan
+// harden-shared-hive-to-256-peers-2026-06-29 / D-024: this module sits on the
+// substrate boot path (boot.ts -> swarm.ts -> pot-git/serve-wiring -> here), so
+// a static edge to `@papercusp/db-org` charges EVERY peer process ~125MB of
+// drizzle module graph (~80MB shared drizzle core + ~35-40MB generated schema)
+// that a peer which never queries Postgres does not use. At 256 peers that is
+// ~32GB of pure import cost and it is what made a >64-peer mesh unmeasurable on
+// this host. Do not re-staticize this import; `peer-child-import-graph.test.ts`
+// fails if the perf peer graph reaches db-org again.
 import { getHiveSetting, setHiveSetting, deleteHiveSetting } from '../../hive-settings-store';
 import { upsertPotGitGcRoutine, setPotGitGcRoutineActive } from './hive-git-gc-routine';
 
@@ -189,7 +197,7 @@ async function syncPotGitGcRoutine(
   mode: PotGitMode,
   sql?: Sql,
 ): Promise<void> {
-  const s = sql ?? getOrgPg().sql;
+  const s = sql ?? (await import('@papercusp/db-org')).getOrgPg().sql;
   if (mode === 'legacy') {
     await setPotGitGcRoutineActive(s, potHomeSlug, false);
     return;
