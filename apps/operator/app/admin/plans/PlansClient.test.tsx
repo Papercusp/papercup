@@ -11,7 +11,7 @@
  * constants/helpers (PLAN_BUCKETS, bucketOf, …) are preserved via importActual.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 import type { ReactElement } from 'react';
 
@@ -77,7 +77,16 @@ vi.mock('@papercusp/operator-core/lib/harness/scope', () => ({
 }));
 
 /* ── Child-pane stubs (heavy / Vditor / IPC / sync-bound) ──────────── */
-vi.mock('./PlanRail', () => ({ default: () => <div data-testid="plan-rail" /> }));
+vi.mock('./PlanRail', () => ({
+  default: ({ onSelect }: { onSelect: (slug: string) => void }) => (
+    <>
+      <div data-testid="plan-rail" />
+      <button type="button" data-testid="plan-rail-select" onClick={() => onSelect('plan-a')}>
+        Select plan
+      </button>
+    </>
+  ),
+}));
 vi.mock('./PlanDetail', () => ({ default: ({ slug }: { slug: string }) => <div data-testid="plan-detail">{slug}</div> }));
 vi.mock('./PlanItemsList', () => ({
   default: ({ title }: { title: string }) => <div data-testid="plan-items-list">{title}</div>,
@@ -176,6 +185,13 @@ describe('PlansClient (Plans admin shell)', () => {
     const detail = screen.getByTestId('plan-detail');
     expect(detail).toBeTruthy();
     expect(detail.textContent).toBe('plan-a');
+  });
+
+  it('opens the full PlanDetail when selecting a plan from the Plans rail', async () => {
+    renderClient();
+    fireEvent.click(screen.getByTestId('plan-rail-select'));
+    await waitFor(() => expect(screen.getByTestId('plan-detail')).toBeTruthy());
+    expect(screen.getByTestId('plan-detail').textContent).toBe('plan-a');
   });
 
   it('shows search results when ?q= is set (and no plan open)', () => {

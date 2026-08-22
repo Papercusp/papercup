@@ -173,17 +173,12 @@ export default function PlansClient() {
     parseAsStringEnum<PlanDetailTab>(['editor', 'revisions', 'agents']).withDefault('editor'),
   );
   const [, setJump] = useQueryState('jump', parseAsString);
-  // Per-plan filter for the item list — the left rail sets it (clicking a
-  // plan FILTERS the list to that plan; it does NOT open the plan).
-  // Multi-select OR filter: plans toggled in the rail narrow the item list
-  // to those plans. Click a selected plan again to remove it.
+  // Per-plan filter for the item list. The Plans view uses the same rail as
+  // the Queue and Sessions views, but a plan click there opens the full plan
+  // detail; only the latter two views use this multi-select OR filter.
   const [itemPlans, setItemPlans] = useQueryState(
     'itemPlans',
     parseAsArrayOf(parseAsString).withDefault([]),
-  );
-  const toggleItemPlan = useCallback(
-    (s: string) => void setItemPlans(itemPlans.includes(s) ? itemPlans.filter((x) => x !== s) : [...itemPlans, s]),
-    [itemPlans, setItemPlans],
   );
 
   // Sessions view (P-007): the agent whose dossier is open in the right pane.
@@ -605,6 +600,25 @@ export default function PlansClient() {
     [leaveGuard, setJump, setPane, setSlug, setTab, setView],
   );
 
+  // The Plans rail is an opener; Queue and Sessions use the same rail as a
+  // multi-select item filter. Keep the callback stable so the memoized rail
+  // rows do not all re-render whenever a filter or view changes.
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const itemPlansRef = useRef(itemPlans);
+  itemPlansRef.current = itemPlans;
+  const onSelectPlan = useCallback(
+    (s: string) => {
+      if (viewRef.current === 'plans') {
+        void navSlug(s);
+        return;
+      }
+      const current = itemPlansRef.current;
+      void setItemPlans(current.includes(s) ? current.filter((x) => x !== s) : [...current, s]);
+    },
+    [navSlug, setItemPlans],
+  );
+
   // "Queue" — jump to the items view with item-status filters cleared
   // (active plan-status / harness filters stay). Closes any open plan +
   // search + per-plan rail selection so the full cross-plan Queue shows.
@@ -822,10 +836,10 @@ export default function PlansClient() {
           <PlanRail
             ref={railRef}
             list={railList}
-            selectedSlugs={itemPlans}
+            selectedSlugs={view === 'plans' ? (slug ? [slug] : []) : itemPlans}
             query={q}
             searchHitSlugs={searchHitSlugs}
-            onSelect={toggleItemPlan}
+            onSelect={onSelectPlan}
             onStartToggle={() => planList.refresh()}
           />
         </div>
