@@ -1301,6 +1301,11 @@ import './cupboard/install-rubric';
 // requires_rubrics BEFORE downloading, then seeds a status:'draft' TEMPLATE row.
 import './cupboard/publish-plan';
 import './cupboard/install-plan';
+// cupboard-plan-rubric-recipe-sharing-2026-08-21 P-013/P-014 — the recipe kind.
+// publish-recipe REFUSES a script naming concrete workspace-scoped refs rather than
+// laundering it; install-recipe is no-clobber over what is otherwise an UPSERT.
+import './cupboard/publish-recipe';
+import './cupboard/install-recipe';
 // cupboard-agent-tool-coverage-2026-07-14 P-008/P-009 — the cross-kind browse
 // (cupboard:search over browse-listings.ts) + the universal delist
 // (cupboard:unpublish over delete-listing.ts, shared with unlist-hive-rows).

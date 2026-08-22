@@ -169,6 +169,12 @@ function sanitizeItemPart(part: PlanPart): {
   const lines = part.text.split('\n');
   const first = lines[0] ?? '';
 
+  // Counted on the ORIGINAL text, before the note suffix is cut. Most work-item ids
+  // live INSIDE that note, so counting afterwards reports 0 removed on the very
+  // items where the most identity was removed — a strip that happened and did not
+  // show up in its own report is worse than no report.
+  const refsRemoved = countMatches(part.text, WORK_ITEM_REF_RE);
+
   let statusChanged = false;
   let head = first.replace(ITEM_STATUS_RE, (_all, pre: string, status: string, post: string) => {
     if (status !== 'todo') statusChanged = true;
@@ -180,15 +186,13 @@ function sanitizeItemPart(part: PlanPart): {
   const noteRemoved = NOTE_SUFFIX_RE.test(head);
   head = head.replace(NOTE_SUFFIX_RE, '');
 
-  const rest = lines.slice(1);
-  const before = countMatches([head, ...rest].join('\n'), WORK_ITEM_REF_RE);
-  const scrubbed = [head, ...rest].map(stripWorkItemRefs);
+  const scrubbed = [head, ...lines.slice(1)].map(stripWorkItemRefs);
 
   return {
     text: scrubbed.join('\n').replace(/\s+$/, ''),
     statusChanged,
     noteRemoved,
-    refsRemoved: before,
+    refsRemoved,
   };
 }
 
@@ -226,6 +230,28 @@ function sanitizeFrontmatter(
  * as-built reality after implementation, and it is meaningless to an installer who
  * has not built anything yet.
  */
+/**
+ * Does `rubricRef` name THIS plan — i.e. is it the plan's own per-plan acceptance
+ * rubric rather than a shareable one?
+ *
+ * Boundary-aware on purpose. A bare `rubricRef.includes(slug)` looks right and is
+ * wrong in a way that fails silently and asymmetrically: a short slug is a substring
+ * of unrelated refs (slug `x` "matches" `plan-class-bugfix`), so the plan's real
+ * dependencies vanish from the declaration and the install gate has nothing to check.
+ * The convention this is actually detecting is a ref that embeds the slug as a
+ * hyphen/slash-delimited component (`acceptance-<slug>`, `<slug>-acceptance`).
+ */
+function refNamesPlan(rubricRef: string, slug: string): boolean {
+  if (!slug) return false;
+  if (rubricRef === slug) return true;
+  const boundary = '[-_/.]';
+  return new RegExp(`(^|${boundary})${escapeRegex(slug)}($|${boundary})`).test(rubricRef);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 export function deriveRequiredRubrics(content: string, sourceSlug: string): RubricRequirement[] {
   const refs = new Set<string>();
 
@@ -238,7 +264,7 @@ export function deriveRequiredRubrics(content: string, sourceSlug: string): Rubr
   const slug = sourceSlug.trim();
   const out: RubricRequirement[] = [];
   for (const rubricRef of [...refs].sort()) {
-    if (slug && rubricRef.includes(slug)) continue; // this plan's own acceptance rubric
+    if (refNamesPlan(rubricRef, slug)) continue; // this plan's own acceptance rubric
     if (rubricRef.startsWith('<') || rubricRef.includes('$')) continue; // a placeholder, not a ref
     out.push({ rubricRef });
     if (out.length >= MAX_REQUIRED_RUBRICS) break;
