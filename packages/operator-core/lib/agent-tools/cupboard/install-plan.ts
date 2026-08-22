@@ -48,7 +48,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe('Accept the co-install of required rubrics this workspace lacks. Without it a resolvable-but-missing requirement refuses rather than silently pulling in extra units.'),
-    harness: z.string().max(120).optional().describe('Harness scope for the seeded plan row.'),
+    harness: entityRef('harness', { soft: true, max: 120, describe: 'Harness scope for the seeded plan row.' }).optional(),
     skipSeed: z.boolean().optional().describe('Place the dir only — do not create the plan row.'),
     workspace: entityRef('workspace', { max: 120 }).optional(),
   }),

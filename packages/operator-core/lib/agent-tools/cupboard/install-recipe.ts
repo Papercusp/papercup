@@ -13,12 +13,11 @@
  * stranger's script.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+/** Canonical `{ data }` envelope — the framework owns wire encoding (auto-TOON on the MCP transport). */
+const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'cupboard:install-recipe',
@@ -42,13 +41,13 @@ export default defineTool({
     githubUrl: z.string().max(500).optional().describe('Install a mirror repo directly instead of resolving a listing (needs listingRef).'),
     listingRef: z.string().max(200).optional().describe('Within-repo recipe discriminator (the per-ref subdir). Required with githubUrl.'),
     skipSeed: z.boolean().optional().describe('Place the dir only — do not create the code_recipes row.'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 
     if (!args.listingId && !args.githubUrl) {
-      return text({ ok: false, error: 'listingId or githubUrl required' });
+      return ok({ ok: false, error: 'listingId or githubUrl required' });
     }
 
     const { installRecipeFromCupboard } = await import('../../cupboard/install-recipe-io');
@@ -60,10 +59,10 @@ export default defineTool({
     });
 
     if (!outcome.ok) {
-      return text({ ok: false, error: outcome.error, detail: outcome.detail, status: outcome.status });
+      return ok({ ok: false, error: outcome.error, detail: outcome.detail, status: outcome.status });
     }
     const r = outcome.result;
-    return text({
+    return ok({
       ok: true,
       ref: r.ref,
       recipeId: r.recipeId,
