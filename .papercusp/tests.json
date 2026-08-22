@@ -1498,6 +1498,36 @@
    "durationMs": 0,
    "phase": "staging",
    "kind": "contract"
+  },
+  {
+   "id": "spec-test-adequacy-terminal-gate",
+   "summary": "P-007 terminal adequacy gate: missing/current proof and exact terminal scorecard matching are fail-closed and revision-specific",
+   "file": "packages/operator-core/lib/agent-tools/work_items/spec-test-adequacy-gate.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-007-01",
+    "VAL-007-02"
+   ],
+   "status": "passing",
+   "lastRunTs": 1787387650,
+   "durationMs": 13,
+   "phase": "staging",
+   "kind": "contract"
+  },
+  {
+   "id": "spec-test-adequacy-completion-handler",
+   "summary": "P-007 completion handler: refuses inadequate proof before writes and reports every checked exact spec revision on successful close",
+   "file": "packages/operator-core/lib/agent-tools/work_items/complete.test.ts",
+   "framework": "vitest",
+   "coversVALs": [
+    "VAL-007-01",
+    "VAL-007-02"
+   ],
+   "status": "passing",
+   "lastRunTs": 1787385956,
+   "durationMs": 873,
+   "phase": "staging",
+   "kind": "contract"
   }
  ]
 }
