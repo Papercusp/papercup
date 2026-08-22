@@ -5,8 +5,12 @@ import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import TriggersClient from "./TriggersClient";
 
 const useFlag = vi.fn(() => true);
+const askConfirm = vi.fn(async () => true);
 vi.mock("@/lib/flag-hooks", () => ({ useFlag: () => useFlag() }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/app/harness/useConfirmDialog", () => ({
+  useConfirmDialog: () => ({ confirm: askConfirm, element: null }),
+}));
 
 const BINDING_ID = "10000000-0000-4000-8000-000000000001";
 const payload = {
@@ -51,10 +55,7 @@ const payload = {
 
 beforeEach(() => {
   useFlag.mockReturnValue(true);
-  vi.stubGlobal(
-    "confirm",
-    vi.fn(() => true),
-  );
+  askConfirm.mockResolvedValue(true);
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -97,6 +98,12 @@ describe("/admin/triggers client", () => {
     });
     fireEvent.click(toggle);
     await waitFor(() => {
+      expect(askConfirm).toHaveBeenCalledWith({
+        title: "Arm ext:gmail:message.*?",
+        body: "Matching events may immediately start this plan.",
+        confirmLabel: "Arm",
+        destructive: true,
+      });
       const calls = vi
         .mocked(fetch)
         .mock.calls.filter(([, init]) => init?.method === "PATCH");

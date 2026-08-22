@@ -7,7 +7,10 @@ import { FLAGS } from "@papercusp/flags";
 import type {
   ExternalTriggerAdminSnapshot,
   ExternalTriggerBindingAdminRow,
+  ExternalTriggerRunAdminRow,
 } from "@papercusp/operator-core/lib/external-triggers/admin";
+import { Table, type TableColumn } from "@/app/harness/Table";
+import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { useFlag } from "@/lib/flag-hooks";
 import "./triggers.css";
 
@@ -39,8 +42,46 @@ function compactJson(value: Record<string, unknown>): string {
   return Object.keys(value).length === 0 ? "none" : JSON.stringify(value);
 }
 
+const RUN_COLUMNS = [
+  {
+    key: "status",
+    header: "Status",
+    render: (run) => (
+      <span className={`tr-badge run-${run.status}`}>{run.status}</span>
+    ),
+  },
+  {
+    key: "event",
+    header: "Event",
+    render: (run) => (
+      <>
+        <code>{run.eventPattern}</code>
+        <small>{run.sourceKind}</small>
+      </>
+    ),
+  },
+  {
+    key: "plan",
+    header: "Plan",
+    render: (run) => `${run.planHarnessSlug}/${run.planSlug}`,
+  },
+  { key: "attempts", header: "Attempts", render: (run) => run.attempts },
+  {
+    key: "triggered",
+    header: "Triggered",
+    render: (run) => formatTime(run.triggeredAt),
+  },
+  {
+    key: "outcome",
+    header: "Outcome",
+    render: (run) =>
+      run.error ?? (run.planRunRef ? `plan run ${run.planRunRef}` : "—"),
+  },
+] satisfies TableColumn<ExternalTriggerRunAdminRow>[];
+
 export default function TriggersClient() {
   const flagEnabled = useFlag(FLAGS.TRIGGERS_ADMIN);
+  const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [view, setView] = useQueryState(
     "view",
     parseAsStringEnum<View>(["bindings", "sources", "runs"]).withDefault(
@@ -132,7 +173,14 @@ export default function TriggersClient() {
       const consequence = armed
         ? "Matching events may immediately start this plan."
         : "Matching events will stop starting this plan until it is armed again.";
-      if (!window.confirm(`${verb} ${binding.eventPattern}?\n\n${consequence}`))
+      if (
+        !(await askConfirm({
+          title: `${verb} ${binding.eventPattern}?`,
+          body: consequence,
+          confirmLabel: verb,
+          destructive: armed,
+        }))
+      )
         return;
       setBusy(`armed:${binding.id}`);
       try {
@@ -149,7 +197,7 @@ export default function TriggersClient() {
         setBusy(null);
       }
     },
-    [load, patch],
+    [askConfirm, load, patch],
   );
 
   const saveStormPolicy = useCallback(async () => {
@@ -202,6 +250,7 @@ export default function TriggersClient() {
 
   return (
     <main className="tr-shell">
+      {confirmEl}
       <section className="tr-intro" aria-labelledby="tr-title">
         <div>
           <span className="tr-kicker">Triggered plans</span>
@@ -395,44 +444,12 @@ export default function TriggersClient() {
               {payload.recentRuns.length === 0 ? (
                 <Empty message="No external-trigger runs have fired yet." />
               ) : (
-                <table className="tr-table">
-                  <thead>
-                    <tr>
-                      <th>Status</th>
-                      <th>Event</th>
-                      <th>Plan</th>
-                      <th>Attempts</th>
-                      <th>Triggered</th>
-                      <th>Outcome</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {payload.recentRuns.map((run) => (
-                      <tr key={run.id}>
-                        <td>
-                          <span className={`tr-badge run-${run.status}`}>
-                            {run.status}
-                          </span>
-                        </td>
-                        <td>
-                          <code>{run.eventPattern}</code>
-                          <small>{run.sourceKind}</small>
-                        </td>
-                        <td>
-                          {run.planHarnessSlug}/{run.planSlug}
-                        </td>
-                        <td>{run.attempts}</td>
-                        <td>{formatTime(run.triggeredAt)}</td>
-                        <td>
-                          {run.error ??
-                            (run.planRunRef
-                              ? `plan run ${run.planRunRef}`
-                              : "—")}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <Table
+                  className="tr-table"
+                  columns={RUN_COLUMNS}
+                  rows={payload.recentRuns}
+                  getRowKey={(run) => run.id}
+                />
               )}
             </section>
           )}
