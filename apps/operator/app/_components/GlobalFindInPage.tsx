@@ -49,9 +49,17 @@ export default function GlobalFindInPage() {
   // `targetRef.current` only when its deps ([targetRef, isSupported]) change, so a
   // ref populated AFTER mount is never picked up. Holding the element in state and
   // handing the lib a fresh ref object per target makes that effect re-run once
-  // <main> resolves.
+  // <main> resolves. The detached fallback prevents the library's development
+  // warning while the app shell is still resolving its routed <main>.
   const [mainEl, setMainEl] = useState<HTMLElement | null>(null);
-  const targetRef = useMemo(() => ({ current: mainEl }), [mainEl]);
+  const fallbackTarget = useMemo<HTMLElement | null>(
+    () => (typeof document === 'undefined' ? null : document.createElement('div')),
+    [],
+  );
+  const targetRef = useMemo(
+    () => ({ current: mainEl ?? fallbackTarget }),
+    [fallbackTarget, mainEl],
+  );
   const inputRef = useRef<HTMLInputElement | null>(null);
   const rangesRef = useRef<Range[]>([]);
   // Only scroll the page when the user acted (typed / next / prev) — never on a

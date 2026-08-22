@@ -22,10 +22,14 @@ const h = vi.hoisted(() => ({
   nextIndex: vi.fn((i: number, len: number) => (len === 0 ? -1 : (i + 1) % len)),
   prevIndex: vi.fn((i: number, len: number) => (len === 0 ? -1 : (i - 1 + len) % len)),
   formatMatchLabel: vi.fn((active: number, count: number) => (count === 0 ? 'No results' : `${active + 1}/${count}`)),
+  highlightTargets: [] as Array<HTMLElement | null>,
 }));
 
 vi.mock('react-css-highlight', () => ({
-  useHighlight: () => ({ isSupported: h.isSupported, refresh: h.refresh }),
+  useHighlight: ({ targetRef }: { targetRef: { current: HTMLElement | null } }) => {
+    h.highlightTargets.push(targetRef.current);
+    return { isSupported: h.isSupported, refresh: h.refresh };
+  },
 }));
 
 // Capture the shortcut callback so we can fire find.open programmatically.
@@ -60,6 +64,7 @@ beforeEach(() => {
   h.refresh.mockClear();
   h.nextIndex.mockClear();
   h.prevIndex.mockClear();
+  h.highlightTargets.length = 0;
 });
 afterEach(cleanup);
 
@@ -75,6 +80,12 @@ describe('GlobalFindInPage (Ctrl/⌘+F find bar)', () => {
     expect(screen.getByLabelText('Next match (Enter)')).toBeTruthy();
     expect(screen.getByLabelText('Previous match (Shift+Enter)')).toBeTruthy();
     expect(screen.getByLabelText('Close find (Esc)')).toBeTruthy();
+  });
+
+  it('never initializes Highlight with a null target while the route is resolving', () => {
+    renderBar('?find=true');
+    expect(h.highlightTargets.length).toBeGreaterThan(0);
+    expect(h.highlightTargets.every((target) => target !== null)).toBe(true);
   });
 
   it('disables the next/prev buttons when there are zero matches', () => {
