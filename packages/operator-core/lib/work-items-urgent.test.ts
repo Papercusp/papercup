@@ -132,9 +132,10 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  const unexpected = warn.mock.calls.filter(
-    ([message]) => typeof message !== 'string' || !message.startsWith('[hnsw-iterative-scan]'),
-  );
+  const unexpected = warn.mock.calls.filter((call: unknown[]) => {
+    const message = call[0];
+    return typeof message !== 'string' || !message.startsWith('[hnsw-iterative-scan]');
+  });
   expect(unexpected).toEqual([]);
   vi.restoreAllMocks();
 });
