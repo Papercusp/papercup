@@ -1192,14 +1192,15 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const prior = await lastStored();
 
         withPrior(prior);
-        const r = await one({
+        const r = (await one({
           id: 'WI-7',
           checkpoint: 'body',
           rowsMode: 'merge',
           checks: [{ id: 'gate-green', claim: 'gate is green at HEAD', recheck: 'probe gate', verified: 'saw green' }],
-        });
+        })) as { checks: number; checksDropped?: string[] };
         const stored = await lastStored();
         expect(r.checks).toBe(1);
+        expect(r.checksDropped).toBeUndefined();
         expect(stored).toContain('gate is green at HEAD');
         expect(stored).not.toContain('gate is green\n');
       });

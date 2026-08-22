@@ -803,10 +803,14 @@ export default defineTool({
                   effectiveChecks !== undefined ? normalizeCheckEntries(effectiveChecks, prior) : prior;
                 // Recomputed on every transform invocation (the store may retry it under
                 // its lock) so the last run — the one whose result is stored — wins.
-                const keptClaims = new Set(merged.map((c) => c.claim.trim()));
+                // Drop detection must use the same stable identity as the merge and
+                // normalizer. Comparing claim text here misreports an id-keyed
+                // rewording as a lost predecessor, even though the row was replaced
+                // in place and retained its slot/evidence.
+                const keptCheckKeys = new Set(merged.map((c) => carryRowKey(c)));
                 droppedCheckClaims = prior
-                  .map((c) => c.claim.trim())
-                  .filter((claim) => claim.length > 0 && !keptClaims.has(claim));
+                  .filter((c) => c.claim.trim().length > 0 && !keptCheckKeys.has(carryRowKey(c)))
+                  .map((c) => c.claim.trim());
                 if (merged.length === 0) return body.length > 0 ? body : null;
                 const rendered = withCarryNoteChecks(body, merged);
                 if (rendered.length <= CHECKPOINT_CAP) return rendered;
