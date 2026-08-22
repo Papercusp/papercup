@@ -18,6 +18,7 @@ import {
   assertGoogleWorkspaceOwnerUserId,
   provisionOwnedGoogleWorkspaceSources,
 } from '../../../external-triggers/google-workspace';
+import { ensureGmailRespondDraftBinding } from '../../../external-triggers/gmail-flagship';
 import { defineTool } from '@papercusp/agent-mcp';
 
 let providersLoaded = false;
@@ -59,14 +60,11 @@ export default defineTool({
       return Response.json({ ok: false, error: `provider ${providerId} not registered` }, { status: 500 });
     }
 
-    const connectsGoogleWorkspace =
-      providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
+    const connectsGoogleWorkspace = providerId === 'google' && plugin === GOOGLE_WORKSPACE_OAUTH_PLUGIN;
     let googleOwner: { ownerUserId: string; workspaceId: string } | null = null;
     if (connectsGoogleWorkspace) {
       try {
-        const ownerUserId = assertGoogleWorkspaceOwnerUserId(
-          verified.privateContext?.ownerUserId,
-        );
+        const ownerUserId = assertGoogleWorkspaceOwnerUserId(verified.privateContext?.ownerUserId);
         const workspaceId = verified.privateContext?.workspaceId?.trim() ?? '';
         if (!workspaceId) throw new Error('google_workspace_workspace_id_required');
         googleOwner = { ownerUserId, workspaceId };
@@ -97,12 +95,20 @@ export default defineTool({
     await fsTokenStorage.update(plugin, harness, patch);
     if (googleOwner) {
       try {
-        await provisionOwnedGoogleWorkspaceSources(getOrgPg().sql, {
+        const sources = await provisionOwnedGoogleWorkspaceSources(getOrgPg().sql, {
           workspaceId: googleOwner.workspaceId,
           ownerUserId: googleOwner.ownerUserId,
           field,
           createdBy: `owner:${googleOwner.ownerUserId}`,
         });
+        const gmail = sources.find((source) => source.kind === 'gmail');
+        if (!gmail) throw new Error('google_workspace_gmail_source_missing');
+        await ensureGmailRespondDraftBinding(
+          getOrgPg().sql,
+          googleOwner.workspaceId,
+          gmail,
+          `owner:${googleOwner.ownerUserId}`,
+        );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return Response.redirect(

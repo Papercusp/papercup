@@ -16,7 +16,7 @@
  *
  * Pure unit, no env/network (same as types.test.ts).
  */
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it } from "vitest";
 import {
   ALL_FLAG_KEYS,
   DARK_FLAGS,
@@ -27,13 +27,13 @@ import {
   FLAGS,
   FLAG_DEFAULTS,
   type DarkCase,
-} from './types';
+} from "./types";
 
 const VALID_DARK_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>([
-  'incomplete',
-  'owner-authority',
-  'cutover',
-  'parked',
+  "incomplete",
+  "owner-authority",
+  "cutover",
+  "parked",
 ]);
 
 /**
@@ -53,17 +53,17 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // live default-ON — live-evidenced harm: a backgrounded capability:bash job died
   // ~3-6s after the launching call returned via the bwrap `--die-with-parent` path).
   // Count 27 → 28.
-  'papercusp-capability-exec-sandbox',
-  'papercusp-cloudflare-publish',
-  'papercusp-harness-phases',
-  'papercusp-design',
-  'papercusp-testing',
-  'papercusp-open-signup',
+  "papercusp-capability-exec-sandbox",
+  "papercusp-cloudflare-publish",
+  "papercusp-harness-phases",
+  "papercusp-design",
+  "papercusp-testing",
+  "papercusp-open-signup",
   // papercusp-per-hive-release-gate GRADUATED to default-ON 2026-07-03 (D-008 canary
   // met: oddsmith checkpoint green + main FF'd) — removed from this snapshot; the
   // count assertion below dropped from 10 to 9 to match.
-  'papercusp-auth-config-overrides',
-  'papercusp-external-bench',
+  "papercusp-auth-config-overrides",
+  "papercusp-external-bench",
   // papercusp-test-completion-gate GRADUATED to default-ON 2026-07-04 (dark-flag-age
   // review, EI-7280 — see libs/flags/src/types.ts DARK_FLAGS): enforce-system-on-
   // generic-work-2026-06-29 P-014 verified it LIVE + enabled with zero blast radius
@@ -76,11 +76,11 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // framework P-008 / D-006, owner-authority): letting a REMOTE fleet owner spawn on
   // this host is opt-in, so it ships fail-closed (default-OFF) permanently — each
   // contributing host flips it ON per-host. Not a pending-flip; OFF is the correct default.
-  'papercusp-accept-delegated-seats',
+  "papercusp-accept-delegated-seats",
   // 2026-07-14 (WI-2479) — persistent fleet headcount auto-top-up is a
   // dangerous fleet-autonomy surface. The governor is complete but remains
   // explicitly default-OFF until its bounded no-storm behavior is ratified.
-  'papercusp-fleet-headcount-governor',
+  "papercusp-fleet-headcount-governor",
   // papercusp-queen-warm-session GRADUATED to default-ON 2026-07-02 (owner flip
   // directive — see libs/flags/src/types.ts DARK_FLAGS) — removed from this
   // snapshot; the count assertion below dropped from 11 to 10 to match.
@@ -88,7 +88,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // owner-chosen Option B): reverse-engineered proprietary transport, dark until an
   // owner-attended live canary against production ChatGPT; direct native auth is the
   // fallback. Pending-flip (count 10 → 11).
-  'papercusp-codex-gateway-oauth-proxy',
+  "papercusp-codex-gateway-oauth-proxy",
   // papercusp-gateway-maintenance-carry GRADUATED to default-ON 2026-07-15 by
   // explicit owner release direction: behavioral cutover now ships live, with one
   // clean post-deploy smoke per class instead of ten pre-cutover drills.
@@ -97,12 +97,12 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // consent, mobile pairing, auto-update channel) so a fresh install never sees them.
   // case: incomplete; default-OFF is the intended production state (ON = testers only).
   // Count 11 → 12; well under DARK_FLAGS_HIGH_WATERMARK (22), so no watermark bump.
-  'papercusp-onboarding-preview-features',
+  "papercusp-onboarding-preview-features",
   // 2026-07-04 — the-hive/Swarm lexicon skin (restore-pot-lexicon-public-release,
   // owner-directed): public release ships the Pot (Papercup) lexicon by DEFAULT, so
   // the-hive flips to default-OFF. case: parked (BUILT + kept, but cut from public V1 —
   // reachable only via the TESTING-gated BrandSwitcher, P-004). Count 12 → 13.
-  'papercusp-the-hive',
+  "papercusp-the-hive",
   // 2026-07-04 (EI-7230) — NOT a new post-inversion darkening: a BUG-FIX correction.
   // watchdog-auto-close's own code comment (watchdog-and-exposed-systems-improvement-
   // 2026-06-18 P-009) has ALWAYS said "DEFAULT OFF — auto-closing real improvement items
@@ -113,7 +113,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // ACTUALLY false pre-inversion). Adding it here + to DARK_FLAGS restores its always-
   // intended default-OFF, so the watchdog goes back to escalate-only until the owner
   // reviews the auto-close criteria. Count 13 → 14.
-  'papercusp-watchdog-auto-close',
+  "papercusp-watchdog-auto-close",
   // 2026-07-05 (WI-1994) — NOT a new post-inversion darkening: the same bug-fix class as
   // papercusp-watchdog-auto-close above. papercusp-substrate-sidecar's OWN code comment
   // (libs/flags/src/types.ts) has ALWAYS said "DEFAULT OFF ... Listed in KNOWN_DARK_FLAGS"
@@ -122,7 +122,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // frame boots the dark path and the sidecar process crash-loops (exit 1 right after
   // joining its topic), the mechanism behind WI-1910's 0 peer_connected. Adding it here +
   // to DARK_FLAGS restores its always-intended default-OFF. Count 13 → 14.
-  'papercusp-substrate-sidecar',
+  "papercusp-substrate-sidecar",
   // 2026-07-05 (EI-7685) — NOT a new post-inversion darkening: the same bug-fix class as
   // papercusp-watchdog-auto-close / papercusp-substrate-sidecar above (THIRD instance).
   // papercusp-reclaim-stalled's OWN code comments (work-items-stale-claims.ts,
@@ -136,7 +136,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // calling work_items:checkpoint in the window, wiping its checkpoint and reassigning to an
   // idle peer. Adding it here + to DARK_FLAGS restores its always-intended default-OFF.
   // Count 14 → 15.
-  'papercusp-reclaim-stalled',
+  "papercusp-reclaim-stalled",
   // 2026-07-05 (WI-3093) — NOT a new post-inversion darkening: the FOURTH instance of the
   // same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-sidecar /
   // papercusp-reclaim-stalled above. papercusp-psu-end-user's OWN code comment
@@ -150,14 +150,14 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // could see + click a button opening a full unauthenticated superuser agent shell, with
   // zero owner ratification. Adding it here + to DARK_FLAGS restores its always-intended
   // default-OFF. Count 15 → 16.
-  'papercusp-psu-end-user',
+  "papercusp-psu-end-user",
   // 2026-07-07 — papercusp-templates-marketplace (local-first-party-template-bundling,
   // owner-directed): a DELIBERATE new dark flag (case: parked), not inversion drift.
   // V1 ships the first-party templates bundled + resolved from the local store; the
   // Cupboard MARKETPLACE merge (user-published, runtime-fetched templates) is deferred
   // to v2. The remote-fetch code is wired but dormant. OFF is the intended v1 production
   // state (ON = v2). Count 16 → 17; well under DARK_FLAGS_HIGH_WATERMARK (22).
-  'papercusp-templates-marketplace',
+  "papercusp-templates-marketplace",
   // 2026-07-07 — papercusp-rubrics-marketplace (local-first-party-rubric-bundling,
   // owner-directed): the rubrics sibling of papercusp-templates-marketplace — the same
   // DELIBERATE v1/v2 split (case: parked), not inversion drift. V1 bundles the
@@ -165,7 +165,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // Cupboard kind='rubric' marketplace merge is deferred to v2 (no remote-fetch code
   // yet — the flag reserves the seam). OFF is the intended v1 production state
   // (ON = v2). Count 17 → 18; well under DARK_FLAGS_HIGH_WATERMARK (22).
-  'papercusp-rubrics-marketplace',
+  "papercusp-rubrics-marketplace",
   // 2026-07-09 — papercusp-own-log-fork-auto-recovery (p2p-parity-parallel-lanes-
   // 2026-07-09 P-003 / WI-3535, owner-authority): the own-log-fork-guard's
   // sketched auto-recovery is a DESTRUCTIVE per-harness Corestore store reset
@@ -173,7 +173,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // requires flag-gated default-OFF until the owner personally ratifies it.
   // Deliberate new dark flag, not inversion drift. Count 18 → 19; well under
   // DARK_FLAGS_HIGH_WATERMARK (22).
-  'papercusp-own-log-fork-auto-recovery',
+  "papercusp-own-log-fork-auto-recovery",
   // 2026-07-17 — papercusp-hrw-rendezvous-authority GRADUATED default-ON (LIVE-1
   // P-059 drill, coordination lane): the attended multi-peer verify its dark entry
   // required ran on the tower↔VM rig (identical fresh candidate sets + the same
@@ -206,7 +206,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // DARK_FLAGS_HIGH_WATERMARK (22); the watermark ceiling is `<=`, so this does not
   // breach it, but leaves ZERO headroom — see EI-9140's 2026-07-10 review (types.ts)
   // for the standing capacity note to the owner.
-  'papercusp-substrate-log-snapshot',
+  "papercusp-substrate-log-snapshot",
   // 2026-07-10 (WI-3796) — NOT a new post-inversion darkening: the SEVENTH instance of
   // the same bug-fix class as papercusp-watchdog-auto-close / papercusp-substrate-sidecar /
   // papercusp-reclaim-stalled / papercusp-psu-end-user / papercusp-plan-part-federation /
@@ -241,7 +241,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // inversion. Confirmed via direct PG check: no override row for it in workspace
   // papercusp-workspace. Adding it here restores its always-intended default-OFF. Count
   // 23 → 24 — AT the raised DARK_FLAGS_HIGH_WATERMARK (24); see types.ts for the raise note.
-  'papercusp-doc-steward',
+  "papercusp-doc-steward",
   // 2026-07-10 — papercusp-mem0-federation-egress (mem0-cross-machine-federation-2026-07-10
   // F1-1 mirror, D-006 privacy, case: owner-authority): DELIBERATE new dark flag, not a
   // bug-fix correction. Gates cross-machine federation of SHAREABLE memories
@@ -253,7 +253,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // graduation candidates ready (see EI-9140/2026-07-10 review), so
   // DARK_FLAGS_HIGH_WATERMARK was raised 24→25 (see types.ts's watermark constant
   // comment). Count 24 → 25.
-  'papercusp-mem0-federation-egress',
+  "papercusp-mem0-federation-egress",
   // 2026-07-12 (WI-4238) — papercusp-queen-full-autonomy: BUG-FIX correction, NINTH
   // instance of the EI-7230 class (own comment always said "OFF by default — DELIBERATE",
   // never actually added to DARK_FLAGS, so the P-011 inversion silently derived it ON).
@@ -269,7 +269,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // stale side and are now corrected in types.ts. Only this one inverts the safety
   // direction (ON removes the last human check on the system widening its own ceilings),
   // so only this one is darkened. Watermark raised 25→26. Count 25 → 26.
-  'papercusp-queen-full-autonomy',
+  "papercusp-queen-full-autonomy",
   // 2026-07-12 (WI-4240) — papercusp-workspace-coordination was added here as the TENTH
   // EI-7230 instance (an UNVERIFIED workspace-brain re-key cutover held OFF by a hand-placed
   // operator_flag_overrides row); GRADUATED OUT 2026-08-02 (WI-605, workspace-scoped-
@@ -282,8 +282,8 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // a two-machine proof), never actually added, so P-011 derived both live-ON. Byte-identical
   // on a single box (both no-op without a multi-machine transport) and consistent with the
   // sibling cross-machine flags already dark. Watermark raised 27→29. Count 27 → 29.
-  'papercusp-authority-rpc-protomux',
-  'papercusp-authority-eviction-probe',
+  "papercusp-authority-rpc-protomux",
+  "papercusp-authority-eviction-probe",
   // 2026-07-20 (WI-5563, bug-drain-200k structural-starvation diagnosis) —
   // papercusp-replication-liveness-staleness-auto-close: DELIBERATE new dark flag, not
   // a bug-fix correction (case: owner-authority, same class as WATCHDOG_AUTO_CLOSE).
@@ -295,7 +295,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // human/agent verifying the specific item is unsafe by default; OFF is byte-identical
   // to today (escalate-only). Well under DARK_FLAGS_HIGH_WATERMARK (29) as an
   // owner-authority case (does not count toward the parking watermark). Count 28 → 29.
-  'papercusp-replication-liveness-staleness-auto-close',
+  "papercusp-replication-liveness-staleness-auto-close",
   // 2026-07-26 (shared-hive-cross-machine-scale-10k-2026-06-29 P-010, su-709bb) — THREE
   // BUG-FIX corrections of the identical never-added-to-DARK_FLAGS class as
   // WATCHDOG_AUTO_CLOSE / SUBSTRATE_SIDECAR / RECLAIM_STALLED / PSU_END_USER above, NOT new
@@ -321,9 +321,9 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   //  · papercusp-capability-envelope-overrides — SECURITY surface; runtime per-role
   //    deny/allow overrides merged OVER the baked ROLE_ENVELOPES at dispatch. OFF ⇒ the
   //    sync-cache stays empty ⇒ byte-identical to the baked envelopes.
-  'papercusp-improvement-auto-implement',
-  'papercusp-lazy-substrate-boot',
-  'papercusp-capability-envelope-overrides',
+  "papercusp-improvement-auto-implement",
+  "papercusp-lazy-substrate-boot",
+  "papercusp-capability-envelope-overrides",
   // (papercusp-task-manager was added here 2026-07-27 by WI-6499 and REMOVED 2026-08-02
   // by WI-6844 — it graduated to default-ON on an explicit owner directive: "we put it
   // behind a testing flag. Remove that flag, we'll make it part of our standard
@@ -350,7 +350,7 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // trade was sought for the watermark slot. Graduates on the owner's word that the tab
   // is part of the standard release; when it does, DELETE this entry (do not comment it
   // out as still-dark) and ratchet the watermark 14 → 13 in the same change.
-  'papercusp-conversations-rail-tab',
+  "papercusp-conversations-rail-tab",
   //
   // 2026-08-12 (retire-mug-kettle-su-only-2026-08-09 P-068 / D-098): the entry for
   // `papercusp-mug-kettle-system` was REMOVED from this snapshot, because the flag
@@ -375,7 +375,12 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // The actor launches unattended GOAL-mode sessions and spends money, so it
   // stays independent of the report-only liveness watchdog and defaults OFF.
   // owner-authority does not consume a parking-watermark slot. Count 31 → 32.
-  'papercusp-goal-holder-respawn',
+  "papercusp-goal-holder-respawn",
+  // 2026-08-22 (external-triggers-gmail-slack-2026-08-22 P-011) — deliberate
+  // owner-authority dark flag for future automatic Gmail sending. Draft creation
+  // ships independently and has no send branch. Owner-authority does not consume
+  // a parking-watermark slot. Count 32 → 33.
+  "papercusp-gmail-auto-send",
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the
@@ -385,8 +390,8 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
 // still the "expiry" that stops a dark flag lingering silently — past it the test below
 // goes red; treat that as "do the review," not "bump the date" (the bump is the LAST step).
 
-describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', () => {
-  it('every flag defaults ON unless consciously registered in DARK_FLAGS', () => {
+describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", () => {
+  it("every flag defaults ON unless consciously registered in DARK_FLAGS", () => {
     // With the P-011 inversion FLAG_DEFAULTS is DERIVED (`!DARK_FLAGS.has(key)`),
     // so this holds by construction — but the assert documents the contract and
     // catches any future hand-edit that re-introduces a default-OFF literal.
@@ -396,40 +401,57 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(
       offenders,
       `New flags DEFAULT TO ENABLED — finished work never ships dark (CLAUDE.md "Feature flags + PostHog"). ` +
-        `These flags resolve to false without being in DARK_FLAGS: [${offenders.join(', ')}]. ` +
+        `These flags resolve to false without being in DARK_FLAGS: [${offenders.join(", ")}]. ` +
         `Either ship the flag enabled (the default — add nothing) or — only for genuinely ` +
         `incomplete/unsafe work — consciously add it to DARK_FLAGS in libs/flags/src/types.ts ` +
         `with a case + reason, and surface the pending flip in the plan's "## Now" + your report.`,
     ).toEqual([]);
   });
 
-  it('DARK_FLAGS covers EXACTLY the default-OFF set (reason guaranteed by construction)', () => {
+  it("DARK_FLAGS covers EXACTLY the default-OFF set (reason guaranteed by construction)", () => {
     // Both directions: every default-OFF flag is registered (has a reason), and
     // every registered dark flag actually defaults false (no stale entry that has
     // since flipped ON). Replaces the old separate "allowlist not stale" guard.
-    const defaultOff = ALL_FLAG_KEYS.filter((key) => FLAG_DEFAULTS[key] === false).sort();
+    const defaultOff = ALL_FLAG_KEYS.filter(
+      (key) => FLAG_DEFAULTS[key] === false,
+    ).sort();
     const registered = [...DARK_FLAGS.keys()].sort();
-    expect(defaultOff, 'the derived default-OFF set must equal DARK_FLAGS exactly').toEqual(registered);
+    expect(
+      defaultOff,
+      "the derived default-OFF set must equal DARK_FLAGS exactly",
+    ).toEqual(registered);
   });
 
-  it('every DARK_FLAGS entry is a real registered flag key with a valid case + reason', () => {
+  it("every DARK_FLAGS entry is a real registered flag key with a valid case + reason", () => {
     const known = new Set<string>(ALL_FLAG_KEYS);
     for (const [key, info] of DARK_FLAGS) {
-      expect(known.has(key), `DARK_FLAGS contains unregistered key "${key}"`).toBe(true);
+      expect(
+        known.has(key),
+        `DARK_FLAGS contains unregistered key "${key}"`,
+      ).toBe(true);
       // The DarkCase TYPE already rejects an invalid reason at compile time; this is
       // belt-and-suspenders for the runtime shape. There is deliberately NO "finished,
       // owner flips after verifying" case — finished + tested ⇒ ship ON (flip in-task).
-      expect(VALID_DARK_CASES.has(info.case), `DARK_FLAGS["${key}"] has invalid case "${info.case}"`).toBe(true);
-      expect(info.reason.trim().length, `DARK_FLAGS["${key}"] needs a non-empty reason`).toBeGreaterThan(0);
+      expect(
+        VALID_DARK_CASES.has(info.case),
+        `DARK_FLAGS["${key}"] has invalid case "${info.case}"`,
+      ).toBe(true);
+      expect(
+        info.reason.trim().length,
+        `DARK_FLAGS["${key}"] needs a non-empty reason`,
+      ).toBeGreaterThan(0);
     }
   });
 
-  it('the dark allowlist is not past its review-by date (no silent lingering)', () => {
+  it("the dark allowlist is not past its review-by date (no silent lingering)", () => {
     // The default-on policy only "sticks" if a dark flag can't sit forever. Past
     // DARK_FLAGS_REVIEW_BY this fails — the team re-reviews EVERY dark flag, flips
     // the ones now ready, and ONLY THEN pushes the date out for what must stay dark.
     const reviewBy = Date.parse(DARK_FLAGS_REVIEW_BY);
-    expect(Number.isNaN(reviewBy), 'DARK_FLAGS_REVIEW_BY must be a valid ISO date').toBe(false);
+    expect(
+      Number.isNaN(reviewBy),
+      "DARK_FLAGS_REVIEW_BY must be a valid ISO date",
+    ).toBe(false);
     expect(
       Date.now() <= reviewBy,
       `The DARK_FLAGS allowlist is past its review-by (${DARK_FLAGS_REVIEW_BY}). ` +
@@ -439,7 +461,7 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     ).toBe(true);
   });
 
-  it('the dark allowlist only ever SHRINKS — agents may not reconstruct it (owner mandate 2026-06-23)', () => {
+  it("the dark allowlist only ever SHRINKS — agents may not reconstruct it (owner mandate 2026-06-23)", () => {
     // ANTI-RECONSTRUCTION GUARD (owner-directed, plan flip-dark-flags-default-on-2026-06-23): the
     // allowlist was being abused as a PARKING LOT — finished work left default-OFF "to be safe"
     // because flipping it on made agents uncomfortable. After the owner's flags-default-ON sweep the
@@ -448,10 +470,13 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // an existing dark flag first (net-zero), or get EXPLICIT owner sign-off to raise the watermark.
     // Growth must be a deliberate, owner-visible act, never a quiet append.
     // (DARK_FLAGS_HIGH_WATERMARK now lives in libs/flags/src/types.ts — imported above.)
-    const parkingCount = [...DARK_FLAGS.values()].filter((entry) => DARK_FLAGS_PARKING_CASES.has(entry.case)).length;
-    expect(parkingCount, 'the runtime parking count must match its exported source-of-truth count').toBe(
-      DARK_FLAGS_PARKING_COUNT,
-    );
+    const parkingCount = [...DARK_FLAGS.values()].filter((entry) =>
+      DARK_FLAGS_PARKING_CASES.has(entry.case),
+    ).length;
+    expect(
+      parkingCount,
+      "the runtime parking count must match its exported source-of-truth count",
+    ).toBe(DARK_FLAGS_PARKING_COUNT);
     expect(
       parkingCount <= DARK_FLAGS_HIGH_WATERMARK,
       `The parked/incomplete dark subset GREW to ${parkingCount} (parking watermark ${DARK_FLAGS_HIGH_WATERMARK}); ` +
@@ -460,15 +485,17 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     ).toBe(true);
   });
 
-  it('does not ration owner-authority/cutover safety flags with the parking watermark', () => {
-    const parkingCount = [...DARK_FLAGS.values()].filter((entry) => DARK_FLAGS_PARKING_CASES.has(entry.case)).length;
+  it("does not ration owner-authority/cutover safety flags with the parking watermark", () => {
+    const parkingCount = [...DARK_FLAGS.values()].filter((entry) =>
+      DARK_FLAGS_PARKING_CASES.has(entry.case),
+    ).length;
     const governedCount = DARK_FLAGS.size - parkingCount;
     expect(governedCount).toBeGreaterThan(0);
     expect(DARK_FLAGS.size).toBeGreaterThan(DARK_FLAGS_HIGH_WATERMARK);
     expect(parkingCount).toBeLessThanOrEqual(DARK_FLAGS_HIGH_WATERMARK);
   });
 
-  it('VALUE-PRESERVING: the derived FLAG_DEFAULTS matches the pre-inversion snapshot for EVERY flag', () => {
+  it("VALUE-PRESERVING: the derived FLAG_DEFAULTS matches the pre-inversion snapshot for EVERY flag", () => {
     // The P-011 inversion MUST NOT silently flip any flag. For every registered FlagKey, the
     // derived default must equal the pre-inversion value (false iff in the captured snapshot).
     const mismatches: string[] = [];
@@ -481,13 +508,18 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     expect(
       mismatches,
       `FLAG-DEFAULT INVERSION changed an effective default — it must be strictly value-preserving: ` +
-        `[${mismatches.join('; ')}]`,
+        `[${mismatches.join("; ")}]`,
     ).toEqual([]);
 
     // And the snapshot itself must reference only real flags (no stale literal that drifted out of FLAGS).
     const known = new Set<string>(ALL_FLAG_KEYS);
-    const orphanSnapshot = [...PRE_INVERSION_DEFAULT_OFF].filter((k) => !known.has(k));
-    expect(orphanSnapshot, `PRE_INVERSION_DEFAULT_OFF references unregistered flag(s)`).toEqual([]);
+    const orphanSnapshot = [...PRE_INVERSION_DEFAULT_OFF].filter(
+      (k) => !known.has(k),
+    );
+    expect(
+      orphanSnapshot,
+      `PRE_INVERSION_DEFAULT_OFF references unregistered flag(s)`,
+    ).toEqual([]);
   });
 
   // 2026-07-26 (P-010, su-709bb) — improvement-auto-implement + lazy-substrate-boot +
@@ -495,8 +527,10 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
   // flag-comment-lint recall fix (the guard could not see the reversed "OFF (default)"
   // declaration form), not new darkenings. All owner-authority/cutover ⇒ no parking-watermark
   // impact. See the block at the end of PRE_INVERSION_DEFAULT_OFF above. Count 29 → 32.
-  it('the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)', () => {
-    const offCount = ALL_FLAG_KEYS.filter((k) => FLAG_DEFAULTS[k] === false).length;
+  it("the default-OFF COUNT matches the snapshot (9 pre-inversion + deliberate additions)", () => {
+    const offCount = ALL_FLAG_KEYS.filter(
+      (k) => FLAG_DEFAULTS[k] === false,
+    ).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
     // 9 pre-inversion + papercusp-accept-delegated-seats (2026-07-03,
     // agent-allocation-framework P-008 owner-authority trust gate)
@@ -648,32 +682,50 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // 2026-08-20 — P-009's independently gated unattended holder recovery.
     // case: owner-authority, so the parking subset/watermark remain 14.
     // Count 31 → 32.
-    expect(offCount).toBe(32);
+    expect(offCount).toBe(33);
   });
 
-  it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {
+  it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
     // A coarse human-readable cross-check on top of the snapshot equality above.
-    for (const key of [FLAGS.CLOUDFLARE_PUBLISH, FLAGS.HARNESS_PHASES, FLAGS.DESIGN, FLAGS.TESTING]) {
-      expect(DARK_FLAGS.get(key)?.case).toBe('parked');
+    for (const key of [
+      FLAGS.CLOUDFLARE_PUBLISH,
+      FLAGS.HARNESS_PHASES,
+      FLAGS.DESIGN,
+      FLAGS.TESTING,
+    ]) {
+      expect(DARK_FLAGS.get(key)?.case).toBe("parked");
       expect(FLAG_DEFAULTS[key]).toBe(false);
     }
-    expect(DARK_FLAGS.get(FLAGS.OPEN_SIGNUP)?.case).toBe('owner-authority');
-    expect(DARK_FLAGS.get(FLAGS.AUTH_CONFIG_OVERRIDES)?.case).toBe('owner-authority');
+    expect(DARK_FLAGS.get(FLAGS.OPEN_SIGNUP)?.case).toBe("owner-authority");
+    expect(DARK_FLAGS.get(FLAGS.AUTH_CONFIG_OVERRIDES)?.case).toBe(
+      "owner-authority",
+    );
+    expect(DARK_FLAGS.get(FLAGS.GMAIL_AUTO_SEND)?.case).toBe("owner-authority");
+    expect(FLAG_DEFAULTS[FLAGS.GMAIL_AUTO_SEND]).toBe(false);
     // WI-3093: psu end-user exposure (a full superuser agent shell) is the highest-stakes
     // owner-authority entry in the set — pin it explicitly so a future edit can't silently
     // re-flip it to default-ON the way the P-011 inversion originally did.
-    expect(DARK_FLAGS.get(FLAGS.PSU_END_USER)?.case).toBe('owner-authority');
+    expect(DARK_FLAGS.get(FLAGS.PSU_END_USER)?.case).toBe("owner-authority");
     expect(FLAG_DEFAULTS[FLAGS.PSU_END_USER]).toBe(false);
   });
 
-  it('plan completion audit guards ship default-ON and are never dark', () => {
-    for (const key of [FLAGS.PLAN_CODE_AUDIT_GATE, FLAGS.PLAN_ITEM_COMPLETION_GATE]) {
-      expect(FLAG_DEFAULTS[key], `${key} must enforce plan completion by default`).toBe(true);
-      expect(DARK_FLAGS.has(key), `${key} must not be registered as a dark flag`).toBe(false);
+  it("plan completion audit guards ship default-ON and are never dark", () => {
+    for (const key of [
+      FLAGS.PLAN_CODE_AUDIT_GATE,
+      FLAGS.PLAN_ITEM_COMPLETION_GATE,
+    ]) {
+      expect(
+        FLAG_DEFAULTS[key],
+        `${key} must enforce plan completion by default`,
+      ).toBe(true);
+      expect(
+        DARK_FLAGS.has(key),
+        `${key} must not be registered as a dark flag`,
+      ).toBe(false);
     }
   });
 
-  it('P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark', () => {
+  it("P2P + GITHUB_BRIDGE ship default-ON with STRUCTURAL inertness (FS-D5) — never dark", () => {
     // p2p-work-distribution-2026-07-02 P-005 / FS-D5 (plan decision D-019): the P2P
     // work-sharing surface follows the landed GITHUB_BRIDGE pattern — the flag is the
     // FLEET-WIDE kill-switch (default-ON), and activation is the REAL surface (explicit
@@ -682,8 +734,14 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // a future "let me dark-ship P2P to be safe" edit — which FS-D5 explicitly forbids
     // (a dark entry would also trip the shrink-only high-watermark guard above).
     for (const key of [FLAGS.P2P, FLAGS.GITHUB_BRIDGE]) {
-      expect(FLAG_DEFAULTS[key], `${key} must default ON (fleet kill-switch, not dark)`).toBe(true);
-      expect(DARK_FLAGS.has(key), `${key} must NOT be in DARK_FLAGS — inertness is structural (FS-D5)`).toBe(false);
+      expect(
+        FLAG_DEFAULTS[key],
+        `${key} must default ON (fleet kill-switch, not dark)`,
+      ).toBe(true);
+      expect(
+        DARK_FLAGS.has(key),
+        `${key} must NOT be in DARK_FLAGS — inertness is structural (FS-D5)`,
+      ).toBe(false);
     }
   });
 });

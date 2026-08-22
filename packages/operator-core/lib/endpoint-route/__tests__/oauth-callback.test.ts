@@ -16,7 +16,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RouteContext } from '../define-route';
 
 const sourceMocks = vi.hoisted(() => ({
-  provision: vi.fn(async () => []),
+  provision: vi.fn(async () => [
+    {
+      id: '11111111-1111-4111-8111-111111111111',
+      workspaceId: 'workspace-1',
+      kind: 'gmail',
+      ownerUserId: '22222222-2222-4222-8222-222222222222',
+      credentialRef: 'google-workspace:owner',
+      status: 'connected',
+      config: { installSlug: 'papercusp' },
+      cursor: {},
+    },
+  ]),
+  ensureGmailBinding: vi.fn(async () => ({
+    plan: { created: true, schemaAdded: true },
+    binding: { id: 'binding-1', armed: false },
+  })),
   sql: { test: true },
 }));
 
@@ -35,6 +50,9 @@ vi.mock('../../external-triggers/google-workspace', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../external-triggers/google-workspace')>()),
   provisionOwnedGoogleWorkspaceSources: sourceMocks.provision,
 }));
+vi.mock('../../external-triggers/gmail-flagship', () => ({
+  ensureGmailRespondDraftBinding: sourceMocks.ensureGmailBinding,
+}));
 vi.mock('../../oauth/state', () => ({
   verifyAndConsumeState: async (token: string) => {
     if (!token.includes('.') || token === 'garbage.sig') {
@@ -45,10 +63,12 @@ vi.mock('../../oauth/state', () => ({
         ok: true,
         privateContext: {
           codeVerifier: 'persisted-verifier',
-          ...(token === 'google.missing' ? {} : {
-            ownerUserId: '22222222-2222-4222-8222-222222222222',
-            workspaceId: 'workspace-1',
-          }),
+          ...(token === 'google.missing'
+            ? {}
+            : {
+                ownerUserId: '22222222-2222-4222-8222-222222222222',
+                workspaceId: 'workspace-1',
+              }),
         },
         claims: {
           plugin: 'google-workspace',
@@ -91,6 +111,7 @@ beforeEach(async () => {
   process.env.PAPERCUSP_HOME = TMP_HOME;
   providers.__resetRegistryForTest();
   sourceMocks.provision.mockClear();
+  sourceMocks.ensureGmailBinding.mockClear();
 });
 
 afterEach(async () => {
@@ -192,9 +213,7 @@ describe('GET /api/oauth/callback', () => {
       refresh: async () => ({ accessToken: 'unused' }),
     });
 
-    const response = await GET(
-      new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'),
-    );
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
     expect(response.status).toBe(307);
     expect(sourceMocks.provision).toHaveBeenCalledWith(sourceMocks.sql, {
       workspaceId: 'workspace-1',
@@ -202,6 +221,12 @@ describe('GET /api/oauth/callback', () => {
       field: 'owner',
       createdBy: 'owner:22222222-2222-4222-8222-222222222222',
     });
+    expect(sourceMocks.ensureGmailBinding).toHaveBeenCalledWith(
+      sourceMocks.sql,
+      'workspace-1',
+      expect.objectContaining({ kind: 'gmail', ownerUserId: '22222222-2222-4222-8222-222222222222' }),
+      'owner:22222222-2222-4222-8222-222222222222',
+    );
     const cfgPath = join(TMP_HOME, 'harnesses/papercusp/plugin-configs/google-workspace.json');
     const cfg = JSON.parse(await fs.readFile(cfgPath, 'utf8'));
     expect(cfg.owner).toBe('google-access');
@@ -224,9 +249,7 @@ describe('GET /api/oauth/callback', () => {
       refresh: async () => ({ accessToken: 'unused' }),
     });
 
-    const response = await GET(
-      new Request('http://x/api/oauth/callback?code=authorization-code&state=google.missing'),
-    );
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.missing'));
     expect(response.status).toBe(400);
     expect(exchangeCode).not.toHaveBeenCalled();
     expect(sourceMocks.provision).not.toHaveBeenCalled();

@@ -27,6 +27,11 @@ export const FLAGS = {
   // requires an explicit owner confirmation at the server boundary. OFF hides
   // the tab and makes the route return its disabled shape without touching data.
   TRIGGERS_ADMIN: "papercusp-triggers-admin",
+  // external-triggers-gmail-slack-2026-08-22 P-011: future automatic Gmail
+  // SEND authority. The shipped flagship tool creates drafts only and never
+  // reads this flag. DEFAULT OFF in DARK_FLAGS (owner-authority): enabling a
+  // future consumer would send outward-facing email without per-message review.
+  GMAIL_AUTO_SEND: "papercusp-gmail-auto-send",
   // RES — the workspace-scoped Resources section (top-level nav CTA next to OPS
   // + the /res allocation board): hand account pools + local GPUs to the fleets
   // inside the workspace hive tree, each with a share %. Default ON (derived
@@ -387,7 +392,8 @@ export const FLAGS = {
   // DARK_FLAGS — the owner directed this fix); OFF disables ONLY this rung
   // (seeding + estimate caching + context-death detection keep running) ⇒
   // warn-only. The kill-switch if the force-respawn ever misfires.
-  COMPACTION_WATCHDOG_FORCE_COMPACT: "papercusp-compaction-watchdog-force-compact",
+  COMPACTION_WATCHDOG_FORCE_COMPACT:
+    "papercusp-compaction-watchdog-force-compact",
   // agent-managed-compaction P-013 (D-009 ambient awareness): when ON, a BANDED
   // context-usage gauge ("context: N/L (X%)", silent <65% / quiet 65-80% / loud ⚠
   // 80-90% / critical >90%) is appended to EVERY papercusp-su MCP tool RESULT (the
@@ -740,7 +746,8 @@ export const FLAGS = {
   // self-budgeting (silent unless a crossing intersects a real commitment) and
   // fail-soft on every leg. OFF = the clean kill-switch — the rail carries no
   // presence lines, exactly as before it landed.
-  COORD_PRESENCE_TRANSITION_ALERTS: "papercusp-coord-presence-transition-alerts",
+  COORD_PRESENCE_TRANSITION_ALERTS:
+    "papercusp-coord-presence-transition-alerts",
   // self-learning-frontier-2026-06-12 (P-031 / FB-20): Red Queen vaccination —
   // `system:red-queen-drill` plants origin=drill synthetic frictions in the
   // SANDBOX workspace ('red-queen-sandbox'), detects them with a real watchdog
@@ -1452,7 +1459,8 @@ export const FLAGS = {
   // WATCHDOG_AUTO_CLOSE (autonomously resolving a durable escalation without a human/
   // agent looking at the specific item is unsafe until the owner reviews the staleness
   // criteria); OFF = today's behavior (escalate-only), byte-identical. KNOWN_DARK_FLAGS.
-  REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE: "papercusp-replication-liveness-staleness-auto-close",
+  REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE:
+    "papercusp-replication-liveness-staleness-auto-close",
   // shared-hive-rekey-2026-06-19 (C-001 read-plane revocation, S0-for-release): the
   // master gate for the hive epoch RE-KEY — content encrypted under a per-epoch group
   // key so a removed/excluded peer cannot READ post-boundary content. The K-half
@@ -1777,7 +1785,8 @@ export const FLAGS = {
   // successor search is a BUILDER gap to fix, not a reason to keep the fold. DEFAULT ON
   // (evidence-gated like P-021 — inert until a class passes drills). OFF = kill-switch:
   // every compaction re-primes, today's behavior.
-  ENRICHMENT_RETIRE_PROVEN_CLASSES: "papercusp-enrichment-retire-proven-classes",
+  ENRICHMENT_RETIRE_PROVEN_CLASSES:
+    "papercusp-enrichment-retire-proven-classes",
   // workspace-scoped-coordination-2026-06-20 (D-007): the SHARED master gate for the QUEEN +
   // SCOUT + OVERWATCH per-HIVE → per-WORKSPACE brain re-key — ONE central brain per workspace
   // spanning all its hives (all halves flip together on THIS one flag; keying must stay
@@ -1826,7 +1835,8 @@ export const FLAGS = {
   // authoring nudge (author the rubric POST-implementation — better informed, D-007).
   // Rubric-template plans + scheduled template instances are exempt. Default ON (derived
   // FLAG_DEFAULTS — not in DARK_FLAGS); OFF restores ungated plan shipping byte-identically.
-  ACCEPTANCE_RUBRIC_COMPLETION_GATE: "papercusp-acceptance-rubric-completion-gate",
+  ACCEPTANCE_RUBRIC_COMPLETION_GATE:
+    "papercusp-acceptance-rubric-completion-gate",
   // consult-min-max-and-rubric-vetting-2026-08-17 P-004: the VETTING half of the rubric
   // family. Before a NON-implementer grades the WORK, the acceptance-rubric AUTHOR vets
   // the RUBRIC against the meta-rubric ('meta-acceptance-rubric'): a get_feedback
@@ -1872,7 +1882,8 @@ export const FLAGS = {
   // with real rows (364 as of this check) — the "migration+backfill confirmed applied" condition
   // this comment names as the flip gate is met). OFF ⇒ the unbounded event-fold (the reversible
   // fallback, byte-identical to pre-P-005).
-  COORD_OPEN_ESCALATIONS_PROJECTION: "papercusp-coord-open-escalations-projection",
+  COORD_OPEN_ESCALATIONS_PROJECTION:
+    "papercusp-coord-open-escalations-projection",
   // coord-wake-on-reply: by default, when an agent coord:sends a DIRECTED message and
   // a peer REPLIES to it (their coord:send sets related_msg_id to the original msg_id),
   // auto-wake the ORIGINAL sender so they re-invoke the moment the reply lands — the
@@ -1984,7 +1995,8 @@ export const FLAGS = {
   // it is a conservative load-shed guard for background spawns only; interactive
   // spawns and Codex/OpenAI control-plane spawns are unchanged. OFF is the kill-switch
   // if the health predicate ever false-positives.
-  AUTONOMOUS_SPAWN_GATEWAY_DISPATCH_GATE: "papercusp-autonomous-spawn-gateway-dispatch-gate",
+  AUTONOMOUS_SPAWN_GATEWAY_DISPATCH_GATE:
+    "papercusp-autonomous-spawn-gateway-dispatch-gate",
   // queen-capacity-aware-dispatch-2026-06-22: gates the Queen's capacity-aware
   // dispatch (placement keyed on live fleet capacity) — clamps fresh-spawn headroom
   // under fleet:place_batch. DEFAULT ON (WI-3855, 2026-07-11: this comment's "DEFAULT
@@ -2789,168 +2801,382 @@ export const ALL_FLAG_KEYS: readonly FlagKey[] = Object.values(FLAGS);
 // FLAG_DEFAULTS entry was a compile error). Default-OFF is permitted ONLY for one of
 // the four DarkCase reasons — there is deliberately NO "finished, owner flips after
 // verifying" case (finished + tested ⇒ ship ON, verify-then-flip in-task).
-export type DarkCase = 'incomplete' | 'owner-authority' | 'cutover' | 'parked';
-export const DARK_FLAGS: ReadonlyMap<FlagKey, { case: DarkCase; reason: string }> =
-  new Map<FlagKey, { case: DarkCase; reason: string }>([
-    // parked — deliberately out of V1 scope (built-or-not, simply not shipping yet)
-    [FLAGS.CLOUDFLARE_PUBLISH, { case: 'parked', reason: 'cut for V1 — the Cloudflare publish surface is not shipping.' }],
-    [FLAGS.HARNESS_PHASES, { case: 'parked', reason: 'cut for V1.' }],
-    [FLAGS.DESIGN, { case: 'parked', reason: 'cut for V1.' }],
-    [FLAGS.TESTING, { case: 'parked', reason: 'cut for V1.' }],
-    [FLAGS.THE_HIVE, { case: 'parked', reason: 'restore-pot-lexicon-public-release-2026-07-04 (owner 2026-07-04): public release ships the Pot (Papercup) lexicon by DEFAULT. The `the-hive`/Swarm skin is BUILT and kept, but cut from public V1 — reachable only via the TESTING-gated BrandSwitcher (P-004). OFF ⇒ the classic/pot pack (the public default); ON ⇒ the bee skin for internal/testing use.' }],
-    [FLAGS.CONVERSATIONS_RAIL_TAB, { case: 'parked', reason: 'WI-37561, owner directive 2026-08-09 verbatim: "Put the \'convos\' tab in the middle pane behind a testing flag". The owner CHOSE hidden-until-flipped over a visible kill-switch when asked directly, so this is a requested park, not finished work hidden from its own author. It parks the RAIL TAB only: /adv keeps its own Conversations tab on the same four SSE-cached queries, so no conversation content is unreachable while this is dark — the cheapness of hiding it is the reason the park is honest. ON ⇒ the 💬 Convos tab returns to the middle rail in its owner-set last position (nothing else moves; the id never left TAB_IDS). GRADUATES when the owner says the tab is part of the standard release — the same sentence that graduated papercusp-task-manager on 2026-08-02.' }],
-    // TEST_COMPLETION_GATE graduated 2026-07-04 (dark-flag-age review, EI-7280):
-    // enforce-system-on-generic-work-2026-06-29 P-014 verified it LIVE + enabled
-    // (flags:get confirmed true) with zero blast radius (done-without-test watchdog
-    // signalCount:0 across every tick since activation) — default ON.
-    // incomplete — the code is not fully working / unverified on a path that matters
-    [FLAGS.EXTERNAL_BENCH, { case: 'incomplete', reason: 'WI-5646 (owner decision 2026-07-26): the external-bench BLUEPRINT is now RETIRED — its design premise ("the treatment IS the shipped coding system, byte for byte") died when the per-feature coding spine was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so it would benchmark a system that no longer exists. This flag stays dark PERMANENTLY and is NOT awaiting graduation — the prior "dark until the P-009 ~50-task pilot proves the end-to-end path" condition is void; that pilot will not run. (Also still true: the grader adapter is incomplete — M2 in-container modality unbuilt — and infra-heavy.) Do NOT flip ON. It gates the eval UI + run/reproducibility stores, which are kept only to read HISTORICAL run data. Benchmarking the pot/Mug architecture is a NEW blueprint + its own flag, not this one.' }],
-    [FLAGS.CODEX_GATEWAY_OAUTH_PROXY, { case: 'incomplete', reason: 'WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).' }],
-    [FLAGS.ONBOARDING_PREVIEW_FEATURES, { case: 'incomplete', reason: 'owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.' }],
-    // TASK_MANAGER GRADUATED 2026-08-02 (WI-6844) on an explicit owner directive:
-    // "we put it behind a testing flag. Remove that flag, we'll make it part of our
-    // standard release." Its entry is gone from here, so it derives default-ON like
-    // every other registered flag; the KEY deliberately survives as a runtime
-    // kill-switch, which is not the same thing as being dark. This is the shrink
-    // direction — see the watermark note below, lowered 14→13 in the same change so
-    // the freed slot ratchets DOWN rather than becoming headroom for the next park.
-    // PER_POT_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
-    // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
-    // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
-    // enabled AND a repo is configured, so hives without per-hive git stay byte-identical.
-    // PRESENCE_GOSSIP graduated 2026-07-16 (LIVE-1 P-059 drill, coordination lane):
-    // the dark-entry gate was met — both dogfood machines (tower + mac VM) on
-    // reader-carrying builds (G3 verified static + live) and the 2-machine
-    // presence-federation verify ran on the tower↔VM rig per
-    // docs/plans/CUTOVER-presence-gossip-2026-07-16.md. Default ON; OFF + a
-    // presence-loop reboot is the tested rollback (reader stays wired either way).
-    // GATEWAY_MAINTENANCE_CARRY graduated 2026-07-15 by explicit owner release
-    // direction: behavioral cutover defaults ON; one clean post-deploy smoke per
-    // affected class replaces the former ten-drill pre-cutover campaign. OFF remains
-    // a reversible operational kill-switch, so it no longer belongs in DARK_FLAGS.
-    // MUG_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
-    // queen wakes prefer the wake-executor warm resume with deterministic rebirth.
-    // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
-    [FLAGS.OPEN_SIGNUP, { case: 'owner-authority', reason: 'SECURITY: /auth/signup is internet-reachable (cloudflared tunnel) — open signup mints real accounts. The zero-active-users bootstrap path keeps fresh installs working; owner flips ON after the auth-tier rollout.' }],
-    [FLAGS.AUTH_CONFIG_OVERRIDES, { case: 'owner-authority', reason: 'OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.' }],
-    [FLAGS.ACCEPT_DELEGATED_SEATS, { case: 'owner-authority', reason: 'OWNER-AUTHORITY / trust surface (agent-allocation-framework P-008, D-006) — lets a REMOTE fleet owner spawn agents on THIS host (within the host capability envelope). OFF ⇒ this host honors NO delegated-seat spawn requests (fail-closed; byte-identical to today). The contributing-host owner flips it ON per-host via /res or /admin/features to opt in. Permanently default-OFF (per-host opt-in), NOT a pending flip.' }],
-    [FLAGS.WATCHDOG_AUTO_CLOSE, { case: 'owner-authority', reason: 'EI-7230: restores the flag\'s OWN documented intent (watchdog-and-exposed-systems-improvement-2026-06-18 P-009 — "DEFAULT OFF — auto-closing real improvement items autonomously is unsafe until the owner reviews"), which the P-011 flag-default-inversion migration (2026-06-29) silently flipped to effectively ON by omitting it from this allowlist — auto-close.ts\'s own live getFlag check meant the watchdog could have been silently auto-closing real improvement items in production with no owner review. OFF ⇒ escalate-only (today\'s intended, safe behavior); owner flips ON after reviewing the auto-close criteria.' }],
-    [FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE, { case: 'owner-authority', reason: 'WI-5563 (bug-drain-200k structural-starvation diagnosis, 2026-07-20): same owner-authority class as WATCHDOG_AUTO_CLOSE — autonomously resolving a durable escalation (an open replication-liveness EI) without a human/agent verifying the specific item is unsafe by default. This sweep (replication-liveness-staleness-sweep.ts) is DELIBERATELY WIDER than the always-on replication-stall-orphan-sweep.ts (which only resolves a target harness that no longer EXISTS): it resolves connectivity-only EIs (no_replicator/frozen/connected_never_replicated — never the drain_* kinds) whose target harness STILL EXISTS but has recorded no activity for a long (30d default) inactivity window, on top of the EI itself being open ≥14d. Fails closed on any harness with no activity history at all. OFF ⇒ escalate-only (today\'s behavior — these EIs sit open as noise, exactly the WI-5563-diagnosed starvation cause); owner flips ON after reviewing the eligible-kind list + age/inactivity thresholds.' }],
-    [FLAGS.CAPABILITY_EXEC_SANDBOX, { case: 'incomplete', reason: 'EI-16635 / agent-capability-confinement-2026-06-13 P-022/D-008: SAME EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class — this flag\'s OWN code comment (exec-sandbox.ts / types.ts) has always said "OFF by default until validated end-to-end on a bwrap-capable host (this dev box\'s userns is restricted)" but was never actually added here, so the 2026-06-29 P-011 inversion silently derived it live default-ON. Confirmed live-ON for papercusp-workspace (no operator_flag_overrides row; only a `generic-test` workspace override exists). Live-evidenced harm (EI-16635): with the flag accidentally ON, capability:bash run_in_background jobs route through the bwrap-only fallback (buildCapabilitySandboxCommand), which passes `--die-with-parent` to bwrap — a lifetime constraint fundamentally incompatible with a BACKGROUND job that is meant to outlive the launching call. Reproduced: a backgrounded job\'s output file stopped growing ~3-6s after the launching capability:bash call returned, with no process left running — not a `ps aux` visibility artifact (the file itself stopped growing) — and a heavier job showed the SAME truncation point across two independent runs. `capability:bash_output` then misattributes the death to `stranded_by_operator_restart` even when dev:service_health confirms zero restarts, actively misleading the investigator. OFF ⇒ raw (unsandboxed) exec, today\'s actually-working behavior for capability:bash background jobs. RECONCILED (2026-07-19): buildCapabilitySandboxCommand now takes a `background` opt (threaded from capability:bash\'s run_in_background:true → startBackground) and omits `--die-with-parent` on the bwrap-fallback path for a background spawn (unit-tested: exec-sandbox.test.ts). NOT YET closed: (1) a live-host re-test of the ORIGINAL 3-6s-truncation repro was inconclusive on a bwrap+srt-capable box — manual repros of both the bwrap-only path and the preferred srt path (buildCapabilitySandboxCommand prefers srt when present, so the bwrap fix does not even engage on a host with srt on PATH) each ran a backgrounded job to completion without early death, so the srt path\'s own background-job lifetime semantics are UNVERIFIED, not confirmed-safe; (2) still needs a live bwrap-capable-host validation before owner/leader flips this ON.' }],
-    [FLAGS.SUBSTRATE_LOG_SNAPSHOT, { case: 'incomplete', reason: 'WI-3370: 6th instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class in this file — this flag\'s OWN code comment (directly above in FLAGS) has always said "DEFAULT OFF (dark) ... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so the 2026-06-29 P-011 inversion silently flipped it (and the reader leg riding the same boolean) to live default-ON. Confirmed live: flags:get(papercusp-substrate-log-snapshot)=true. Split per this fix: the flag now gates ONLY the producer (produceLogSnapshot, boot.ts) — periodic own-log compaction whose real-wire replay-cost saving + cross-machine convergence are real-hardware-unverified (P-008, same D-003 gate as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE). The reader leg (seedCursorFromSnapshots) is now the separate default-ON SUBSTRATE_LOG_SNAPSHOT_READER flag, since the local-seed case it serves is unambiguously safe and REQUIRED for the seed-history-trim-public-builds-2026-07-07 sparse public-build seed to restore. OFF ⇒ no NEW snapshot ops produced by this box (existing on-disk snapshot markers are untouched and still read via the reader flag) — byte-identical to the pre-P-011 intent. Owner/leader flips ON after the P-008 two-machine convergence proof.' }],
-    [FLAGS.SUBSTRATE_SIDECAR, { case: 'incomplete', reason: 'WI-1994: same EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class — this flag\'s OWN code comment above has always said "DEFAULT OFF — staged on :3170 FIRST; never :3070 until integration-verified... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so post the 2026-06-29 P-011 inversion it silently derived default-ON. Live-evidenced harm (WI-1910): a fresh containerized-rig frame boots the dark substrate-sidecar path and the sidecar process dies exit 1 right after joining its topic (crash-loop respawn), the mechanism behind WI-1910\'s 0 peer_connected. WI-604 (the "complete + flip" umbrella feature) was separately deprecated 2026-07-03 — the full sidecar was never built out (stubbed replication spike only) — so there is no live plan driving this to a real default-ON graduation; it stays dark until one exists. OFF ⇒ in-process substrate boot, today\'s actually-running behavior on :3070.' }],
-    [FLAGS.RECLAIM_STALLED, { case: 'owner-authority', reason: 'EI-7685: THIRD instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR bug-fix class in this same file — the flag\'s OWN code comments (work-items-stale-claims.ts, dbos/in-process-periodic.ts, plan-items/stale-claims.ts, fleet/spawn-reclaim.ts) all say "default OFF" / "DARK because freeing a LIVE agent\'s claim changes live placement on a fleet-critical hot path (D-003: land it attended)" — a deliberate agent-activity-liveness-truth-2026-06-21 P-003 design decision that this leg must ship attended — but it was never added to this allowlist, so the P-011 inversion (2026-06-29) silently flipped it to live default-ON. Confirmed LIVE via flags:get(papercusp-reclaim-stalled) = true. Live-evidenced harm (EI-7685): an agent mid an uninterrupted ~20min build (alive, no crash) had its work-item claim reclaimed by the "stalled" leg for merely not calling work_items:checkpoint in the window, wiping its in-flight checkpoint and reassigning the item to an idle peer — exactly the live-placement disruption D-003 says must never ship unattended. OFF ⇒ only the DEAD-holder + confirmed-terminal-spawn legs free claims (today\'s actually-safe behavior); owner flips ON after an attended review of the stalled-window tuning (this session\'s own checkpoint cadence — routine long builds without a checkpoint touch — is itself evidence the default stalledMs/graceMs is too aggressive to enable blind). RE-APPLIED 2026-07-05 ~21:22Z after a fleet-wide `git reset --hard` (17:12:34 local, unrelated incident under investigation by su-f0afe) wiped this uncommitted edit before git-sync could commit it.' }],
-    [FLAGS.PSU_END_USER, { case: 'owner-authority', reason: 'WI-3093 (found 2026-07-05 by su-f5241 while closing the ticket for "no psu launch button visible"): FOURTH instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-RECLAIM_STALLED bug-fix class in this same file — this flag\'s OWN code comment directly above (psu-in-desktop-builds-2026-06-23 C1) has always said "DEFAULT OFF — this is the legitimate owner-authority/SECURITY dark case... the owner must personally ratify the end-user exposure before it defaults on... KNOWN_DARK_FLAGS" but was never actually added here, so the P-011 inversion (2026-06-29) silently flipped it to live default-ON. Confirmed LIVE via flags:get(papercusp-psu-end-user) = true — and made ACTIVELY EXPLOITABLE, not just theoretically live, the moment WI-3093\'s OWN fix rendered ConsoleLauncherButton in ChromeShell (previously the button existed but was never mounted, so the dark-default bug had no user-visible surface; now it does): an end user of the shipped desktop app could see and click a button that opens a full unauthenticated superuser agent shell, with zero owner ratification. OFF ⇒ the entry is not offered; the bundled psu shim is inert (today\'s actually-intended, safe behavior — dev/internal launch via other paths is unchanged). Owner flips ON only after personally ratifying end-user psu exposure.' }],
-    // parked — the v2 Cupboard marketplace merge is BUILT (the remote-fetch path
-    // exists + works) but deliberately out of V1 scope per owner directive
-    // (2026-07-07): V1 ships the first-party templates bundled + resolved from the
-    // LOCAL store; the marketplace (user-published, runtime-fetched templates) is a
-    // staged v2 enablement. OFF ⇒ templates:* resolve the local store only; the
-    // remote Cupboard path stays dormant. Flipped ON in v2 once the marketplace is
-    // ready. Not incomplete/unsafe — a deliberate owner-directed staged cutover.
-    [FLAGS.TEMPLATES_MARKETPLACE, { case: 'parked', reason: 'local-first-party-template-bundling-2026-07-07 (owner-directed 2026-07-07): V1 ships the first-party templates bundled in-app + resolved from the local store; the Cupboard MARKETPLACE merge (user-published, runtime-fetched templates via templates:list/get-guide/new-app) is deliberately deferred to v2. The remote-fetch code is wired but dormant. OFF ⇒ templates:* resolve the local store only (offline, no Cupboard round-trip). Owner flips ON in v2 when the marketplace ships.' }],
-    // The rubrics sibling of TEMPLATES_MARKETPLACE — the same owner-directed v1/v2
-    // split (local-first-party-rubric-bundling-2026-07-07): v1 bundles + seeds the
-    // first-party rubrics locally; the Cupboard kind='rubric' marketplace is a v2 seam.
-    [FLAGS.RUBRICS_MARKETPLACE, { case: 'parked', reason: 'local-first-party-rubric-bundling-2026-07-07 (owner-directed 2026-07-07, the templates-v1 design applied to rubrics): V1 ships the first-party rubrics bundled in-app (sidecar/rubrics content dirs) and seeds them into the workspace rubric store on first rubrics:* read (idempotent, no-clobber — an existing workspace rubricId always wins). The Cupboard MARKETPLACE merge for kind=rubric listings is deliberately deferred to v2 — no remote-fetch code exists yet; the flag reserves the seam. OFF ⇒ rubrics:* resolve the workspace store (+ bundled seed) only. Owner flips ON in v2 when the rubric marketplace ships.' }],
-    [FLAGS.OWN_LOG_FORK_AUTO_RECOVERY, { case: 'owner-authority', reason: 'p2p-parity-parallel-lanes-2026-07-09 P-003 (WI-3535): the own-log-fork-guard auto-recovery sketch (own-log-fork-recovery.ts) performs a per-harness Corestore STORE RESET — deletes the on-disk peer-log directory so a fresh keypair is minted on next boot — to break the equivocation-loop boot loop. DESTRUCTIVE: it discards any local hypercore-only history not yet merged into PG, so unattended auto-recovery is unsafe until the owner personally ratifies it (the plan explicitly requires this flag-gated default-OFF). OFF ⇒ recoverForkedOwnLog always short-circuits with reason:"flag_off"; the detector still files a durable EI naming the supported MANUAL recovery. Owner flips ON only after reviewing the destructive blast radius.' }],
-    // HRW_RENDEZVOUS_AUTHORITY graduated 2026-07-17 (LIVE-1 P-059 drill, coordination
-    // lane): the cutover dark-entry gate was met — the multi-peer same-inputs verify
-    // ran on the tower↔VM rig (both machines' fresh pot_slug='papercusp' candidate
-    // sets identical, same tower-built code on both), then the flag was flipped ON in
-    // BOTH machines' stores in one pass (resolveUseHrwRendezvous reads per-call, so
-    // no peer ever computed with a stale value across a reboot boundary). Default ON;
-    // OFF is the tested rollback (selectAuthorityFromRows argmin, byte-identical
-    // pre-WI-1491 behavior). See docs/plans/CUTOVER-presence-gossip-2026-07-16.md.
-    // 2026-07-18 — papercusp-plan-part-federation GRADUATED default-ON (WI-5331 Leg B):
-    // the real two-machine merge proof its dark entry demanded (P-008) ran on the live
-    // tower↔Avis-iMac rig — concurrent different-part edits (tower section:now rewrite
-    // vs mac item flip, 5s apart) under flag-ON on BOTH machines converged to
-    // byte-identical content (md5 b2f6826d…) in ~5s with both edits surviving on both
-    // sides: tower held item:P-003 origin=remote (mac device key) recomposed into its
-    // content, the mac held section:now origin=remote (tower device key) recomposed
-    // into its content — no whole-blob clobber in either direction; recompose was the
-    // sole content writer per P-006/P-009. Verdict: p2p-part-merge-proof-2026-07-18
-    // D-001. Entry removed (the set shrinks). OFF remains the tested rollback (plans
-    // federate as the whole harness_plans.content blob, mig 125).
-    // WI-3796 (2026-07-10, fleet p2p-parity-lanes): SEVENTH instance of the identical
-    // EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-RECLAIM_STALLED/
-    // WI-3093-PSU_END_USER/EI-9064-PLAN_PART_FEDERATION/WI-3370-SUBSTRATE_LOG_SNAPSHOT
-    // bug-fix class in this same file — TWO more flags whose OWN code comments (directly
-    // above in FLAGS) have always said "DEFAULT OFF" but were never actually added here,
-    // so the 2026-06-29 P-011 inversion silently flipped both to live default-ON.
-    // CONFIRMED LIVE via direct PG check: harness_shared.operator_flag_overrides carries
-    // no override row for either key in workspace papercusp-workspace, so both were
-    // resolving purely off the buggy code-level default (verified 2026-07-10 via psql).
-    // This SEVENTH instance breaches the prior watermark of 22 with zero graduation
-    // candidates ready (see the 2026-07-10 review note below) — raised
-    // DARK_FLAGS_HIGH_WATERMARK 22→24 to accommodate, which CLAUDE.md's "Feature flags"
-    // section flags as needing explicit owner sign-off. Under this session's standing
-    // AUTO-mode grant (owner directive 2026-07-03: ZERO owner-confirm pauses; AUTO mode
-    // passes owner-authority/"owner must personally ratify" gates and discloses rather
-    // than blocking on them) this was actioned directly and disclosed loudly via
-    // coord:send + a durable fact + this comment, rather than parked pending a sign-off
-    // that would leave two unreviewed, fleet-wide-blast-radius behaviors silently live in
-    // the meantime. The correction is unambiguously the SAFE direction — it turns OFF
-    // two already-live, never-ratified behaviors, restoring the byte-identical documented
-    // baseline; it does not newly enable anything. Owner may reverse (re-remove from
-    // DARK_FLAGS + restore watermark to 22) at any time.
-    //
-    // 2026-08-10 (WI-37718) — GIT_SYNC_DERIVED_ATTRIBUTION, the FIRST of that pair, has
-    // GRADUATED default-ON and its entry is REMOVED from this map (the set shrinks; an
-    // 'owner-authority' entry is not rationed by DARK_FLAGS_HIGH_WATERMARK / the
-    // DARK_FLAGS_PARKING_COUNT subset either way, so no watermark change accompanies this).
-    // The owner flipped it after the end-to-end review this entry demanded: the writer-side
-    // defect that made derived attribution resolve a placeholder holder
-    // (EI-20055604348536487, fixed in b2af0024a8) is live on every writer path, and after
-    // the last pre-fix process cycled, 39/39 consecutive lock rows carried a real declared
-    // intent with zero sentinels while the last 60 commits carried real per-agent subjects
-    // with zero sentinel subjects — i.e. the edge-case-bug risk this entry was holding the
-    // flag against was measured, not assumed. DOC_STEWARD (the pair's other half, below)
-    // is UNAFFECTED and stays dark — its own end-to-end check has not been run.
-    [FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, { case: 'owner-authority', reason: 'papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008), found 2026-07-26 (su-709bb) by the flag-comment-lint recall fix (normalization step 5 — this entry declares itself as "When OFF (default)", the REVERSED form the guard could not previously see, so it was silently SKIPPED). Same class as WATCHDOG_AUTO_CLOSE/RECLAIM_STALLED/DOC_STEWARD: the flag\'s OWN comment states it is the master switch for AUTO-implementing captured improvements and that OFF is the default, with an explicit precondition — "Flip ON only once the work_items surface + the release-gate cutover have landed" — but it was never added here, so it derived live default-ON. That is an AUTONOMY-ESCALATION surface (the routine spawns an implementer agent in a dedicated runner harness and lands code via the release gate) running with no owner ratification and with its own stated precondition unverified. OFF ⇒ the improvement-implement routine is a no-op; capture (Phase 1) + triage (Phase 2) are unaffected — exactly the documented, intended behavior. Owner flips ON once the stated preconditions are confirmed landed.' }],
-    [FLAGS.CAPABILITY_ENVELOPE_OVERRIDES, { case: 'owner-authority', reason: 'live-configurability-audit-2026-06-20 P-009, found 2026-07-26 (su-709bb) by the same flag-comment-lint recall fix (declares itself "OFF (default) ⇒ the sync-cache stays empty ⇒ byte-identical" — the REVERSED form, previously skipped). Its own comment opens "DARK:" and describes a SECURITY/capability surface: runtime per-role capability-envelope overrides (capability_envelope:set_role / :set_protected) that merge per-role deny/allow overrides OVER the baked ROLE_ENVELOPES at the dispatch checkCapabilityEnvelope step. Never added here, so it derived live default-ON — meaning any override row present would silently apply to real dispatch authorization with no owner ratification. OFF ⇒ the sync-cache stays empty ⇒ byte-identical to the baked envelopes (the documented intent). Owner flips ON to ratify runtime envelope overrides.' }],
-    [FLAGS.DOC_STEWARD, { case: 'owner-authority', reason: 'docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the post-git-sync doc-freshness sweep dispatches an LLM doc-steward agent to auto-edit/regenerate a drifted doc against current code, and can spawn an agent per drift. The flag\'s OWN comment has always said "DEFAULT OFF: it auto-edits the doc corpus (owner-authority surface) + spawns an agent per drift — flip ON after the owner-verified end-to-end check" but was never added to DARK_FLAGS, so it derived live default-ON — confirmed no PG override exists in workspace papercusp-workspace. Unattended auto-editing of the doc corpus + unbounded per-drift agent spawn is an owner-authority surface, so it ships dark until the owner runs the end-to-end verification its own design calls for. OFF ⇒ the freshness sweep still detects drift, but no auto-edit and no agent dispatch (today\'s actually-safe behavior). Owner flips ON after the verified check.' }],
-    // WI-4238 (2026-07-12, su-00a91): the NINTH instance of the EI-7230 bug-fix class —
-    // and, after a per-flag re-derivation, the ONLY one of the ten outstanding
-    // comment-vs-DARK_FLAGS mismatches that is genuinely a SAFETY mis-default.
-    //
-    // The other nine all default-ON to a SAFER/NARROWER behavior (completed partition
-    // cutovers + workspace/auth guard rails) — for those, "restoring the documented dark
-    // baseline" is a REGRESSION, and two of them (COORD_/ISSUES_PER_WORKSPACE) would have
-    // stranded ~79k live rows. Their comments were the stale side and are now corrected in
-    // FLAGS above. THIS one is the true inversion: ON removes a human check rather than
-    // adding one, so it is the one that actually belongs here.
-    //
-    // Confirmed live-ON 2026-07-12: no override row in harness_shared.operator_flag_overrides
-    // for workspace papercusp-workspace, so it resolved purely off the buggy P-011 default.
-    // Not yet exercised (leader su-286379e2 verified 0 full-autonomy grants in 48h) — a real
-    // code-level mis-default, not an active incident. Raised DARK_FLAGS_HIGH_WATERMARK 25→26
-    // (see the constant's note); actioned under the owner's standing AUTO-mode grant and
-    // disclosed rather than left silently live, and it is unambiguously the SAFE direction —
-    // it turns OFF an already-live, never-ratified behavior and newly enables nothing.
-    // WI-4240 (2026-07-12, su-00a91): the two cross-machine authority cutovers — 11th + 12th
-    // instances of the EI-7230 class. Both comments always said DEFAULT OFF / dark (they are
-    // real-hardware-UNVERIFIED cross-machine paths gated on a two-machine proof), but neither
-    // was ever added here, so P-011 derived both live-ON. An unverified cross-machine cutover's
-    // correct DEFAULT is unambiguously OFF regardless of the missing rig — the rig gates
-    // turning them ON, not the default. Byte-identical on this single box (both no-op without a
-    // multi-machine transport, confirmed in their wiring), and consistent with every sibling
-    // cross-machine flag already dark (PLAN_PART_FEDERATION / PRESENCE_GOSSIP /
-    // HRW_RENDEZVOUS_AUTHORITY). Watermark 27→29.
-    [FLAGS.AUTHORITY_RPC_PROTOMUX, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-001/D-005: routes remote lock-authority RPCs over the per-harness Hyperswarm protomux channel so NAT\'d peers are served. Real-hardware-UNVERIFIED (P-003) — the flip is gated on the two-machine serialization proof. Comment always said "DEFAULT OFF" but was never added here, so P-011 derived it live-ON. wireAuthorityRpcSwarmTransport returns early without a device signer/swarm, so ON is a no-op on a single box; OFF = HTTP-only, byte-identical. Owner/leader flips ON after the two-machine proof.' }],
-    [FLAGS.LAZY_SUBSTRATE_BOOT, { case: 'cutover', reason: 'shared-hive-cross-machine-scale-10k-2026-06-29 P-010 (found 2026-07-26, su-709bb): the SAME never-added-to-DARK_FLAGS class as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE directly below, but INVISIBLE to the flag-comment-lint guard until this date — the guard only recognised "DEFAULT OFF", while this entry declares itself in the REVERSED form "OFF (default): boot is byte-identical to today (eager all-harness boot). DARK + STAGED-ON-:3170-FIRST", so it classified as null and was silently SKIPPED (fixed: flag-comment-lint normalization step 5). Its own comment records an owner-ratified D-005/D-006 BINDING execution constraint to stage on :3170 first, precisely because a wrong eviction silently stops a harness syncing → fleet data divergence (the EI-126 102 GB class) — yet it derived live default-ON, so the eviction reaper + outbox keepalive have been running unattended with that blast radius and no staged verify. The live-ON state was an ACCIDENT (a missing entry here), never a decision. OFF ⇒ eager all-harness boot + no reaper — the long-standing, definitively-safe behavior (costs RSS, cannot diverge). NOTE this also gates P-010\'s new activate-on-demand policy (substrate-active-set-policy/-facts), which rides this same flag deliberately rather than adding a second separately-flippable half of one behaviour. Owner/leader flips ON at the attended :3170 staged verify its own D-005/D-006 constraint calls for.' }],
-    [FLAGS.AUTHORITY_EVICTION_PROBE, { case: 'cutover', reason: 'shared-hive-hardening-2026-06-13 P-016: wires the φ-accrual + SWIM failure detector into authority selection so a crashed authority is evicted promptly instead of waiting out the 90s staleness window. Rides the same unverified cross-machine RPC seam as AUTHORITY_RPC_PROTOMUX; real-hardware-UNVERIFIED (D-003). Comment always said "DEFAULT OFF (dark)... KNOWN_DARK_FLAGS" but was never added here, so P-011 derived it live-ON. wirePeerEviction installs no monitor when off and single-box/no-transport is a no-op anyway; OFF = staleness-only selection, byte-identical to pre-P-016. Owner/leader flips ON after the two-machine proof.' }],
-    [FLAGS.MUG_FULL_AUTONOMY, { case: 'owner-authority', reason: 'WI-4238: the recursive-self-improvement boundary. When ON, (1) the autonomy decider returns `auto` for categorical HARD GATES — authority:\'owner\', protected/locked categories, irreversible actions, above-ceiling, and graduation:* ratification asks — so the Queen widens her own ceilings without pausing; and (2) the self-improvement auto-implement loop lifts the protectedPathPatterns/protectedKeywords TCB bars, making a kind=bug that touches the deploy gate / flags / capability dispatch / migrations / the loop\'s OWN code auto-implement-eligible. The flag\'s own comment has always said "OFF by default — DELIBERATE, NOT the alpha flags-default-on policy" and warned it "removes the last human check on the system widening its own ceilings and editing its own safety machinery" — but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. OFF ⇒ the documented gated residue is restored VERBATIM (pinned both directions in tests); the decider/loop fail-DARK on a flag-IO error. Owner flips ON only by personally ratifying full autonomy.' }],
-    [FLAGS.FLEET_HEADCOUNT_GOVERNOR, { case: 'owner-authority', reason: 'WI-2479: persistent per-fleet headcount auto-top-up can open real agent sessions without an attended launch call. The routine is bounded to a live deficit, uses an atomic retry lease plus the existing launch-window guard, and exponentially backs off failures, but it remains a fleet-autonomy escalation surface. OFF is a pure no-op; owner flips ON only after reviewing the no-storm and no-double-open tests.' }],    [FLAGS.MEM0_FEDERATION_EGRESS, { case: 'owner-authority', reason: 'mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today\'s personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.' }],
-    [FLAGS.GOAL_HOLDER_RESPAWN, { case: 'owner-authority', reason: 'goal-live-holder-guarantee-2026-08-18 P-009 / D-002: automatically launching a replacement GOAL-mode holder spends money and creates unattended agent sessions. The actor is bounded to active goals that opt into holder.onLoss=respawn, uses the shared flap-damping/give-up policy, and is independently kill-switched from the report-only liveness watchdog. OFF is a pure no-op before reading goals; deterministic deactivation and reporting remain enabled. Owner flips ON after reviewing the bounded recovery behavior.' }],
-  ]);
+export type DarkCase = "incomplete" | "owner-authority" | "cutover" | "parked";
+export const DARK_FLAGS: ReadonlyMap<
+  FlagKey,
+  { case: DarkCase; reason: string }
+> = new Map<FlagKey, { case: DarkCase; reason: string }>([
+  // parked — deliberately out of V1 scope (built-or-not, simply not shipping yet)
+  [
+    FLAGS.CLOUDFLARE_PUBLISH,
+    {
+      case: "parked",
+      reason: "cut for V1 — the Cloudflare publish surface is not shipping.",
+    },
+  ],
+  [FLAGS.HARNESS_PHASES, { case: "parked", reason: "cut for V1." }],
+  [FLAGS.DESIGN, { case: "parked", reason: "cut for V1." }],
+  [FLAGS.TESTING, { case: "parked", reason: "cut for V1." }],
+  [
+    FLAGS.THE_HIVE,
+    {
+      case: "parked",
+      reason:
+        "restore-pot-lexicon-public-release-2026-07-04 (owner 2026-07-04): public release ships the Pot (Papercup) lexicon by DEFAULT. The `the-hive`/Swarm skin is BUILT and kept, but cut from public V1 — reachable only via the TESTING-gated BrandSwitcher (P-004). OFF ⇒ the classic/pot pack (the public default); ON ⇒ the bee skin for internal/testing use.",
+    },
+  ],
+  [
+    FLAGS.CONVERSATIONS_RAIL_TAB,
+    {
+      case: "parked",
+      reason:
+        "WI-37561, owner directive 2026-08-09 verbatim: \"Put the 'convos' tab in the middle pane behind a testing flag\". The owner CHOSE hidden-until-flipped over a visible kill-switch when asked directly, so this is a requested park, not finished work hidden from its own author. It parks the RAIL TAB only: /adv keeps its own Conversations tab on the same four SSE-cached queries, so no conversation content is unreachable while this is dark — the cheapness of hiding it is the reason the park is honest. ON ⇒ the 💬 Convos tab returns to the middle rail in its owner-set last position (nothing else moves; the id never left TAB_IDS). GRADUATES when the owner says the tab is part of the standard release — the same sentence that graduated papercusp-task-manager on 2026-08-02.",
+    },
+  ],
+  // TEST_COMPLETION_GATE graduated 2026-07-04 (dark-flag-age review, EI-7280):
+  // enforce-system-on-generic-work-2026-06-29 P-014 verified it LIVE + enabled
+  // (flags:get confirmed true) with zero blast radius (done-without-test watchdog
+  // signalCount:0 across every tick since activation) — default ON.
+  // incomplete — the code is not fully working / unverified on a path that matters
+  [
+    FLAGS.EXTERNAL_BENCH,
+    {
+      case: "incomplete",
+      reason:
+        'WI-5646 (owner decision 2026-07-26): the external-bench BLUEPRINT is now RETIRED — its design premise ("the treatment IS the shipped coding system, byte for byte") died when the per-feature coding spine was retired 2026-06-24 and `coding` was reassigned to the pot/Mug architecture, so it would benchmark a system that no longer exists. This flag stays dark PERMANENTLY and is NOT awaiting graduation — the prior "dark until the P-009 ~50-task pilot proves the end-to-end path" condition is void; that pilot will not run. (Also still true: the grader adapter is incomplete — M2 in-container modality unbuilt — and infra-heavy.) Do NOT flip ON. It gates the eval UI + run/reproducibility stores, which are kept only to read HISTORICAL run data. Benchmarking the pot/Mug architecture is a NEW blueprint + its own flag, not this one.',
+    },
+  ],
+  [
+    FLAGS.CODEX_GATEWAY_OAUTH_PROXY,
+    {
+      case: "incomplete",
+      reason:
+        "WI-2198: the codex ChatGPT-subscription OAuth streaming reverse-proxy routes fleet codex agents through a REVERSE-ENGINEERED proprietary transport (chatgpt.com/backend-api/codex + auth.openai.com/oauth/token) that can only be verified by an owner-attended live canary against production ChatGPT. Dark until that canary passes; direct native auth is the live fallback. OFF ⇒ codex-cli accounts keep the exec bridge (byte-identical).",
+    },
+  ],
+  [
+    FLAGS.ONBOARDING_PREVIEW_FEATURES,
+    {
+      case: "incomplete",
+      reason:
+        "owner-directed 2026-07-04 (deterministic-onboarding-tutorial P-001): gates onboarding-tutorial items whose backing feature is NOT ready — telemetry consent, mobile pairing (phone notifications / remote control), auto-update channel. OFF ⇒ a fresh install never sees them (the intended default); ON ⇒ testers exercise the preview surfaces. Graduates per-item as each backing feature ships.",
+    },
+  ],
+  // TASK_MANAGER GRADUATED 2026-08-02 (WI-6844) on an explicit owner directive:
+  // "we put it behind a testing flag. Remove that flag, we'll make it part of our
+  // standard release." Its entry is gone from here, so it derives default-ON like
+  // every other registered flag; the KEY deliberately survives as a runtime
+  // kill-switch, which is not the same thing as being dark. This is the shrink
+  // direction — see the watermark note below, lowered 14→13 in the same change so
+  // the freed slot ratchets DOWN rather than becoming headroom for the next park.
+  // PER_POT_RELEASE_GATE graduated 2026-07-03 (per-hive-git D-008 canary met:
+  // oddsmith green-checkpoint went green and FF'd oddsmith main — pipeline_events
+  // 'advanced' 2026-07-03T15:16Z): default ON. A hive's gate engages only when
+  // enabled AND a repo is configured, so hives without per-hive git stay byte-identical.
+  // PRESENCE_GOSSIP graduated 2026-07-16 (LIVE-1 P-059 drill, coordination lane):
+  // the dark-entry gate was met — both dogfood machines (tower + mac VM) on
+  // reader-carrying builds (G3 verified static + live) and the 2-machine
+  // presence-federation verify ran on the tower↔VM rig per
+  // docs/plans/CUTOVER-presence-gossip-2026-07-16.md. Default ON; OFF + a
+  // presence-loop reboot is the tested rollback (reader stays wired either way).
+  // GATEWAY_MAINTENANCE_CARRY graduated 2026-07-15 by explicit owner release
+  // direction: behavioral cutover defaults ON; one clean post-deploy smoke per
+  // affected class replaces the former ten-drill pre-cutover campaign. OFF remains
+  // a reversible operational kill-switch, so it no longer belongs in DARK_FLAGS.
+  // MUG_WARM_SESSION graduated 2026-07-02 (owner flip directive): default ON —
+  // queen wakes prefer the wake-executor warm resume with deterministic rebirth.
+  // owner-authority — a privilege / security / destructive / autonomy surface the owner ratifies
+  [
+    FLAGS.OPEN_SIGNUP,
+    {
+      case: "owner-authority",
+      reason:
+        "SECURITY: /auth/signup is internet-reachable (cloudflared tunnel) — open signup mints real accounts. The zero-active-users bootstrap path keeps fresh installs working; owner flips ON after the auth-tier rollout.",
+    },
+  ],
+  [
+    FLAGS.GMAIL_AUTO_SEND,
+    {
+      case: "owner-authority",
+      reason:
+        "external-triggers-gmail-slack-2026-08-22 P-011: automatic Gmail sending is an outward-facing owner-authority action. The shipped gmail:create-draft tool has no send branch and remains live independently; OFF reserves the separate auto-send capability until the owner ratifies its review, recipient, and failure policy.",
+    },
+  ],
+  [
+    FLAGS.AUTH_CONFIG_OVERRIDES,
+    {
+      case: "owner-authority",
+      reason:
+        "OWNER-AUTHORITY escalation surface — auth:set_full_access_roles can WIDEN the all-gates bypass set. OFF ⇒ the auth-config sync-cache stays empty ⇒ every surface uses its baked literal (byte-identical); owner flips ON to ratify the dials.",
+    },
+  ],
+  [
+    FLAGS.ACCEPT_DELEGATED_SEATS,
+    {
+      case: "owner-authority",
+      reason:
+        "OWNER-AUTHORITY / trust surface (agent-allocation-framework P-008, D-006) — lets a REMOTE fleet owner spawn agents on THIS host (within the host capability envelope). OFF ⇒ this host honors NO delegated-seat spawn requests (fail-closed; byte-identical to today). The contributing-host owner flips it ON per-host via /res or /admin/features to opt in. Permanently default-OFF (per-host opt-in), NOT a pending flip.",
+    },
+  ],
+  [
+    FLAGS.WATCHDOG_AUTO_CLOSE,
+    {
+      case: "owner-authority",
+      reason:
+        "EI-7230: restores the flag's OWN documented intent (watchdog-and-exposed-systems-improvement-2026-06-18 P-009 — \"DEFAULT OFF — auto-closing real improvement items autonomously is unsafe until the owner reviews\"), which the P-011 flag-default-inversion migration (2026-06-29) silently flipped to effectively ON by omitting it from this allowlist — auto-close.ts's own live getFlag check meant the watchdog could have been silently auto-closing real improvement items in production with no owner review. OFF ⇒ escalate-only (today's intended, safe behavior); owner flips ON after reviewing the auto-close criteria.",
+    },
+  ],
+  [
+    FLAGS.REPLICATION_LIVENESS_STALENESS_AUTO_CLOSE,
+    {
+      case: "owner-authority",
+      reason:
+        "WI-5563 (bug-drain-200k structural-starvation diagnosis, 2026-07-20): same owner-authority class as WATCHDOG_AUTO_CLOSE — autonomously resolving a durable escalation (an open replication-liveness EI) without a human/agent verifying the specific item is unsafe by default. This sweep (replication-liveness-staleness-sweep.ts) is DELIBERATELY WIDER than the always-on replication-stall-orphan-sweep.ts (which only resolves a target harness that no longer EXISTS): it resolves connectivity-only EIs (no_replicator/frozen/connected_never_replicated — never the drain_* kinds) whose target harness STILL EXISTS but has recorded no activity for a long (30d default) inactivity window, on top of the EI itself being open ≥14d. Fails closed on any harness with no activity history at all. OFF ⇒ escalate-only (today's behavior — these EIs sit open as noise, exactly the WI-5563-diagnosed starvation cause); owner flips ON after reviewing the eligible-kind list + age/inactivity thresholds.",
+    },
+  ],
+  [
+    FLAGS.CAPABILITY_EXEC_SANDBOX,
+    {
+      case: "incomplete",
+      reason:
+        "EI-16635 / agent-capability-confinement-2026-06-13 P-022/D-008: SAME EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class — this flag's OWN code comment (exec-sandbox.ts / types.ts) has always said \"OFF by default until validated end-to-end on a bwrap-capable host (this dev box's userns is restricted)\" but was never actually added here, so the 2026-06-29 P-011 inversion silently derived it live default-ON. Confirmed live-ON for papercusp-workspace (no operator_flag_overrides row; only a `generic-test` workspace override exists). Live-evidenced harm (EI-16635): with the flag accidentally ON, capability:bash run_in_background jobs route through the bwrap-only fallback (buildCapabilitySandboxCommand), which passes `--die-with-parent` to bwrap — a lifetime constraint fundamentally incompatible with a BACKGROUND job that is meant to outlive the launching call. Reproduced: a backgrounded job's output file stopped growing ~3-6s after the launching capability:bash call returned, with no process left running — not a `ps aux` visibility artifact (the file itself stopped growing) — and a heavier job showed the SAME truncation point across two independent runs. `capability:bash_output` then misattributes the death to `stranded_by_operator_restart` even when dev:service_health confirms zero restarts, actively misleading the investigator. OFF ⇒ raw (unsandboxed) exec, today's actually-working behavior for capability:bash background jobs. RECONCILED (2026-07-19): buildCapabilitySandboxCommand now takes a `background` opt (threaded from capability:bash's run_in_background:true → startBackground) and omits `--die-with-parent` on the bwrap-fallback path for a background spawn (unit-tested: exec-sandbox.test.ts). NOT YET closed: (1) a live-host re-test of the ORIGINAL 3-6s-truncation repro was inconclusive on a bwrap+srt-capable box — manual repros of both the bwrap-only path and the preferred srt path (buildCapabilitySandboxCommand prefers srt when present, so the bwrap fix does not even engage on a host with srt on PATH) each ran a backgrounded job to completion without early death, so the srt path's own background-job lifetime semantics are UNVERIFIED, not confirmed-safe; (2) still needs a live bwrap-capable-host validation before owner/leader flips this ON.",
+    },
+  ],
+  [
+    FLAGS.SUBSTRATE_LOG_SNAPSHOT,
+    {
+      case: "incomplete",
+      reason:
+        'WI-3370: 6th instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class in this file — this flag\'s OWN code comment (directly above in FLAGS) has always said "DEFAULT OFF (dark) ... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so the 2026-06-29 P-011 inversion silently flipped it (and the reader leg riding the same boolean) to live default-ON. Confirmed live: flags:get(papercusp-substrate-log-snapshot)=true. Split per this fix: the flag now gates ONLY the producer (produceLogSnapshot, boot.ts) — periodic own-log compaction whose real-wire replay-cost saving + cross-machine convergence are real-hardware-unverified (P-008, same D-003 gate as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE). The reader leg (seedCursorFromSnapshots) is now the separate default-ON SUBSTRATE_LOG_SNAPSHOT_READER flag, since the local-seed case it serves is unambiguously safe and REQUIRED for the seed-history-trim-public-builds-2026-07-07 sparse public-build seed to restore. OFF ⇒ no NEW snapshot ops produced by this box (existing on-disk snapshot markers are untouched and still read via the reader flag) — byte-identical to the pre-P-011 intent. Owner/leader flips ON after the P-008 two-machine convergence proof.',
+    },
+  ],
+  [
+    FLAGS.SUBSTRATE_SIDECAR,
+    {
+      case: "incomplete",
+      reason:
+        'WI-1994: same EI-7230/WATCHDOG_AUTO_CLOSE bug-fix class — this flag\'s OWN code comment above has always said "DEFAULT OFF — staged on :3170 FIRST; never :3070 until integration-verified... Listed in KNOWN_DARK_FLAGS" but was never actually added here, so post the 2026-06-29 P-011 inversion it silently derived default-ON. Live-evidenced harm (WI-1910): a fresh containerized-rig frame boots the dark substrate-sidecar path and the sidecar process dies exit 1 right after joining its topic (crash-loop respawn), the mechanism behind WI-1910\'s 0 peer_connected. WI-604 (the "complete + flip" umbrella feature) was separately deprecated 2026-07-03 — the full sidecar was never built out (stubbed replication spike only) — so there is no live plan driving this to a real default-ON graduation; it stays dark until one exists. OFF ⇒ in-process substrate boot, today\'s actually-running behavior on :3070.',
+    },
+  ],
+  [
+    FLAGS.RECLAIM_STALLED,
+    {
+      case: "owner-authority",
+      reason:
+        'EI-7685: THIRD instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR bug-fix class in this same file — the flag\'s OWN code comments (work-items-stale-claims.ts, dbos/in-process-periodic.ts, plan-items/stale-claims.ts, fleet/spawn-reclaim.ts) all say "default OFF" / "DARK because freeing a LIVE agent\'s claim changes live placement on a fleet-critical hot path (D-003: land it attended)" — a deliberate agent-activity-liveness-truth-2026-06-21 P-003 design decision that this leg must ship attended — but it was never added to this allowlist, so the P-011 inversion (2026-06-29) silently flipped it to live default-ON. Confirmed LIVE via flags:get(papercusp-reclaim-stalled) = true. Live-evidenced harm (EI-7685): an agent mid an uninterrupted ~20min build (alive, no crash) had its work-item claim reclaimed by the "stalled" leg for merely not calling work_items:checkpoint in the window, wiping its in-flight checkpoint and reassigning the item to an idle peer — exactly the live-placement disruption D-003 says must never ship unattended. OFF ⇒ only the DEAD-holder + confirmed-terminal-spawn legs free claims (today\'s actually-safe behavior); owner flips ON after an attended review of the stalled-window tuning (this session\'s own checkpoint cadence — routine long builds without a checkpoint touch — is itself evidence the default stalledMs/graceMs is too aggressive to enable blind). RE-APPLIED 2026-07-05 ~21:22Z after a fleet-wide `git reset --hard` (17:12:34 local, unrelated incident under investigation by su-f0afe) wiped this uncommitted edit before git-sync could commit it.',
+    },
+  ],
+  [
+    FLAGS.PSU_END_USER,
+    {
+      case: "owner-authority",
+      reason:
+        'WI-3093 (found 2026-07-05 by su-f5241 while closing the ticket for "no psu launch button visible"): FOURTH instance of the identical EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-RECLAIM_STALLED bug-fix class in this same file — this flag\'s OWN code comment directly above (psu-in-desktop-builds-2026-06-23 C1) has always said "DEFAULT OFF — this is the legitimate owner-authority/SECURITY dark case... the owner must personally ratify the end-user exposure before it defaults on... KNOWN_DARK_FLAGS" but was never actually added here, so the P-011 inversion (2026-06-29) silently flipped it to live default-ON. Confirmed LIVE via flags:get(papercusp-psu-end-user) = true — and made ACTIVELY EXPLOITABLE, not just theoretically live, the moment WI-3093\'s OWN fix rendered ConsoleLauncherButton in ChromeShell (previously the button existed but was never mounted, so the dark-default bug had no user-visible surface; now it does): an end user of the shipped desktop app could see and click a button that opens a full unauthenticated superuser agent shell, with zero owner ratification. OFF ⇒ the entry is not offered; the bundled psu shim is inert (today\'s actually-intended, safe behavior — dev/internal launch via other paths is unchanged). Owner flips ON only after personally ratifying end-user psu exposure.',
+    },
+  ],
+  // parked — the v2 Cupboard marketplace merge is BUILT (the remote-fetch path
+  // exists + works) but deliberately out of V1 scope per owner directive
+  // (2026-07-07): V1 ships the first-party templates bundled + resolved from the
+  // LOCAL store; the marketplace (user-published, runtime-fetched templates) is a
+  // staged v2 enablement. OFF ⇒ templates:* resolve the local store only; the
+  // remote Cupboard path stays dormant. Flipped ON in v2 once the marketplace is
+  // ready. Not incomplete/unsafe — a deliberate owner-directed staged cutover.
+  [
+    FLAGS.TEMPLATES_MARKETPLACE,
+    {
+      case: "parked",
+      reason:
+        "local-first-party-template-bundling-2026-07-07 (owner-directed 2026-07-07): V1 ships the first-party templates bundled in-app + resolved from the local store; the Cupboard MARKETPLACE merge (user-published, runtime-fetched templates via templates:list/get-guide/new-app) is deliberately deferred to v2. The remote-fetch code is wired but dormant. OFF ⇒ templates:* resolve the local store only (offline, no Cupboard round-trip). Owner flips ON in v2 when the marketplace ships.",
+    },
+  ],
+  // The rubrics sibling of TEMPLATES_MARKETPLACE — the same owner-directed v1/v2
+  // split (local-first-party-rubric-bundling-2026-07-07): v1 bundles + seeds the
+  // first-party rubrics locally; the Cupboard kind='rubric' marketplace is a v2 seam.
+  [
+    FLAGS.RUBRICS_MARKETPLACE,
+    {
+      case: "parked",
+      reason:
+        "local-first-party-rubric-bundling-2026-07-07 (owner-directed 2026-07-07, the templates-v1 design applied to rubrics): V1 ships the first-party rubrics bundled in-app (sidecar/rubrics content dirs) and seeds them into the workspace rubric store on first rubrics:* read (idempotent, no-clobber — an existing workspace rubricId always wins). The Cupboard MARKETPLACE merge for kind=rubric listings is deliberately deferred to v2 — no remote-fetch code exists yet; the flag reserves the seam. OFF ⇒ rubrics:* resolve the workspace store (+ bundled seed) only. Owner flips ON in v2 when the rubric marketplace ships.",
+    },
+  ],
+  [
+    FLAGS.OWN_LOG_FORK_AUTO_RECOVERY,
+    {
+      case: "owner-authority",
+      reason:
+        'p2p-parity-parallel-lanes-2026-07-09 P-003 (WI-3535): the own-log-fork-guard auto-recovery sketch (own-log-fork-recovery.ts) performs a per-harness Corestore STORE RESET — deletes the on-disk peer-log directory so a fresh keypair is minted on next boot — to break the equivocation-loop boot loop. DESTRUCTIVE: it discards any local hypercore-only history not yet merged into PG, so unattended auto-recovery is unsafe until the owner personally ratifies it (the plan explicitly requires this flag-gated default-OFF). OFF ⇒ recoverForkedOwnLog always short-circuits with reason:"flag_off"; the detector still files a durable EI naming the supported MANUAL recovery. Owner flips ON only after reviewing the destructive blast radius.',
+    },
+  ],
+  // HRW_RENDEZVOUS_AUTHORITY graduated 2026-07-17 (LIVE-1 P-059 drill, coordination
+  // lane): the cutover dark-entry gate was met — the multi-peer same-inputs verify
+  // ran on the tower↔VM rig (both machines' fresh pot_slug='papercusp' candidate
+  // sets identical, same tower-built code on both), then the flag was flipped ON in
+  // BOTH machines' stores in one pass (resolveUseHrwRendezvous reads per-call, so
+  // no peer ever computed with a stale value across a reboot boundary). Default ON;
+  // OFF is the tested rollback (selectAuthorityFromRows argmin, byte-identical
+  // pre-WI-1491 behavior). See docs/plans/CUTOVER-presence-gossip-2026-07-16.md.
+  // 2026-07-18 — papercusp-plan-part-federation GRADUATED default-ON (WI-5331 Leg B):
+  // the real two-machine merge proof its dark entry demanded (P-008) ran on the live
+  // tower↔Avis-iMac rig — concurrent different-part edits (tower section:now rewrite
+  // vs mac item flip, 5s apart) under flag-ON on BOTH machines converged to
+  // byte-identical content (md5 b2f6826d…) in ~5s with both edits surviving on both
+  // sides: tower held item:P-003 origin=remote (mac device key) recomposed into its
+  // content, the mac held section:now origin=remote (tower device key) recomposed
+  // into its content — no whole-blob clobber in either direction; recompose was the
+  // sole content writer per P-006/P-009. Verdict: p2p-part-merge-proof-2026-07-18
+  // D-001. Entry removed (the set shrinks). OFF remains the tested rollback (plans
+  // federate as the whole harness_plans.content blob, mig 125).
+  // WI-3796 (2026-07-10, fleet p2p-parity-lanes): SEVENTH instance of the identical
+  // EI-7230/WATCHDOG_AUTO_CLOSE/WI-1994-SUBSTRATE_SIDECAR/EI-7685-RECLAIM_STALLED/
+  // WI-3093-PSU_END_USER/EI-9064-PLAN_PART_FEDERATION/WI-3370-SUBSTRATE_LOG_SNAPSHOT
+  // bug-fix class in this same file — TWO more flags whose OWN code comments (directly
+  // above in FLAGS) have always said "DEFAULT OFF" but were never actually added here,
+  // so the 2026-06-29 P-011 inversion silently flipped both to live default-ON.
+  // CONFIRMED LIVE via direct PG check: harness_shared.operator_flag_overrides carries
+  // no override row for either key in workspace papercusp-workspace, so both were
+  // resolving purely off the buggy code-level default (verified 2026-07-10 via psql).
+  // This SEVENTH instance breaches the prior watermark of 22 with zero graduation
+  // candidates ready (see the 2026-07-10 review note below) — raised
+  // DARK_FLAGS_HIGH_WATERMARK 22→24 to accommodate, which CLAUDE.md's "Feature flags"
+  // section flags as needing explicit owner sign-off. Under this session's standing
+  // AUTO-mode grant (owner directive 2026-07-03: ZERO owner-confirm pauses; AUTO mode
+  // passes owner-authority/"owner must personally ratify" gates and discloses rather
+  // than blocking on them) this was actioned directly and disclosed loudly via
+  // coord:send + a durable fact + this comment, rather than parked pending a sign-off
+  // that would leave two unreviewed, fleet-wide-blast-radius behaviors silently live in
+  // the meantime. The correction is unambiguously the SAFE direction — it turns OFF
+  // two already-live, never-ratified behaviors, restoring the byte-identical documented
+  // baseline; it does not newly enable anything. Owner may reverse (re-remove from
+  // DARK_FLAGS + restore watermark to 22) at any time.
+  //
+  // 2026-08-10 (WI-37718) — GIT_SYNC_DERIVED_ATTRIBUTION, the FIRST of that pair, has
+  // GRADUATED default-ON and its entry is REMOVED from this map (the set shrinks; an
+  // 'owner-authority' entry is not rationed by DARK_FLAGS_HIGH_WATERMARK / the
+  // DARK_FLAGS_PARKING_COUNT subset either way, so no watermark change accompanies this).
+  // The owner flipped it after the end-to-end review this entry demanded: the writer-side
+  // defect that made derived attribution resolve a placeholder holder
+  // (EI-20055604348536487, fixed in b2af0024a8) is live on every writer path, and after
+  // the last pre-fix process cycled, 39/39 consecutive lock rows carried a real declared
+  // intent with zero sentinels while the last 60 commits carried real per-agent subjects
+  // with zero sentinel subjects — i.e. the edge-case-bug risk this entry was holding the
+  // flag against was measured, not assumed. DOC_STEWARD (the pair's other half, below)
+  // is UNAFFECTED and stays dark — its own end-to-end check has not been run.
+  [
+    FLAGS.IMPROVEMENT_AUTO_IMPLEMENT,
+    {
+      case: "owner-authority",
+      reason:
+        'papercusp-self-improvement-loop-2026-06-04 Phase 3 (D-004/D-006/D-008), found 2026-07-26 (su-709bb) by the flag-comment-lint recall fix (normalization step 5 — this entry declares itself as "When OFF (default)", the REVERSED form the guard could not previously see, so it was silently SKIPPED). Same class as WATCHDOG_AUTO_CLOSE/RECLAIM_STALLED/DOC_STEWARD: the flag\'s OWN comment states it is the master switch for AUTO-implementing captured improvements and that OFF is the default, with an explicit precondition — "Flip ON only once the work_items surface + the release-gate cutover have landed" — but it was never added here, so it derived live default-ON. That is an AUTONOMY-ESCALATION surface (the routine spawns an implementer agent in a dedicated runner harness and lands code via the release gate) running with no owner ratification and with its own stated precondition unverified. OFF ⇒ the improvement-implement routine is a no-op; capture (Phase 1) + triage (Phase 2) are unaffected — exactly the documented, intended behavior. Owner flips ON once the stated preconditions are confirmed landed.',
+    },
+  ],
+  [
+    FLAGS.CAPABILITY_ENVELOPE_OVERRIDES,
+    {
+      case: "owner-authority",
+      reason:
+        'live-configurability-audit-2026-06-20 P-009, found 2026-07-26 (su-709bb) by the same flag-comment-lint recall fix (declares itself "OFF (default) ⇒ the sync-cache stays empty ⇒ byte-identical" — the REVERSED form, previously skipped). Its own comment opens "DARK:" and describes a SECURITY/capability surface: runtime per-role capability-envelope overrides (capability_envelope:set_role / :set_protected) that merge per-role deny/allow overrides OVER the baked ROLE_ENVELOPES at the dispatch checkCapabilityEnvelope step. Never added here, so it derived live default-ON — meaning any override row present would silently apply to real dispatch authorization with no owner ratification. OFF ⇒ the sync-cache stays empty ⇒ byte-identical to the baked envelopes (the documented intent). Owner flips ON to ratify runtime envelope overrides.',
+    },
+  ],
+  [
+    FLAGS.DOC_STEWARD,
+    {
+      case: "owner-authority",
+      reason:
+        "docs-corpus-audit WS2 P-008 / deterministic-commit-workitem-attribution P-005: the post-git-sync doc-freshness sweep dispatches an LLM doc-steward agent to auto-edit/regenerate a drifted doc against current code, and can spawn an agent per drift. The flag's OWN comment has always said \"DEFAULT OFF: it auto-edits the doc corpus (owner-authority surface) + spawns an agent per drift — flip ON after the owner-verified end-to-end check\" but was never added to DARK_FLAGS, so it derived live default-ON — confirmed no PG override exists in workspace papercusp-workspace. Unattended auto-editing of the doc corpus + unbounded per-drift agent spawn is an owner-authority surface, so it ships dark until the owner runs the end-to-end verification its own design calls for. OFF ⇒ the freshness sweep still detects drift, but no auto-edit and no agent dispatch (today's actually-safe behavior). Owner flips ON after the verified check.",
+    },
+  ],
+  // WI-4238 (2026-07-12, su-00a91): the NINTH instance of the EI-7230 bug-fix class —
+  // and, after a per-flag re-derivation, the ONLY one of the ten outstanding
+  // comment-vs-DARK_FLAGS mismatches that is genuinely a SAFETY mis-default.
+  //
+  // The other nine all default-ON to a SAFER/NARROWER behavior (completed partition
+  // cutovers + workspace/auth guard rails) — for those, "restoring the documented dark
+  // baseline" is a REGRESSION, and two of them (COORD_/ISSUES_PER_WORKSPACE) would have
+  // stranded ~79k live rows. Their comments were the stale side and are now corrected in
+  // FLAGS above. THIS one is the true inversion: ON removes a human check rather than
+  // adding one, so it is the one that actually belongs here.
+  //
+  // Confirmed live-ON 2026-07-12: no override row in harness_shared.operator_flag_overrides
+  // for workspace papercusp-workspace, so it resolved purely off the buggy P-011 default.
+  // Not yet exercised (leader su-286379e2 verified 0 full-autonomy grants in 48h) — a real
+  // code-level mis-default, not an active incident. Raised DARK_FLAGS_HIGH_WATERMARK 25→26
+  // (see the constant's note); actioned under the owner's standing AUTO-mode grant and
+  // disclosed rather than left silently live, and it is unambiguously the SAFE direction —
+  // it turns OFF an already-live, never-ratified behavior and newly enables nothing.
+  // WI-4240 (2026-07-12, su-00a91): the two cross-machine authority cutovers — 11th + 12th
+  // instances of the EI-7230 class. Both comments always said DEFAULT OFF / dark (they are
+  // real-hardware-UNVERIFIED cross-machine paths gated on a two-machine proof), but neither
+  // was ever added here, so P-011 derived both live-ON. An unverified cross-machine cutover's
+  // correct DEFAULT is unambiguously OFF regardless of the missing rig — the rig gates
+  // turning them ON, not the default. Byte-identical on this single box (both no-op without a
+  // multi-machine transport, confirmed in their wiring), and consistent with every sibling
+  // cross-machine flag already dark (PLAN_PART_FEDERATION / PRESENCE_GOSSIP /
+  // HRW_RENDEZVOUS_AUTHORITY). Watermark 27→29.
+  [
+    FLAGS.AUTHORITY_RPC_PROTOMUX,
+    {
+      case: "cutover",
+      reason:
+        'shared-hive-hardening-2026-06-13 P-001/D-005: routes remote lock-authority RPCs over the per-harness Hyperswarm protomux channel so NAT\'d peers are served. Real-hardware-UNVERIFIED (P-003) — the flip is gated on the two-machine serialization proof. Comment always said "DEFAULT OFF" but was never added here, so P-011 derived it live-ON. wireAuthorityRpcSwarmTransport returns early without a device signer/swarm, so ON is a no-op on a single box; OFF = HTTP-only, byte-identical. Owner/leader flips ON after the two-machine proof.',
+    },
+  ],
+  [
+    FLAGS.LAZY_SUBSTRATE_BOOT,
+    {
+      case: "cutover",
+      reason:
+        'shared-hive-cross-machine-scale-10k-2026-06-29 P-010 (found 2026-07-26, su-709bb): the SAME never-added-to-DARK_FLAGS class as AUTHORITY_RPC_PROTOMUX/AUTHORITY_EVICTION_PROBE directly below, but INVISIBLE to the flag-comment-lint guard until this date — the guard only recognised "DEFAULT OFF", while this entry declares itself in the REVERSED form "OFF (default): boot is byte-identical to today (eager all-harness boot). DARK + STAGED-ON-:3170-FIRST", so it classified as null and was silently SKIPPED (fixed: flag-comment-lint normalization step 5). Its own comment records an owner-ratified D-005/D-006 BINDING execution constraint to stage on :3170 first, precisely because a wrong eviction silently stops a harness syncing → fleet data divergence (the EI-126 102 GB class) — yet it derived live default-ON, so the eviction reaper + outbox keepalive have been running unattended with that blast radius and no staged verify. The live-ON state was an ACCIDENT (a missing entry here), never a decision. OFF ⇒ eager all-harness boot + no reaper — the long-standing, definitively-safe behavior (costs RSS, cannot diverge). NOTE this also gates P-010\'s new activate-on-demand policy (substrate-active-set-policy/-facts), which rides this same flag deliberately rather than adding a second separately-flippable half of one behaviour. Owner/leader flips ON at the attended :3170 staged verify its own D-005/D-006 constraint calls for.',
+    },
+  ],
+  [
+    FLAGS.AUTHORITY_EVICTION_PROBE,
+    {
+      case: "cutover",
+      reason:
+        'shared-hive-hardening-2026-06-13 P-016: wires the φ-accrual + SWIM failure detector into authority selection so a crashed authority is evicted promptly instead of waiting out the 90s staleness window. Rides the same unverified cross-machine RPC seam as AUTHORITY_RPC_PROTOMUX; real-hardware-UNVERIFIED (D-003). Comment always said "DEFAULT OFF (dark)... KNOWN_DARK_FLAGS" but was never added here, so P-011 derived it live-ON. wirePeerEviction installs no monitor when off and single-box/no-transport is a no-op anyway; OFF = staleness-only selection, byte-identical to pre-P-016. Owner/leader flips ON after the two-machine proof.',
+    },
+  ],
+  [
+    FLAGS.MUG_FULL_AUTONOMY,
+    {
+      case: "owner-authority",
+      reason:
+        "WI-4238: the recursive-self-improvement boundary. When ON, (1) the autonomy decider returns `auto` for categorical HARD GATES — authority:'owner', protected/locked categories, irreversible actions, above-ceiling, and graduation:* ratification asks — so the Queen widens her own ceilings without pausing; and (2) the self-improvement auto-implement loop lifts the protectedPathPatterns/protectedKeywords TCB bars, making a kind=bug that touches the deploy gate / flags / capability dispatch / migrations / the loop's OWN code auto-implement-eligible. The flag's own comment has always said \"OFF by default — DELIBERATE, NOT the alpha flags-default-on policy\" and warned it \"removes the last human check on the system widening its own ceilings and editing its own safety machinery\" — but it was never added here, so the 2026-06-29 P-011 inversion silently derived it default-ON. OFF ⇒ the documented gated residue is restored VERBATIM (pinned both directions in tests); the decider/loop fail-DARK on a flag-IO error. Owner flips ON only by personally ratifying full autonomy.",
+    },
+  ],
+  [
+    FLAGS.FLEET_HEADCOUNT_GOVERNOR,
+    {
+      case: "owner-authority",
+      reason:
+        "WI-2479: persistent per-fleet headcount auto-top-up can open real agent sessions without an attended launch call. The routine is bounded to a live deficit, uses an atomic retry lease plus the existing launch-window guard, and exponentially backs off failures, but it remains a fleet-autonomy escalation surface. OFF is a pure no-op; owner flips ON only after reviewing the no-storm and no-double-open tests.",
+    },
+  ],
+  [
+    FLAGS.MEM0_FEDERATION_EGRESS,
+    {
+      case: "owner-authority",
+      reason:
+        "mem0-cross-machine-federation-2026-07-10 (F1-1 mirror, D-006 privacy): gates the cross-machine federation of SHAREABLE memories (memory:remember with shareable=true). When ON, capture triggers enqueue shareable=true memories to the peer-log outbox, and receive-side projections apply remote memories to the local store (source-partitioned H6 pattern mirroring agent-facts). OWNER-AUTHORITY: memory federation affects what personal memory data leaves the machine — only the owner ratifies when/how/which memories federate. The privacy gates ride the SAME pot-visibility + member-admission guards as agent-facts (private pots never leak; only admitted members receive). OFF ⇒ shareable flag has no effect — capture stays quiet and egress never happens (byte-identical to today's personal-only behavior). Owner flips ON after reviewing privacy implications + confirming the privacy gates are in effect.",
+    },
+  ],
+  [
+    FLAGS.GOAL_HOLDER_RESPAWN,
+    {
+      case: "owner-authority",
+      reason:
+        "goal-live-holder-guarantee-2026-08-18 P-009 / D-002: automatically launching a replacement GOAL-mode holder spends money and creates unattended agent sessions. The actor is bounded to active goals that opt into holder.onLoss=respawn, uses the shared flap-damping/give-up policy, and is independently kill-switched from the report-only liveness watchdog. OFF is a pure no-op before reading goals; deterministic deactivation and reporting remain enabled. Owner flips ON after reviewing the bounded recovery behavior.",
+    },
+  ],
+]);
 
 // Only these cases are subject to the anti-parking-lot size budget. Safety
 // kill-switches (owner-authority/cutover) remain governed by DARK_FLAGS_REVIEW_BY.
-export const DARK_FLAGS_PARKING_CASES: ReadonlySet<DarkCase> = new Set<DarkCase>(['parked', 'incomplete']);
-export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) =>
-  DARK_FLAGS_PARKING_CASES.has(entry.case),
+export const DARK_FLAGS_PARKING_CASES: ReadonlySet<DarkCase> =
+  new Set<DarkCase>(["parked", "incomplete"]);
+export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter(
+  (entry) => DARK_FLAGS_PARKING_CASES.has(entry.case),
 ).length;
 
 // ── The dark allowlist's HYGIENE BOUNDS (re-review + parking budget) ──────────
@@ -3132,7 +3358,7 @@ export const DARK_FLAGS_PARKING_COUNT = [...DARK_FLAGS.values()].filter((entry) 
 // `npm run test:file -- libs/flags/src/production-defaults.test.ts` passed 10/10.
 // The review was completed before the deadline was advanced; no flag membership
 // or watermark changed. Next review is 2026-09-03.
-export const DARK_FLAGS_REVIEW_BY = '2026-09-03';
+export const DARK_FLAGS_REVIEW_BY = "2026-09-03";
 // 2026-07-12 (WI-4238, su-00a91): 25 → 26 for papercusp-queen-full-autonomy.
 //
 // WHY THIS GUARD KEEPS GETTING RAISED (22→24→25→26, every time for this same bug class,

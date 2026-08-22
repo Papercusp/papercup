@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  createGoogleGmailDraft,
   decodeGoogleGmailNotification,
   ensureGoogleGmailWatch,
   normalizeGoogleGmailMessage,
@@ -47,6 +48,8 @@ function message(id: string): GoogleGmailMessage {
         { name: 'From', value: 'Ada <ada@example.com>' },
         { name: 'To', value: 'Bob <bob@example.com>, "Doe, Jane" <jane@example.com>' },
         { name: 'Subject', value: `Subject ${id}` },
+        { name: 'Message-ID', value: `<${id}@example.com>` },
+        { name: 'References', value: '<root@example.com>' },
       ],
       parts: [
         { mimeType: 'text/plain', body: { data: encoded(`plain ${id}`) } },
@@ -91,11 +94,14 @@ describe('Google Gmail adapter', () => {
       from: 'Ada <ada@example.com>',
       to: ['Bob <bob@example.com>', '"Doe, Jane" <jane@example.com>'],
       subject: 'Subject m-1',
+      messageId: '<m-1@example.com>',
+      references: '<root@example.com>',
       text: 'plain m-1',
       html: '<p>html m-1</p>',
       snippet: 'snippet-m-1',
       occurredAt: NOW.toISOString(),
       labels: ['INBOX'],
+      direction: 'inbound',
     });
     expect(
       decodeGoogleGmailNotification(
@@ -108,6 +114,43 @@ describe('Google Gmail adapter', () => {
       ),
     ).toEqual({ emailAddress: 'owner@example.com', historyId: '123' });
     expect(decodeGoogleGmailNotification(encoded('not-json'))).toBeNull();
+  });
+
+  it('creates an RFC 2822 Gmail draft in the originating thread and never calls send', async () => {
+    const fetchImpl = vi.fn(async (request: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(request instanceof Request ? request.url : request.toString());
+      expect(url.pathname).toBe('/gmail/v1/users/me/drafts');
+      expect(init?.method).toBe('POST');
+      const posted = JSON.parse(String(init?.body)) as { message: { raw: string; threadId: string } };
+      expect(posted.message.threadId).toBe('thread-m-1');
+      const raw = Buffer.from(posted.message.raw, 'base64url').toString('utf8');
+      expect(raw).toContain('To: Ada <ada@example.com>\r\n');
+      expect(raw).toContain('Subject: Re: Subject m-1\r\n');
+      expect(raw).toContain('In-Reply-To: <m-1@example.com>\r\n');
+      expect(raw).toContain('References: <root@example.com> <m-1@example.com>\r\n');
+      expect(raw).toContain('\r\n\r\nDraft response');
+      return json({ id: 'draft-1', message: { id: 'draft-message-1', threadId: 'thread-m-1' } });
+    }) as unknown as typeof fetch;
+
+    await expect(
+      createGoogleGmailDraft(
+        'access-token',
+        {
+          to: 'Ada <ada@example.com>',
+          subject: 'Re: Subject m-1',
+          text: 'Draft response',
+          threadId: 'thread-m-1',
+          inReplyTo: '<m-1@example.com>',
+          references: '<root@example.com>',
+        },
+        { fetch: fetchImpl, apiOrigin: 'https://gmail.test' },
+      ),
+    ).resolves.toEqual({
+      draftId: 'draft-1',
+      messageId: 'draft-message-1',
+      threadId: 'thread-m-1',
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('renews users.watch while preserving an existing history cursor', async () => {

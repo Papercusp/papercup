@@ -1431,6 +1431,10 @@ import './triggers/bind';
 import './triggers/arm';
 import './triggers/disarm';
 import './triggers/status';
+// external-triggers-gmail-slack-2026-08-22 P-011 — anchored, draft-only
+// Gmail response seam. Recipient/thread/token come from the trigger run; there
+// is deliberately no send branch on this tool.
+import './gmail/create-draft';
 // WI-4014 Part 2 (linking-system follow-up to WI-3956): the lifecycle verb for a
 // standing event-key INJECT subscription (watch:create wake:false targetKind:'event')
 // — the wake:false sibling of events:cancel, mirroring topics:unsubscribe's shape.

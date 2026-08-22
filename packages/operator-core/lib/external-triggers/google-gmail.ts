@@ -81,6 +81,21 @@ export interface GoogleGmailSyncResult {
   historyId: string;
 }
 
+export interface GoogleGmailDraftInput {
+  to: string;
+  subject: string;
+  text: string;
+  threadId: string;
+  inReplyTo: string;
+  references?: string | null;
+}
+
+export interface GoogleGmailDraftResult {
+  draftId: string;
+  messageId: string;
+  threadId: string;
+}
+
 type Ingest = (sql: postgres.Sql, input: IngestExternalTriggerInput) => Promise<IngestExternalTriggerResult>;
 
 export interface GoogleGmailDeps {
@@ -354,6 +369,8 @@ export function normalizeGoogleGmailMessage(message: GoogleGmailMessage): Record
   const threadId = nonEmpty(message.threadId);
   const from = header(message.payload, 'From');
   const subject = header(message.payload, 'Subject');
+  const messageId = header(message.payload, 'Message-ID');
+  const references = header(message.payload, 'References');
   const time = occurredAt(message);
   if (threadId) normalized.threadId = threadId;
   if (from) normalized.from = from;
@@ -364,13 +381,82 @@ export function normalizeGoogleGmailMessage(message: GoogleGmailMessage): Record
   if (cc.length) normalized.cc = cc;
   if (bcc.length) normalized.bcc = bcc;
   if (subject) normalized.subject = subject;
+  if (messageId) normalized.messageId = messageId;
+  if (references) normalized.references = references;
   if (texts.length) normalized.text = [...new Set(texts)].join('\n');
   if (html.length) normalized.html = [...new Set(html)].join('\n');
   const snippet = nonEmpty(message.snippet);
   if (snippet) normalized.snippet = snippet;
   if (time) normalized.occurredAt = time;
-  if (message.labelIds?.length) normalized.labels = [...message.labelIds];
+  if (message.labelIds?.length) {
+    normalized.labels = [...message.labelIds];
+    normalized.direction = message.labelIds.some((label) => label === 'SENT' || label === 'DRAFT')
+      ? 'outbound'
+      : 'inbound';
+  }
   return normalized;
+}
+
+function safeHeader(value: string, field: string, maxLength = 8_000): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maxLength || /[\r\n]/.test(normalized)) {
+    throw new Error(`google_gmail_draft_${field}_invalid`);
+  }
+  return normalized;
+}
+
+function replyReferences(references: string | null | undefined, inReplyTo: string): string {
+  const prior = references?.trim() ?? '';
+  const combined = prior ? `${prior} ${inReplyTo}` : inReplyTo;
+  return safeHeader(combined, 'references');
+}
+
+/** Create one RFC 2822 draft reply; this seam never sends the message. */
+export async function createGoogleGmailDraft(
+  accessToken: string,
+  input: GoogleGmailDraftInput,
+  provided: Pick<GoogleGmailDeps, 'fetch' | 'apiOrigin'> = {},
+): Promise<GoogleGmailDraftResult> {
+  const token = accessToken.trim();
+  if (!token) throw new Error('google_gmail_access_token_required');
+  const to = safeHeader(input.to, 'to', 2_000);
+  const subject = safeHeader(input.subject, 'subject', 998);
+  const threadId = safeHeader(input.threadId, 'thread_id', 512);
+  const inReplyTo = safeHeader(input.inReplyTo, 'in_reply_to', 998);
+  const references = replyReferences(input.references, inReplyTo);
+  const text = input.text.trim();
+  if (!text || text.length > 100_000) throw new Error('google_gmail_draft_text_invalid');
+  const raw = [
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    `In-Reply-To: ${inReplyTo}`,
+    `References: ${references}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: 8bit',
+    '',
+    text,
+  ].join('\r\n');
+  const body = await gmailRequest<{
+    id?: string;
+    message?: { id?: string; threadId?: string };
+  }>(
+    provided.fetch ?? fetch,
+    (provided.apiOrigin ?? GMAIL_API_ORIGIN).replace(/\/$/, ''),
+    token,
+    '/gmail/v1/users/me/drafts',
+    'draft_create',
+    {
+      method: 'POST',
+      body: { message: { raw: Buffer.from(raw, 'utf8').toString('base64url'), threadId } },
+    },
+  );
+  const draftId = nonEmpty(body.id);
+  const messageId = nonEmpty(body.message?.id);
+  const createdThreadId = nonEmpty(body.message?.threadId);
+  if (!draftId || !messageId || !createdThreadId) throw new Error('google_gmail_draft_response_invalid');
+  if (createdThreadId !== threadId) throw new Error('google_gmail_draft_thread_mismatch');
+  return { draftId, messageId, threadId: createdThreadId };
 }
 
 /** Decode the Gmail JSON envelope carried in Pub/Sub message.data. */
