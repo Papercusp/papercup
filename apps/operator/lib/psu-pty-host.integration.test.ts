@@ -579,6 +579,76 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
     },
     25_000,
   );
+
+  it(
+    'force-kills a graceful-signal-resistant predecessor before spawning the successor',
+    async () => {
+      const ownerId = `su-recycle-predecessor-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, io } = fakeIo();
+      const childCode =
+        "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "for(const signal of ['SIGHUP','SIGTERM','SIGINT'])process.on(signal,()=>{});" +
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);if(line==='QUIT')process.exit(0);}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS: '250',
+          PAPERCUSP_PSU_PTY_RECYCLE_FORCE_KILL_WAIT_MS: '500',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+      });
+
+      const bootDeadline = Date.now() + 5_000;
+      while (!captured().includes('BOOT:') && Date.now() < bootDeadline) await sleep(20);
+      expect(captured()).toContain('BOOT:');
+      const firstBoot = Number(captured().match(/BOOT:(\d+)/)?.[1]);
+      expect(Number.isInteger(firstBoot)).toBe(true);
+
+      await controlInject(sock, 'recycle', '');
+      const successorDeadline = Date.now() + 8_000;
+      let boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      while (boots.length < 2 && Date.now() < successorDeadline) {
+        await sleep(25);
+        boots = [...captured().matchAll(/BOOT:(\d+)/g)].map((m) => Number(m[1]));
+      }
+      expect(boots).toHaveLength(2);
+      expect(boots[1]).not.toBe(firstBoot);
+
+      // The predecessor ignores the graceful signal. It must be dead before
+      // this host can leave the recycle path with a second writer in flight.
+      const predecessorGoneDeadline = Date.now() + 2_000;
+      let predecessorAlive = true;
+      while (predecessorAlive && Date.now() < predecessorGoneDeadline) {
+        try {
+          process.kill(firstBoot, 0);
+        } catch {
+          predecessorAlive = false;
+          break;
+        }
+        await sleep(25);
+      }
+      expect(predecessorAlive).toBe(false);
+
+      await rawInject(sock, 'QUIT\n');
+      await done;
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    25_000,
+  );
 });
 
 describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING still gets its turn (WI-38257)', () => {
