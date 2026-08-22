@@ -41,9 +41,23 @@ async function execSystemctlUser(args: string[]): Promise<string> {
   return stdout;
 }
 
+/**
+ * Bounded journald fallback for a failed unit. `systemctl status` can omit the prior failed
+ * attempt once `Restart=` has already brought a new process up; the journal retains it.
+ */
+async function readSystemdUserJournal(unit: string): Promise<string> {
+  const { stdout } = await execFileP(
+    'journalctl',
+    ['--user', '-u', unit, '--since=-10min', '--no-pager', '--lines=200'],
+    { timeout: 10_000 },
+  );
+  return stdout;
+}
+
 function productionDeps(ctx: SystemActionCtx): ReconcilerDeps {
   return {
     execUser: execSystemctlUser,
+    readUnitJournal: readSystemdUserJournal,
     now: () => Date.now(),
     notify: async ({ summary, kind }) =>
       void (await sendMessage(SUPERVISION_IDENTITY, {

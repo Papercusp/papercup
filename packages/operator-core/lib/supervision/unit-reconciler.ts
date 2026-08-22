@@ -547,6 +547,12 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
 export interface ReconcilerDeps {
   /** `systemctl --user <args>` — returns stdout, or throws on nonzero exit / spawn failure. */
   execUser: (args: string[]) => Promise<string>;
+  /**
+   * Read a bounded recent journal excerpt for one user unit. Optional so pure/test callers keep
+   * their existing shape; production supplies it because `systemctl status` may show only the
+   * currently-running attempt and omit the failure that incremented `NRestarts`.
+   */
+  readUnitJournal?: (unit: string) => Promise<string>;
   now: () => number;
   /** Broadcast a coord message. Mirrors service-health.ts's `sendMessage(HEALTH_IDENTITY, …)`. */
   notify: (opts: { summary: string; kind?: 'message' | 'escalation'; category?: string }) => Promise<void>;
@@ -636,6 +642,32 @@ export function extractBuildErrorDetail(output: string): string | null {
   return detail.slice(0, 300);
 }
 
+/**
+ * A runtime/startup failure printed by the main process rather than a build step.
+ *
+ * EI-19457080109574347 recurred on 2026-08-22 with exactly this shape: the host emitted
+ * `Error: Refusing off-loopback bind 0.0.0.0 …`, then systemd recorded only the generic
+ * `Main process exited, status=7/NOTRUNNING` trailer. The old extractor recognized compiler
+ * errors but not a plain `Error:` line, so the actionable policy failure disappeared from the
+ * escalation. Explicitly exclude `not fatal` health chatter before accepting `FATAL`.
+ */
+export function extractRuntimeFailureDetail(output: string): string | null {
+  const lines = output.split('\n').map((line) => stripJournalPrefix(line.trim()));
+  const detail = lines.find((line) => {
+    if (!line || /\bnot fatal\b/i.test(line)) return false;
+    return (
+      /(?:^|\]\s*)(?:[A-Za-z][A-Za-z]+Error|Error):\s+\S/.test(line) ||
+      /\b(?:FATAL|Refusing|Unhandled(?:Promise)?Rejection)\b/i.test(line)
+    );
+  });
+  return detail?.slice(0, 400) ?? null;
+}
+
+/** Prefer a compiler diagnostic, then a runtime/startup policy error. */
+export function extractActionableFailureDetail(output: string): string | null {
+  return extractBuildErrorDetail(output) ?? extractRuntimeFailureDetail(output);
+}
+
 /** Pull one compact failure-cause line out of `systemctl status` output. The
  * current process's ExecMainCode is normally 0 once systemd has respawned it,
  * so the recent journal excerpt embedded by `status --lines` is the only useful
@@ -695,18 +727,20 @@ export function summarizeSystemctlStatusCause(output: string): string | null {
   const controlProcess = lines.find(isFailedControlProcessLine);
   // EI-19457080109574347: the failing STEP is only half the answer \u2014 append the error that step
   // printed, so the escalation carries the fault itself instead of a pointer to where to look.
-  const buildError = extractBuildErrorDetail(output);
+  const actionableDetail = extractActionableFailureDetail(output);
   if (controlProcess) {
     const step = controlProcess.slice(0, 400);
-    return buildError ? `${step} \u2014 ${buildError}` : step;
+    return actionableDetail ? `${step} \u2014 ${actionableDetail}` : step;
   }
 
   const cause = [...lines].reverse().find((line) =>
     /EADDRINUSE|address already in use|fatal|Main process exited|Failed with result|code=(?:exited|killed)|status=\d+/i.test(line),
   );
-  if (!cause) return buildError;
+  if (!cause) return actionableDetail;
   const trailer = cause.replace(/^[-\u251c\u2514\u2502\s]+/, '').slice(0, 400);
-  return buildError ? `${trailer} \u2014 ${buildError}` : trailer;
+  return actionableDetail && !trailer.includes(actionableDetail)
+    ? `${trailer} \u2014 ${actionableDetail}`
+    : trailer;
 }
 
 /**
@@ -727,6 +761,33 @@ export function stdoutFromExecError(err: unknown): string | null {
     if (typeof stdout === 'string' && stdout.trim().length > 0) return stdout;
   }
   return null;
+}
+
+/**
+ * Read both diagnostic layers and summarize them as one cause.
+ *
+ * `systemctl status` is still useful for the failed control/main-process line, but for a unit
+ * that has already restarted successfully it may omit the prior attempt entirely. Journald is
+ * the durable per-unit history and is therefore the fallback/source of the actionable error.
+ * Both reads are best-effort: escalation must still happen when either source is unavailable.
+ */
+async function captureUnitFailureCause(deps: ReconcilerDeps, unit: string): Promise<string | null> {
+  let statusOutput: string | null = null;
+  try {
+    statusOutput = await deps.execUser(['status', unit, '--no-pager', '--lines=200']);
+  } catch (err) {
+    statusOutput = stdoutFromExecError(err);
+  }
+
+  let journalOutput: string | null = null;
+  try {
+    journalOutput = (await deps.readUnitJournal?.(unit)) ?? null;
+  } catch {
+    // Best-effort diagnostic enrichment; never suppress the page itself.
+  }
+
+  const combined = [statusOutput, journalOutput].filter((part): part is string => Boolean(part?.trim()));
+  return combined.length > 0 ? summarizeSystemctlStatusCause(combined.join('\n')) : null;
 }
 
 /** Module-singleton flap state, keyed by unit name — survives across ticks within one process
@@ -865,18 +926,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       state.nRestartsObs = loop.nextObs;
       state.silentLoopEscalated = loop.nextEscalated;
       if (loop.escalate) {
-        let lastExitCause: string | null = null;
-        try {
-          lastExitCause = summarizeSystemctlStatusCause(
-            await deps.execUser(['status', entry.unit, '--no-pager', '--lines=200']),
-          );
-        } catch (err) {
-          // EI-19966318801100410: `systemctl --user status` on a failed unit ALWAYS exits
-          // non-zero, so execUser always rejects here — but the promisified rejection still
-          // carries the captured stdout. Recover it before giving up on diagnostics.
-          const stdout = stdoutFromExecError(err);
-          lastExitCause = stdout ? summarizeSystemctlStatusCause(stdout) : null;
-        }
+        const lastExitCause = await captureUnitFailureCause(deps, entry.unit);
         await deps
           .notify({
             summary:
@@ -936,21 +986,8 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     // suffix would silently never match and the build-step branch would be dead code.
     const failureCause = async (): Promise<{ suffix: string; cause: string | null }> => {
       const fallback = ` Cause unavailable; inspect \`systemctl --user status ${unitName}\` + its journal.`;
-      try {
-        const cause = summarizeSystemctlStatusCause(
-          await deps.execUser(['status', unitName, '--no-pager', '--lines=200']),
-        );
-        return { suffix: cause ? ` Cause: ${cause}` : fallback, cause };
-      } catch (err) {
-        // EI-19966318801100410: `systemctl --user status` on a failed/inactive unit ALWAYS
-        // exits non-zero (execUser always rejects here), even though it prints full diagnostic
-        // stdout — this is the STEADY STATE for exactly the down-unit case these two callers
-        // (escalate-start-limit-hit, escalate-give-up) exist for. Recover the stdout the
-        // rejection still carries before falling back to "unavailable".
-        const stdout = stdoutFromExecError(err);
-        const cause = stdout ? summarizeSystemctlStatusCause(stdout) : null;
-        return { suffix: cause ? ` Cause: ${cause}` : fallback, cause };
-      }
+      const cause = await captureUnitFailureCause(deps, unitName);
+      return { suffix: cause ? ` Cause: ${cause}` : fallback, cause };
     };
 
     switch (action.kind) {

@@ -73,6 +73,42 @@ function requiresRestart(paths: string[]): boolean {
   return r.status === 0;
 }
 
+function execForcesLoopback(execStart: string): boolean {
+  const r = runFn(
+    ['staging_exec_forces_loopback'],
+    'staging_exec_forces_loopback "$EXEC_START"',
+    { env: { EXEC_START: execStart } },
+  );
+  if (r.status !== 0 && r.status !== 1) {
+    throw new Error(`staging_exec_forces_loopback exited unexpectedly (${r.status}): ${r.stderr || r.stdout}`);
+  }
+  return r.status === 0;
+}
+
+describe('sync-staging-checkout.sh staging launch contract (EI-19457080109574347)', () => {
+  it('accepts the shipped shape: source .env.local, then explicitly force loopback', () => {
+    expect(execForcesLoopback(
+      "set -a; [ -f .env.local ] && . ./.env.local; set +a; export PAPERCUSP_HONO_PORT=3170 PAPERCUSP_BIND_HOST=127.0.0.1; exec node dist-host/hono-host.mjs",
+    )).toBe(true);
+  });
+
+  it('rejects sourcing the shared env without a later bind override', () => {
+    expect(execForcesLoopback(
+      'export PAPERCUSP_BIND_HOST=127.0.0.1; set -a; . ./.env.local; set +a; exec node dist-host/hono-host.mjs',
+    )).toBe(false);
+  });
+
+  it('rejects an off-loopback assignment that supersedes an earlier loopback value', () => {
+    expect(execForcesLoopback(
+      'set -a; . ./.env.local; set +a; export PAPERCUSP_BIND_HOST=127.0.0.1; export PAPERCUSP_BIND_HOST=0.0.0.0; exec node dist-host/hono-host.mjs',
+    )).toBe(false);
+  });
+
+  it('rejects an implicit/default bind because the effective staging policy is not proven', () => {
+    expect(execForcesLoopback('exec node dist-host/hono-host.mjs')).toBe(false);
+  });
+});
+
 describe('sync-staging-checkout.sh paths_require_restart() — restart relevance gate (WI-5710)', () => {
   describe('restart-EXEMPT advances (the whole point: no process kill)', () => {
     it('SPA source under apps/operator-vite/src only', () => {
@@ -322,6 +358,14 @@ describe('sync-staging-checkout.sh staging_live_client_count() — live-session 
  */
 describe('sync-staging-checkout.sh — the shipped script actually wires the gates (WI-5710)', () => {
   const script = readFileSync(SCRIPT_PATH, 'utf8');
+
+  it('checks the effective staging launch bind before even the unchanged-HEAD no-op', () => {
+    const guardIdx = script.indexOf('assert_staging_unit_loopback || exit 1');
+    const targetIdx = script.indexOf('target="$(git -C');
+    expect(guardIdx).toBeGreaterThan(-1);
+    expect(targetIdx).toBeGreaterThan(-1);
+    expect(guardIdx).toBeLessThan(targetIdx);
+  });
 
   it('consults paths_require_restart() before restarting', () => {
     expect(script).toMatch(/paths_require_restart/);

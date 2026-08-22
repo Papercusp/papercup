@@ -27,6 +27,7 @@ import {
   BUILD_STEP_RETRY_LIMIT,
   supervisionSnapshot,
   extractBuildErrorDetail,
+  extractRuntimeFailureDetail,
   stdoutFromExecError,
   type SystemctlUnitStatus,
   type ReconcilerDeps,
@@ -116,6 +117,15 @@ const EXEC_START_PRE_BUILD_ERROR_JOURNAL = [
   'Aug 10 12:19:58 host systemd[3674]: papercup-staging-api.service: Control process exited, code=exited, status=1/FAILURE',
 ];
 
+// EI-19457080109574347 recurrence on 2026-08-22: ExecStartPre SUCCEEDED; the main process
+// rejected an unsafe off-loopback listener contract and exited 7. The actionable error existed
+// only in journald while the alert said "Last exit unavailable".
+const REMOTE_AUTH_RUNTIME_FAILURE_JOURNAL = [
+  'Aug 22 03:53:24 host hono-host[2450000]: [boot-integrity] tree-drift warning (not fatal)',
+  'Aug 22 03:53:26 host hono-host[2450000]: Error: Refusing off-loopback bind 0.0.0.0: set PAPERCUSP_ALLOW_REMOTE_ADMIN=1 only together with PAPERCUSP_REMOTE_ORIGINS.',
+  'Aug 22 03:53:26 host systemd[3674]: papercup-staging-api.service: Main process exited, code=exited, status=7/NOTRUNNING',
+];
+
 describe('summarizeSystemctlStatusCause', () => {
   it('extracts the most-recent concrete failure line from a restarted unit status', () => {
     expect(
@@ -191,6 +201,13 @@ describe('summarizeSystemctlStatusCause', () => {
     expect(cause).toContain('startingAdvSessionId');
     expect(cause).toContain('launch-su.ts:533:10');
   });
+
+  it('appends a main-process startup policy error and ignores unrelated "not fatal" chatter', () => {
+    const cause = summarizeSystemctlStatusCause(REMOTE_AUTH_RUNTIME_FAILURE_JOURNAL.join('\n'));
+    expect(cause).toContain('Main process exited, code=exited, status=7/NOTRUNNING');
+    expect(cause).toContain('Error: Refusing off-loopback bind 0.0.0.0');
+    expect(cause).not.toContain('tree-drift warning');
+  });
 });
 
 describe('extractBuildErrorDetail (EI-19457080109574347)', () => {
@@ -235,6 +252,14 @@ describe('extractBuildErrorDetail (EI-19457080109574347)', () => {
         ].join('\n'),
       ),
     ).toBeNull();
+  });
+});
+
+describe('extractRuntimeFailureDetail (EI-19457080109574347 recurrence)', () => {
+  it('recovers the exact runtime policy error and rejects "not fatal" noise', () => {
+    expect(extractRuntimeFailureDetail(REMOTE_AUTH_RUNTIME_FAILURE_JOURNAL.join('\n')))
+      .toContain('Error: Refusing off-loopback bind 0.0.0.0');
+    expect(extractRuntimeFailureDetail('host: warning (not fatal)')).toBeNull();
   });
 });
 
@@ -1271,6 +1296,40 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     expect(silentPage).toContain('Last exit:');
     expect(silentPage).toContain('bundle-host.sh');
     expect(silentPage).not.toContain('Last exit unavailable');
+  });
+
+  it('EI-19457080109574347: a SILENT crash-loop page reads journald when status has no output and carries the remote-auth boot failure', async () => {
+    const upFixture = [
+      'papercup-mcp-proxy.service                       loaded active   running Papercusp resilient MCP proxy',
+      '',
+    ].join('\n');
+    let nRestarts = 0;
+    let now = 1_000_000;
+    const readUnitJournal = vi.fn(async (_unit: string) => REMOTE_AUTH_RUNTIME_FAILURE_JOURNAL.join('\n'));
+    const deps = makeDeps({
+      autoRestartFlagOn: async () => false,
+      now: () => now,
+      readUnitJournal,
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return upFixture;
+        if (args[0] === 'show') return `Result=success\nNRestarts=${nRestarts}\nRestart=always\n`;
+        if (args[0] === 'status') throw new Error('status output unavailable');
+        return '';
+      }),
+      registry: () => [AUTORESTART_ENTRY],
+    });
+    for (let i = 0; i <= 4; i++) {
+      nRestarts = 8 + i;
+      await reconcileTick(deps);
+      now += 60_000;
+    }
+    const silentPage = deps.notify.mock.calls
+      .map((c) => c[0].summary as string)
+      .find((s) => s.includes('SILENTLY crash-looping'));
+    expect(silentPage).toContain('Last exit:');
+    expect(silentPage).toContain('Error: Refusing off-loopback bind 0.0.0.0');
+    expect(silentPage).not.toContain('Last exit unavailable');
+    expect(readUnitJournal).toHaveBeenCalledWith('papercup-mcp-proxy');
   });
 
   it('EI-19966318801100410: an escalate-give-up transition FILES a durable EI via fileGiveUpEi, carrying the unit, restart count, and cause — not just a broadcast', async () => {

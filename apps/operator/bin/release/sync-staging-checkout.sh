@@ -50,6 +50,37 @@ MAX_STALE_SEC="${PAPERCUSP_STAGING_SYNC_MAX_STALE_SEC:-1800}"
 
 log() { echo "[staging-sync] $(date -Is) $*"; }
 
+# EI-19457080109574347 (2026-08-22 recurrence): the shared apps/operator/.env.local
+# deliberately carries an off-loopback bind for other operator roles. A staging ExecStart
+# sourced that file without overriding the bind, then P-016's correct fail-fast auth policy
+# crash-looped :3170. The old process had been healthy; the sync restart created the outage.
+#
+# Prove the EFFECTIVE command has an explicit final loopback assignment after any .env.local
+# source. Checking for the token anywhere is insufficient: an assignment before the source is
+# overwritten by the file, and an earlier loopback assignment can be superseded later.
+staging_exec_forces_loopback() {
+  local exec_start="${1:-}" launch_tail last_bind
+  launch_tail="$exec_start"
+  if [[ "$exec_start" == *".env.local"* ]]; then
+    launch_tail="${exec_start##*.env.local}"
+  fi
+  last_bind="$(printf '%s\n' "$launch_tail" | grep -oE 'PAPERCUSP_BIND_HOST=[^ ;}]+' | tail -n 1 || true)"
+  [ "$last_bind" = "PAPERCUSP_BIND_HOST=127.0.0.1" ]
+}
+
+assert_staging_unit_loopback() {
+  local exec_start
+  if ! exec_start="$(systemctl --user show -p ExecStart --value "$UNIT" 2>/dev/null)"; then
+    log "FATAL: refusing staging sync — cannot read $UNIT ExecStart, so the launch bind policy is unverified"
+    return 1
+  fi
+  if staging_exec_forces_loopback "$exec_start"; then
+    return 0
+  fi
+  log "FATAL: refusing staging sync/restart — $UNIT ExecStart does not force PAPERCUSP_BIND_HOST=127.0.0.1 after sourcing .env.local. Repair the unit/drop-in first; otherwise a shared off-loopback bind can crash-loop :3170 under the strict remote-auth boot guard."
+  return 1
+}
+
 # --- WI-5710 gate 1: is a process restart actually REQUIRED? ----------------
 #
 # The original script gated everything on `target != current`, i.e. it used
@@ -141,6 +172,11 @@ if ! flock -n 9; then
 fi
 
 [ -d "$INTEGRATION_ROOT/.git" ] || { log "FATAL: integration root not a git repo: $INTEGRATION_ROOT"; exit 1; }
+
+# Fail BEFORE even the no-op/advance decision: a drifted launch command must be visible on the
+# next timer tick, and it must never reach a restart that replaces a healthy old process with a
+# predictably rejected off-loopback boot.
+assert_staging_unit_loopback || exit 1
 
 target="$(git -C "$INTEGRATION_ROOT" rev-parse --verify "${BRANCH}^{commit}")"
 current="$(git -C "$STAGING_ROOT" rev-parse --verify HEAD 2>/dev/null || echo none)"
