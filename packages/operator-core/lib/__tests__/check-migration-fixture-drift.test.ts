@@ -122,6 +122,7 @@ describe('findFixtureGaps', () => {
 ALTER TABLE harness_shared.event_awaits
   ADD COLUMN IF NOT EXISTS root_id bigint;
 `;
+  const migrationFile = 'libs/papercusp/libs/db/sql/757-memory-canonical-row-kind-discriminator.sql';
 
   it('flags a fixture that builds the table with other columns but not the new one', () => {
     const gaps = findFixtureGaps('event_awaits', 'root_id', {
@@ -136,6 +137,61 @@ ALTER TABLE harness_shared.event_awaits
       `,
     });
     expect(gaps).toEqual(['packages/x/store.integration.test.ts']);
+  });
+
+  it('is silent when applyMigrationsForTest explicitly lists the migration inline', () => {
+    const gaps = findFixtureGaps('memory_canonical', 'row_kind', {
+      root: '/repo',
+      files: ['packages/x/memory-federation-privacy.integration.test.ts'],
+      migrationFile,
+      readFile: () => `
+        await applyMigrationsForTest(db.sql, [
+          '756-memory-canonical.sql',
+          '757-memory-canonical-row-kind-discriminator.sql',
+        ]);
+        CREATE TABLE harness_shared.memory_canonical (
+          id bigint,
+          workspace_id text
+        );
+      `,
+    });
+    expect(gaps).toEqual([]);
+  });
+
+  it('is silent when applyMigrationsForTest receives a reusable migration list variable', () => {
+    const gaps = findFixtureGaps('memory_canonical', 'row_kind', {
+      root: '/repo',
+      files: ['packages/x/memory-federation-privacy.integration.test.ts'],
+      migrationFile,
+      readFile: () => `
+        const migrationList = [
+          '756-memory-canonical.sql',
+          '757-memory-canonical-row-kind-discriminator.sql',
+        ];
+        await applyMigrationsForTest(db.sql, migrationList);
+        CREATE TABLE harness_shared.memory_canonical (
+          id bigint,
+          workspace_id text
+        );
+      `,
+    });
+    expect(gaps).toEqual([]);
+  });
+
+  it('still flags a fixture when its applyMigrationsForTest list omits the migration', () => {
+    const gaps = findFixtureGaps('memory_canonical', 'row_kind', {
+      root: '/repo',
+      files: ['packages/x/memory-federation-privacy.integration.test.ts'],
+      migrationFile,
+      readFile: () => `
+        await applyMigrationsForTest(db.sql, ['756-memory-canonical.sql']);
+        CREATE TABLE harness_shared.memory_canonical (
+          id bigint,
+          workspace_id text
+        );
+      `,
+    });
+    expect(gaps).toEqual(['packages/x/memory-federation-privacy.integration.test.ts']);
   });
 
   it('is silent when the fixture already names the column', () => {
