@@ -188,6 +188,30 @@ describe('OpenSSH ControlMaster planning', () => {
     expect(command.args.join(' ')).not.toMatch(/StrictHostKeyChecking|UserKnownHostsFile|IdentityFile/);
   });
 
+  it('accepts typed provider-tunnel port, stable host identity, and certificate authentication', () => {
+    const command = buildOpenSshControlMasterCommand({
+      target: 'alice@127.0.0.1',
+      port: 45222,
+      hostKeyAlias: 'azure-0123456789abcdef',
+      identityFile: '/home/alice/.ssh/azure-id_rsa',
+      certificateFile: '/home/alice/.ssh/azure-id_rsa-aadcert.pub',
+      controlPath: '/tmp/papercusp-azure.sock',
+      localPort: 45123,
+    });
+    expect(command.args).toEqual(
+      expect.arrayContaining([
+        '-p',
+        '45222',
+        'HostKeyAlias=azure-0123456789abcdef',
+        'IdentitiesOnly=yes',
+        '-i',
+        '/home/alice/.ssh/azure-id_rsa',
+        'CertificateFile=/home/alice/.ssh/azure-id_rsa-aadcert.pub',
+      ]),
+    );
+    expect(command.args.join(' ')).not.toMatch(/StrictHostKeyChecking=no|UserKnownHostsFile=/);
+  });
+
   it('rejects option-shaped targets, non-port values, and overlong control sockets', () => {
     expect(() =>
       buildOpenSshControlMasterCommand({
@@ -222,6 +246,12 @@ describe('OpenSSH ControlMaster planning', () => {
     );
     expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['attacker.example'] })).toThrow(
       'bare OpenSSH destination',
+    );
+    expect(() => buildOpenSshControlMasterCommand({ ...base, extraArgs: ['-p2222'] })).toThrow(
+      "manager-owned OpenSSH flag '-p'",
+    );
+    expect(() => buildOpenSshControlMasterCommand({ ...base, certificateFile: '/tmp/aadcert.pub' })).toThrow(
+      'requires an explicit identity file',
     );
   });
 

@@ -9609,7 +9609,7 @@
           "POST"
         ]
       },
-      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; 90d for kind:convention) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.",
+      "description": "Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; kind:convention with no ttlSec is permanent) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.",
       "capabilities": [
         "coord:write"
       ],

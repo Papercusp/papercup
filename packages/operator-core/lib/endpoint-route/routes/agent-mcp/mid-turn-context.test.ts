@@ -185,7 +185,6 @@ describe('mid-turn-context — the cost properties', () => {
     const { budgetChars } = firstCall() as { budgetChars: number };
     expect(budgetChars).toBeLessThanOrEqual(400);
     expect(budgetChars * 50).toBeLessThan(4_000 * 50 * 0.2);
-    expect(firstCall()).toMatchObject({ corpusBudgetChars: 500 });
   });
 
   it('passes port "mid-turn" so the epoch ledger dedups it against every other port for free', async () => {
@@ -220,16 +219,13 @@ describe('mid-turn-context — the cost properties', () => {
     expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
   });
 
-  it('caps a distinct-query burst to one small injection per rolling window', async () => {
+  it('caps recalls per rolling minute so a burst cannot buy an embed each', async () => {
     const o = owner();
-    const corpus = `## ${CORPUS_BLOCK_HEADING}\n\n- [work-item WI-1] ${'x'.repeat(2_000)}`;
-    buildMemoryContextBlockMock.mockResolvedValue(corpus);
-    let injected = 0;
     for (let i = 0; i < 40; i++) {
-      injected += (await post({ owner: o, tool: 'Grep', toolInput: { pattern: `distinct-${i}` } })).text.length;
+      await post({ owner: o, tool: 'Grep', toolInput: { pattern: `distinct-${i}` } });
     }
-    expect(buildMemoryContextBlockMock).toHaveBeenCalledTimes(1);
-    expect(injected).toBe(corpus.length);
+    // Every query is distinct, so only the rolling ceiling can bound this.
+    expect(buildMemoryContextBlockMock.mock.calls.length).toBeLessThanOrEqual(12);
   });
 
   it('clamps a very long command rather than embedding a pasted heredoc', async () => {

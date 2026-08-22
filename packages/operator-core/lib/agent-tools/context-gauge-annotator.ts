@@ -19,7 +19,6 @@ import type { ResultAnnotator } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from './coordination/identity';
 import {
   CONTEXT_GAUGE_LOUD_PCT,
-  contextGaugeBand,
   contextUsagePct,
   renderBandedContextGauge,
 } from './coordination/tools/inbox-context-usage';
@@ -35,25 +34,6 @@ type AnnotatedResult = Parameters<ResultAnnotator>[0];
 
 /** A rendered `context: N/L (X%)` usage line already present in the result (coord:inbox). */
 const CONTEXT_LINE_RE = /context: \d+\/\d+ \(\d+%\)/;
-const GAUGE_MIN_DELTA_PCT = 5;
-const lastGaugeByOwner = new Map<string, { band: string; pct: number }>();
-
-export function resetContextGaugeEmissionStateForTests(): void {
-  lastGaugeByOwner.clear();
-}
-
-function rememberGauge(ownerId: string, band: string, pct: number): void {
-  lastGaugeByOwner.set(ownerId, { band, pct });
-}
-
-function shouldEmitGauge(ownerId: string, band: string, pct: number): boolean {
-  const prior = lastGaugeByOwner.get(ownerId);
-  if (!prior || prior.band !== band || Math.abs(prior.pct - pct) >= GAUGE_MIN_DELTA_PCT) {
-    rememberGauge(ownerId, band, pct);
-    return true;
-  }
-  return false;
-}
 
 function resultCarriesContextLine(result: AnnotatedResult): boolean {
   return (
@@ -80,20 +60,11 @@ export const contextGaugeAnnotator: ResultAnnotator = (result, ctx) => {
   const tokens = currentContextTokensSyncForOwner(ownerId);
   if (tokens == null) return result;
   const pct = contextUsagePct(tokens, usage.limit);
-  const band = contextGaugeBand(pct);
-  if (band == null || pct == null) {
-    lastGaugeByOwner.delete(ownerId);
-    return result;
-  }
   const selfCompactionAvailable =
     pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT ? selfCompactionAvailability(ownerId).available : null;
   const line = renderBandedContextGauge(tokens, usage.limit, selfCompactionAvailable);
   if (!line) return result; // below the quiet band — silent
-  if (resultCarriesContextLine(result)) {
-    rememberGauge(ownerId, band, pct);
-    return result; // don't double-render (coord:inbox)
-  }
-  if (!shouldEmitGauge(ownerId, band, pct)) return result;
+  if (resultCarriesContextLine(result)) return result; // don't double-render (coord:inbox)
   return {
     ...result,
     _meta: { ...(result._meta ?? {}), _contextGauge: line },

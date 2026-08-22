@@ -73,7 +73,7 @@ function desired(): WorkspaceHostDesiredSpec {
   };
 }
 
-function context(): WorkspaceHostProviderContext {
+function context(provider: Readonly<Record<string, unknown>> = {}): WorkspaceHostProviderContext {
   return {
     workspaceId: 'workspace-azure-1',
     requestId: 'request-azure-1',
@@ -81,7 +81,7 @@ function context(): WorkspaceHostProviderContext {
       target: 'azure',
       cloudCredentialRef: { kind: 'cloud', ref: 'resolver://azure/development' },
       scope: { kind: 'subscription', id: SUBSCRIPTION_ID },
-      provider: { cloud: 'AzureCloud', credentialSource: 'default-credential' },
+      provider: { cloud: 'AzureCloud', credentialSource: 'default-credential', ...provider },
     },
   };
 }
@@ -417,6 +417,38 @@ describe('Azure workspace-host provider contract and lifecycle', () => {
     expect(profile.compatibility.fallbacks).toContainEqual(
       expect.objectContaining({ feature: 'fileTransfer', strategy: 'provider-object-storage' }),
     );
+  });
+
+  it('exposes key-backed Bastion and restricted direct SSH only when explicitly selected', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+
+    const bastionKey = await provider.getTransportProfile(
+      host,
+      context({ transportPreference: 'azure-bastion-ssh' }),
+    );
+    expect(bastionKey).toMatchObject({ kind: 'azure-bastion-ssh', audited: true });
+    expect(bastionKey.compatibility.requirements.map(({ id }) => id)).not.toContain('azure-ssh-extension');
+
+    await expect(
+      provider.getTransportProfile(
+        host,
+        context({ transportPreference: 'azure-direct-ssh', directAddress: '203.0.113.18' }),
+      ),
+    ).rejects.toThrow('explicit restricted source CIDR allowlist');
+    const direct = await provider.getTransportProfile(
+      host,
+      context({
+        transportPreference: 'azure-direct-ssh',
+        directAddress: '203.0.113.18',
+        directSshSourceRanges: ['198.51.100.42/32'],
+      }),
+    );
+    expect(direct).toMatchObject({
+      kind: 'azure-direct-ssh',
+      audited: false,
+      compatibility: { traffic: { interactive: 'recommended', 'bulk-transfer': 'supported' } },
+    });
   });
 
   it('passes the shared fake provider contract including LRO reconcile, observation, transport, and confirmed destroy', async () => {

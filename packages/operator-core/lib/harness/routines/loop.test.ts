@@ -39,13 +39,18 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: getFlagSpy }));
 vi.mock('@papercusp/flags', () => ({ FLAGS: { LOOPS: 'papercusp-loops' } }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: armInboxWakeSpy }));
 
-const { recordLoopTransitionSpy } = vi.hoisted(() => ({
+const { recordLoopTransitionSpy, retireFleetLeadershipWatchesForOwnersSpy } = vi.hoisted(() => ({
   recordLoopTransitionSpy: vi.fn(async (..._args: unknown[]) => undefined),
+  retireFleetLeadershipWatchesForOwnersSpy: vi.fn(async (..._args: unknown[]) => undefined),
 }));
 vi.mock('./loop-transition-log', () => ({ recordLoopTransition: recordLoopTransitionSpy }));
+vi.mock('../../events/await/store', () => ({
+  retireFleetLeadershipWatchesForOwners: retireFleetLeadershipWatchesForOwnersSpy,
+}));
 
 import {
   materializeLoop,
+  deactivateLoop,
   deactivateLoopForGoal,
   buildLoopWakePrompt,
   detectDrivenWorkItemId,
@@ -521,6 +526,16 @@ describe('deactivateLoopForGoal (EI-21123319355080521)', () => {
     const sql = vi.fn();
     await expect(deactivateLoopForGoal('su-x', '   ', { sql: sql as any })).resolves.toBe(false);
     expect(sql).not.toHaveBeenCalled();
+  });
+});
+
+describe('deactivateLoop fleet-watch teardown (EI-21178284518430314)', () => {
+  it('is fail-soft and still retires watches when the routine is already inactive', async () => {
+    const sql = vi.fn((_strings: TemplateStringsArray, ..._values: unknown[]) => Promise.resolve([])) as any;
+    retireFleetLeadershipWatchesForOwnersSpy.mockRejectedValueOnce(new Error('await store unavailable'));
+
+    await expect(deactivateLoop('su-x', { sql })).resolves.toBe(false);
+    expect(retireFleetLeadershipWatchesForOwnersSpy).toHaveBeenCalledWith(['su-x'], { client: sql });
   });
 });
 

@@ -13,7 +13,7 @@ const DEFAULT_STARTUP_PROBE_ATTEMPTS = 5;
 const DEFAULT_STARTUP_PROBE_DELAY_MS = 250;
 const DEFAULT_PORT_ATTEMPTS = 3;
 const MAX_OPENSSH_CONTROL_PATH_BYTES = 100;
-const MANAGER_OWNED_OPENSSH_FLAGS = ['-F', '-L', '-R', '-D', '-W', '-S'] as const;
+const MANAGER_OWNED_OPENSSH_FLAGS = ['-F', '-L', '-R', '-D', '-W', '-S', '-i', '-p'] as const;
 const MANAGER_OWNED_OPENSSH_OPTIONS = new Set([
   'batchmode',
   'certificatefile',
@@ -142,6 +142,14 @@ export interface OpenSshControlMasterSpec {
   target: string;
   /** Provider-native OpenSSH options, for example a ProxyCommand for GCP IAP. */
   extraArgs?: readonly string[];
+  /** Typed destination port for nested provider tunnels such as Azure Bastion. */
+  port?: number;
+  /** Stable remote identity when the network endpoint is a loopback provider tunnel. */
+  hostKeyAlias?: string;
+  /** Explicit private key selected by the provider connection profile. */
+  identityFile?: string;
+  /** Short-lived OpenSSH certificate paired with identityFile. */
+  certificateFile?: string;
   controlPath: string;
   localPort: number;
   remoteOperatorPort?: number;
@@ -252,6 +260,29 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
   const aliveInterval = requirePort(spec.serverAliveIntervalSeconds ?? 15, 'ServerAliveInterval seconds');
   const aliveCount = requirePort(spec.serverAliveCountMax ?? 3, 'ServerAliveCountMax');
   const extraArgs = validateOpenSshExtraArgs(spec.extraArgs ?? []);
+  const portArgs = spec.port === undefined ? [] : ['-p', String(requirePort(spec.port, 'OpenSSH port'))];
+  const hostKeyAlias =
+    spec.hostKeyAlias === undefined ? undefined : requireArg(spec.hostKeyAlias, 'OpenSSH HostKeyAlias');
+  if (hostKeyAlias?.startsWith('-') || /\s/.test(hostKeyAlias)) {
+    throw new Error('OpenSSH HostKeyAlias must be one token and may not begin with a dash');
+  }
+  const identityFile =
+    spec.identityFile === undefined ? undefined : requireArg(spec.identityFile, 'OpenSSH identity file');
+  const certificateFile =
+    spec.certificateFile === undefined ? undefined : requireArg(spec.certificateFile, 'OpenSSH certificate file');
+  if (certificateFile && !identityFile) {
+    throw new Error('OpenSSH certificate file requires an explicit identity file');
+  }
+  const identityArgs = identityFile
+    ? [
+        '-o',
+        'IdentitiesOnly=yes',
+        '-i',
+        identityFile,
+        ...(certificateFile ? ['-o', `CertificateFile=${certificateFile}`] : []),
+      ]
+    : [];
+  const hostKeyArgs = hostKeyAlias ? ['-o', `HostKeyAlias=${hostKeyAlias}`] : [];
 
   return {
     command: requireArg(spec.executable ?? 'ssh', 'OpenSSH executable'),
@@ -275,6 +306,9 @@ export function buildOpenSshControlMasterCommand(spec: OpenSshControlMasterSpec)
       `ServerAliveInterval=${aliveInterval}`,
       '-o',
       `ServerAliveCountMax=${aliveCount}`,
+      ...portArgs,
+      ...hostKeyArgs,
+      ...identityArgs,
       '-L',
       `${LOOPBACK_HOST}:${localPort}:${LOOPBACK_HOST}:${remotePort}`,
       ...extraArgs,

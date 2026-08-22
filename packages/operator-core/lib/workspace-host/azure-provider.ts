@@ -27,6 +27,11 @@ import type {
 } from '@papercusp/deployment-driver';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { AZURE_WORKSPACE_HOST_TARGET } from './azure-connection';
+import {
+  AZURE_WORKSPACE_HOST_TRANSPORTS,
+  buildAzureWorkspaceHostTransportProfile,
+  type AzureWorkspaceHostTransport,
+} from './azure-connection-profile';
 
 export const AZURE_WORKSPACE_HOST_PROVIDER_VERSION = 'azure-workspace-host-provider-v1';
 
@@ -243,7 +248,7 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     repair: true,
     confirmedDestroy: true,
   },
-  transportKinds: ['azure-bastion-entra-ssh'],
+  transportKinds: AZURE_WORKSPACE_HOST_TRANSPORTS,
   constraints: [
     'Azure Resource Manager ids and x-ms-client-request-id values are deterministic per logical resource',
     'Public IP allocation is explicit; private-only Bastion/Entra SSH is the default',
@@ -1412,108 +1417,32 @@ export class AzureWorkspaceHostProvider implements WorkspaceHostProvider {
 
   async getTransportProfile(
     host: WorkspaceHostRef,
-    _ctx: WorkspaceHostProviderContext,
+    ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostTransportProfile> {
     const vm = requireKnownResource(host.resources, [VM_KIND], 'get-transport-profile');
-    return {
-      kind: 'azure-bastion-entra-ssh',
-      endpoint: `azure-bastion-entra-ssh://${encodeURIComponent(vm.providerId)}`,
-      supportedClientPlatforms: ['linux', 'macos', 'windows'],
-      features: { command: true, pty: true, tcpForward: true, fileTransfer: true, clipboard: false },
-      prerequisites: ['Azure Bastion native client access', 'Microsoft Entra SSH authorization', 'Azure CLI'],
-      constraints: ['Public IP is not required', 'Clipboard integration is not provided by Azure Bastion'],
-      reconnect: 'recreate',
-      audited: true,
-      compatibility: {
-        requirements: [
-          {
-            id: 'azure-cli',
-            label: 'Azure CLI',
-            kind: 'client-tool',
-            minimumVersion: '2.32.0',
-            requiredFor: ['command', 'pty', 'tcpForward', 'fileTransfer'],
-          },
-          {
-            id: 'azure-bastion-extension',
-            label: 'Azure CLI Bastion extension',
-            kind: 'client-plugin',
-            requiredFor: ['tcpForward', 'fileTransfer'],
-          },
-          {
-            id: 'azure-ssh-extension',
-            label: 'Azure CLI SSH extension',
-            kind: 'client-plugin',
-            requiredFor: ['command', 'pty', 'tcpForward', 'fileTransfer'],
-          },
-          {
-            id: 'openssh-client',
-            label: 'OpenSSH client',
-            kind: 'client-tool',
-            requiredFor: ['command', 'pty', 'tcpForward', 'fileTransfer'],
-          },
-          {
-            id: 'azure-bastion-standard-sku',
-            label: 'Azure Bastion Standard or Premium SKU with native client enabled',
-            kind: 'provider-permission',
-            requiredFor: ['command', 'pty', 'tcpForward', 'fileTransfer'],
-          },
-          {
-            id: 'azure-entra-ssh',
-            label: 'Microsoft Entra SSH authorization',
-            kind: 'provider-permission',
-            requiredFor: ['command', 'pty', 'tcpForward', 'fileTransfer'],
-          },
-          {
-            id: 'azure-bastion-network',
-            label: 'Reachable Azure Bastion native-client HTTPS path',
-            kind: 'network',
-            requiredFor: ['command', 'pty', 'tcpForward', 'fileTransfer'],
-          },
-        ],
-        traffic: { interactive: 'supported', 'bulk-transfer': 'discouraged' },
-        limits: {
-          unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'],
-          notes: ['Bastion scale units, SKU, VM, and network path determine concurrency and throughput'],
-        },
-        proxy: {
-          mode: 'supported',
-          notes: [
-            'Preflight must verify Azure CLI, extensions, and the native-client HTTPS path through corporate policy',
-          ],
-        },
-        cost: {
-          model: 'provider-metered',
-          requiredSkus: ['Standard', 'Premium'],
-          meters: ['Azure Bastion hourly deployment', 'Bastion scale units', 'network egress'],
-          notes: ['Native client and file transfer require a paid Bastion SKU; provider pricing remains authoritative'],
-        },
-        audit: {
-          controlPlaneEvents: true,
-          sessionMetadata: true,
-          sessionContent: false,
-          fileTransferEvents: false,
-          notes: ['Bastion diagnostic and Entra control events do not record SSH payload contents'],
-        },
-        hostKey: {
-          initialEnrollment: 'verify-before-connect',
-          replacement: 'block-and-reverify',
-          notes: ['Pin the VM SSH host key through Bastion and block unexpected replacement'],
-        },
-        fallbacks: [
-          {
-            feature: 'fileTransfer',
-            trafficClass: 'bulk-transfer',
-            strategy: 'provider-object-storage',
-            description: 'Use an identity-scoped Azure Blob Storage transfer for large files',
-          },
-          {
-            feature: 'clipboard',
-            strategy: 'unsupported',
-            description: 'Use explicit local-client copy/paste; Bastion native SSH does not synchronize clipboards',
-          },
-        ],
-      },
-    };
+    const provider = ctx.connection.provider ?? {};
+    const requested =
+      optionalString(provider.transportPreference, 'Azure connection transportPreference') ??
+      'azure-bastion-entra-ssh';
+    if (!(AZURE_WORKSPACE_HOST_TRANSPORTS as readonly string[]).includes(requested)) {
+      throw new Error(`Azure transportPreference must be one of ${AZURE_WORKSPACE_HOST_TRANSPORTS.join(', ')}`);
+    }
+    return buildAzureWorkspaceHostTransportProfile({
+      kind: requested as AzureWorkspaceHostTransport,
+      vmResourceId: vm.providerId,
+      ...(provider.directAddress !== undefined
+        ? { directAddress: requireString(provider.directAddress, 'Azure direct SSH address') }
+        : {}),
+      ...(provider.directSshSourceRanges !== undefined
+        ? {
+            directSshSourceRanges: stringArray(
+              provider.directSshSourceRanges,
+              'Azure direct SSH source ranges',
+              [],
+            ),
+          }
+        : {}),
+    });
   }
 
   async attestHealth(

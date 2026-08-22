@@ -78,38 +78,30 @@ const QUERY_CLAMP = 1_000;
  * pointer section carries its own CORPUS_BUDGET_CHARS (corpus-recall.ts) and is
  * NOT re-clamped here — see clampToBudget for why. So the arithmetic above is
  * no longer the whole cost: a recall that carries a full pointer section costs
- * ~850 chars, not ~350: this port shrinks the separate corpus leg to a
- * handle-sized teaser. The rolling ceiling permits one interruption per five
- * minutes, bounding this append-only channel even when every query is distinct.
+ * ~2.2k chars, not ~350. The bound that matters is MAX_PER_MIN below (recalls,
+ * not tool calls), which caps this channel at ~26k chars/min worst case — and
+ * far less in practice, because the per-epoch surfaced-refs ledger means a
+ * pointer is delivered ONCE, not on every batch that would rank it.
  */
 const MID_TURN_BUDGET_CHARS = (() => {
   const raw = Number(process.env.PAPERCUSP_MID_TURN_BUDGET_CHARS);
   return Number.isFinite(raw) && raw > 0 ? raw : 350;
 })();
 
-/** The default corpus leg is 1,800 chars. Mid-turn is a pointer, not a briefing. */
-const MID_TURN_CORPUS_BUDGET_CHARS = (() => {
-  const raw = Number(process.env.PAPERCUSP_MID_TURN_CORPUS_BUDGET_CHARS);
-  return Number.isFinite(raw) && raw > 0 ? raw : 500;
-})();
-
 /**
- * Cost ceiling: max recalls per session per rolling window. The epoch ledger
+ * Cost ceiling: max recalls per session per rolling minute. The epoch ledger
  * dedups what we SHOW but not what we SPEND — every call is still an embed plus
  * a pgvector query, and this hook is fleet-wide across every psu session. This
  * caps the spend without ever delaying the FIRST call of a burst, which is the
  * one that matters (the acceptance case is "fires early, on the first grep for
  * the symptom" — a time-based floor would have suppressed exactly that).
  */
-const MAX_PER_WINDOW = (() => {
-  const raw = Number(process.env.PAPERCUSP_MID_TURN_MAX_PER_WINDOW);
-  return Number.isFinite(raw) && raw > 0 ? raw : 1;
+const MAX_PER_MIN = (() => {
+  const raw = Number(process.env.PAPERCUSP_MID_TURN_MAX_PER_MIN);
+  return Number.isFinite(raw) && raw > 0 ? raw : 12;
 })();
 
-const RATE_WINDOW_MS = (() => {
-  const raw = Number(process.env.PAPERCUSP_MID_TURN_WINDOW_MS);
-  return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60_000;
-})();
+const RATE_WINDOW_MS = 60_000;
 
 /**
  * In-process only, and that is correct rather than a storage-policy violation:
@@ -132,7 +124,7 @@ function pruneRateState(now: number): void {
  * Two guards, in order of cheapness:
  *   - identical consecutive query ⇒ nothing can have changed, skip for free.
  *     (`ls` then `ls` then `ls`, or a retry loop on one failing command.)
- *   - more than MAX_PER_WINDOW recalls in the trailing window ⇒ over the ceiling.
+ *   - more than MAX_PER_MIN recalls in the trailing minute ⇒ over the ceiling.
  */
 function admitCall(owner: string, query: string, now: number): boolean {
   const state = recentCalls.get(owner);
@@ -142,7 +134,7 @@ function admitCall(owner: string, query: string, now: number): boolean {
   }
   if (state.lastQuery === query) return false;
   const fresh = state.at.filter((t) => now - t <= RATE_WINDOW_MS);
-  if (fresh.length >= MAX_PER_WINDOW) {
+  if (fresh.length >= MAX_PER_MIN) {
     state.at = fresh;
     return false;
   }
@@ -1082,7 +1074,6 @@ const midTurnContext = defineTool({
             ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
           },
           budgetChars: MID_TURN_BUDGET_CHARS,
-          corpusBudgetChars: MID_TURN_CORPUS_BUDGET_CHARS,
           heading: 'Possibly relevant (mid-turn)',
         })) ?? '';
 
