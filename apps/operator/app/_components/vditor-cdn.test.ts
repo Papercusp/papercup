@@ -28,6 +28,13 @@ import { stripJsComments } from './strip-js-comments';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../../../..');
 const MARKDOWN_EDITOR = resolve(HERE, 'MarkdownEditor.tsx');
+const SETUP_SCRIPT = resolve(REPO_ROOT, 'apps/operator/scripts/setup-vditor-runtime.sh');
+const MARKMAP_BUNDLE = resolve(REPO_ROOT, 'apps/operator/public/vditor/dist/js/markmap/markmap.min.js');
+const THIRD_LANGUAGES = resolve(
+  REPO_ROOT,
+  'apps/operator/public/vditor/dist/js/highlight.js/third-languages.js',
+);
+const LOCAL_MARKMAP_ASSETS = resolve(REPO_ROOT, 'apps/operator/public/vditor-local');
 
 /** Every way Vditor can be entered: the static preview renderer and the editor
  *  constructor. Both read `options.cdn`; both are lazy `import('vditor')`. */
@@ -113,5 +120,51 @@ describe('vditor cdn (WI-7088)', () => {
       existsSync(mirrored),
       `vditor mirror missing at ${mirrored} — run apps/operator/scripts/setup-vditor-runtime.sh (normally chained from apps/operator's postinstall and operator-vite's prebuild)`,
     ).toBe(true);
+  });
+
+  it('vendors markmap scripts locally and rewrites the prebuilt loader', async () => {
+    const setup = await readFile(SETUP_SCRIPT, 'utf8');
+    const markmap = await readFile(MARKMAP_BUNDLE, 'utf8');
+
+    // These URLs are injected by Vditor's prebuilt markmap bundle, so a local
+    // VDITOR_CDN base cannot redirect them. The setup script must copy the
+    // browser bundles and patch the exact script-src values during every fresh
+    // install/build, including an already-stamped v3.11.2 mirror.
+    expect(setup).toContain('resolve_asset d3 dist/d3.min.js 6.7.0');
+    expect(setup).toContain('resolve_asset markmap-view dist/index.min.js 0.14.3');
+    expect(setup).toContain('resolve_asset webfontloader webfontloader.js 1.6.28');
+    expect(setup).toContain("/vditor-local/d3.min.js");
+    expect(setup).toContain("/vditor-local/markmap-view.min.js");
+    expect(setup).toContain("/vditor-local/webfontloader.js");
+
+    const operatorPkg = JSON.parse(
+      await readFile(resolve(REPO_ROOT, 'apps/operator/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    const vitePkg = JSON.parse(
+      await readFile(resolve(REPO_ROOT, 'apps/operator-vite/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(operatorPkg.scripts?.postinstall).toContain('setup-vditor-runtime.sh');
+    expect(vitePkg.scripts?.prebuild).toContain('setup-vditor-runtime.sh');
+
+    for (const [name, remote, local, file] of [
+      ['d3', 'https://cdn.jsdelivr.net/npm/d3@6.7.0', '/vditor-local/d3.min.js', 'd3.min.js'],
+      ['markmap-view', 'https://cdn.jsdelivr.net/npm/markmap-view@0.14.3', '/vditor-local/markmap-view.min.js', 'markmap-view.min.js'],
+      ['webfontloader', 'https://cdn.jsdelivr.net/npm/webfontloader@1.6.28/webfontloader.js', '/vditor-local/webfontloader.js', 'webfontloader.js'],
+    ] as const) {
+      expect(existsSync(resolve(LOCAL_MARKMAP_ASSETS, file)), `${name} local browser bundle is missing`).toBe(true);
+      expect(markmap, `${name} markmap loader still contains its remote script URL`).not.toContain(remote);
+      expect(markmap, `${name} markmap loader no longer points at the local script`).toContain(local);
+    }
+  });
+
+  it('does not classify inline third-language grammars as runtime loaders', async () => {
+    const src = await readFile(THIRD_LANGUAGES, 'utf8');
+
+    // The jsDelivr strings in this file are provenance comments. The grammar
+    // bodies immediately register with the already-local highlight.js runtime;
+    // there is no fetch/XHR or script-element injection to vendor.
+    expect(src).toMatch(/hljs\.registerLanguage\("(?:abap|solidity|yul)"/);
+    expect(src).not.toMatch(/\b(?:fetch|XMLHttpRequest)\b/);
+    expect(src).not.toMatch(/createElement\s*\(\s*["']script["']\s*\)/);
   });
 });
