@@ -1716,6 +1716,8 @@ export default defineTool({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
+        callerMembership,
+        leaderSpawnIgnored: leaderSpawnSkipped,
         plan: planSlug,
         harness,
         agent,
@@ -2097,6 +2099,8 @@ export default defineTool({
           ok: true,
           fleet: fleetSlug,
           leaderRole,
+          callerMembership,
+          leaderSpawnIgnored: leaderSpawnSkipped,
           plan: planSlug,
           harness,
           placement: 'remote',
@@ -2205,6 +2209,8 @@ export default defineTool({
           ok: remotePlacements.length > 0,
           fleet: fleetSlug,
           leaderRole,
+          callerMembership,
+          leaderSpawnIgnored: leaderSpawnSkipped,
           autoModeEntered: leaderControl?.mode.healthy === true,
           leaderControl,
           plan: planSlug,
@@ -2263,6 +2269,8 @@ export default defineTool({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
+        callerMembership,
+        leaderSpawnIgnored: leaderSpawnSkipped,
         plan: planSlug,
         harness,
         agent,
@@ -2448,6 +2456,8 @@ export default defineTool({
         ok: true,
         fleet: fleetSlug,
         leaderRole,
+        callerMembership,
+        leaderSpawnIgnored: leaderSpawnSkipped,
         plan: planSlug,
         harness,
         agent: effAgent,
@@ -3339,35 +3349,43 @@ export default defineTool({
           `Seats (P-005): ${opened.length} member${opened.length === 1 ? '' : 's'} launched FROM slot \`${seatPin.ref}\` — ${seatPin.consumedBefore} of ${seatPin.delegated} seat${seatPin.delegated === 1 ? '' : 's'} were already consumed; each member consumes one at boot (the cap re-checks there too).`,
         );
       }
-      lines.push(
-        `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Do NOT ` +
-          `call fleet:launch-on-plan or fleet:take-leadership again for this fleet — you already lead it (a ` +
-          `re-call opens NO new members for ${Math.round(RELAUNCH_SUPPRESS_MS / 1000)}s).`,
-      );
-      // P-009: disclose a lifted compaction cap (you launched INTO leadership from the member cap).
-      if (leaderReseed?.reason === 'member-cap-lifted') {
-        lines.push(
-          `  ↳ compaction cap lifted ${leaderReseed.from} → ${leaderReseed.applied} tokens (P-009): you were at the 300k member cap; leaders get the full window. Your \`context: N/limit\` signal reflects it next turn.`,
-        );
-      }
       // goal-mode-hardening P-009 / D-013: a DELEGATING caller must not be handed the
       // leader's standing job. It is not leading this fleet — telling it to arm a monitor
       // loop and watch the members would re-create by instruction the exact role it just
       // paid a spawn to avoid, and (worse) it would then believe the fleet is supervised
       // by itself rather than by the agent that actually holds the role.
-      if (spawnedLeader) {
-        lines.push(
-          `THIS FLEET IS LED BY A LAUNCHED AGENT, NOT BY YOU — \`${spawnedLeader.ownerId}\` was spawned to lead it ` +
-            `and already holds the role in the registry. You are NOT in this fleet and you do NOT enter AUTO mode ` +
-            `from this call. Do not arm a monitor loop for it; that is the leader's standing job and it was briefed ` +
-            `with it at launch.`,
-        );
-        lines.push(
-          `  ↳ Stay connected without polling: \`coord:couple { b: "${spawnedLeader.ownerId}" }\` makes its state ` +
-            `visible to you, and \`coord:send\` reaches it directly. It is addressable NOW — the identity was pinned ` +
-            `before the fleet row was written — even though it is still booting.`,
-        );
+      if (callerExcludedFromFleet) {
+        if (spawnedLeader) {
+          lines.push(
+            `THIS FLEET IS LED BY A LAUNCHED AGENT, NOT BY YOU — \`${spawnedLeader.ownerId}\` was spawned to lead it ` +
+              `and already holds the role in the registry. You are NOT in this fleet and you do NOT enter AUTO mode ` +
+              `from this call. Do not arm a monitor loop for it; that is the leader's standing job and it was briefed ` +
+              `with it at launch.`,
+          );
+          lines.push(
+            `  ↳ Stay connected without polling: \`coord:couple { b: "${spawnedLeader.ownerId}" }\` makes its state ` +
+              `visible to you, and \`coord:send\` reaches it directly. It is addressable NOW — the identity was pinned ` +
+              `before the fleet row was written — even though it is still booting.`,
+          );
+        } else {
+          lines.push(
+            `THIS FLEET IS ALREADY LED BY A SPAWNED AGENT, NOT BY YOU — this leader:'spawn' retry preserved ` +
+              `the existing leader and kept you outside the fleet. You do NOT enter AUTO mode from this call; ` +
+              `do not arm a monitor loop for it.`,
+          );
+        }
       } else {
+        lines.push(
+          `You are this fleet's LEADER (${ownerId}). Members auto-start on boot — no kickoff needed. Do NOT ` +
+            `call fleet:launch-on-plan or fleet:take-leadership again for this fleet — you already lead it (a ` +
+            `re-call opens NO new members for ${Math.round(RELAUNCH_SUPPRESS_MS / 1000)}s).`,
+        );
+        // P-009: disclose a lifted compaction cap (you launched INTO leadership from the member cap).
+        if (leaderReseed?.reason === 'member-cap-lifted') {
+          lines.push(
+            `  ↳ compaction cap lifted ${leaderReseed.from} → ${leaderReseed.applied} tokens (P-009): you were at the 300k member cap; leaders get the full window. Your \`context: N/limit\` signal reflects it next turn.`,
+          );
+        }
         lines.push(LEADER_AUTO_MODE_DIRECTIVE);
         // Auto-numbered from the single canonical LEADER_STANDING_JOB source (P-013): a future
         // insert never hand-renumbers, and the rendered length is test-guarded against balloon.
@@ -3391,6 +3409,7 @@ export default defineTool({
         ok: launchTransaction.verifiedMemberIds.length > 0,
         fleet: fleetSlug,
         leaderRole,
+        callerMembership,
         // Machine-readable fact about the ACTUAL registered leader, never inferred from
         // how many member terminals happened to open. On leader:'spawn' this describes
         // the spawned leader; the caller remains a delegator as the message below states.

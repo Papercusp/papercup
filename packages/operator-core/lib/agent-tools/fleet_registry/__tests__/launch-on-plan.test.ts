@@ -425,6 +425,75 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(payload.autoModeEntered).toBe(true);
     expect(payload.leaderControl).toMatchObject({ healthy: true, mode: { healthy: true } });
   });
+
+  it('keeps the caller outside on a same-owner spawned-leader retry', async () => {
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 2 });
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        owner: 'owner-1',
+        leaderOwnerId: 'spawned-leader',
+        colorScheme: { name: 'Ocean' },
+      },
+      created: false,
+    });
+
+    const res = await tool.handler(
+      {
+        name: 'Spawn Retry',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        leader: 'spawn',
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.callerMembership).toEqual({
+      enrolled: false,
+      role: 'delegator',
+      reason: 'leader-spawn-caller-excluded',
+    });
+    expect(payload.leaderRole).toBe('delegator');
+    expect(payload.leaderSpawnIgnored).toContain('caller remains outside the fleet');
+    expect(setPresenceFleetMock).not.toHaveBeenCalled();
+    expect(setFleetLeaderMock).not.toHaveBeenCalled();
+    expect(ensureFleetLeaderControlMock).not.toHaveBeenCalled();
+    expect(setClaimSpecMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(payload.message).toContain('kept you outside the fleet');
+  });
+
+  it('keeps ordinary top-up enrollment for an unrelated existing fleet', async () => {
+    setClaimSpecMock.mockReset();
+    setClaimSpecMock.mockResolvedValue({ ok: true, revision: 2 });
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: {
+        owner: 'other-caller',
+        leaderOwnerId: 'other-leader',
+        colorScheme: { name: 'Ocean' },
+      },
+      created: false,
+    });
+
+    const res = await tool.handler(
+      {
+        name: 'Unrelated Top Up',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        leader: 'spawn',
+      } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.callerMembership.enrolled).toBe(true);
+    expect(setPresenceFleetMock).toHaveBeenCalledWith('ws-1', 'owner-1', 'unrelated-top-up', 'leader');
+    expect(setClaimSpecMock).toHaveBeenCalledTimes(1);
+    expect(payload.leaderSpawnIgnored).toContain('only tops up members');
+  });
 });
 
 describe('memberLaunchCommand', () => {
