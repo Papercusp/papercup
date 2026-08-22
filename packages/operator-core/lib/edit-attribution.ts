@@ -208,22 +208,34 @@ export async function readEditAttributionRoster(opts: {
          AND ts >= now() - make_interval(hours => ${lookbackHours})
        ORDER BY file, ts DESC
     `;
-    const byAgent = new Map<string, LedgerRosterEntry>();
+    // One agent can edit different files under different work-items inside the
+    // lookback window. Keep those provenance cohorts separate: collapsing only
+    // by agent unions an older lane onto newer files and makes git-sync stamp a
+    // commit with the wrong Papercusp-Work-Item trailer (EI-21193794700858679).
+    const byProvenance = new Map<string, LedgerRosterEntry>();
     for (const r of rows) {
-      let e = byAgent.get(r.agent_id);
+      const key = JSON.stringify([
+        r.agent_id,
+        r.work_item_id,
+        r.plan_slug,
+        r.intent,
+        r.session_id,
+        r.contributor,
+      ]);
+      let e = byProvenance.get(key);
       if (!e) {
         e = { agent: r.agent_id, files: [], workItems: [] };
-        byAgent.set(r.agent_id, e);
+        byProvenance.set(key, e);
       }
       if (!e.files.includes(r.file)) e.files.push(r.file);
       if (r.work_item_id && !e.workItems.includes(r.work_item_id)) e.workItems.push(r.work_item_id);
-      // DISTINCT ON gave the latest row per file; keep the first non-null scalar we see.
+      // Every row in this cohort has identical scalar provenance.
       if (r.plan_slug && !e.planSlug) e.planSlug = r.plan_slug;
       if (r.intent && !e.intent) e.intent = r.intent;
       if (r.session_id && !e.sessionId) e.sessionId = r.session_id;
       if (r.contributor && !e.contributor) e.contributor = r.contributor;
     }
-    return [...byAgent.values()];
+    return [...byProvenance.values()];
   } catch {
     return [];
   }

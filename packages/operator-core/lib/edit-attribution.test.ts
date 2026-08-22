@@ -92,6 +92,18 @@ describe('readEditAttributionRoster — workspace-scoped, never repo_root-scoped
     expect(roster.find((e) => e.agent === 'su-bbb')?.files).toEqual(['c.ts']);
   });
 
+  it('keeps one agent\'s different work-item cohorts separate', async () => {
+    sqlStub.rows = [
+      row({ agent_id: 'su-aaa', file: 'old.ts', work_item_id: 'WI-40700', intent: 'old lane' }),
+      row({ agent_id: 'su-aaa', file: 'new.ts', work_item_id: null, intent: 'WI-40703 new lane' }),
+    ];
+    const roster = await readEditAttributionRoster({ workspaceId: 'papercusp-workspace' });
+    expect(roster).toEqual([
+      { agent: 'su-aaa', files: ['old.ts'], workItems: ['WI-40700'], intent: 'old lane' },
+      { agent: 'su-aaa', files: ['new.ts'], workItems: [], intent: 'WI-40703 new lane' },
+    ]);
+  });
+
   it('returns [] without a workspace id rather than reading across every workspace', async () => {
     expect(await readEditAttributionRoster({ workspaceId: null })).toEqual([]);
     expect(await readEditAttributionRoster({ workspaceId: undefined })).toEqual([]);

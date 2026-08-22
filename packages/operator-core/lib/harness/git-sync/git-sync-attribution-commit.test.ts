@@ -143,4 +143,21 @@ describe('commitAttributedGroups (P-004 + WI-38594 diff subjects)', () => {
     expect(commit.some((a) => a.startsWith('Papercusp-Session:'))).toBe(false);
     expect(commit.some((a) => a.startsWith('Papercusp-Plan:'))).toBe(false);
   });
+
+  it('creates separate commits when one agent edited files under different work-items', async () => {
+    const { runGit, calls } = fakeGit({ porcelain: ' M old.ts\0 M new.ts\0' });
+    const attribution = new Map<string, FileAttribution>([
+      ['old.ts', { agent: 'ag1', intent: 'old lane', workItems: ['WI-40700'] }],
+      ['new.ts', { agent: 'ag1', intent: 'new lane', workItems: [] }],
+    ]);
+
+    await commitAttributedGroups(runGit, '/repo', attribution, [], MSG);
+
+    const commits = calls.filter((c) => c.includes('commit'));
+    expect(commits).toHaveLength(2);
+    const oldCommit = commits.find((c) => c.includes('old lane'))!;
+    const newCommit = commits.find((c) => c.includes('new lane'))!;
+    expect(oldCommit).toContain('Papercusp-Work-Item: WI-40700');
+    expect(newCommit.some((a) => a.startsWith('Papercusp-Work-Item:'))).toBe(false);
+  });
 });

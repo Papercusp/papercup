@@ -180,7 +180,11 @@ export function groupFilesForAttribution(
   opts: { defaultSubject?: string } = {},
 ): AttributedCommitGroup[] {
   const defaultSubject = opts.defaultSubject ?? DEFAULT_GIT_SYNC_SUBJECT;
-  const byAgent = new Map<string, { attr: FileAttribution; files: string[] }>();
+  // An agent may move between work-items before one git-sync tick. Grouping by
+  // agent alone makes whichever file is visited first donate its provenance to
+  // every other dirty file from that agent. Partition by the complete commit
+  // provenance instead, while retaining the agent as the author identity.
+  const byProvenance = new Map<string, { attr: FileAttribution; files: string[] }>();
   const remainder: string[] = [];
   for (const f of dirtyFiles) {
     const a = attribution.get(f);
@@ -188,17 +192,26 @@ export function groupFilesForAttribution(
       remainder.push(f);
       continue;
     }
-    let g = byAgent.get(a.agent);
+    const key = JSON.stringify([
+      a.agent,
+      a.intent ?? null,
+      [...(a.workItems ?? [])].sort(),
+      a.planSlug ?? null,
+      a.sessionId ?? null,
+      a.agentLabel ?? null,
+      a.email ?? null,
+    ]);
+    let g = byProvenance.get(key);
     if (!g) {
       g = { attr: a, files: [] };
-      byAgent.set(a.agent, g);
+      byProvenance.set(key, g);
     }
     g.files.push(f);
   }
-  const groups: AttributedCommitGroup[] = [...byAgent.entries()]
+  const groups: AttributedCommitGroup[] = [...byProvenance.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([agent, g]) => ({
-      agent,
+    .map(([, g]) => ({
+      agent: g.attr.agent,
       files: g.files.slice().sort(),
       subject: intentToSubject(g.attr.intent, g.attr.agentLabel),
       coAuthor: coAuthorTrailer(g.attr),
