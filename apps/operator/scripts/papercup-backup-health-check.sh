@@ -109,9 +109,9 @@ set -uo pipefail
 # and exit path are untouched — only the FILING is withheld, so a test still gets the truth.
 # BACKUP_ALERT_FORCE=1 files anyway, for the rare case a non-default threshold should.
 if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
-   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ] || [ -n "${BACKUP_TMPDIR_MAX_ENTRIES+x}" ]; } \
+   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ] || [ -n "${BACKUP_VOLUME_WARN_PCT+x}" ] || [ -n "${BACKUP_VOLUME_FLOOR_PCT+x}" ] || [ -n "${BACKUP_TMPDIR_MAX_ENTRIES+x}" ]; } \
    && [ "${BACKUP_NO_FILE:-0}" != 1 ]; then
-  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT/BACKUP_TMPDIR_MAX_ENTRIES) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
+  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT/BACKUP_VOLUME_WARN_PCT/BACKUP_VOLUME_FLOOR_PCT/BACKUP_TMPDIR_MAX_ENTRIES) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
   BACKUP_NO_FILE=1
 fi
 
@@ -131,6 +131,13 @@ BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
 BACKUP_STALE_TMP_MAX_H="${BACKUP_STALE_TMP_MAX_H:-2}"
 BACKUP_DB_DATA_DIR="${BACKUP_DB_DATA_DIR:-/var/lib/postgresql/18/main}"
 BACKUP_DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-90}"
+# The logical dumps and Kopia repository share /mnt/data on this host. This is
+# a separate capacity domain from PGDATA/root and therefore needs its own level
+# and derivative. Alert with 8% free so there is a 6%-of-volume intervention
+# window before the 2% admission floor used by backup/checkpoint operations.
+BACKUP_VOLUME_PATH="${BACKUP_VOLUME_PATH:-$BACKUP_DUMP_DIR}"
+BACKUP_VOLUME_WARN_PCT="${BACKUP_VOLUME_WARN_PCT:-92}"
+BACKUP_VOLUME_FLOOR_PCT="${BACKUP_VOLUME_FLOOR_PCT:-2}"
 # Colon-separated. /tmp/pcv is the TMPDIR libs/test-config/src/vitest-config.ts FORCES for
 # every test process, which is why it is watched explicitly and not merely as part of /tmp:
 # it is a subdirectory, so a count of /tmp's top level cannot see inside it. That exact blind
@@ -208,8 +215,12 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are 
 # admissionIdentity(title).titleKey (_create-core.ts), so a title carrying a
 # changing "~17h to full" would mint a BRAND NEW item on every refile instead of
 # deduping onto the open one. Keep the title stable; put the varying part here.
-disk_trend_line() { # <avail_kb> — echoes ONE human line. Never fails, never blocks the alarm.
-  local avail_kb="${1:-}" hist="$STATE_DIR/db-disk-history" now="" line_count=0
+disk_trend_line() { # <avail_kb> [history-name] [floor-kb] [floor-label]
+  # Echoes ONE human line. Never fails, never blocks the alarm. A floor of zero
+  # preserves the original PGDATA "ETA TO FULL" semantics; the backup volume
+  # passes its admission floor so the countdown names the actionable boundary.
+  local avail_kb="${1:-}" hist_name="${2:-db-disk-history}" floor_kb="${3:-0}" floor_label="${4:-FULL}"
+  local hist="$STATE_DIR/$hist_name" now="" line_count=0
   now="$(now_s)"
   [[ "$avail_kb" =~ ^[0-9]+$ ]] || { echo "trend: unavailable (available-space field unparseable)"; return 0; }
   # Append BEFORE reading, so even a first-ever run leaves a baseline for the next.
@@ -219,7 +230,7 @@ disk_trend_line() { # <avail_kb> — echoes ONE human line. Never fails, never b
     { tail -n 240 "$hist" >"$hist.tmp" 2>/dev/null && mv "$hist.tmp" "$hist" 2>/dev/null; } || true
   fi
   # A malformed/garbage history must degrade to "no baseline", never to a wrong number.
-  awk -v now="$now" -v cur="$avail_kb" '
+  awk -v now="$now" -v cur="$avail_kb" -v floor="$floor_kb" -v floor_label="$floor_label" '
     /^[0-9]+ [0-9]+$/ && $1 < now { if (oldest == 0 || $1 < oldest) { oldest = $1; oldest_avail = $2 } }
     END {
       if (oldest == 0) { print "trend: no prior sample yet (this run seeds the baseline)"; exit }
@@ -231,7 +242,12 @@ disk_trend_line() { # <avail_kb> — echoes ONE human line. Never fails, never b
         printf "trend: NOT shrinking over the last %.1fh (free space changed %+.1f GiB)\n", span_h, -lost_kb / 1048576.0
         exit
       }
-      printf "trend: losing %.2f GiB/h over the last %.1fh — ETA TO FULL ~%.0fh at this rate\n", rate, span_h, (cur / 1048576.0) / rate
+      headroom = cur - floor
+      if (headroom <= 0) {
+        printf "trend: losing %.2f GiB/h over the last %.1fh — AT/BELOW %s now\n", rate, span_h, floor_label
+        exit
+      }
+      printf "trend: losing %.2f GiB/h over the last %.1fh — ETA TO %s ~%.0fh at this rate\n", rate, span_h, floor_label, (headroom / 1048576.0) / rate
     }
   ' "$hist" 2>/dev/null || echo "trend: unavailable"
 }
@@ -292,7 +308,69 @@ INVESTIGATION RECIPE (verified while working WI-38595, 2026-08-14 — each of th
   fi
 }
 
-# ── (e) TMPDIR ENTRY-COUNT ────────────────────────────────────────────────
+# ── (e) BACKUP-REPOSITORY VOLUME HEADROOM ────────────────────────────────
+# PGDATA and the backup repository are different filesystems on this host.
+# Watching only PGDATA leaves the repository able to consume /mnt/data until
+# Kopia and the logical dumps both fail. Keep this probe O(1): one df sample per
+# health tick, retained as a bounded history. The derivative counts down to the
+# admission floor rather than ENOSPC, so the alarm names the last safe action
+# boundary instead of the later catastrophe.
+check_backup_volume_headroom() {
+  local df_line="" disk_pct="" total_kb="" avail_kb="" floor_kb="" trend="" red_marker=""
+  if [ -e "$BACKUP_VOLUME_PATH" ]; then
+    df_line="$(df -Pk "$BACKUP_VOLUME_PATH" 2>/dev/null | tail -n1)"
+    disk_pct="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%' | tail -n1)"
+    avail_kb="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit }}')"
+    total_kb="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 3); exit }}')"
+  fi
+
+  if [ -z "$disk_pct" ]; then
+    log "SKIP backup-volume probe: could not resolve usage% for '$BACKUP_VOLUME_PATH' (path missing or df output unparseable)."
+    return 0
+  fi
+  if ! [[ "$disk_pct" =~ ^[0-9]+$ ]] \
+     || ! [[ "$total_kb" =~ ^[0-9]+$ ]] \
+     || ! [[ "$avail_kb" =~ ^[0-9]+$ ]] \
+     || ! [[ "$BACKUP_VOLUME_WARN_PCT" =~ ^[0-9]+$ ]] \
+     || ! [[ "$BACKUP_VOLUME_FLOOR_PCT" =~ ^[0-9]+$ ]] \
+     || [ "$BACKUP_VOLUME_WARN_PCT" -gt 100 ] 2>/dev/null \
+     || [ "$BACKUP_VOLUME_FLOOR_PCT" -ge 100 ] 2>/dev/null; then
+    log "SKIP backup-volume probe: invalid usage/size/threshold (usage='$disk_pct', total_kb='$total_kb', avail_kb='$avail_kb', warn='$BACKUP_VOLUME_WARN_PCT', floor='$BACKUP_VOLUME_FLOOR_PCT')."
+    return 0
+  fi
+
+  floor_kb=$(( total_kb * BACKUP_VOLUME_FLOOR_PCT / 100 ))
+  trend="$(disk_trend_line "$avail_kb" backup-volume-history "$floor_kb" "${BACKUP_VOLUME_FLOOR_PCT}% FLOOR")"
+  log "Backup-volume usage at $BACKUP_VOLUME_PATH: ${disk_pct}% (warn ${BACKUP_VOLUME_WARN_PCT}%, admission floor ${BACKUP_VOLUME_FLOOR_PCT}% free) | ${trend}"
+
+  red_marker="$STATE_DIR/backup-volume-red-ei-filed"
+  if [ "$disk_pct" -ge "$BACKUP_VOLUME_WARN_PCT" ]; then
+    local host title body
+    host="$(hostname 2>/dev/null || echo unknown-host)"
+    # Keep changing measurements out of the title so repeated samples dedupe.
+    title="Backup repository volume above capacity warning threshold on ${host}"
+    body="WI-39596 durable backup-volume detector: the filesystem containing '$BACKUP_VOLUME_PATH' is ${disk_pct}% used (warn ${BACKUP_VOLUME_WARN_PCT}%) with a ${BACKUP_VOLUME_FLOOR_PCT}% free-space admission floor.
+
+${trend}
+
+This volume holds both /mnt/data/Backup/db-dumps and the Kopia repository. Hourly compressed logical-dump rewrites previously generated multi-GiB unique uploads that could outrun daily full maintenance. D-003 keeps the hourly RPO but makes pg_dump output uncompressed so Kopia is the single zstd/deduplication layer.
+
+ACTION: read the measured trend first. If it is still shrinking, compare consecutive Kopia upload bytes and full-maintenance receipts; do not attribute growth from mtime or a single du snapshot. A mitigation/reclamation does not close WI-39596 until consecutive post-change dump/snapshot cycles show bounded growth.
+
+df output:
+${df_line}"
+    if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
+      log "RED already tracked (backup volume, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
+    else
+      file_ei "$title" "$body"
+      mark_red "$red_marker"
+    fi
+  else
+    rm -f "$red_marker"
+  fi
+}
+
+# ── (f) TMPDIR ENTRY-COUNT ────────────────────────────────────────────────
 # ── WHY A COUNT, WHEN (d) ALREADY WATCHES THE SAME DISK (WI-38830, 2026-08-14) ──
 # Because the two measure different things, and this failure is INVISIBLE to bytes.
 # A leaked per-test-process scratch dir costs ~6 KiB, so 449,259 of them — the state
@@ -594,7 +672,52 @@ if [ "${1:-}" = "--self-test" ]; then
         "baseline too recent"
   printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
 
-  # ── WI-38830 recurrence guard: signal (e), TMPDIR entry count ─────────────
+  # ── WI-39596 recurrence guard: backup-volume level + ETA to admission floor
+  # This is deliberately a SECOND history and marker from PGDATA. A green root
+  # volume says nothing about /mnt/data, where both dumps and Kopia content live.
+  check_backup_volume() {
+    local name="$1" threshold="$2" want_marker="$3" seed="$4" want_re="$5"; shift 5
+    local out="" got_marker=no
+    rm -rf "${t:?}/state" "$t/dump"; mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart"
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    [ -n "$seed" ] && printf '%s\n' "$seed" > "$t/state/backup-volume-history"
+    out="$(env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/no-db-data" BACKUP_VOLUME_PATH="$t/dump" \
+        BACKUP_VOLUME_WARN_PCT="$threshold" BACKUP_VOLUME_FLOOR_PCT=2 \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" \
+        "$@" bash "$self" 2>&1 >/dev/null)"
+    [ -f "$t/state/backup-volume-red-ei-filed" ] && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ] && printf '%s' "$out" | grep -qE "$want_re"; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s and /%s/; got marker=%s, output: %s\n' \
+        "$name" "$want_marker" "$want_re" "$got_marker" \
+        "$(printf '%s' "$out" | grep -i 'backup-volume usage' | head -1)"
+      f=$((f+1))
+    fi
+  }
+
+  backup_now_s="$(date +%s)"
+  backup_df_line="$(df -Pk "$t" 2>/dev/null | tail -n1)"
+  backup_avail_kb="$(printf '%s' "$backup_df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) { print $(i - 1); exit }}')"
+
+  check_backup_volume "backup volume green: no marker" \
+        100 no "" "Backup-volume usage" BACKUP_NO_FILE=1
+  check_backup_volume "backup volume red: marker set" \
+        0 yes "" "Backup-volume usage" BACKUP_ALERT_FORCE=1
+  check_backup_volume "backup trend with no baseline: refuses an ETA" \
+        100 no "" "no prior sample yet" BACKUP_NO_FILE=1
+  check_backup_volume "backup trend falling: counts down to the 2% floor" \
+        100 no "$((backup_now_s - 7200)) $((backup_avail_kb + 10485760))" \
+        "losing 5\\.0[0-9] GiB/h .* ETA TO 2% FLOOR" BACKUP_NO_FILE=1
+  check_backup_volume "backup trend recovering: no countdown" \
+        100 no "$((backup_now_s - 7200)) $((backup_avail_kb - 10485760))" \
+        "NOT shrinking" BACKUP_NO_FILE=1
+  printf '  ---- %d passed, %d failed (post backup-volume block)\n' "$p" "$f"
+
+  # ── WI-38830 recurrence guard: signal (f), TMPDIR entry count ─────────────
   # Every case below points a WATCHED dir at an isolated fixture, never at the real
   # /tmp — a self-test that judged live host state would pass or fail for reasons that
   # have nothing to do with the code under test.
@@ -648,6 +771,7 @@ fi
 # Check the PostgreSQL data filesystem before the artifact probes. A shared root
 # volume can take PostgreSQL down even while every backup artifact is still fresh.
 check_db_disk_headroom
+check_backup_volume_headroom
 check_tmpdir_entry_count
 
 # ── (a) FRESHNESS — judge the ARTIFACT, not the log ────────────────────────

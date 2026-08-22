@@ -16,4 +16,4 @@ OnFailure=papercusp-db-backup-alert.service
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
-ExecStart=%h/.config/kopia/db-backup.sh
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh

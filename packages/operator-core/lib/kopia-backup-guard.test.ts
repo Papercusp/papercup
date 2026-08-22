@@ -163,6 +163,8 @@ describe('Kopia managed entrypoint contract', () => {
   const hotScript = readFileSync(join(systemdDir, 'kopia-snapshot-all.sh'), 'utf8');
   const homeScript = readFileSync(join(systemdDir, 'kopia-home-snapshot.sh'), 'utf8');
   const protectedScript = readFileSync(join(systemdDir, 'kopia-protected-snapshot.sh'), 'utf8');
+  const dbService = readFileSync(join(systemdDir, 'papercusp-db-backup.service'), 'utf8');
+  const dbScript = readFileSync(join(systemdDir, 'papercusp-db-backup.sh'), 'utf8');
   const timer = readFileSync(join(systemdDir, 'kopia-snapshots.timer'), 'utf8');
   const healthcheck = readFileSync(join(systemdDir, 'kopia-healthcheck.sh'), 'utf8');
 
@@ -226,5 +228,20 @@ describe('Kopia managed entrypoint contract', () => {
   it('pins the 30-minute cadence and matching 60-minute stale threshold', () => {
     expect(timer).toMatch(/^OnCalendar=\*:0\/30$/m);
     expect(healthcheck).toContain('MAX_SNAP_AGE_S="${MAX_SNAP_AGE_S:-3600}"');
+  });
+
+  it('keeps the hourly database writer canonical and dedupe-friendly', () => {
+    const executableDbScript = dbScript
+      .split('\n')
+      .filter((line) => !line.trimStart().startsWith('#'))
+      .join('\n');
+
+    expect(dbService).toContain(
+      'ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh',
+    );
+    expect(dbService).not.toContain('%h/.config/kopia/db-backup.sh');
+    expect(executableDbScript.match(/--compress=none/g)).toHaveLength(2);
+    expect(executableDbScript).not.toMatch(/(?:^|\s)-Z1(?:\s|$)/m);
+    expect(dbScript).toContain('pg_restore -l');
   });
 });
