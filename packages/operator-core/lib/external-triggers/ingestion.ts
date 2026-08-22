@@ -27,6 +27,7 @@ export interface ExternalTriggerSink {
 }
 
 export interface CanonicalExternalEvent extends NormalizedExternalEvent {
+  workspaceId: string;
   source: string;
   event: string;
   sourceId: string;
@@ -213,7 +214,7 @@ export async function ingestExternalTriggerEvent(
   if (!datatype) throw new Error(`external_trigger_unknown_datatype:${datatypeId}`);
 
   const key = buildKey('external-trigger', { source, event: eventName });
-  const canonical: CanonicalExternalEvent & { workspaceId: string } = {
+  const canonical: CanonicalExternalEvent = {
     key,
     source,
     event: eventName,
