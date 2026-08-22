@@ -37,7 +37,13 @@
  * clipping it is a correctness regression, not a UI tweak. The next breach is
  * WI-7304 (on-demand body + server-side search), NOT a ceiling raise.
  */
-import { attachListMeta } from './list-meta';
+import type {
+  CompanionSummaryAggregateRow,
+  FacetSelection,
+} from '@papercusp/facets';
+import type { OrgSql } from '../work-items';
+import type { BoundedListPage } from './bounded-list-read';
+import { attachListMeta, readListMeta } from './list-meta';
 import { createReadDeadline } from './read-deadline';
 
 /**
@@ -48,6 +54,139 @@ import { createReadDeadline } from './read-deadline';
  * and the memory backend's degraded p50 of ~10.9s (WI-39554).
  */
 const OBSERVATIONS_READ_BUDGET_MS = 6_000;
+
+/** One immutable keyset page. The historical 2,000-row growing window is gone. */
+export const LEARNING_OBSERVATIONS_PAGE_LIMIT = 200;
+
+export interface LearningObservationsWireFilters {
+  scopes?: string[];
+  sourceRoles?: string[];
+  confidences?: string[];
+  kinds?: string[];
+  /** Selected-plan slugs matched against observation.refs. */
+  plans?: string[];
+}
+
+export interface LearningObservationsWireArgs {
+  state?: 'open' | 'resolved' | 'closed';
+  q?: string;
+  filters?: LearningObservationsWireFilters;
+  cursor?: string | null;
+  limit?: number;
+}
+
+export interface LearningObservationsCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface NormalizedLearningObservationsArgs {
+  state: 'open' | 'resolved' | 'closed' | null;
+  q: string | null;
+  filters: {
+    scopes: string[];
+    sourceRoles: string[];
+    confidences: string[];
+    kinds: string[];
+    plans: string[];
+  };
+  /** Exact and token-boundary forms compiled once for the refs predicate. */
+  planExactRefs: string[];
+  planRefPatterns: string[];
+  cursor: LearningObservationsCursor | null;
+  limit: number;
+}
+
+export interface LearningObservationsCompiledPredicate {
+  args: NormalizedLearningObservationsArgs;
+  fingerprint: string;
+}
+
+const uniq = (values: readonly string[] | undefined): string[] =>
+  [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))].sort();
+
+const escapePgRegex = (value: string): string =>
+  value.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+
+export function decodeLearningObservationsCursor(
+  raw: string | null | undefined,
+): LearningObservationsCursor | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<LearningObservationsCursor>;
+    return typeof parsed.createdAt === 'string' &&
+      Number.isFinite(Date.parse(parsed.createdAt)) &&
+      typeof parsed.id === 'string' &&
+      parsed.id.length > 0
+      ? { createdAt: parsed.createdAt, id: parsed.id }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+export const encodeLearningObservationsCursor = (
+  row: Pick<LearningObservationRow, 'createdAt' | 'id'>,
+): string => JSON.stringify({ createdAt: row.createdAt, id: row.id });
+
+export function normalizeLearningObservationsArgs(
+  args: LearningObservationsWireArgs,
+): NormalizedLearningObservationsArgs {
+  const filters = args.filters ?? {};
+  const plans = uniq(filters.plans).map((value) => value.toLowerCase());
+  const limit = Math.min(
+    Math.max(Math.trunc(Number.isFinite(args.limit) ? args.limit! : LEARNING_OBSERVATIONS_PAGE_LIMIT), 1),
+    LEARNING_OBSERVATIONS_PAGE_LIMIT,
+  );
+  return {
+    state: args.state ?? null,
+    q: args.q?.trim() || null,
+    filters: {
+      scopes: uniq(filters.scopes),
+      sourceRoles: uniq(filters.sourceRoles),
+      confidences: uniq(filters.confidences),
+      kinds: uniq(filters.kinds),
+      plans,
+    },
+    planExactRefs: [...new Set(plans.flatMap((slug) => [slug, `plan:${slug}`]))].sort(),
+    planRefPatterns: plans.map(
+      (slug) => `(^|[^a-z0-9_-])${escapePgRegex(slug)}($|[^a-z0-9_-])`,
+    ),
+    cursor: decodeLearningObservationsCursor(args.cursor),
+    limit,
+  };
+}
+
+export function buildLearningObservationsPredicate(
+  args: NormalizedLearningObservationsArgs,
+): LearningObservationsCompiledPredicate {
+  return { args, fingerprint: JSON.stringify(args) };
+}
+
+export function learningObservationsSummarySelection(
+  args: NormalizedLearningObservationsArgs,
+): FacetSelection {
+  const entries: Array<[string, ReadonlySet<string>]> = [];
+  const add = (key: string, values: string[]) => {
+    if (values.length > 0) entries.push([key, new Set(values)]);
+  };
+  add('scope', args.filters.scopes);
+  add('sourceRole', args.filters.sourceRoles);
+  add('confidence', args.filters.confidences);
+  add('kind', args.filters.kinds);
+  return new Map(entries);
+}
+
+/** True only for the historical derived-snapshot variant. */
+export function isDefaultLearningObservationsPage(
+  args: NormalizedLearningObservationsArgs,
+): boolean {
+  return args.state === null &&
+    args.q === null &&
+    args.cursor === null &&
+    args.limit === LEARNING_OBSERVATIONS_PAGE_LIMIT &&
+    Object.values(args.filters).every((values) => values.length === 0);
+}
 
 export interface LearningObservationsArgs {
   state?: 'open' | 'resolved' | 'closed';
@@ -75,6 +214,271 @@ export interface LearningObservationRow {
   refs: string[];
   sourceRole?: string;
   createdAt: string;
+}
+
+type ObservationFacetKey = 'kind' | 'scope' | 'sourceRole' | 'confidence';
+
+interface LearningObservationDbRow {
+  id: string;
+  title: string;
+  body: string | null;
+  kind: string | null;
+  scope: string | null;
+  confidence: string | null;
+  refs: string[] | null;
+  sourceRole: string | null;
+  createdAt: string | Date;
+}
+
+interface LearningObservationAggregateDbRow {
+  kind: 'totals' | 'facet';
+  facet: string | null;
+  label: string | null;
+  value: string | null;
+  count: number | null;
+  total: number | null;
+  matched: number | null;
+}
+
+const likeContainsPattern = (query: string): string =>
+  `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
+
+function observationScopedCte(
+  sql: OrgSql,
+  workspaceId: string,
+  args: NormalizedLearningObservationsArgs,
+) {
+  return sql`
+    scoped AS MATERIALIZED (
+      SELECT issue_id AS id,
+             COALESCE(title, '') AS title,
+             body,
+             NULLIF(payload->'observation'->>'kind', '') AS observation_kind,
+             COALESCE(
+               NULLIF(payload->'observation'->>'scope', ''),
+               NULLIF(scope, '')
+             ) AS observation_scope,
+             COALESCE(
+               NULLIF(payload->>'sourceRole', ''),
+               NULLIF(payload->>'filedByRole', '')
+             ) AS source_role,
+             NULLIF(payload->'observation'->>'confidence', '') AS confidence,
+             ARRAY(
+               SELECT jsonb_array_elements_text(
+                 CASE
+                   WHEN jsonb_typeof(payload->'observation'->'refs') = 'array'
+                   THEN payload->'observation'->'refs'
+                   ELSE '[]'::jsonb
+                 END
+               )
+             ) AS refs,
+             created_at
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${workspaceId}
+         AND kind = ANY(${['bug', 'change']}::text[])
+         AND lane = 'observation'
+         AND (payload->'observation'->>'rubricRef') IS NULL
+         AND ${args.state ? sql`state = ${args.state}` : sql`TRUE`}
+    )`;
+}
+
+function observationPredicateSql(
+  sql: OrgSql,
+  args: NormalizedLearningObservationsArgs,
+  omit?: ObservationFacetKey,
+) {
+  const f = args.filters;
+  const q = args.q ? likeContainsPattern(args.q) : null;
+  return sql`
+    ${
+      q
+        ? sql`(
+            COALESCE(s.title, '') ILIKE ${q} ESCAPE '\\'
+            OR COALESCE(s.body, '') ILIKE ${q} ESCAPE '\\'
+            OR COALESCE(s.observation_kind, '') ILIKE ${q} ESCAPE '\\'
+            OR array_to_string(s.refs, ' ') ILIKE ${q} ESCAPE '\\'
+          )`
+        : sql`TRUE`
+    }
+    AND ${
+      omit !== 'scope' && f.scopes.length > 0
+        ? sql`s.observation_scope = ANY(${f.scopes}::text[])`
+        : sql`TRUE`
+    }
+    AND ${
+      omit !== 'sourceRole' && f.sourceRoles.length > 0
+        ? sql`s.source_role = ANY(${f.sourceRoles}::text[])`
+        : sql`TRUE`
+    }
+    AND ${
+      omit !== 'confidence' && f.confidences.length > 0
+        ? sql`s.confidence = ANY(${f.confidences}::text[])`
+        : sql`TRUE`
+    }
+    AND ${
+      omit !== 'kind' && f.kinds.length > 0
+        ? sql`COALESCE(s.observation_kind, 'other') = ANY(${f.kinds}::text[])`
+        : sql`TRUE`
+    }
+    AND ${
+      f.plans.length > 0
+        ? sql`EXISTS (
+            SELECT 1
+              FROM unnest(s.refs) AS observation_ref(value)
+             WHERE lower(observation_ref.value) = ANY(${args.planExactRefs}::text[])
+                OR lower(observation_ref.value) ~ ANY(${args.planRefPatterns}::text[])
+          )`
+        : sql`TRUE`
+    }`;
+}
+
+function mapLearningObservationDbRow(
+  row: LearningObservationDbRow,
+): LearningObservationRow {
+  const createdAt = row.createdAt instanceof Date
+    ? row.createdAt.toISOString()
+    : new Date(row.createdAt).toISOString();
+  const out: LearningObservationRow = {
+    id: row.id,
+    title: row.title,
+    refs: Array.isArray(row.refs) ? row.refs : [],
+    createdAt,
+  };
+  if (row.body != null) out.body = row.body;
+  if (row.kind != null) out.kind = row.kind;
+  if (row.scope != null) out.scope = row.scope;
+  if (row.confidence != null) out.confidence = row.confidence;
+  if (row.sourceRole != null) out.sourceRole = row.sourceRole;
+  return out;
+}
+
+/** Convert the existing derived snapshot into page 1 without recomputing it. */
+export function pageLearningObservationsSnapshot(
+  snapshot: readonly LearningObservationRow[],
+  predicate: LearningObservationsCompiledPredicate,
+): BoundedListPage<LearningObservationRow> {
+  const rows = snapshot.slice(0, predicate.args.limit);
+  const total = readListMeta(snapshot)?.total;
+  const hasMore = total != null
+    ? total > rows.length
+    : rows.length === predicate.args.limit;
+  const tail = rows[rows.length - 1];
+  const nextCursor = hasMore && tail && Number.isFinite(Date.parse(tail.createdAt))
+    ? encodeLearningObservationsCursor(tail)
+    : null;
+  return {
+    rows,
+    previousCursor: null,
+    nextCursor,
+    hasMore: nextCursor !== null,
+  };
+}
+
+/** Read one bounded page from the authoritative observation corpus. */
+export async function readLearningObservationsPageFromStore(
+  sql: OrgSql,
+  workspaceId: string,
+  predicate: LearningObservationsCompiledPredicate,
+): Promise<BoundedListPage<LearningObservationRow>> {
+  const args = predicate.args;
+  const rows = await sql<LearningObservationDbRow[]>`
+    WITH ${observationScopedCte(sql, workspaceId, args)}
+    SELECT s.id,
+           s.title,
+           s.body,
+           s.observation_kind AS kind,
+           s.observation_scope AS scope,
+           s.confidence,
+           s.refs,
+           s.source_role AS "sourceRole",
+           s.created_at AS "createdAt"
+      FROM scoped s
+     WHERE ${observationPredicateSql(sql, args)}
+       AND ${
+         args.cursor
+           ? sql`(s.created_at, s.id) < (${args.cursor.createdAt}::timestamptz, ${args.cursor.id}::text)`
+           : sql`TRUE`
+       }
+     ORDER BY s.created_at DESC, s.id DESC
+     LIMIT ${args.limit + 1}`;
+  const hasMore = rows.length > args.limit;
+  const pageRows = hasMore ? rows.slice(0, args.limit) : rows;
+  const mapped = pageRows.map(mapLearningObservationDbRow);
+  const tail = mapped[mapped.length - 1];
+  return {
+    rows: mapped,
+    previousCursor: args.cursor ? encodeLearningObservationsCursor(args.cursor) : null,
+    nextCursor: hasMore && tail ? encodeLearningObservationsCursor(tail) : null,
+    hasMore,
+  };
+}
+
+/** Exact total + matched total + four drill-down facet groups in one statement. */
+export async function readLearningObservationsSummaryFromStore(
+  sql: OrgSql,
+  workspaceId: string,
+  predicate: LearningObservationsCompiledPredicate,
+): Promise<readonly CompanionSummaryAggregateRow[]> {
+  const args = predicate.args;
+  const rows = await sql<LearningObservationAggregateDbRow[]>`
+    WITH ${observationScopedCte(sql, workspaceId, args)},
+    totals AS (
+      SELECT count(*)::int AS n FROM scoped
+    ),
+    matched AS (
+      SELECT count(*)::int AS n FROM scoped s WHERE ${observationPredicateSql(sql, args)}
+    ),
+    kind_facets AS (
+      SELECT COALESCE(s.observation_kind, 'other') AS value, count(*)::int AS n
+        FROM scoped s
+       WHERE ${observationPredicateSql(sql, args, 'kind')}
+       GROUP BY COALESCE(s.observation_kind, 'other')
+    ),
+    scope_facets AS (
+      SELECT s.observation_scope AS value, count(*)::int AS n
+        FROM scoped s
+       WHERE ${observationPredicateSql(sql, args, 'scope')}
+         AND s.observation_scope IS NOT NULL
+       GROUP BY s.observation_scope
+    ),
+    source_role_facets AS (
+      SELECT s.source_role AS value, count(*)::int AS n
+        FROM scoped s
+       WHERE ${observationPredicateSql(sql, args, 'sourceRole')}
+         AND s.source_role IS NOT NULL
+       GROUP BY s.source_role
+    ),
+    confidence_facets AS (
+      SELECT s.confidence AS value, count(*)::int AS n
+        FROM scoped s
+       WHERE ${observationPredicateSql(sql, args, 'confidence')}
+         AND s.confidence IS NOT NULL
+       GROUP BY s.confidence
+    )
+    SELECT 'totals'::text AS kind,
+           NULL::text AS facet,
+           NULL::text AS label,
+           NULL::text AS value,
+           NULL::int AS count,
+           totals.n AS total,
+           matched.n AS matched
+      FROM totals CROSS JOIN matched
+    UNION ALL SELECT 'facet', 'kind', 'Signal', value, n, NULL, NULL FROM kind_facets
+    UNION ALL SELECT 'facet', 'scope', 'Scope', value, n, NULL, NULL FROM scope_facets
+    UNION ALL SELECT 'facet', 'sourceRole', 'Role', value, n, NULL, NULL FROM source_role_facets
+    UNION ALL SELECT 'facet', 'confidence', 'Confidence', value, n, NULL, NULL FROM confidence_facets`;
+
+  return rows.map((row): CompanionSummaryAggregateRow =>
+    row.kind === 'totals'
+      ? { kind: 'totals', total: row.total ?? 0, matched: row.matched ?? 0 }
+      : {
+          kind: 'facet',
+          facet: row.facet ?? '',
+          label: row.label ?? undefined,
+          value: row.value ?? '',
+          count: row.count ?? 0,
+        },
+  );
 }
 
 /** Build the `learning.observations` rows (newest-first) with list `_meta` (total).

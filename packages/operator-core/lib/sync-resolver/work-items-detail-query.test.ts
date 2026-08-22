@@ -6,19 +6,33 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
 
-const { listEnrichedWorkItemsMock, getEnrichedWorkItemMock, countWorkItemsMock } = vi.hoisted(() => ({
-  listEnrichedWorkItemsMock: vi.fn(async (_o: unknown) => [] as unknown[]),
+const {
+  readWorkItemsPageFromStoreMock,
+  readWorkItemsSummaryFromStoreMock,
+  getEnrichedWorkItemMock,
+  activeWorkspaceIdMock,
+} = vi.hoisted(() => ({
+  readWorkItemsPageFromStoreMock: vi.fn(),
+  readWorkItemsSummaryFromStoreMock: vi.fn(),
   getEnrichedWorkItemMock: vi.fn(async (_h: string, _id: string) => null as unknown),
-  countWorkItemsMock: vi.fn(async (_f: unknown) => 0),
+  activeWorkspaceIdMock: vi.fn(() => 'workspace-test'),
 }));
 
 vi.mock('../endpoint-route/routes/harness/work-items', () => ({
-  listEnrichedWorkItems: listEnrichedWorkItemsMock,
   getEnrichedWorkItem: getEnrichedWorkItemMock,
 }));
-vi.mock('../work-items', () => ({
-  countWorkItems: countWorkItemsMock,
-  isWorkItemKind: (k: string) => ['change', 'bug', 'task', 'feature', 'research-task', 'chunk'].includes(k),
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
+vi.mock('../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../workspace-registry')>()),
+  activeWorkspaceId: activeWorkspaceIdMock,
+}));
+vi.mock('./work-items-list-query', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./work-items-list-query')>()),
+  readWorkItemsPageFromStore: readWorkItemsPageFromStoreMock,
+  readWorkItemsSummaryFromStore: readWorkItemsSummaryFromStoreMock,
 }));
 
 describe('workItems P-006 (byHarness slim + detail)', () => {
@@ -31,39 +45,59 @@ describe('workItems P-006 (byHarness slim + detail)', () => {
   describe('resolvers', () => {
     beforeEach(() => {
       vi.resetModules();
-      listEnrichedWorkItemsMock.mockClear();
+      readWorkItemsPageFromStoreMock.mockReset();
+      readWorkItemsPageFromStoreMock.mockResolvedValue({ rows: [], nextCursor: null, hasMore: false });
+      readWorkItemsSummaryFromStoreMock.mockReset();
+      readWorkItemsSummaryFromStoreMock.mockResolvedValue([{ kind: 'totals', total: 0, matched: 0 }]);
       getEnrichedWorkItemMock.mockClear();
-      countWorkItemsMock.mockClear();
+      activeWorkspaceIdMock.mockClear();
     });
     afterEach(() => vi.resetModules());
 
     it('byHarness drops per-row summary but keeps light fields + the total on _meta', async () => {
-      listEnrichedWorkItemsMock.mockImplementation(async () => [
-        { id: 'WI-1', title: 't1', summary: 'HEAVY'.repeat(500), kind: 'change', state: 'open', assignee: 'su' },
-        { id: 'WI-2', title: 't2', summary: 'ALSO HEAVY', kind: 'bug', state: 'open', assignee: null },
+      readWorkItemsPageFromStoreMock.mockResolvedValue({
+        rows: [
+          { id: 'WI-1', title: 't1', summary: '', kind: 'change', state: 'open', assignee: 'su' },
+          { id: 'WI-2', title: 't2', summary: '', kind: 'bug', state: 'open', assignee: null },
+        ],
+        nextCursor: null,
+        hasMore: false,
+      });
+      readWorkItemsSummaryFromStoreMock.mockResolvedValue([
+        { kind: 'totals', total: 1821, matched: 2 },
       ]);
-      countWorkItemsMock.mockImplementation(async () => 1821);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('workItems.byHarness', { harnessSlug: 'papercusp' })) as Array<Record<string, unknown>>;
+      const [summary] = (await r('workItems.summary', { harnessSlug: 'papercusp' })) as Array<Record<string, unknown>>;
       expect(rows).toHaveLength(2);
       expect(rows[0].summary).toBe(''); // slimmed
       expect(rows[1].summary).toBe('');
       expect(rows[0].title).toBe('t1'); // light fields kept
       expect(rows[0].assignee).toBe('su');
-      expect((rows[0]._meta as { total: number }).total).toBe(1821); // authoritative total preserved
+      expect((rows[0]._meta as { total?: number } | undefined)?.total).toBeUndefined();
+      expect(summary).toMatchObject({ total: 1821, matched: 2 }); // authoritative corpus total is separate
     });
 
-    it('threads an inherited multi-harness scope through both rows and the authoritative count', async () => {
+    it('threads an inherited multi-harness scope through both rows and the companion summary', async () => {
       const { resolveNamedQueryV2: r } = await import('./index');
       await r('workItems.byHarness', { harnessSlugs: ['root', 'child'] });
-      expect(listEnrichedWorkItemsMock).toHaveBeenCalledWith(expect.objectContaining({
-        harness: undefined,
-        harnesses: ['root', 'child'],
-      }));
-      expect(countWorkItemsMock).toHaveBeenCalledWith(expect.objectContaining({
-        harness: undefined,
-        harnesses: ['root', 'child'],
-      }));
+      await r('workItems.summary', { harnessSlugs: ['root', 'child'] });
+      const normalizedScope = expect.objectContaining({
+        args: expect.objectContaining({
+          harnessSlug: null,
+          harnessSlugs: ['child', 'root'],
+        }),
+      });
+      expect(readWorkItemsPageFromStoreMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'workspace-test',
+        normalizedScope,
+      );
+      expect(readWorkItemsSummaryFromStoreMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'workspace-test',
+        normalizedScope,
+      );
     });
 
     it('detail returns the single FULL enriched row (with summary) via getEnrichedWorkItem', async () => {
@@ -74,7 +108,7 @@ describe('workItems P-006 (byHarness slim + detail)', () => {
       expect(rows[0].id).toBe('WI-7');
       expect(rows[0].summary).toBe('the full summary text'); // NOT slimmed — detail carries it
       expect(getEnrichedWorkItemMock).toHaveBeenCalledWith('papercusp', 'WI-7');
-      expect(listEnrichedWorkItemsMock).not.toHaveBeenCalled();
+      expect(readWorkItemsPageFromStoreMock).not.toHaveBeenCalled();
     });
 
     it('detail returns [] when the id is not found in the harness', async () => {

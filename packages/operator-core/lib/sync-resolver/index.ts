@@ -65,6 +65,18 @@ import {
   workItemsSummarySelection,
   type WorkItemsListWireArgs,
 } from './work-items-list-query';
+import {
+  LEARNING_OBSERVATIONS_PAGE_LIMIT,
+  buildLearningObservationsPredicate,
+  isDefaultLearningObservationsPage,
+  learningObservationsSummarySelection,
+  normalizeLearningObservationsArgs,
+  pageLearningObservationsSnapshot,
+  readLearningObservationsPageFromStore,
+  readLearningObservationsSummaryFromStore,
+  type LearningObservationRow,
+  type LearningObservationsWireArgs,
+} from './learning-observations-read';
 
 /**
  * Shared deadline for the fan-outs bounded IN PLACE (WI-39825). 6s — the budget
@@ -139,6 +151,25 @@ const workItemsListArgsSchema = z.object({
   limit: clampedLimit(WORK_ITEMS_CURSOR_PAGE_LIMIT, WORK_ITEMS_CURSOR_PAGE_LIMIT),
   states: z.array(z.string().max(40)).max(20).optional(),
   perState: clampedLimitOpt(WORK_ITEMS_FAIR_STATE_LIMIT),
+});
+
+const learningObservationsFiltersSchema = z.object({
+  scopes: z.array(z.string().max(300)).max(500).optional(),
+  sourceRoles: z.array(z.string().max(160)).max(200).optional(),
+  confidences: z.array(z.string().max(80)).max(100).optional(),
+  kinds: z.array(z.string().max(80)).max(100).optional(),
+  plans: z.array(z.string().max(300)).max(500).optional(),
+});
+
+const learningObservationsArgsSchema = z.object({
+  state: z.enum(['open', 'resolved', 'closed']).optional(),
+  q: z.string().max(500).optional(),
+  filters: learningObservationsFiltersSchema.optional(),
+  cursor: z.string().max(2_000).nullable().optional(),
+  limit: clampedLimit(
+    LEARNING_OBSERVATIONS_PAGE_LIMIT,
+    LEARNING_OBSERVATIONS_PAGE_LIMIT,
+  ),
 });
 
 /**
@@ -980,6 +1011,52 @@ const workItemsListQueryPair = createCompanionListQueryPair({
     );
   },
   summarySelection: workItemsSummarySelection,
+});
+
+const learningObservationsQueryPair = createCompanionListQueryPair({
+  domain: 'learning.observations',
+  rowsQueryName: 'learning.observations',
+  argsSchema: learningObservationsArgsSchema,
+  backingTables: ['harness_shared.work_items'] as const,
+  normalizeArgs: (args: LearningObservationsWireArgs) =>
+    normalizeLearningObservationsArgs(args),
+  buildPredicate: buildLearningObservationsPredicate,
+  readPage: async ({ args, predicate }) => {
+    if (isDefaultLearningObservationsPage(args)) {
+      const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
+      await import('../derived-reads/producers');
+      const snapshot = await readDerivedSnapshotRows('learning.observations');
+      return pageLearningObservationsSnapshot(
+        snapshot as LearningObservationRow[],
+        predicate,
+      );
+    }
+    const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] =
+      await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../issues-engineer'),
+      ]);
+    return readLearningObservationsPageFromStore(
+      getOrgPg().sql,
+      resolveIssuesScopeWorkspace(activeWorkspaceId()),
+      predicate,
+    );
+  },
+  readSummaryAggregateRows: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }, { resolveIssuesScopeWorkspace }] =
+      await Promise.all([
+        import('@papercusp/db-org'),
+        import('../workspace-registry'),
+        import('../issues-engineer'),
+      ]);
+    return readLearningObservationsSummaryFromStore(
+      getOrgPg().sql,
+      resolveIssuesScopeWorkspace(activeWorkspaceId()),
+      predicate,
+    );
+  },
+  summarySelection: learningObservationsSummarySelection,
 });
 
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
@@ -4178,41 +4255,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── learning.observations — the Observations pane's browse feed ──
-  //
-  // (turn-end-reflection-observations-2026-06-14 P-044 / D-005). PRE-IDEA sensor
-  // readings from the turn-end reflection step, filed in the SEPARATE
-  // OBSERVATION_TOPIC lane — they NEVER enter the work/triage queue (that is the
-  // whole point: this is browse-only, no ranking/triage/dispatch). Newest first.
-  // NOT table-backed (engineer_issues has no emit_change_notify) — refreshes on
-  // mount + manual invalidate + the server-side notifySyncInvalidate
-  // captureImprovement fires on a lane:observation file.
-  'learning.observations': {
-    argsSchema: z
-      .object({
-        state: z.enum(['open', 'resolved', 'closed']).optional(),
-        // Same generous ceiling as Work Queue. The UI grows a 200-row window;
-        // clamp instead of reject so rollout skew cannot break the pane.
-        limit: clampedLimitOpt(2000),
-      })
-      .optional(),
-    resolve: async (args) => {
-      const a = (args ?? {}) as { state?: 'open' | 'resolved' | 'closed'; limit?: number };
-      // PRECOMPUTED (phase2 P-005) — but ONLY the DEFAULT view (no state filter,
-      // default limit 200 — the Observations pane's mount). listIssues +
-      // countIssues + per-row map/sort over the whole OBSERVATION lane was 0.22s /
-      // 152KB on every read; the routine now fills a snapshot. Snapshots have no
-      // arg dimension, so a state filter / custom limit falls through to the live
-      // inline compute (both share computeLearningObservations, so they can't drift).
-      if (a.state === undefined && (a.limit === undefined || a.limit === 200)) {
-        const { readDerivedSnapshotRows } = await import('../derived-reads/registry');
-        await import('../derived-reads/producers');
-        return readDerivedSnapshotRows('learning.observations');
-      }
-      const { computeLearningObservations } = await import('./learning-observations-read');
-      return computeLearningObservations(a);
-    },
-  },
+  // ── learning.observations + companion summary ──
+  // One normalized predicate backs 200-row (created_at,id) keyset pages, exact
+  // totals, and scope/role/confidence/kind drill-down facets. The unfiltered
+  // first page deliberately keeps the existing derived snapshot fast path.
+  'learning.observations': learningObservationsQueryPair.rowsEntry as QueryEntry<unknown>,
+  'learning.observations.summary': learningObservationsQueryPair.summaryEntry as QueryEntry<unknown>,
 
   // ── learning.observations.counts — signal distribution with real DB counts ──
   //
@@ -4222,6 +4270,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // with one row per kind: { kind, count }. Used by the Observations panel to
   // render signal distribution buttons with "500+" guard when count >= 500.
   'learning.observations.counts': {
+    backingTables: ['harness_shared.work_items'],
     argsSchema: z
       .object({
         state: z.enum(['open', 'resolved', 'closed']).optional(),
@@ -4234,6 +4283,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { OBSERVATION_LANE } = await import('../harness/improvements/read-items');
       const filter = {
         lane: OBSERVATION_LANE,
+        excludeRubricGraded: true,
         ...(a.state ? { state: a.state } : {}),
       };
       const counts = await countObservationsByKind(filter);

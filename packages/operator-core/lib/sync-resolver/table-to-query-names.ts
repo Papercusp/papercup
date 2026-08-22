@@ -468,6 +468,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.byHive',
     'workItems.byHarness',
     'workItems.summary',
+    // P-005: the observation row page, exact companion summary, and legacy kind
+    // aggregate all read the issue-family projection of this base table.
+    'learning.observations',
+    'learning.observations.summary',
+    'learning.observations.counts',
     // dependency-health-pane P-003: the graph pane's edge query resolves BOTH
     // endpoints against work_items, so a STATUS flip (a blocker going terminal)
     // or a rename changes what an edge MEANS even though work_item_deps itself

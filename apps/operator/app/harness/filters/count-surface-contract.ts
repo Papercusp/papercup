@@ -52,9 +52,6 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
       testPath:
         "packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts",
     },
-    columnFilterCalls: {
-      "apps/operator/app/adv/harnesses/WorkItemsPanel.tsx": 1,
-    },
   },
   {
     id: "dependency-graph",
@@ -67,9 +64,6 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
       planItem: "P-004",
       testPath:
         "packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts",
-    },
-    columnFilterCalls: {
-      "apps/operator/app/adv/harnesses/DepGraphPanel.tsx": 1,
     },
   },
   {
