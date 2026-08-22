@@ -20,6 +20,8 @@ import {
   installPapercuspFiles,
   projectHistoryDispatcherExec,
   projectHistoryLauncherCandidates,
+  operatorAppRootForPrompts,
+  resolveOperatorAppRootFromModuleDir,
   resolveInstallPaths,
   renderSuPlaybook,
 } from '../papercusp-files';
@@ -310,14 +312,39 @@ describe('installPapercuspFiles', () => {
     );
   });
 
+  it('resolves the operator app root from the module layout, independent of cwd (EI-19445483716744925)', async () => {
+    const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../../');
+    const sourceModuleDir = path.join(repoRoot, 'packages', 'operator-core', 'lib', 'desktop-install');
+    const expectedSourceRoot = path.join(repoRoot, 'apps', 'operator');
+
+    // The source module is below packages/operator-core, so the old fixed two-hop
+    // resolver returned packages/operator-core instead of this app root.
+    expect(resolveOperatorAppRootFromModuleDir(sourceModuleDir)).toBe(expectedSourceRoot);
+    expect(operatorAppRootForPrompts()).toBe(expectedSourceRoot);
+
+    // A bundled module is rooted at sidecar/ and receives the runtime-only app
+    // tree under sidecar/apps/operator.
+    const sidecarRoot = path.join(tmpAppRoot, 'sidecar');
+    const packagedAppRoot = path.join(sidecarRoot, 'apps', 'operator');
+    await fs.mkdir(packagedAppRoot, { recursive: true });
+    expect(resolveOperatorAppRootFromModuleDir(path.join(sidecarRoot, 'serve.mjs'))).toBe(packagedAppRoot);
+
+    // dist-host is already below apps/operator; it must resolve to that nearest
+    // app root rather than walking above it.
+    const distHostRoot = path.join(tmpAppRoot, 'release', 'apps', 'operator');
+    await fs.mkdir(path.join(distHostRoot, 'dist-host'), { recursive: true });
+    expect(resolveOperatorAppRootFromModuleDir(path.join(distHostRoot, 'dist-host'))).toBe(distHostRoot);
+  });
+
   /**
    * WI-39140 / P-006 regression.
    *
    * The test above pins the tsx SOURCE layout, where resolveOperatorAppRoot()
-   * returns `<repo>/apps/operator`. Production does not supply that anchor, and
-   * the mismatch is invisible: the resolver simply returns null, the dispatcher
-   * is written WITHOUT its `project-history` case, and the install reports
-   * success. It shipped on a green deploy with nothing failing.
+   * returns `<repo>/apps/operator`. Production uses a packaged sidecar layout,
+   * so the source-root test alone cannot prove the bundled source fallback. The
+   * mismatch was invisible: the candidate resolver returned no source, the
+   * dispatcher was written WITHOUT its `project-history` case, and the install
+   * reported success. It shipped on a green deploy with nothing failing.
    *
    * Both anchors below were MEASURED on the deployed operator (pid running
    * `<release>/apps/operator/dist-host/hono-host.mjs`), not assumed.
@@ -702,10 +729,10 @@ describe('installPapercuspFiles', () => {
 
   it('dist-host layout: auto-discovery finds hooks + extension when cwd IS the operator app root', async () => {
     // The dev-api service runs `node dist-host/hono-host.mjs` with
-    // WorkingDirectory=<appRoot>: the module dir collapses to <appRoot>/dist-host,
-    // so resolveOperatorAppRoot's walk-up-two lands on the wrong directory and the
-    // cwd+apps/operator candidate doubles the path. Without the plain-cwd
-    // candidates, hook enrollment silently skipped — the live :3070 install
+    // WorkingDirectory=<appRoot>: the module dir collapses to <appRoot>/dist-host;
+    // the resolver now recognizes the nearest <appRoot> directly. The plain-cwd
+    // candidates remain defense-in-depth for older/partially unpacked bundles;
+    // without them, hook enrollment once silently skipped — the live :3070 install
     // endpoint returned ok with zero hooks while every psu launch on the box lost
     // its turn-start memory delta (2026-07-12).
     const ccDir = path.join(tmpAppRoot, 'scripts', 'hooks', 'cc');

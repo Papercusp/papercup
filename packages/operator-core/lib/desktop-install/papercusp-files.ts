@@ -15,6 +15,7 @@
  */
 
 import * as fs from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
 import * as crypto from 'node:crypto';
@@ -684,21 +685,48 @@ async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boole
   return true;
 }
 
+/**
+ * Resolve the operator app root from the directory containing this module.
+ *
+ * The source module lives below `packages/operator-core`, while an esbuild
+ * bundle collapses the module directory to `sidecar/` and the dist-host build
+ * puts it below `apps/operator/`. A fixed number of `..` hops therefore cannot
+ * describe all three layouts. Walk upward and accept either an existing
+ * `<ancestor>/apps/operator` (source/package sidecar) or an ancestor already
+ * named `apps/operator` (dist-host/source app). The artifact check makes the
+ * source and packaged choices self-validating instead of cwd-dependent.
+ */
+export function resolveOperatorAppRootFromModuleDir(moduleDir: string): string {
+  const originalDir = path.resolve(moduleDir);
+  let dir = originalDir;
+  while (true) {
+    if (path.basename(dir) === 'operator' && path.basename(path.dirname(dir)) === 'apps') {
+      return dir;
+    }
+
+    const packagedAppRoot = path.join(dir, 'apps', 'operator');
+    if (existsSync(packagedAppRoot)) return packagedAppRoot;
+
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+
+  // Preserve the old best-effort fallback for an incomplete/unpacked runtime;
+  // the candidate lists still provide their cwd and legacy-layout fallbacks.
+  return path.resolve(originalDir, '..', '..');
+}
+
 function resolveOperatorAppRoot(): string {
-  // Source layout (tsx dev): this file lives at
-  // <operatorApp>/lib/desktop-install/papercusp-files.ts. Walk up two
-  // directories. In the esbuild-bundled production layout (single
-  // host.cjs in sidecar/), the module dir collapses to sidecar/ — the
-  // candidate-list fallbacks below handle that. ESM-safe: use
-  // fileURLToPath(import.meta.url) for the module path, with process.cwd()
-  // as a safe fallback if that fails for any reason.
+  // ESM-safe: use fileURLToPath(import.meta.url) for the module path, with
+  // process.cwd() as a safe fallback if that fails for any reason.
   let moduleDir: string;
   try {
     moduleDir = path.dirname(fileURLToPath(import.meta.url));
   } catch {
     moduleDir = process.cwd();
   }
-  return path.resolve(moduleDir, '..', '..');
+  return resolveOperatorAppRootFromModuleDir(moduleDir);
 }
 
 /**
@@ -718,9 +746,9 @@ function resolveOperatorAppRoot(): string {
  * Extracted from `playbookCandidates` (EI-996) so a sibling prompt-source
  * resolver (e.g. the su-tier ROLE ADDENDUM, `su-role-<role>.addendum.md`) reuses
  * the SAME roots instead of forking a second, silently-diverging copy — notably
- * the `process.cwd()` fallbacks that cover the esbuild-bundled Tauri sidecar
- * layout, where `__dirname` collapses to `sidecar/` and the module-relative root
- * alone resolves nothing.
+ * the `process.cwd()` fallbacks that cover older esbuild-bundled Tauri sidecar
+ * layouts and partially unpacked runtimes. The resolver now returns the
+ * packaged `sidecar/apps/operator` root directly when that tree is present.
  */
 export function promptsDirCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
   if (explicitRoot) return [path.join(operatorAppRoot, 'prompts')];
@@ -1065,10 +1093,10 @@ function hookDirCandidates(operatorAppRoot: string, explicitRoot: boolean, subdi
   const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', subdir)];
   if (explicitRoot) return fromRoot;
   // Plain-cwd candidate mirrors cliLauncherCandidates/playbookCandidates: in the
-  // dist-host layout (module at <operatorApp>/dist-host/, cwd = <operatorApp>) the
-  // walk-up-two root resolves to apps/ and the cwd+apps/operator candidate doubles
-  // the path — without cwd/scripts both miss and hook enrollment silently skips
-  // (found live 2026-07-12: the :3070 install endpoint returned ok with zero hooks).
+  // dist-host layout (module at <operatorApp>/dist-host/, cwd = <operatorApp>) it
+  // remains a defense-in-depth fallback for an older or partially unpacked bundle
+  // whose module root cannot be inspected (found live 2026-07-12: the :3070 install
+  // endpoint returned ok with zero hooks).
   return [
     ...fromRoot,
     path.join(process.cwd(), 'scripts', 'hooks', subdir),
@@ -1263,15 +1291,14 @@ const REPO_ANCHORED_WALK_DEPTH = 8;
  *
  * Why a walk instead of a fixed number of `..` hops: the caller never reliably
  * knows its own depth below the repo root. `resolveOperatorAppRoot()` returns
- * `<repo>/apps/operator` in the tsx SOURCE layout but `<repo>/apps` in the
- * esbuild-BUNDLED layout (the bundle sits at `apps/operator/dist-host/`, one
- * level deeper than the source file it replaces, so the same two-hop walk lands
- * one level high). `process.cwd()` is no better: the deployed operator runs with
- * cwd `<release>/apps/operator`, not the repo root.
+ * `<repo>/apps/operator` in the tsx SOURCE layout and `<sidecar>/apps/operator`
+ * in the packaged layout. `process.cwd()` is no better as the sole anchor: the
+ * deployed operator may run with cwd `<release>/apps/operator`, not the repo
+ * root.
  *
  * A fixed hop count therefore encodes ONE layout and silently misses the others —
- * the resolver returns null, and the caller degrades to an install with the
- * feature quietly absent (WI-39140/P-006: the shipped `papercusp project-history`
+ * the candidate resolver returns no source, and the caller degrades to an install
+ * with the feature quietly absent (WI-39140/P-006: the shipped `papercusp project-history`
  * route vanished from the installed dispatcher in exactly this way, on a green
  * deploy, with nothing failing).
  *

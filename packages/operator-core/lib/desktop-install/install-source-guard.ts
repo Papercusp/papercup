@@ -17,10 +17,11 @@
  *
  * ## Why this is NOT the cwd bug (EI-19445483716744925), and why that matters
  *
- * `resolveOperatorAppRoot()` walks up two directories from this module. In the current
- * tree that lands on `packages/operator-core` rather than `apps/operator`, so the
- * module-relative candidate never resolves and every lookup falls through to the
- * `process.cwd()`-rooted candidates. That is a real bug and it is filed separately.
+ * `resolveOperatorAppRoot()` now walks the module layout and returns the real
+ * `apps/operator` root for source, dist-host, and packaged sidecar trees. Before
+ * EI-19445483716744925, its fixed two-hop walk landed on `packages/operator-core`
+ * in the current source tree, so every lookup fell through to the
+ * `process.cwd()`-rooted candidates. That was a real bug and is filed separately.
  *
  * It is TEMPTING to conclude it is the root cause here and that fixing it — making
  * resolution module-relative instead of cwd-relative — closes this hole. **It does not.**
