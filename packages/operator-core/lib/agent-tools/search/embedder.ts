@@ -218,7 +218,7 @@ export async function buildQueryEmbedderResolved(
   try {
     const acquire = resolveEmbedderWith({
       // P-015 harrier default flip: the QUERY side must keep ranking in the
-      // gemma space the vector(384) stored vectors live in, not dims-guard
+      // gemma space where the vector(768) prose vectors live, not dims-guard
       // off — see proseSurfacePreference (memory/configure.ts).
       readPreference: async () => proseSurfacePreference(await readEmbedderPreference()),
       resolveKey: resolveOpenAiKey,
@@ -233,7 +233,7 @@ export async function buildQueryEmbedderResolved(
       // document-prompt vectors written on the storage side).
       buildGemma: () => buildSidecarAwareEmbedder('gemma', 'query'),
       // harrier-oss (P-014, selectable only): queries carry the instruct
-      // prefix; documents embed raw. Native 1024 — a vector(384) surface
+      // prefix; documents embed raw. Native 1024 — a vector(768) surface
       // must check `dims` before ranking against it.
       buildHarrier: () => buildSidecarAwareEmbedder('harrier', 'query'),
     });
