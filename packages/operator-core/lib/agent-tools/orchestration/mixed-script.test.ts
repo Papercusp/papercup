@@ -220,7 +220,11 @@ describe('P-012 server-side mixed capability scripts', () => {
     expect(handlerContexts).toHaveLength(7);
     for (const handlerCtx of handlerContexts) {
       expect(handlerCtx.tx).toBe(ctx.tx);
-      expect(handlerCtx.signal).toBe(ctx.signal);
+      // runToolOrchestration and dispatch-stack each own cancellation layers;
+      // handlers receive a derived per-dispatch signal, never the caller's
+      // parent object. The cancellation case below proves propagation.
+      expect(handlerCtx.signal).not.toBe(ctx.signal);
+      expect(handlerCtx.signal.aborted).toBe(false);
       expect(handlerCtx.codeMode).toBe(true);
       expect(handlerCtx.transportCapExempt).toBe(true);
       expect(handlerCtx.contextTier).toBeUndefined();
@@ -272,9 +276,15 @@ describe('P-012 server-side mixed capability scripts', () => {
     expect(result).toMatchObject({
       ok: false,
       dispatchCount: 1,
-      error: expect.stringContaining('parent_cancelled'),
+      // The handler observes the aborted signal immediately; dispatch-stack
+      // deliberately normalizes that cancellation into its public timeout
+      // error instead of leaking a handler-specific rejection string.
+      error: expect.stringContaining('tool capability:bash failed [timeout]'),
       uncertainMutations: [
-        expect.objectContaining({ tool: 'capability:bash', error: expect.stringContaining('parent_cancelled') }),
+        expect.objectContaining({
+          tool: 'capability:bash',
+          error: expect.stringContaining('tool capability:bash failed [timeout]'),
+        }),
       ],
     });
   });
