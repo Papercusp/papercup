@@ -312,8 +312,10 @@ export async function joinHiveAsView(
   // process) instead of waiting on the joiner's directory instance to (re-)hear the
   // owner's announce — the multi-minute race that live-blocked owner→joiner
   // federation. Both values trace to verifyHiveAnnounce-gated sources: the caller's
-  // announce/listing, or the local verified directory. Best-effort — absent values
-  // stamp nothing and the old directory-timing path still applies.
+  // announce/listing, or the local verified directory. A wholly absent identity
+  // remains best-effort, but a hive_pubkey without its owner binding is a degraded
+  // join: reporting it as success would leave the substrate with a partial trust
+  // anchor and the canonical bootstrap would never retry the repair.
   const ownerDevicePubkey =
     (typeof opts.ownerDevicePubkey === 'string' && opts.ownerDevicePubkey.trim()
       ? opts.ownerDevicePubkey.trim()
@@ -327,6 +329,9 @@ export async function joinHiveAsView(
     ...(announcedPubkey ? { hive_pubkey: announcedPubkey } : {}),
     ...(ownerDevicePubkey ? { owner_device_pubkey: ownerDevicePubkey } : {}),
   };
+  const viewHasHivePubkey = Boolean(announcedPubkey || existingView?.hive_pubkey);
+  const viewHasOwnerDevicePubkey = Boolean(ownerDevicePubkey || existingView?.owner_device_pubkey);
+  const partialIdentityStamp = viewHasHivePubkey && !viewHasOwnerDevicePubkey;
 
   // Post-mutate member entries (hive_slug + upstream coords stamped) — the
   // git-sync seeding below feeds these to the eligibility/seed composition.
@@ -519,6 +524,14 @@ export async function joinHiveAsView(
       }),
     );
     m.detail = `${m.detail}; git_sync:${outcome.seeded ? 'seeded' : outcome.reason}`;
+  }
+
+  if (partialIdentityStamp) {
+    console.error(
+      `[join-hive] degraded join for ${potSlug}: hive_pubkey is present but ` +
+        `owner_device_pubkey is missing; retrying is required to repair the view`,
+    );
+    return { ok: false, potSlug, members, error: 'partial_identity_stamp' };
   }
 
   return { ok: true, potSlug, members };
