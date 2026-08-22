@@ -26,6 +26,8 @@ import {
 } from './host-capacity';
 
 const CHILD_PATH = fileURLToPath(new URL('./peer-child.ts', import.meta.url));
+/** `--import` shim that installs the no-PG resolution hooks (see spawnPeerChild). */
+const NO_PG_REGISTER_PATH = fileURLToPath(new URL('./no-pg-register.mjs', import.meta.url));
 
 export interface ChildEvent {
   evt: string;
@@ -224,7 +226,29 @@ export function spawnPeerChild(
     execPrefix?: string[];
   } = {},
 ): PeerChildHandle {
-  const argv = [...(opts.execPrefix ?? []), process.execPath, '--import', 'tsx', CHILD_PATH];
+  // `--import tsx` FIRST (the child is TypeScript), then the no-PG resolution
+  // hooks, so `@papercusp/db-org` is diverted to a throwing stub before any
+  // substrate module resolves it. A perf peer never queries Postgres — it passes
+  // applyOverride / loadRevokedOverride / verifyBindingOverride /
+  // announceIdentityOverride — but the substrate's module graph reaches db-org by
+  // 51 static paths, and one surviving edge loads the whole drizzle graph.
+  // MEASURED (fresh process, `node --expose-gc --import tsx`, RSS after 3x GC):
+  // peer-child's module graph is 247-254MB with db-org and 130-142MB without, so
+  // this is ~112MB of pure import cost per peer for an ORM the child never calls
+  // — ~29GB across 256 peers, and the dominant reason `decideMeshCapacity()`
+  // refuses a mesh much above 64 on this host. Plan
+  // harden-shared-hive-to-256-peers-2026-06-29 P-012 / D-024; see
+  // perf/no-pg-hooks.mjs for the full rationale and why this is a rig-local
+  // loader rather than ~40 lazy imports across production projection modules.
+  const argv = [
+    ...(opts.execPrefix ?? []),
+    process.execPath,
+    '--import',
+    'tsx',
+    '--import',
+    NO_PG_REGISTER_PATH,
+    CHILD_PATH,
+  ];
   const proc = spawn(argv[0], argv.slice(1), {
     env: {
       ...process.env,
