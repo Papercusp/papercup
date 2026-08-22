@@ -1,6 +1,7 @@
 import AdmZip from 'adm-zip';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
+import { ingestExternalTriggerEvent } from '../external-triggers/ingestion';
 import { buildPersonalAmbientContextBlock, type PersonalAmbientDeps } from './ambient';
 import { parsePersonalArchive } from './archive-import';
 import { authorizePersonalAccess } from './authorization';
@@ -36,6 +37,9 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await org.adminSql`DELETE FROM harness_shared.trigger_runs WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.trigger_bindings WHERE workspace_id = ${WS}`;
+  await org.adminSql`DELETE FROM harness_shared.trigger_deliveries WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.trigger_sources WHERE workspace_id = ${WS}`;
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
@@ -180,10 +184,27 @@ describe('Personal Vault core', () => {
       RETURNING id`;
     const sink = await createPersonalVaultExternalSinkForSource(org.adminSql, WS, sources[0].id);
     expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}` });
-    await sink.deliver({
-      key: 'ext:gmail:message-received', externalId: 'live-m1', occurredAt: '2026-08-22T00:00:00Z',
-      payload: { from: 'ada@example.com', to: ['bob@example.com'], subject: 'Live mail', text: 'Hello' },
+    const event = {
+      id: 'live-m1', from: 'ada@example.com', to: ['bob@example.com'],
+      subject: 'Live mail', text: 'Hello',
+    };
+    const ingested = await ingestExternalTriggerEvent(org.adminSql, {
+      workspaceId: WS,
+      sourceId: sources[0].id,
+      source: 'gmail',
+      event: 'message.received',
+      externalId: event.id,
+      datatypeId: 'email-message',
+      adapterPayload: event,
+      normalize: (payload) => payload as typeof event,
+      occurredAt: '2026-08-22T00:00:00Z',
+      additionalSinks: [sink],
+    }, {
+      emit: async () => ({ ok: true, key: 'ext:gmail:message.received', woken: 0, notified: [], msgId: null, waiters: 0 }),
     });
+    expect(ingested.deliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered' }),
+    ]));
     const fakeFetch = async () => new Response(JSON.stringify({
       connections: [{ resourceName: 'people/1', names: [{ displayName: 'Ada' }], emailAddresses: [{ value: 'ada@example.com' }] }],
     }), { status: 200, headers: { 'content-type': 'application/json' } });
