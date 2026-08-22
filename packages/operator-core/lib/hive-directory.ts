@@ -546,9 +546,53 @@ export class HiveDirectory {
     if (!this.topicForLocalHive(descIn)) return null; // private
     // P-004 (hardening): re-derive pubkey/memberRepos/memberLinks at BUILD
     // time so every announce is fresh; failure → announce as registered.
-    const desc = this.deps.enrichDescriptor
-      ? await this.deps.enrichDescriptor(descIn).catch(() => descIn)
-      : descIn;
+    // WI-3496: swallow point #4 on the announce path. This `.catch` discards the
+    // ENTIRE enrichment and announces `descIn` — and it also catches a rejection of
+    // the LAZY `await import('./hive-descriptor-enrich')` inside the injected seam
+    // (hive-directory-deps.ts), so the enricher can fail to ENTER and log nothing at
+    // all. Failing soft stays (a broken enricher must not stop the hive announcing);
+    // failing SILENTLY does not — an announce stripped of its cross-Hive dial address
+    // is indistinguishable on the wire from one that never had a key.
+    //
+    // Measured 2026-08-22: the papercusp announce carried neither hivePubkey nor
+    // memberLinks while the enricher, run standalone, supplies BOTH and the keychain
+    // reads ok — with ZERO enricher log lines. All three outcomes below are silent
+    // today, which is exactly why that state was unattributable.
+    let desc = descIn;
+    if (!this.deps.enrichDescriptor) {
+      // (1) seam absent — production always wires it, so this means a non-production
+      // deps object reached a real announce.
+      console.warn(
+        `[hive-directory] announce for hive ${descIn.potId} built with NO enrichDescriptor seam ` +
+          `(workspace ${descIn.workspaceId ?? 'unknown'}) — no hivePubkey/memberRepos/memberLinks/` +
+          `homeRepoKey enrichment rides this frame.`,
+      );
+    } else {
+      try {
+        desc = await this.deps.enrichDescriptor(descIn);
+      } catch (e) {
+        // (2) the enricher (or its lazy import) REJECTED — it may never have entered,
+        // which is why its own internal warnings can be absent.
+        desc = descIn;
+        console.warn(
+          `[hive-directory] enrichDescriptor REJECTED for hive ${descIn.potId} ` +
+            `(workspace ${descIn.workspaceId ?? 'unknown'}): ` +
+            `${e instanceof Error ? (e.stack ?? e.message) : String(e)}. ` +
+            `Announcing the UNENRICHED descriptor — no hivePubkey, memberRepos, memberLinks or ` +
+            `homeRepoKey rides this frame. A lazy-import failure lands here having logged nothing.`,
+        );
+      }
+      if (!desc.hivePubkey) {
+        // (3) enrichment RETURNED yet the frame still has no dial address. Distinguishes
+        // "enricher never ran" from "enricher ran and still produced no key".
+        console.warn(
+          `[hive-directory] announce for hive ${descIn.potId} (workspace ` +
+            `${descIn.workspaceId ?? 'unknown'}) has NO hive_pubkey AFTER enrichment returned ` +
+            `(enrichedKeys=${Object.keys(desc).sort().join('|')}) — this frame carries no ` +
+            `cross-Hive dial address, so peers can discover the hive but never dial it.`,
+        );
+      }
+    }
     const body: HiveAnnounceBody = {
       hive_id: desc.potId,
       title: desc.title,
