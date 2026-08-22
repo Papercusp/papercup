@@ -111,7 +111,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['coord:resolve', 'coord:escalations'],
     humanSurface: 'Inbox / escalations queue — resolve-with-choice',
     coverage: 'covered',
-    notes: 'Authority is per-escalation: an escalation that asks an owner-authority question still gates even when the category ceiling would allow auto.',
+    notes:
+      'Authority is per-escalation: an escalation that asks an owner-authority question still gates even when the category ceiling would allow auto.',
   },
   {
     id: 'escalations.answer-question',
@@ -132,7 +133,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['coord:resolve', 'coord:escalations'],
     humanSurface: 'In-tool decision card (ctx.askUser) surfaced to the owner-decision-queue',
     coverage: 'covered',
-    notes: 'EI-458: re-audited — a card-linked escalation (chat:ask_choice\'s onCard hook stashes cardCorrelationId/cardWorkspaceId on the escalation record) is ALREADY a first-class, ledgered "answer card N" action: coord:escalations lists the open record (cardCorrelationId included), and coord:resolve { msg_id, choice } both records the append-only escalation_resolved event AND (card-link.ts unblockLinkedCard) resolves the SAME live ctx.askUser card in one write. The prior partial verdict undercounted coord:resolve\'s card-unblock side-effect; conversations:answer was never the right verb here (that answers a question conversation, not a click-card) and is removed from this row.',
+    notes:
+      'EI-458: re-audited — a card-linked escalation (chat:ask_choice\'s onCard hook stashes cardCorrelationId/cardWorkspaceId on the escalation record) is ALREADY a first-class, ledgered "answer card N" action: coord:escalations lists the open record (cardCorrelationId included), and coord:resolve { msg_id, choice } both records the append-only escalation_resolved event AND (card-link.ts unblockLinkedCard) resolves the SAME live ctx.askUser card in one write. The prior partial verdict undercounted coord:resolve\'s card-unblock side-effect; conversations:answer was never the right verb here (that answers a question conversation, not a click-card) and is removed from this row.',
   },
   {
     id: 'escalations.cross-hive-ask',
@@ -155,7 +157,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['plans:set-status'],
     humanSurface: 'Plan view — needs-human item gate',
     coverage: 'covered',
-    notes: 'authority=owner: a milestone/design gate is the owner\'s to clear. The Mug can propose (flip wip→done with rationale) but the gate stays owner-authority unless graduated.',
+    notes:
+      "authority=owner: a milestone/design gate is the owner's to clear. The Mug can propose (flip wip→done with rationale) but the gate stays owner-authority unless graduated.",
   },
   {
     id: 'plan.ratify-decision',
@@ -166,7 +169,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['plans:add-decision', 'plans:ratify-decision'],
     humanSurface: 'Plan view — decision ratification ("Ratified: <by> on <date>")',
     coverage: 'covered',
-    notes: 'EI-458: plans:ratify-decision adds a distinct, idempotent ratify verb (appends a `Ratified: <by> on <date>` line to the decision body) so "propose a decision" (plans:add-decision) and "ratify it" are separately governable, ledgered actions — no more free-prose "RATIFIED by owner".',
+    notes:
+      'EI-458: plans:ratify-decision adds a distinct, idempotent ratify verb (appends a `Ratified: <by> on <date>` line to the decision body) so "propose a decision" (plans:add-decision) and "ratify it" are separately governable, ledgered actions — no more free-prose "RATIFIED by owner".',
   },
   {
     id: 'plan.set-status-now',
@@ -277,7 +281,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['improvements:set-auto-policy'],
     humanSurface: 'Improvement digest — auto-implement policy (autoKinds graduation, dispatch ceilings)',
     coverage: 'covered',
-    notes: 'WI-5252 (EI-458 follow-up, resolved): re-audited — the design question was "what does approve mean distinct from create+triage?". Answer: per-idea create+triage is NOT a separate approval — it is already fully realized by ideation.triage-improvement\'s decision (improvements:triage{decision:"place"}) plus the mechanical work_items:create realization, the same decision→execution-boundary pattern plan.convert-item-to-work already covers with one verb. The GENUINE distinct "approve auto-implement" action is the one a human/Mug actually exercises with no per-item review at all: improvements:set-auto-policy (autoKinds graduation, maxPerRun/maxAttempts, tighten-only protected-path/keyword additions) — already Queen-accessible (mug/architect/operator roles), audited + one-call-revertible. It was simply missing from this audit; capability-category-map.ts now carries a specific override (cat:improvements-auto-policy, before the generic improvements: → ideation-intake rule) so it resolves to `implementation`, matching this row.',
+    notes:
+      'WI-5252 (EI-458 follow-up, resolved): re-audited — the design question was "what does approve mean distinct from create+triage?". Answer: per-idea create+triage is NOT a separate approval — it is already fully realized by ideation.triage-improvement\'s decision (improvements:triage{decision:"place"}) plus the mechanical work_items:create realization, the same decision→execution-boundary pattern plan.convert-item-to-work already covers with one verb. The GENUINE distinct "approve auto-implement" action is the one a human/Mug actually exercises with no per-item review at all: improvements:set-auto-policy (autoKinds graduation, maxPerRun/maxAttempts, tighten-only protected-path/keyword additions) — already Queen-accessible (mug/architect/operator roles), audited + one-call-revertible. It was simply missing from this audit; capability-category-map.ts now carries a specific override (cat:improvements-auto-policy, before the generic improvements: → ideation-intake rule) so it resolves to `implementation`, matching this row.',
   },
 
   // ── review & merge ───────────────────────────────────────────────────────────────
@@ -310,7 +315,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['review:approve', 'merge:approve'],
     humanSurface: 'Pipeline reviewer role / git-sync merge; now also review:approve / merge:approve',
     coverage: 'covered',
-    notes: 'EI-457: review:approve wraps POST /harness/:slug/reviews/:id/resolve (approve/answer a pending review, unblocking its feature); merge:approve wraps POST /harness/:slug/promote/:id/confirm (confirm a promotion, merging a phase forward). Together they make review&merge a governable category.',
+    notes:
+      'EI-457: review:approve wraps POST /harness/:slug/reviews/:id/resolve (approve/answer a pending review, unblocking its feature); merge:approve wraps POST /harness/:slug/promote/:id/confirm (confirm a promotion, merging a phase forward). Together they make review&merge a governable category.',
   },
 
   // ── release & deploy (PROTECTED) ──────────────────────────────────────────────────
@@ -345,7 +351,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: [],
     humanSurface: 'green-checkpoint automation (FF main); no manual Mug verb',
     coverage: 'partial',
-    notes: 'Promotion to green is automation-only (green-checkpoint FFs main on a passing suite); a pre-push hook blocks manual pushes. The Mug influences it only via deploy:* + the staging suite. Intentionally near-uncovered — promotion to green stays automation/owner. Noted, not necessarily a build item.',
+    notes:
+      'Promotion to green is automation-only (green-checkpoint FFs main on a passing suite); a pre-push hook blocks manual pushes. The Mug influences it only via deploy:* + the staging suite. Intentionally near-uncovered — promotion to green stays automation/owner. Noted, not necessarily a build item.',
   },
 
   // ── spend & budget (PROTECTED) ────────────────────────────────────────────────────
@@ -472,7 +479,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['flags:set'],
     humanSurface: '/admin/features (auth-affecting flags)',
     coverage: 'partial',
-    notes: 'flags:set is one verb spanning system-control and credentials-auth; the category-map sends flags:set → system-control (also protected). Distinguishing auth-affecting flags would need per-flag metadata. Both targets are protected, so the gate is never-auto either way — recorded as partial, not a true gap.',
+    notes:
+      'flags:set is one verb spanning system-control and credentials-auth; the category-map sends flags:set → system-control (also protected). Distinguishing auth-affecting flags would need per-flag metadata. Both targets are protected, so the gate is never-auto either way — recorded as partial, not a true gap.',
   },
   {
     id: 'credentials.trust-author',
@@ -483,7 +491,8 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     queenVerbs: ['trust:add', 'trust:remove'],
     humanSurface: 'Trust list (trust:list) — owner trust grants',
     coverage: 'covered',
-    notes: 'PROTECTED. trust:add grants a VERIFIED remote author auto-run privilege (the admission gate trust leg, shared-hive-trust-admission P-010); trust:remove revokes it (reversible). Owner-authority security grant, off the Mug autonomous surface — mirrors policy_set (D-006). trust:list is read-only (not a governed action).',
+    notes:
+      'PROTECTED. trust:add grants a VERIFIED remote author auto-run privilege (the admission gate trust leg, shared-hive-trust-admission P-010); trust:remove revokes it (reversible). Owner-authority security grant, off the Mug autonomous surface — mirrors policy_set (D-006). trust:list is read-only (not a governed action).',
   },
 
   // ── knowledge-curation ────────────────────────────────────────────────────────────
@@ -540,6 +549,18 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     coverage: 'covered',
     notes:
       'Arming makes a scheduled plan start firing runs; reversible (disarm). NON-protected so it can graduate per plan risk (scheduled-recurring-plans-2026-06-16 D-017) — seeded never-auto, distinct from system-control’s permanently-protected SYSTEM loops.',
+  },
+  {
+    id: 'schedule.arm-external-trigger',
+    label: 'Arm / disarm an external-event plan binding',
+    category: 'schedule-arm',
+    reversibility: 'reversible',
+    authority: 'system',
+    queenVerbs: ['triggers:arm', 'triggers:disarm'],
+    humanSurface: 'Admin → Triggers and the per-plan Triggers panel',
+    coverage: 'covered',
+    notes:
+      'Installed is not armed. Arming lets provider events start autonomous plan runs, so it shares the schedule-arm ceiling and remains one-call reversible.',
   },
 
   // ── system-control (PROTECTED) ──────────────────────────────────────────────────────

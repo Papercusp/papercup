@@ -2,6 +2,8 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import {
+  createExternalTriggerBinding,
+  createExternalTriggerSource,
   loadExternalTriggerAdminSnapshot,
   setExternalTriggerBindingArmed,
   updateExternalTriggerBindingStormPolicy,
@@ -100,5 +102,46 @@ describe('external-trigger admin shared seam', () => {
         windowSeconds: 300,
       }),
     ).rejects.toThrow('external_trigger_invalid_storm_max_runs');
+  });
+
+  it('creates a non-secret source and installs its binding disarmed', async () => {
+    const source = await createExternalTriggerSource(sql, WS, {
+      kind: 'slack',
+      config: { teamId: 'T123' },
+      credentialRef: 'integration:slack-fixture',
+      status: 'ready',
+      createdBy: 'agent-fixture',
+    });
+    expect(source).toMatchObject({ kind: 'slack', status: 'ready', config: { teamId: 'T123' } });
+
+    const binding = await createExternalTriggerBinding(sql, WS, {
+      sourceId: source.id,
+      planHarnessSlug: HARNESS,
+      planSlug: PLAN,
+      eventPattern: 'ext:slack:mention',
+      eventFilter: { channelType: 'public_channel' },
+      stormPolicy: { maxRuns: 3, windowSeconds: 120 },
+      createdBy: 'agent-fixture',
+    });
+    expect(binding).toMatchObject({
+      sourceId: source.id,
+      sourceKind: 'slack',
+      eventPattern: 'ext:slack:mention',
+      armed: false,
+      action: { type: 'launch-plan' },
+      stormPolicy: { maxRuns: 3, windowSeconds: 120 },
+    });
+  });
+
+  it('refuses a binding pattern for a different source kind', async () => {
+    const source = await createExternalTriggerSource(sql, WS, { kind: 'slack' });
+    await expect(
+      createExternalTriggerBinding(sql, WS, {
+        sourceId: source.id,
+        planHarnessSlug: HARNESS,
+        planSlug: PLAN,
+        eventPattern: 'ext:gmail:message.received',
+      }),
+    ).rejects.toThrow('external_trigger_pattern_source_mismatch:ext:slack:');
   });
 });

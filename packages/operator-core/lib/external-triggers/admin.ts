@@ -9,6 +9,54 @@
 import type postgres from 'postgres';
 import { parseStormPolicy } from './binding-engine';
 
+const SOURCE_KIND_RE = /^[a-z0-9][a-z0-9-]*$/;
+const SOURCE_STATUSES = new Set(['unconfigured', 'ready', 'connecting', 'connected', 'degraded', 'error', 'disabled']);
+
+export interface CreateExternalTriggerSourceInput {
+  kind: string;
+  config?: Record<string, unknown>;
+  credentialRef?: string | null;
+  status?: string;
+  createdBy?: string | null;
+}
+
+export interface CreatedExternalTriggerSource {
+  id: string;
+  kind: string;
+  status: string;
+  config: Record<string, unknown>;
+  credentialRef: string | null;
+  cursor: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateExternalTriggerBindingInput {
+  sourceId: string;
+  planHarnessSlug: string;
+  planSlug: string;
+  eventPattern: string;
+  eventFilter?: Record<string, unknown>;
+  stormPolicy?: Record<string, unknown>;
+  createdBy?: string | null;
+}
+
+export interface CreatedExternalTriggerBinding {
+  id: string;
+  sourceId: string;
+  sourceKind: string;
+  planHarnessSlug: string;
+  planSlug: string;
+  eventPattern: string;
+  eventFilter: Record<string, unknown>;
+  action: Record<string, unknown>;
+  armed: boolean;
+  stormPolicy: Record<string, unknown>;
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface ExternalTriggerSourceAdminRow {
   id: string;
   kind: string;
@@ -129,6 +177,131 @@ interface RunDbRow {
 function iso(value: Date | string | null): string | null {
   if (value === null) return null;
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function required(value: string, field: string): string {
+  const normalized = value.trim();
+  if (!normalized) throw new Error(`external_trigger_${field}_required`);
+  return normalized;
+}
+
+function normalizedStormPolicy(raw: Record<string, unknown> = {}): Record<string, unknown> {
+  const parsed = parseStormPolicy(raw);
+  return {
+    windowSeconds: parsed.windowSeconds,
+    ...(parsed.maxRuns === null ? {} : { maxRuns: parsed.maxRuns }),
+  };
+}
+
+/** Create a non-secret source definition. Provider credentials remain opaque references. */
+export async function createExternalTriggerSource(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: CreateExternalTriggerSourceInput,
+): Promise<CreatedExternalTriggerSource> {
+  const kind = required(input.kind, 'source_kind');
+  if (!SOURCE_KIND_RE.test(kind)) throw new Error(`external_trigger_invalid_source_kind:${kind}`);
+  const status = input.status?.trim() || 'unconfigured';
+  if (!SOURCE_STATUSES.has(status)) throw new Error(`external_trigger_invalid_source_status:${status}`);
+  const config = JSON.stringify(input.config ?? {});
+  const rows = await sql<
+    Array<
+      Omit<CreatedExternalTriggerSource, 'createdAt' | 'updatedAt'> & {
+        createdAt: Date | string;
+        updatedAt: Date | string;
+      }
+    >
+  >`
+    INSERT INTO harness_shared.trigger_sources
+      (workspace_id, kind, config, credential_ref, status, created_by)
+    VALUES (
+      ${required(workspaceId, 'workspace_id')}, ${kind}, ${config}::text::jsonb,
+      ${input.credentialRef?.trim() || null}, ${status}, ${input.createdBy?.trim() || null}
+    )
+    RETURNING id::text,
+              kind,
+              status,
+              config,
+              credential_ref AS "credentialRef",
+              cursor,
+              created_at AS "createdAt",
+              updated_at AS "updatedAt"`;
+  if (!rows[0]) throw new Error('external_trigger_source_create_failed');
+  return {
+    ...rows[0],
+    createdAt: iso(rows[0].createdAt) as string,
+    updatedAt: iso(rows[0].updatedAt) as string,
+  };
+}
+
+/** Install an external-event binding. Installed bindings always begin disarmed. */
+export async function createExternalTriggerBinding(
+  sql: postgres.Sql,
+  workspaceId: string,
+  input: CreateExternalTriggerBindingInput,
+): Promise<CreatedExternalTriggerBinding> {
+  const ws = required(workspaceId, 'workspace_id');
+  const sourceId = required(input.sourceId, 'source_id');
+  const planHarnessSlug = required(input.planHarnessSlug, 'plan_harness_slug');
+  const planSlug = required(input.planSlug, 'plan_slug');
+  const eventPattern = required(input.eventPattern, 'event_pattern');
+  const sources = await sql<Array<{ kind: string }>>`
+    SELECT kind FROM harness_shared.trigger_sources
+     WHERE workspace_id = ${ws} AND id = ${sourceId}::uuid
+     LIMIT 1`;
+  if (!sources[0]) throw new Error(`external_trigger_unknown_source:${sourceId}`);
+  const expectedPrefix = `ext:${sources[0].kind}:`;
+  if (!eventPattern.startsWith(expectedPrefix)) {
+    throw new Error(`external_trigger_pattern_source_mismatch:${expectedPrefix}`);
+  }
+  const plans = await sql<Array<{ exists: boolean }>>`
+    SELECT EXISTS (
+      SELECT 1 FROM harness_shared.harness_plans
+       WHERE workspace_id = ${ws}
+         AND harness_slug = ${planHarnessSlug}
+         AND plan_slug = ${planSlug}
+    ) AS exists`;
+  if (!plans[0]?.exists) throw new Error(`external_trigger_unknown_plan:${planHarnessSlug}/${planSlug}`);
+
+  const eventFilter = JSON.stringify(input.eventFilter ?? {});
+  const action = JSON.stringify({ type: 'launch-plan' });
+  const stormPolicy = normalizedStormPolicy(input.stormPolicy);
+  const stormPolicyJson = JSON.stringify(stormPolicy);
+  const rows = await sql<
+    Array<
+      Omit<CreatedExternalTriggerBinding, 'sourceKind' | 'createdAt' | 'updatedAt'> & {
+        createdAt: Date | string;
+        updatedAt: Date | string;
+      }
+    >
+  >`
+    INSERT INTO harness_shared.trigger_bindings
+      (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+       event_filter, action, armed, storm_policy, created_by)
+    VALUES (
+      ${ws}, ${sourceId}::uuid, ${planHarnessSlug}, ${planSlug}, ${eventPattern},
+      ${eventFilter}::text::jsonb, ${action}::text::jsonb, FALSE,
+      ${stormPolicyJson}::text::jsonb, ${input.createdBy?.trim() || null}
+    )
+    RETURNING id::text,
+              source_id::text AS "sourceId",
+              plan_harness_slug AS "planHarnessSlug",
+              plan_slug AS "planSlug",
+              event_pattern AS "eventPattern",
+              event_filter AS "eventFilter",
+              action,
+              armed,
+              storm_policy AS "stormPolicy",
+              created_by AS "createdBy",
+              created_at AS "createdAt",
+              updated_at AS "updatedAt"`;
+  if (!rows[0]) throw new Error('external_trigger_binding_create_failed');
+  return {
+    ...rows[0],
+    sourceKind: sources[0].kind,
+    createdAt: iso(rows[0].createdAt) as string,
+    updatedAt: iso(rows[0].updatedAt) as string,
+  };
 }
 
 export function disabledExternalTriggerAdminSnapshot(): ExternalTriggerAdminSnapshot {

@@ -54,6 +54,8 @@ describe('capability→category map: specific-over-group overrides', () => {
     // plans: group default plan-governance, attention overrides to inbox
     ['plans:attention', 'inbox-triage'],
     ['plans:set-status', 'plan-governance'],
+    ['triggers:arm', 'schedule-arm'],
+    ['triggers:disarm', 'schedule-arm'],
     // new_subagent: request (ask) vs approve (lifecycle)
     ['new_subagent:request', 'escalations'],
     ['new_subagent:approve', 'agent-lifecycle'],

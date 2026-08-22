@@ -1413,6 +1413,14 @@ import './events/await';
 import './events/emit';
 import './events/cancel';
 import './events/status';
+// external-triggers-gmail-slack-2026-08-22 P-005 — source/binding inventory,
+// installation, explicit arm/disarm, and health/run visibility.
+import './triggers/list';
+import './triggers/create';
+import './triggers/bind';
+import './triggers/arm';
+import './triggers/disarm';
+import './triggers/status';
 // WI-4014 Part 2 (linking-system follow-up to WI-3956): the lifecycle verb for a
 // standing event-key INJECT subscription (watch:create wake:false targetKind:'event')
 // — the wake:false sibling of events:cancel, mirroring topics:unsubscribe's shape.

@@ -67,36 +67,168 @@ const TRIGGER = 'action';
  */
 const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── release & deploy (PROTECTED) ──
-  { id: 'cat:deploy', on: TRIGGER, when: { action: { matches: '^deploy:' } }, fire: 'release-deploy', meta: { reason: 'ships / tears down a deploy target' } },
+  {
+    id: 'cat:deploy',
+    on: TRIGGER,
+    when: { action: { matches: '^deploy:' } },
+    fire: 'release-deploy',
+    meta: { reason: 'ships / tears down a deploy target' },
+  },
 
   // ── spend & budget (PROTECTED) ──
-  { id: 'cat:budget', on: TRIGGER, when: { action: { matches: '^operator:budget' } }, fire: 'spend-budget', meta: { reason: 'sets a spend budget' } },
-  { id: 'cat:rate-limit', on: TRIGGER, when: { action: { matches: '^operator:rate_limit' } }, fire: 'spend-budget', meta: { reason: 'governs rate / throughput spend' } },
-  { id: 'cat:voice-spend', on: TRIGGER, when: { action: { matches: '^operator:voice_spend' } }, fire: 'spend-budget', meta: { reason: 'voice spend accounting' } },
-  { id: 'cat:scale-out', on: TRIGGER, when: { action: { matches: '^accounts:scale_out' } }, fire: 'spend-budget', meta: { reason: 'account scaling = provisioning spend' } },
+  {
+    id: 'cat:budget',
+    on: TRIGGER,
+    when: { action: { matches: '^operator:budget' } },
+    fire: 'spend-budget',
+    meta: { reason: 'sets a spend budget' },
+  },
+  {
+    id: 'cat:rate-limit',
+    on: TRIGGER,
+    when: { action: { matches: '^operator:rate_limit' } },
+    fire: 'spend-budget',
+    meta: { reason: 'governs rate / throughput spend' },
+  },
+  {
+    id: 'cat:voice-spend',
+    on: TRIGGER,
+    when: { action: { matches: '^operator:voice_spend' } },
+    fire: 'spend-budget',
+    meta: { reason: 'voice spend accounting' },
+  },
+  {
+    id: 'cat:scale-out',
+    on: TRIGGER,
+    when: { action: { matches: '^accounts:scale_out' } },
+    fire: 'spend-budget',
+    meta: { reason: 'account scaling = provisioning spend' },
+  },
 
   // ── credentials & auth (PROTECTED) — specific overrides BEFORE accounts:/hive: groups ──
-  { id: 'cat:accounts-cred', on: TRIGGER, when: { action: { matches: '^accounts:(register|remove)' } }, fire: 'credentials-auth', meta: { reason: 'registers/removes a credential-bearing account' } },
-  { id: 'cat:operator-credentials', on: TRIGGER, when: { action: { matches: '^operator:credentials' } }, fire: 'credentials-auth', meta: { reason: 'credential status / management' } },
-  { id: 'cat:hive-cross-grant', on: TRIGGER, when: { action: { matches: '^pot:cross_grant' } }, fire: 'credentials-auth', meta: { reason: 'grants cross-hive authorization' } },
-  { id: 'cat:substrate-revoke', on: TRIGGER, when: { action: { matches: '^substrate:revoke' } }, fire: 'credentials-auth', meta: { reason: 'revokes a substrate contributor/device' } },
-  { id: 'cat:trust', on: TRIGGER, when: { action: { matches: '^trust:(add|remove)' } }, fire: 'credentials-auth', meta: { reason: 'grants/revokes owner trust — auto-run authorization for a verified GitHub author' } },
+  {
+    id: 'cat:accounts-cred',
+    on: TRIGGER,
+    when: { action: { matches: '^accounts:(register|remove)' } },
+    fire: 'credentials-auth',
+    meta: { reason: 'registers/removes a credential-bearing account' },
+  },
+  {
+    id: 'cat:operator-credentials',
+    on: TRIGGER,
+    when: { action: { matches: '^operator:credentials' } },
+    fire: 'credentials-auth',
+    meta: { reason: 'credential status / management' },
+  },
+  {
+    id: 'cat:hive-cross-grant',
+    on: TRIGGER,
+    when: { action: { matches: '^pot:cross_grant' } },
+    fire: 'credentials-auth',
+    meta: { reason: 'grants cross-hive authorization' },
+  },
+  {
+    id: 'cat:substrate-revoke',
+    on: TRIGGER,
+    when: { action: { matches: '^substrate:revoke' } },
+    fire: 'credentials-auth',
+    meta: { reason: 'revokes a substrate contributor/device' },
+  },
+  {
+    id: 'cat:trust',
+    on: TRIGGER,
+    when: { action: { matches: '^trust:(add|remove)' } },
+    fire: 'credentials-auth',
+    meta: { reason: 'grants/revokes owner trust — auto-run authorization for a verified GitHub author' },
+  },
 
   // ── system-control (PROTECTED) ──
-  { id: 'cat:autoloop', on: TRIGGER, when: { action: { matches: '^autoloop:' } }, fire: 'system-control', meta: { reason: 'arms / disarms the autoloop' } },
-  { id: 'cat:flags', on: TRIGGER, when: { action: { matches: '^flags:' } }, fire: 'system-control', meta: { reason: 'flips a feature flag' } },
-  { id: 'cat:routines', on: TRIGGER, when: { action: { matches: '^routines:' } }, fire: 'system-control', meta: { reason: 'controls a background routine' } },
-  { id: 'cat:backup', on: TRIGGER, when: { action: { matches: '^backup:' } }, fire: 'system-control', meta: { reason: 'snapshot / restore / rollback of system state' } },
-  { id: 'cat:db-migrate', on: TRIGGER, when: { action: { matches: '^db:migrate' } }, fire: 'system-control', meta: { reason: 'applies a schema migration' } },
-  { id: 'cat:processes', on: TRIGGER, when: { action: { matches: '^processes:' } }, fire: 'system-control', meta: { reason: 'process control (kill, etc.)' } },
-  { id: 'cat:dev-restart', on: TRIGGER, when: { action: { matches: '^dev:restart' } }, fire: 'system-control', meta: { reason: 'restarts a dev service' } },
-  { id: 'cat:wake-mode', on: TRIGGER, when: { action: { matches: '^coord:wake-mode' } }, fire: 'system-control', meta: { reason: 'changes fleet wake mode' } },
-  { id: 'cat:hive-declare-wake', on: TRIGGER, when: { action: { matches: '^pot:declare-wake' } }, fire: 'system-control', meta: { reason: 'declares a wake routine' } },
+  {
+    id: 'cat:autoloop',
+    on: TRIGGER,
+    when: { action: { matches: '^autoloop:' } },
+    fire: 'system-control',
+    meta: { reason: 'arms / disarms the autoloop' },
+  },
+  {
+    id: 'cat:flags',
+    on: TRIGGER,
+    when: { action: { matches: '^flags:' } },
+    fire: 'system-control',
+    meta: { reason: 'flips a feature flag' },
+  },
+  {
+    id: 'cat:routines',
+    on: TRIGGER,
+    when: { action: { matches: '^routines:' } },
+    fire: 'system-control',
+    meta: { reason: 'controls a background routine' },
+  },
+  {
+    id: 'cat:backup',
+    on: TRIGGER,
+    when: { action: { matches: '^backup:' } },
+    fire: 'system-control',
+    meta: { reason: 'snapshot / restore / rollback of system state' },
+  },
+  {
+    id: 'cat:db-migrate',
+    on: TRIGGER,
+    when: { action: { matches: '^db:migrate' } },
+    fire: 'system-control',
+    meta: { reason: 'applies a schema migration' },
+  },
+  {
+    id: 'cat:processes',
+    on: TRIGGER,
+    when: { action: { matches: '^processes:' } },
+    fire: 'system-control',
+    meta: { reason: 'process control (kill, etc.)' },
+  },
+  {
+    id: 'cat:dev-restart',
+    on: TRIGGER,
+    when: { action: { matches: '^dev:restart' } },
+    fire: 'system-control',
+    meta: { reason: 'restarts a dev service' },
+  },
+  {
+    id: 'cat:wake-mode',
+    on: TRIGGER,
+    when: { action: { matches: '^coord:wake-mode' } },
+    fire: 'system-control',
+    meta: { reason: 'changes fleet wake mode' },
+  },
+  {
+    id: 'cat:hive-declare-wake',
+    on: TRIGGER,
+    when: { action: { matches: '^pot:declare-wake' } },
+    fire: 'system-control',
+    meta: { reason: 'declares a wake routine' },
+  },
 
   // ── agent-lifecycle — hive: overrides (cross_grant/declare-wake/ask*) handled above/below ──
-  { id: 'cat:hive-ask', on: TRIGGER, when: { action: { matches: '^pot:(ask|request_work|asks)' } }, fire: 'escalations', meta: { reason: 'asks another hive (a cross-hive question)' } },
-  { id: 'cat:launch-agent', on: TRIGGER, when: { action: { matches: '^capability:launch-agent$' } }, fire: 'agent-lifecycle', meta: { reason: 'launches an ad-hoc agent or resumes/forks an existing agent' } },
-  { id: 'cat:fleet', on: TRIGGER, when: { action: { matches: '^fleet:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' } },
+  {
+    id: 'cat:hive-ask',
+    on: TRIGGER,
+    when: { action: { matches: '^pot:(ask|request_work|asks)' } },
+    fire: 'escalations',
+    meta: { reason: 'asks another hive (a cross-hive question)' },
+  },
+  {
+    id: 'cat:launch-agent',
+    on: TRIGGER,
+    when: { action: { matches: '^capability:launch-agent$' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'launches an ad-hoc agent or resumes/forks an existing agent' },
+  },
+  {
+    id: 'cat:fleet',
+    on: TRIGGER,
+    when: { action: { matches: '^fleet:' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' },
+  },
   // cup:spawn (WI-1764 #3 renamed fleet:spawn → cup:spawn) placed a background
   // autonomous-loop bee — same agent-lifecycle category as the fleet: verbs it split from.
   // ⚠ KEPT DELIBERATELY THOUGH NO `cup:*` TOOL REMAINS (P-059 retired cup:spawn,
@@ -104,63 +236,277 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // decision ledger holds historical rows stamped `cup:spawn`; deleting the rule
   // would re-categorize those to null, which the gate reads as never-auto. A rule
   // that matches no LIVE verb still classifies the past correctly.
-  { id: 'cat:bee', on: TRIGGER, when: { action: { matches: '^cup:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' } },
-  { id: 'cat:hive', on: TRIGGER, when: { action: { matches: '^pot:' } }, fire: 'agent-lifecycle', meta: { reason: 'hive (swarm of agents) lifecycle' } },
-  { id: 'cat:new-subagent-approve', on: TRIGGER, when: { action: { matches: '^new_subagent:approve' } }, fire: 'agent-lifecycle', meta: { reason: 'approves a new subagent spawn' } },
-  { id: 'cat:new-subagent-request', on: TRIGGER, when: { action: { matches: '^new_subagent:request' } }, fire: 'escalations', meta: { reason: 'requests approval for a new subagent (an ask)' } },
-  { id: 'cat:intel-spawn-tree', on: TRIGGER, when: { action: { matches: '^intel:spawn_tree' } }, fire: 'agent-lifecycle', meta: { reason: 'agent spawn-tree view' } },
-  { id: 'cat:agents', on: TRIGGER, when: { action: { matches: '^agents:' } }, fire: 'agent-lifecycle', meta: { reason: 'agent roster' } },
+  {
+    id: 'cat:bee',
+    on: TRIGGER,
+    when: { action: { matches: '^cup:' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' },
+  },
+  {
+    id: 'cat:hive',
+    on: TRIGGER,
+    when: { action: { matches: '^pot:' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'hive (swarm of agents) lifecycle' },
+  },
+  {
+    id: 'cat:new-subagent-approve',
+    on: TRIGGER,
+    when: { action: { matches: '^new_subagent:approve' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'approves a new subagent spawn' },
+  },
+  {
+    id: 'cat:new-subagent-request',
+    on: TRIGGER,
+    when: { action: { matches: '^new_subagent:request' } },
+    fire: 'escalations',
+    meta: { reason: 'requests approval for a new subagent (an ask)' },
+  },
+  {
+    id: 'cat:intel-spawn-tree',
+    on: TRIGGER,
+    when: { action: { matches: '^intel:spawn_tree' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'agent spawn-tree view' },
+  },
+  {
+    id: 'cat:agents',
+    on: TRIGGER,
+    when: { action: { matches: '^agents:' } },
+    fire: 'agent-lifecycle',
+    meta: { reason: 'agent roster' },
+  },
 
   // ── inbox-triage — plans:attention override BEFORE the plans: group ──
-  { id: 'cat:plans-attention', on: TRIGGER, when: { action: { matches: '^plans:attention' } }, fire: 'inbox-triage', meta: { reason: 'the inbox / attention view' } },
-  { id: 'cat:inbox', on: TRIGGER, when: { action: { matches: '^inbox:' } }, fire: 'inbox-triage', meta: { reason: 'inbox triage' } },
+  {
+    id: 'cat:plans-attention',
+    on: TRIGGER,
+    when: { action: { matches: '^plans:attention' } },
+    fire: 'inbox-triage',
+    meta: { reason: 'the inbox / attention view' },
+  },
+  {
+    id: 'cat:inbox',
+    on: TRIGGER,
+    when: { action: { matches: '^inbox:' } },
+    fire: 'inbox-triage',
+    meta: { reason: 'inbox triage' },
+  },
   // cat:messages-dismiss (messages:dismiss) RETIRED 2026-07-26 —
   // retire-work-item-mail-surface-2026-07-26 P-007.
 
   // ── plan-governance ──
-  { id: 'cat:plan-reviews', on: TRIGGER, when: { action: { matches: '^harness:(plan_reviews|pending_reviews)' } }, fire: 'plan-governance', meta: { reason: 'plan-review queue' } },
-  // schedule-arm: arming a scheduled plan is its OWN (graduatable) category — MUST precede the
-  // generic plans: rule so plans:arm-schedule doesn't fall through to plan-governance (D-017).
-  { id: 'cat:schedule-arm', on: TRIGGER, when: { action: { matches: '^plans:(arm|disarm)-schedule' } }, fire: 'schedule-arm', meta: { reason: 'arms / disarms a scheduled plan’s recurrence (start/stop autonomous runs)' } },
-  { id: 'cat:plans', on: TRIGGER, when: { action: { matches: '^plans:' } }, fire: 'plan-governance', meta: { reason: 'ratify / promote / set plan state' } },
-  { id: 'cat:plan-items', on: TRIGGER, when: { action: { matches: '^plan_items:' } }, fire: 'plan-governance', meta: { reason: 'plan-item governance (claim / convert / status)' } },
-  { id: 'cat:goals', on: TRIGGER, when: { action: { matches: '^goals:' } }, fire: 'plan-governance', meta: { reason: 'plan-level objectives' } },
+  {
+    id: 'cat:plan-reviews',
+    on: TRIGGER,
+    when: { action: { matches: '^harness:(plan_reviews|pending_reviews)' } },
+    fire: 'plan-governance',
+    meta: { reason: 'plan-review queue' },
+  },
+  // schedule-arm: activating any trigger that may start unattended plan runs is its OWN
+  // graduatable category. These overrides MUST precede the generic plans: rule (D-017).
+  {
+    id: 'cat:trigger-arm',
+    on: TRIGGER,
+    when: { action: { matches: '^triggers:(arm|disarm)$' } },
+    fire: 'schedule-arm',
+    meta: { reason: 'arms / disarms an external-event binding that can start autonomous plan runs' },
+  },
+  {
+    id: 'cat:schedule-arm',
+    on: TRIGGER,
+    when: { action: { matches: '^plans:(arm|disarm)-schedule' } },
+    fire: 'schedule-arm',
+    meta: { reason: 'arms / disarms a scheduled plan’s recurrence (start/stop autonomous runs)' },
+  },
+  {
+    id: 'cat:plans',
+    on: TRIGGER,
+    when: { action: { matches: '^plans:' } },
+    fire: 'plan-governance',
+    meta: { reason: 'ratify / promote / set plan state' },
+  },
+  {
+    id: 'cat:plan-items',
+    on: TRIGGER,
+    when: { action: { matches: '^plan_items:' } },
+    fire: 'plan-governance',
+    meta: { reason: 'plan-item governance (claim / convert / status)' },
+  },
+  {
+    id: 'cat:goals',
+    on: TRIGGER,
+    when: { action: { matches: '^goals:' } },
+    fire: 'plan-governance',
+    meta: { reason: 'plan-level objectives' },
+  },
 
   // ── work-prioritization ──
-  { id: 'cat:work-items', on: TRIGGER, when: { action: { matches: '^work_items:' } }, fire: 'work-prioritization', meta: { reason: 'work-item priority / reorder / state' } },
+  {
+    id: 'cat:work-items',
+    on: TRIGGER,
+    when: { action: { matches: '^work_items:' } },
+    fire: 'work-prioritization',
+    meta: { reason: 'work-item priority / reorder / state' },
+  },
 
   // ── implementation — improvements:set-auto-policy override BEFORE improvements: group ──
   // (WI-5252: the auto-implement risk-policy/graduation dial is a DISTINCT human-driving
   // action from generic idea triage — it governs WHICH changes dispatch with no per-item
   // review at all, so it belongs to `implementation`, not `ideation-intake`.)
-  { id: 'cat:improvements-auto-policy', on: TRIGGER, when: { action: { matches: '^improvements:set-auto-policy' } }, fire: 'implementation', meta: { reason: 'graduates/tunes the auto-implement dispatch policy (autoKinds, dispatch ceilings, protected-path/keyword tightening) — the actual "approve auto-implement" lever, distinct from per-idea triage' } },
+  {
+    id: 'cat:improvements-auto-policy',
+    on: TRIGGER,
+    when: { action: { matches: '^improvements:set-auto-policy' } },
+    fire: 'implementation',
+    meta: {
+      reason:
+        'graduates/tunes the auto-implement dispatch policy (autoKinds, dispatch ceilings, protected-path/keyword tightening) — the actual "approve auto-implement" lever, distinct from per-idea triage',
+    },
+  },
 
   // ── ideation & intake — conversations:promote override BEFORE conversations: group ──
-  { id: 'cat:conversations-promote', on: TRIGGER, when: { action: { matches: '^conversations:promote' } }, fire: 'ideation-intake', meta: { reason: 'promotes a conversation to tracked work' } },
-  { id: 'cat:scout', on: TRIGGER, when: { action: { matches: '^blender:' } }, fire: 'ideation-intake', meta: { reason: 'grades a Scout idea' } },
-  { id: 'cat:improvements', on: TRIGGER, when: { action: { matches: '^improvements:' } }, fire: 'ideation-intake', meta: { reason: 'triage / promote an improvement' } },
-  { id: 'cat:issues', on: TRIGGER, when: { action: { matches: '^issues:' } }, fire: 'ideation-intake', meta: { reason: 'triage / promote an issue' } },
+  {
+    id: 'cat:conversations-promote',
+    on: TRIGGER,
+    when: { action: { matches: '^conversations:promote' } },
+    fire: 'ideation-intake',
+    meta: { reason: 'promotes a conversation to tracked work' },
+  },
+  {
+    id: 'cat:scout',
+    on: TRIGGER,
+    when: { action: { matches: '^blender:' } },
+    fire: 'ideation-intake',
+    meta: { reason: 'grades a Scout idea' },
+  },
+  {
+    id: 'cat:improvements',
+    on: TRIGGER,
+    when: { action: { matches: '^improvements:' } },
+    fire: 'ideation-intake',
+    meta: { reason: 'triage / promote an improvement' },
+  },
+  {
+    id: 'cat:issues',
+    on: TRIGGER,
+    when: { action: { matches: '^issues:' } },
+    fire: 'ideation-intake',
+    meta: { reason: 'triage / promote an issue' },
+  },
 
   // ── review & merge ──
-  { id: 'cat:gym', on: TRIGGER, when: { action: { matches: '^gym:' } }, fire: 'review-merge', meta: { reason: 'judges a gym candidate (a quality verdict)' } },
-  { id: 'cat:design-review', on: TRIGGER, when: { action: { matches: '^design-phase[.:]record_review' } }, fire: 'review-merge', meta: { reason: 'records a design reviewer verdict' } },
-  { id: 'cat:review-approve', on: TRIGGER, when: { action: { matches: '^review:approve' } }, fire: 'review-merge', meta: { reason: 'approves a pending code review' } },
-  { id: 'cat:merge-approve', on: TRIGGER, when: { action: { matches: '^merge:approve' } }, fire: 'review-merge', meta: { reason: 'confirms a promotion / merge to a later phase' } },
+  {
+    id: 'cat:gym',
+    on: TRIGGER,
+    when: { action: { matches: '^gym:' } },
+    fire: 'review-merge',
+    meta: { reason: 'judges a gym candidate (a quality verdict)' },
+  },
+  {
+    id: 'cat:design-review',
+    on: TRIGGER,
+    when: { action: { matches: '^design-phase[.:]record_review' } },
+    fire: 'review-merge',
+    meta: { reason: 'records a design reviewer verdict' },
+  },
+  {
+    id: 'cat:review-approve',
+    on: TRIGGER,
+    when: { action: { matches: '^review:approve' } },
+    fire: 'review-merge',
+    meta: { reason: 'approves a pending code review' },
+  },
+  {
+    id: 'cat:merge-approve',
+    on: TRIGGER,
+    when: { action: { matches: '^merge:approve' } },
+    fire: 'review-merge',
+    meta: { reason: 'confirms a promotion / merge to a later phase' },
+  },
 
   // ── escalations & agent-questions ──
-  { id: 'cat:coord-escalate', on: TRIGGER, when: { action: { matches: '^coord:(escalate|escalations|resolve|ack|deliberate|vote)' } }, fire: 'escalations', meta: { reason: 'raises / resolves an escalation' } },
-  { id: 'cat:harness-escalation', on: TRIGGER, when: { action: { matches: '^harness:escalation' } }, fire: 'escalations', meta: { reason: 'harness escalation queue' } },
-  { id: 'cat:conversations', on: TRIGGER, when: { action: { matches: '^conversations:' } }, fire: 'escalations', meta: { reason: 'answer / resolve an agent question' } },
-  { id: 'cat:chat-ask-choice', on: TRIGGER, when: { action: { matches: '^chat[:_]?ask_choice' } }, fire: 'escalations', meta: { reason: 'answers a decision card' } },
+  {
+    id: 'cat:coord-escalate',
+    on: TRIGGER,
+    when: { action: { matches: '^coord:(escalate|escalations|resolve|ack|deliberate|vote)' } },
+    fire: 'escalations',
+    meta: { reason: 'raises / resolves an escalation' },
+  },
+  {
+    id: 'cat:harness-escalation',
+    on: TRIGGER,
+    when: { action: { matches: '^harness:escalation' } },
+    fire: 'escalations',
+    meta: { reason: 'harness escalation queue' },
+  },
+  {
+    id: 'cat:conversations',
+    on: TRIGGER,
+    when: { action: { matches: '^conversations:' } },
+    fire: 'escalations',
+    meta: { reason: 'answer / resolve an agent question' },
+  },
+  {
+    id: 'cat:chat-ask-choice',
+    on: TRIGGER,
+    when: { action: { matches: '^chat[:_]?ask_choice' } },
+    fire: 'escalations',
+    meta: { reason: 'answers a decision card' },
+  },
 
   // ── knowledge-curation ──
-  { id: 'cat:memory', on: TRIGGER, when: { action: { matches: '^memory:' } }, fire: 'knowledge-curation', meta: { reason: 'remember / forget / update a memory' } },
-  { id: 'cat:knowledge-packs', on: TRIGGER, when: { action: { matches: '^knowledge_packs:' } }, fire: 'knowledge-curation', meta: { reason: 'publish / install a knowledge pack' } },
-  { id: 'cat:blueprint', on: TRIGGER, when: { action: { matches: '^blueprint:' } }, fire: 'knowledge-curation', meta: { reason: 'authors / extends a blueprint' } },
-  { id: 'cat:docs', on: TRIGGER, when: { action: { matches: '^docs:' } }, fire: 'knowledge-curation', meta: { reason: 'publishes documentation' } },
-  { id: 'cat:curation', on: TRIGGER, when: { action: { matches: '^curation:' } }, fire: 'knowledge-curation', meta: { reason: 'hive knowledge curation' } },
-  { id: 'cat:wiki', on: TRIGGER, when: { action: { matches: '^wiki:' } }, fire: 'knowledge-curation', meta: { reason: 'wiki / backlinks' } },
-  { id: 'cat:rationale', on: TRIGGER, when: { action: { matches: '^rationale:' } }, fire: 'knowledge-curation', meta: { reason: 'rationale projection' } },
+  {
+    id: 'cat:memory',
+    on: TRIGGER,
+    when: { action: { matches: '^memory:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'remember / forget / update a memory' },
+  },
+  {
+    id: 'cat:knowledge-packs',
+    on: TRIGGER,
+    when: { action: { matches: '^knowledge_packs:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'publish / install a knowledge pack' },
+  },
+  {
+    id: 'cat:blueprint',
+    on: TRIGGER,
+    when: { action: { matches: '^blueprint:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'authors / extends a blueprint' },
+  },
+  {
+    id: 'cat:docs',
+    on: TRIGGER,
+    when: { action: { matches: '^docs:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'publishes documentation' },
+  },
+  {
+    id: 'cat:curation',
+    on: TRIGGER,
+    when: { action: { matches: '^curation:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'hive knowledge curation' },
+  },
+  {
+    id: 'cat:wiki',
+    on: TRIGGER,
+    when: { action: { matches: '^wiki:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'wiki / backlinks' },
+  },
+  {
+    id: 'cat:rationale',
+    on: TRIGGER,
+    when: { action: { matches: '^rationale:' } },
+    fire: 'knowledge-curation',
+    meta: { reason: 'rationale projection' },
+  },
 ];
 
 /**
@@ -172,8 +518,20 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
  * this module exists to avoid (see module doc).
  */
 const CAPABILITY_FALLBACK_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
-  { id: 'cap:secrets', on: TRIGGER, when: { capability: { matches: '^secrets:' } }, fire: 'credentials-auth', meta: { reason: 'capability reads/writes secret material' } },
-  { id: 'cap:compute-exec', on: TRIGGER, when: { capability: { matches: '^compute:exec:' } }, fire: 'system-control', meta: { reason: 'capability runs arbitrary code' } },
+  {
+    id: 'cap:secrets',
+    on: TRIGGER,
+    when: { capability: { matches: '^secrets:' } },
+    fire: 'credentials-auth',
+    meta: { reason: 'capability reads/writes secret material' },
+  },
+  {
+    id: 'cap:compute-exec',
+    on: TRIGGER,
+    when: { capability: { matches: '^compute:exec:' } },
+    fire: 'system-control',
+    meta: { reason: 'capability runs arbitrary code' },
+  },
 ];
 
 const ENGINE = new RulesEngine<ActionEvent, AutonomyCategory>({ keyOf: () => TRIGGER })
@@ -192,10 +550,7 @@ export interface CategoryResult {
  * governed action as never-auto (D-009). `capability` is optional and only
  * consulted by {@link CAPABILITY_FALLBACK_RULES}.
  */
-export function classifyActionCategory(
-  action: string,
-  capability?: string,
-): CategoryResult | null {
+export function classifyActionCategory(action: string, capability?: string): CategoryResult | null {
   const [first] = ENGINE.match({ action, capability });
   if (!first) return null;
   return { category: first.fire, reason: (first.rule.meta as { reason: string }).reason };

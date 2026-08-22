@@ -1,0 +1,147 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const loadSnapshot = vi.fn();
+const createSource = vi.fn();
+const createBinding = vi.fn();
+const setArmed = vi.fn();
+const invalidate = vi.fn();
+
+vi.mock('../../external-triggers/admin', () => ({
+  loadExternalTriggerAdminSnapshot: (...args: unknown[]) => loadSnapshot(...args),
+  createExternalTriggerSource: (...args: unknown[]) => createSource(...args),
+  createExternalTriggerBinding: (...args: unknown[]) => createBinding(...args),
+  setExternalTriggerBindingArmed: (...args: unknown[]) => setArmed(...args),
+}));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getOrgPg: () => ({ sql: { test: true } }),
+}));
+vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-fallback' }));
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => ({ ownerId: 'su-test', workspaceId: 'ws-1' }),
+}));
+vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...args: unknown[]) => invalidate(...args) }));
+
+import listTool from './list';
+import createTool from './create';
+import bindTool from './bind';
+import armTool from './arm';
+import disarmTool from './disarm';
+import statusTool from './status';
+
+const ctx = { workspaceId: 'ws-1', role: 'operator' } as never;
+const body = (out: unknown) => (out as { data: unknown }).data as any;
+const snapshot = {
+  enabled: true,
+  counts: { sources: 2, bindings: 2, armed: 1, recentFailures: 1 },
+  sources: [
+    { id: '00000000-0000-4000-8000-000000000001', kind: 'gmail' },
+    { id: '00000000-0000-4000-8000-000000000002', kind: 'slack' },
+  ],
+  bindings: [
+    {
+      id: '10000000-0000-4000-8000-000000000001',
+      sourceId: '00000000-0000-4000-8000-000000000001',
+      planSlug: 'email',
+      armed: true,
+    },
+    {
+      id: '10000000-0000-4000-8000-000000000002',
+      sourceId: '00000000-0000-4000-8000-000000000002',
+      planSlug: 'thread',
+      armed: false,
+    },
+  ],
+  recentRuns: [{ id: 'run-1', bindingId: '10000000-0000-4000-8000-000000000001', status: 'failed' }],
+};
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  loadSnapshot.mockResolvedValue(snapshot);
+  createSource.mockResolvedValue({ id: '00000000-0000-4000-8000-000000000003', kind: 'slack' });
+  createBinding.mockResolvedValue({ id: '10000000-0000-4000-8000-000000000003', armed: false });
+  setArmed.mockImplementation(async (_sql, _ws, id, armed) => ({ id, armed }));
+  invalidate.mockResolvedValue(undefined);
+});
+
+describe('triggers:* tool surface', () => {
+  it('registers all six tools with routing guidance', () => {
+    const tools = [listTool, createTool, bindTool, armTool, disarmTool, statusTool];
+    expect(tools.map((tool) => tool.name)).toEqual([
+      'triggers:list',
+      'triggers:create',
+      'triggers:bind',
+      'triggers:arm',
+      'triggers:disarm',
+      'triggers:status',
+    ]);
+    for (const tool of tools) {
+      expect(tool.guidance?.when).toBeTruthy();
+      expect(tool.guidance?.notWhen).toBeTruthy();
+    }
+  });
+
+  it('lists and filters sources plus bindings together', async () => {
+    const out = body(await listTool.handler({ sourceKind: 'slack', plan: 'thread', limit: 100 } as never, ctx));
+    expect(out).toMatchObject({ ok: true, counts: { sources: 1, bindings: 1 } });
+    expect(out.sources[0].kind).toBe('slack');
+    expect(out.bindings[0].planSlug).toBe('thread');
+  });
+
+  it('creates a source with server-authored attribution and invalidates sync', async () => {
+    const out = body(await createTool.handler({ kind: 'slack', config: { teamId: 'T1' } } as never, ctx));
+    expect(out.ok).toBe(true);
+    expect(createSource).toHaveBeenCalledWith(expect.anything(), 'ws-1', {
+      kind: 'slack',
+      config: { teamId: 'T1' },
+      createdBy: 'su-test',
+    });
+    expect(invalidate).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-1' });
+  });
+
+  it('installs a binding disarmed through the shared seam', async () => {
+    const out = body(
+      await bindTool.handler(
+        {
+          sourceId: '00000000-0000-4000-8000-000000000002',
+          harness: 'papercusp',
+          plan: 'thread',
+          eventPattern: 'ext:slack:mention',
+        } as never,
+        ctx,
+      ),
+    );
+    expect(out.binding.armed).toBe(false);
+    expect(createBinding).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws-1',
+      expect.objectContaining({
+        planHarnessSlug: 'papercusp',
+        planSlug: 'thread',
+        createdBy: 'su-test',
+      }),
+    );
+  });
+
+  it('arms and disarms only the named binding', async () => {
+    const bindingId = '10000000-0000-4000-8000-000000000002';
+    expect(body(await armTool.handler({ bindingId, confirm: true } as never, ctx))).toMatchObject({
+      binding: { armed: true },
+    });
+    expect(body(await disarmTool.handler({ bindingId, confirm: true } as never, ctx))).toMatchObject({
+      binding: { armed: false },
+    });
+    expect(setArmed.mock.calls.map((call) => call.slice(1))).toEqual([
+      ['ws-1', bindingId, true],
+      ['ws-1', bindingId, false],
+    ]);
+  });
+
+  it('returns scoped status and a typed not-found result', async () => {
+    const bindingId = '10000000-0000-4000-8000-000000000001';
+    const ok = body(await statusTool.handler({ bindingId } as never, ctx));
+    expect(ok).toMatchObject({ ok: true, bindings: [{ id: bindingId }], recentRuns: [{ id: 'run-1' }] });
+    const missing = body(await statusTool.handler({ sourceId: '00000000-0000-4000-8000-000000000099' } as never, ctx));
+    expect(missing).toMatchObject({ ok: false, error: 'source_not_found' });
+  });
+});
