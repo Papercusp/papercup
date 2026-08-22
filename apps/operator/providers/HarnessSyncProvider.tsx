@@ -36,7 +36,12 @@
  * failure. That is the degraded mode, not the default.
  */
 import { useEffect, useState, type ReactNode } from 'react';
-import { SyncProvider, setSyncDeltaCodec, CONNECTION_CAPPED_MAX_IN_FLIGHT } from '@papercusp/sync';
+import {
+  SyncProvider,
+  setSyncDeltaCodec,
+  CONNECTION_CAPPED_MAX_IN_FLIGHT,
+  syncMetrics,
+} from '@papercusp/sync';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useFlag } from '@/lib/flag-hooks';
 import { FLAGS } from '@papercusp/flags';
@@ -109,18 +114,36 @@ export function resolveMaxInFlightFetches(ipcCarriesFetch: boolean): number | un
  * stampede this exists to prevent.
  */
 export async function assertIpcCarriesFetch(): Promise<boolean> {
+  return (await readIpcClient()) === 'connected';
+}
+
+async function readIpcClient(): Promise<string | null> {
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const status = await invoke<{ client?: string }>('endpoint_ipc_status');
-    return status?.client === 'connected';
+    return status?.client ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /** Bounded startup poll — how long to keep asking before settling for capped. */
 const IPC_ASSERT_TIMEOUT_MS = 30_000;
 const IPC_ASSERT_INTERVAL_MS = 500;
+
+/**
+ * Make the bounded fallback visible after it settles. The warning is the
+ * immediate operator signal; the metrics fields are the durable in-page
+ * evidence available to the health panel and DevTools snapshot.
+ */
+export function reportIpcAssertionTimeout(lastClient: string | null): void {
+  syncMetrics.recordIpcAssertionTimeout(lastClient);
+  // eslint-disable-next-line no-console
+  console.warn(
+    `[HarnessSyncProvider] IPC fetch assertion timed out after ${IPC_ASSERT_TIMEOUT_MS}ms; ` +
+      `remaining connection-capped. Last observed client: ${lastClient ?? 'unknown'}.`,
+  );
+}
 
 /**
  * Start CAPPED; raise only once IPC is PROVEN to carry fetch.
@@ -142,7 +165,7 @@ const IPC_ASSERT_INTERVAL_MS = 500;
  * not re-cap, because the poll has already stopped. Closing that needs a push
  * signal from Rust and is a separate item — recorded, not silently omitted.
  */
-function useIpcCarriesFetch(): boolean {
+export function useIpcCarriesFetch(): boolean {
   const [carries, setCarries] = useState(false);
 
   useEffect(() => {
@@ -155,14 +178,20 @@ function useIpcCarriesFetch(): boolean {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = Date.now() + IPC_ASSERT_TIMEOUT_MS;
+    let lastClient: string | null = null;
 
     const poll = async () => {
       if (cancelled) return;
-      if (await assertIpcCarriesFetch()) {
+      lastClient = await readIpcClient();
+      if (lastClient === 'connected') {
         if (!cancelled) setCarries(true);
         return; // proven — stop asking
       }
-      if (cancelled || Date.now() >= deadline) return;
+      if (cancelled) return;
+      if (Date.now() >= deadline) {
+        reportIpcAssertionTimeout(lastClient);
+        return;
+      }
       timer = setTimeout(poll, IPC_ASSERT_INTERVAL_MS);
     };
     void poll();

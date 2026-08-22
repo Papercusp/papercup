@@ -1,3 +1,5 @@
+/** @vitest-environment jsdom */
+
 /**
  * resolveMaxInFlightFetches — WI-6253 + D-047 recurrence guards.
  *
@@ -18,16 +20,30 @@
  * the cap is raised ONLY on a positive `client === 'connected'` assertion, and
  * every other state (and every failure) stays capped.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CONNECTION_CAPPED_MAX_IN_FLIGHT } from '@papercusp/sync';
+import { act, cleanup, renderHook } from '@testing-library/react';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { CONNECTION_CAPPED_MAX_IN_FLIGHT, syncMetrics } from '@papercusp/sync';
 
 const invoke = vi.fn();
 vi.mock('@tauri-apps/api/core', () => ({ invoke: (...a: unknown[]) => invoke(...a) }));
+vi.mock('@/app/_components/SetupWizard/tauri-detect', () => ({ isTauri: () => true }));
 
-const { resolveMaxInFlightFetches, assertIpcCarriesFetch } = await import('./HarnessSyncProvider');
+const {
+  resolveMaxInFlightFetches,
+  assertIpcCarriesFetch,
+  reportIpcAssertionTimeout,
+  useIpcCarriesFetch,
+} = await import('./HarnessSyncProvider');
 
 beforeEach(() => {
   invoke.mockReset();
+  syncMetrics.__resetForTests();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('resolveMaxInFlightFetches', () => {
@@ -79,5 +95,35 @@ describe('assertIpcCarriesFetch (D-047)', () => {
     // structured `client` field decides.
     invoke.mockResolvedValue({ resolution_detail: 'connected to /run/papercusp.sock' });
     await expect(assertIpcCarriesFetch()).resolves.toBe(false);
+  });
+
+  it('records and warns when the bounded assertion gives up', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    reportIpcAssertionTimeout('dead');
+
+    expect(syncMetrics.snapshot()).toMatchObject({
+      ipcAssertTimedOut: true,
+      ipcAssertLastClient: 'dead',
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('Last observed client: dead'));
+    warn.mockRestore();
+  });
+
+  it('reports the timeout from the real startup poll deadline', async () => {
+    invoke.mockResolvedValue({ client: 'dead' });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+
+    renderHook(() => useIpcCarriesFetch());
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+
+    expect(syncMetrics.snapshot()).toMatchObject({
+      ipcAssertTimedOut: true,
+      ipcAssertLastClient: 'dead',
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 });
