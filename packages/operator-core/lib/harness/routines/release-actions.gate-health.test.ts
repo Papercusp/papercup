@@ -321,6 +321,7 @@ describe('trackGateStall monotonic gate_health merge (EI-20854484804457933)', ()
       lastFromFresh: true,
       lastVerdict: 'not-green',
       failingTests: ['real-failure.test.ts'],
+      observedCandidate: 'candidate-re',
     };
     seededGh = prior;
 
@@ -345,6 +346,24 @@ describe('trackGateStall monotonic gate_health merge (EI-20854484804457933)', ()
     const update = [...calls].reverse().find((call) => /UPDATE\s+harness_shared\.routines/i.test(call.query));
     expect(update?.query).toContain('jsonb_array_length');
     expect(update?.query).toContain('lastFromFresh');
+    expect(update?.query).toContain('observedCandidate');
+  });
+
+  it('does not carry a prior candidate’s failures onto a newer empty verdict', () => {
+    const folded = mergeGateHealthMonotonic(
+      {
+        failingTests: ['lint:tsc'],
+        observedCandidate: 'old-candidate',
+      },
+      {
+        failingTests: [],
+        lastFromFresh: false,
+        lastVerdict: 'not-green',
+        observedCandidate: 'new-candidate',
+      },
+    );
+
+    expect(folded.failingTests).toEqual([]);
   });
 });
 

@@ -1427,7 +1427,7 @@ export function shouldWarnOnStallClearMiss(stallAlerted: boolean, clearedCount: 
  * closes the stale read/modify/write race.
  */
 export function mergeGateHealthMonotonic(
-  previous: { failingTests?: unknown } | null | undefined,
+  previous: { failingTests?: unknown; observedCandidate?: unknown } | null | undefined,
   next: Record<string, unknown>,
 ): Record<string, unknown> {
   const previousFailingTests = Array.isArray(previous?.failingTests)
@@ -1436,9 +1436,15 @@ export function mergeGateHealthMonotonic(
   const nextFailingTests = Array.isArray(next.failingTests)
     ? next.failingTests.filter((test): test is string => typeof test === 'string')
     : [];
+  const previousCandidate =
+    typeof previous?.observedCandidate === 'string' ? previous.observedCandidate.trim().toLowerCase() : '';
+  const nextCandidate =
+    typeof next.observedCandidate === 'string' ? next.observedCandidate.trim().toLowerCase() : '';
   const preservesPreviousFailures =
     previousFailingTests.length > 0 &&
     nextFailingTests.length === 0 &&
+    previousCandidate.length > 0 &&
+    previousCandidate === nextCandidate &&
     next.lastFromFresh !== true &&
     next.lastVerdict !== 'green';
   return preservesPreviousFailures ? { ...next, failingTests: previousFailingTests } : next;
@@ -2182,6 +2188,9 @@ export async function trackGateStall(
               CASE WHEN jsonb_typeof($2::jsonb->'gate_health'->'failingTests') = 'array'
                 THEN $2::jsonb->'gate_health'->'failingTests' ELSE '[]'::jsonb END
             ) = 0
+            AND NULLIF(metadata->'gate_health'->>'observedCandidate', '') IS NOT NULL
+            AND lower(metadata->'gate_health'->>'observedCandidate') =
+                lower($2::jsonb->'gate_health'->>'observedCandidate')
             AND COALESCE(($2::jsonb->'gate_health'->>'lastFromFresh')::boolean, false) = false
             AND COALESCE($2::jsonb->'gate_health'->>'lastVerdict', '') <> 'green'
             THEN jsonb_set(
