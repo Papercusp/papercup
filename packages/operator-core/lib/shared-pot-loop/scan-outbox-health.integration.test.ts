@@ -145,3 +145,99 @@ describe('scanOutboxHealth — quarantined-row exclusion (EI-21009625512310918)'
     expect(result.oldestUndrainedAgeMs).toBe(3_600_000);
   });
 });
+
+describe('scanOutboxHealth — residentInProcess dormancy exception (EI-21096375006041139)', () => {
+  let db: FreshPgDb;
+  let sql: postgres.Sql;
+
+  beforeAll(async () => {
+    db = await createFreshPgDb('outbox_health_resident');
+    sql = db.sql;
+    await sql.unsafe(`
+      CREATE TABLE harness_shared.substrate_outbox (
+        id             BIGSERIAL PRIMARY KEY,
+        workspace_id   TEXT   NOT NULL,
+        harness_slug   TEXT   NOT NULL,
+        table_name     TEXT   NOT NULL,
+        op             TEXT   NOT NULL CHECK (op IN ('put', 'del')),
+        key            TEXT   NOT NULL,
+        row            JSONB,
+        ts             BIGINT NOT NULL,
+        drained_at     BIGINT,
+        drained_log_key TEXT,
+        quarantined_at BIGINT
+      );
+    `);
+  }, 60_000);
+  afterAll(async () => {
+    await db.cleanup();
+  });
+  beforeEach(async () => {
+    await sql`DELETE FROM harness_shared.substrate_outbox`;
+  });
+
+  it('residentInProcess:false withholds the AGE breach on a small, merely-aged backlog — the live hotel-reservations shape (406 rows, ~3h, no booted drain loop)', async () => {
+    const now = 1_800_000_000_000;
+    // ~3h old, well under any real depth SLO — mirrors the live forensics
+    // (undrainedDepth:371, oldestUndrainedAgeMs:11292679) that drained
+    // completely in ~10s once the harness next booted.
+    await seed(sql, { key: 'dormant-1', ts: now - 3 * 60 * 60_000, drainedAt: null, quarantinedAt: null });
+
+    const result = await scanOutboxHealth(sql, {
+      maxDepth: 10_000,
+      maxAgeMs: 30 * 60_000,
+      nowMs: now,
+      workspaceId: WORKSPACE,
+      harness: HARNESS,
+      residentInProcess: false,
+    });
+
+    expect(result.undrainedDepth).toBe(1);
+    expect(result.oldestUndrainedAgeMs).toBe(3 * 60 * 60_000);
+    expect(result.breaches).toEqual([]);
+    expect(result.ageBreachSuppressedDormant).toBe(true);
+  });
+
+  it('residentInProcess:false does NOT suppress the DEPTH leg — unbounded growth is real regardless of why nothing is draining it', async () => {
+    const now = 1_800_000_000_000;
+    await seed(sql, { key: 'dormant-2', ts: now - 3 * 60 * 60_000, drainedAt: null, quarantinedAt: null });
+
+    const result = await scanOutboxHealth(sql, {
+      maxDepth: 0,
+      maxAgeMs: 30 * 60_000,
+      nowMs: now,
+      workspaceId: WORKSPACE,
+      harness: HARNESS,
+      residentInProcess: false,
+    });
+
+    expect(result.breaches).toEqual(['outbox depth 1 > SLO 0']);
+    expect(result.ageBreachSuppressedDormant).toBe(true);
+  });
+
+  it('residentInProcess omitted (unknown) or true preserves the unconditional pre-existing behavior — a real drain-loop failure still alarms', async () => {
+    const now = 1_800_000_000_000;
+    await seed(sql, { key: 'live-1', ts: now - 3 * 60 * 60_000, drainedAt: null, quarantinedAt: null });
+
+    const omitted = await scanOutboxHealth(sql, {
+      maxDepth: 10_000,
+      maxAgeMs: 30 * 60_000,
+      nowMs: now,
+      workspaceId: WORKSPACE,
+      harness: HARNESS,
+    });
+    expect(omitted.breaches).toEqual(['oldest undrained row age 10800000ms > SLO 1800000ms']);
+    expect(omitted.ageBreachSuppressedDormant).toBe(false);
+
+    const resident = await scanOutboxHealth(sql, {
+      maxDepth: 10_000,
+      maxAgeMs: 30 * 60_000,
+      nowMs: now,
+      workspaceId: WORKSPACE,
+      harness: HARNESS,
+      residentInProcess: true,
+    });
+    expect(resident.breaches).toEqual(['oldest undrained row age 10800000ms > SLO 1800000ms']);
+    expect(resident.ageBreachSuppressedDormant).toBe(false);
+  });
+});

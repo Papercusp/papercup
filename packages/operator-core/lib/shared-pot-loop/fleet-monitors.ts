@@ -223,11 +223,47 @@ export interface OutboxHealth {
   undrainedDepth: number;
   oldestUndrainedAgeMs: number | null;
   breaches: string[];
+  /**
+   * EI-21096375006041139: true when an aged-backlog breach was withheld
+   * because the caller told us this harness's substrate is NOT currently
+   * resident in this process (see `residentInProcess` below). `false` when no
+   * age breach applied regardless, or when residency is unknown/true.
+   */
+  ageBreachSuppressedDormant: boolean;
 }
 
 export async function scanOutboxHealth(
   sql: postgres.Sql,
-  opts: { maxDepth: number; maxAgeMs: number; nowMs?: number; workspaceId?: string; harness?: string },
+  opts: {
+    maxDepth: number;
+    maxAgeMs: number;
+    nowMs?: number;
+    workspaceId?: string;
+    harness?: string;
+    /**
+     * EI-21096375006041139: does THIS process currently hold a booted
+     * substrate handle (an active outbox-drain loop) for this harness?
+     * `undefined` (the default) preserves today's unconditional behavior for
+     * every existing caller that does not track boot residency — the age SLO
+     * is judged exactly as before.
+     *
+     * `false` means no drain loop is resident here right now, so an aged
+     * backlog is NOT evidence the drain is STUCK — outbox-drain.ts's own
+     * header documents that it "runs an immediate catch-up drain on start",
+     * so the backlog self-heals the moment this harness next boots. Measured
+     * live (EI-21096375006041139): a 3h-old, 406-row backlog on a harness with
+     * no resident drain loop drained completely in ~10s once it booted. Firing
+     * the age breach in that state accuses a defect — a wedged/failing drain —
+     * that provably does not exist: the loop is not failing, it simply is not
+     * running yet, by ordinary boot orchestration, not by fault.
+     *
+     * The DEPTH leg is DELIBERATELY NEVER suppressed by this flag: unbounded
+     * growth is the "102GB lesson" this scan exists to catch (see the module
+     * header), and that storage-bloat risk is real regardless of WHY nothing
+     * is draining the backlog right now.
+     */
+    residentInProcess?: boolean;
+  },
 ): Promise<OutboxHealth> {
   const nowMs = opts.nowMs ?? Date.now();
   // WI-3896 / mig 645 follow-up (EI-21009625512310918): a QUARANTINED row
@@ -253,9 +289,16 @@ export async function scanOutboxHealth(
   const oldest = rows[0]?.oldest_ts == null ? null : Number(rows[0].oldest_ts);
   const age = oldest == null ? null : Math.max(0, nowMs - oldest);
   const breaches: string[] = [];
+  let ageBreachSuppressedDormant = false;
   if (depth > opts.maxDepth) breaches.push(`outbox depth ${depth} > SLO ${opts.maxDepth}`);
-  if (age != null && age > opts.maxAgeMs) breaches.push(`oldest undrained row age ${age}ms > SLO ${opts.maxAgeMs}ms`);
-  return { undrainedDepth: depth, oldestUndrainedAgeMs: age, breaches };
+  if (age != null && age > opts.maxAgeMs) {
+    if (opts.residentInProcess === false) {
+      ageBreachSuppressedDormant = true;
+    } else {
+      breaches.push(`oldest undrained row age ${age}ms > SLO ${opts.maxAgeMs}ms`);
+    }
+  }
+  return { undrainedDepth: depth, oldestUndrainedAgeMs: age, breaches, ageBreachSuppressedDormant };
 }
 
 // ── EI-20579195481991931: per-peer federation silence ────────────────────────
@@ -892,6 +935,14 @@ export async function runSharedHiveMonitorPass(opts: {
   isAuthority: boolean;
   presence?: readonly PresenceRow[];
   liveLeases?: readonly LeaseHolderRow[];
+  /**
+   * EI-21096375006041139: does THIS process currently hold a booted substrate
+   * handle for `harness`? Passed straight through to `scanOutboxHealth`'s
+   * same-named opt (see there for the full rationale) — a caller that does not
+   * track boot residency may omit this; the outbox age SLO then behaves
+   * exactly as it always has.
+   */
+  residentInProcess?: boolean;
   slo?: {
     outboxMaxDepth?: number;
     outboxMaxAgeMs?: number;
@@ -926,6 +977,7 @@ export async function runSharedHiveMonitorPass(opts: {
     nowMs,
     workspaceId: opts.workspaceId,
     harness: opts.harness,
+    residentInProcess: opts.residentInProcess,
   });
   for (const b of outbox.breaches) {
     incidents.push({ kind: 'outbox-health', title: b, detail: outbox });
