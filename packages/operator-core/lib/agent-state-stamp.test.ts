@@ -13,6 +13,7 @@ import {
   noteIntentDeclared,
   noteAssumptionAsserted,
   noteGoalClaimed,
+  clearGoalClaimedIfMatches,
   readAgentStateStamp,
   resetAgentStateStamps,
   agentStateStampSize,
@@ -168,6 +169,31 @@ describe('noteGoalClaimed', () => {
       assumptionSetId: 3368,
       goalRef: null,
     });
+  });
+});
+
+describe('clearGoalClaimedIfMatches', () => {
+  it('clears a matching normalized ref and reports that it did so', () => {
+    noteGoalClaimed(OWNER, '  WI-6393  ');
+
+    expect(clearGoalClaimedIfMatches(OWNER, 'WI-6393')).toBe(true);
+    expect(readAgentStateStamp(OWNER).goalRef).toBeNull();
+  });
+
+  it('does not clear a mismatched ref or an unrelated newer goal', () => {
+    noteGoalClaimed(OWNER, 'WI-6393');
+    expect(clearGoalClaimedIfMatches(OWNER, 'WI-other')).toBe(false);
+    expect(readAgentStateStamp(OWNER).goalRef).toBe('WI-6393');
+
+    noteGoalClaimed(OWNER, 'plan-1#P-004');
+    expect(clearGoalClaimedIfMatches(OWNER, 'WI-6393')).toBe(false);
+    expect(readAgentStateStamp(OWNER).goalRef).toBe('plan-1#P-004');
+  });
+
+  it('does not create or rehydrate a cache entry when the owner/ref is absent', () => {
+    expect(clearGoalClaimedIfMatches(OWNER, null)).toBe(false);
+    expect(clearGoalClaimedIfMatches('', 'WI-6393')).toBe(false);
+    expect(readAgentStateStamp(OWNER).goalRef).toBeNull();
   });
 });
 

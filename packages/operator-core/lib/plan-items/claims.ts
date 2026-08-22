@@ -23,6 +23,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_WORKSPACE_ID } from '../workspace-id-constant';
 import { getClaimAuthority } from './claim-authority';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
+import { clearGoalClaimedIfMatches } from '../agent-state-stamp';
+import { planItemRef } from '../agent-goal-ref';
 
 export type LivenessMode = 'availability' | 'activity';
 export type HeartbeatKind = 'activity' | 'extend' | 'keepalive';
@@ -367,19 +369,29 @@ export async function releaseClaimLocal(p: ReleaseClaimParams): Promise<boolean>
   `;
   // WI-6974: a RELEASE empties the lane the Orders panel shows. Only on a real
   // delete — a no-op release (wrong claim_id / already gone) wrote nothing.
-  if (rows.length > 0) await notifyAgentOrdersChanged(owner);
+  if (rows.length > 0) {
+    const ref = planItemRef(planSlug, itemId);
+    if (ref) clearGoalClaimedIfMatches(owner, ref);
+    await notifyAgentOrdersChanged(owner);
+  }
   return rows.length > 0;
 }
 
 /** Release every claim held by a session owner (session-end cleanup). Returns count. */
 export async function releaseAllClaimsForOwner(workspaceId: string, owner: string): Promise<number> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ item_id: string }[]>`
+  const rows = await sql<{ plan_slug: string; item_id: string }[]>`
     DELETE FROM harness_shared.plan_item_claims
      WHERE workspace_id = ${workspaceId} AND owner = ${owner}
-    RETURNING item_id
+    RETURNING plan_slug, item_id
   `;
-  if (rows.length > 0) await notifyAgentOrdersChanged(owner); // WI-6974 — lane emptied.
+  if (rows.length > 0) {
+    for (const row of rows) {
+      const ref = planItemRef(row.plan_slug, row.item_id);
+      if (ref) clearGoalClaimedIfMatches(owner, ref);
+    }
+    await notifyAgentOrdersChanged(owner); // WI-6974 — lane emptied.
+  }
   return rows.length;
 }
 

@@ -549,6 +549,24 @@ export function noteGoalClaimed(ownerId: string, goalRef: string | null): void {
 }
 
 /**
+ * Clear a goal only when it is still the goal that a release just completed.
+ *
+ * Lifecycle cleanup can race with a newer claim by the same owner. An
+ * unconditional `noteGoalClaimed(ownerId, null)` in an old release path would
+ * erase that newer claim's attribution, so compare the normalized ref against
+ * the cached value before clearing. Reading the map directly is intentional:
+ * this is a write-side guard and must not schedule durable re-hydration for a
+ * missing cache entry.
+ */
+export function clearGoalClaimedIfMatches(ownerId: string, goalRef: string | null): boolean {
+  if (!ownerId) return false;
+  const expected = asGoalRef(goalRef);
+  if (expected == null || stamps.get(ownerId)?.goalRef !== expected) return false;
+  noteGoalClaimed(ownerId, null);
+  return true;
+}
+
+/**
  * The dispatcher's hot-path read: ONE Map.get, no I/O, never throws. An unknown
  * owner yields the all-null stamp, which is written as three NULLs.
  *
