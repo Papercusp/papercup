@@ -5,36 +5,43 @@ Cross-process file claim coordination for engineer-collaborator agents
 
 **Plan:** [`apps/operator/docs/plans/su-agent-coordination-v3-2026-05-14.md`](../../../docs/plans/su-agent-coordination-v3-2026-05-14.md)
 
-## Phase 1 ships (this commit)
+## Current lock surfaces
 
-Cooperative no-wait surface — 5 verbs, shared workspace gating plus
-deterministic per-path advisory locks, FIFO-ordered grant cascade for future waiters, identity
-via `?client=` URL param.
+The lock family has three deliberately different scopes. Choose the narrowest
+surface that matches the thing being protected:
 
-| Tool | What it does |
+| Tool | Scope and behavior |
 |---|---|
-| `locks:acquire` | Atomic multi-path claim. Returns `{ok, lock_id, expires_ts, held}` or `{ok: false, busy: [...]}`. |
-| `locks:release` | Free locks + run cascade. Pass `lock_id` (with optional `paths` filter) or `all_mine: true`; `paths` alone cannot select a lock. |
-| `locks:heartbeat` | Extend a lock's TTL. `extended: false` means it was already stolen. |
-| `locks:cancel_wait` | (Phase 2 — waiter cancellation; no-op until wait subsystem ships.) |
-| `locks:queue` | Read-only inspection. Active locks include `lock_id` for recovery, plus pending waiters and (optional) terminal waiters from the last 24h. |
+| `locks:acquire` | Exclusive locks for a deliberate set of repository files (or authorized home-directory configuration files). Supports an immediate result, a same-turn `wait.max_sec` drain, or `wake_on_grant:true` for a queued one-shot wake. |
+| `locks:release` | Release selected file-lock sets by `lock_id`/`lock_ids`, or release all of the caller's locks with `all_mine:true`; `paths` only filters a selected lock. |
+| `locks:heartbeat` | Extend a held file-lock lease; `extended:false` means the lock is gone, stolen, expired, or not found in the requested domain. |
+| `locks:cancel_wait` | Cancel a queued `locks:acquire` waiter ticket. If a grant raced, cancel returns false and the caller must release the lock it received. |
+| `locks:queue` | Read-only inspection of file locks and pending waiters; use it to recover a lost `lock_id`. |
+| `locks:acquire_granular` | Multi-granularity intention lock on a file, directory/subtree, or harness root. `X` owns the subtree; `S` reads it; `SIX` reads it while writing one node. This is a separate domain and does **not** exclude classic `locks:acquire` file locks. |
+| `locks:release_granular` | Release the complete granular lock-set returned by `locks:acquire_granular`. |
+| `locks:acquire_resource` | Lock a registered named resource such as `dev-server` or `db-schema`: `shared` means use it; `exclusive` means restart/mutate it and drain existing shared holders. |
+| `locks:release_resource` | Release a named-resource lock by `lock_id`, resource name, or a selected batch. |
+| `locks:heartbeat_resource` | Extend a long-held named-resource lease before its TTL expires. |
 
-Defaults: `ttl_sec=1200` (20 min), max `ttl_sec=3600` (1 h), max
-`paths.length=50`, max `intent` 200 chars.
+### Lease and wait bounds
 
-## Phase 2 (not yet)
+- All lock leases default to `ttl_sec=1200` (20 minutes) and cap at
+  `ttl_sec=3600` (1 hour). `ttl_sec=0` is invalid; it is not a request for
+  an immediate expiry.
+- `locks:acquire` accepts up to 50 total file entries across `paths` and
+  `external_paths`; `intent` is capped at 1000 characters. Its blocking
+  `wait.max_sec` is capped at 300 seconds (larger values are clamped). For a
+  longer wait, use `wake_on_grant:true` and end the turn.
+- `locks:acquire_resource` accepts only registered resource names. Its
+  exclusive `wait.max_drain_sec` is 0–300 seconds; discover the exact name and
+  policy with `locks:list` first. `reason` is capped at 2000 characters.
+- `locks:acquire_granular` uses a repo-relative node (or the empty string for
+  the harness root), the same 1-hour lease cap, and a 1000-character `intent`.
 
-Server-side blocking acquire via `LISTEN/NOTIFY` (6-step
-LISTEN-before-INSERT protocol). The `wait: { max_sec: N }` parameter on
-`locks:acquire` is accepted but currently no-op — returns immediate
-busy. Phase 2 wires up `WorkspaceListener` (refcounted shared
-connection), waiter cap (10/owner), and progress events.
-
-## Phase 3 (not yet)
-
-`PreToolUse` / `PostToolUse` hooks for Claude Code (and OMP) — turns the
-cooperative surface into enforced. Other CLIs (Codex, Gemini) stay
-cooperative until their hook recipes land.
+The server-side `LISTEN/NOTIFY` wait path, waiter cap, progress events, and
+configured automatic edit hooks are shipped. A session without hook coverage
+must use `locks:acquire` explicitly for a deliberate multi-file hold; do not
+manually wrap every incidental edit in a hooked session.
 
 ## Storage
 

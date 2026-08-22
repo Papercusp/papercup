@@ -20,12 +20,13 @@
 
 ### Core verbs (Phase 1)
 - ✅ `locks:acquire` — atomic multi-path with short-circuit success
-  path (audit 4 #1). No-wait only; `wait` param accepted but no-op
-  until Phase 2.
+  path (audit 4 #1), plus the shipped blocking `wait` and
+  `wake_on_grant` paths described below.
 - ✅ `locks:release` — DELETE + `SELECT grant_cascade(...)` in the same
   transaction.
 - ✅ `locks:heartbeat` — `extended:false` when lock already stolen.
-- ✅ `locks:cancel_wait` — owner-check prevents cross-agent cancel.
+- ✅ `locks:cancel_wait` — owner-check prevents cross-agent cancel of a
+  queued `locks:acquire` waiter.
 - ✅ `locks:queue` — read-only (no advisory lock), `ROW_NUMBER() OVER`
   for `ahead_count` with `(queued_ts, ticket_id)` tiebreaker
   (reviewer #9).
@@ -33,7 +34,8 @@
   (audit 3 #1), NOTIFY inside function (reviewer #6), narrow EXCEPTION
   blocks with explicit "intentionally NOT catching WHEN OTHERS"
   comment (reviewer #7).
-- ✅ All 5 tools registered in `agent-tools/index.ts`.
+- ✅ File, granular, and named-resource lock tools are registered in
+  `agent-tools/index.ts`.
 - ✅ Capability tiers added: `locks:read` (low), `locks:write` (medium).
 
 ### Identity + install (Phase 0/3 split)
@@ -72,7 +74,7 @@
 - ✅ Bootstrap re-run is idempotent.
 
 ### Enforcement (Phase 3)
-- ✅ `pretooluse-locks-acquire.sh` — Claude Code PreToolUse hook.
+- ✅ `pretooluse-locks-acquire.sh` — configured edit-hook integration.
   Filters tool calls to Edit/Write/MultiEdit, resolves repo-relative
   path under `~/papercupai-workspace/papercup/`, calls `locks:acquire`
   via HTTP MCP, caches `lock_id` keyed by `tool_use_id` under
@@ -90,14 +92,10 @@
   renumbered to 9-21.
 - ✅ Host context files refreshed (`~/.claude/CLAUDE.md`,
   `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.omp/agent/CLAUDE.md`).
-- ✅ OMP / Codex / Gemini posture documented in `scripts/hooks/README.md`:
-  none of them ship a registered-config-file hook surface equivalent
-  to Claude Code's `PreToolUse`/`PostToolUse` (verified by reading
-  `@oh-my-pi/pi-coding-agent` source on 2026-05-14 — only
-  `ClientBridge.requestPermission`, invoked through the TUI permission
-  flow, no config-file registration). Cooperative discipline via the
-  injected `papercusp-su.tools.md` block is the coverage for those
-  CLIs until upstream lands a hook entry-point.
+- ✅ Hook coverage is client/configuration dependent: configured edit hooks
+  acquire and release per-edit file locks; sessions without a hook surface
+  remain cooperative and use explicit `locks:acquire` for deliberate
+  multi-file holds.
 
 ### Hook smoke (verified end-to-end against live :3055)
 - ✅ PreToolUse acquires + caches lock_id.
