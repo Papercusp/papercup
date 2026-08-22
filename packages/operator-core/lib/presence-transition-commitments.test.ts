@@ -73,6 +73,79 @@ describe('gatherCommitmentsOn — the awaiting-reply leg', () => {
     ]);
   });
 
+  it('drops a commitment whose only referenced work-item is terminal', async () => {
+    fetchUnansweredDirected.mockResolvedValue(
+      new Map([
+        ['peer', {
+          count: 1,
+          oldestAgeMs: 1,
+          newest: [{ msgId: 'm-terminal', from: 'r1', summary: 'finish WI-38645 closeout', ageMs: 1 }],
+        }],
+      ]),
+    );
+    sqlImpl = (text) =>
+      text.includes('feature_id = ANY')
+        ? [{ feature_id: 'WI-38645', status: 'done' }]
+        : [];
+
+    await expect(gatherCommitmentsOn(['peer'])).resolves.toEqual([]);
+  });
+
+  it('drops a commitment whose only referenced work-item no longer exists', async () => {
+    fetchUnansweredDirected.mockResolvedValue(
+      new Map([
+        ['peer', {
+          count: 1,
+          oldestAgeMs: 1,
+          newest: [{ msgId: 'm-missing', from: 'r1', summary: 'resume WI-38645', ageMs: 1 }],
+        }],
+      ]),
+    );
+    sqlImpl = (text) => (text.includes('feature_id = ANY') ? [] : []);
+
+    await expect(gatherCommitmentsOn(['peer'])).resolves.toEqual([]);
+  });
+
+  it('keeps a commitment with a live referenced work-item', async () => {
+    fetchUnansweredDirected.mockResolvedValue(
+      new Map([
+        ['peer', {
+          count: 1,
+          oldestAgeMs: 1,
+          newest: [{ msgId: 'm-live', from: 'r1', summary: 'resume WI-38645', ageMs: 1 }],
+        }],
+      ]),
+    );
+    sqlImpl = (text) =>
+      text.includes('feature_id = ANY')
+        ? [{ feature_id: 'WI-38645', status: 'open' }]
+        : [];
+
+    await expect(gatherCommitmentsOn(['peer'])).resolves.toEqual([
+      { receiverId: 'r1', subjectId: 'peer', kind: 'awaiting-reply', detail: 'resume WI-38645' },
+    ]);
+  });
+
+  it('keeps commitments when the terminal-state lookup fails', async () => {
+    fetchUnansweredDirected.mockResolvedValue(
+      new Map([
+        ['peer', {
+          count: 1,
+          oldestAgeMs: 1,
+          newest: [{ msgId: 'm-unknown', from: 'r1', summary: 'resume WI-38645', ageMs: 1 }],
+        }],
+      ]),
+    );
+    sqlImpl = (text) => {
+      if (text.includes('feature_id = ANY')) throw new Error('work-item db down');
+      return [];
+    };
+
+    await expect(gatherCommitmentsOn(['peer'])).resolves.toEqual([
+      { receiverId: 'r1', subjectId: 'peer', kind: 'awaiting-reply', detail: 'resume WI-38645' },
+    ]);
+  });
+
   it('fails soft when the aggregate throws', async () => {
     fetchUnansweredDirected.mockRejectedValue(new Error('pg down'));
     await expect(gatherCommitmentsOn(['peer'])).resolves.toEqual([]);

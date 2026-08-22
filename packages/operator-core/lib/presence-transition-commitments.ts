@@ -42,6 +42,7 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import type { Commitment } from './presence-transition-emitter';
+import { extractWorkItemIds, TERMINAL_WORK_ITEM_STATES } from './agent-tools/work_items/mirror-guard';
 import {
   fetchUnansweredDirected,
   UNANSWERED_LOOKBACK_MS,
@@ -54,6 +55,50 @@ import {
  * expensive.
  */
 const MAX_COMMITMENTS_PER_SUBJECT = 50;
+
+/**
+ * Resolve the work-items named by awaiting-reply summaries in one bounded read.
+ * `null` means the read failed; callers must keep the commitments in that case
+ * because an infra error is not evidence that a blocker is stale.
+ *
+ * Work-item ids are the unified table's global feature_id key, so this lookup
+ * deliberately does not reuse event_awaits.workspace_id (which is the corpus
+ * partition literal `default`, not the active coordination workspace).
+ */
+async function readReferencedWorkItemStates(
+  ids: readonly string[],
+): Promise<Map<string, string> | null> {
+  if (ids.length === 0) return new Map();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ feature_id: string; status: string | null }[]>`
+      SELECT feature_id, status
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(${[...ids]})
+    `;
+    return new Map(
+      rows
+        .filter((row) => row.feature_id && row.status)
+        .map((row) => [row.feature_id.toUpperCase(), row.status as string]),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A reply commitment whose summary names only settled or missing work is a
+ * stale wait edge. Keep summaries with no work-item reference, with a live
+ * reference, or when the lookup itself failed (fail-open on uncertainty).
+ */
+function referencesLiveWorkItem(summary: string | undefined, states: Map<string, string>): boolean {
+  const ids = extractWorkItemIds(summary ?? '');
+  if (ids.length === 0) return true;
+  return ids.some((id) => {
+    const state = states.get(id);
+    return state === undefined || !TERMINAL_WORK_ITEM_STATES.has(state.toLowerCase());
+  });
+}
 
 /**
  * (a) Who is still awaiting a reply FROM one of these agents?
@@ -79,17 +124,35 @@ async function gatherAwaitingReply(subjectIds: readonly string[]): Promise<Commi
       lookbackMs: UNANSWERED_LOOKBACK_MS,
       perRecipientCap: MAX_COMMITMENTS_PER_SUBJECT,
     });
+    const entries = [...byRecipient].flatMap(([subjectId, summary]) =>
+      summary.newest.map((entry) => ({ subjectId, entry })),
+    );
+    const referencedIds = [
+      ...new Set(entries.flatMap(({ entry }) => extractWorkItemIds(entry.summary ?? ''))),
+    ];
+    const states = await readReferencedWorkItemStates(referencedIds);
+    if (states === null) {
+      // Keep the old fail-soft behavior: a DB read failure cannot turn into a
+      // false claim that a waiting agent's work has already settled.
+      return entries.flatMap(({ subjectId, entry }) => {
+        if (!entry.from) return [];
+        return [{
+          receiverId: entry.from,
+          subjectId,
+          kind: 'awaiting-reply' as const,
+          detail: entry.summary ? clip(entry.summary, 60) : entry.msgId,
+        }];
+      });
+    }
     const out: Commitment[] = [];
-    for (const [subjectId, summary] of byRecipient) {
-      for (const entry of summary.newest) {
-        if (!entry.from) continue;
-        out.push({
+    for (const { subjectId, entry } of entries) {
+      if (!entry.from || !referencesLiveWorkItem(entry.summary, states)) continue;
+      out.push({
           receiverId: entry.from,
           subjectId,
           kind: 'awaiting-reply',
           detail: entry.summary ? clip(entry.summary, 60) : entry.msgId,
-        });
-      }
+      });
     }
     return out;
   } catch {

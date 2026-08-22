@@ -226,6 +226,41 @@ function statusUnavailable(
   });
 }
 
+/**
+ * Checkpoint and deploy logs are ordinary files, not journal units. Return a
+ * ready-to-call capability handle beside each path so a caller cannot
+ * accidentally feed the path back into `logs:read` (EI-20200101026196583).
+ * Keep the default tail bounded: the caller can request a different window
+ * after following the handle.
+ */
+const RELEASE_LOG_TAIL_LINES = 200;
+
+function fileReadHandle(logPath: string) {
+  return {
+    tool: 'capability:read' as const,
+    args: { file_path: logPath, tail: RELEASE_LOG_TAIL_LINES },
+  };
+}
+
+function attachFileReadHandles(status: DeployStatus): DeployStatus {
+  const lastVerdict = status.gate.lastVerdict?.logPath
+    ? { ...status.gate.lastVerdict, read: fileReadHandle(status.gate.lastVerdict.logPath) }
+    : status.gate.lastVerdict;
+  const deployInFlight = status.deployInFlight?.logPath
+    ? { ...status.deployInFlight, read: fileReadHandle(status.deployInFlight.logPath) }
+    : status.deployInFlight;
+  const checkpointRunInFlight = status.checkpointRunInFlight && typeof status.checkpointRunInFlight.logPath === 'string' && status.checkpointRunInFlight.logPath
+    ? { ...status.checkpointRunInFlight, read: fileReadHandle(status.checkpointRunInFlight.logPath) }
+    : status.checkpointRunInFlight;
+
+  return {
+    ...status,
+    gate: { ...status.gate, lastVerdict },
+    deployInFlight,
+    checkpointRunInFlight,
+  };
+}
+
 export default defineTool({
   name: 'release:deploy',
   profile: 'engineer',
@@ -237,11 +272,12 @@ export default defineTool({
     notWhen:
       'Never force as a reflex to "get my change out" — force ships KNOWN-BROKEN code (route-around-the-broken-thing); owner/operator-gated, no-users window only. Prefer fix-reds > quarantine-a-confirmed-unrelated-red-by-hand > owner-force; never silently wait. Threshold tuning → release:checkpoint-config; per-path probe → dev:pipeline_position.',
     chaining:
-      'dev:pipeline_position{path} → release:deploy{op:status} → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds.',
+      'dev:pipeline_position{path} → release:deploy{op:status}; read status.gate.lastVerdict.read, status.checkpointRunInFlight.read, or status.deployInFlight.read with capability:read when you need the corresponding file log (these are files, not logs:read journal units) → {op:trigger,confirm:true} (green-but-stalled) OR fix the reds.',
     seeAlso: [
       'release:checkpoint-run (re-run the gate verdict before deploying)',
       'dev:pipeline_position (locate your commit in the pipeline first)',
       'release:checkpoint-config (the gate config)',
+      'capability:read (read the file log via the `read` handle returned in status)',
     ],
   },
   capability: 'operator:write',
@@ -320,7 +356,7 @@ export default defineTool({
         ok: true,
         op: 'status',
         ...stamp,
-        ...status,
+        ...attachFileReadHandles(status),
         diagnosticVintage: currentDiagnosticVintage({
           stagingHeadSha: status.deploy.stagingHeadSha,
           greenPinSha: status.deploy.greenPinSha,

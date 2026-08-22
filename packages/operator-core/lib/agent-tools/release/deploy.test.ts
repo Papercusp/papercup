@@ -389,6 +389,38 @@ describe('release:deploy — trigger', () => {
     });
   });
 
+  it('op:status returns direct capability:read handles for file-backed logs', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({
+        gate: {
+          ...mkStatus().gate,
+          lastVerdict: {
+            tickAtMs: 1,
+            candidate: 'candidate0',
+            from: 'base0',
+            status: 'not-green',
+            logPath: '/home/test/.papercusp/checkpoint-logs/verdict.log',
+          },
+        },
+        checkpointRunInFlight: checkpointRun(),
+        deployInFlight: inFlight(),
+      }),
+    );
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b.gate.lastVerdict.read).toEqual({
+      tool: 'capability:read',
+      args: { file_path: '/home/test/.papercusp/checkpoint-logs/verdict.log', tail: 200 },
+    });
+    expect(b.checkpointRunInFlight.read).toEqual({
+      tool: 'capability:read',
+      args: { file_path: '/tmp/papercup-green-checkpoint-manual-demo.log', tail: 200 },
+    });
+    expect(b.deployInFlight.read).toEqual({
+      tool: 'capability:read',
+      args: { file_path: '/tmp/papercup-auto-deploy.log', tail: 200 },
+    });
+  });
+
   it('a FINISHED deploy does not keep refusing — the normal green trigger still fires', async () => {
     statusM.mockResolvedValue(
       mkStatus({

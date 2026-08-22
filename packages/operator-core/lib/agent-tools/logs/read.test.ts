@@ -121,6 +121,14 @@ describe('logs:read — ok reflects the READ, not the line count', () => {
   });
 });
 
+describe('logs:read — journal/file boundary', () => {
+  it('routes release log files to capability:read instead of journal unit arguments', () => {
+    const guidance = (logsReadTool as unknown as { guidance?: { notWhen?: string } }).guidance;
+    expect(guidance?.notWhen).toContain('capability:read { file_path: <logPath>, tail: N }');
+    expect(guidance?.notWhen).toContain('not `logs:read` with the path as a journal unit');
+  });
+});
+
 describe('logs:read — arguments reach journalctl unchanged', () => {
   it('forwards grep, level, window, limit and scope verbatim', async () => {
     await call({
