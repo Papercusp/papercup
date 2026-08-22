@@ -3630,7 +3630,7 @@ export interface FailingFile {
 
 /** The npm invocation used to run a workspace-scoped test or rescue script. */
 export interface WorkspaceTestInvocation {
-  cmd: "npm";
+  cmd: string;
   args: string[];
   cwd: string;
 }
@@ -3675,6 +3675,40 @@ export function resolveWorkspaceTestInvocation(
     args: ["run", "test", "--workspace", workspace, "--", ...forwardedArgs],
     cwd: rootDir,
   };
+}
+
+/**
+ * Resolve ONE named failing file through the runner that actually owns its format.
+ *
+ * The affected runner's canonical failing-file union includes Bash self-tests as well as
+ * Vitest files. Passing a `.selftest.sh` path through `npm run test -- <vitest args>` does
+ * not execute that file: it hands the path and Vitest-only flags to the package's generic
+ * test script. On the desktop package that costs the whole composite suite and then times
+ * out, manufacturing an inconclusive isolation verdict. Bash self-tests are executable
+ * units with an explicit, hermetic contract, so re-run them directly from the package cwd.
+ */
+export function resolveWorkspaceFileTestInvocation(
+  rootDir: string,
+  workspace: string,
+  file: string,
+  vitestArgs: readonly string[],
+): WorkspaceTestInvocation {
+  if (/\.selftest\.sh$/.test(file)) {
+    const workspaceInvocation = resolveWorkspaceTestInvocation(
+      rootDir,
+      workspace,
+      [],
+    );
+    return {
+      cmd: "bash",
+      args: [file],
+      cwd: workspaceInvocation.cwd,
+    };
+  }
+  return resolveWorkspaceTestInvocation(rootDir, workspace, [
+    ...vitestArgs,
+    file,
+  ]);
 }
 
 /** Resolve a workspace-scoped non-test script using the same standalone-package mapping. */
@@ -10309,9 +10343,10 @@ export function realCheckpointDeps(
     // break / stale candidate) instead of blaming load unconditionally.
     const startedAt = Date.now();
     try {
-      const invocation = resolveWorkspaceTestInvocation(
+      const invocation = resolveWorkspaceFileTestInvocation(
         cfg.checkpointRoot,
         workspace,
+        file,
         [
           "--no-file-parallelism",
           // EI-19332206710686203: single concurrency removes the SUITE's contention but not
@@ -10319,7 +10354,6 @@ export function realCheckpointDeps(
           // re-run inherits vitest's 5s default and re-fails a merely-slow test — the absorber
           // would then never rescue a timeout-shaped flake, which is the commonest kind here.
           `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-          file,
         ],
       );
       const r = await exec(invocation.cmd, invocation.args, {
@@ -10391,10 +10425,28 @@ export function realCheckpointDeps(
       // it is what contention is, and scoring it as one was the category error. A genuine
       // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
       // CONCURRENT_CONFIRM_TIMEOUT_MS still bounds the whole run.
+      const bashFiles = files.filter((file) => /\.selftest\.sh$/.test(file));
+      const vitestFiles = files.filter((file) => !/\.selftest\.sh$/.test(file));
+      for (const file of bashFiles) {
+        const invocation = resolveWorkspaceFileTestInvocation(
+          cfg.checkpointRoot,
+          workspace,
+          file,
+          [],
+        );
+        const r = await exec(invocation.cmd, invocation.args, {
+          cwd: invocation.cwd,
+          env,
+          allowNonZero: true,
+          timeoutMs: CONCURRENT_CONFIRM_TIMEOUT_MS,
+        });
+        if (r.code !== 0) return { workspace, passed: false };
+      }
+      if (vitestFiles.length === 0) return { workspace, passed: true };
       const invocation = resolveWorkspaceTestInvocation(
         cfg.checkpointRoot,
         workspace,
-        [`--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`, ...files],
+        [`--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`, ...vitestFiles],
       );
       const r = await exec(invocation.cmd, invocation.args, {
         cwd: invocation.cwd,
@@ -11528,27 +11580,50 @@ export function realCheckpointDeps(
       env.VITEST_MAX_THREADS = "1";
       const summaries: string[] = [headNote];
       for (const [workspace, wsFiles] of byWorkspace) {
-        const invocation = resolveWorkspaceTestInvocation(
-          cfg.checkpointRoot,
-          workspace,
-          [
-            "--no-file-parallelism",
-            // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
-            // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
-            // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
-            // broken and keeps `main` frozen on a red that no longer exists.
-            `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-            ...wsFiles,
-          ],
+        const bashFiles = wsFiles.filter((file) => /\.selftest\.sh$/.test(file));
+        const vitestFiles = wsFiles.filter(
+          (file) => !/\.selftest\.sh$/.test(file),
         );
-        const r = await exec(invocation.cmd, invocation.args, {
-          cwd: invocation.cwd,
-          env,
-          allowNonZero: true,
-          timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
-        }).catch((e: unknown) => ({ code: 1, stdout: "", stderr: String(e) }));
-        summaries.push(`${workspace}: ${r.code === 0 ? "pass" : "FAIL"}`);
-        if (r.code !== 0) {
+        const invocations: WorkspaceTestInvocation[] = [];
+        if (vitestFiles.length > 0) {
+          invocations.push(
+            resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
+              "--no-file-parallelism",
+              // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
+              // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
+              // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
+              // broken and keeps `main` frozen on a red that no longer exists.
+              `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+              ...vitestFiles,
+            ]),
+          );
+        }
+        for (const file of bashFiles) {
+          invocations.push(
+            resolveWorkspaceFileTestInvocation(
+              cfg.checkpointRoot,
+              workspace,
+              file,
+              [],
+            ),
+          );
+        }
+        let workspacePassed = true;
+        for (const invocation of invocations) {
+          const r = await exec(invocation.cmd, invocation.args, {
+            cwd: invocation.cwd,
+            env,
+            allowNonZero: true,
+            timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+          }).catch((e: unknown) => ({
+            code: 1,
+            stdout: "",
+            stderr: String(e),
+          }));
+          if (r.code !== 0) workspacePassed = false;
+        }
+        summaries.push(`${workspace}: ${workspacePassed ? "pass" : "FAIL"}`);
+        if (!workspacePassed) {
           // The group verdict is FINAL here (`pass:false`, unchanged). Everything below is
           // DIAGNOSTIC — re-run each named file ALONE so the held-gate verdict can name which
           // files are genuinely broken at tip and which are already green, instead of telling
@@ -11560,13 +11635,13 @@ export function realCheckpointDeps(
           const perFile = await splitTipFailuresPerFile(
             files,
             async (wsName, file) => {
-              const invocation = resolveWorkspaceTestInvocation(
+              const invocation = resolveWorkspaceFileTestInvocation(
                 cfg.checkpointRoot,
                 wsName,
+                file,
                 [
                   "--no-file-parallelism",
                   `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-                  file,
                 ],
               );
               const one = await exec(invocation.cmd, invocation.args, {

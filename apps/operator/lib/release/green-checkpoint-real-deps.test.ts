@@ -34,6 +34,7 @@ import {
   checkNpmScript,
   hasNpmScript,
   realCheckpointDeps,
+  resolveWorkspaceFileTestInvocation,
   resolveWorkspaceTestInvocation,
   CONCURRENT_CONFIRM_TIMEOUT_MS,
   ISOLATION_RUN_TIMEOUT_MS,
@@ -2280,6 +2281,56 @@ describe("EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
       expect(run.args.slice(0, 3)).toEqual(["run", "test", "--"]);
     }
     expect(testRuns.at(-1)?.args).toContain(file);
+  });
+
+  it("routes Bash self-test rescues through Bash, never the package Vitest command", async () => {
+    const standaloneCfg = releaseConfig({
+      integrationRoot: "/int",
+      releaseRoot: "/int",
+      checkpointRoot: standaloneTree,
+      releaseRef: "ready",
+      integrationBranch: "main",
+      checkpointLogDir: tmpLogDir,
+    });
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(standaloneCfg, exec);
+    const file = "bin/lib/release-artifacts.selftest.sh";
+
+    expect(
+      resolveWorkspaceFileTestInvocation(
+        standaloneTree,
+        "@papercusp/desktop",
+        file,
+        ["--no-file-parallelism", "--testTimeout=60000"],
+      ),
+    ).toEqual({
+      cmd: "bash",
+      args: [file],
+      cwd: join(standaloneTree, "papercusp-desktop"),
+    });
+
+    await deps.isolationRun?.({ workspace: "@papercusp/desktop", file });
+    await deps.concurrentRun?.({
+      workspace: "@papercusp/desktop",
+      files: [file],
+    });
+    await deps.runTestsAtRef?.("deadbeef", [
+      { workspace: "@papercusp/desktop", file },
+    ]);
+
+    const bashRuns = calls.filter(
+      (call) => call.cmd === "bash" && call.args.includes(file),
+    );
+    expect(bashRuns).toHaveLength(3);
+    for (const run of bashRuns) {
+      expect(run.args).toEqual([file]);
+      expect(run.opts?.cwd).toBe(join(standaloneTree, "papercusp-desktop"));
+    }
+    expect(
+      calls.some(
+        (call) => call.cmd === "npm" && call.args.includes(file),
+      ),
+    ).toBe(false);
   });
 });
 
