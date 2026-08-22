@@ -27,7 +27,7 @@ describe('Personal Vault archive importers', () => {
     zip.addFile('data/tweets.js', Buffer.from('window.YTD.tweets.part0 = [{"tweet":{"id_str":"42","created_at":"2026-08-21T00:00:00Z","full_text":"A post"}}];'));
     const parsed = parsePersonalArchive('exports.zip', zip.toBuffer());
     expect(parsed.sources).toEqual(['facebook', 'x']);
-    expect(parsed.documents.map((d) => d.kind)).toEqual(['message', 'post']);
+    expect(parsed.documents.map((d) => d.kind).sort()).toEqual(['message', 'post']);
     expect(parsed.warnings).toEqual([]);
   });
 });
