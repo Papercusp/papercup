@@ -3376,6 +3376,69 @@ def _has_inplace_flag(seg, kind):
     return False
 
 
+# EI-20090210551302164 — Prettier's `--write`/`-w` is another in-place rewrite
+# that bypasses the Edit/Write lock hook.  Keep this deliberately narrower than
+# a general npm-script detector: the shell hook can prove the executable and
+# an explicit literal path here, but it cannot know what an arbitrary package
+# script will eventually invoke.
+_PRETTIER_COMMAND_RE = re.compile(
+    r'(?:^|[;&|\n]\s*)'
+    r'(?:(?:npx|pnpm\s+exec|yarn\s+(?:exec|dlx)|bunx)\s+)?'
+    r'(?:\S*/)?prettier(?=\s|$)([^;&|\n]*)',
+    re.IGNORECASE,
+)
+_PRETTIER_WRITE_FLAG_RE = re.compile(r'^(?:--write|-w)$', re.IGNORECASE)
+
+# Prettier options whose next token is an option value rather than a file to
+# format.  An option value may itself be an in-tree path (`--config foo.mjs`),
+# so treating every non-flag token as a write target would create a false deny.
+# `--name=value` forms are skipped generically below.
+_PRETTIER_VALUE_OPTIONS = {
+    '--arrow-parens', '--bracket-same-line', '--cursor-offset', '--end-of-line',
+    '--html-whitespace-sensitivity', '--ignore-path', '--loglevel', '--parser',
+    '--plugin', '--plugin-search-dir', '--print-width', '--prose-wrap',
+    '--range-end', '--range-start', '--tab-width', '--trailing-comma',
+    '--use-tabs', '--cache-location', '--config', '--stdin-filepath',
+}
+
+
+def _prettier_write_targets(seg):
+    """Return explicit literal positional targets from a Prettier argv tail.
+
+    This is intentionally an argv-shaped scan, not a Prettier parser.  It only
+    returns tokens after a real `--write`/`-w`, skips known option values, and
+    stops trusting expansion/glob-bearing tokens at `_resolve_write_target`.
+    Unknown options are treated as flags (not as target values) so a future
+    boolean option cannot make the guard consume the following file path as an
+    option value; recognized value-taking options cover the current CLI's path-
+    bearing forms.
+    """
+    try:
+        _tokens = _strip_redirect_tokens(seg.split())
+    except Exception:
+        return []
+    if not any(_PRETTIER_WRITE_FLAG_RE.match(_tok) for _tok in _tokens):
+        return []
+    _targets, _write_seen, _after_double_dash, _skip_value = [], False, False, False
+    for _tok in _tokens:
+        if _skip_value:
+            _skip_value = False
+            continue
+        if not _after_double_dash and _tok == '--':
+            _after_double_dash = True
+            continue
+        if not _after_double_dash and _PRETTIER_WRITE_FLAG_RE.match(_tok):
+            _write_seen = True
+            continue
+        if not _after_double_dash and _tok.startswith('-'):
+            if '=' not in _tok and _tok.lower() in _PRETTIER_VALUE_OPTIONS:
+                _skip_value = True
+            continue
+        if _write_seen:
+            _targets.append(_tok)
+    return _targets
+
+
 # EI-18763270524857214: a `cd <dir>` earlier in the SAME compound command
 # changes the cwd every later relative target actually resolves against — the
 # guard was resolving every target against the session's STARTING cwd
@@ -3632,6 +3695,14 @@ def _shell_write_guard():
         _pos = [t for t in _strip_redirect_tokens(_toks) if not t.startswith('-')]
         if len(_pos) >= 2:
             _targets.append((_pos[-1], '`cp`', _m.start()))
+
+    # `prettier --write FILE` / `prettier -w FILE` — unlike `--check`, these
+    # mutate each positional file in place.  This catches the common `npx`
+    # / package-manager execution forms covered by `_PRETTIER_COMMAND_RE`,
+    # while leaving arbitrary `npm run format` scripts to their own tooling.
+    for _m in _PRETTIER_COMMAND_RE.finditer(_clean):
+        for _tok in _prettier_write_targets(_m.group(1)):
+            _targets.append((_tok, '`prettier --write`/`-w`', _m.start()))
 
     for _raw, _construct, _at in _targets:
         _effective_cwd = _effective_cwd_before(_at, _cwd, _clean, _has_paren)

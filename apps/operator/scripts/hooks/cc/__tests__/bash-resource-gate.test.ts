@@ -3203,6 +3203,71 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     expect(reason).toMatch(/`cp`/);
   });
 
+  /**
+   * EI-20090210551302164 — Prettier's in-place modes bypass the Edit/Write
+   * hooks just like the older shell-write constructs above. The filed command
+   * was `npx prettier --write` against GoalDetailPanel.test.tsx; keep that
+   * exact target and the supported executable wrappers pinned here so a future
+   * parser narrowing cannot silently reopen one spelling of the same bypass.
+   */
+  describe('Prettier in-place writes (EI-20090210551302164)', () => {
+    const TARGET = 'apps/operator/app/adv/hud/GoalDetailPanel.test.tsx';
+
+    it('denies the exact filed `npx prettier --write` repro', () => {
+      const reason = expectShellWriteDeny(
+        runGate(bashCmd(`npx prettier --write ${TARGET}`, { cwd: CANON }), CANON_ENV),
+      );
+      expect(reason).toContain('`prettier --write`/`-w`');
+      expect(reason).toContain(TARGET);
+    });
+
+    it('denies Prettier’s short `-w` alias', () => {
+      const reason = expectShellWriteDeny(
+        runGate(bashCmd(`prettier -w ${TARGET}`, { cwd: CANON }), CANON_ENV),
+      );
+      expect(reason).toContain(TARGET);
+    });
+
+    it.each([
+      ['pnpm exec', `pnpm exec prettier --write ${TARGET}`],
+      ['yarn exec', `yarn exec prettier --write ${TARGET}`],
+      ['yarn dlx', `yarn dlx prettier --write ${TARGET}`],
+      ['bunx', `bunx prettier --write ${TARGET}`],
+      ['an explicit executable path', `./node_modules/.bin/prettier --write ${TARGET}`],
+    ])('denies %s when it targets a tree file', (_label, command) => {
+      const reason = expectShellWriteDeny(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+      expect(reason).toContain(TARGET);
+    });
+
+    it('does not mistake a read-only `--config` path for a write target', () => {
+      expectAllow(
+        runGate(
+          bashCmd(
+            `prettier --write --config packages/operator-core/.prettierrc.json /tmp/prettier-probe.ts`,
+            { cwd: CANON },
+          ),
+          CANON_ENV,
+        ),
+      );
+    });
+
+    it('does not mistake a read-only `--stdin-filepath` value for a write target', () => {
+      expectAllow(
+        runGate(
+          bashCmd(`prettier --write --stdin-filepath ${TARGET}`, { cwd: CANON }),
+          CANON_ENV,
+        ),
+      );
+    });
+
+    it.each([
+      ['without `--write`', `npx prettier --check ${TARGET}`],
+      ['with an out-of-tree target', 'npx prettier --write /tmp/prettier-probe.ts'],
+    ])('allows Prettier %s', (_label, command) => {
+      expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+    });
+  });
+
   it('fires WITH NO agent marker at all — unconditional, like the exit-guard', () => {
     expectShellWriteDeny(runGate(bashCmd('echo hi >> apps/operator/foo.txt', { cwd: CANON }), CANON_ENV));
   });
