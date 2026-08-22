@@ -881,6 +881,30 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // in a template check, user-layer shadowing residue) is introduced by exactly that
   // shape of commit, so the guards were unreachable from the change they guard.
   { prefix: "templates/", workspace: "@papercusp/operator-core" },
+  // EI-21112293570332409. A SECOND route for the same prefix — the loop below applies
+  // every matching route, it does not stop at the first, so this composes with the
+  // operator-core row above rather than replacing it.
+  //
+  // The route above covers the three template guards that live in operator-core. It does
+  // NOT cover `libs/generic/template-kit/src/templates-dir.test.ts`, which scans
+  // `templates/*/checks/*` to enforce that every check naming a sibling template routes
+  // the path through the tri-state resolver `checks/closure-manifests.ts` — the recurrence
+  // guard for EI-21110451200329856, where BOTH official mobile app roots shipped checks
+  // dereferencing `../../papercusp-<id>` paths that exist only in this repo's templates
+  // dir and so were RED in every materialized app.
+  //
+  // MEASURED before adding it, with a positive control (2026-08-22):
+  //   --changed-paths libs/generic/template-kit/src/templates-dir.test.ts
+  //       -> AFFECTED_WS @papercusp/template-kit + 5 fallback   (control: selection works)
+  //   --changed-paths templates/papercusp-android-app/checks/composition-integrity.test.ts
+  //       -> 5 fallback workspaces, template-kit ABSENT         (guard did NOT run)
+  //
+  // So re-introducing the sibling-path defect in the guarded file left the guard that
+  // exists to catch it unselected: scoped `test:affected` returned green, and the guard
+  // would have fired only via the full suite at the green-checkpoint hours later. That is
+  // the same "unreachable from the change they guard" shape the WI-37840 row above fixes,
+  // one workspace over.
+  { prefix: "templates/", workspace: "@papercusp/template-kit" },
 ];
 
 // EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.
