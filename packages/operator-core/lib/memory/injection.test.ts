@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
 // dedup test sets it to mark a memory id as recently-surfaced.
-let sqlRows: Array<{ id?: string; ref?: string; epoch?: number }> = [];
+let sqlRows: Array<Record<string, unknown>> = [];
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: async () => sqlRows }),
@@ -1497,6 +1497,53 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     });
   };
 
+  const runWithSession = async () => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    return await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why did the corpus leg return that',
+      session: { sessionId: 'su-ambient-fence', epoch: 0, port: 'mid-turn' },
+    });
+  };
+
+  it('passes the durable ambient exclusion fence into corpus retrieval', async () => {
+    corpusIoResult = oneLine({ embedderAvailable: true });
+    sqlRows = [{ ambient_excluded_refs: ['WI-40293'] }];
+    await runWithSession();
+
+    const passed = recallCorpusContext.mock.calls.at(-1)?.[0] ?? {};
+    expect(passed).toMatchObject({ ambientExcludedRefs: new Set(['WI-40293']) });
+  });
+
+  it.each([
+    ['a missing session brief row', []],
+    ['a legacy row with a NULL fence', [{ ambient_excluded_refs: null }]],
+  ])('treats %s as an available empty fence', async (_label, rows) => {
+    corpusIoResult = oneLine({ embedderAvailable: true });
+    sqlRows = rows;
+    await runWithSession();
+
+    const passed = recallCorpusContext.mock.calls.at(-1)?.[0] as {
+      ambientExcludedRefs?: ReadonlySet<string>;
+    };
+    expect([...passed.ambientExcludedRefs ?? []]).toEqual([]);
+  });
+
+  it('fails closed before corpus retrieval when the durable fence is malformed', async () => {
+    corpusIoResult = oneLine({ embedderAvailable: true });
+    sqlRows = [{ ambient_excluded_refs: ['WI-40293', 42] }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const callsBefore = recallCorpusContext.mock.calls.length;
+      const block = await runWithSession();
+      expect(recallCorpusContext.mock.calls.length).toBe(callsBefore);
+      expect(block).not.toContain(CORPUS_BLOCK_HEADING);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('hands the corpus leg the caller’s OWNER id, so its self-echo filter can fire', async () => {
     // EI-19460887729945170 — the wiring regression that shipped. This value has
     // always been the per-agent coord ownerId (`su-xxxx…`; claim-port.ts:47),
@@ -1624,6 +1671,7 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
     block: null,
     lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
     dropped: [
+      { ref: 'work-item:WI-excluded', reason: 'ambient-excluded' },
       { ref: 'work-item:WI-drop-1', reason: 'no-term-overlap' },
       { ref: 'work-item:WI-drop-2', reason: 'budget-exhausted' },
     ],
@@ -1677,7 +1725,7 @@ describe('records the corpus admission funnel on the same recall row (P-009)', (
       embedderAvailable: true,
       retrievalDepth: 24,
       rerank: 'reranked',
-      dropped: { 'no-term-overlap': 1, 'budget-exhausted': 1 },
+      dropped: { 'ambient-excluded': 1, 'no-term-overlap': 1, 'budget-exhausted': 1 },
     });
     expect(Object.keys(corpus!.dropped).sort()).toEqual([
       'ambient-excluded',
