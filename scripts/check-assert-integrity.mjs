@@ -357,6 +357,17 @@ function segmentFunctions(rawLines) {
 const REPORTING_CMD = /(?:^|[;&|]|\bthen\b|\{)\s*(?:echo|printf|rig_reading)\b/;
 const RETURN_STMT = /(?:^|[;&|]|\bthen\b|\{)\s*return\b/;
 
+function hasBareArithmeticRef(line, variable) {
+  // Bash arithmetic contexts accept bare identifiers (`(( expires <= now ))` and
+  // `$((now + ttl))`).  Treat those as real logical consumption just like `$now`;
+  // otherwise R7 misclassifies a value used in arithmetic as diagnostic-only.
+  const identifier = new RegExp(`(?:^|[^A-Za-z0-9_])${variable}(?![A-Za-z0-9_])`);
+  for (const match of line.matchAll(/\(\((.*?)\)\)/g)) {
+    if (identifier.test(match[1])) return true;
+  }
+  return false;
+}
+
 function discardedReadings(file, text) {
   const rawLines = text.split('\n');
   const { fns } = segmentFunctions(rawLines);
@@ -374,7 +385,9 @@ function discardedReadings(file, text) {
       // Reference = $v or ${v...}, but NOT a longer identifier merely starting with v.
       const refRe = new RegExp(`\\$\\{${v}[^A-Za-z0-9_]|\\$${v}(?![A-Za-z0-9_])`);
       const refs = [];
-      for (let j = i + 1; j < body.length; j++) if (refRe.test(body[j])) refs.push(j);
+      for (let j = i + 1; j < body.length; j++) {
+        if (refRe.test(body[j]) || hasBareArithmeticRef(body[j], v)) refs.push(j);
+      }
 
       // Never referenced at all is a DIFFERENT defect (dead assignment), not this one.
       if (refs.length === 0) continue;

@@ -499,6 +499,28 @@ describe('check-assert-integrity: R7 discarded reading', () => {
     expect(out).toEqual([]);
   });
 
+  it('does NOT fire when the value feeds bare Bash arithmetic logic', () => {
+    const out = r7(
+      [
+        '  now="$(probe)"',
+        '  if (( expires <= now )); then return 1; fi',
+        '  printf "now=%s\\n" "$now"',
+      ].join('\n'),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('FAIL-CLOSED: a longer arithmetic identifier is not a reference to the measured value', () => {
+    const out = r7(
+      [
+        '  now="$(probe)"',
+        '  if (( expires <= nowish )); then return 1; fi',
+        '  printf "now=%s\\n" "$now"',
+      ].join('\n'),
+    );
+    expect(out).toHaveLength(1);
+  });
+
   it('does NOT fire when no return can pre-empt the report', () => {
     const out = r7(
       [
