@@ -29,6 +29,8 @@ import {
   // is not recognized by tsc).
   // @ts-expect-error
 } from '../../../../scripts/test-files.mjs';
+// @ts-expect-error — same plain-Node .mjs launcher, no declaration file.
+import { workspaceTestInvocation } from '../../../../scripts/workspace-test.mjs';
 // @ts-expect-error — same plain-Node .mjs CLI, no declaration file.
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
@@ -242,6 +244,31 @@ describe('evaluateMatch — the false-green refusal (P-009)', () => {
   it('accepts a single-file request that resolved', () => {
     const one = [{ absolute: A, requested: 'a.test.ts' }];
     expect(evaluateMatch({ routes: one, matched: [A], listStatus: 0 }).ok).toBe(true);
+  });
+});
+
+describe('workspace test launcher — explicit paths use the owning-config guard', () => {
+  it('routes a mixed workspace request instead of letting Vitest silently narrow it', () => {
+    const invocation = workspaceTestInvocation([
+      '--passWithNoTests',
+      'lib/agent-tools/release/checkpoint-run.test.ts',
+      'lib/release/green-checkpoint.test.ts',
+    ]);
+
+    expect(invocation).toMatchObject({ command: process.execPath, routed: true });
+    expect(invocation.args).toEqual([
+      resolve(REPO_ROOT, 'scripts/test-files.mjs'),
+      'lib/agent-tools/release/checkpoint-run.test.ts',
+      'lib/release/green-checkpoint.test.ts',
+    ]);
+  });
+
+  it('keeps no-file workspace runs on the package\'s full-suite Vitest command', () => {
+    expect(workspaceTestInvocation(['--passWithNoTests'])).toMatchObject({
+      command: 'npx',
+      args: ['vitest', 'run', '--passWithNoTests'],
+      routed: false,
+    });
   });
 });
 
