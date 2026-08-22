@@ -86,6 +86,21 @@ const argsSchema = z
       .describe(
         "Return only these P-NNN records from the structured items array. Counts still describe the whole plan; itemSelection reports requested/matched/missing ids. Use this instead of pulling a large plan or querying harness_plans directly when you need one item.",
       ),
+    decisionId: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Return one decision by id with its complete body. This is a narrow identity/CAS read; decisionSelection reports the requested, matched, and missing ids.",
+      ),
+    decisions: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(100)
+      .optional()
+      .describe(
+        "Return only these decision ids with complete bodies. This is a narrow identity/CAS read; counts still describe the whole plan and decisionSelection reports requested/matched/missing ids.",
+      ),
     mode: z
       .enum(["meta", "sections", "full"])
       .optional()
@@ -309,6 +324,53 @@ export function narrowHeadingPayload(
   return out;
 }
 
+/**
+ * Build the decision-id-narrowed payload.
+ *
+ * A decision read exists specifically to recover a governing ruling whose
+ * complete body did not fit in a plan read. Keep only identity/CAS fields
+ * around the selected records; carrying the plan's prose, items, or
+ * decorations here would recreate the overflow this selector is meant to
+ * avoid. `decisionSelection` is deliberately in-band so a missing id cannot
+ * be mistaken for a complete read.
+ */
+export function narrowDecisionPayload(
+  base: Record<string, unknown>,
+  requestedIds: string[],
+  selected: Array<Record<string, unknown>>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const identityFields = new Set([
+    "slug",
+    "harness",
+    "archived",
+    "legacy",
+    "frontmatter",
+    "contentHash",
+    "version",
+    "filename",
+    "forcedPast",
+    "counts",
+  ]);
+  for (const [key, value] of Object.entries(base)) {
+    if (!identityFields.has(key)) continue;
+    if (key === "frontmatter" && value && typeof value === "object") {
+      out[key] = Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).filter(([k]) => k !== "raw"),
+      );
+      continue;
+    }
+    out[key] = value;
+  }
+  out.decisions = selected;
+  out.decisionSelection = {
+    requested: requestedIds,
+    matched: selected.map((decision) => String(decision.id)),
+    missing: requestedIds.filter((id) => !selected.some((decision) => decision.id === id)),
+  };
+  return out;
+}
+
 export default defineTool({
   name: "plans:get",
   description:
@@ -360,6 +422,15 @@ export default defineTool({
     const requestedItemIdSet = requestedItemIds
       ? new Set(requestedItemIds)
       : null;
+    const requestedDecisionIds =
+      args.decisionId || args.decisions?.length
+        ? [
+            ...new Set([
+              ...(args.decisionId ? [args.decisionId] : []),
+              ...(args.decisions ?? []),
+            ]),
+          ]
+        : null;
     const env = await runBulk(
       slugs,
       async (slug) =>
@@ -368,7 +439,7 @@ export default defineTool({
           {
             tool: "plans:get",
             // Folds EVERY output-determining dimension: slug + resolved harness +
-            // mode + heading + includeRaw + item selection. workspace scope is added by cachedRead
+            // mode + heading + includeRaw + item/decision selection. workspace scope is added by cachedRead
             // from ctx. includeRaw MUST be here — else a slim agent-cached entry
             // (no `raw`) would be served to a UI caller that asked for raw, and
             // the editor would break intermittently on cache state.
@@ -379,6 +450,7 @@ export default defineTool({
               heading: args.heading ?? null,
               includeRaw: args.includeRaw ?? false,
               items: requestedItemIds,
+              decisions: requestedDecisionIds,
             },
             tags: ["harness_plans", "plan_revisions", "plan_runs", "plan_audits"],
             softTtlMs: PLANS_GET_SOFT_TTL_MS,
@@ -414,7 +486,9 @@ export default defineTool({
                 counts: { sections: sections.length },
               };
               let payload: Record<string, unknown> = legacyBase;
-              if (args.heading) {
+              if (requestedDecisionIds) {
+                payload = narrowDecisionPayload(legacyBase, requestedDecisionIds, []);
+              } else if (args.heading) {
                 payload = narrowHeadingPayload(
                   legacyBase,
                   args.heading,
@@ -598,6 +672,20 @@ export default defineTool({
             // `heading`: the requested section plus IDENTITY/CAS fields only —
             // deliberately NOT the full `base` meta envelope (overrides mode).
             // Rationale + the measurement live on narrowHeadingPayload above.
+            if (requestedDecisionIds) {
+              const requestedDecisionIdSet = new Set(requestedDecisionIds);
+              const selectedDecisions = parsed.decisions.filter((decision) =>
+                requestedDecisionIdSet.has(decision.id),
+              );
+              return {
+                ok: true as const,
+                ...narrowDecisionPayload(
+                  base,
+                  requestedDecisionIds,
+                  selectedDecisions as Array<Record<string, unknown>>,
+                ),
+              };
+            }
             if (args.heading) {
               return {
                 ok: true as const,

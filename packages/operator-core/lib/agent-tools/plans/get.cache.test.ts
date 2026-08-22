@@ -21,7 +21,22 @@ const M = vi.hoisted(() => ({
       raw: `slug: ${slug}\n`,
       frontmatter: { slug },
       now: { state: "s", next: "n" },
-      decisions: [],
+      decisions: [
+        {
+          id: "D-001",
+          title: "First ruling",
+          body: "The complete first ruling body must remain intact.",
+          date: "2026-08-20",
+          itemRefs: ["P-001"],
+        },
+        {
+          id: "D-009",
+          title: "Selected ruling",
+          body: "The complete selected ruling body must remain intact, including its final sentence.",
+          date: "2026-08-21",
+          itemRefs: ["P-009"],
+        },
+      ],
       items: [
         {
           id: "P-001",
@@ -316,6 +331,67 @@ describe("plans:get — cache wiring", () => {
   it("keeps item selections in separate cache entries", async () => {
     await run({ slug: "alpha", items: ["P-001"] });
     await run({ slug: "alpha", items: ["P-009"] });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns selected decisions at full body with a narrow identity/CAS envelope", async () => {
+    const body = await run({ slug: "alpha", mode: "full", decisionId: "D-009" });
+    const result = body.results[0]!;
+
+    expect(result).toMatchObject({
+      slug: "alpha",
+      harness: "papercup",
+      contentHash: expect.any(String),
+      version: 1,
+      counts: { items: 2, decisions: 2 },
+      decisions: [
+        {
+          id: "D-009",
+          title: "Selected ruling",
+          body: "The complete selected ruling body must remain intact, including its final sentence.",
+          date: "2026-08-21",
+          itemRefs: ["P-009"],
+        },
+      ],
+      decisionSelection: {
+        requested: ["D-009"],
+        matched: ["D-009"],
+        missing: [],
+      },
+    });
+    expect(result).not.toHaveProperty("now");
+    expect(result).not.toHaveProperty("items");
+    expect(result).not.toHaveProperty("prose");
+    expect(result).not.toHaveProperty("sectionIndex");
+    expect(result).not.toHaveProperty("linkedFeatures");
+    expect(result).not.toHaveProperty("latestAudit");
+  });
+
+  it("supports several decision ids and reports missing ids without truncating matched bodies", async () => {
+    const body = await run({
+      slug: "alpha",
+      decisions: ["D-009", "D-404", "D-001", "D-009"],
+    });
+
+    expect(body.results[0]).toMatchObject({
+      decisions: [
+        { id: "D-001", body: "The complete first ruling body must remain intact." },
+        {
+          id: "D-009",
+          body: "The complete selected ruling body must remain intact, including its final sentence.",
+        },
+      ],
+      decisionSelection: {
+        requested: ["D-009", "D-404", "D-001"],
+        matched: ["D-001", "D-009"],
+        missing: ["D-404"],
+      },
+    });
+  });
+
+  it("keeps decision selections in separate cache entries", async () => {
+    await run({ slug: "alpha", decisionId: "D-001" });
+    await run({ slug: "alpha", decisionId: "D-009" });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
   });
 
