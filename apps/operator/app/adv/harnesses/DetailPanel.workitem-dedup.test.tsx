@@ -2,22 +2,13 @@
 /**
  * DetailPanel — work-item detail dedup guard.
  *
- * The detail pane's `workItems.byHarness` subscription MUST use the SAME `limit`
- * as the WorkItemsPanel grid (the shared WORK_ITEMS_PAGE constant) so the two
- * share one React Query key `['sync','workItems.byHarness',args]` and dedup into
- * a single stream — the pane then reads the grid's already-loaded rows on
- * selection instead of firing a SECOND request.
- *
- * Regression (owner report 2026-07-08, Windows-only): the pane hardcoded
- * `limit: 300` vs the grid's 500, forking the key into a fresh on-click fetch
- * that starves under the desktop webview's ~6-connection-per-host cap on
- * Windows/WebView2 (the IPC bypass hides it on mac/linux WebKit) — the detail
- * pane sat on "Loading …" forever while the grid loaded fine.
+ * P-004 makes the one-row `workItems.detail` query selected-row authority.
+ * Detail must never subscribe to the bounded byHarness page: a selected id can
+ * sit beyond page one or outside the active filter and still has to resolve.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
-import { WORK_ITEMS_PAGE } from './WorkItemsPanel';
 import { resolveSelectionKind } from './DetailPanel';
 
 type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, unknown> };
@@ -89,7 +80,7 @@ describe('DetailPanel work-item detail subscription', () => {
     expect(empty!.textContent).toBe('Pick a work item from the list to inspect.');
   });
 
-  it('subscribes to workItems.byHarness with the grid page size so the queries dedup', () => {
+  it('uses one-row detail authority and never depends on byHarness page membership', () => {
     render(
       <NuqsTestingAdapter searchParams="?sel=WI-1">
         <DetailPanel
@@ -100,9 +91,9 @@ describe('DetailPanel work-item detail subscription', () => {
         />
       </NuqsTestingAdapter>,
     );
-    const wi = syncCalls.find((c) => c.queryName === 'workItems.byHarness' && c.enabled !== false);
-    expect(wi, 'detail must enable workItems.byHarness for a WI- selection').toBeTruthy();
-    // The exact invariant: same args as the grid → shared React Query key → dedup.
-    expect(wi!.args).toMatchObject({ harnessSlug: 'h1', limit: WORK_ITEMS_PAGE });
+    const list = syncCalls.find((c) => c.queryName === 'workItems.byHarness' && c.enabled !== false);
+    expect(list, 'detail must not depend on a bounded list page').toBeUndefined();
+    const detail = syncCalls.find((c) => c.queryName === 'workItems.detail' && c.enabled !== false);
+    expect(detail?.args).toEqual({ harnessSlug: 'h1', id: 'WI-1' });
   });
 });

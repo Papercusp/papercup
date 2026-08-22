@@ -24,22 +24,27 @@ import type { ReactNode } from 'react';
 
 interface SyncState {
   loading?: boolean;
+  fetching?: boolean;
   data?: unknown;
   error?: { message: string } | null;
 }
 let itemsState: SyncState;
 let edgesState: SyncState;
+let summaryState: SyncState;
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     queryName === 'workItems.depEdges'
       ? { ...edgesState, invalidate: vi.fn() }
-      : { ...itemsState, invalidate: vi.fn() },
+      : queryName === 'workItems.summary'
+        ? { ...summaryState, invalidate: vi.fn() }
+        : { ...itemsState, invalidate: vi.fn() },
 }));
 
 let filtersActive = false;
 vi.mock('../../harness/filters', () => ({
-  useColumnFilters: (_cols: unknown, rows: unknown[]) => ({
+  useColumnFilterState: () => ({ state: {}, setValue: vi.fn(), remove: vi.fn(), clearAll: vi.fn() }),
+  useColumnFiltersFromState: (_cols: unknown, rows: unknown[]) => ({
     rows,
     controller: {},
     activeChips: [],
@@ -138,6 +143,12 @@ async function waitForCanvas(): Promise<SVGSVGElement> {
 
 beforeEach(() => {
   itemsState = { loading: false, data: withTotal(ITEMS, 18647), error: null };
+  summaryState = {
+    loading: false,
+    fetching: false,
+    data: [{ total: 18_647, matched: 18_647, facets: [] }],
+    error: null,
+  };
   edgesState = { loading: false, data: EDGES, error: null };
   filtersActive = false;
   setTitle.mockClear();
@@ -161,10 +172,8 @@ describe('P-001 — the corpus relationship is legible in the pane', () => {
     expect(screen.queryByText(/items have dependencies/)).toBeNull();
   });
 
-  it('WITHHOLDS it when the resolver attached no total, instead of quoting the page size', () => {
-    // The guard that matters: readListTotal() would fall back to the array LENGTH here and
-    // render "2 of 2", i.e. the download presented as the corpus.
-    itemsState = { loading: false, data: ITEMS, error: null };
+  it('WITHHOLDS it when the companion summary is absent, instead of quoting the page size', () => {
+    summaryState = { loading: true, fetching: true, data: undefined, error: null };
     renderPanel();
     expect(screen.queryByText(/items have dependencies/)).toBeNull();
     expect(screen.getByText(/2 nodes/)).toBeTruthy();

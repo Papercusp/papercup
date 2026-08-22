@@ -19,7 +19,7 @@ import { LivenessDot, livenessFromHeartbeat } from '../../coord/presence-ui';
 import { useHarnessFeatures, useHarnessIssues, type FeatureStatus, type HarnessFeature } from './useHarnessData';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { issueAction, issueActionStatus, type IssueActionKind } from './harness-actions';
-import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
+import type { WorkItemRow } from './WorkItemsPanel';
 import type { WorkingAgent } from './AdvAgentsPanel';
 import { runOutcome } from './run-outcome';
 import { agentDisplayLabel, agentRoleLabel } from '../../harness/agent-display';
@@ -232,25 +232,9 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     () => (kind === 'issue' ? (issues ?? []).find((i) => i.id === selectedId) ?? null : null),
     [kind, issues, selectedId],
   );
-  // WI-* resolves against the same `workItems.byHarness` sync query the
-  // WorkItemsPanel grid reads. The `limit` MUST match the grid's (WORK_ITEMS_PAGE)
-  // so the two share one React Query key ['sync','workItems.byHarness',args] and
-  // dedup into a single stream: the detail then reads the grid's already-loaded
-  // rows on selection instead of firing a SECOND request. A distinct limit here
-  // (was 300 vs the grid's 500) forks the key → a fresh on-click fetch that
-  // starves under the desktop's ~6-conn-per-host cap on Windows/WebView2 (the
-  // IPC bypass hides it on mac/linux), leaving the pane stuck on "Loading …".
-  const workItemsQuery = useSyncQuery<WorkItemRow>({
-    queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit: WORK_ITEMS_PAGE },
-    enabled: Boolean(slug) && kind === 'workItem',
-  });
-  const workItemRows = workItemsQuery.loading ? null : workItemsQuery.data;
-  // P-006: the grid's byHarness rows no longer carry the heavy per-row `summary`
-  // (dropped at the sync boundary — the grid never renders it). Fetch the selected
-  // item's FULL detail on demand (its own tiny 1-row query, not a fork of the
-  // grid's key), so the prose block shows the full summary. Enabled only while a
-  // WI is actually selected.
+  // P-004: selected-row authority is the existing one-row detail query. A
+  // selection must remain resolvable even when the item is beyond the current
+  // keyset page (or excluded by a filter), so page membership is never consulted.
   const workItemDetailQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.detail',
     args: { harnessSlug: slug, id: kind === 'workItem' ? selectedId : '' },
@@ -258,15 +242,10 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
   });
   const workItemDetailRow = workItemDetailQuery.loading ? null : (workItemDetailQuery.data?.[0] ?? null);
   const workItem = useMemo(
-    () => {
-      if (kind !== 'workItem') return null;
-      // Prefer the full detail row (carries summary); fall back to the already-
-      // loaded grid row for the light fields while the detail request is in flight.
-      const gridRow = (workItemRows ?? []).find((w) => w.id === selectedId) ?? null;
-      if (workItemDetailRow && workItemDetailRow.id === selectedId) return workItemDetailRow;
-      return gridRow;
-    },
-    [kind, workItemRows, workItemDetailRow, selectedId],
+    () => kind === 'workItem' && workItemDetailRow?.id === selectedId
+      ? workItemDetailRow
+      : null,
+    [kind, workItemDetailRow, selectedId],
   );
   // agent:* resolves against the same `fleetAssignments.byHarness` sync query
   // the Agents panel's Working view reads (one projection, identical rows).
@@ -315,7 +294,7 @@ export default function DetailPanel({ params, api }: PanelComponentProps) {
     if (
       features === null ||
       issues === null ||
-      (kind === 'workItem' && workItemRows === null) ||
+      (kind === 'workItem' && workItemDetailQuery.loading) ||
       (kind === 'agent' && agentRows === null)
     ) {
       return <Empty>Loading {selectedId}…</Empty>;

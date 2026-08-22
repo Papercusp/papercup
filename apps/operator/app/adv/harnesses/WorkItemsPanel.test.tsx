@@ -17,13 +17,16 @@ import type { ReactNode } from 'react';
 
 interface SyncState { loading?: boolean; fetching?: boolean; data?: unknown; error?: { message: string } | null }
 let wiState: SyncState;
-let wiArgs: unknown;
+let summaryState: SyncState;
+let rowArgs: unknown;
 const invalidateMock = vi.fn();
+const summaryInvalidateMock = vi.fn();
 vi.mock('@papercusp/sync', () => ({
   onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args }: { queryName: string; args?: unknown }) => {
     if (queryName === 'trust.list') return { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
-    wiArgs = args;
+    if (queryName === 'workItems.summary') return { ...summaryState, invalidate: summaryInvalidateMock };
+    rowArgs = args;
     return { ...wiState, invalidate: invalidateMock };
   },
 }));
@@ -51,7 +54,8 @@ vi.mock('@papercusp/grid-core', () => ({
 // would make those assertions test the stub. Only the stateful/visual members
 // (the hook, the bar) are faked.
 vi.mock('../../harness/filters', async () => ({
-  useColumnFilters: (_cols: unknown, rows: unknown[]) => ({
+  useColumnFilterState: () => ({ state: {}, setValue: vi.fn(), remove: vi.fn(), clearAll: vi.fn() }),
+  useColumnFiltersFromState: (_cols: unknown, rows: unknown[]) => ({
     rows, controller: {}, activeChips: [], hasActive: false, clearAll: vi.fn(),
   }),
   ColumnFilterBar: () => <div data-testid="filter-bar" />,
@@ -96,9 +100,16 @@ function renderPanel(slug = 'alpha', searchParams = '', onUrlUpdate?: (e: unknow
 
 beforeEach(() => {
   wiState = { loading: false, fetching: false, data: ROWS, error: null };
-  wiArgs = undefined;
+  summaryState = {
+    loading: false,
+    fetching: false,
+    data: [{ total: 2, matched: 2, facets: [] }],
+    error: null,
+  };
+  rowArgs = undefined;
   setTitle.mockReset();
   invalidateMock.mockReset();
+  summaryInvalidateMock.mockReset();
 });
 afterEach(cleanup);
 
@@ -143,25 +154,27 @@ describe('WorkItemsPanel', () => {
     // a newly sorted page. The panel must still report 57 and keep paging.
     wiState = {
       loading: false, fetching: false, error: null,
-      data: [ROWS[0], { ...ROWS[1], _meta: { total: 57 } }],
+      data: [ROWS[0], { ...ROWS[1], _meta: { nextCursor: 'cursor-2', hasMore: true } }],
     };
+    summaryState = { loading: false, fetching: false, data: [{ total: 57, matched: 57, facets: [] }], error: null };
     renderPanel();
     expect(setTitle).toHaveBeenCalledWith('Work items · alpha (57)');
     expect(screen.getByTestId('wi-count').textContent).toContain('57 items');
     expect(screen.getByTestId('wi-count').textContent).not.toContain('loaded');
-    expect(wiArgs).toEqual({ harnessSlug: 'alpha', limit: 500 });
+    expect(rowArgs).toEqual({ harnessSlug: 'alpha', q: '', filters: {}, limit: 500 });
     fireEvent.click(screen.getByRole('button', { name: 'load-more' }));
-    await waitFor(() => expect(wiArgs).toEqual({ harnessSlug: 'alpha', limit: 1000 }));
+    await waitFor(() => expect(rowArgs).toEqual({
+      harnessSlug: 'alpha', q: '', filters: {}, limit: 500, cursor: 'cursor-2',
+    }));
   });
 
   it('reflects the filter in the title + badge (shown of store total)', () => {
+    summaryState = { loading: false, fetching: false, data: [{ total: 2, matched: 1, facets: [] }], error: null };
     renderPanel('alpha', '?wq=login'); // matches WI-1 only → 1 of 2 loaded
-    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2 · latest 2 loaded work items)');
-    expect(screen.getByTestId('wi-count').textContent).toContain(
-      '1 of 2 match in latest 2 loaded work items; 2 in the full corpus',
-    );
+    expect(setTitle).toHaveBeenCalledWith('Work items · alpha (1 of 2)');
+    expect(screen.getByTestId('wi-count').textContent).toContain('1 of 2 match');
     expect(screen.getByTestId('wi-count').getAttribute('aria-label')).toContain(
-      'latest 2 loaded work items',
+      'selected harness work-item corpus',
     );
   });
 
@@ -172,6 +185,7 @@ describe('WorkItemsPanel', () => {
   });
 
   it('shows the no-match message when the filter excludes everything', () => {
+    summaryState = { loading: false, fetching: false, data: [{ total: 2, matched: 0, facets: [] }], error: null };
     renderPanel('alpha', '?wq=zzzznope');
     expect(screen.getByText(/No work items match the filter/i)).toBeTruthy();
   });
@@ -180,6 +194,7 @@ describe('WorkItemsPanel', () => {
     renderPanel();
     fireEvent.click(screen.getByRole('button', { name: 'Refresh work items' }));
     expect(invalidateMock).toHaveBeenCalledTimes(1);
+    expect(summaryInvalidateMock).toHaveBeenCalledTimes(1);
   });
 
   it('writes the clicked row id into ?sel', async () => {

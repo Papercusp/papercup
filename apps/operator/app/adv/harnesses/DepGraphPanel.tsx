@@ -11,12 +11,10 @@
  * items which could be thousands. like other tabs this should also have a pot selector to
  * filter, and all the filters from the work item list pane should also be brought over."
  *
- * ── IT SHARES THE LIST'S DATA, IT DOES NOT RE-FETCH IT ──────────────────────────────────
- * Nodes come from the SAME `workItems.byHarness` subscription the grid uses, with the SAME
- * `limit` (WORK_ITEMS_PAGE) so React Query dedups the two into ONE stream. That is deliberate
- * on two counts: "the same data as the list" is the requirement, and a second multi-MB fetch
- * would starve the desktop webview's ~6-connection-per-host cap — the known "stuck on Loading"
- * failure DetailPanel avoids the same way. Only the EDGES are a new query.
+ * ── IT SHARES THE LIST PREDICATE + SUMMARY ───────────────────────────────────────────────
+ * Nodes use the same bounded `workItems.byHarness` page and the filter bar consumes the same
+ * exact `workItems.summary` companion as the grid. Edges remain graph-scoped and hydrate
+ * out-of-page endpoints; dependency metrics therefore never masquerade as corpus counts.
  *
  * ── SELECTION IS URL STATE, AND THAT IS NOT A STYLE CHOICE ──────────────────────────────
  * Selection lives in the `sel` nuqs param — the very param WorkItemsPanel's row-click writes
@@ -431,21 +429,24 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     return extra.size === 0 ? items : [...items, ...extra.values()];
   }, [items, edgeRows, listIds]);
 
-  const filterCountEvidence = useMemo<CountEvidence>(
-    () => items == null
-      ? { kind: 'unknown', reason: 'loading' }
-      : {
-          kind: 'window',
-          count: filterCorpus.length,
-          window: 'the loaded work-item list plus hydrated graph endpoints',
-          corpusTotal: readListMeta(items)?.total,
-        },
-    [filterCorpus.length, items],
-  );
-  const cf = useColumnFilters(filterColumns, filterCorpus, {
+  const summary = summaryQuery.data?.[0] ?? null;
+  const pairedFetching = Boolean(itemsQuery.fetching || summaryQuery.fetching);
+  const filterCountEvidence = useMemo<CountEvidence>(() => {
+    if (!summary) return { kind: 'unknown', reason: summaryQuery.error ? 'failed' : 'loading' };
+    if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
+    return {
+      kind: 'corpus',
+      count: summary.matched,
+      total: summary.total,
+      population: 'the selected harness work-item corpus',
+    };
+  }, [summary, summaryQuery.error, pairedFetching]);
+  const facetOptions = useMemo(() => workItemFacetOptions(summary), [summary]);
+  const cf = useColumnFiltersFromState(filterColumns, filterCorpus, {
     ns: WORK_ITEM_FILTER_NS,
     countEvidence: filterCountEvidence,
-  });
+    serverEnumOptions: facetOptions,
+  }, filterBinding);
 
   /**
    * Every id that survived the filter, across the WHOLE graph corpus — what the model
@@ -790,12 +791,9 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   // number that is right in the common case and quietly wrong in the others is worse than no
   // number, and this pane has already paid for one of those (WI-36045).
   //
-  // `readListMeta(...)?.total`, NOT `readListTotal(...)`: the latter FALLS BACK to the
-  // downloaded array length when the resolver attached no total, which here would silently
-  // turn the sentence into "122 of 500 items have dependencies" — the page size dressed up
-  // as the corpus. An absent total must read as "I don't know the denominator", so the
-  // claim is withheld rather than made from a fallback.
-  const corpusTotal = readListMeta(items ?? [])?.total ?? 0;
+  // The denominator is the companion aggregate, never the 500-row node page.
+  // If the summary is absent/updating the corpus claim is withheld.
+  const corpusTotal = !pairedFetching && summary ? summary.total : 0;
   const unscoped = !selectedId && !healthOnly && !cf.hasActive;
   const canStateCorpus = unscoped && corpusTotal > 0 && graph.totalInScope > 0;
 
