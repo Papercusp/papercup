@@ -114,6 +114,9 @@ export interface GitSyncStallSnapshot {
   reapedCount?: number;
   /** The root routine engine is stale; infra-liveness owns this root-cause alarm. */
   routineEngineStale?: boolean;
+  /** Start time of a writer-backed, currently-active `local-sync` phase. A fresh fire gets one
+   *  bounded attempt window before frozen-HEAD becomes actionable; stale markers never exempt it. */
+  activeLocalSyncStartedAtMs?: number | null;
 }
 
 export interface GitSyncStallVerdict {
@@ -284,7 +287,21 @@ export function evaluateGitSyncStall(
   // for rows written before EI-20315742298217655.
   const localSyncStatus = s.localSyncStatus ?? s.lastStatus;
   const commitNotAttemptable = localSyncStatus === 'nothing' || localSyncStatus === 'skipped';
-  const commitStale = !rootEngineStale && !commitNotAttemptable && s.headUnchangedMs != null && s.headUnchangedMs > headStaleMs;
+  // EI-21154752873591799 / WI-40600: the HEAD clock can already be stale when a new, healthy
+  // local-sync fire begins. The colliding cron tick then records `skipped-locked` while the
+  // real fire holds the writer-backed `git_sync_activity` marker, and the watchdog used to page
+  // before that fire had any chance to commit. Give only a FRESH local-sync one normal stall
+  // window. A killed/stuck fire leaves the original started_at behind and becomes actionable
+  // once the same threshold elapses; fire/error/reaper signals remain independent below.
+  const activeLocalSyncAgeMs = s.activeLocalSyncStartedAtMs == null
+    ? null
+    : Math.max(0, now - s.activeLocalSyncStartedAtMs);
+  const freshLocalSync = activeLocalSyncAgeMs != null && activeLocalSyncAgeMs <= headStaleMs;
+  const commitStale = !rootEngineStale
+    && !freshLocalSync
+    && !commitNotAttemptable
+    && s.headUnchangedMs != null
+    && s.headUnchangedMs > headStaleMs;
   const fireStale = !rootEngineStale && s.lastFiredMs != null && now - s.lastFiredMs > fireStaleMs;
   // FALSE-ALARM FIX (2026-07-02, second class): a fault observed on a SINGLE sweep is
   // transient (a push/fetch blip git-sync clears on its next healthy 3-min tick) — it must
@@ -403,6 +420,7 @@ export async function checkGitSyncStall(
         reaped_count: number | null;
         wd_error_sweeps: number | null;
         wd_stall_sweeps: number | null;
+        git_sync_activity: unknown;
       }[]
     >`
       SELECT install_slug,
@@ -417,7 +435,8 @@ export async function checkGitSyncStall(
              COALESCE((metadata->>'watchdog_alerted')::boolean, false) AS watchdog_alerted,
              COALESCE((metadata->>'reaped_count')::int, 0) AS reaped_count,
              COALESCE((metadata->>'wd_error_sweeps')::int, 0) AS wd_error_sweeps,
-             COALESCE((metadata->>'wd_stall_sweeps')::int, 0) AS wd_stall_sweeps
+             COALESCE((metadata->>'wd_stall_sweeps')::int, 0) AS wd_stall_sweeps,
+             metadata->'git_sync_activity' AS git_sync_activity
         FROM harness_shared.routines
        WHERE target_role = 'system:git-sync'
          AND active = true`;
@@ -432,6 +451,12 @@ export async function checkGitSyncStall(
       const lastFiredMs = row.last_fired_ms != null ? Number(row.last_fired_ms) : null;
       const wdHeadSinceMs = row.wd_head_since_ms != null ? Number(row.wd_head_since_ms) : null;
       const watchdogAlerted = row.watchdog_alerted ?? false;
+      const activity = row.git_sync_activity && typeof row.git_sync_activity === 'object'
+        ? row.git_sync_activity as Record<string, unknown>
+        : null;
+      const activeLocalSyncStartedAtMs = activity?.active === true && activity.phase === 'local-sync'
+        ? Number(activity.started_at)
+        : null;
 
       // ── Head-movement clock: reset when HEAD advances (or first observation). ──
       let headUnchangedMs: number | null;
@@ -478,6 +503,9 @@ export async function checkGitSyncStall(
           watchdogAlerted,
           reapedCount: row.reaped_count != null ? Number(row.reaped_count) : 0,
           routineEngineStale: routineEngine.stale,
+          activeLocalSyncStartedAtMs: Number.isFinite(activeLocalSyncStartedAtMs)
+            ? activeLocalSyncStartedAtMs
+            : null,
         },
         now,
         opts,

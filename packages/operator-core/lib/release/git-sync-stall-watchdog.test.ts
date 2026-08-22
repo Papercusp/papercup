@@ -44,6 +44,55 @@ describe('evaluateGitSyncStall', () => {
     expect(v.reason).toMatch(/HEAD has not advanced/);
   });
 
+  it('WI-40600: a fresh writer-backed local-sync fire gets one bounded attempt window', () => {
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: 4 * H,
+        lastStatus: 'skipped-locked',
+        localSyncStatus: 'synced',
+        activeLocalSyncStartedAtMs: NOW - 5 * M,
+      },
+      NOW,
+    );
+    expect(v.stalled).toBe(false);
+    expect(v.commitStale).toBe(false);
+  });
+
+  it('WI-40600: a stale local-sync activity marker does not mask a real frozen-HEAD stall', () => {
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: 4 * H,
+        lastStatus: 'skipped-locked',
+        localSyncStatus: 'synced',
+        activeLocalSyncStartedAtMs: NOW - 31 * M,
+      },
+      NOW,
+    );
+    expect(v.stalled).toBe(true);
+    expect(v.commitStale).toBe(true);
+  });
+
+  it('WI-40600: fresh local-sync suppresses only frozen-HEAD, never error/reaper signals', () => {
+    const v = evaluateGitSyncStall(
+      {
+        ...base,
+        headUnchangedMs: 4 * H,
+        lastStatus: 'error',
+        lastError: 'git process stopped making progress',
+        errorSweeps: 2,
+        reapedCount: 3,
+        activeLocalSyncStartedAtMs: NOW - 5 * M,
+      },
+      NOW,
+    );
+    expect(v.commitStale).toBe(false);
+    expect(v.errorStall).toBe(true);
+    expect(v.persistentReap).toBe(true);
+    expect(v.stalled).toBe(true);
+  });
+
   it('commit-staleness is robust to a NULL last_error (the noisy secondary signal)', () => {
     // The live stall had last_error momentarily null — commitStale must still catch it.
     const v = evaluateGitSyncStall({ ...base, headUnchangedMs: 4 * H, lastError: null }, NOW);
