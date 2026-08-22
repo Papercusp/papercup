@@ -203,6 +203,18 @@ describe('fetchUnansweredDirected (EI-13819 SQL path)', () => {
     expect(map.get(MEMBER.ownerId)).toBeUndefined();
   });
 
+  it('WI-7147: release_request remains visible despite machine lifecycle stamps', async () => {
+    await sendMessage(LEADER, {
+      to: [MEMBER.ownerId],
+      summary: 'release request with a real reclaim deadline',
+      expectsReply: true,
+      extra: { auto: true, lifecycle: 'release_request' },
+    });
+
+    const map = await fetchUnansweredDirected([MEMBER.ownerId]);
+    expect(map.get(MEMBER.ownerId)?.count).toBe(1);
+  });
+
   it('EI-19315474516256070: auto:true lifecycle chatter is excluded even when it sets expectsReply:true', async () => {
     await sendMessage(LEADER, {
       to: [MEMBER.ownerId],

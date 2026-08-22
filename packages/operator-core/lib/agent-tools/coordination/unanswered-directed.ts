@@ -327,11 +327,17 @@ export async function fetchUnansweredDirected(
          -- When the sender EXPLICITLY declared \`expects:'none'\`, that is the more specific,
          -- more recent signal (D-048 supersedes the legacy field) and wins — a sender who said
          -- "no reply needed" cannot be overridden by a stale/inconsistent boolean.
-         AND (e.body->>'expects') IS DISTINCT FROM 'none'
+         -- WI-7147: release requests are machine-lifecycle envelopes for
+         -- transport purposes, but carry a real reply deadline and reclaim /
+         -- escalation consequence. Keep this explicit obligation visible even
+         -- though the emitter stamps auto:true / expects:none.
+         AND ((e.body->>'expects') IS DISTINCT FROM 'none'
+              OR e.body->>'lifecycle' = 'release_request')
          -- WI-4537 (a): machine LIFECYCLE chatter is not an obligation. sendMessage now
          -- auto-stamps this for every machine sender (messages.ts), so it is reliable going
          -- forward.
-         AND (e.body->>'auto') IS DISTINCT FROM 'true'
+         AND ((e.body->>'auto') IS DISTINCT FROM 'true'
+              OR e.body->>'lifecycle' = 'release_request')
          -- WI-4537 (b): …and the SAME machine-sender rule again, structurally — because the
          -- write-time stamp cannot reach the rows ALREADY written without it, and those are the
          -- bulk of the noise today (~490 unflagged robot rows vs ~314 flagged). Shared pattern,
