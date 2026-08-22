@@ -749,7 +749,13 @@ export const PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS = 60_000;
 // template. Under real operator pressure the inner create alone has taken
 // 111s. A 30s client deadline is unsafe here: the old reconnect path replayed
 // the same still-running write before its result receipt existed.
-export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 300_000;
+// EI-21107910194803524: raised 300s -> 900s. The 111s figure above was a baseline,
+// not a worst case: a real materialization on 2026-08-21 spent ~290s in pot:create
+// alone under fleet load (~55 load average), leaving no room for the template
+// overlay inside a 300s client deadline. The server-side budgets were raised to
+// 900s to match; a client deadline TIGHTER than the server's just aborts calls the
+// server would have completed, which is the failure this constant exists to prevent.
+export const PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS = 900_000;
 
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
