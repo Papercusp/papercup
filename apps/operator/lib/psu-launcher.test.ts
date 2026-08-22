@@ -4628,6 +4628,43 @@ describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', 
     expect(agents).not.toContain('first deterministic carry');
   });
 
+  it.each([
+    ['legacy AGENTS.md without a base snapshot', false],
+    ['legacy contaminated base snapshot', true],
+  ])('repairs %s before layering the next carry', (_label, hasBaseSnapshot) => {
+    const codexHome = join(home, 'codex-home');
+    mkdirSync(codexHome, { recursive: true });
+    const legacyAgents = [
+      '# Base persona',
+      '',
+      '---',
+      '## Managed carry checkpoint',
+      '',
+      'stale carry from a predecessor',
+      '',
+    ].join('\n');
+    writeFileSync(join(codexHome, 'AGENTS.md'), legacyAgents, { mode: 0o600 });
+    if (hasBaseSnapshot) {
+      writeFileSync(join(codexHome, '.papercusp-carry-base-AGENTS.md'), legacyAgents, { mode: 0o600 });
+    }
+
+    mintCarryRespawnArgs(['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna'], {
+      systemPromptAddendum: 'fresh carry after repair',
+      ownerId: 'su-codex-legacy-carry',
+      home,
+      agent: 'codex',
+      codexHome,
+    });
+
+    const agents = readFileSync(join(codexHome, 'AGENTS.md'), 'utf8');
+    const base = readFileSync(join(codexHome, '.papercusp-carry-base-AGENTS.md'), 'utf8');
+    expect(base).toBe('# Base persona\n');
+    expect(agents).toContain('# Base persona');
+    expect(agents).toContain('fresh carry after repair');
+    expect(agents).not.toContain('stale carry from a predecessor');
+    expect((agents.match(/^## Managed carry checkpoint$/gm) ?? [])).toHaveLength(1);
+  });
+
   it('mints a successor for a RESUME-launched claude argv (no --session-id to rotate — synthesized)', () => {
     // The owner-reported 2026-07-18 spam: `psu --resume` sessions could never be
     // force-respawned because this threw on their `claude --resume <id>` argv.

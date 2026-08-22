@@ -2002,6 +2002,15 @@ export function mintRecycleArgs(
  * 0600 launch-context file, and layer it onto the fresh child. The original argv
  * is the input on every respawn, so generated carry flags never accumulate.
  */
+function stripManagedCarrySection(text) {
+  const source = String(text ?? '');
+  // The managed section is always the final heading emitted below. Match the
+  // optional separator as well so a legacy/stale snapshot is reduced to the
+  // original prompt before it becomes the new immutable base.
+  const marker = /(?:^|\r?\n)(?:---\r?\n)?## Managed carry checkpoint(?:\r?\n|$)/m.exec(source);
+  return marker ? source.slice(0, marker.index) : source;
+}
+
 export function mintCarryRespawnArgs(
   args = [],
   {
@@ -2045,12 +2054,14 @@ export function mintCarryRespawnArgs(
     // Snapshot the launch-time prompt ONCE, then replace (never accumulate) the
     // managed carry section on each successor. A fleet member can respawn many
     // times; appending to the previous AGENTS.md would grow context without
-    // bound and replay stale checkpoints.
-    let baseText;
-    if (existsSync(basePath)) {
-      baseText = readFileSync(basePath, 'utf8');
-    } else {
-      baseText = readFileSync(agentsPath, 'utf8');
+    // bound and replay stale checkpoints. Older homes may already have a
+    // contaminated AGENTS.md (or base snapshot) from that accumulation bug, so
+    // strip the managed tail before preserving either source as the base.
+    const baseExists = existsSync(basePath);
+    const baseSourcePath = baseExists ? basePath : agentsPath;
+    const sourceBaseText = readFileSync(baseSourcePath, 'utf8');
+    const baseText = stripManagedCarrySection(sourceBaseText);
+    if (!baseExists || baseText !== sourceBaseText) {
       writeFileSync(basePath, baseText, { mode: 0o600 });
       chmodSync(basePath, 0o600);
     }
