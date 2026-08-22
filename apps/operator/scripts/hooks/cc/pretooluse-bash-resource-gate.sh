@@ -5033,47 +5033,94 @@ owner = (
 # what it can decode); the OMP hook declares the same thing on its own call.
 _payload_cwd = payload.get('cwd')
 _request_cwd = _payload_cwd if isinstance(_payload_cwd, str) and _payload_cwd.strip() else os.getcwd()
-body = json.dumps({
-    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-    'params': {
-        'name': 'locks:check_command',
-        'arguments': {'command': command, 'cwd': _request_cwd},
-        '_meta': {'format': 'json'},
-    },
-}).encode()
+# ── SCHEMA-SKEW TOLERANCE (WI-40602) ───────────────────────────────────────
+# THIS HOOK AND THE TOOL IT CALLS SHIP ON DIFFERENT CLOCKS. The hook client is
+# read live from the staging tree, so an edit here takes effect immediately;
+# `locks:check_command` is served by the RELEASE CHECKOUT pinned to green `main`
+# (git-pipeline-position.ts:335), so its schema only moves on deploy. Adding an
+# argument therefore breaks the call the instant it lands and keeps it broken
+# for as long as the green gate is red.
+#
+# That is not hypothetical: staging commit 8b824cae7f (2026-08-22T06:59:34Z)
+# added `cwd` to both halves, and every hook call failed `invalid_args:
+# Unrecognized key: "cwd"` from 08:31Z onward — 549 rejections across 8 agents
+# in ~4h. Because an error response carries no `result`, all of them fell
+# through to the fail-open `allow()` below, so the resource-gate stopped
+# blocking real collisions and NOTHING surfaced it. The only symptom reached
+# individual agents as "you called locks:check_command 16× and it failed",
+# which reads as a detector bug about themselves and gets dismissed.
+#
+# So: send the optional arg, but never let it be load-bearing. On a rejection,
+# retry once WITHOUT it. `cwd` only refines substitution path-matching, so the
+# retry preserves the safety-critical exclusive-hold check in full and degrades
+# only the advisory substitution half. Every failure path still ends at
+# allow(), exactly as before — this can restore blocking, never invent it.
+def _gate_request(include_cwd):
+    """POST one locks:check_command call. Returns the raw body, or None on transport failure."""
+    _arguments = {'command': command}
+    if include_cwd:
+        _arguments['cwd'] = _request_cwd
+    body = json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {
+            'name': 'locks:check_command',
+            'arguments': _arguments,
+            '_meta': {'format': 'json'},
+        },
+    }).encode()
 
-req = urllib.request.Request(
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
-    + urllib.parse.quote(owner, safe=''),
-    data=body,
-    headers={
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/event-stream',
-    },
-    method='POST',
-)
-try:
-    resp = urllib.request.urlopen(req, timeout=4)
-    raw_resp = resp.read().decode('utf-8', errors='replace')
-except Exception as e:
-    print(f'[resource-gate] operator unreachable ({e}); allowing (fail-open)', file=sys.stderr)
+    req = urllib.request.Request(
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
+        + urllib.parse.quote(owner, safe=''),
+        data=body,
+        headers={
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        },
+        method='POST',
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=4)
+        return resp.read().decode('utf-8', errors='replace')
+    except Exception as e:
+        print(f'[resource-gate] operator unreachable ({e}); allowing (fail-open)', file=sys.stderr)
+        return None
+
+
+def _gate_result(raw):
+    """Extract the JSON-RPC `result` from a raw (possibly SSE-framed) body, or None."""
+    if not raw:
+        return None
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith('event:'):
+            continue
+        if line.startswith('data:'):
+            line = line[5:].strip()
+        try:
+            cand = json.loads(line)
+            if isinstance(cand, dict) and 'result' in cand:
+                return cand['result']
+        except Exception:
+            pass
+    return None
+
+
+raw_resp = _gate_request(True)
+if raw_resp is None:
     allow()
 
-result = None
-for line in raw_resp.splitlines():
-    line = line.strip()
-    if not line or line.startswith('event:'):
-        continue
-    if line.startswith('data:'):
-        line = line[5:].strip()
-    try:
-        cand = json.loads(line)
-        if isinstance(cand, dict) and 'result' in cand:
-            result = cand['result']
-            break
-    except Exception:
-        pass
+result = _gate_result(raw_resp)
+if result is None and 'Unrecognized key' in (raw_resp or ''):
+    print('[resource-gate] operator rejected an argument (schema skew — hook is ahead of '
+          'the deployed tool; see WI-40602); retrying without `cwd`. Substitution matching '
+          'is degraded until the green gate deploys; resource-gate intact.', file=sys.stderr)
+    raw_resp = _gate_request(False)
+    if raw_resp is None:
+        allow()
+    result = _gate_result(raw_resp)
+
 if not result:
     allow()
 
