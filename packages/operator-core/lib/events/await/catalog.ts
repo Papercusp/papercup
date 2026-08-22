@@ -157,6 +157,17 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: 'plans:runs polling',
   },
+  {
+    family: 'external-trigger',
+    keyTemplate: 'ext:<source>:<event>',
+    params: [
+      { name: 'source', required: true, describe: 'normalized provider/source slug, e.g. gmail or slack' },
+      { name: 'event', required: true, describe: 'normalized event name, e.g. message.received' },
+    ],
+    describe: 'A provider payload was normalized, schema-validated, ledgered, and emitted for trigger matching.',
+    emitter: 'external-trigger ingestion core (packages/operator-core/lib/external-triggers/ingestion.ts)',
+    exists: true,
+  },
   // ── Work items ────────────────────────────────────────────────────────────
   {
     family: 'work-item',

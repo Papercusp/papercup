@@ -55,6 +55,8 @@ describe('buildKey', () => {
     expect(buildKey('work-item', { id: 'WI-1234' })).toBe('work-item:status:WI-1234');
     expect(buildKey('lock', { ticket: 'abc' })).toBe('lock:grant:abc');
     expect(buildKey('plan-item', { slug: 'my-plan', id: 'P-014' })).toBe('plan-item:done:my-plan:P-014');
+    expect(buildKey('external-trigger', { source: 'gmail', event: 'message.received' }))
+      .toBe('ext:gmail:message.received');
   });
 
   it('throws when a required param is missing', () => {
