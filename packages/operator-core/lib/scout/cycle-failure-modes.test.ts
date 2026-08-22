@@ -200,7 +200,9 @@ function makeRealStepDeps(opts: {
     critique: async (ideas, ctx) => (await critiqueIdeas(ideas, ctx.corpus, { llmCall: ctx.llmCall })).critiques,
     recombine: async (scored, ctx) => (await recombineProposals(scored, { llmCall: ctx.llmCall })).proposals,
     route: async (proposals) => {
-      recorded.routeBatches.push([...proposals]);
+      // runScoutCycle performs a cost-free D-010 continuation probe with []
+      // before every early-exit path. It is not a proposal-routing batch.
+      if (proposals.length > 0) recorded.routeBatches.push([...proposals]);
       return (await routeProposals(proposals, ports)).decisions;
     },
   };
@@ -243,7 +245,9 @@ function makeSimpleDeps(opts: {
         : [];
     },
     route: async (proposals) => {
-      routeBatches.push([...proposals]);
+      // The initial D-010 continuation drain routes [] by design; only count
+      // actual proposal batches in these routing assertions.
+      if (proposals.length > 0) routeBatches.push([...proposals]);
       if (opts.route) return opts.route(proposals);
       return proposals.map((p) => ({
         proposalId: p.id,
