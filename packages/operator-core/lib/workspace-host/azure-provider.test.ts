@@ -396,6 +396,29 @@ describe('Azure workspace-host provider planning', () => {
 });
 
 describe('Azure workspace-host provider contract and lifecycle', () => {
+  it('declares the native-client CLI floor, Bastion SKU cost, audit limits, and large-file fallback', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const profile = await provider.getTransportProfile(host, context());
+
+    expect(profile.compatibility.requirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'azure-cli', minimumVersion: '2.32.0' }),
+        expect.objectContaining({ id: 'azure-bastion-extension' }),
+        expect.objectContaining({ id: 'azure-ssh-extension' }),
+      ]),
+    );
+    expect(profile.compatibility.cost).toMatchObject({
+      model: 'provider-metered',
+      requiredSkus: ['Standard', 'Premium'],
+    });
+    expect(profile.compatibility.traffic['bulk-transfer']).toBe('discouraged');
+    expect(profile.compatibility.audit).toMatchObject({ controlPlaneEvents: true, sessionContent: false });
+    expect(profile.compatibility.fallbacks).toContainEqual(
+      expect.objectContaining({ feature: 'fileTransfer', strategy: 'provider-object-storage' }),
+    );
+  });
+
   it('passes the shared fake provider contract including LRO reconcile, observation, transport, and confirmed destroy', async () => {
     const { provider } = providerAndClient();
     const report = await runFakeWorkspaceHostProviderContractSuite(provider, {

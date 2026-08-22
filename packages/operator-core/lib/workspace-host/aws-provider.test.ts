@@ -460,6 +460,24 @@ describe('AWS workspace-host provider planning', () => {
 });
 
 describe('AWS workspace-host provider contract and lifecycle', () => {
+  it('declares versioned SSM prerequisites and rejects false bulk-transfer parity in its profile', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+    const profile = await provider.getTransportProfile(host, context());
+
+    expect(profile.compatibility.requirements).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'aws-session-manager-plugin', minimumVersion: '1.1.23.0' }),
+        expect.objectContaining({ id: 'aws-ssm-agent', minimumVersion: '2.3.672.0' }),
+      ]),
+    );
+    expect(profile.compatibility.traffic['bulk-transfer']).toBe('unsupported');
+    expect(profile.compatibility.audit).toMatchObject({ controlPlaneEvents: true, sessionContent: false });
+    expect(profile.compatibility.fallbacks).toContainEqual(
+      expect.objectContaining({ feature: 'fileTransfer', strategy: 'provider-object-storage' }),
+    );
+  });
+
   it('passes the shared fake provider contract including reconcile, observation, transport, and confirmed destroy', async () => {
     const { provider } = providerAndClient();
     const report = await runFakeWorkspaceHostProviderContractSuite(provider, {

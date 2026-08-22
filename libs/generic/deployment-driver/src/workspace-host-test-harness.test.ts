@@ -209,6 +209,26 @@ function fakeProvider(): WorkspaceHostProvider {
         constraints: [],
         reconnect: 'resume',
         audited: true,
+        compatibility: {
+          requirements: [],
+          traffic: { interactive: 'recommended', 'bulk-transfer': 'supported' },
+          limits: { unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'], notes: [] },
+          proxy: { mode: 'supported', notes: [] },
+          cost: { model: 'included', meters: [], notes: [] },
+          audit: {
+            controlPlaneEvents: true,
+            sessionMetadata: true,
+            sessionContent: false,
+            fileTransferEvents: false,
+            notes: [],
+          },
+          hostKey: {
+            initialEnrollment: 'verify-before-connect',
+            replacement: 'block-and-reverify',
+            notes: [],
+          },
+          fallbacks: [],
+        },
       };
     },
     async attestHealth(host) {

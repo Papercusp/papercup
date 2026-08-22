@@ -143,6 +143,74 @@ export interface WorkspaceHostTransportFeatureSet {
   fileTransfer: boolean;
   clipboard?: boolean;
 }
+export type WorkspaceHostTransportFeature = keyof WorkspaceHostTransportFeatureSet;
+export type WorkspaceHostTransportTrafficClass = 'interactive' | 'bulk-transfer';
+export type WorkspaceHostTransportSuitability = 'recommended' | 'supported' | 'discouraged' | 'unsupported';
+export type WorkspaceHostTransportRequirementKind =
+  | 'client-tool'
+  | 'client-plugin'
+  | 'remote-agent'
+  | 'provider-permission'
+  | 'network';
+export interface WorkspaceHostTransportRequirement {
+  /** Stable key used to join provider requirements with preflight observations. */
+  id: string;
+  label: string;
+  kind: WorkspaceHostTransportRequirementKind;
+  minimumVersion?: string;
+  platforms?: readonly string[];
+  requiredFor: readonly WorkspaceHostTransportFeature[];
+}
+export type WorkspaceHostTransportLimitKind = 'session-duration' | 'idle-timeout' | 'concurrency' | 'throughput';
+export interface WorkspaceHostTransportLimits {
+  sessionDurationMinutes?: number;
+  idleTimeoutMinutes?: number;
+  concurrentSessions?: number;
+  throughputMbps?: number;
+  /** Explicitly distinguishes unpublished/provider-dependent limits from unlimited service. */
+  unknown: readonly WorkspaceHostTransportLimitKind[];
+  notes: readonly string[];
+}
+export interface WorkspaceHostTransportProxyPolicy {
+  mode: 'supported' | 'allowlist-required' | 'provider-dependent' | 'unsupported';
+  requiredDomains?: readonly string[];
+  notes: readonly string[];
+}
+export interface WorkspaceHostTransportCostPolicy {
+  model: 'included' | 'network-metered' | 'provider-metered' | 'third-party';
+  requiredSkus?: readonly string[];
+  meters: readonly string[];
+  notes: readonly string[];
+}
+export interface WorkspaceHostTransportAuditPolicy {
+  controlPlaneEvents: boolean;
+  sessionMetadata: boolean;
+  sessionContent: boolean;
+  fileTransferEvents: boolean;
+  notes: readonly string[];
+}
+export interface WorkspaceHostTransportHostKeyPolicy {
+  initialEnrollment: 'verify-before-connect' | 'provider-managed' | 'not-applicable';
+  replacement: 'block-and-reverify' | 'provider-managed' | 'not-applicable';
+  notes: readonly string[];
+}
+export interface WorkspaceHostTransportFallback {
+  feature: WorkspaceHostTransportFeature;
+  trafficClass?: WorkspaceHostTransportTrafficClass;
+  strategy: 'alternate-transport' | 'provider-object-storage' | 'unsupported';
+  transportKind?: string;
+  description: string;
+}
+export interface WorkspaceHostTransportCompatibilityContract {
+  requirements: readonly WorkspaceHostTransportRequirement[];
+  traffic: Readonly<Record<WorkspaceHostTransportTrafficClass, WorkspaceHostTransportSuitability>>;
+  limits: WorkspaceHostTransportLimits;
+  proxy: WorkspaceHostTransportProxyPolicy;
+  cost: WorkspaceHostTransportCostPolicy;
+  audit: WorkspaceHostTransportAuditPolicy;
+  hostKey: WorkspaceHostTransportHostKeyPolicy;
+  fallbacks: readonly WorkspaceHostTransportFallback[];
+}
 /** A concrete profile declares real abilities and constraints; it does not promise false SSH parity. */
 export interface WorkspaceHostTransportProfile {
   kind: string;
@@ -155,6 +223,8 @@ export interface WorkspaceHostTransportProfile {
   sessionLimit?: number;
   throughputMbps?: number;
   audited: boolean;
+  /** Structured, preflight-consumable compatibility and policy contract. */
+  compatibility: WorkspaceHostTransportCompatibilityContract;
 }
 
 export interface WorkspaceHostDataPolicy {

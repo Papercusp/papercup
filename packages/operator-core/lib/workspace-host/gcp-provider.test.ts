@@ -13,6 +13,7 @@ import {
   GCP_DATA_DISK_RESIZE_POLICY,
   GCP_DATA_MOUNT_POINT,
   GCP_IAP_TCP_FORWARDING_RANGE,
+  buildGcpWorkspaceHostTransportProfile,
   createGcpWorkspaceHostProvider,
   gcpWorkspaceHostRequestUuid,
   type GcpComputeInstanceStatus,
@@ -33,6 +34,30 @@ import {
 } from './gcp-provider';
 
 const NOW = '2026-08-22T08:30:00.000Z';
+
+describe('GCP workspace-host transport compatibility profiles', () => {
+  it('declares IAP prerequisites, corporate-proxy allowlisting, audit limits, and a bulk-transfer fallback', () => {
+    const profile = buildGcpWorkspaceHostTransportProfile({
+      kind: 'gcp-iap-ssh',
+      projectId: 'papercusp-dev-123',
+      zone: 'us-central1-a',
+      instanceName: 'pc-host-gcp-1-vm',
+    });
+
+    expect(profile.compatibility.requirements.map(({ id }) => id)).toEqual(
+      expect.arrayContaining(['gcloud-cli', 'gcp-iap-tunnel', 'gcp-os-login', 'gcp-iap-network']),
+    );
+    expect(profile.compatibility.proxy).toMatchObject({
+      mode: 'allowlist-required',
+      requiredDomains: ['tunnel.cloudproxy.app'],
+    });
+    expect(profile.compatibility.traffic['bulk-transfer']).toBe('discouraged');
+    expect(profile.compatibility.audit).toMatchObject({ controlPlaneEvents: true, sessionContent: false });
+    expect(profile.compatibility.fallbacks).toContainEqual(
+      expect.objectContaining({ feature: 'fileTransfer', strategy: 'provider-object-storage' }),
+    );
+  });
+});
 
 function desired(network: 'managed' | 'existing' = 'managed'): WorkspaceHostDesiredSpec {
   return {

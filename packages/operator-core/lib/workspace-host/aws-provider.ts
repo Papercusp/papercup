@@ -1019,6 +1019,80 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
       constraints: ['No native file-transfer or clipboard parity; use command or audited object-store transfer'],
       reconnect: 'recreate',
       audited: true,
+      compatibility: {
+        requirements: [
+          {
+            id: 'aws-cli',
+            label: 'AWS CLI',
+            kind: 'client-tool',
+            requiredFor: ['command', 'pty', 'tcpForward'],
+          },
+          {
+            id: 'aws-session-manager-plugin',
+            label: 'AWS Session Manager plugin',
+            kind: 'client-plugin',
+            minimumVersion: '1.1.23.0',
+            requiredFor: ['command', 'pty', 'tcpForward'],
+          },
+          {
+            id: 'aws-ssm-agent',
+            label: 'AWS Systems Manager Agent',
+            kind: 'remote-agent',
+            minimumVersion: '2.3.672.0',
+            requiredFor: ['command', 'pty', 'tcpForward'],
+          },
+          {
+            id: 'aws-ssm-session-permission',
+            label: 'Systems Manager StartSession permission',
+            kind: 'provider-permission',
+            requiredFor: ['command', 'pty', 'tcpForward'],
+          },
+          {
+            id: 'aws-ssmmessages-network',
+            label: 'Reachable Systems Manager message endpoints',
+            kind: 'network',
+            requiredFor: ['command', 'pty', 'tcpForward'],
+          },
+        ],
+        traffic: { interactive: 'supported', 'bulk-transfer': 'unsupported' },
+        limits: {
+          unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'],
+          notes: ['Session quotas and idle timeouts depend on the AWS account and Session Manager preferences'],
+        },
+        proxy: {
+          mode: 'supported',
+          notes: ['Preflight must verify the AWS CLI and Session Manager plugin can reach regional HTTPS endpoints'],
+        },
+        cost: {
+          model: 'included',
+          meters: ['network egress'],
+          notes: ['Session Manager has no separate connection charge; network and fallback storage charges may apply'],
+        },
+        audit: {
+          controlPlaneEvents: true,
+          sessionMetadata: true,
+          sessionContent: false,
+          fileTransferEvents: false,
+          notes: ['Port-forwarded and SSH payloads are encrypted and are not available in Session Manager logs'],
+        },
+        hostKey: {
+          initialEnrollment: 'verify-before-connect',
+          replacement: 'block-and-reverify',
+          notes: ['Pin the instance SSH host key through the SSM tunnel; do not silently accept replacement'],
+        },
+        fallbacks: [
+          {
+            feature: 'fileTransfer',
+            strategy: 'provider-object-storage',
+            description: 'Use an identity-scoped, audited S3 transfer instead of tunneling bulk bytes through SSM',
+          },
+          {
+            feature: 'clipboard',
+            strategy: 'unsupported',
+            description: 'Use explicit local-client copy/paste; SSM does not synchronize clipboards',
+          },
+        ],
+      },
     };
   }
 

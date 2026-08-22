@@ -531,6 +531,24 @@ function sshAddress(value: string | undefined, label: string): string {
   return address.includes(':') && !address.startsWith('[') ? `[${address}]` : address;
 }
 
+const GCP_SSH_FEATURES = ['command', 'pty', 'tcpForward', 'fileTransfer'] as const;
+
+function gcpHostKeyPolicy(): WorkspaceHostTransportProfile['compatibility']['hostKey'] {
+  return {
+    initialEnrollment: 'verify-before-connect',
+    replacement: 'block-and-reverify',
+    notes: ['Pin the first observed SSH host key; a changed key requires an independently verified rotation'],
+  };
+}
+
+function gcpClipboardFallback(): WorkspaceHostTransportProfile['compatibility']['fallbacks'][number] {
+  return {
+    feature: 'clipboard',
+    strategy: 'unsupported',
+    description: 'Use explicit copy/paste in the local client; the transport does not synchronize clipboards',
+  };
+}
+
 /** Stable machine-readable profile consumed by psu and the desktop connection manager. */
 export function buildGcpWorkspaceHostTransportProfile(
   input: GcpWorkspaceHostTransportProfileInput,
@@ -551,6 +569,51 @@ export function buildGcpWorkspaceHostTransportProfile(
       prerequisites: ['OS Login permission', 'Verified SSH host key', 'Explicit restricted source CIDR allowlist'],
       constraints: ['Public IPv4 is enabled', 'Only tcp/22 is exposed', 'No provider tunnel or session-content audit'],
       audited: false,
+      compatibility: {
+        requirements: [
+          {
+            id: 'openssh-client',
+            label: 'OpenSSH client',
+            kind: 'client-tool',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+          {
+            id: 'gcp-os-login',
+            label: 'OS Login permission',
+            kind: 'provider-permission',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+          {
+            id: 'gcp-direct-ssh-firewall',
+            label: 'Restricted tcp/22 source CIDR allowlist',
+            kind: 'network',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+        ],
+        traffic: { interactive: 'recommended', 'bulk-transfer': 'supported' },
+        limits: {
+          unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'],
+          notes: ['Limits and throughput depend on the VM, public network path, and caller SSH policy'],
+        },
+        proxy: {
+          mode: 'provider-dependent',
+          notes: ['A corporate proxy must explicitly support the configured direct SSH path'],
+        },
+        cost: {
+          model: 'network-metered',
+          meters: ['external IPv4', 'network egress'],
+          notes: ['Compute Engine and public-network charges remain provider-billed'],
+        },
+        audit: {
+          controlPlaneEvents: false,
+          sessionMetadata: false,
+          sessionContent: false,
+          fileTransferEvents: false,
+          notes: ['Use host-side logging when direct SSH audit evidence is required'],
+        },
+        hostKey: gcpHostKeyPolicy(),
+        fallbacks: [gcpClipboardFallback()],
+      },
     };
   }
   if (input.kind === 'defguard-ssh') {
@@ -562,6 +625,57 @@ export function buildGcpWorkspaceHostTransportProfile(
       prerequisites: ['Defguard enrollment', 'OS Login permission', 'Verified SSH host key'],
       constraints: ['No public IP or inbound GCP firewall rule', 'Access requires the enrolled Defguard overlay'],
       audited: true,
+      compatibility: {
+        requirements: [
+          {
+            id: 'openssh-client',
+            label: 'OpenSSH client',
+            kind: 'client-tool',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+          {
+            id: 'defguard-client',
+            label: 'Enrolled Defguard client',
+            kind: 'client-tool',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+          {
+            id: 'gcp-os-login',
+            label: 'OS Login permission',
+            kind: 'provider-permission',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+          {
+            id: 'defguard-overlay',
+            label: 'Defguard overlay route to the workspace host',
+            kind: 'network',
+            requiredFor: GCP_SSH_FEATURES,
+          },
+        ],
+        traffic: { interactive: 'recommended', 'bulk-transfer': 'supported' },
+        limits: {
+          unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'],
+          notes: ['Limits and throughput depend on the Defguard gateway, peer path, and VM'],
+        },
+        proxy: {
+          mode: 'provider-dependent',
+          notes: ['Corporate-network compatibility must be verified against the deployed Defguard path'],
+        },
+        cost: {
+          model: 'third-party',
+          meters: ['Defguard deployment', 'network egress'],
+          notes: ['Defguard infrastructure and provider network charges are billed outside this profile'],
+        },
+        audit: {
+          controlPlaneEvents: true,
+          sessionMetadata: true,
+          sessionContent: false,
+          fileTransferEvents: false,
+          notes: ['Overlay enrollment and connection events do not include SSH session contents'],
+        },
+        hostKey: gcpHostKeyPolicy(),
+        fallbacks: [gcpClipboardFallback()],
+      },
     };
   }
   return {
@@ -575,6 +689,72 @@ export function buildGcpWorkspaceHostTransportProfile(
       'IAP/OS Login control events are auditable; SSH session contents are not provider-recorded',
     ],
     audited: true,
+    compatibility: {
+      requirements: [
+        {
+          id: 'gcloud-cli',
+          label: 'Google Cloud CLI',
+          kind: 'client-tool',
+          requiredFor: GCP_SSH_FEATURES,
+        },
+        {
+          id: 'openssh-client',
+          label: 'OpenSSH client',
+          kind: 'client-tool',
+          requiredFor: GCP_SSH_FEATURES,
+        },
+        {
+          id: 'gcp-iap-tunnel',
+          label: 'IAP-secured Tunnel User permission',
+          kind: 'provider-permission',
+          requiredFor: GCP_SSH_FEATURES,
+        },
+        {
+          id: 'gcp-os-login',
+          label: 'OS Login permission',
+          kind: 'provider-permission',
+          requiredFor: GCP_SSH_FEATURES,
+        },
+        {
+          id: 'gcp-iap-network',
+          label: 'HTTPS access to the IAP TCP forwarding service',
+          kind: 'network',
+          requiredFor: GCP_SSH_FEATURES,
+        },
+      ],
+      traffic: { interactive: 'recommended', 'bulk-transfer': 'discouraged' },
+      limits: {
+        unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'],
+        notes: ['IAP TCP forwarding is an interactive access path; test large transfers separately'],
+      },
+      proxy: {
+        mode: 'allowlist-required',
+        requiredDomains: ['tunnel.cloudproxy.app'],
+        notes: ['Corporate proxies must allow the IAP TCP forwarding HTTPS domain'],
+      },
+      cost: {
+        model: 'network-metered',
+        meters: ['network egress'],
+        notes: ['IAP TCP forwarding has no dedicated SKU in this contract; provider network charges may apply'],
+      },
+      audit: {
+        controlPlaneEvents: true,
+        sessionMetadata: true,
+        sessionContent: false,
+        fileTransferEvents: false,
+        notes: ['IAP and OS Login control events are visible; SSH payloads are not provider-recorded'],
+      },
+      hostKey: gcpHostKeyPolicy(),
+      fallbacks: [
+        {
+          feature: 'fileTransfer',
+          trafficClass: 'bulk-transfer',
+          strategy: 'provider-object-storage',
+          description: 'Use a signed or identity-scoped Cloud Storage transfer for large files',
+        },
+        gcpClipboardFallback(),
+      ],
+    },
   };
 }
 
