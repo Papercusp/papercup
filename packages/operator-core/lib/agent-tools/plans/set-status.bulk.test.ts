@@ -38,6 +38,15 @@ vi.mock('./with-plan-lock', () => ({
   bumpUpdatedDate: (s: string) => s,
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+const laneSync = vi.hoisted(() => ({
+  item: vi.fn(async () => null),
+  dependents: vi.fn(async () => [] as string[]),
+}));
+vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
+  findAllLinkedWorkItems: vi.fn(async () => []),
+  resyncPlanItemLaneNow: laneSync.item,
+  resyncDependentPlanItemLanesNow: laneSync.dependents,
+}));
 
 import { withPlanLock } from './with-plan-lock';
 const lockM = vi.mocked(withPlanLock);
@@ -74,6 +83,8 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
       oldStatus: 'todo',
       newStatus: 'wip',
     });
+    expect(laneSync.item).toHaveBeenCalledWith('plan-a', 'P-001', null);
+    expect(laneSync.dependents).not.toHaveBeenCalled();
   });
 
   it('itemIds:[…] flips many of one plan to the same status', async () => {
@@ -82,6 +93,10 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: { itemId: string }) => r.itemId)).toEqual(['P-001', 'P-002']);
     expect(b.results.every((r: { newStatus: string }) => r.newStatus === 'done')).toBe(true);
+    expect(laneSync.item).toHaveBeenNthCalledWith(1, 'plan-a', 'P-001', null);
+    expect(laneSync.item).toHaveBeenNthCalledWith(2, 'plan-a', 'P-002', null);
+    expect(laneSync.dependents).toHaveBeenNthCalledWith(1, 'plan-a', 'P-001', null);
+    expect(laneSync.dependents).toHaveBeenNthCalledWith(2, 'plan-a', 'P-002', null);
   });
 
   it('items:[…] heterogeneous; per-item status overrides the batch default', async () => {

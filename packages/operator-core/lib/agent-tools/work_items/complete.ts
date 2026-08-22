@@ -1476,48 +1476,8 @@ export async function synchronizeFinishWork(
     // indistinguishable here from a flip that landed. `planItem` therefore means "the
     // reflection was requested and not rejected", NOT "the plan item is now <reflected>".
     // Do not read this field as proof of a flip; read the plan item.
-    if (statusResult.ok) {
-      planItem = reflected;
-
-      // WI-40558: plans:set-status dispatches its post-invoke reactions before
-      // the reaction's workspace transaction has necessarily committed. The
-      // generic dependency-terminality rule therefore remains the normal path,
-      // but its fresh plan re-read can race the commit and still see the old
-      // dependency state. Live result: the plan reported a dependent lane
-      // actionable while its linked work-item kept the active plan-lane blocker
-      // that had parked it.
-      //
-      // This finish saga already waits for plans:set-status to return, so the
-      // plan write is committed at this point. Reuse the canonical lane-resync
-      // builtin in dependency mode now, closing the race without adding a second
-      // blocker writer or weakening the periodic/reaction backstops.
-      const laneResyncResult = await fire({
-        fire: 'plan-item.resyncLane',
-        args: {
-          dependencies: [
-            {
-              planSlug: stamp.plan_slug,
-              itemId: stamp.item_id,
-              harnessSlug: stamp.harness_slug,
-            },
-          ],
-        },
-        parentCtx: opts.ctx,
-        cause: {
-          depth: 1,
-          chain: ['work-items:finish'],
-          ruleId: 'work-items:finish:dependent-lane-resync',
-          rootRunId: typeof opts.ctx.runId === 'string' ? opts.ctx.runId : null,
-        },
-      }).catch((error) => ({
-        ok: false as const,
-        error: error instanceof Error ? error.message : String(error),
-      }));
-      if (!laneResyncResult.ok) {
-        planItem = 'failed';
-        errors.push(`dependent plan-lane resync failed: ${laneResyncResult.error ?? 'unknown error'}`);
-      }
-    } else {
+    if (statusResult.ok) planItem = reflected;
+    else {
       planItem = 'failed';
       errors.push(`plan-item status failed: ${statusResult.error ?? 'unknown error'}`);
     }

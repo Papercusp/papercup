@@ -42,7 +42,11 @@ import {
   looksLikeResidualClosure,
   TERMINAL_WORK_ITEM_STATES,
 } from '../../plan-items/convert';
-import { findAllLinkedWorkItems } from '../../plan-items/reconcile-linked-work-items';
+import {
+  findAllLinkedWorkItems,
+  resyncDependentPlanItemLanesNow,
+  resyncPlanItemLaneNow,
+} from '../../plan-items/reconcile-linked-work-items';
 import { setWorkItemState } from '../../work-items';
 import { unassignItem } from '../../plan-items/assignments';
 import { bestEffortOwnerUser, resolveAdoptedName } from '../../plan-items/agent-names';
@@ -1043,6 +1047,32 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
           (e as Error)?.message ?? e,
         );
       }
+    }
+  }
+
+  // WI-40558: run the canonical lane reconciler only AFTER withPlanLock has
+  // returned, which is the commit boundary. The post-invoke reaction rules stay
+  // as the generic/backstop path, but they are scheduled while this tool's
+  // dispatch transaction is still settling; their fresh plan re-read can race
+  // the commit and classify the OLD lane. Live repro left P-007 effective=wip
+  // with blockers=0 while its linked WI-40447 retained an active plan-lane gate.
+  //
+  // Reuse the same resync functions the reaction builtin calls. This is
+  // transition-gated, awaited, and fail-soft: the caller sees committed plan
+  // state before we reconcile the item itself and any direct dependents whose
+  // readiness changed on a terminality edge.
+  if (result.value.oldStatus !== it.status) {
+    try {
+      await resyncPlanItemLaneNow(it.slug, it.itemId, harnessSlug ?? null);
+      const oldTerminal = result.value.oldStatus !== null && isTerminalStatus(result.value.oldStatus);
+      if (oldTerminal !== isTerminalStatus(it.status)) {
+        await resyncDependentPlanItemLanesNow(it.slug, it.itemId, harnessSlug ?? null);
+      }
+    } catch (e) {
+      console.warn(
+        `[plans:set-status] post-commit lane resync ${it.slug}#${it.itemId} failed:`,
+        (e as Error)?.message ?? e,
+      );
     }
   }
 
