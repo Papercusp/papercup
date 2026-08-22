@@ -44,6 +44,8 @@ import { fileURLToPath } from 'node:url';
 import { isCliEntry } from '../../../util/cli-entry';
 import { loadavg, cpus as osCpus } from 'node:os';
 import type { PerfArtifact } from './artifact';
+import { captureRunProvenance, resolveRepoRoot, stampArtifactProvenance } from './provenance';
+import { renderProvenanceLines } from './report';
 import {
   baselineFromArtifacts,
   baselineFromHistory,
@@ -566,6 +568,11 @@ function renderReport(
               : ''),
         ]
       : []),
+    // D-026: the same "what code produced this" block report.ts renders, from
+    // the SAME helper — the two renderers already diverge (this one is inline,
+    // pre-dating report.ts's extraction) and a second hand-written copy of the
+    // provenance block would be the next thing to drift out of agreement.
+    ...renderProvenanceLines(artifacts),
     '',
     // SLO and convergence are SEPARATE columns on purpose: the former is host
     // responsiveness, the latter is whether replication kept up, and a run can
@@ -622,6 +629,40 @@ async function main(): Promise<void> {
   const startPsiMem = samplePsiSome('memory');
   const startPsiCpu = samplePsiSome('cpu');
 
+  // D-026: capture WHAT CODE IS RUNNING, once, at run start — the tree moves
+  // during a run, so a per-artifact re-capture would record the state at emit
+  // rather than at execution. The staleness that introduces is not assumed
+  // away: `stampArtifactProvenance` re-stats the subject trees at every emit
+  // and records any that moved (`subjectDriftSinceCapture`).
+  const repoRoot = resolveRepoRoot(HERE);
+  const runProvenance = captureRunProvenance({
+    from: HERE,
+    hostAtStart: {
+      loadavg1m: loadavg()[0],
+      cpus: osCpus().length,
+      ratio1m: startLoadRatio,
+      psiMemSome60: startPsiMem?.avg60 ?? null,
+      psiCpuSome60: startPsiCpu?.avg60 ?? null,
+      swapPagesAtStart: startSwap ? startSwap.pswpin + startSwap.pswpout : null,
+    },
+  });
+  if (runProvenance.unavailable.length) {
+    console.log(
+      `  ⚠ run provenance incomplete: ${runProvenance.unavailable.join('; ')}` +
+        ` — artifacts from this run are attributable only as far as the legs that answered.`,
+    );
+  }
+  if (runProvenance.submodulesDivergedFromGitlink?.length) {
+    // Loud on purpose: this is the condition under which the recorded
+    // last-commit sha does NOT describe all the code that ran, and it is
+    // invisible from the superproject sha alone.
+    console.log(
+      `  ⚠ ${runProvenance.submodulesDivergedFromGitlink.length} submodule(s) diverge from the recorded gitlink ` +
+        `(${runProvenance.submodulesDivergedFromGitlink.slice(0, 5).join(', ')}) — ` +
+        `lastCommitSha ${runProvenance.lastCommitSha?.slice(0, 12) ?? '(unknown)'} is an INCOMPLETE description of this run.`,
+    );
+  }
+
   const artifacts: PerfArtifact[] = [];
   const ctx: ScenarioRunCtx = {
     profile: args.profile,
@@ -629,11 +670,23 @@ async function main(): Promise<void> {
     peerCounts: args.peers ?? prof.peerCounts,
     seed: 1234,
     log: (line) => console.log(`  ${line}`),
-    async emit(artifact) {
+    async emit(incoming) {
+      // Stamp HERE, not in the meter: this is the one funnel every artifact
+      // passes through, including ones produced in child processes (netem's
+      // inner runner, mesh peer children) that have no access to the parent's
+      // provenance capture.
+      const artifact = stampArtifactProvenance(incoming, runProvenance, repoRoot);
       artifacts.push(artifact);
       const n = artifacts.length;
       const file = join(outDir, `${String(n).padStart(3, '0')}-${artifact.scenario.replace(/[^a-z0-9.-]/gi, '_')}.json`);
       writeFileSync(file, JSON.stringify(artifact, null, 2));
+      const drift = artifact.provenance?.subjectDriftSinceCapture ?? [];
+      if (drift.length) {
+        console.log(
+          `  ⚠ subject tree moved since run start (${drift.join(', ')}) — this artifact and the ` +
+            `run-start provenance may describe different code.`,
+        );
+      }
       console.log(`  ✔ ${shortSummary(artifact)}`);
     },
   };

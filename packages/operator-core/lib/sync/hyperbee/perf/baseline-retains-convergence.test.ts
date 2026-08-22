@@ -48,7 +48,8 @@ function convergence(convergedReaders: number, expectedReaders = 63): Convergenc
 
 function artifact(conv: ConvergenceStats | null, latMs = 100): PerfArtifact {
   return {
-    schema: 1,
+    schema: 2,
+    provenance: null,
     scenario: 'replication.sustained',
     tier: 1,
     params: { peers: 64, rate: 10 },

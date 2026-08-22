@@ -36,7 +36,8 @@ function artifact(
   metrics: Record<string, MetricSummary>,
 ): PerfArtifact {
   return {
-    schema: 1,
+    schema: 2,
+    provenance: null,
     scenario,
     tier: 1,
     params,
