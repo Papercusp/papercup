@@ -534,7 +534,19 @@ function rowToAudit(row: PlanAuditRow): PlanAudit {
 export interface PlanAuditReadScope {
   /** Concrete workspace carrying the plan. Falls back to the ambient request scope. */
   workspaceId?: string;
-  /** Concrete harness/home Hive carrying the plan. Omitted for legacy ambient reads. */
+  /**
+   * ⚠ NOT the plan's owning Hive-home slug (`resolvePlanScope`'s collapsed
+   * `harnessSlug`) — do not pass `row.harnessSlug` from a `plans:get`-shaped
+   * plan row here (EI-21124863090048444). `harness_slug` on `plan_audits` is the
+   * CITATION-CONTEXT harness `plans:audit` ran from (so `repoCitationContextForHarness`
+   * can re-resolve citations at ship time), which for a Hive with member/sub-harnesses
+   * routinely differs from the plan's own Hive home. A strict-equality filter here
+   * silently drops a real audit row whenever the two disagree. `recordPlanAudit`'s
+   * own audit_seq computation and `getEffectiveItemAudits` both already scope purely
+   * by (workspaceId, planSlug) — leave this unset unless you are DELIBERATELY
+   * narrowing to one citation-context harness (a rare, explicit need, not the default
+   * "read the plan's latest audit" case).
+   */
   harnessSlug?: string;
 }
 

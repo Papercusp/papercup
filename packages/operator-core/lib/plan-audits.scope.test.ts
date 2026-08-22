@@ -66,4 +66,41 @@ describe("getLatestPlanAudit workspace scope", () => {
     expect(M.sql.mock.calls[0]?.[3]).toBeNull();
     expect(M.sql.mock.calls[0]?.[4]).toBeNull();
   });
+
+  // EI-21124863090048444: plans:get omitted latestAudit for a "SideStage"-shaped plan
+  // (a Hive with member/sub-harnesses) even though the canonical plan_audits row
+  // existed. Root cause: plans:audit stores harness_slug as the CITATION-CONTEXT
+  // harness it ran from (e.g. a member/sub-harness like "sidestage-mobile" or
+  // "papercusp/libs/generic/rrf"), while plans:get was passing the plan's Hive-HOME
+  // slug (e.g. "sidestage" / "papercusp") as a strict-equality filter — a value that
+  // routinely disagrees with what was written, so the real row matched nothing.
+  it("finds a canonical audit row even when its stored harness_slug is a member/sub-harness, not the plan's Hive home", async () => {
+    const sideStageAudit = {
+      ...row,
+      plan_slug: "sidestage-plan",
+      // The audit was recorded from a MEMBER harness of the "sidestage" Hive —
+      // not from the Hive home itself.
+      harness_slug: "sidestage-mobile",
+    };
+    M.sql.mockResolvedValue([sideStageAudit]);
+
+    // The fixed call shape (plans/get.ts): workspaceId only, matching how
+    // recordPlanAudit's own audit_seq computation and getEffectiveItemAudits both
+    // already scope the audit ledger purely by (workspaceId, planSlug).
+    const result = await getLatestPlanAudit("sidestage-plan", {
+      workspaceId: "papercusp-workspace",
+    });
+
+    expect(result).toMatchObject({ planSlug: "sidestage-plan", harnessSlug: "sidestage-mobile" });
+
+    // Pins the FIXED contract: the harness_slug predicate is passed NULL (the
+    // real WHERE clause is `harness_slug = ${harnessSlug}::text IS NULL OR ...`,
+    // so NULL means unfiltered). Before the fix, plans:get threaded the plan's
+    // Hive-home slug ("sidestage") through here — a value that never equals the
+    // stored citation-context slug ("sidestage-mobile") for a Hive with
+    // member/sub-harnesses, so that predicate would have matched zero rows
+    // against a real database even though this row is the canonical audit.
+    expect(M.sql.mock.calls[0]?.[3]).toBeNull();
+    expect(M.sql.mock.calls[0]?.[4]).toBeNull();
+  });
 });
