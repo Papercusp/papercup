@@ -10,8 +10,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { SpecPoolEffect, CollapseGuardVerdict } from '../../../scheduler/spec-pool-preview';
 
 const spawnConsoleMock = vi.fn();
+const spawnHeadlessMock = vi.fn();
 const fetchGatewayHeadroomMock = vi.fn();
 const createFleetIfAbsentMock = vi.fn();
+const getFleetHeadcountTargetMock = vi.fn();
 const setFleetLeaderMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
@@ -34,6 +36,7 @@ vi.mock('../../../console-launcher', () => ({
 
 vi.mock('../../../console-spawn', () => ({
   spawnConsole: (...args: unknown[]) => spawnConsoleMock(...args),
+  spawnHeadless: (...args: unknown[]) => spawnHeadlessMock(...args),
 }));
 
 vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
@@ -63,6 +66,7 @@ vi.mock('../../../papercusp-root', () => ({
 vi.mock('../../../agent-fleets-store', () => ({
   createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
+  getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
   getFleetScheme: vi.fn(async () => ({ name: 'Ocean' })),
   // The P-005 idempotency guard (PG-backed, migration 484): default every handler test
   // to a WON slot; suppression semantics live in agent-fleets-store.integration.test.ts.
@@ -222,6 +226,8 @@ beforeEach(() => {
   launchTransaction.verify.mockReset();
   launchTransaction.verify.mockResolvedValue({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
   launchTransaction.persist.mockClear();
+  getFleetHeadcountTargetMock.mockReset();
+  getFleetHeadcountTargetMock.mockResolvedValue(null);
   createFleetIfAbsentMock.mockReset();
   createFleetIfAbsentMock.mockResolvedValue({
     record: { leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } },
@@ -269,8 +275,56 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       terminal: `term-${spawnConsoleMock.mock.calls.length}`,
       pid: 100 + spawnConsoleMock.mock.calls.length,
     }));
+    spawnHeadlessMock.mockReset();
+    spawnHeadlessMock.mockImplementation(() => ({
+      status: 'ok',
+      terminal: `headless-${spawnHeadlessMock.mock.calls.length}`,
+      pid: 200 + spawnHeadlessMock.mock.calls.length,
+      taskId: `task-${spawnHeadlessMock.mock.calls.length}`,
+      logPath: `/tmp/fleet-${spawnHeadlessMock.mock.calls.length}.log`,
+    }));
     fetchGatewayHeadroomMock.mockReset();
     fetchGatewayHeadroomMock.mockResolvedValue({ reachable: false });
+  });
+
+  it('reuses the persisted headcount launch profile for an omitted top-up recipe (D-008)', async () => {
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'profiled-fleet',
+      target: 30,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'codex',
+        model: 'gpt-5.6-luna',
+        effort: 'max',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+        contextSize: 'trimmed',
+        compactionLimit: 825_000,
+        role: 'su',
+        brief: 'drain the bug lane',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await tool.handler({ name: 'Profiled Fleet' } as never, {} as never);
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(spawnHeadlessMock).toHaveBeenCalled();
+    const command = (spawnHeadlessMock.mock.calls[0][0] as any).envelope.greetingCmd as string;
+    expect(command).toContain('--agent=codex');
+    expect(command).toContain('--model=gpt-5.6-luna:max');
+    expect(command).toContain('--account=default');
+    expect(command).toContain('--context-size=trimmed');
+    expect(command).toContain('--compaction-limit=825000');
+    expect(command).toContain('--carry=warm');
+    expect(command).toContain('--headless');
+    expect(payload.requested).toBe(30);
+    expect(payload.headcountProfile).toMatchObject({ applied: true, target: 30 });
   });
 
   it('rejects an unresolved member role before promotion, fleet creation, or terminal spawn', async () => {
