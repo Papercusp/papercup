@@ -430,15 +430,23 @@ export async function listClaudeSessionIds(sessionRoot: string): Promise<string[
 
 export interface ArchiveSessionResult {
   ok: boolean;
-  reason?: 'no_files' | 'too_many_files' | 'too_large';
+  reason?: 'no_files' | 'too_many_files' | 'too_large' | 'changed_during_read';
   fileCount: number;
   bytesRaw: number;
   bytesStored: number;
 }
 
+/** Test seam for the source read in {@link archiveSession}. The production
+ * reader is node:fs/promises.readFile; the seam lets the race guard be tested
+ * deterministically without relying on a timing-sensitive live writer. */
+export interface ArchiveSessionReadDeps {
+  readFile?: (path: string) => Promise<Buffer>;
+}
+
 export async function archiveSession(
   ref: SessionArchiveRef,
   store: SessionArchiveStore = pgSessionArchiveStore(),
+  deps: ArchiveSessionReadDeps = {},
 ): Promise<ArchiveSessionResult> {
   const none = { fileCount: 0, bytesRaw: 0, bytesStored: 0 };
   const collected = await collectSessionFiles(ref);
@@ -452,8 +460,19 @@ export async function archiveSession(
   const manifest: ArchiveManifestEntry[] = [];
   let bytesRaw = 0;
   let bytesStored = 0;
+  const readSnapshot = deps.readFile ?? readFile;
   for (const f of collected) {
-    const raw = await readFile(f.abs);
+    const raw = await readSnapshot(f.abs);
+    // The source is a live, append-only CLI file. A read can finish on a
+    // partial tail while the native writer is still appending; committing that
+    // byte slice would make the canonical archive temporarily incomplete even
+    // though the later SHA-checked delete would refuse to remove the newer
+    // source. Fail closed and let the end hook/reconciler retry from the now
+    // stable file instead.
+    const afterRead = await statFile(f.abs);
+    if (!afterRead || afterRead.bytes !== f.bytes || afterRead.mtimeMs !== f.mtimeMs) {
+      return { ok: false, reason: 'changed_during_read', ...none };
+    }
     const sha = sha256Hex(raw);
     const blob = await zstdCompress(raw);
     bytesRaw += raw.length;

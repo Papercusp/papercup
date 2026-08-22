@@ -11,7 +11,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { appendFile, mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -305,6 +305,36 @@ describe('collectors — symlink safety + per-CLI shapes', () => {
   it('listClaudeSessionIds enumerates every uuid in the config dir', async () => {
     const { root } = await claudeFixture();
     expect((await listClaudeSessionIds(root)).sort()).toEqual([SID, OTHER].sort());
+  });
+});
+
+describe('archive snapshot boundary', () => {
+  it('refuses a Codex rollout that grows while its bytes are being read', async () => {
+    const root = await tmp('sa-codex-live-');
+    const day = join(root, 'sessions', '2026', '08', '22');
+    await mkdir(day, { recursive: true });
+    const abs = join(day, `rollout-2026-08-22T08-00-00-${SID}.jsonl`);
+    await writeFile(abs, '{"type":"response_item","payload":{"type":"message"}}\n');
+    const store = new MemStore();
+
+    const result = await archiveSession(
+      { sourceKind: 'codex', sessionId: SID, sessionRoot: root },
+      store,
+      {
+        readFile: async (path) => {
+          const raw = await readFile(path);
+          // Simulate the native writer appending an incomplete JSONL tail
+          // after the archive read began.
+          await appendFile(path, '{"type":"response_item","payload":{"type":"message"');
+          return raw;
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok: false, reason: 'changed_during_read' });
+    expect(store.upsertCalls).toBe(0);
+    expect(await store.readStamp('codex', SID)).toBeNull();
+    expect(existsSync(abs)).toBe(true);
   });
 });
 
