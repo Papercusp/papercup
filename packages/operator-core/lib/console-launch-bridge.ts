@@ -12,13 +12,13 @@
  * falls back to Tauri on a 501); the AGENT path (capability:terminal,
  * fleet:launch-on-plan) had no way there and hard-501'd "Linux/macOS only".
  *
- * THE MECHANISM (same rails as attention.notify, D-007): the operator emits a
- * `console.launch-request` event on the existing sync SSE bus carrying the
- * ConsoleEnvelope + a requestId, and parks the caller on a pending promise.
- * The desktop webview's DesktopConsoleLaunchBridge component consumes the
- * event, CLAIMS the request (POST /agent-mcp/console/launch-claim — single-
- * consumer: multiple open webviews must not each spawn a window), invokes the
- * Tauri `console_launch` command, and reports back (POST
+ * THE MECHANISM (same rails as attention.notify, D-007): the operator keeps
+ * the secret-capable ConsoleEnvelope in memory and emits only an opaque,
+ * single-use ticket on the existing sync SSE bus. The desktop webview's
+ * DesktopConsoleLaunchBridge component ignores tickets targeted at a different
+ * UI client, redeems its ticket for the envelope (POST
+ * /agent-mcp/console/launch-claim), invokes the Tauri `console_launch` command,
+ * and reports back (POST
  * /agent-mcp/console/launch-result), which resolves the pending promise.
  * No webview attached / no Tauri / nobody claims → the request times out and
  * the caller gets a loud, actionable error instead of a silent no-window "ok"
@@ -54,9 +54,28 @@ export interface BridgeLaunchResult {
 
 interface PendingLaunch {
   claimed: boolean;
+  envelope: ConsoleEnvelope | null;
+  targetClientId: string | null;
   timer: NodeJS.Timeout;
   resolve: (r: BridgeLaunchResult) => void;
 }
+
+export interface ConsoleLaunchClaimResult {
+  granted: boolean;
+  envelope?: ConsoleEnvelope;
+}
+
+export interface RemoteWorkspaceConsoleLaunchOptions {
+  /** UI client id of the desktop connection that initiated the action. */
+  targetClientId: string;
+  /** Saved local psu connection profile. It is passed as one validated argv cell. */
+  profileName: string;
+  cwd?: string;
+  timeoutMs?: number;
+  label?: string | null;
+}
+
+const CONNECTION_PROFILE_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 const pending = new Map<string, PendingLaunch>();
 
@@ -72,16 +91,19 @@ export function pendingBridgeLaunchCount(): number {
  */
 export async function requestDesktopConsoleLaunch(opts: {
   envelope: ConsoleEnvelope;
+  /** Optional exact UI client target. Null keeps ordinary first-eligible-desktop behavior. */
+  targetClientId?: string | null;
   label?: string | null;
   planSlug?: string | null;
   timeoutMs?: number;
 }): Promise<BridgeLaunchResult> {
-  const requestId = randomUUID();
+  const ticket = randomUUID();
   const timeoutMs = opts.timeoutMs ?? DESKTOP_BRIDGE_TIMEOUT_MS;
+  const targetClientId = opts.targetClientId?.trim() || null;
 
   const result = new Promise<BridgeLaunchResult>((resolve) => {
     const timer = setTimeout(() => {
-      pending.delete(requestId);
+      pending.delete(ticket);
       resolve({
         ok: false,
         pid: null,
@@ -92,24 +114,31 @@ export async function requestDesktopConsoleLaunch(opts: {
       });
     }, timeoutMs);
     timer.unref?.();
-    pending.set(requestId, { claimed: false, timer, resolve });
+    pending.set(ticket, {
+      claimed: false,
+      envelope: opts.envelope,
+      targetClientId,
+      timer,
+      resolve,
+    });
   });
 
-  // The envelope's mcpJsonContents is EMPTY on agent launches (skipMcpJson) —
-  // and launch_inner (native_console.rs) skips displacement for empty contents,
-  // so the bridged spawn never clobbers a project's real .mcp.json.
+  // The envelope remains server-side until the intended desktop atomically
+  // redeems the ticket. The SSE stream is observable by every attached SPA;
+  // broadcasting raw shell text or env here would turn the sync bus into a
+  // secret-bearing transport and let an unrelated webview win the request.
   try {
     await notifySyncInvalidate(CONSOLE_LAUNCH_REQUEST_EVENT, {
-      requestId,
-      envelope: opts.envelope as unknown as Record<string, unknown>,
+      ticket,
+      targetClientId,
       label: opts.label ?? null,
       planSlug: opts.planSlug ?? null,
     });
   } catch (e: any) {
-    const p = pending.get(requestId);
+    const p = pending.get(ticket);
     if (p) {
       clearTimeout(p.timer);
-      pending.delete(requestId);
+      pending.delete(ticket);
       return { ok: false, pid: null, error: `sync-bus emit failed: ${e?.message ?? e}` };
     }
   }
@@ -118,15 +147,18 @@ export async function requestDesktopConsoleLaunch(opts: {
 }
 
 /**
- * First-claimer-wins gate so N open webviews spawn ONE window per request.
- * Returns false for an unknown/expired/already-claimed request — the caller
- * webview must then NOT invoke console_launch.
+ * Atomically redeem a launch ticket. A target mismatch does not consume it;
+ * an accepted claim returns the envelope exactly once and clears the retained
+ * copy immediately. Unknown, expired, and replayed tickets are refused.
  */
-export function claimConsoleLaunch(requestId: string): boolean {
-  const p = pending.get(requestId);
-  if (!p || p.claimed) return false;
+export function claimConsoleLaunch(ticket: string, clientId: string): ConsoleLaunchClaimResult {
+  const p = pending.get(ticket);
+  if (!p || p.claimed || !p.envelope || !clientId) return { granted: false };
+  if (p.targetClientId && p.targetClientId !== clientId) return { granted: false };
+  const envelope = p.envelope;
   p.claimed = true;
-  return true;
+  p.envelope = null;
+  return { granted: true, envelope };
 }
 
 /**
@@ -134,17 +166,56 @@ export function claimConsoleLaunch(requestId: string): boolean {
  * the request is unknown (expired / double-report) — harmless, just ignored.
  */
 export function completeConsoleLaunch(
-  requestId: string,
+  ticket: string,
   result: { ok: boolean; pid?: number | null; error?: string | null },
 ): boolean {
-  const p = pending.get(requestId);
-  if (!p) return false;
+  const p = pending.get(ticket);
+  if (!p || !p.claimed) return false;
   clearTimeout(p.timer);
-  pending.delete(requestId);
+  pending.delete(ticket);
   p.resolve({
     ok: result.ok,
     pid: result.pid ?? null,
     error: result.error ?? (result.ok ? null : 'console_launch failed'),
   });
   return true;
+}
+
+/**
+ * Request a native terminal that enters a saved remote-workspace connection.
+ *
+ * The profile name is deliberately the only command-shaped input and is
+ * allow-listed to a single shell-safe argv cell. Provider credentials and
+ * connection details remain in the local 0600 profile store; neither the SSE
+ * event nor the operator-side envelope carries them.
+ */
+export async function requestRemoteWorkspaceConsoleLaunch(
+  opts: RemoteWorkspaceConsoleLaunchOptions,
+): Promise<BridgeLaunchResult> {
+  if (!CONNECTION_PROFILE_NAME_RE.test(opts.profileName)) {
+    return {
+      ok: false,
+      pid: null,
+      error:
+        'connection profile name is invalid — expected 1-64 letters, digits, dots, underscores, or hyphens, beginning with a letter or digit',
+    };
+  }
+  if (!opts.targetClientId.trim()) {
+    return { ok: false, pid: null, error: 'target client id is required' };
+  }
+
+  const envelope: ConsoleEnvelope = {
+    cwd: opts.cwd ?? process.cwd(),
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: `psu --connect=${opts.profileName}`,
+    needsSuperuserBootstrap: false,
+    sessionId: randomUUID(),
+  };
+  return requestDesktopConsoleLaunch({
+    envelope,
+    targetClientId: opts.targetClientId,
+    timeoutMs: opts.timeoutMs,
+    label: opts.label ?? `Remote workspace · ${opts.profileName}`,
+  });
 }

@@ -73,6 +73,23 @@ describe("remote GUI parity", () => {
     expect(
       bridge.indexOf("await canUseContentOriginDesktopActions()"),
     ).toBeLessThan(bridge.indexOf("/api/agent-mcp/console/launch-claim"));
+    expect(bridge).toContain("getOrCreateClientId");
+    expect(bridge).toContain("args.targetClientId !== clientId");
+    expect(bridge.indexOf("args.targetClientId !== clientId")).toBeLessThan(
+      bridge.indexOf("/api/agent-mcp/console/launch-claim"),
+    );
+    expect(bridge).not.toContain("args.envelope");
+
+    const route = read(
+      "packages/operator-core/lib/endpoint-route/routes/agent-mcp/console-launch-bridge.ts",
+    );
+    expect(route).toContain("claimConsoleLaunch(body.ticket, body.clientId)");
+
+    const operatorBridge = read(
+      "packages/operator-core/lib/console-launch-bridge.ts",
+    );
+    expect(operatorBridge).toContain("requestRemoteWorkspaceConsoleLaunch");
+    expect(operatorBridge).not.toContain("envelope: opts.envelope as unknown");
 
     for (const path of [
       "apps/operator/app/adv/sessions/AdvSessionsClient.tsx",

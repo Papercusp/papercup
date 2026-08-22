@@ -12,11 +12,11 @@
  * component gives AGENT-invoked launches (capability:terminal,
  * fleet:launch-on-plan) the same reach:
  *
- *   1. the operator emits `console.launch-request` on the sync bus with the
- *      ConsoleEnvelope + requestId and parks the agent's tool call on it;
- *   2. this component CLAIMS the request (POST launch-claim — first claimer
- *      wins, so N open webviews spawn exactly ONE window);
- *   3. invokes the Tauri `console_launch` command with the envelope;
+ *   1. the operator emits only an opaque `console.launch-request` ticket and
+ *      optional target UI-client id, retaining the ConsoleEnvelope in memory;
+ *   2. this component ignores another client's ticket, then atomically CLAIMS
+ *      its own ticket and receives the envelope from the claim response;
+ *   3. invokes the Tauri `console_launch` command with that envelope;
  *   4. POSTs launch-result, resolving the agent's await with ok/error.
  *
  * Mounted once at the app root next to DesktopAttentionNotifier, and rides
@@ -29,6 +29,7 @@
  */
 import { useEffect } from 'react';
 import { onSyncBusEvent } from '@papercusp/sync';
+import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
 import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
 
 const CONSOLE_LAUNCH_REQUEST_EVENT = 'console.launch-request';
@@ -43,10 +44,16 @@ interface ConsoleEnvelope {
 }
 
 interface LaunchRequestArgs {
-  requestId?: string;
-  envelope?: ConsoleEnvelope;
+  ticket?: string;
+  targetClientId?: string | null;
   label?: string | null;
   planSlug?: string | null;
+}
+
+interface LaunchClaimResponse {
+  status?: string;
+  granted?: boolean;
+  envelope?: ConsoleEnvelope;
 }
 
 async function postJson(path: string, body: unknown): Promise<any> {
@@ -59,14 +66,31 @@ async function postJson(path: string, body: unknown): Promise<any> {
 }
 
 async function handleLaunchRequest(args: LaunchRequestArgs): Promise<void> {
-  const requestId = args.requestId;
-  const envelope = args.envelope;
-  if (!requestId || !envelope?.cwd || typeof envelope.greetingCmd !== 'string') return;
+  const ticket = args.ticket;
+  const clientId = getOrCreateClientId();
+  if (!ticket || !clientId) return;
+  if (args.targetClientId && args.targetClientId !== clientId) return;
   if (!await canUseContentOriginDesktopActions()) return;
 
-  // Single-consumer gate: only the first claimer proceeds.
-  const claim = await postJson('/api/agent-mcp/console/launch-claim', { requestId });
+  // The envelope is returned exactly once by the atomic claim. It never rides
+  // the broadcast SSE stream, and a wrong client id cannot consume the ticket.
+  const claim = await postJson('/api/agent-mcp/console/launch-claim', {
+    ticket,
+    clientId,
+  }) as LaunchClaimResponse | null;
   if (!claim || claim.granted !== true) return;
+  const envelope = claim.envelope;
+
+  if (!envelope?.cwd || typeof envelope.greetingCmd !== 'string') {
+    await postJson('/api/agent-mcp/console/launch-result', {
+      ticket,
+      ok: false,
+      error: 'console launch ticket returned an invalid envelope',
+    }).catch(() => {
+      /* operator unreachable — its timeout is the backstop */
+    });
+    return;
+  }
 
   // From here on WE own the request: every outcome must be reported back, or
   // the agent's call blocks until the operator-side timeout.
@@ -84,18 +108,18 @@ async function handleLaunchRequest(args: LaunchRequestArgs): Promise<void> {
       | null;
     if (result && 'status' in result && result.status === 'ok') {
       await postJson('/api/agent-mcp/console/launch-result', {
-        requestId,
+        ticket,
         ok: true,
         pid: typeof result.pid === 'number' ? result.pid : null,
       });
     } else {
       const error =
         (result as { error?: string } | null)?.error ?? 'console_launch returned no result';
-      await postJson('/api/agent-mcp/console/launch-result', { requestId, ok: false, error });
+      await postJson('/api/agent-mcp/console/launch-result', { ticket, ok: false, error });
     }
   } catch (e: any) {
     await postJson('/api/agent-mcp/console/launch-result', {
-      requestId,
+      ticket,
       ok: false,
       error: e?.message ?? String(e),
     }).catch(() => {
