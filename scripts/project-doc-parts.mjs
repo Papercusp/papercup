@@ -65,6 +65,25 @@ export const EVIDENCE_SUFFIX = '#evidence';
 export const CORPUS_FILE = 'packages/operator-core/lib/doc-projection/claude-md-corpus.generated.md';
 
 /**
+ * Compare the DB-composed corpus with the committed DB-free subject.
+ *
+ * The provenance banner's source sha only identifies the CLAUDE.md snapshot from which
+ * the rows were initially loaded. A direct edit to a canonical row leaves that sha
+ * unchanged, so the live projector must also compare the composed bytes with the file.
+ * Keep this pure so the recurrence is testable without Postgres or the working tree.
+ */
+export function corpusDriftVerdict({ onDisk, composed }) {
+  if (onDisk === null) return { ok: false, reason: 'absent' };
+  if (onDisk === composed) return { ok: true, reason: 'already-current' };
+  return {
+    ok: false,
+    reason: 'drifted',
+    live: sha256(onDisk),
+    expected: sha256(composed),
+  };
+}
+
+/**
  * Deliberately inert: no fenced block, no `npm run`, no grep recipe, no path that the
  * retired-surfaces guard would read as a claim. The banner is part of the text those
  * guards judge, so anything executable-looking here would become a claim the corpus
@@ -694,13 +713,29 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const corpus = composeCorpus(allParts, { sourceSha: doc.generated_from_sha ?? doc.content_hash ?? null });
     const corpusPath = resolve(ROOT, CORPUS_FILE);
     const corpusOnDisk = existsSync(corpusPath) ? readFileSync(corpusPath, 'utf8') : null;
+    const corpusVerdict = corpusDriftVerdict({ onDisk: corpusOnDisk, composed: corpus.text });
     console.log(`\n  ${CORPUS_FILE}`);
     console.log(
       `    composed     ${fmt(corpus.text.length)} chars — ${corpus.blocks} block(s) from ${allParts.length} part(s)` +
         ` (${allParts.filter((p) => !p.client_scope.length).length} unprojected)`,
     );
     if (corpusOnDisk === null) console.log('    on disk      absent');
-    else console.log(`    on disk      ${fmt(corpusOnDisk.length)} chars — ${corpusOnDisk === corpus.text ? 'IDENTICAL ✓' : 'DIFFERS'}`);
+    else console.log(`    on disk      ${fmt(corpusOnDisk.length)} chars — ${corpusVerdict.ok ? 'IDENTICAL ✓' : 'DIFFERS'}`);
+    if (!write && !writeCorpus && !corpusVerdict.ok) {
+      failed = true;
+      if (corpusVerdict.reason === 'absent') {
+        console.error(`    ✗ CHECK: ${CORPUS_FILE} is absent; the canonical rows were not measured against a committed subject.`);
+      } else {
+        console.error(
+          `    ✗ CHECK: ${CORPUS_FILE} differs from the canonical row composition ` +
+          `(live ${corpusVerdict.live.slice(0, 16)}, expected ${corpusVerdict.expected.slice(0, 16)}).`,
+        );
+      }
+      console.error(
+        `      The source sha identifies the original CLAUDE.md load only; this byte comparison catches direct row edits too. ` +
+        `Re-run with --write-corpus after reviewing the canonical rows.`,
+      );
+    }
     if (write || writeCorpus) {
       writeFileSync(corpusPath, corpus.text, 'utf8');
       console.log(`    ✓ wrote ${CORPUS_FILE}`);

@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, cutOrder, danglingProjectionWarnings, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, corpusDriftVerdict, cutOrder, danglingProjectionWarnings, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionBanner, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -481,6 +481,36 @@ describe('overwriteVerdict — the projector reads PG, so the FILE is what it ca
     // Guards the obvious implementation slip: `live === contentHash` with both empty.
     const v = overwriteVerdict({ onDisk: 'anything at all', generatedFromSha: '', contentHash: '' });
     expect(v.ok).toBe(false);
+  });
+});
+
+describe('corpusDriftVerdict — canonical rows are the corpus subject', () => {
+  const sourceSha = 'a'.repeat(64);
+  const banner = `<!-- source-sha256: ${sourceSha} -->\n`;
+
+  it('accepts an exact canonical composition', () => {
+    const text = `${banner}canonical row body\n`;
+    expect(corpusDriftVerdict({ onDisk: text, composed: text })).toEqual({
+      ok: true,
+      reason: 'already-current',
+    });
+  });
+
+  it('CONTROL — a direct row edit is detected even when the original source sha is unchanged', () => {
+    const onDisk = `${banner}old canonical row body\n`;
+    const composed = `${banner}new canonical row body\n`;
+    const verdict = corpusDriftVerdict({ onDisk, composed });
+
+    expect(verdict.ok).toBe(false);
+    expect(verdict.reason).toBe('drifted');
+    expect(verdict.live).not.toBe(verdict.expected);
+  });
+
+  it('treats an absent committed corpus as a failed comparison', () => {
+    expect(corpusDriftVerdict({ onDisk: null, composed: `${banner}canonical\n` })).toEqual({
+      ok: false,
+      reason: 'absent',
+    });
   });
 });
 

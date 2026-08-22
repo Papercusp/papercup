@@ -184,6 +184,14 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the derived-truth ladder part post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-21',
+      plan: 'none — part authored directly into harness_doc_parts after the manifest snapshot',
+      // The per-file test rerun rule was added after the manifest snapshot. It is a new
+      // standalone part, so the live corpus legitimately carries one additional block.
+      why: 'added the gate-failure triage invariant post-load (re-run named files individually)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {
