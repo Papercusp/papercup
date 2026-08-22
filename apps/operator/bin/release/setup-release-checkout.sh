@@ -96,6 +96,88 @@ esac
 
 log() { echo "[setup-release] $*"; }
 
+# EI-21181583819839124: a crashed Git process can leave the linked checkout's
+# index.lock behind. Every later checkpoint then fails before running a single
+# test, even though the gate's own run-lock is healthy. Recover only the narrow,
+# measurable stale case: Git resolves the exact per-worktree lock path, the file
+# is at least five minutes old, and no live process holds it open. A fresh or
+# owned lock remains a hard stop. The stale file is MOVED to a recoverable temp
+# quarantine rather than deleted, so the incident evidence survives.
+index_lock_has_live_holder() {
+  local lock_path="$1"
+
+  if command -v fuser >/dev/null 2>&1; then
+    fuser "$lock_path" >/dev/null 2>&1
+    return $?
+  fi
+
+  # The release host is Linux. Keep the standalone script fail-closed if the
+  # normal owner probe is absent: /proc is an acceptable fallback, while an
+  # environment with neither probe must never guess that a lock is abandoned.
+  if [ -d /proc ]; then
+    local fd target
+    for fd in /proc/[0-9]*/fd/*; do
+      target="$(readlink "$fd" 2>/dev/null || true)"
+      [ "$target" = "$lock_path" ] && return 0
+    done
+    return 1
+  fi
+
+  return 0
+}
+
+quarantine_stale_worktree_index_lock() {
+  local lock_path lock_mtime now age quarantine_dir quarantine_path
+
+  lock_path="$(git -C "$RELEASE_ROOT" rev-parse --git-path index.lock 2>/dev/null || true)"
+  [ -n "$lock_path" ] || return 1
+  case "$lock_path" in
+    /*) ;;
+    *) lock_path="$RELEASE_ROOT/$lock_path" ;;
+  esac
+  [ -f "$lock_path" ] || return 1
+
+  lock_mtime="$(stat -c %Y "$lock_path" 2>/dev/null || true)"
+  [ -n "$lock_mtime" ] || return 1
+  now="$(date +%s)"
+  age=$((now - lock_mtime))
+  if [ "$age" -lt 300 ]; then
+    log "refusing to reclaim fresh Git index lock ($age seconds old): $lock_path"
+    return 1
+  fi
+  if index_lock_has_live_holder "$lock_path"; then
+    log "refusing to reclaim Git index lock held by a live process: $lock_path"
+    return 1
+  fi
+
+  quarantine_dir="${TMPDIR:-/tmp}/papercusp-stale-git-locks"
+  mkdir -p "$quarantine_dir"
+  quarantine_path="$(mktemp "$quarantine_dir/index.lock.$(date +%s).XXXXXX")"
+  mv "$lock_path" "$quarantine_path"
+  log "quarantined stale unowned Git index lock: $lock_path -> $quarantine_path"
+  return 0
+}
+
+refresh_release_worktree() {
+  if git -C "$RELEASE_ROOT" checkout --detach "$TARGET_SHA" >/dev/null 2>&1; then
+    git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
+    return 0
+  fi
+
+  if quarantine_stale_worktree_index_lock; then
+    log "retrying checkout after stale Git index lock recovery"
+    git -C "$RELEASE_ROOT" checkout --detach "$TARGET_SHA" >/dev/null 2>&1 || \
+      git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
+    git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
+    return 0
+  fi
+
+  # Preserve the historical fallback for non-lock checkout failures. A live or
+  # fresh index.lock makes this reset fail too, which is the intended fail-closed
+  # result rather than stealing another process's lock.
+  git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
+}
+
 # Symlink-safe roots: `find` (default -P) does NOT descend through a symlinked
 # START path, so a symlinked INTEGRATION_ROOT (e.g. papercup -> papercusp, since
 # 2026-06-25) makes the node_modules copy loop below (`find "$INTEGRATION_ROOT"
@@ -151,9 +233,7 @@ if [ "$PREPARE_EXISTING" = "1" ]; then
   log "preserving existing checkout and submodules (prepare-existing)"
 elif [ -e "$RELEASE_ROOT/.git" ]; then
   log "release worktree exists; checking out $TARGET_SHA"
-  git -C "$RELEASE_ROOT" checkout --detach "$TARGET_SHA" >/dev/null 2>&1 || \
-    git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
-  git -C "$RELEASE_ROOT" reset --hard "$TARGET_SHA"
+  refresh_release_worktree
   # UNTRACKED debris survives reset --hard and poisons every later run from
   # this tree (2026-06-06: a stray test file made the green-checkpoint red
   # forever). Clean it — node_modules excluded (the hardlink copies from step
