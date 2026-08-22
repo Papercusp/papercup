@@ -1,6 +1,7 @@
 /** WI-2479: durable, dark-by-default fleet headcount repair action. */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import {
@@ -16,6 +17,8 @@ import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { liveFleetMemberIds } from '../../fleet/fleet-roster';
 import { composeMemberLaunchContext, memberLaunchCommand } from '../../agent-launch-core';
 import { resolveGoalLaunch } from '../../goal-launch-settings';
+import type { GoalLaunchRole } from '../../goal-launch-settings-shared';
+import { resolveGoalContext } from '../../modes/goal-context';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -37,6 +40,55 @@ export function resolveFleetHeadcountProfile(
   config: FleetHeadcountConfig,
 ): FleetHeadcountConfig & { headless: boolean } {
   return { ...config, headless: config.headless ?? true };
+}
+
+/**
+ * D-016: resolve the launch SLOT for a governor refill from durable goal
+ * context, not from `AgentFleetRecord` or `FleetHeadcountConfig` (neither
+ * carries a slot). The goal's `metadata.drainFleet` declaration is the
+ * canonical identity written by `mintDrainFleetForGoal`; every other fleet
+ * attached to that goal is a plan-fleet member. Fleets outside a goal keep the
+ * absent role layer rather than inheriting a persona's `--role`.
+ */
+export function resolveFleetHeadcountLaunchRole(args: {
+  goalId: string | null;
+  fleetSlug: string;
+  drainFleetSlug: string | null;
+}): GoalLaunchRole | null {
+  if (!args.goalId) return null;
+  return args.drainFleetSlug === args.fleetSlug ? 'drain-fleet-member' : 'plan-fleet-member';
+}
+
+/** Resolve the governor's slot from the launcher's goal and its declaration. */
+async function resolveFleetHeadcountLaunchRoleForFleet(
+  workspaceId: string,
+  fleetSlug: string,
+  launcherOwnerId: string,
+): Promise<GoalLaunchRole | null> {
+  let goalId: string | null;
+  try {
+    goalId = await resolveGoalContext(workspaceId, launcherOwnerId);
+  } catch {
+    return null;
+  }
+  if (!goalId) return null;
+
+  try {
+    const rows = await getOrgPg().sql<{ drain_fleet: string | null }[]>`
+      SELECT metadata->>'drainFleet' AS drain_fleet
+        FROM harness_shared.goals
+       WHERE id = ${goalId} AND workspace_id = ${workspaceId}
+       LIMIT 1`;
+    return resolveFleetHeadcountLaunchRole({
+      goalId,
+      fleetSlug,
+      drainFleetSlug: rows[0]?.drain_fleet ?? null,
+    });
+  } catch {
+    // Preserve the resolver's fail-open launch behavior if the declaration
+    // read is unavailable; applying a guessed slot could bind the wrong role.
+    return null;
+  }
 }
 
 // WI-6154: this-host identity (PAPERCUSP_HONO_PORT) must win over an inherited
@@ -80,16 +132,21 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     // owner's own launches while a background routine ignored the same ceiling.
     //
     // The launcher is the fleet's LEADER: the governor is acting on the leader's
-    // behalf, so the goal it serves is the leader's goal context (D-008).
+    // behalf, so the goal it serves is the leader's goal context (D-008). The
+    // launch slot is inferred from the goal's durable drainFleet declaration;
+    // it is not present on the fleet registry/config rows.
+    const goalRole = await resolveFleetHeadcountLaunchRoleForFleet(
+      workspaceId,
+      fleetSlug,
+      fleet.leaderOwnerId ?? '',
+    );
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: fleet.leaderOwnerId ?? '',
       // D-016 (WI-38048): `config.role` is psu `--role`, a persona — NOT a launch
-      // slot, so it must not key the goal's profiles. The governor refills an
-      // existing fleet without knowing whether it is a plan or drain fleet, so it
-      // has no slot to name and folds no role layer. Ceilings are unaffected:
-      // they never depended on a role.
-      goalRole: null,
+      // slot, so it must not key the goal's profiles. The slot above is derived
+      // from durable goal context instead.
+      goalRole,
       fleetSlug,
       count: deficit,
     });

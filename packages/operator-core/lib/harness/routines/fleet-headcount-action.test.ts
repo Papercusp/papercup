@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { computeHeadcountDeficit, nextHeadcountBackoff, resolveFleetHeadcountProfile } from './fleet-headcount-action';
+import {
+  computeHeadcountDeficit,
+  nextHeadcountBackoff,
+  resolveFleetHeadcountLaunchRole,
+  resolveFleetHeadcountProfile,
+} from './fleet-headcount-action';
 
 describe('fleet headcount governor guards (WI-2479)', () => {
   it('opens only the missing member deficit and never a negative wave', () => {
@@ -34,6 +39,32 @@ describe('fleet headcount governor guards (WI-2479)', () => {
       carry: 'warm',
       compactionLimit: 825_000,
       brief: 'drain bugs',
+    });
+  });
+
+  describe('resolveFleetHeadcountLaunchRole (D-016)', () => {
+    it('binds the declared drain fleet to the drain-fleet-member slot', () => {
+      expect(resolveFleetHeadcountLaunchRole({
+        goalId: 'goal-1',
+        fleetSlug: 'goal-drain-goal-1',
+        drainFleetSlug: 'goal-drain-goal-1',
+      })).toBe('drain-fleet-member');
+    });
+
+    it('binds another fleet in the same goal to the plan-fleet-member slot', () => {
+      expect(resolveFleetHeadcountLaunchRole({
+        goalId: 'goal-1',
+        fleetSlug: 'plan-fleet-1',
+        drainFleetSlug: 'goal-drain-goal-1',
+      })).toBe('plan-fleet-member');
+    });
+
+    it('leaves the role layer absent when the fleet has no goal context', () => {
+      expect(resolveFleetHeadcountLaunchRole({
+        goalId: null,
+        fleetSlug: 'standalone-fleet',
+        drainFleetSlug: null,
+      })).toBeNull();
     });
   });
 });
