@@ -6,10 +6,13 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type { ToolCallRow } from './tool-call-log';
+import { resolveConcreteWorkspaceId } from './workspace-registry';
 
 export interface ToolCallRowsFilter {
   sessionId?: string;
   ownerId?: string;
+  /** Concrete workspace to read; defaults to the active request/process workspace. */
+  workspaceId?: string;
   /** Only rows strictly after this ISO timestamp (a window/generation floor). */
   sinceIso?: string;
   /** Only rows at or before this ISO timestamp (a generation ceiling). */
@@ -29,6 +32,7 @@ export async function toolCallRowsFor(filter: ToolCallRowsFilter): Promise<ToolC
     throw new Error('toolCallRowsFor: pass sessionId and/or ownerId');
   }
   const limit = Math.min(Math.max(filter.limit ?? 1000, 1), 5000);
+  const workspaceId = resolveConcreteWorkspaceId(filter.workspaceId);
   const { sql } = getOrgPg();
   const rows = await sql<
     Array<{
@@ -47,6 +51,7 @@ export async function toolCallRowsFor(filter: ToolCallRowsFilter): Promise<ToolC
            created_at::text AS created_at
     FROM harness_shared.agent_activity
     WHERE kind = 'tool'
+      AND workspace_id IN (${workspaceId}, '*')
       AND (${filter.sessionId ?? null}::text IS NULL OR session_id = ${filter.sessionId ?? null})
       AND (${filter.ownerId ?? null}::text IS NULL OR owner_id = ${filter.ownerId ?? null})
       AND (${filter.sinceIso ?? null}::timestamptz IS NULL OR created_at > ${filter.sinceIso ?? null}::timestamptz)

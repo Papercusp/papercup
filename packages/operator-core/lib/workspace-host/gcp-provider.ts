@@ -33,6 +33,8 @@ export { GCP_CLOUD_PLATFORM_SCOPE };
 export const GCP_WORKSPACE_HOST_TARGET = 'gcp';
 export const GCP_WORKSPACE_HOST_PROVIDER_VERSION = 'gcp-workspace-host-provider-v1';
 export const GCP_IAP_TCP_FORWARDING_RANGE = '35.235.240.0/20';
+export const GCP_DATA_DISK_RESIZE_POLICY = 'grow-only';
+export const GCP_DATA_MOUNT_POINT = '/var/lib/papercusp';
 
 export type GcpComputeInstanceStatus =
   | 'PROVISIONING'
@@ -64,6 +66,7 @@ export interface GcpResourceObservation {
   name: string;
   selfLink?: string;
   observedAt: string;
+  labels?: Readonly<Record<string, string>>;
 }
 
 export interface GcpInstanceObservation extends GcpResourceObservation {
@@ -71,11 +74,13 @@ export interface GcpInstanceObservation extends GcpResourceObservation {
   sourceImage?: string;
   attachedDiskNames: readonly string[];
   agentOnline?: boolean;
+  recreateInput?: GcpInstanceInsertInput;
 }
 
 export interface GcpDiskObservation extends GcpResourceObservation {
   status: GcpComputeDiskStatus;
   attachedInstanceNames: readonly string[];
+  sizeGb?: number;
 }
 
 export interface GcpSnapshotObservation extends GcpResourceObservation {
@@ -252,6 +257,7 @@ export interface GcpWorkspaceHostDesiredProviderSettings {
   bootDiskGiB: number;
   bootDiskType: string;
   dataDiskType: string;
+  dataDiskResizePolicy: typeof GCP_DATA_DISK_RESIZE_POLICY;
   kmsKeyName?: string;
   startupScript?: string;
   metadata: Readonly<Record<string, string>>;
@@ -324,6 +330,7 @@ type GcpStepInput =
   | {
       op: 'create-snapshot';
       projectId: string;
+      zone: string;
       requestId: string;
       request: GcpSnapshotInsertInput;
       hostId: string;
@@ -357,7 +364,7 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     restart: true,
     snapshot: true,
     restore: false,
-    upgrade: false,
+    upgrade: true,
     repair: true,
     confirmedDestroy: true,
   },
@@ -365,7 +372,10 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
   constraints: [
     'Instances have no external IP; interactive access uses IAP TCP forwarding with OS Login',
     'Cloud authorization is a resolver reference; service-account key material is forbidden',
-    'Restore and in-place image upgrades are not yet supported',
+    'Data disks use a grow-only resize policy; shrinking requires snapshot-and-restore into a new disk',
+    'Upgrade replaces the VM boot/runtime layer and reattaches the retained data disk',
+    'Snapshot plans quiesce a running VM before capture and restore its prior running state afterward',
+    'Restore from snapshots is not yet supported',
   ],
 };
 
@@ -382,6 +392,14 @@ function optionalPayload(value: unknown, label: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`);
   return value;
+}
+
+function dataDeviceName(value: unknown): string {
+  const name = optionalString(value, 'gcp.desired.provider.dataDeviceName') ?? 'papercusp-data';
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(name)) {
+    throw new Error('gcp.desired.provider.dataDeviceName must be a lowercase Compute Engine device name');
+  }
+  return name;
 }
 
 function positiveInteger(value: unknown, label: string): number {
@@ -499,13 +517,14 @@ function readSettings(desired: WorkspaceHostDesiredSpec): GcpWorkspaceHostDesire
     ]),
     instanceName: optionalString(provider.instanceName, 'gcp.desired.provider.instanceName') ?? `${base}-vm`,
     dataDiskName: optionalString(provider.dataDiskName, 'gcp.desired.provider.dataDiskName') ?? `${base}-data`,
-    dataDeviceName: optionalString(provider.dataDeviceName, 'gcp.desired.provider.dataDeviceName') ?? 'papercusp-data',
+    dataDeviceName: dataDeviceName(provider.dataDeviceName),
     bootDiskGiB:
       provider.bootDiskGiB === undefined
         ? 30
         : positiveInteger(provider.bootDiskGiB, 'gcp.desired.provider.bootDiskGiB'),
     bootDiskType: optionalString(provider.bootDiskType, 'gcp.desired.provider.bootDiskType') ?? 'pd-balanced',
     dataDiskType: optionalString(provider.dataDiskType, 'gcp.desired.provider.dataDiskType') ?? 'pd-balanced',
+    dataDiskResizePolicy: GCP_DATA_DISK_RESIZE_POLICY,
     kmsKeyName: optionalString(provider.kmsKeyName, 'gcp.desired.provider.kmsKeyName'),
     startupScript: optionalPayload(provider.startupScript, 'gcp.desired.provider.startupScript'),
     metadata: stringRecord(provider.metadata, 'gcp.desired.provider.metadata'),
@@ -521,6 +540,22 @@ function labels(desired: WorkspaceHostDesiredSpec, workspaceId: string): Readonl
   return Object.fromEntries([...entries.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
+function assertManagedHostResource(
+  observed: GcpResourceObservation,
+  hostId: string,
+  resourceLabel: string,
+): void {
+  const expectedHostLabel = gcpLabel(hostId);
+  if (
+    observed.labels?.['papercusp-managed'] !== 'true' ||
+    observed.labels['papercusp-host-id'] !== expectedHostLabel
+  ) {
+    throw new Error(
+      `GCP ${resourceLabel} '${observed.name}' is not labeled as managed by workspace host '${hostId}'`,
+    );
+  }
+}
+
 function metadata(
   settings: GcpWorkspaceHostDesiredProviderSettings,
   hostId: string,
@@ -529,10 +564,33 @@ function metadata(
   entries.set('block-project-ssh-keys', 'TRUE');
   entries.set('enable-oslogin', 'TRUE');
   entries.set('papercusp-host-id', hostId);
-  if (settings.startupScript) entries.set('startup-script', settings.startupScript);
+  entries.set('papercusp-data-resize-policy', settings.dataDiskResizePolicy);
+  entries.set('startup-script', durableFilesystemStartupScript(settings));
   return [...entries.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
+}
+
+function durableFilesystemStartupScript(settings: GcpWorkspaceHostDesiredProviderSettings): string {
+  const device = `/dev/disk/by-id/google-${settings.dataDeviceName}`;
+  const userScript = settings.startupScript?.trim();
+  return [
+    '#!/usr/bin/env bash',
+    'set -euo pipefail',
+    `data_device='${device}'`,
+    `data_mount='${GCP_DATA_MOUNT_POINT}'`,
+    'for attempt in $(seq 1 60); do test -b "$data_device" && break; sleep 1; done',
+    'test -b "$data_device"',
+    'if ! blkid "$data_device" >/dev/null 2>&1; then mkfs.ext4 -F "$data_device"; fi',
+    'data_uuid=$(blkid -s UUID -o value "$data_device")',
+    'install -d -m 0750 "$data_mount"',
+    'grep -q "^UUID=${data_uuid} " /etc/fstab || printf "UUID=%s %s ext4 defaults,nofail,discard 0 2\\n" "$data_uuid" "$data_mount" >> /etc/fstab',
+    'mountpoint -q "$data_mount" || mount "$data_mount"',
+    'resize2fs "$data_device"',
+    'install -d -m 0750 "$data_mount"/{postgres,repositories,transcripts,workspaces}',
+    ...(userScript ? ['', '# User-supplied bootstrap follows the durable mount.', userScript] : []),
+    '',
+  ].join('\n');
 }
 
 function resource(
@@ -651,20 +709,18 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       target: GCP_WORKSPACE_HOST_TARGET,
       hostId: hostIdFor(request),
       generatedAt: this.now(),
-      steps: this.planSteps(request, ctx),
+      steps: await this.planSteps(request, ctx),
       warnings: [],
     };
   }
 
-  private planSteps(
+  private async planSteps(
     request: WorkspaceHostPlanRequest,
     ctx: WorkspaceHostProviderContext,
-  ): readonly WorkspaceHostPlanStep[] {
+  ): Promise<readonly WorkspaceHostPlanStep[]> {
     if (request.action === 'provision') return this.planProvision(request, ctx);
     if (request.action === 'destroy') return this.planDestroy(request, ctx);
-    if (request.action === 'restore' || request.action === 'upgrade') {
-      throw new Error(`GCP workspace-host action '${request.action}' is not supported`);
-    }
+    if (request.action === 'restore') throw new Error("GCP workspace-host action 'restore' is not supported");
     const instance = requireKnownResource(request.host.resources, [VM_KIND], request.action);
     const zone = requireString(instance.zone, `GCP ${request.action} instance zone`);
     const projectId = requireString(
@@ -673,30 +729,114 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
       'GCP projectId',
     );
     const requestId = gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:${request.action}:${instance.providerId}`);
-    if (request.action === 'snapshot') {
+    if (request.action === 'upgrade') {
+      const observed = await this.client.getInstance(projectId, zone, instance.providerId);
+      if (!observed?.recreateInput) {
+        throw new Error('GCP upgrade requires a fresh instance read with recreateInput');
+      }
       const disk = requireKnownResource(request.host.resources, [DISK_KIND], request.action);
-      const name = request.name ?? stableName('pc-snapshot', request.host.hostId);
+      const [bootDisk, dataDisk] = observed.recreateInput.disks;
+      if (refName(dataDisk.source) !== refName(disk.providerId) || dataDisk.autoDelete) {
+        throw new Error('GCP upgrade refused because the retained data disk identity is ambiguous');
+      }
+      const deleteKey = `${request.idempotencyKey}:delete-boot-runtime:${instance.providerId}`;
+      const createKey = `${request.idempotencyKey}:create-boot-runtime:${instance.providerId}`;
       return [
         {
-          id: 'snapshot-data-disk',
-          action: 'snapshot',
-          resourceKind: 'snapshot',
+          id: 'delete-boot-runtime',
+          action: 'upgrade',
+          resourceKind: VM_KIND,
           dependsOn: [],
-          idempotencyKey: `${request.idempotencyKey}:snapshot:${disk.providerId}`,
+          idempotencyKey: deleteKey,
+          destructive: true,
+          input: {
+            op: 'delete-instance',
+            projectId,
+            zone,
+            resourceName: instance.providerId,
+            requestId: gcpWorkspaceHostRequestUuid(deleteKey),
+            hostId: request.host.hostId,
+          } satisfies GcpStepInput,
+        },
+        {
+          id: 'create-boot-runtime',
+          action: 'upgrade',
+          resourceKind: VM_KIND,
+          dependsOn: ['delete-boot-runtime'],
+          idempotencyKey: createKey,
           destructive: false,
           input: {
-            op: 'create-snapshot',
+            op: 'insert-instance',
             projectId,
-            requestId,
+            zone,
+            requestId: gcpWorkspaceHostRequestUuid(createKey),
             hostId: request.host.hostId,
             request: {
-              name,
-              sourceDisk: disk.providerId,
-              labels: { 'papercusp-host-id': gcpLabel(request.host.hostId) },
+              ...observed.recreateInput,
+              disks: [
+                {
+                  ...bootDisk,
+                  initializeParams: { ...bootDisk.initializeParams, sourceImage: request.image.id },
+                },
+                { ...dataDisk, autoDelete: false, source: dataDisk.source },
+              ],
             },
           } satisfies GcpStepInput,
         },
       ];
+    }
+    if (request.action === 'snapshot') {
+      const disk = requireKnownResource(request.host.resources, [DISK_KIND], request.action);
+      const name = request.name ?? stableName('pc-snapshot', request.host.hostId);
+      const observed = await this.client.getInstance(projectId, zone, instance.providerId);
+      const quiesce = observed?.status === 'RUNNING';
+      const stopId = 'quiesce-instance';
+      const snapshotId = 'snapshot-data-disk';
+      const steps: WorkspaceHostPlanStep[] = [];
+      if (quiesce) {
+        steps.push({
+          id: stopId,
+          action: 'snapshot',
+          resourceKind: VM_KIND,
+          dependsOn: [],
+          idempotencyKey: `${request.idempotencyKey}:quiesce:${instance.providerId}`,
+          destructive: false,
+          input: {
+            op: 'stop-instance', projectId, zone, instanceName: instance.providerId,
+            requestId: gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:quiesce:${instance.providerId}`),
+            hostId: request.host.hostId,
+          } satisfies GcpStepInput,
+        });
+      }
+      steps.push({
+        id: snapshotId,
+        action: 'snapshot',
+        resourceKind: 'snapshot',
+        dependsOn: quiesce ? [stopId] : [],
+        idempotencyKey: `${request.idempotencyKey}:snapshot:${disk.providerId}`,
+        destructive: false,
+        input: {
+          op: 'create-snapshot', projectId, zone: requireString(disk.zone, 'GCP snapshot disk zone'), requestId,
+          hostId: request.host.hostId,
+          request: { name, sourceDisk: disk.providerId, labels: { 'papercusp-host-id': gcpLabel(request.host.hostId) } },
+        } satisfies GcpStepInput,
+      });
+      if (quiesce) {
+        steps.push({
+          id: 'resume-instance',
+          action: 'snapshot',
+          resourceKind: VM_KIND,
+          dependsOn: [snapshotId],
+          idempotencyKey: `${request.idempotencyKey}:resume:${instance.providerId}`,
+          destructive: false,
+          input: {
+            op: 'start-instance', projectId, zone, instanceName: instance.providerId,
+            requestId: gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:resume:${instance.providerId}`),
+            hostId: request.host.hostId,
+          } satisfies GcpStepInput,
+        });
+      }
+      return steps;
     }
     const op =
       request.action === 'start'
@@ -963,6 +1103,7 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           input: {
             op: 'create-snapshot',
             projectId,
+            zone: requireString(disk.zone, 'GCP destroy snapshot disk zone'),
             requestId: gcpWorkspaceHostRequestUuid(key),
             hostId: request.host.hostId,
             request: {
@@ -1156,6 +1297,9 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         );
       case 'create-snapshot': {
         requireKnownResource(request.knownResources, [DISK_KIND], request.step.id);
+        const sourceDisk = await this.client.getDisk(input.projectId, input.zone, input.request.sourceDisk);
+        if (!sourceDisk) throw new Error(`GCP snapshot source disk '${input.request.sourceDisk}' is absent`);
+        assertManagedHostResource(sourceDisk, input.hostId, 'snapshot source disk');
         const operation = await this.client.createSnapshot(input.projectId, input.request, input.requestId);
         if (!(await this.settled(operation, ctx.signal))) return this.inProgress(request, operation.name);
         const found = await this.client.getSnapshot(input.projectId, input.request.name);
@@ -1218,6 +1362,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
   ): Promise<WorkspaceHostApplyResult> {
     const before = await this.describeDeleteTarget(input);
     if (!before) return this.destroyed(request, input.hostId, input.resourceName);
+    if (input.op === 'delete-instance') assertManagedHostResource(before, input.hostId, 'instance');
+    if (input.op === 'delete-disk') {
+      const disk = before as GcpDiskObservation;
+      assertManagedHostResource(disk, input.hostId, 'data disk');
+      if (disk.attachedInstanceNames.length > 0) {
+        throw new Error(
+          `GCP data disk '${disk.name}' is still attached to ${disk.attachedInstanceNames.join(', ')}; refusing deletion`,
+        );
+      }
+    }
     let operation: GcpOperationRef;
     if (input.op === 'delete-instance')
       operation = await this.client.deleteInstance(

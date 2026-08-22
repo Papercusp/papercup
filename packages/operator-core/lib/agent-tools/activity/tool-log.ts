@@ -12,6 +12,8 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { isSessionShapedOwnerId } from '../coordination/dead-session-recipient-guidance';
+import { knownOwnerIdSet, resolveRecipientsAgainst } from '../coordination/recipient-resolve';
 import { toolCallRowsFor } from '../../tool-call-log-store';
 import { dedupeToolCalls, renderToolCallLog } from '../../tool-call-log';
 
@@ -27,6 +29,80 @@ const isoBoundary = z
 
 function normalizeIsoBoundary(value: string | undefined): string | undefined {
   return value === undefined ? undefined : new Date(value).toISOString();
+}
+
+type OwnerResolutionFailure = {
+  ok: false;
+  error: 'owner_resolution_unavailable' | 'owner_not_found' | 'owner_ambiguous';
+  owner: string;
+  matches?: string[];
+  message: string;
+};
+
+type OwnerResolution = { ok: true; ownerId: string } | OwnerResolutionFailure;
+
+/**
+ * Resolve the display handle accepted by the activity reader to the canonical
+ * owner id used by the ledger. Full session-shaped ids are intentionally kept
+ * verbatim: unlike a live recipient, a historical activity owner may already
+ * be absent from the current roster.
+ */
+async function resolveActivityOwner(
+  owner: string,
+  workspaceId?: string | null,
+): Promise<OwnerResolution> {
+  if (isSessionShapedOwnerId(owner)) return { ok: true, ownerId: owner };
+
+  const known = await knownOwnerIdSet(workspaceId);
+  if (!known) {
+    return {
+      ok: false,
+      error: 'owner_resolution_unavailable',
+      owner,
+      message:
+        `Cannot resolve owner '${owner}' because the live owner roster is unavailable. ` +
+        'Retry with the full ownerId or after coord:presence is available.',
+    };
+  }
+
+  const resolution = resolveRecipientsAgainst([owner], [...known]);
+  const ambiguous = resolution.ambiguous[0];
+  if (ambiguous) {
+    return {
+      ok: false,
+      error: 'owner_ambiguous',
+      owner,
+      matches: ambiguous.matches,
+      message: `Owner '${owner}' matches more than one live ownerId; pass the full ownerId.`,
+    };
+  }
+  if (resolution.unknown.length > 0 || resolution.resolved.length === 0) {
+    return {
+      ok: false,
+      error: 'owner_not_found',
+      owner,
+      message: `Owner '${owner}' matches no known ownerId; pass the full ownerId or check coord:presence.`,
+    };
+  }
+  return { ok: true, ownerId: resolution.resolved[0]! };
+}
+
+function ownerResolutionError(failure: OwnerResolutionFailure) {
+  return {
+    isError: true as const,
+    content: [
+      {
+        type: 'text' as const,
+        text: JSON.stringify({
+          ok: false,
+          error: failure.error,
+          owner: failure.owner,
+          ...(failure.matches ? { matches: failure.matches } : {}),
+          message: failure.message,
+        }),
+      },
+    ],
+  };
 }
 
 export default defineTool({
@@ -58,7 +134,14 @@ export default defineTool({
     top_k: z.number().int().min(1).max(25).optional(),
   }),
   async handler(args, ctx) {
-    const ownerId = args.owner === 'self' ? resolveAgentIdentity(ctx).ownerId : args.owner;
+    const identity = args.owner ? resolveAgentIdentity(ctx) : null;
+    const requestedOwnerId = args.owner === 'self' ? identity!.ownerId : args.owner;
+    let ownerId = requestedOwnerId;
+    if (requestedOwnerId) {
+      const resolved = await resolveActivityOwner(requestedOwnerId, identity?.workspaceId);
+      if (!resolved.ok) return ownerResolutionError(resolved);
+      ownerId = resolved.ownerId;
+    }
     if (!ownerId && !args.session_id) {
       return {
         isError: true,

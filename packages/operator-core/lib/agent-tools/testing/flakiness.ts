@@ -77,7 +77,7 @@ export default defineTool({
               kind: 'change',
               title: `Flaky-test quarantine candidate: ${c.filePath} (flip-rate ${Math.round(c.flipRate * 100)}%)`,
               summary: `${c.filePath} flipped pass<->fail ${c.flips}/${c.totalRuns - 1} consecutive-run transitions (flipRate ${c.flipRate}) over the lookback window. Recent statuses: ${c.recentStatuses.join(', ')}. Quarantine it accountably (quarantine.txt) with a MANDATORY de-quarantine follow-up work item — do not quarantine-and-forget.`,
-              harness: harnessSlug,
+              harness: harnessSlug ?? undefined,
               severity: 'minor',
               payload: { filePath: c.filePath, flipRate: c.flipRate, totalRuns: c.totalRuns, source: 'testing:flakiness' },
             },

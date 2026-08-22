@@ -180,6 +180,33 @@ describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)
     ...over,
   });
 
+  it('releases a never-fired cold loop only after a carry-note newer than the arm settles it', async () => {
+    const updates: unknown[][] = [];
+    const armedAt = T0 + 1_000;
+    const noteAt = T0 + 5_000; // the long arming turn checkpoints after the nominal first-fire time
+    const sql = fakeSql(
+      [
+        coldRow({
+          last_fired_at: null,
+          armed_at: pgString(armedAt),
+          note_updated_ts: String(noteAt),
+        }),
+      ],
+      updates,
+    );
+
+    const res = await reconcile({ sql, nowMs: T0 + 10_000 });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({
+      id: 'rt-1',
+      completedAt: noteAt,
+      nextFireAt: noteAt + 60_000,
+      via: 'initial-cold-note-refresh',
+    });
+    expect(updates).toHaveLength(1);
+  });
+
   it("the reset boundary (ended→started back-to-back at delivery) is NOT a settle — the 'ended' is the DYING session, not the woken turn finishing", async () => {
     // Live repro (fire #4972 → overlap #4979): cold delivery at T0+1s restarts the session —
     // old process emits 'ended' (+1000ms), new process 'started' (+1250ms). The cold turn is

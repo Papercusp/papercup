@@ -16,6 +16,12 @@ import { describe, it, expect, afterAll, afterEach, beforeAll } from 'vitest';
 import { WebSocket } from 'ws';
 import { spawnPty, killPty } from './pty-bridge';
 import { startPtyWsServer } from './pty-ws';
+import {
+  _resetPtyTicketStateForTests,
+  issuePtyTicket,
+  PTY_TICKET_TTL_MS,
+  type PtyAccessScope,
+} from './pty-ticket';
 import type { AddressInfo } from 'node:net';
 
 let port: number;
@@ -36,6 +42,13 @@ beforeAll(async () => {
 });
 
 const liveIds: string[] = [];
+const TEST_SCOPE: PtyAccessScope = {
+  tenantId: 'tenant-a',
+  workspaceId: 'workspace-a',
+  harnessSlug: 'harness-a',
+  hostId: 'host-a',
+  principalId: 'user-a',
+};
 /**
  * Reap each test's pty as it ends. Reaping only in afterAll kept every spawned pty
  * alive at once, which trips `pty cap reached` on a small host: the F-E2 backstop
@@ -46,17 +59,21 @@ const liveIds: string[] = [];
 function reap(): void {
   for (const id of liveIds.splice(0)) {
     try {
-      killPty(id);
+      killPty(id, TEST_SCOPE);
     } catch {
       /* already exited */
     }
   }
 }
-afterEach(reap);
+afterEach(() => {
+  reap();
+  _resetPtyTicketStateForTests();
+});
 afterAll(reap);
 
 function spawnTestPty(args: readonly string[]) {
   const h = spawnPty({
+    accessScope: TEST_SCOPE,
     command: 'bash',
     args: ['-c', args.join(' ')],
     cwd: process.cwd(),
@@ -67,15 +84,51 @@ function spawnTestPty(args: readonly string[]) {
   return h;
 }
 
-function openWs(path: string, origin = 'http://localhost:3055'): WebSocket {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers: { Origin: origin } });
+function openWs(
+  path: string,
+  origin = 'http://localhost:3055',
+  protocols: string[] = [],
+): WebSocket {
+  const ws = new WebSocket(
+    `ws://127.0.0.1:${port}${path}`,
+    protocols,
+    { headers: { Origin: origin } },
+  );
   ws.binaryType = 'arraybuffer';
   return ws;
 }
 
-async function awaitOpenOrClose(ws: WebSocket): Promise<{ opened: boolean; closeCode?: number; closeReason?: string }> {
+function protocolsFor(
+  handle: ReturnType<typeof spawnTestPty>,
+  origin = 'http://localhost:3055',
+  scope: PtyAccessScope = handle.accessScope,
+  nowMs?: number,
+): string[] {
+  const issued = issuePtyTicket({
+    ...scope,
+    ptyId: handle.id,
+    origin,
+    nowMs,
+  });
+  return [issued.protocol, issued.ticket];
+}
+
+function openAuthorizedWs(
+  handle: ReturnType<typeof spawnTestPty>,
+  origin = 'http://localhost:3055',
+): WebSocket {
+  return openWs(`/pty/${handle.id}`, origin, protocolsFor(handle, origin));
+}
+
+async function awaitOpenOrClose(ws: WebSocket): Promise<{
+  opened: boolean;
+  statusCode?: number;
+  closeCode?: number;
+  closeReason?: string;
+}> {
   return new Promise((resolve) => {
     ws.once('open', () => resolve({ opened: true }));
+    ws.once('unexpected-response', (_req, res) => resolve({ opened: false, statusCode: res.statusCode }));
     ws.once('close', (code, reason) => resolve({ opened: false, closeCode: code, closeReason: reason.toString() }));
     ws.once('error', () => { /* swallow; close will follow */ });
   });
@@ -98,45 +151,54 @@ async function collectBytes(ws: WebSocket, predicate: (s: string) => boolean, ti
 }
 
 describe('pty-ws', () => {
-  it('rejects unknown pty id with 4410', async () => {
+  it('rejects a bearerless unknown pty before the WebSocket upgrade', async () => {
     const ws = openWs('/pty/00000000-0000-0000-0000-000000000000');
     const r = await awaitOpenOrClose(ws);
-    // ws may report `open` then immediately get a close event. We
-    // accept either close-without-open OR an open followed by 4410.
-    if (r.opened) {
-      const closed = await new Promise<{ code: number; reason: string }>((res) => {
-        ws.once('close', (code, reason) => res({ code, reason: reason.toString() }));
-      });
-      expect(closed.code).toBe(4410);
-    } else {
-      expect(r.closeCode).toBe(4410);
-    }
+    expect(r.opened).toBe(false);
+    expect(r.statusCode).toBe(401);
   });
 
-  it('rejects malformed URL with 4404', async () => {
-    const ws = openWs('/wrong/path');
-    const r = await new Promise<{ opened: boolean; closeCode?: number }>((resolve) => {
-      ws.once('open', () => {
-        ws.once('close', (code) => resolve({ opened: true, closeCode: code }));
-      });
-      ws.once('close', (code) => resolve({ opened: false, closeCode: code }));
-      ws.once('error', () => { /* close follows */ });
-    });
-    expect(r.closeCode).toBe(4404);
+  it('rejects a malformed route before the WebSocket upgrade', async () => {
+    const handle = spawnTestPty(['sleep 30']);
+    const ws = openWs('/wrong/path', 'http://localhost:3055', protocolsFor(handle));
+    const r = await awaitOpenOrClose(ws);
+    expect(r.opened).toBe(false);
+    expect(r.statusCode).toBe(404);
   });
 
   it('rejects disallowed Origin with 4403', async () => {
     const handle = spawnTestPty(['echo', 'origin_test']);
-    const ws = openWs(`/pty/${handle.id}`, 'http://evil.example.com');
+    const origin = 'http://evil.example.com';
+    const ws = openWs(`/pty/${handle.id}`, origin, protocolsFor(handle, origin));
     const r = await awaitOpenOrClose(ws);
-    if (r.opened) {
-      const closed = await new Promise<{ code: number }>((res) => {
-        ws.once('close', (code) => res({ code }));
-      });
-      expect(closed.code).toBe(4403);
-    } else {
-      expect(r.closeCode).toBe(4403);
-    }
+    expect(r.opened).toBe(false);
+    expect(r.statusCode).toBe(403);
+  });
+
+  it('rejects replayed, expired, and foreign-scope tickets before upgrade', async () => {
+    const handle = spawnTestPty(['sleep 30']);
+    const origin = 'http://localhost:3055';
+    const protocols = protocolsFor(handle, origin);
+    const first = openWs(`/pty/${handle.id}`, origin, protocols);
+    expect((await awaitOpenOrClose(first)).opened).toBe(true);
+    first.close();
+
+    const replay = openWs(`/pty/${handle.id}`, origin, protocols);
+    expect((await awaitOpenOrClose(replay)).statusCode).toBe(401);
+
+    const expired = openWs(
+      `/pty/${handle.id}`,
+      origin,
+      protocolsFor(handle, origin, handle.accessScope, Date.now() - PTY_TICKET_TTL_MS - 1),
+    );
+    expect((await awaitOpenOrClose(expired)).statusCode).toBe(401);
+
+    const foreign = openWs(
+      `/pty/${handle.id}`,
+      origin,
+      protocolsFor(handle, origin, { ...handle.accessScope, principalId: 'user-b' }),
+    );
+    expect((await awaitOpenOrClose(foreign)).statusCode).toBe(401);
   });
 
   it('round-trips binary input and replays on second connect', async () => {
@@ -144,7 +206,7 @@ describe('pty-ws', () => {
     // exiting bash would dispose the underlying handle and the second
     // connect would race the close.
     const handle = spawnTestPty(['echo PTYWS_TEST_MARKER; sleep 30']);
-    const ws = openWs(`/pty/${handle.id}`);
+    const ws = openAuthorizedWs(handle);
     // Start collecting BEFORE awaiting open: `echo` fires immediately on spawn,
     // so the live frame (or the on-connect screen replay) can arrive in the
     // microtask gap between open and a listener attached afterwards, and ws
@@ -160,7 +222,7 @@ describe('pty-ws', () => {
 
     // Second connect — replay should carry the marker via P4 screen state.
     // Same early-attach: the server sends the replay right after connect.
-    const ws2 = openWs(`/pty/${handle.id}`);
+    const ws2 = openAuthorizedWs(handle);
     const replayRead = collectBytes(ws2, (s) => s.includes('PTYWS_TEST_MARKER'));
     const opened2 = await awaitOpenOrClose(ws2);
     expect(opened2.opened).toBe(true);
@@ -175,7 +237,7 @@ describe('pty-ws', () => {
     // Generous sleeps so the resize control frame lands before the second
     // tput print, and the pty stays open through the round-trip, under load.
     const handle = spawnTestPty(['printf "tput_cols=$(tput cols)\\n"; sleep 3; printf "tput_cols2=$(tput cols)\\n"; sleep 3']);
-    const ws = openWs(`/pty/${handle.id}`);
+    const ws = openAuthorizedWs(handle);
     // First print fires immediately — collect before awaiting open (see the
     // round-trip test) so the frame can't slip the open→listener gap.
     const firstRead = collectBytes(ws, (s) => /tput_cols=\d+/.test(s));
@@ -193,7 +255,7 @@ describe('pty-ws', () => {
 
   it('emits exit text frame on process exit', async () => {
     const handle = spawnTestPty(['exit 7']);
-    const ws = openWs(`/pty/${handle.id}`);
+    const ws = openAuthorizedWs(handle);
     // Register the exit-frame listener SYNCHRONOUSLY, before awaiting open.
     // `exit 7` exits instantly, and the server replays the exit frame to a
     // late subscriber right after connect (pty-ws.ts ~L286). The only race
@@ -231,7 +293,7 @@ describe('pty-ws', () => {
     // box the ack_payload read + ack + keystroke round-trip can take many
     // seconds, and the pty must stay open until the echo arrives.
     const handle = spawnTestPty(['printf "ack_payload\\n"; sleep 30']);
-    const ws = openWs(`/pty/${handle.id}`);
+    const ws = openAuthorizedWs(handle);
     // ack_payload prints immediately — collect before awaiting open (see the
     // round-trip test) so the frame can't slip the open→listener gap.
     const ackRead = collectBytes(ws, (s) => s.includes('ack_payload'));

@@ -13,7 +13,10 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import { listDueCronRoutines } from '@papercusp/db-org';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
+import { claimDueRoutine } from './claim';
+import { materializeLoop } from './loop';
 import { reconcileLoopRoutines } from './reconcile-loop-routines';
 
 let org: OrgTestDb;
@@ -46,6 +49,7 @@ beforeEach(async () => {
   await sql`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.session_turn_journal WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.carry_notes WHERE workspace_id = ${WS}`;
 });
 
 /**
@@ -308,5 +312,93 @@ describe('reconcileLoopRoutines — cron+loop composition (take the sooner)', ()
     const res = await reconcile({ sql, nowMs: T0 + 10_000 });
     expect(res.rearmed).toBe(0);
     expect((await readFire(id)).nextFireMs).toBe(cronNext); // cron-next preserved
+  });
+});
+
+describe('cold first-fire settlement — materialize → reconcile → claim (EI-20988940040434762)', () => {
+  it('does not stage the first wake before the arm note, then re-arms and claims it after settlement', async () => {
+    const ownerId = `su-cold-first-${++rtSeq}`;
+    const armAtMs = T0 + 1_000;
+    const intervalSec = 60;
+    const intervalMs = intervalSec * 1_000;
+    const noteAtMs = armAtMs + 5_000; // the arm turn settles after its nominal first-fire window
+
+    const routine = await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId,
+      intervalSec,
+      kickoff: 'cold first-fire integration',
+      carry: 'cold',
+      now: new Date(armAtMs),
+      sql,
+    });
+
+    const initial = (
+      await sql<
+        Array<{
+          parked: boolean;
+          last_fired_at: Date | null;
+          payload_template: Record<string, unknown> | null;
+          armed_at: string | null;
+        }>
+      >`
+        SELECT (next_fire_at = 'infinity'::timestamptz) AS parked,
+               last_fired_at,
+               payload_template,
+               metadata->>'armed_at' AS armed_at
+          FROM harness_shared.routines
+         WHERE id = ${routine.id}
+      `
+    )[0];
+    expect(initial).toMatchObject({
+      parked: true,
+      last_fired_at: null,
+      payload_template: { carry: 'cold' },
+      armed_at: new Date(armAtMs).toISOString(),
+    });
+    expect((await listDueCronRoutines(sql)).some((row) => row.id === routine.id)).toBe(false);
+
+    await sql`
+      INSERT INTO harness_shared.carry_notes (workspace_id, scope, note, updated_ts)
+      VALUES (${WS}, ${`loop:${HARNESS}:${ownerId}`}, 'arm turn settled', ${noteAtMs})
+    `;
+
+    const reconciled = await reconcile({ sql, nowMs: noteAtMs + 10_000 });
+    expect(reconciled.rearmed).toBe(1);
+    expect(reconciled.loops[0]).toMatchObject({
+      id: routine.id,
+      completedAt: noteAtMs,
+      nextFireAt: noteAtMs + intervalMs,
+      via: 'initial-cold-note-refresh',
+    });
+
+    const rearmed = (
+      await sql<Array<{ parked: boolean; next_fire_at: Date | null }>>`
+        SELECT (next_fire_at = 'infinity'::timestamptz) AS parked, next_fire_at
+          FROM harness_shared.routines
+         WHERE id = ${routine.id}
+      `
+    )[0];
+    expect(rearmed.parked).toBe(false);
+    expect(rearmed.next_fire_at?.getTime()).toBe(noteAtMs + intervalMs);
+
+    // Use a JS Date here so the claim CAS sees the same millisecond precision as the
+    // due-list read; this test is about the cold handoff, not PostgreSQL microseconds.
+    const dueAt = new Date(noteAtMs + intervalMs - 1_000);
+    await sql`UPDATE harness_shared.routines SET next_fire_at = ${dueAt} WHERE id = ${routine.id}`;
+    const due = (await listDueCronRoutines(sql)).find((row) => row.id === routine.id);
+    expect(due).toBeDefined();
+    expect(await claimDueRoutine(sql, due!)).toBe(true);
+
+    const claimed = (
+      await sql<Array<{ parked: boolean; last_fired_at: Date | null }>>`
+        SELECT (next_fire_at = 'infinity'::timestamptz) AS parked, last_fired_at
+          FROM harness_shared.routines
+         WHERE id = ${routine.id}
+      `
+    )[0];
+    expect(claimed.parked).toBe(true);
+    expect(claimed.last_fired_at).not.toBeNull();
   });
 });

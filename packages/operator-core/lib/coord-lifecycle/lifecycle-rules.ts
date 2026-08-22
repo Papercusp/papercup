@@ -106,7 +106,12 @@ registerReactionRule({
   when: (e) => Boolean((e.args as { intent?: string } | undefined)?.intent),
   fire: 'coord:emit',
   args: (e) => {
-    const a = e.args as { intent: string; current_files?: string[]; current_plan_slug?: string };
+    const a = e.args as {
+      intent: string;
+      current_files?: string[];
+      current_plan_slug?: string;
+      declared_goal_refs?: string[];
+    };
     const { summary, body } = renderIntent({
       intent: a.intent,
       files: a.current_files,
@@ -118,6 +123,7 @@ registerReactionRule({
       summary,
       ...(body ? { body } : {}),
       ...(a.current_plan_slug ? { plan_slug: a.current_plan_slug } : {}),
+      ...(a.declared_goal_refs ? { declared_goal_refs: a.declared_goal_refs } : {}),
       to: intentAudience(a.current_plan_slug, a.current_files),
     };
   },

@@ -51,18 +51,21 @@ set -uo pipefail
 DUMP=/mnt/data/Backup/db-dumps
 STATUS="$DUMP/STATUS.json"
 LOG="$DUMP/db-backup.log"
-LOCK=/home/marsh-office/.cache/kopia/db-backup.lock
+BACKUP_USER="${USER:-$(id -un)}"
+BACKUP_GROUP="$(id -gn)"
+BACKUP_HOME="${HOME:-$(getent passwd "$(id -u)" | cut -d: -f6)}"
+LOCK="${PC_BACKUP_LOCK:-$BACKUP_HOME/.cache/kopia/db-backup.lock}"
 PSQL="sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc"
 
 # pg_dump runs as the `postgres` OS user (peer auth on the unix socket — there is
-# no `marsh-office` PG role, and TCP is scram-only), so IT opens the output files.
+# no backup-service PG role, and TCP is scram-only), so IT opens the output files.
 # The old hook dodged this by piping to a shell redirect, which the shell (as
-# marsh-office) opened. -Fd cannot stream to stdout, and pg_dump chmods the
+# the backup service user) opened. -Fd cannot stream to stdout, and pg_dump chmods the
 # directory it writes, so the target must be postgres-OWNED. This staging dir is
-# owned by postgres and group-writable by marsh-office, so pg_dump can write and
+# owned by postgres and group-writable by the backup service user, so pg_dump can write and
 # this script can still do the atomic swap. 0775 keeps it readable by kopia.
 PGOUT="$DUMP/pg"
-sudo -n install -d -o postgres -g marsh-office -m 0775 "$PGOUT" 2>/dev/null || true
+sudo -n install -d -o postgres -g "$BACKUP_GROUP" -m 0775 "$PGOUT" 2>/dev/null || true
 
 # Our tag. Must NOT start with "pg_dump" or an orphan reaper would kill us.
 export PGAPPNAME=pcbackup
@@ -169,7 +172,7 @@ DBS=$(sudo -n -u postgres psql -h /var/run/postgresql -d postgres -tAc \
 #
 # pg_dump -Fd writes its output dir 0700 postgres:postgres. On the SUCCESS path
 # we chown it back (below), so a plain `rm -rf` works. On the FAILURE path the
-# chown never runs — and THIS script runs as marsh-office, so `rm -rf` on that
+# chown never runs — and THIS script runs as the backup service user, so `rm -rf` on that
 # 0700 postgres-owned dir dies with "Permission denied". That turned a single
 # bad dump into a PERMANENT one: the leftover .tmp survived, and because
 # pg_dump -Fd refuses a non-empty target, every later run failed the same way.
@@ -192,16 +195,16 @@ for db in $DBS; do
         pg_dump -h /var/run/postgresql -Fd -j "$JOBS" --compress=none -f "$out.tmp" "$db" 2>"$dumperr"; then
 
     # pg_dump chmods its -Fd output to 0700 postgres:postgres. Left that way the
-    # dump is UNREADABLE BY KOPIA (which runs as marsh-office), so it would never
+    # dump is UNREADABLE BY KOPIA (which runs as the backup service user), so it would never
     # leave this box — a silently-useless backup, i.e. the very failure this
     # script exists to end, wearing a different mask. Hand it back to us.
     #
     # But note there are TWO readers, not one, and they are different users:
-    #   * KOPIA + this script      -> marsh-office   (gets it off the box, swaps it)
+    #   * backup archiver + this script -> service user (gets it off the box, swaps it)
     #   * pg_restore, at RESTORE   -> postgres       (peer auth on the socket is the
-    #                                 only superuser path here: marsh-office has no
+    #                                 only superuser path here: the service user has no
     #                                 PG role and TCP is scram-only)
-    # Chowning to marsh-office:marsh-office at 0700 served the first and locked out
+    # Chowning to the service user at 0700 served the first and locked out
     # the second, so the artifact was readable by the process that ARCHIVES it and
     # unreadable by the process that RESTORES it — a backup you cannot restore is
     # the same class of silently-useless backup as one that never leaves the box.
@@ -213,7 +216,7 @@ for db in $DBS; do
     # excludes everyone else (o= also tightens the previously world-readable
     # members). Modes are set explicitly rather than via +X so the result does not
     # depend on what pg_dump happened to write.
-    sudo -n chown -R marsh-office:postgres "$out.tmp"
+    sudo -n chown -R "${BACKUP_USER}:postgres" "$out.tmp"
     sudo -n chmod -R u=rwX,g=rX,o= "$out.tmp"
 
     # VALIDATE THE ARTIFACT, don't trust the exit code. The whole EI-10733 bug
@@ -284,10 +287,10 @@ reap_own_stragglers   # nothing of ours may outlive this script holding locks
 # twice. It gets its OWN status fields and its OWN staleness assertion in
 # healthcheck.sh, so it is independently loud without being coupled.
 #
-# Runs as marsh-office over TCP (scram), NOT `sudo -u postgres`: peer auth is a
+# Runs as the backup service user over TCP (scram), NOT `sudo -u postgres`: peer auth is a
 # SYSTEM-cluster concept and this server has its own roles. So the chown dance
 # above is unnecessary here — this script already owns what it writes.
-ODDSMITH_DISCOVERY="${ODDSMITH_DISCOVERY:-/home/marsh-office/.oddsmith/embedded-pg.json}"
+ODDSMITH_DISCOVERY="${ODDSMITH_DISCOVERY:-$BACKUP_HOME/.oddsmith/embedded-pg.json}"
 ODDS_OK=false
 ODDS_NOTE="not attempted"
 odds_out="$PGOUT/oddsmith"

@@ -698,6 +698,10 @@ export type RebaseVia =
   | 'lifecycle'
   | 'turn-journal'
   | 'note-refresh'
+  /** EI-20988940040434762: the first cold fire was parked at arm time and is
+   *  released by the first carry-note written after that arm. No fire outcome
+   *  is recorded because no wake has been delivered yet. */
+  | 'initial-cold-note-refresh'
   | 'presence-quiescence'
   | 'stuck-backstop'
   /** WI-36792: the loop is parked at 'infinity' and the FIRE-GATE is what is holding it —
@@ -764,6 +768,9 @@ interface LoopRow {
   /** payload_template->>'carry' — 'cold' marks a cold loop (reset/recycle wakes), which
    *  changes what counts as a settle (see completionSignal). */
   carry: string | null;
+  /** metadata->>'armed_at' — the latest arm instant. A cold loop with no prior
+   *  fire uses it to distinguish its first post-arm checkpoint from a stale note. */
+  armed_at: Date | string | null;
   /** max(carry_notes.updated_ts) for the loop's scope, any workspace (epoch ms — bigint,
    *  so a STRING over the wire). A refresh AFTER the fire is the cold protocol's own
    *  "iteration done" contract (loop:checkpoint is REQUIRED before a cold turn ends). */
@@ -937,11 +944,11 @@ export async function reconcileLoopRoutines(
   // Loop routines in scope: a PARKED pure loop (rebase off completion), an armed cron+loop
   // (fold the sooner — unchanged), OR (EI-11407) an ARMED pure loop that has fired at least
   // once — newly in scope so the reachability sweep can catch a permanently-dead owner
-  // without waiting for the loop to actually fire again first. A pure loop still ARMED for
-  // its FIRST fire ever (last_fired_at IS NULL) matches none of these and is correctly
-  // skipped — nothing to rebase or check reachability on until it has actually fired. The
-  // partial index routines_loop_interval_idx (on reschedule_interval_sec IS NOT NULL, every
-  // loop routine — never conditioned on parked/cron) keeps this scan cheap either way.
+  // without waiting for the loop to actually fire again first. A cold loop's initial arm is
+  // also parked at infinity with last_fired_at NULL; it is released below only after a
+  // carry-note newer than metadata.armed_at exists (EI-20988940040434762). The partial index
+  // routines_loop_interval_idx (on reschedule_interval_sec IS NOT NULL, every loop routine —
+  // never conditioned on parked/cron) keeps this scan cheap either way.
   const rows = await db<LoopRow[]>`
     SELECT r.id,
            r.target_owner_id,
@@ -984,6 +991,7 @@ export async function reconcileLoopRoutines(
                AND a.summary = ${SESSION_START_MARKER}
                AND a.created_at > r.last_fired_at) AS lifecycle_started_at,
            (r.payload_template->>'carry') AS carry,
+           r.metadata->>'armed_at' AS armed_at,
            (SELECT max(cn.updated_ts)
               FROM harness_shared.carry_notes cn
              WHERE cn.scope = ('loop:' || r.install_slug || ':' || r.target_owner_id)
@@ -1078,11 +1086,63 @@ export async function reconcileLoopRoutines(
     // wedging the whole fleet's loops is exactly the failure class this guards). Log + continue.
     try {
       // A fired loop always has last_fired_at (claim sets it on park/advance); defensively
-      // skip a malformed/missing row rather than rebasing off an unbounded window. tsMs()
-      // tolerates the string form the pooled connection returns (EI-2549).
+      // skip a malformed/missing row rather than rebasing off an unbounded window. The one
+      // intentional exception is a never-fired COLD loop: materializeLoop parks its initial
+      // schedule at infinity, and the first post-arm carry-note is the only valid completion
+      // signal for releasing that schedule (EI-20988940040434762). tsMs() tolerates the string
+      // form the pooled connection returns (EI-2549).
       const lastFiredMs = tsMs(row.last_fired_at);
-      if (lastFiredMs == null) continue;
       const intervalMs = row.interval_sec * 1000;
+
+      if (lastFiredMs == null) {
+        if (row.carry === 'cold') {
+          const armedAtMs = tsMs(row.armed_at);
+          const noteAt = row.note_updated_ts == null ? null : Number(row.note_updated_ts);
+          if (armedAtMs != null && noteAt != null && Number.isFinite(noteAt) && noteAt > armedAtMs) {
+            const reArmIso = new Date(noteAt + intervalMs).toISOString();
+            const armedAtIso = new Date(armedAtMs).toISOString();
+            const updated = await db<{ id: string }[]>`
+              UPDATE harness_shared.routines
+                 SET next_fire_at = ${reArmIso}::timestamptz, updated_at = now()
+               WHERE id = ${row.id}
+                 AND active = TRUE
+                 AND reschedule_interval_sec IS NOT NULL
+                 AND last_fired_at IS NULL
+                 AND next_fire_at = 'infinity'::timestamptz
+                 AND payload_template->>'carry' = 'cold'
+                 AND (metadata->>'armed_at')::timestamptz = ${armedAtIso}::timestamptz
+               RETURNING id
+            `;
+            if (updated.length > 0) {
+              const via: RebaseVia = 'initial-cold-note-refresh';
+              result.rearmed++;
+              result.loops.push({
+                id: row.id,
+                targetOwnerId: row.target_owner_id,
+                completedAt: noteAt,
+                nextFireAt: noteAt + intervalMs,
+                via,
+              });
+              // No fire outcome is recorded here: the initial wake has not been delivered
+              // yet. Keep the same transition ledger used by ordinary loop re-arms so the
+              // pending-first-fire handoff is observable without fabricating a fire.
+              void recordLoopTransition(db, {
+                workspaceId: row.routine_workspace_id,
+                installSlug: row.install_slug,
+                routineId: row.id,
+                routineName: row.name,
+                targetOwnerId: row.target_owner_id,
+                event: 'rearmed',
+                actor: 'reconcile-loop-routines',
+                newNextFireAt: reArmIso,
+                intervalSec: row.interval_sec,
+                detail: { via, wasParked: true, initialColdFire: true },
+              });
+            }
+          }
+        }
+        continue;
+      }
 
       // EI-11407 ARMED-LOOP REACHABILITY SWEEP — a pure loop (never cron: cron+loop keeps its
       // pre-existing fold-the-sooner handling below, untouched) that is NOT parked has already

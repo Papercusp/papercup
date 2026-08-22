@@ -808,9 +808,11 @@ describe('the Server artifact is disclosed, not silently dropped', () => {
     expect(html).toContain('<h4 class="component-h">Papercusp Server</h4>');
     expect(html).toContain('gui_0.0.9_amd64.deb');
     expect(html).toContain('server_0.0.9_amd64.deb');
-    // Linux guidance: the app self-hosts, so the Server is optional here (NOT the
-    // mac/Windows "install both").
-    expect(html).toContain('optional');
+    // Linux now matches macOS/Windows: the GUI requires the sibling Server.
+    expect(html).toContain('Install both.');
+    expect(html).toContain('needs <strong>Papercusp Server</strong> running alongside it');
+    expect(html).not.toContain('runs on its own on Linux');
+    expect(html).not.toContain('optional here');
     expect(html).not.toContain('headless server build');
   });
 
@@ -906,6 +908,21 @@ describe('the Server artifact is disclosed, not silently dropped', () => {
     expect(html).toContain('<h3 class="platform-h">Windows</h3>');
     expect(html).toContain('class="warn"');
     expect(html).toContain('needs <strong>Papercusp Server</strong>');
+  });
+
+  it('WARNS when Linux ships a GUI without its required Server', () => {
+    const linuxGuiOnly = hydrated({
+      row: row({
+        artifacts: [
+          { product: 'gui', platform: 'linux-x86_64', name: 'GUI_0.0.9_amd64.deb', url: 'desktop-v0.0.9-alpha/GUI_0.0.9_amd64.deb', size: 80_000_000, sha256: 'l' },
+        ],
+      }),
+    });
+    const html = renderIndexHtml([linuxGuiOnly], { generatedAt: GENERATED_AT, analytics: null });
+    expect(html).toContain('<h3 class="platform-h">Linux</h3>');
+    expect(html).toContain('class="warn"');
+    expect(html).toContain('needs <strong>Papercusp Server</strong>');
+    expect(html).toContain("this build can't start on its own");
   });
 });
 

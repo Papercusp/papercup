@@ -346,11 +346,10 @@ export async function materializeLoop(
   const workspaceId = input.workspaceId ?? activeWorkspaceId();
   const now = input.now ?? new Date();
   const firstFireSec = input.firstFireInSec ?? input.intervalSec;
-  // A finite first fire: the existing claim path fires it, then B-LOOP-2's
-  // completion-rebase takes over the parked loop. (We deliberately do NOT arm
-  // PARKED here — 'infinity' is only reachable via claim, and the rebase keys on
-  // a turn settling, which the freshly-armed-but-never-fired loop has not done.)
-  const nextFireAt = new Date(now.getTime() + firstFireSec * 1000);
+  // Warm loops keep their finite first fire. A cold loop's first wake is different:
+  // the arm turn must settle and write its first carry-note before the wake may be
+  // staged, otherwise a long loop:arm turn can overlap the nominal first fire.
+  const scheduledFirstFireAt = new Date(now.getTime() + firstFireSec * 1000);
 
   const payloadTemplate: Record<string, unknown> = { kickoff: input.kickoff };
   // EI-20256869903801099: preserve the distinction between an explicit custom
@@ -383,11 +382,16 @@ export async function materializeLoop(
   const name = loopRoutineName(input.ownerId);
   const desiredId = loopRoutineId(input.harnessSlug, input.ownerId);
   const triggerConfigStr = JSON.stringify({});
-  const nextFireAtStr = nextFireAt.toISOString();
   const existing = await sql<
-    Array<{ id: string; install_slug: string; active: boolean; payload_template: Record<string, unknown> | null }>
+    Array<{
+      id: string;
+      install_slug: string;
+      active: boolean;
+      last_fired_at: Date | string | null;
+      payload_template: Record<string, unknown> | null;
+    }>
   >`
-    SELECT id, install_slug, active, payload_template
+    SELECT id, install_slug, active, last_fired_at, payload_template
       FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId}
        AND name = ${name}
@@ -404,6 +408,10 @@ export async function materializeLoop(
     const priorGoal = existing[0]?.payload_template?.goal;
     if (typeof priorGoal === 'string' && priorGoal.trim()) payloadTemplate.goal = priorGoal.trim();
   }
+  const initialColdFirePending =
+    input.carry === 'cold' && (existing.length === 0 || existing[0]?.last_fired_at == null);
+  const nextFireAt: Date | 'infinity' = initialColdFirePending ? 'infinity' : scheduledFirstFireAt;
+  const nextFireAtStr = nextFireAt === 'infinity' ? 'infinity' : nextFireAt.toISOString();
   const payloadTemplateStr = JSON.stringify(payloadTemplate);
 
   let row: { id: string; name: string; nextFireAt: Date | null; targetRole: string };

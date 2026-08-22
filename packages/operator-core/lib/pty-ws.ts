@@ -29,12 +29,19 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { IncomingMessage } from 'node:http';
 import {
   getPty,
+  getPtyAccessScope,
   writePty,
   resizePty,
   killPty,
   markActive,
   getScreenSerialization,
 } from './pty-bridge';
+import {
+  PTY_WS_PROTOCOL,
+  ptyTicketFromProtocolHeader,
+  redeemPtyTicket,
+  type PtyAccessScope,
+} from './pty-ticket';
 import {
   recordViewerAttached,
   refreshViewerAttached,
@@ -67,6 +74,8 @@ const LOW_WATERMARK_BYTES = 524_288;
 const COALESCE_INTERVAL_MS = 2;
 
 interface OriginCheckOptions {
+  /** Exact origins (scheme + host + optional port) allowed for remote upgrades. */
+  allowedOrigins: string[];
   /** Hosts (without scheme) that may originate WS upgrades. Production. */
   allowedHosts: string[];
   /** Whether to additionally allow localhost-family hosts. Dev. */
@@ -74,13 +83,16 @@ interface OriginCheckOptions {
 }
 
 function isAllowedOrigin(origin: string | undefined, opts: OriginCheckOptions): boolean {
-  if (!origin) return opts.allowLocalhost; // some clients omit Origin on same-origin
+  if (!origin) return false;
   let host: string;
   try {
-    host = new URL(origin).host;
+    const parsed = new URL(origin);
+    if (parsed.origin !== origin) return false;
+    host = parsed.host;
   } catch {
     return false;
   }
+  if (opts.allowedOrigins.includes(origin)) return true;
   if (opts.allowedHosts.includes(host)) return true;
   if (opts.allowLocalhost) {
     if (host.startsWith('localhost:') || host === 'localhost') return true;
@@ -92,6 +104,8 @@ function isAllowedOrigin(origin: string | undefined, opts: OriginCheckOptions): 
 
 export interface PtyWsServerOptions {
   port: number;
+  /** Exact production browser origins (e.g. ['https://operator.example.com']). */
+  allowedOrigins?: string[];
   /** Production hosts to allow (e.g. ['operator.papercup.ai']). */
   allowedHosts?: string[];
   /** Allow localhost / loopback origins. Default true; set false in prod. */
@@ -116,11 +130,55 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
   if (wsState.started) return wsState.serverRef;
   wsState.started = true;
 
+  const originOpts: OriginCheckOptions = {
+    allowedOrigins: opts.allowedOrigins ?? [],
+    allowedHosts: opts.allowedHosts ?? [],
+    allowLocalhost: opts.allowLocalhost ?? true,
+  };
+  const verifiedUpgrades = new WeakMap<IncomingMessage, {
+    ptyId: string;
+    accessScope: PtyAccessScope;
+  }>();
+
   const wss = new WebSocketServer({
     port: opts.port,
-    // We do our own origin check rather than relying on `verifyClient`
-    // (which runs synchronously during the upgrade handshake) so the
-    // logging path is a normal request handler.
+    handleProtocols(protocols) {
+      return protocols.has(PTY_WS_PROTOCOL) ? PTY_WS_PROTOCOL : false;
+    },
+    // Authenticate and atomically redeem the one-time ticket before the server
+    // emits a 101 response. A rejected browser never reaches `connection`, so a
+    // bearerless socket cannot observe even whether a PTY handle exists.
+    verifyClient(info, done) {
+      const origin = info.origin;
+      if (!isAllowedOrigin(origin, originOpts)) {
+        done(false, 403, 'origin not allowed');
+        return;
+      }
+      const match = (info.req.url ?? '').match(/^\/pty\/([a-f0-9-]{8,})\/?$/i);
+      if (!match) {
+        done(false, 404, 'unknown route');
+        return;
+      }
+      const ptyId = match[1]!;
+      const accessScope = getPtyAccessScope(ptyId);
+      const ticket = ptyTicketFromProtocolHeader(info.req.headers['sec-websocket-protocol']);
+      if (!accessScope || !ticket) {
+        done(false, 401, 'pty ticket required');
+        return;
+      }
+      const redeemed = redeemPtyTicket(ticket, {
+        ...accessScope,
+        ptyId,
+        origin: origin!,
+        protocol: PTY_WS_PROTOCOL,
+      });
+      if (!redeemed.ok) {
+        done(false, 401, `pty ticket rejected: ${redeemed.reason}`);
+        return;
+      }
+      verifiedUpgrades.set(info.req, { ptyId, accessScope });
+      done(true);
+    },
     perMessageDeflate: false, // we send mostly small frames, deflate adds latency
   });
   // EADDRINUSE recovery — if HMR re-imports this module and the
@@ -139,28 +197,15 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
   });
   wsState.serverRef = wss;
 
-  const originOpts: OriginCheckOptions = {
-    allowedHosts: opts.allowedHosts ?? [],
-    allowLocalhost: opts.allowLocalhost ?? true,
-  };
-
   wss.on('connection', (ws, req) => {
-    const origin = req.headers.origin;
-    if (!isAllowedOrigin(origin, originOpts)) {
-      ws.close(4403, 'origin not allowed');
+    const verified = verifiedUpgrades.get(req);
+    if (!verified) {
+      ws.close(4401, 'unverified upgrade');
       return;
     }
-
-    // URL is `/pty/<id>`. Anything else is rejected.
-    const url = req.url ?? '';
-    const m = url.match(/^\/pty\/([a-f0-9-]{8,})\/?$/i);
-    if (!m) {
-      ws.close(4404, 'unknown route');
-      return;
-    }
-    const ptyId = m[1];
-
-    const handle = getPty(ptyId);
+    verifiedUpgrades.delete(req);
+    const { ptyId, accessScope } = verified;
+    const handle = getPty(ptyId, accessScope);
     // Accept a connection to an already-EXITED pty while its handle is still in
     // the 30 s grace window (pty-bridge reaps killed handles 30 s after exit
     // precisely so a late subscriber can read the final screen + exit code).
@@ -176,7 +221,7 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
       return;
     }
 
-    void attachWsToPty(ws, ptyId);
+    void attachWsToPty(ws, ptyId, accessScope);
   });
 
   // ── Heartbeat (gotty / ttyd shape) ──────────────────────────────────
@@ -224,8 +269,8 @@ export function startPtyWsServer(opts: PtyWsServerOptions): WebSocketServer | nu
   return wss;
 }
 
-async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
-  const handle = getPty(ptyId);
+async function attachWsToPty(ws: WebSocket, ptyId: string, accessScope: PtyAccessScope): Promise<void> {
+  const handle = getPty(ptyId, accessScope);
   if (!handle) { ws.close(); return; }
 
   // PTY-panel viewer-attach signal (pty-viewer-heartbeat.ts): record that a human is
@@ -291,7 +336,7 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
   // that has run more than a few seconds, and inherently
   // geometry-correct for vim/htop because the headless Terminal
   // resizes alongside the pty.
-  const replay = await getScreenSerialization(ptyId);
+  const replay = await getScreenSerialization(ptyId, accessScope);
   if (replay && replay.length > 0) {
     const buf = Buffer.from(replay, 'utf8');
     unacked += buf.length;
@@ -312,11 +357,11 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
 
   // ── Client → server input + control frames ──────────────────────────
   ws.on('message', (data, isBinary) => {
-    markActive(ptyId);
+    markActive(ptyId, accessScope);
     if (isBinary) {
       // Raw bytes from xterm input.
       const buf = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
-      writePty(ptyId, buf);
+      writePty(ptyId, buf, accessScope);
       return;
     }
     // Text frame: JSON control message.
@@ -327,7 +372,7 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
     switch (msg.type) {
       case 'resize':
         if (typeof msg.cols === 'number' && typeof msg.rows === 'number') {
-          resizePty(ptyId, Math.floor(msg.cols), Math.floor(msg.rows));
+          resizePty(ptyId, Math.floor(msg.cols), Math.floor(msg.rows), accessScope);
         }
         break;
       case 'ack':
@@ -340,7 +385,7 @@ async function attachWsToPty(ws: WebSocket, ptyId: string): Promise<void> {
         }
         break;
       case 'kill':
-        killPty(ptyId);
+        killPty(ptyId, accessScope);
         break;
       // Unknown types are ignored — forward-compat.
     }

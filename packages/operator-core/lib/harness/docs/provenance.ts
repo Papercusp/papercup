@@ -11,7 +11,8 @@
 
 import { parseDocumentsField, parseSubjectRef, resolveAllAnchorPaths, type SubjectRef } from './subject-ref';
 import { runGit, repoHeadSha } from './git-runner';
-import { resolveHarnessRepoRoot } from './harness-repo';
+import { resolveHarnessDocPaths } from './harness-repo';
+import { readDocBody } from './doc-fs';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { upsertDocRecord, type HarnessDocRecord } from './doc-record';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
@@ -41,12 +42,26 @@ function inferFromDocId(docId: string): SubjectRef[] {
   return [];
 }
 
+/**
+ * Doc records use the docs-root-relative filename as their identity. The docs
+ * author emits `.mdx` paths, but callers commonly pass the page id without its
+ * extension (the form returned by the read/search surfaces), so canonicalize
+ * that shorthand before touching the record store.
+ */
+function normalizeDocId(raw: string): string {
+  const trimmed = raw.trim().replace(/^\.?\//, '');
+  if (!trimmed || /\.mdx?$/i.test(trimmed)) return trimmed;
+  return `${trimmed}.mdx`;
+}
+
 export async function recordGeneratedDoc(input: RecordGeneratedDocInput): Promise<RecordGeneratedDocResult> {
-  const docId = input.docId.trim().replace(/^\.?\//, '');
+  const docId = normalizeDocId(input.docId);
   if (!docId) return { ok: false, error: 'doc_id_required' };
 
-  const repoRoot = await resolveHarnessRepoRoot(input.harnessSlug);
-  if (!repoRoot) return { ok: false, error: 'unknown_harness' };
+  const paths = await resolveHarnessDocPaths(input.harnessSlug);
+  if (!paths) return { ok: false, error: 'unknown_harness' };
+  const { repoRoot, docsRoot } = paths;
+  if ((await readDocBody(docsRoot, docId)) === null) return { ok: false, error: 'unknown_doc' };
 
   // A harness's docs live in its workspace — derive it (never a silent 'default'); the
   // repo-root check above already validated the harness, so this resolves (P-002 / D-003).

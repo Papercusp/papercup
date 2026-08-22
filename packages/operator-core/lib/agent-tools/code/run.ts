@@ -835,7 +835,10 @@ function newCodeRunSummaryProjectionStats(): CodeRunSummaryProjectionStats {
  * The identity fast path is intentional: summaries already below the budget remain
  * byte-identical to the historical code:run response.
  */
-export function shapeCodeRunSummary<T extends { summary?: unknown }>(
+// `shapeMutationEcho` intentionally projects large dry-run results to a plain
+// `Record<string, unknown>`. Keep that legacy projection in the accepted input
+// shape so the result-door shaping chain remains type-safe after the projection.
+export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<string, unknown>>(
   result: T,
 ): T | (T & { summaryNotice: CodeRunSummaryNotice }) {
   const summary = result.summary;

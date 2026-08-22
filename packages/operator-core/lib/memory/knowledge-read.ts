@@ -171,11 +171,14 @@ export const STORE_COUNTS_TTL_MS = 60_000;
  * rows, 12.1%), and nobody had measured THAT direction. Migration 757 adds a
  * GENERATED STORED `row_kind` column plus a partial index on the minority side, and
  * the totalMemories leg is no longer irreducible:
+ *   The canonical steady-state measurement is recorded in migration 757:
  *   BEFORE  count(*) WHERE NOT (payload ? 'entityType')
- *           Seq Scan          cost=2557.16  actual=70.9ms  buffers hit=4804
+ *           Seq Scan          32.05 / 34.29 / 30.98 ms    buffers hit=4440
  *   AFTER   count(*) WHERE row_kind = 'memory'
- *           Bitmap Heap Scan  cost=1884.08  actual= 5.0ms  buffers hit=1138 read=17
- * ~14x faster, ~4x fewer buffers. The entity leg stays a Seq Scan on purpose.
+ *           Bitmap Heap Scan   8.97 / 10.06 /  9.07 ms   buffers hit=1154
+ * ~3.4x faster and ~3.8x fewer buffers. The entity leg stays a Seq Scan on purpose.
+ * An earlier rolled-back transactional probe claimed 70.9ms -> 5.0ms (~14x), but
+ * those figures did not survive the live post-ANALYZE steady state; do not quote them.
  *
  * The cache below is still worth keeping: it addresses the CALL RATE, which is an
  * independent lever from the per-call cost and was the larger factor.

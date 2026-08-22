@@ -464,12 +464,11 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // live-refreshes the Description on the same writes that move the list row.
     'featuresConsolidated.detail',
     'featuresConsolidated.byPlanSlug',
-    // designFeatures.byHarness (data-sync-push-completion P-003) — the Design dashboard's
-    // "features needing design" list reads work_items (needs_design / design_status /
-    // design_spec_id columns) via harness_features_consolidated. A design-state flip on a
-    // feature lands on work_items + fires work_items.changed, so the dashboard push-updates
-    // instead of going stale until interaction.
+    // P-011: rows and their independent exact summary share this producer set.
+    // A design-state/title/create write therefore invalidates both members in
+    // the same cycle instead of leaving page rows and bucket evidence adjacent.
     'designFeatures.byHarness',
+    'designFeatures.summary',
     // WI-7232: the single-feature on-demand detail read (carries the `summary`
     // dropped from designFeatures.byHarness) — bridged wherever byHarness is, so
     // an open detail card live-refreshes its Summary on the same design-state
@@ -545,10 +544,10 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'contributors.byHarness',
     'featureTimeline.byFeature',
     'scheduler.running',
-    // designFeatures.byHarness (P-003) — documentary mirror of the work_items producer
-    // above; this key is a compat VIEW (COVERAGE_EXEMPT) so the real .changed comes from
-    // work_items, but listing it keeps the two arrays in sync.
+    // P-011 documentary mirror of the work_items producer above. This key is a
+    // compat VIEW (COVERAGE_EXEMPT), but list and summary stay paired here too.
     'designFeatures.byHarness',
+    'designFeatures.summary',
     // WI-7232: single-feature on-demand detail (carries `summary` dropped from byHarness).
     'designFeatures.detail',
   ],

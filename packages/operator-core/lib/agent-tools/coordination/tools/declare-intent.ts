@@ -142,6 +142,14 @@ export default defineTool({
       .describe(
         'P-NNN plan items you are taking (your LANE) — each is auto-claimed; your other claims in this plan are released. A non-empty lane requires current_plan_slug. Pass [] with a plan to release your whole lane; pass [] without a plan for a replacement-member presence re-declaration that does not touch plan claims. Omit to leave claims untouched. WI-/EI- work-item ids belong to scheduler:get_next, not this field.',
       ),
+    declared_goal_refs: z
+      .array(z.string().regex(/^(?:WI|EI)-\d+$/, 'work-item ref required'))
+      .min(1)
+      .max(40)
+      .optional()
+      .describe(
+        'Optional typed work-item refs explicitly covered by this declaration. Omit when no multi-goal declaration is intended; prose is never inferred.',
+      ),
     harness: z
       .string()
       .max(120)

@@ -784,6 +784,24 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({ kickoff: 'k', carry: 'cold' });
   });
 
+  it('parks a never-fired cold loop until its first carry-note settles the arming turn', async () => {
+    const now = new Date('2026-08-22T08:00:00.000Z');
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'k',
+      carry: 'cold',
+      now,
+    });
+
+    // A finite arm-time schedule can be claimed while the long loop:arm turn is still
+    // settling. The first cold fire must start parked; reconcile releases it only after a
+    // carry-note newer than metadata.armed_at exists (EI-20988940040434762).
+    expect(upsertRoutineSpy.mock.calls[0][1].nextFireAt).toBe('infinity');
+  });
+
   it('stamps continuation:"gated" onto payload_template only when armed gated (flush-to-proceed P-005)', async () => {
     await materializeLoop({
       workspaceId: 'ws', harnessSlug: 'h', ownerId: 'o', intervalSec: 60, kickoff: 'k', continuation: 'gated',

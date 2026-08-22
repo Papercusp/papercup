@@ -84,6 +84,10 @@ beforeAll(async () => {
     DO $$ BEGIN CREATE ROLE harness_app; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
     DO $$ BEGIN CREATE ROLE harness_zero; EXCEPTION WHEN duplicate_object THEN NULL; END $$;
   `);
+  // The real harness git runner routes through the spawner sidecar, whose managed
+  // child registration needs the task ledger even though this fixture only asserts
+  // harness-docs tables.
+  await db.sql.unsafe(readMigration('696-task-ledger.sql')).simple();
   await db.sql.unsafe(readMigration('172-harness-docs.sql')).simple();
   // 386 adds the doc-steward retry counters (regen_attempts/reverify_attempts) the
   // sweep's mark/verify/setStatus helpers now write.
@@ -136,6 +140,37 @@ describe('harness-docs full flow', () => {
     expect(res.record.source).toBe('generated');
     expect(res.record.status).toBe('fresh');
     expect(res.record.anchorPaths).toContain('src/feature1.ts');
+  });
+
+  it('normalizes bare .mdx ids and refuses unknown docs before creating a phantom row', async () => {
+    const docId = 'guides/generated.mdx';
+    const barePath = join(repo, 'docs', docId);
+    writeFileSync(barePath, '# Generated\n');
+
+    try {
+      const recorded = await recordGeneratedDoc({
+        harnessSlug: 'demo',
+        docId: './guides/generated',
+        documents: ['src/setup.ts'],
+      });
+      expect(recorded.ok).toBe(true);
+      if (!recorded.ok) return;
+      expect(recorded.record.docId).toBe(docId);
+      expect(await getDocRecord('demo', docId)).not.toBeNull();
+      expect(await getDocRecord('demo', 'guides/generated')).toBeNull();
+
+      const missing = await recordGeneratedDoc({
+        harnessSlug: 'demo',
+        docId: 'guides/does-not-exist',
+        documents: ['src/setup.ts'],
+      });
+      expect(missing).toEqual({ ok: false, error: 'unknown_doc' });
+      expect(await getDocRecord('demo', 'guides/does-not-exist.mdx')).toBeNull();
+      expect(await getDocRecord('demo', 'guides/does-not-exist')).toBeNull();
+    } finally {
+      await deleteDocRecord('demo', docId);
+      rmSync(barePath, { force: true });
+    }
   });
 
   it('merged read shows generated + untracked manual + unanchored', async () => {

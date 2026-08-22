@@ -133,7 +133,7 @@ const backdrop: React.CSSProperties = {
   padding: 24, overflow: 'auto', background: 'rgba(7, 9, 13, 0.96)', color: 'var(--text, #f3f4f6)',
 };
 const panel: React.CSSProperties = { width: 'min(760px, 100%)', textAlign: 'left' };
-const eyebrow: React.CSSProperties = { margin: '0 0 8px', color: 'var(--muted, #9ca3af)', fontSize: 12, fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase' };
+const eyebrow: React.CSSProperties = { margin: '0 0 8px', color: 'var(--muted, #9ca3af)', fontSize: 12, fontWeight: 700, letterSpacing: 0, textTransform: 'uppercase' };
 const title: React.CSSProperties = { margin: 0, fontSize: 30, lineHeight: 1.15 };
 const intro: React.CSSProperties = { margin: '12px 0 8px', color: 'var(--muted, #aeb4bf)', lineHeight: 1.6 };
 const diagnostic: React.CSSProperties = { margin: '0 0 22px', padding: '9px 11px', borderRadius: 8, background: 'var(--bad-bg, #3a171c)', color: 'var(--bad, #fca5a5)', fontSize: 13 };

@@ -69,7 +69,12 @@ export async function autoCheckpointStaleHeldItems(input: {
     // (the snapshot is holder-session-level by design; the block says so).
     let toolLog = '';
     try {
-      const rows = await toolCallRowsFor({ sessionId: input.sessionId, sinceIso: input.sinceIso, limit: 400 });
+      const rows = await toolCallRowsFor({
+        sessionId: input.sessionId,
+        workspaceId: input.workspaceId,
+        sinceIso: input.sinceIso,
+        limit: 400,
+      });
       toolLog = renderToolCallLog(rows, { maxLines: AUTO_CHECKPOINT_LOG_LINES });
     } catch {
       /* the block is still useful with the journal note alone */
@@ -203,7 +208,12 @@ async function checkpointOnReleaseImpl(input: {
     let toolLog = '';
     try {
       const sinceIso = new Date(Date.now() - RELEASE_CHECKPOINT_LOOKBACK_MS).toISOString();
-      const rows = await toolCallRowsFor({ ownerId: input.releasingOwnerId, sinceIso, limit: 400 });
+      const rows = await toolCallRowsFor({
+        ownerId: input.releasingOwnerId,
+        workspaceId: input.workspaceId,
+        sinceIso,
+        limit: 400,
+      });
       toolLog = renderToolCallLog(rows, { maxLines: AUTO_CHECKPOINT_LOG_LINES });
     } catch {
       /* the block is still useful with the release note alone */

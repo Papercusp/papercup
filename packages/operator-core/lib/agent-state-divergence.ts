@@ -218,6 +218,8 @@ export interface DivergenceCall {
   invokedAt: string;
   intentEventId?: number | null;
   goalRef?: string | null;
+  /** Typed work-item refs explicitly covered by the declaration event. */
+  declaredGoalRefs?: readonly string[];
   /** Raw args; digested internally. Absent is fine — the retry leg then cannot
    *  fire for that call, which is reported, not guessed at. */
   args?: unknown;
@@ -563,6 +565,16 @@ export function detectIntentActionDivergence(
       if (!distinct.has(g)) distinct.set(g, c);
     }
     if (distinct.size < 2) continue;
+    // A declaration may intentionally cover several simultaneously-held work-items.
+    // Suppress only when EVERY observed live goal is present in EVERY declaration
+    // copy carried by the bucket; absent or partial metadata remains positive drift.
+    const observedGoals = [...distinct.keys()];
+    const fullyDeclared = bucket
+      .map((c) => c.declaredGoalRefs)
+      .every(
+        (refs) => Array.isArray(refs) && observedGoals.every((goal) => refs.includes(goal)),
+      );
+    if (fullyDeclared) continue;
     // Report against the FIRST goal seen — the one the intent was declared
     // under. Pairing every goal against every other would multiply one drift
     // into n² findings that all describe the same event.

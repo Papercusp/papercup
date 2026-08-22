@@ -10623,6 +10623,45 @@ export function realCheckpointDeps(
                   `in that tree regardless of the fix: ${(submodules.stderr || submodules.stdout || "").trim().slice(0, 500)}`,
               );
             }
+
+            // EI-21142032293145491: `git worktree add` also leaves the dependency tree empty.
+            // Without a worktree-local node_modules, Node walks up through this nested repair
+            // path into the canonical staging checkout. Workspace symlinks then resolve source
+            // files from staging instead of the frozen candidate, so tsc reports a convincing
+            // mixture of real candidate diagnostics and foreign staging diagnostics (and the
+            // same candidate can produce different results as peers edit staging). Reuse the
+            // existing isolated-checkout dependency copier; `copy` is required here because
+            // the repair tree is committed after the fixer exits and must not share inodes with
+            // a concurrent install in staging. `--prepare-existing` preserves the worktree and
+            // the submodules initialized above while still rebuilding every node_modules tree.
+            const dependencies = await exec(
+              "bash",
+              [
+                path.join(
+                  toolingRoot(),
+                  "apps/operator/bin/release/setup-release-checkout.sh",
+                ),
+                "--ref",
+                queue.repairHead,
+                "--integration",
+                cfg.integrationRoot,
+                "--release",
+                queue.worktreePath,
+                "--node-modules",
+                "force",
+                "--node-modules-copy",
+                "copy",
+                "--prepare-existing",
+              ],
+              {
+                timeoutMs: SETUP_TREE_TIMEOUT_MS,
+                killProcessGroupOnTimeout: true,
+              },
+            );
+            log(
+              `prepared frozen repair worktree dependencies at ${queue.worktreePath} ` +
+                `(setup-release-checkout.sh exited ${dependencies.code})`,
+            );
           },
           async finalizeFrozenRepairWorktree(
             queue: FrozenCandidateRepairQueue,

@@ -35,6 +35,7 @@ vi.mock('../../workspace-registry', async (importOriginal) => {
 
 const { default: reportTool } = await import('./report');
 const { default: recentTool } = await import('./recent');
+const { toolCallRowsFor } = await import('../../tool-call-log-store');
 
 // A worker ctx (role session) — not superuser, so owner falls back to the explicit
 // arg the hook passes. workspaceId pins the row's workspace.
@@ -294,6 +295,27 @@ describe('activity:recent — numeric id ordering across digit boundaries (regre
     const r = await recent({ since_id: '8' });
     const ids = r.activity.map((x) => Number(x.id));
     expect(ids).toEqual([9, 10, 998, 999, 1000, 1500]);
+  });
+});
+
+describe('activity:tool-log — workspace visibility parity', () => {
+  it('matches activity:recent visibility and retains legacy wildcard rows', async () => {
+    await db.sql.unsafe(`
+      INSERT INTO harness_shared.agent_activity (workspace_id, owner_id, kind, summary) VALUES
+        ('ws-test', 'su-parity', 'tool', 'current workspace'),
+        ('*', 'su-parity', 'tool', 'legacy wildcard'),
+        ('ws-other', 'su-parity', 'tool', 'other workspace')
+    `);
+
+    const recentRows = await recent({ owner: 'su-parity' });
+    const logRows = await toolCallRowsFor({ ownerId: 'su-parity', workspaceId: 'ws-test' });
+
+    expect(logRows.map((row) => row.summary).sort()).toEqual(
+      recentRows.activity.map((row) => row.summary).sort(),
+    );
+    expect(logRows.map((row) => row.summary).sort()).toEqual(
+      ['current workspace', 'legacy wildcard'].sort(),
+    );
   });
 });
 

@@ -216,6 +216,7 @@ export async function searchSimilarRecipes(
     SELECT id, title, description, script, run_count, tools_used, updated_at
       FROM harness_shared.code_recipes
      WHERE id = ANY(${ids})
+       AND status = 'active'
   `) as unknown as Array<{
     id: string;
     title: string;

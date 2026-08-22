@@ -235,7 +235,6 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'coord.inbox',
   'coord.plans',
   'decision.ledger',
-  'designFeatures.byHarness',
   'designMemos.list',
   'designRegistry.search',
   'designRegressions.list',

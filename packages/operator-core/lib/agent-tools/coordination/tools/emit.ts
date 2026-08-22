@@ -59,6 +59,12 @@ export default defineTool({
     plan_slug: z.string().optional(),
     /** Chain to a prior message (e.g. a window 'done' referencing its 'open'). */
     related_msg_id: z.string().optional(),
+    /** Typed work-item refs explicitly covered by an intent lifecycle event. */
+    declared_goal_refs: z
+      .array(z.string().regex(/^(?:WI|EI)-\d+$/, 'work-item ref required'))
+      .min(1)
+      .max(40)
+      .optional(),
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -73,7 +79,11 @@ export default defineTool({
       related_msg_id: args.related_msg_id,
       ...(harnessSlug ? { harnessSlug } : {}),
       // The lifecycle markers — visible signal, not an excluded ambient category.
-      extra: { auto: true, lifecycle: args.category },
+      extra: {
+        auto: true,
+        lifecycle: args.category,
+        ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
+      },
     });
     return {
       content: [

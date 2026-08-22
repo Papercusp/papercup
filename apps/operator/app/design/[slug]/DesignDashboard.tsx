@@ -14,10 +14,13 @@
  * until the existing component is refactored without paperclip
  * collision risk.
  */
-import { useState, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
 import type React from 'react';
 import { useSyncQuery } from '@papercusp/sync';
+import type { CompanionListSummary } from '@papercusp/facets';
+import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { filterCountLabel, type CountEvidence } from '@/app/harness/filters';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import SketchPane from './SketchPane';
 import RegressionPane from './RegressionPane';
@@ -77,6 +80,40 @@ type Bucket = 'all' | 'pending' | 'accepted' | 'ignored';
 
 const PANES: Pane[] = ['features', 'memos', 'registry', 'tokens', 'sketch', 'regressions'];
 const BUCKETS: Bucket[] = ['all', 'pending', 'accepted', 'ignored'];
+const DESIGN_FEATURES_PAGE = 100;
+
+type DesignFeatureCounts = Record<Bucket, number>;
+
+/** Page one replaces; cursor pages append idempotently by feature identity. */
+export function mergeDesignFeaturePage<T extends { featureId: string }>(
+  previous: readonly T[],
+  page: readonly T[],
+  cursor: string | null,
+): T[] {
+  if (!cursor) return [...page];
+  const byId = new Map(previous.map((row) => [row.featureId, row] as const));
+  for (const row of page) byId.set(row.featureId, row);
+  return [...byId.values()];
+}
+
+/** Exact search-aware bucket counts authored by the companion aggregate. */
+export function designFeatureBucketCounts(
+  summary: CompanionListSummary | null | undefined,
+): DesignFeatureCounts | null {
+  const status = summary?.facets.find((facet) => facet.key === 'status');
+  if (!status) return null;
+  const count = (value: Exclude<Bucket, 'all'>) =>
+    status.values.find((entry) => entry.value === value)?.count ?? 0;
+  const pending = count('pending');
+  const accepted = count('accepted');
+  const ignored = count('ignored');
+  return {
+    all: pending + accepted + ignored,
+    pending,
+    accepted,
+    ignored,
+  };
+}
 
 export default function DesignDashboard({ slug }: { slug: string }) {
   const workspaceId = useWorkspaceId();
@@ -85,13 +122,59 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   const [activePane, setActivePane] = useQueryState('pane', parseAsStringEnum<Pane>(PANES).withDefault('features'));
   const [bucket, setBucket] = useQueryState('bucket', parseAsStringEnum<Bucket>(BUCKETS).withDefault('all'));
   const [selectedFeatureId, setSelectedFeatureId] = useQueryState('feature', parseAsString);
+  const [featureSearch, setFeatureSearch] = useQueryState(
+    'featureQuery',
+    parseAsString.withDefault(''),
+  );
   const [registryQuery, setRegistryQuery] = useState('');
+
+  const [featureCursor, setFeatureCursor] = useState<string | null>(null);
+  const [loadedFeatures, setLoadedFeatures] = useState<DesignFeature[]>([]);
+  const [nextFeatureCursor, setNextFeatureCursor] = useState<string | null>(null);
+  const [featurePageReady, setFeaturePageReady] = useState(false);
+  const sharedFeatureArgs = useMemo(
+    () => ({
+      harnessSlug: slug,
+      workspaceId: workspaceId ?? 'default',
+      q: featureSearch,
+      ...(bucket === 'all' ? {} : { statuses: [bucket] }),
+    }),
+    [slug, workspaceId, featureSearch, bucket],
+  );
+
+  useEffect(() => {
+    setFeatureCursor(null);
+    setLoadedFeatures([]);
+    setNextFeatureCursor(null);
+    setFeaturePageReady(false);
+  }, [slug, workspaceId, featureSearch, bucket]);
 
   const featuresQ = useSyncQuery<DesignFeature>({
     queryName: 'designFeatures.byHarness',
-    args: { harnessSlug: slug, workspaceId: workspaceId ?? 'default' },
+    args: {
+      ...sharedFeatureArgs,
+      limit: DESIGN_FEATURES_PAGE,
+      ...(featureCursor ? { cursor: featureCursor } : {}),
+    },
     enabled: Boolean(slug),
   });
+  const featuresSummaryQ = useSyncQuery<CompanionListSummary>({
+    queryName: 'designFeatures.summary',
+    args: sharedFeatureArgs,
+    enabled: Boolean(slug),
+  });
+
+  useEffect(() => {
+    if (featuresQ.loading || featuresQ.fetching || !featuresQ.data) return;
+    setLoadedFeatures((previous) =>
+      mergeDesignFeaturePage(previous, featuresQ.data!, featureCursor),
+    );
+    const meta = readListMeta(featuresQ.data);
+    setNextFeatureCursor(
+      typeof meta?.nextCursor === 'string' ? meta.nextCursor : null,
+    );
+    setFeaturePageReady(true);
+  }, [featuresQ.data, featuresQ.loading, featuresQ.fetching, featureCursor]);
 
   const memosQ = useSyncQuery<MemoEntry>({
     queryName: 'designMemos.list',
@@ -110,34 +193,71 @@ export default function DesignDashboard({ slug }: { slug: string }) {
     enabled: activePane === 'tokens',
   });
 
-  const features = featuresQ.data ?? [];
+  const features = featurePageReady ? loadedFeatures : [];
   const tokenRows = tokensQ.data ?? [];
-  const counts = useMemo(() => {
-    const c = { all: 0, pending: 0, accepted: 0, ignored: 0 };
-    for (const f of features) {
-      c.all++;
-      if (f.designStatus === 'pending') c.pending++;
-      else if (f.designStatus === 'accepted') c.accepted++;
-      else if (f.designStatus === 'ignored') c.ignored++;
-      else c.pending++; // null/unset → treated as pending in counts
+  const featuresSummary = featuresSummaryQ.data?.[0] ?? null;
+  const counts = useMemo(
+    () => designFeatureBucketCounts(featuresSummary),
+    [featuresSummary],
+  );
+  const pairedFetching = Boolean(
+    featuresQ.loading ||
+    featuresQ.fetching ||
+    featuresSummaryQ.loading ||
+    featuresSummaryQ.fetching
+  );
+  const countError = Boolean(featuresQ.error || featuresSummaryQ.error);
+  const countEvidence = useCallback(
+    (count: number | undefined): CountEvidence => {
+      if (countError) return { kind: 'unknown', reason: 'failed' };
+      if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
+      if (count === undefined) return { kind: 'unknown', reason: 'loading' };
+      return {
+        kind: 'corpus',
+        count,
+        population: featureSearch.trim()
+          ? 'the Design feature queue matching the current search'
+          : 'the Design feature queue',
+      };
+    },
+    [countError, pairedFetching, featureSearch],
+  );
+  const countLabels = useMemo(
+    () => Object.fromEntries(
+      BUCKETS.map((entry) => [
+        entry,
+        filterCountLabel(countEvidence(counts?.[entry]), 'feature'),
+      ]),
+    ) as Record<Bucket, ReturnType<typeof filterCountLabel>>,
+    [countEvidence, counts],
+  );
+  const loadedCountLabel = useMemo(() => {
+    if (countError) {
+      return filterCountLabel({ kind: 'unknown', reason: 'failed' }, 'feature');
     }
-    return c;
-  }, [features]);
-
-  const filteredFeatures = useMemo(() => {
-    if (bucket === 'all') return features;
-    if (bucket === 'pending') {
-      return features.filter((f) => f.designStatus === null || f.designStatus === 'pending');
+    if (pairedFetching) {
+      return filterCountLabel({ kind: 'unknown', reason: 'updating' }, 'feature');
     }
-    return features.filter((f) => f.designStatus === bucket);
-  }, [features, bucket]);
+    if (!featurePageReady || !featuresSummary) {
+      return filterCountLabel({ kind: 'unknown', reason: 'loading' }, 'feature');
+    }
+    return filterCountLabel({
+      kind: 'window',
+      count: features.length,
+      window: 'loaded server-filtered Design page',
+      corpusTotal: featuresSummary.matched,
+    }, 'feature');
+  }, [countError, pairedFetching, featurePageReady, featuresSummary, features.length]);
+  const loadMoreFeatures = useCallback(() => {
+    if (nextFeatureCursor) setFeatureCursor(nextFeatureCursor);
+  }, [nextFeatureCursor]);
 
   // The list row still gates whether the detail card shows at all (a feature the
   // active bucket filters out stays hidden, as before) AND supplies the three
   // fields it shares with the detail read, so the header renders with no flicker.
   const selectedListRow = useMemo(
-    () => filteredFeatures.find((f) => f.featureId === selectedFeatureId) ?? null,
-    [filteredFeatures, selectedFeatureId],
+    () => features.find((f) => f.featureId === selectedFeatureId) ?? null,
+    [features, selectedFeatureId],
   );
 
   // WI-7232: the heavy fields (summary, status, designSpecId, discardedDesignWork)
@@ -160,9 +280,9 @@ export default function DesignDashboard({ slug }: { slug: string }) {
           <p className="d-subtitle">IR specs, registry, tokens, sketches, and visual regression review.</p>
         </div>
         <div className="d-metrics" aria-label="Design queue summary">
-          <Metric label="features" value={counts.all} tone="info" />
-          <Metric label="pending" value={counts.pending} tone="warn" />
-          <Metric label="accepted" value={counts.accepted} tone="good" />
+          <Metric label="features" count={countLabels.all} tone="info" />
+          <Metric label="pending" count={countLabels.pending} tone="warn" />
+          <Metric label="accepted" count={countLabels.accepted} tone="good" />
         </div>
         <nav className="d-pane-tabs" aria-label="Design workspace panes">
           {PANES.map((p) => (
@@ -187,7 +307,23 @@ export default function DesignDashboard({ slug }: { slug: string }) {
               <div className="d-section-label">Feature queue</div>
               <div className="d-rail-subtitle">Needs design handoff</div>
             </div>
-            <span className="d-chip d-chip--info">{filteredFeatures.length}/{counts.all}</span>
+            <span
+              className="d-chip d-chip--info"
+              data-count-evidence={loadedCountLabel.evidence}
+              aria-label={loadedCountLabel.ariaLabel}
+            >
+              {loadedCountLabel.title}
+            </span>
+          </div>
+          <div className="d-feature-search">
+            <input
+              type="search"
+              value={featureSearch}
+              onChange={(event) => void setFeatureSearch(event.target.value)}
+              placeholder="Search the full Design queue…"
+              aria-label="Search design features"
+              className="d-search-input d-feature-search-input"
+            />
           </div>
           <div className="d-buckets" role="group" aria-label="Filter design features by status">
             {BUCKETS.map((b) => (
@@ -198,36 +334,55 @@ export default function DesignDashboard({ slug }: { slug: string }) {
                 className="d-bucket"
                 data-active={bucket === b}
                 aria-pressed={bucket === b}
+                data-count-evidence={countLabels[b].evidence}
               >
                 <span>{b}</span>
-                <strong>{counts[b]}</strong>
+                <strong aria-label={countLabels[b].ariaLabel}>
+                  {countLabels[b].title}
+                </strong>
               </button>
             ))}
           </div>
           <ul className="d-feature-list">
-            {featuresQ.loading ? (
+            {featuresQ.loading && !featurePageReady ? (
               <StateRow tone="info">Loading design features…</StateRow>
             ) : featuresQ.error ? (
               <StateRow tone="bad">Failed to load: {featuresQ.error.message}</StateRow>
-            ) : filteredFeatures.length === 0 ? (
-              <StateRow tone="muted">No features {bucket === 'all' ? '' : `with design_status=${bucket}`}.</StateRow>
+            ) : features.length === 0 ? (
+              <StateRow tone="muted">
+                No design features match the current search and status filter.
+              </StateRow>
             ) : (
-              filteredFeatures.map((f) => (
-                <li key={f.featureId}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedFeatureId(f.featureId)}
-                    className="d-feature-row"
-                    data-active={selectedFeatureId === f.featureId}
-                  >
-                    <span className="d-feature-title">{f.title || f.featureId}</span>
-                    <span className="d-feature-meta">
-                      <code>{f.featureId}</code>
-                      <span className={designStatusClass(f.designStatus)}>{f.designStatus ?? 'pending'}</span>
-                    </span>
-                  </button>
-                </li>
-              ))
+              <>
+                {features.map((f) => (
+                  <li key={f.featureId}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedFeatureId(f.featureId)}
+                      className="d-feature-row"
+                      data-active={selectedFeatureId === f.featureId}
+                    >
+                      <span className="d-feature-title">{f.title || f.featureId}</span>
+                      <span className="d-feature-meta">
+                        <code>{f.featureId}</code>
+                        <span className={designStatusClass(f.designStatus)}>{f.designStatus ?? 'pending'}</span>
+                      </span>
+                    </button>
+                  </li>
+                ))}
+                {nextFeatureCursor && (
+                  <li className="d-feature-load-more-row">
+                    <button
+                      type="button"
+                      className="d-feature-load-more"
+                      onClick={loadMoreFeatures}
+                      disabled={featuresQ.fetching}
+                    >
+                      {featuresQ.fetching ? 'Loading more…' : 'Load more design features'}
+                    </button>
+                  </li>
+                )}
+              </>
             )}
           </ul>
         </aside>
@@ -238,7 +393,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
               listRow={selectedListRow}
               detail={selectedDetail}
               detailLoading={featureDetailQ.loading}
-              counts={counts}
+              counts={countLabels}
             />
           )}
           {activePane === 'memos' && (
@@ -272,11 +427,23 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   );
 }
 
-function Metric({ label, value, tone }: { label: string; value: number; tone: 'info' | 'warn' | 'good' }) {
+function Metric({
+  label,
+  count,
+  tone,
+}: {
+  label: string;
+  count: ReturnType<typeof filterCountLabel>;
+  tone: 'info' | 'warn' | 'good';
+}) {
   return (
-    <div className={`d-metric d-metric--${tone}`}>
+    <div
+      className={`d-metric d-metric--${tone}`}
+      data-count-evidence={count.evidence}
+      aria-label={`${label}: ${count.ariaLabel}`}
+    >
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong>{count.title}</strong>
     </div>
   );
 }
@@ -307,7 +474,7 @@ function FeatureDetailPane({
   listRow: DesignFeature | null;
   detail: DesignFeatureDetail | null;
   detailLoading: boolean;
-  counts: Record<Bucket, number>;
+  counts: Record<Bucket, ReturnType<typeof filterCountLabel>>;
 }) {
   const feature = listRow;
   if (!feature) {
@@ -320,9 +487,9 @@ function FeatureDetailPane({
           and implementation summary.
         </p>
         <div className="d-empty-chips">
-          <span className="d-chip d-chip--info">{counts.all} total</span>
-          <span className="d-chip d-chip--pending">{counts.pending} pending</span>
-          <span className="d-chip d-chip--accepted">{counts.accepted} accepted</span>
+          <span className="d-chip d-chip--info">{counts.all.title} total</span>
+          <span className="d-chip d-chip--pending">{counts.pending.title} pending</span>
+          <span className="d-chip d-chip--accepted">{counts.accepted.title} accepted</span>
         </div>
       </section>
     );

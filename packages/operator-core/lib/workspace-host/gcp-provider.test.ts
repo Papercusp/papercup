@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  GCP_DATA_DISK_RESIZE_POLICY,
+  GCP_DATA_MOUNT_POINT,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
   type WorkspaceHostApplyResult,
@@ -205,6 +207,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
         name: input.name,
         status: 'READY',
         attachedInstanceNames: [],
+        sizeGb: input.sizeGb,
+        labels: input.labels,
         observedAt: NOW,
       });
     });
@@ -226,6 +230,8 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
         sourceImage: input.disks[0].initializeParams.sourceImage,
         attachedDiskNames: [dataDiskName],
         agentOnline: true,
+        labels: input.labels,
+        recreateInput: input,
         observedAt: NOW,
       });
     });
@@ -255,7 +261,15 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
 
   async deleteInstance(_projectId: string, zone: string, name: string, requestId: string) {
     this.deleteCalls += 1;
-    return this.mutation(requestId, 'zone', zone, () => this.instances.delete(name));
+    return this.mutation(requestId, 'zone', zone, () => {
+      this.instances.delete(name);
+      for (const [diskName, disk] of this.disks) {
+        this.disks.set(diskName, {
+          ...disk,
+          attachedInstanceNames: disk.attachedInstanceNames.filter((candidate) => candidate !== name),
+        });
+      }
+    });
   }
 
   async deleteDisk(_projectId: string, zone: string, name: string, requestId: string) {
@@ -398,8 +412,18 @@ describe('GCP workspace-host provider planning', () => {
       expect.arrayContaining([
         { key: 'enable-oslogin', value: 'TRUE' },
         { key: 'block-project-ssh-keys', value: 'TRUE' },
-        { key: 'startup-script', value: '#!/bin/sh\necho papercusp-bootstrap\n' },
+        { key: 'papercusp-data-resize-policy', value: GCP_DATA_DISK_RESIZE_POLICY },
+        {
+          key: 'startup-script',
+          value: expect.stringContaining(`data_mount='${GCP_DATA_MOUNT_POINT}'`),
+        },
       ]),
+    );
+    expect(instance.metadata.items.find(({ key }) => key === 'startup-script')?.value).toContain(
+      '# User-supplied bootstrap follows the durable mount.\necho papercusp-bootstrap',
+    );
+    expect(instance.metadata.items.find(({ key }) => key === 'startup-script')?.value).toContain(
+      'resize2fs "$data_device"',
     );
   });
 
@@ -530,18 +554,20 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
           : { action, operationId: `operation:${action}`, idempotencyKey: `operation:${action}`, host },
         context(),
       );
-      const result = await provider.apply(
-        { planId: plan.planId, operationId: plan.operationId, step: plan.steps[0], knownResources: resources },
-        context(),
-      );
-      expect(result.state).toBe('applied');
+      for (const step of plan.steps) {
+        const result = await provider.apply(
+          { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+          context(),
+        );
+        expect(result.state).toBe('applied');
+      }
     }
     expect({
       start: client.startCalls,
       stop: client.stopCalls,
       reset: client.resetCalls,
       snapshots: client.snapshotCalls.length,
-    }).toEqual({ start: 1, stop: 1, reset: 2, snapshots: 1 });
+    }).toEqual({ start: 2, stop: 2, reset: 2, snapshots: 1 });
     expect(client.waitedOperations.length).toBeGreaterThanOrEqual(10);
 
     const destroy = await provider.plan(

@@ -72,11 +72,26 @@ describe('getMessageById (WI-3832)', () => {
     expect(found?.msg_id).toBe('orig');
   });
 
-  it('PG fast path: no rows -> null, no fallback scan', async () => {
+  it('PG fast path: no rows -> authoritative readLines fallback still confirms a genuine miss', async () => {
     fastPathState.on = true;
     sqlMock.mockImplementationOnce(async () => []);
+    readLinesMock.mockResolvedValueOnce([]);
     expect(await getMessageById('nope')).toBeNull();
-    expect(readLinesMock).not.toHaveBeenCalled();
+    expect(readLinesMock).toHaveBeenCalledWith('messages');
+  });
+
+  it('PG fast path: a miss falls through when the inbox seam can still see the envelope', async () => {
+    fastPathState.on = true;
+    sqlMock.mockImplementationOnce(async () => []);
+    readLinesMock.mockResolvedValueOnce([
+      { msg_id: 'orig', from: 'a', to: ['b'], kind: 'note', ts: 't', summary: 'inbox-visible' },
+    ]);
+
+    const found = await getMessageById('orig');
+
+    expect(found?.msg_id).toBe('orig');
+    expect(found?.summary).toBe('inbox-visible');
+    expect(readLinesMock).toHaveBeenCalledWith('messages');
   });
 
   it('PG fast path: a query error falls through to the readLines fallback', async () => {

@@ -56,6 +56,27 @@ describe('the stamped leg — goal drift inside one intent declaration', () => {
     expect(out.structuralZero).toBeNull();
   });
 
+  it('suppresses an intentional multi-goal declaration when every goal is explicitly covered', () => {
+    const declaredGoalRefs = ['WI-1', 'WI-2'];
+    const out = detectIntentActionDivergence([
+      call({ id: 1, intentEventId: 100, goalRef: 'WI-1', declaredGoalRefs }),
+      call({ id: 2, intentEventId: 100, goalRef: 'WI-2', declaredGoalRefs }),
+    ]);
+    expect(out.divergences).toHaveLength(0);
+    expect(out.coverage.comparableBuckets).toBe(1);
+    expect(out.structuralZero).toBe('agreement');
+  });
+
+  it('keeps multi-goal drift positive when the typed declaration covers only one goal', () => {
+    const declaredGoalRefs = ['WI-1'];
+    const out = detectIntentActionDivergence([
+      call({ id: 1, intentEventId: 100, goalRef: 'WI-1', declaredGoalRefs }),
+      call({ id: 2, intentEventId: 100, goalRef: 'WI-2', declaredGoalRefs }),
+    ]);
+    expect(out.divergences).toHaveLength(1);
+    expect(out.divergences[0].kind).toBe('goal-drift-within-intent');
+  });
+
   it('reports THREE goals as two findings against the first, not n squared', () => {
     const out = detectIntentActionDivergence([
       call({ id: 1, intentEventId: 100, goalRef: 'WI-1' }),

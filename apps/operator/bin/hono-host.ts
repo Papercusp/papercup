@@ -391,7 +391,13 @@ function startRequestServers(): void {
   // so the two never coexist. Fail-soft on EADDRINUSE (a sibling already bound it).
   const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? '');
   if (Number.isFinite(ptyWsPort) && ptyWsPort > 0) {
-    startPtyWsServer({ port: ptyWsPort });
+    startPtyWsServer({
+      port: ptyWsPort,
+      allowedOrigins: [...remoteAuthPolicy.origins],
+      // Loopback and SSH-forwarded browsers remain the local compatibility
+      // path even when this process also admits exact remote HTTPS origins.
+      allowLocalhost: true,
+    });
   }
 
   // Bounded-RSS self-recycle (per-process): the host leaks retained heap under

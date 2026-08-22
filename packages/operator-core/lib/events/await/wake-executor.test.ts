@@ -119,10 +119,18 @@ const session = (over: Record<string, unknown> = {}) => ({
 
 const livePresence = { stale: false, revoked: false };
 const stalePresence = { stale: true, revoked: false };
+const testPtyAccessScope = {
+  tenantId: 'ws',
+  workspaceId: 'ws',
+  harnessSlug: 'h',
+  hostId: 'host',
+  principalId: 'su-abc',
+};
 
 function fakeOmpPty(id = 'pty-omp') {
   return {
     id,
+    accessScope: testPtyAccessScope,
     onData: new Set<(chunk: Buffer) => void>(),
     onExit: new Set<(code: number, signal: number) => void>(),
     history: [] as Buffer[],
@@ -1347,7 +1355,7 @@ describe('executeWake — the liveness ladder', () => {
         error: expect.stringContaining('did not become ready'),
       });
       expect(write).not.toHaveBeenCalled();
-      expect(kill).toHaveBeenCalledWith('pty-omp');
+      expect(kill).toHaveBeenCalledWith('pty-omp', testPtyAccessScope);
     } finally {
       if (prev === undefined) delete process.env.PAPERCUSP_OMP_RESUME_VIA_PTY;
       else process.env.PAPERCUSP_OMP_RESUME_VIA_PTY = prev;
@@ -1367,10 +1375,10 @@ describe('executeWake — the liveness ladder', () => {
     });
     for (const cb of pty.onData) cb(Buffer.from('restored thread th-1\n'));
     await vi.advanceTimersByTimeAsync(100);
-    expect(write).toHaveBeenCalledWith('pty-helper', Buffer.from('WAKE', 'utf8'));
+    expect(write).toHaveBeenCalledWith('pty-helper', Buffer.from('WAKE', 'utf8'), testPtyAccessScope);
     await vi.advanceTimersByTimeAsync(25);
     await expect(pending).resolves.toEqual({ ok: true, transcriptTail: 'restored thread th-1\n' });
-    expect(write).toHaveBeenLastCalledWith('pty-helper', Buffer.from('\r', 'utf8'));
+    expect(write).toHaveBeenLastCalledWith('pty-helper', Buffer.from('\r', 'utf8'), testPtyAccessScope);
   });
 
   it('NO recorded pid + fresh presence → park (never concurrent-resume a live session)', async () => {

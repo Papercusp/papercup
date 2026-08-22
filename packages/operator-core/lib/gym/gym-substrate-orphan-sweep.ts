@@ -94,8 +94,9 @@ function readGymSubstrateOwner(root: string): GymSubstrateOwner | null {
     const processStartToken = parsed.processStartToken;
     const createdAtMs = parsed.createdAtMs;
     if (
+      typeof pid !== 'number' ||
       !Number.isInteger(pid) ||
-      (pid as number) <= 0 ||
+      pid <= 0 ||
       typeof createdAtMs !== 'number' ||
       !Number.isFinite(createdAtMs) ||
       (processStartToken !== null && typeof processStartToken !== 'string')

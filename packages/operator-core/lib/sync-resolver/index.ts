@@ -94,6 +94,17 @@ import {
   type AdvSessionsListWireArgs,
 } from './adv-sessions-list-query';
 import {
+  DESIGN_FEATURES_DEFAULT_PAGE,
+  DESIGN_FEATURES_PAGE_LIMIT,
+  DESIGN_FEATURE_STATUSES,
+  buildDesignFeaturesPredicate,
+  designFeaturesSummarySelection,
+  normalizeDesignFeaturesListArgs,
+  readDesignFeaturesPageFromStore,
+  readDesignFeaturesSummaryFromStore,
+  type DesignFeaturesListWireArgs,
+} from './design-features-list-query';
+import {
   LEARNING_OBSERVATIONS_PAGE_LIMIT,
   buildLearningObservationsPredicate,
   isDefaultLearningObservationsPage,
@@ -204,6 +215,18 @@ const advSessionsListArgsSchema = z.object({
   planSlugs: z.array(z.string().trim().min(1).max(500)).max(500).optional(),
   cursor: z.string().max(2_000).nullable().optional(),
   limit: clampedLimit(ADV_SESSIONS_PAGE_LIMIT, ADV_SESSIONS_DEFAULT_PAGE),
+});
+
+const designFeaturesListArgsSchema = z.object({
+  harnessSlug: z.string().trim().min(1).max(200),
+  workspaceId: z.string().trim().min(1).max(200).default('default'),
+  q: z.string().max(500).optional(),
+  statuses: z.array(z.enum(DESIGN_FEATURE_STATUSES)).max(3).optional(),
+  cursor: z.string().max(2_000).nullable().optional(),
+  limit: clampedLimit(
+    DESIGN_FEATURES_PAGE_LIMIT,
+    DESIGN_FEATURES_DEFAULT_PAGE,
+  ),
 });
 
 const learningObservationsFiltersSchema = z.object({
@@ -468,45 +491,6 @@ export { NAME_NOT_FOUND, type NameNotFound } from '@papercusp/sync/server';
 // audited 2026-05-24. As each lands, the corresponding ZQL entry in
 // libs/zero-harness/src/queries.ts becomes dead code (to be deleted
 // at the P-022 cutover).
-
-/** WI-7232 — the LIST half of the Design dashboard's feature queue.
- *
- *  Projected to exactly the three fields the list actually renders
- *  (DesignDashboard.tsx: the row at `.d-feature-row` reads title + featureId +
- *  designStatus, and the bucket counts/filter read designStatus). Everything
- *  else the detail card needs now comes from `designFeatures.detail` below.
- *
- *  `summary` was 383,500 B — 81.78% of a 521,715 B payload — and only ever
- *  rendered for the ONE selected feature, so 390 summaries shipped to render at
- *  most one. Same P-006/P-007 list/detail split already applied to
- *  `featuresConsolidated.bySlug` + `.detail`.
- *
- *  ⚠ `designStatus` is deliberately NOT null-omitted even though it is null on
- *  every current row: the consumer's pending filter tests `=== null`, and an
- *  omitted key reads back as `undefined`, which would silently empty that
- *  bucket. Byte measurement cannot catch that, so the field stays.
- *
- *  `needs_design` is the WHERE clause (so it was `true` on every row) and
- *  `updated_ts` is the ORDER BY — neither is read by any consumer, and ordering
- *  does not require selecting the column.
- */
-async function resolveDesignFeatures(args: { harnessSlug: string; workspaceId: string }): Promise<unknown[]> {
-  const { getOrgPg } = await import('@papercusp/db-org');
-  const { harnessSlug, workspaceId } = args;
-  const { sql } = getOrgPg();
-  const rows = await sql`
-    SELECT feature_id, title, design_status
-    FROM harness_shared.harness_features_consolidated
-    WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND needs_design = TRUE
-    ORDER BY updated_ts DESC NULLS LAST
-    LIMIT 500
-  `;
-  return rows.map((r) => ({
-    featureId: r.feature_id,
-    title: r.title,
-    designStatus: r.design_status,
-  })) as unknown[];
-}
 
 /** WI-7232 — the DETAIL half: one feature, every field the detail card reads.
  *  Carries `summary` (and status / designSpecId / discardedDesignWork), which
@@ -1008,6 +992,28 @@ const advSessionsListQueryPair = createCompanionListQueryPair({
   summarySelection: advSessionsSummarySelection,
 });
 
+const designFeaturesListQueryPair = createCompanionListQueryPair({
+  domain: 'designFeatures',
+  rowsQueryName: 'designFeatures.byHarness',
+  argsSchema: designFeaturesListArgsSchema,
+  backingTables: [
+    'harness_shared.work_items',
+    'harness_shared.harness_features_consolidated',
+  ] as const,
+  normalizeArgs: (args: DesignFeaturesListWireArgs) =>
+    normalizeDesignFeaturesListArgs(args),
+  buildPredicate: buildDesignFeaturesPredicate,
+  readPage: async ({ predicate }) => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return readDesignFeaturesPageFromStore(getOrgPg().sql, predicate);
+  },
+  readSummaryAggregateRows: async ({ predicate }) => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return readDesignFeaturesSummaryFromStore(getOrgPg().sql, predicate);
+  },
+  summarySelection: designFeaturesSummarySelection,
+});
+
 const learningObservationsQueryPair = createCompanionListQueryPair({
   domain: 'learning.observations',
   rowsQueryName: 'learning.observations',
@@ -1271,13 +1277,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // design.* — Design tab reads. These are query data and therefore ride
   // @papercusp/sync; byte/image fetches and sketch writes stay on explicit
   // HTTP endpoints.
-  'designFeatures.byHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string().min(1),
-      workspaceId: z.string().default('default'),
-    }),
-    resolve: async (args) => resolveDesignFeatures(args as { harnessSlug: string; workspaceId: string }),
-  },
+  // P-011: a server-filtered immutable-birth keyset page plus an independent
+  // exact all/pending/accepted/ignored companion summary. The list projection
+  // stays at the three WI-7232 fields; detail remains on-demand below.
+  'designFeatures.byHarness': designFeaturesListQueryPair.rowsEntry as QueryEntry<unknown>,
+  'designFeatures.summary': designFeaturesListQueryPair.summaryEntry as QueryEntry<unknown>,
   // WI-7232: the on-demand single-feature read carrying `summary` (and the other
   // detail-card-only fields) dropped from the list above.
   //

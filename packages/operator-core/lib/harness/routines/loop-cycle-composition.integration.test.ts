@@ -126,7 +126,12 @@ describe('loop cycle — claimDueRoutine ↔ reconcileLoopRoutines compose throu
 
     // 5. When that armed time arrives (simulate the interval elapsing), the REAL claim re-fires
     //    — the loop CYCLES: park → rebase → re-fire → park again.
-    await sql`UPDATE harness_shared.routines SET next_fire_at = now() - interval '1 second' WHERE id = ${id}`;
+    // Keep the CAS fixture at millisecond precision. PostgreSQL's `now()` carries
+    // microseconds, while RoutineRow exposes a JS Date; comparing that rounded readback
+    // against the original timestamp would correctly reject the stale snapshot rather
+    // than exercise the cycle.
+    const dueAt = new Date(Date.now() - 1_000);
+    await sql`UPDATE harness_shared.routines SET next_fire_at = ${dueAt} WHERE id = ${id}`;
     const loop2 = await dueLoop(id);
     expect(loop2).toBeDefined(); // due again
     expect(await claimDueRoutine(sql, loop2!)).toBe(true);

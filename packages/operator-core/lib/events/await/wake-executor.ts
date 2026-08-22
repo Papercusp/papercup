@@ -68,6 +68,7 @@ import {
 } from '../../session-archive';
 import { ompSessionsRoot } from '../../omp-sessions';
 import { findPtyByPid, killPty, spawnPty, writePty } from '../../pty-bridge';
+import { localPtyHostId, type PtyAccessScope } from '../../pty-ticket';
 import {
   freshContextWarmInjectTarget,
   runFreshContextWarmInject,
@@ -961,6 +962,7 @@ const TURN_SUBMIT_CR_DELAY_MS = Number(process.env.PAPERCUSP_PSU_PTY_SUBMIT_CR_M
 
 interface OmpResumePtyLike {
   id: string;
+  accessScope: PtyAccessScope;
   onData?: Set<(chunk: Buffer) => void>;
   onExit?: Set<(code: number, signal: number) => void>;
   history?: Buffer[];
@@ -1061,10 +1063,10 @@ export async function injectOmpWakeTurnWhenReady(input: {
   }
 
   try {
-    const wrotePrompt = input.write(input.pty.id, Buffer.from(input.wakeText, 'utf8'));
+    const wrotePrompt = input.write(input.pty.id, Buffer.from(input.wakeText, 'utf8'), input.pty.accessScope);
     if (!wrotePrompt) return { ok: false, error: 'omp resume pty rejected prompt write', transcriptTail: transcript() };
     await sleep(submitCrDelayMs);
-    const wroteSubmit = input.write(input.pty.id, Buffer.from('\r', 'utf8'));
+    const wroteSubmit = input.write(input.pty.id, Buffer.from('\r', 'utf8'), input.pty.accessScope);
     if (!wroteSubmit) return { ok: false, error: 'omp resume pty rejected submit write', transcriptTail: transcript() };
     return { ok: true, transcriptTail: transcript() };
   } catch (err) {
@@ -1741,11 +1743,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         // claude TUI's paste detector (CR → literal newline, turn never submits).
         // Mirror of psu-pty-host.mjs controlWrites (different process + pty owner,
         // so the code can't be shared — kept in lockstep via the shared env var).
-        const okWrite = write(pty.id, Buffer.from(text, 'utf8'));
+        const okWrite = write(pty.id, Buffer.from(text, 'utf8'), pty.accessScope);
         if (okWrite) {
           setTimeout(() => {
             try {
-              write(pty.id, Buffer.from('\r', 'utf8'));
+              write(pty.id, Buffer.from('\r', 'utf8'), pty.accessScope);
             } catch {
               /* pty may have closed between the text write and the CR */
             }
@@ -2059,7 +2061,15 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     }
 
     try {
+      const accessScope: PtyAccessScope = {
+        tenantId: sessionDelivery.workspaceId,
+        workspaceId: sessionDelivery.workspaceId,
+        harnessSlug: resumeHarnessSlug ?? 'system',
+        hostId: localPtyHostId(),
+        principalId: d.subscriberId,
+      };
       const h = spawnManaged({
+        accessScope,
         command: resume.bin,
         args: resume.args,
         cwd,
@@ -2071,7 +2081,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         const injected = await injectOmpWakeTurnWhenReady({ pty: h, wakeText: text, write });
         if (!injected.ok) {
           try {
-            kill(h.id);
+            kill(h.id, h.accessScope);
           } catch {
             /* best-effort cleanup of a non-ready resume pty */
           }

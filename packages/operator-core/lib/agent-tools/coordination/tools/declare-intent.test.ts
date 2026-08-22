@@ -104,6 +104,20 @@ describe('coord:declare-intent scheduler work-item bridge', () => {
     expect(contract).toContain('scheduler:get_next');
     expect(contract).toContain('WI-/EI-');
   });
+
+  it('validates typed declared work-item refs at the tool boundary', () => {
+    const args = (declareIntentTool.args as { parse: (input: unknown) => Record<string, unknown> }).parse({
+      intent: 'reconcile two held items',
+      declared_goal_refs: ['WI-1', 'EI-2'],
+    });
+    expect(args.declared_goal_refs).toEqual(['WI-1', 'EI-2']);
+    expect(() =>
+      (declareIntentTool.args as { parse: (input: unknown) => Record<string, unknown> }).parse({
+        intent: 'not a typed declaration',
+        declared_goal_refs: ['P-001'],
+      }),
+    ).toThrow(/work-item ref required/);
+  });
 });
 
 /** A plan row whose Stage-3 structured index carries the given item ids. */

@@ -696,22 +696,16 @@ function encodeArtifactPath(url: string): string {
     .join('/');
 }
 
-/** The GUI↔Server requirement note for ONE desktop platform section. Linux GUI is
- *  self-contained (Server optional); mac/Windows GUI REQUIRES the Server. If a
- *  mac/Win section has a GUI but NO Server, warn loudly rather than let a tester
- *  install a build that can't start. */
+/** The GUI↔Server requirement note for ONE desktop platform section. Every
+ *  desktop GUI requires the separately installed Server. If a section has a GUI
+ *  but NO Server, warn loudly rather than let a tester install a build that
+ *  cannot start. */
 function platformRequirementNote(
   label: string,
   hasGui: boolean,
   hasServer: boolean,
 ): string {
   if (!hasGui) return '';
-  if (label === 'Linux') {
-    return hasServer
-      ? `\n<p class="n">The app runs on its own on Linux — it includes its own backend. <strong>Papercusp Server</strong> is optional here (only to keep agents running with the app closed).</p>`
-      : '';
-  }
-  // macOS / Windows — the GUI has no built-in backend.
   return hasServer
     ? `\n<p class="n"><strong>Install both.</strong> On ${escapeHtml(label)} the app needs <strong>Papercusp Server</strong> running alongside it — install the app <em>and</em> the Server below.</p>`
     : `\n<p class="warn">⚠ On ${escapeHtml(label)} the app also needs <strong>Papercusp Server</strong> to run — it isn't in this release yet, so this build can't start on its own.</p>`;
@@ -772,10 +766,9 @@ function renderPlatformSection(label: string, desktop: boolean, list: ReleaseArt
 /**
  * A release's downloads, as a separate high-level SECTION per platform (owner ask
  * 2026-07-19), each grouping that platform's app + Server into their own tables of
- * the same shape. This structure carries the GUI↔Server requirement inline:
- *   • Linux  — the GUI self-hosts its own backend (Server optional).
- *   • macOS + Windows — the GUI has NO built-in backend; it needs the separate
- *              Papercusp Server or it fatals — so install BOTH.
+ * the same shape. This structure carries the cross-platform GUI↔Server
+ * requirement inline: Linux, macOS, and Windows GUIs have no built-in backend;
+ * each needs the separate Papercusp Server, so install BOTH.
  * Mobile is its own section. An unrecognized platform is never dropped — it falls
  * into an "Other" section so the page's account of the release stays complete.
  */

@@ -135,9 +135,17 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "design-feature-queue",
     label: "Design feature queue",
     classification: "latent-defect",
-    evidence: "window",
-    pageCap: 500,
-    sourcePaths: ["apps/operator/app/design/[slug]/DesignDashboard.tsx"],
+    evidence: "corpus",
+    pageCap: 250,
+    sourcePaths: [
+      "apps/operator/app/design/[slug]/DesignDashboard.tsx",
+      "packages/operator-core/lib/sync-resolver/design-features-list-query.ts",
+    ],
+    behaviorGuard: {
+      planItem: "P-011",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/design-features-list-query.integration.test.ts",
+    },
   },
   {
     id: "cupboard",
@@ -235,7 +243,6 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
 export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
   "agent-runs",
   "cupboard",
-  "design-feature-queue",
   "learning-improve",
   "learning-retain",
 ] as const;

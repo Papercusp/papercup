@@ -11708,6 +11708,14 @@ html[data-visual-effects='minimal'] .h-root--maximal-hud .h-tab {
   font-size: 11px;
 }
 
+.d-feature-search {
+  padding: 10px 12px 0;
+}
+
+.d-feature-search-input {
+  margin: 0;
+}
+
 .d-buckets {
   padding: 10px 12px;
   border-bottom: 1px solid color-mix(in oklab, var(--border), transparent 28%);
@@ -11736,6 +11744,27 @@ html[data-visual-effects='minimal'] .h-root--maximal-hud .h-tab {
 
 .d-feature-list li + li {
   margin-top: 7px;
+}
+
+.d-feature-load-more-row {
+  padding: 3px 0 5px;
+}
+
+.d-feature-load-more {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid color-mix(in oklab, var(--accent), transparent 60%);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent), transparent 91%);
+  color: var(--accent-cool);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.d-feature-load-more:disabled {
+  cursor: progress;
+  opacity: 0.66;
 }
 
 .d-feature-row {

@@ -638,6 +638,15 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
       git(repo, "commit", "-qm", "add submodule");
       const repairHead = git(repo, "rev-parse", "HEAD");
 
+      // Keep this dependency fixture untracked so the real setup script has a source tree to
+      // copy without changing the frozen candidate's commit. A real repair worktree starts with
+      // the same shape: git worktree add does not carry over this ignored dependency tree.
+      mkdirSync(join(repo, "node_modules", "frozen-dep"), { recursive: true });
+      writeFileSync(
+        join(repo, "node_modules", "frozen-dep", "package.json"),
+        JSON.stringify({ name: "frozen-dep", version: "1.0.0" }),
+      );
+
       process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
       process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
       // The subject's submodule clone is its own `git clone` subprocess and does NOT
@@ -681,6 +690,20 @@ describe("WI-40231: frozen-repair worktree is submodule-complete", () => {
       );
       // git's own verdict: a leading '-' on any line means "not initialized".
       expect(git(worktreePath, "submodule", "status")).not.toMatch(/^-/m);
+
+      // EI-21142032293145491: a repair worktree nested under the integration checkout must
+      // receive its own dependency trees. Otherwise Node climbs to the integration root's
+      // node_modules and the fixer typechecks a moving peer checkout instead of this candidate.
+      const copiedDependency = join(
+        worktreePath,
+        "node_modules",
+        "frozen-dep",
+        "package.json",
+      );
+      expect(existsSync(copiedDependency)).toBe(true);
+      expect(readFileSync(copiedDependency, "utf8")).toBe(
+        JSON.stringify({ name: "frozen-dep", version: "1.0.0" }),
+      );
     } finally {
       if (priorWorkspace === undefined)
         delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;

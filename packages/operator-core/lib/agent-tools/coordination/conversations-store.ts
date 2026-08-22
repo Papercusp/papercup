@@ -270,7 +270,9 @@ export class PgConversationStore {
   ): Promise<SupersedeStoreResult | SupersedeStoreError> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
-    return sql.begin(async (tx) => {
+    const supersedeInTransaction = async (
+      tx: TransactionSql,
+    ): Promise<SupersedeStoreResult | SupersedeStoreError> => {
       const oldRows = await tx<ConversationRowDb[]>`
         SELECT ${tx.unsafe(SELECT_COLS)}
           FROM harness_shared.coord_conversations
@@ -308,7 +310,13 @@ export class PgConversationStore {
         conversation: toRow(updatedOldRows[0] ?? old),
         replacement: toRow(replacementRows[0]!),
       };
-    }) as Promise<SupersedeStoreResult | SupersedeStoreError>;
+    };
+    // A workflow may already supply a TransactionSql-backed store. Reuse that
+    // transaction instead of attempting a nested `.begin()` the handle does
+    // not expose; root Sql callers still get the row-locking transaction above.
+    return 'begin' in sql
+      ? sql.begin(supersedeInTransaction)
+      : supersedeInTransaction(sql);
   }
 
   /** Record the accepted answer + where it was captured (D-004). */

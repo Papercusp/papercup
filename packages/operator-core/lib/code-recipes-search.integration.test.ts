@@ -13,6 +13,7 @@
  * Part of code-recipes-2026-06-21 Phase 2 (P-004, integration tier).
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type postgres from 'postgres';
 import { runHybridSearch } from '@papercusp/search';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { upsertRecipe } from './code-recipes-store';
@@ -218,6 +219,48 @@ describe('code_recipes hybrid search (real PG)', () => {
     });
     expect(results.find((r) => r.id === 'self')).toBeUndefined();
     expect(results.find((r) => r.id === 'other')).toBeDefined();
+  });
+
+  it('revalidates recipe status after ranking so a concurrent merge cannot be recommended', async () => {
+    const id = 'merged-during-search';
+    await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id,
+      title: 'Merged during checkpoint monitor search',
+      description: 'inspect the current checkpoint monitor state',
+      script: 'return 1;',
+      toolsUsed: [],
+      embedding: seededEmbedding(73),
+    });
+
+    const baseSql = db.adminSql as unknown as (strings: TemplateStringsArray, ...values: unknown[]) => unknown;
+    let invalidated = false;
+    const racingSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const query = strings.join(' ');
+      if (!invalidated && /SELECT id, title, description, script[\s\S]*FROM harness_shared\.code_recipes/.test(query)) {
+        invalidated = true;
+        return (async () => {
+          await db.adminSql`
+            UPDATE harness_shared.code_recipes
+               SET status = 'merged', merged_into = 'checkpoint-monitor-survivor'
+             WHERE id = ${id}
+          `;
+          return baseSql(strings, ...values);
+        })();
+      }
+      return baseSql(strings, ...values);
+    }) as unknown as postgres.Sql;
+
+    const results = await searchSimilarRecipes(racingSql, {
+      title: 'Merged during checkpoint monitor search',
+      description: 'inspect the current checkpoint monitor state',
+      toolsUsed: [],
+      embedding: seededEmbedding(73),
+      limit: 10,
+    });
+
+    expect(invalidated).toBe(true);
+    expect(results.find((row) => row.id === id)).toBeUndefined();
   });
 
   it('searches the global recipe corpus', async () => {

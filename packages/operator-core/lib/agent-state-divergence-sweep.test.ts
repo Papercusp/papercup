@@ -68,7 +68,9 @@ describe('loadRecentCalls', () => {
     expect(sql).toHaveBeenCalledTimes(1);
     const [template] = sql.mock.calls[0] as unknown as [TemplateStringsArray, ...unknown[]];
     const query = Array.from(template).join(' ');
-    expect(query).toContain('args_json, call_origin');
+    expect(query).toContain('i.args_json, i.call_origin');
+    expect(query).toContain("e.body->'declared_goal_refs' AS declared_goal_refs");
+    expect(query).toContain('LEFT JOIN harness_shared.coord_event_log AS e');
     // WI-38670 live falsifier: the lifecycle intent `coord:emit` carried the old
     // EI goal under the new intent event id, then the first real call carried the
     // new goal. `coord:emit` is system-authored by contract, so it cannot be one
@@ -80,6 +82,37 @@ describe('loadRecentCalls', () => {
     expect(query).toContain("call_origin IS NULL");
     expect(query).toContain("args_json->>'source' = 'event'");
     expect(query).toContain("args_json->>'reason' LIKE 'subscribed event (%'");
+  });
+
+  it('hydrates typed declared goal refs from the durable intent event', async () => {
+    const sql = vi.fn(async () => [
+      {
+        id: '7',
+        owner: 'su-a',
+        tool_name: 'coord:orient',
+        status: 'ok',
+        invoked_at: new Date(T0).toISOString(),
+        intent_event_id: '42',
+        goal_ref: 'WI-1',
+        declared_goal_refs: ['WI-1', 'WI-2'],
+        args_json: { source: 'test' },
+        call_origin: null,
+      },
+    ]);
+
+    const [call] = await loadRecentCalls({
+      workspaceId: 'test-workspace',
+      sinceMs: T0,
+      limit: 10,
+      sql: sql as never,
+    });
+
+    expect(call).toMatchObject({
+      id: 7,
+      intentEventId: 42,
+      goalRef: 'WI-1',
+      declaredGoalRefs: ['WI-1', 'WI-2'],
+    });
   });
 });
 

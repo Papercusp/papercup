@@ -163,6 +163,7 @@ interface CallRow {
   invoked_at: string | Date;
   intent_event_id: string | number | null;
   goal_ref: string | null;
+  declared_goal_refs: unknown;
   args_json: unknown;
   call_origin: string | null;
 }
@@ -184,12 +185,17 @@ export async function loadRecentCalls(opts: {
   const sql = opts.sql ?? getOrgPg().sql;
   const since = new Date(opts.sinceMs).toISOString();
   const rows = await sql<CallRow[]>`
-    SELECT id, coord_owner_id AS owner, tool_name, status, invoked_at,
-           intent_event_id, goal_ref, args_json, call_origin
-      FROM harness_shared.tool_invocations
-     WHERE workspace_id = ${opts.workspaceId}
-       AND invoked_at > ${since}
-       AND coord_owner_id IS NOT NULL
+    SELECT i.id, i.coord_owner_id AS owner, i.tool_name, i.status, i.invoked_at,
+           i.intent_event_id, i.goal_ref, e.body->'declared_goal_refs' AS declared_goal_refs,
+           i.args_json, i.call_origin
+      FROM harness_shared.tool_invocations AS i
+      LEFT JOIN harness_shared.coord_event_log AS e
+        ON e.workspace_id = i.workspace_id
+       AND e.surface = 'messages'
+       AND e.id = i.intent_event_id
+     WHERE i.workspace_id = ${opts.workspaceId}
+       AND i.invoked_at > ${since}
+       AND i.coord_owner_id IS NOT NULL
        -- coord:emit is the canonical MACHINE lifecycle fire-target. It is
        -- telemetry about a declaration/claim/completion that just happened,
        -- never the agent-authored action this detector judges. In particular,
@@ -201,15 +207,15 @@ export async function loadRecentCalls(opts: {
        -- Exclude the whole surface, not only category='intent': emit.ts defines
        -- every call as system-authored lifecycle. Contextual agent traffic uses
        -- coord:send and remains eligible evidence.
-       AND tool_name <> 'coord:emit'
+       AND i.tool_name <> 'coord:emit'
        -- Platform reaction rows are telemetry about the wake mechanism, not
        -- agent-authored actions. Keep the predicate deliberately narrow: an
        -- unattributed pot:wake with the event source and its stamped reason.
        AND NOT (
-         tool_name = 'pot:wake'
-         AND call_origin IS NULL
-         AND args_json->>'source' = 'event'
-         AND args_json->>'reason' LIKE 'subscribed event (%'
+         i.tool_name = 'pot:wake'
+         AND i.call_origin IS NULL
+         AND i.args_json->>'source' = 'event'
+         AND i.args_json->>'reason' LIKE 'subscribed event (%'
        )
      ORDER BY invoked_at
      LIMIT ${opts.limit ?? SWEEP_ROW_CAP}
@@ -222,6 +228,9 @@ export async function loadRecentCalls(opts: {
     invokedAt: r.invoked_at instanceof Date ? r.invoked_at.toISOString() : String(r.invoked_at),
     intentEventId: r.intent_event_id == null ? null : Number(r.intent_event_id),
     goalRef: r.goal_ref,
+    declaredGoalRefs: Array.isArray(r.declared_goal_refs)
+      ? r.declared_goal_refs.filter((ref): ref is string => typeof ref === 'string' && ref.length > 0)
+      : undefined,
     args: r.args_json ?? undefined,
   }));
 }

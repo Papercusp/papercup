@@ -110,7 +110,20 @@ describe('queryNamesForTriggerEvent', () => {
       'designSketches.byFeature',
     ]);
     expect(queryNamesForTriggerEvent('harness_shared.work_items.changed')).toEqual(
-      expect.arrayContaining(['designFeatures.byHarness']),
+      expect.arrayContaining([
+        'designFeatures.byHarness',
+        'designFeatures.summary',
+      ]),
+    );
+    expect(
+      queryNamesForTriggerEvent(
+        'harness_shared.harness_features_consolidated.changed',
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        'designFeatures.byHarness',
+        'designFeatures.summary',
+      ]),
     );
   });
 

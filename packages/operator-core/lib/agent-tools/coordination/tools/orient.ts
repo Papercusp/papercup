@@ -187,6 +187,8 @@ export interface OrientArgs {
    *  (coord:declare-intent) AND used as the memory:search recall query — the
    *  two halves of the bootstrap that need an intent, folded into the one call. */
   intent?: string;
+  /** Optional typed work-item refs explicitly covered by the declaration. */
+  declared_goal_refs?: string[];
   /** Explicit memory:search query (overrides `intent` for the recall fold). */
   memoryQuery?: string;
   /** Plan slug for the declared lane (used with `intent`). */
@@ -2110,6 +2112,7 @@ export async function composeOrient(
         ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
         ...(args.planItems ? { items: args.planItems } : {}),
         ...(args.harness ? { harness: args.harness } : {}),
+        ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
       })) as { claims?: unknown } | undefined;
       result.intentDeclared = true;
     } catch {
@@ -2509,6 +2512,12 @@ export default defineTool({
       .describe(
         'Your one-line intent for this turn — DECLARED to peers (coord:declare-intent) AND used as the memory:search recall query. The bootstrap-in-one-call lever.',
       ),
+    declared_goal_refs: z
+      .array(z.string().regex(/^(?:WI|EI)-\d+$/, 'work-item ref required'))
+      .min(1)
+      .max(40)
+      .optional()
+      .describe('Optional typed work-item refs explicitly covered by the declared intent; omission preserves the untyped path.'),
     memoryQuery: z
       .string()
       .max(500)

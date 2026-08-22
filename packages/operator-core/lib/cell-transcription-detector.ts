@@ -87,6 +87,19 @@ const SOURCE_HEAD_VALUE_PREFIX =
 const EXPLICIT_PIPELINE_STATE_AFTER_SOURCE_HEAD =
   /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|candidate|gate|green[- ]?checkpoint|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
 
+/**
+ * A target/reference commit is often mentioned next to the pipeline words that
+ * describe what will be checked about it (for example, "validate target commit
+ * abc1234 main/deployed ancestry"). That is a citation, not a transcription of
+ * the current pipeline position. Keep the exception narrow and retain a hit when
+ * the value is explicitly followed by a live-state claim ("is deployed", etc.).
+ */
+const REFERENCE_COMMIT_PREFIX =
+  /\b(?:target|reference|historical|prior|baseline|validate|check|verify|prove|trace|inspect|confirm|test|assert|ensure)\b[^\n]{0,50}\bcommit\s*$/i;
+
+const EXPLICIT_PIPELINE_STATE_AFTER_VALUE =
+  /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
+
 function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valueLength: number): boolean {
   const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
   if (!SOURCE_HEAD_VALUE_PREFIX.test(before)) return false;
@@ -94,6 +107,15 @@ function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valu
   const afterStart = valueStart + valueLength;
   const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
   return !EXPLICIT_PIPELINE_STATE_AFTER_SOURCE_HEAD.test(after);
+}
+
+function isUnlinkedReferenceCommitCitation(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (!REFERENCE_COMMIT_PREFIX.test(before)) return false;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return !EXPLICIT_PIPELINE_STATE_AFTER_VALUE.test(after);
 }
 
 /**
@@ -143,7 +165,7 @@ const PATTERNS: readonly TranscriptionPattern[] = [
     cell: 'git.pipelinePosition',
     field: 'positions / gitSync',
     what: 'a branch behind/ahead count stated as current pipeline state',
-    value: /\b\d{1,4}\s+commits?\b|\bbehind\s+by\s+\d{1,4}\b/gi,
+    value: /(?<![A-Za-z0-9#-])\d{1,4}\s+commits?\b|\bbehind\s+by\s+\d{1,4}\b/gi,
     context: /\b(behind|ahead|main|staging|origin|unpushed|not\s+pushed|sync)\b/i,
   },
 ] as const;
@@ -203,7 +225,8 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
       // that HEAD value keeps it classified as a deployment claim.
       if (
         p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
-        isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length)
+        (isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length) ||
+          isUnlinkedReferenceCommitCitation(haystack, m.index, m[0].length))
       ) {
         continue;
       }
