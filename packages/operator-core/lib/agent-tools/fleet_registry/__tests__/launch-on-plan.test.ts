@@ -20,6 +20,11 @@ const setPresenceFleetMock = vi.fn();
 const ensureFleetLeaderControlMock = vi.fn();
 const assembleRolePromptMock = vi.fn();
 const resolveProjectDirMock = vi.fn();
+const listLiveTasksMock = vi.fn(
+  async (..._args: unknown[]) => [] as Array<{ class: string; memoryMaxBytes: number | null }>,
+);
+const totalmemMock = vi.fn((..._args: unknown[]) => 256 * 1024 ** 3);
+const agentSpawnScopeMemoryMaxGMock = vi.fn((..._args: unknown[]) => 6);
 const launchTransaction = vi.hoisted(() => ({
   verify: vi.fn(async (..._args: unknown[]) => ({
     agentStarted: true as boolean | null,
@@ -47,6 +52,24 @@ vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
 vi.mock('../../../spawn-config', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../spawn-config')>()),
   resolveProjectDir: (...args: unknown[]) => resolveProjectDirMock(...args),
+}));
+
+// Headless launch admission must never read the host's REAL task pressure in this
+// handler suite. A loaded developer box otherwise makes unrelated launch tests
+// clamp to zero before their spawn seam (WI-40655).
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()),
+  totalmem: (...args: unknown[]) => totalmemMock(...args),
+}));
+
+vi.mock('../../../task-manager/store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  listLiveTasks: (...args: unknown[]) => listLiveTasksMock(...args),
+}));
+
+vi.mock('../../../systemd-scope', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  agentSpawnScopeMemoryMaxG: (...args: unknown[]) => agentSpawnScopeMemoryMaxGMock(...args),
 }));
 
 vi.mock('../../../workspace-registry', () => ({
@@ -340,6 +363,31 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(command).toContain('--headless');
     expect(payload.requested).toBe(30);
     expect(payload.headcountProfile).toMatchObject({ applied: true, target: 30 });
+  });
+
+  it('suppresses a headless wave when protected agent scopes exhaust the host-memory budget', async () => {
+    totalmemMock.mockReturnValueOnce(32 * 1024 ** 3);
+    listLiveTasksMock.mockResolvedValueOnce(
+      Array.from({ length: 4 }, () => ({ class: 'agent-session', memoryMaxBytes: 6 * 1024 ** 3 })),
+    );
+
+    const res = await tool.handler(
+      { name: 'Memory Full Fleet', plan: 'my-plan', harness: 'papercusp', count: 1, headless: true } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(listLiveTasksMock).toHaveBeenCalledWith('ws-1');
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(payload.hostMemorySuppressed).toBe(true);
+    expect(payload.hostMemoryClamp).toMatchObject({
+      requestedOpenCount: 1,
+      openCount: 0,
+      clamped: true,
+      activeProtectedAgentScopes: 4,
+      availableProtectedAgentScopes: 0,
+    });
+    expect(payload.message).toContain('host-memory admission allows 0 new headless members');
   });
 
   it('rejects an unresolved member role before promotion, fleet creation, or terminal spawn', async () => {
