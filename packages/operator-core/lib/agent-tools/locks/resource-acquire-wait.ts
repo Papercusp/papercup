@@ -63,7 +63,7 @@ function isPidDefinitivelyDead(pid: number): boolean {
  * string re-acquired between the read and this delete. Returns true iff at least
  * one stale holder was actually reclaimed (the caller's cue to retry the acquire).
  */
-async function reclaimDeadExclusiveHolders(
+export async function reclaimDeadExclusiveHolders(
   coordinationDomain: string,
   owner: string,
   holders: ResourceHolder[],

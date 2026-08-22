@@ -40,6 +40,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import type { GitSyncOutcome } from './run-git-sync';
 // WI-5960: NOT mocked — the real implementation, so the invariant test below
@@ -254,6 +255,7 @@ import {
   fireGitSyncNow,
   isResolverInFlight,
   acquireWithContentionRetry,
+  parseGitSyncOwnerPid,
   formatOwnHeadPublishedLine,
   isIntegratorActorAdmitted,
   mergeAttributionRosters,
@@ -383,6 +385,21 @@ const contentErrorOutcome: GitSyncOutcome = {
 };
 
 const action = getSystemAction('git-sync')!;
+
+/** Spawn + reap a child so the stale-holder regression uses a PID guaranteed to
+ * be dead by the time the git-sync acquire attempts its reclaim. */
+function definitelyDeadPid(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)']);
+    const pid = child.pid;
+    if (!pid) {
+      reject(new Error('spawn returned no pid'));
+      return;
+    }
+    child.once('exit', () => resolve(pid));
+    child.once('error', reject);
+  });
+}
 
 beforeEach(() => {
   tryAcquireResourceMock.mockReset();
@@ -679,7 +696,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       mode: 'exclusive',
       ttlSec: 600,
     });
-    expect((tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner).toMatch(/^system:git-sync:[0-9a-f-]+$/);
+    expect((tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner).toMatch(/^system:git-sync:\d+:[0-9a-f-]+$/);
     // ONLY the per-slug name is auto-registered (idempotent ON CONFLICT DO NOTHING);
     // the extras are a human-registered coordination surface
     expect(registeredResources()).toEqual(['git-sync:papercup']);
@@ -750,10 +767,55 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       .map(([, opts]) => (opts as { owner: string }).owner);
     expect(owners).toHaveLength(2);
     expect(new Set(owners).size).toBe(2);
-    expect(owners.every((owner) => /^system:git-sync:[0-9a-f-]+$/.test(owner))).toBe(true);
+    expect(owners.every((owner) => /^system:git-sync:\d+:[0-9a-f-]+$/.test(owner))).toBe(true);
 
     releaseFirstRun();
     await first;
+  });
+
+  it('EI-20366486129597369: reclaims a dead prior bg-host lock and retries once', async () => {
+    const deadPid = await definitelyDeadPid();
+    const staleOwner = `system:git-sync:${deadPid}:stale-run`;
+    const staleHolder = {
+      owner: staleOwner,
+      owner_label: 'git-sync:papercup',
+      mode: 'exclusive' as const,
+      status: 'held' as const,
+      lock_id: 'stale-lock-1',
+      reason: 'auto-commit papercup',
+      acquired_ts: new Date('2026-08-22T05:00:00.000Z'),
+      expires_ts: new Date('2026-08-22T05:10:00.000Z'),
+      fence_seq: 9,
+    };
+    let firstAttempt = true;
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      if (resource === 'git-sync:papercup' && firstAttempt) {
+        firstAttempt = false;
+        return { ok: false, reason: 'held_exclusive', holders: [staleHolder] };
+      }
+      return { ok: true };
+    });
+    tryReleaseResourceMock.mockImplementation(async () => ({ ok: true, released: 1 } as never));
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await action(ctx);
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('STALE LOCK RECLAIMED'));
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(parseGitSyncOwnerPid(staleOwner)).toBe(deadPid);
+    expect(parseGitSyncOwnerPid('system:git-sync:legacy-uuid')).toBeNull();
+    expect(parseGitSyncOwnerPid('release-deploy:123:uuid')).toBeNull();
+    expect(tryReleaseResourceMock.mock.calls[0]?.[1]).toMatchObject({
+      coordinationDomain: 'ws-42',
+      owner: staleOwner,
+      lockId: 'stale-lock-1',
+    });
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+    expect(acquiredResources()).toEqual(['git-sync:papercup', 'git-sync:papercup', 'git-sync', 'libs-papercusp-submodule']);
   });
 
   it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {

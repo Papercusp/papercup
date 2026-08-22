@@ -41,6 +41,7 @@ import {
   tryReleaseResource,
   type ResourceAcquireResult,
 } from '../../agent-tools/locks/su-lock-store';
+import { reclaimDeadExclusiveHolders } from '../../agent-tools/locks/resource-acquire-wait';
 import { liveLockHoldings } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
@@ -190,10 +191,24 @@ const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
  * correct for one long-lived caller, but the cron and `git-sync:run` paths both
  * identify themselves as `system:git-sync`; sharing that owner would let two
  * fires enter the same checkout concurrently. Keep the stable identity for
- * broadcasts, but give every fire its own lock owner so the resource store's
- * different-owner conflict path provides real single-flight protection.
+ * broadcasts, but give every fire its own lock owner (including this host
+ * process's PID) so the resource store's different-owner conflict path provides
+ * real single-flight protection and a restarted background host can reclaim its
+ * own definitely-dead lease.
  */
-const newGitSyncLockOwner = (): string => `${GIT_SYNC_OWNER}:${randomUUID()}`;
+const newGitSyncLockOwner = (): string => `${GIT_SYNC_OWNER}:${process.pid}:${randomUUID()}`;
+
+/**
+ * EI-20366486129597369: invert `newGitSyncLockOwner` for the stale-holder
+ * recovery path. Legacy UUID-only owners and every unrelated resource owner are
+ * deliberately unrecognized, so they retain normal back-pressure semantics.
+ */
+export function parseGitSyncOwnerPid(owner: string): number | null {
+  const m = /^system:git-sync:(\d+):/.exec(owner);
+  if (!m) return null;
+  const pid = Number(m[1]);
+  return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
 
 /**
  * Return commits newly covered by a proven remote staging head. The bridge
@@ -504,25 +519,45 @@ async function acquireLocks(
 ): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
   for (const resource of resources) {
+    const acquireOne = () => acquireWithContentionRetry(() =>
+      inWorkspaceTxn(cd, owner, async (tx) => {
+        // Auto-register ONLY the per-slug name, in the same txn as its acquire.
+        if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
+        return tryAcquireResource(tx, {
+          coordinationDomain: cd,
+          resource,
+          mode: 'exclusive',
+          owner,
+          ownerLabel: `git-sync:${slug}`,
+          reason: `auto-commit ${slug}`,
+          ttlSec: LOCK_TTL_SEC,
+        });
+      }),
+    );
     let r: ResourceAcquireResult;
     try {
       // EI-1720: retry-with-backoff on a TRANSIENT pg 57014/55P03 so a load-driven
       // workspace-lock contention spike delays — but does not multi-minute-stall —
       // the commit, instead of skipping the tick outright.
-      r = await acquireWithContentionRetry(() =>
-        inWorkspaceTxn(cd, owner, async (tx) => {
-          // Auto-register ONLY the per-slug name, in the same txn as its acquire.
-          if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
-          return tryAcquireResource(tx, {
-            coordinationDomain: cd,
-            resource,
-            mode: 'exclusive',
-            owner,
-            ownerLabel: `git-sync:${slug}`,
-            reason: `auto-commit ${slug}`,
-            ttlSec: LOCK_TTL_SEC,
-          });
-        }));
+      r = await acquireOne();
+      if (!r.ok && r.reason === 'held_exclusive') {
+        // A killed bg-host leaves a fresh-looking exclusive row behind. Give
+        // this fire one proof-safe reclaim attempt before treating it as a live
+        // peer; the helper scopes release by lock_id and only accepts ESRCH.
+        const reclaimed = await reclaimDeadExclusiveHolders(
+          cd,
+          owner,
+          r.holders ?? [],
+          parseGitSyncOwnerPid,
+          ({ holder, pid }) => {
+            console.error(
+              `[git-sync] STALE LOCK RECLAIMED — ${slug} ${resource} holder ${holder.owner} ` +
+              `(pid ${pid} not running on this host); retrying the acquire`,
+            );
+          },
+        );
+        if (reclaimed) r = await acquireOne();
+      }
     } catch (e) {
       // Reaching here on contention means the load window outlasted the retries;
       // the next tick retries without running unlocked. A non-contention error is
