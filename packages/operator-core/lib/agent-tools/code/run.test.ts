@@ -53,6 +53,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
 
 import {
   shapeCodeRunLogs,
+  shapeCodeRunSummary,
   shapeMutationEcho,
   annotateChildFailureWarning,
   bindInnerDispatch,
@@ -191,7 +192,7 @@ describe('code:run → recipe capture (P-003)', () => {
     }));
   });
 
-  it('shapes console logs before serializing the code:run payload, without touching the returned summary', async () => {
+  it('shapes console logs before serializing the code:run payload and keeps a small summary unchanged', async () => {
     const tool = codeRun();
     const res = await tool.fn(
       {
@@ -211,6 +212,53 @@ describe('code:run → recipe capture (P-003)', () => {
       sanitizedLines: 1,
       droppedAfterLimit: 0,
     });
+  });
+});
+
+describe('code:run → nested summary shaping (EI-20981474230843769)', () => {
+  it('keeps a small summary byte-identical', () => {
+    const result = { summary: { markerCount: 1, lines: ['first', 'second'] } };
+    expect(shapeCodeRunSummary(result)).toBe(result);
+  });
+
+  it('bounds nested strings and arrays while preserving scalar marker fields', async () => {
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+
+    const res = await tool.fn(
+      {
+        script:
+          'return {' +
+          'markerCount: 1,' +
+          'lineCount: 81,' +
+          'returnedChars: 54822,' +
+          'lines: Array.from({ length: 81 }, (_, i) => `line-${i} ${"x".repeat(900)}`)' +
+          '};',
+      },
+      {
+        log: () => {},
+        workspaceId: 'ws-test',
+        harnessSlug: 'alpha',
+        role: 'su',
+        isSuperuser: true,
+        uiClientId: 'su-test',
+      } as never,
+    );
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(payload.summary).toMatchObject({ markerCount: 1, lineCount: 81, returnedChars: 54822 });
+    expect(payload.summary.lines.length).toBeLessThan(81);
+    expect(payload.summary.lines.every((line: string) => line.length <= 360)).toBe(true);
+    expect(payload.summaryNotice).toMatchObject({
+      truncated: true,
+      originalChars: expect.any(Number),
+      returnedChars: expect.any(Number),
+      arraysTruncated: expect.any(Number),
+      stringsTruncated: expect.any(Number),
+    });
+    expect(payload.summaryNotice.paths).toContain('summary.lines');
+    expect(JSON.stringify(payload).length).toBeLessThan(6_000);
   });
 });
 

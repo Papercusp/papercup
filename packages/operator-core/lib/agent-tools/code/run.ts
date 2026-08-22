@@ -249,7 +249,9 @@ export default defineTool({
     // WI-7061: annotate AFTER shapeMutationEcho, never inside it — that function returns early
     // when the script planned no mutations, which is exactly the read-only case whose failed
     // child call had no naming signal at all.
-    const shownResult = shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(result)));
+    const shownResult = shapeCodeRunSummary(
+      shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(result))),
+    );
 
     const similarRecipePayload = similarRecipes.length > 0 ? shapeCodeRunSimilarRecipes(similarRecipes) : {};
     const payload =
@@ -570,8 +572,9 @@ interface CodeRunLogsNotice {
 /**
  * WI-3127: the code:run sandbox does not expose require/process, so a script cannot shell out
  * with execSync. It can still write arbitrary console text, and that text is serialized back in
- * the agent-facing `logs` field. Shape that side channel here: keep the script's returned summary
- * untouched, but strip terminal/control noise and bound repetitive or oversized logs.
+ * the agent-facing `logs` field. Shape that side channel here: strip terminal/control noise and
+ * bound repetitive or oversized logs. The script's returned summary is bounded separately by
+ * `shapeCodeRunSummary` below.
  */
 // The constraint is `{ logs?: unknown }` — exactly what this function reads — and NOT
 // `Record<string, unknown>`. Since runToolOrchestration moved to @papercusp/tooldef, its
@@ -657,6 +660,224 @@ function sanitizeCodeRunLogLine(raw: string): string {
     .replace(ANSI_SINGLE_PATTERN, '')
     .replace(/[\r\n]+/g, ' ')
     .replace(CONTROL_PATTERN, '');
+}
+
+const CODE_RUN_SUMMARY_CHAR_BUDGET = 3_500;
+const CODE_RUN_SUMMARY_PROJECTION_STEPS = [
+  { arrayLimit: 8, stringChars: 360, maxDepth: 4 },
+  { arrayLimit: 4, stringChars: 220, maxDepth: 3 },
+  { arrayLimit: 2, stringChars: 120, maxDepth: 2 },
+] as const;
+const CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS = 80;
+const CODE_RUN_SUMMARY_PATH_LIMIT = 16;
+
+export interface CodeRunSummaryNotice {
+  truncated: true;
+  originalChars: number;
+  returnedChars: number;
+  arraysTruncated: number;
+  stringsTruncated: number;
+  valuesTruncated: number;
+  omittedItems: number;
+  paths: string[];
+  note: string;
+}
+
+interface CodeRunSummaryProjectionStats {
+  arraysTruncated: number;
+  stringsTruncated: number;
+  valuesTruncated: number;
+  omittedItems: number;
+  paths: string[];
+}
+
+interface CodeRunSummaryProjectionOptions {
+  arrayLimit: number;
+  stringChars: number;
+  maxDepth: number;
+}
+
+function codeRunSummarySerializedChars(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === 'string' ? serialized.length : 0;
+  } catch {
+    return String(value).length;
+  }
+}
+
+function isCodeRunSummaryRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isCodeRunSummaryScalar(value: unknown): boolean {
+  return value === null || typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string';
+}
+
+function noteCodeRunSummaryPath(stats: CodeRunSummaryProjectionStats, path: string): void {
+  if (stats.paths.length < CODE_RUN_SUMMARY_PATH_LIMIT && !stats.paths.includes(path)) {
+    stats.paths.push(path);
+  }
+}
+
+function clipCodeRunSummaryString(
+  value: string,
+  path: string,
+  maxChars: number,
+  stats: CodeRunSummaryProjectionStats,
+): string {
+  if (value.length <= maxChars) return value;
+  stats.stringsTruncated++;
+  stats.omittedItems += value.length - maxChars;
+  noteCodeRunSummaryPath(stats, path);
+  const suffix = `… [truncated ${value.length - maxChars} chars]`;
+  if (suffix.length >= maxChars) return value.slice(0, maxChars);
+  return value.slice(0, maxChars - suffix.length) + suffix;
+}
+
+function projectCodeRunSummaryValue(
+  value: unknown,
+  path: string,
+  depth: number,
+  options: CodeRunSummaryProjectionOptions,
+  stats: CodeRunSummaryProjectionStats,
+): unknown {
+  if (typeof value === 'string') {
+    return clipCodeRunSummaryString(value, path, options.stringChars, stats);
+  }
+  if (isCodeRunSummaryScalar(value)) return value;
+
+  if (depth >= options.maxDepth) {
+    stats.valuesTruncated++;
+    stats.omittedItems++;
+    noteCodeRunSummaryPath(stats, path);
+    return Array.isArray(value) ? [] : {};
+  }
+
+  if (Array.isArray(value)) {
+    const shown = value.slice(0, options.arrayLimit).map((entry, index) =>
+      projectCodeRunSummaryValue(entry, `${path}[${index}]`, depth + 1, options, stats),
+    );
+    if (value.length > options.arrayLimit) {
+      stats.arraysTruncated++;
+      stats.omittedItems += value.length - options.arrayLimit;
+      noteCodeRunSummaryPath(stats, path);
+    }
+    return shown;
+  }
+
+  if (isCodeRunSummaryRecord(value)) {
+    const projected: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      projected[key] = projectCodeRunSummaryValue(
+        entry,
+        path ? `${path}.${key}` : key,
+        depth + 1,
+        options,
+        stats,
+      );
+    }
+    return projected;
+  }
+
+  return String(value);
+}
+
+function minimalCodeRunSummaryProjection(
+  value: unknown,
+  budget: number,
+  stats: CodeRunSummaryProjectionStats,
+): unknown {
+  if (typeof value === 'string') {
+    return clipCodeRunSummaryString(value, 'summary', Math.max(1, budget - 32), stats);
+  }
+  if (isCodeRunSummaryScalar(value)) return value;
+  if (Array.isArray(value)) return [];
+  if (!isCodeRunSummaryRecord(value)) return String(value);
+
+  const projected: Record<string, unknown> = {};
+  const entries = Object.entries(value);
+  // Keep scalar marker fields first in the last-resort shape. These are the values a monitor
+  // uses to interpret the bounded nested collection (markerCount, lineCount, etc.).
+  for (const [key, entry] of entries.filter(([, candidate]) => isCodeRunSummaryScalar(candidate))) {
+    const candidate = typeof entry === 'string'
+      ? clipCodeRunSummaryString(entry, `summary.${key}`, CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS, stats)
+      : entry;
+    const withCandidate = { ...projected, [key]: candidate };
+    if (codeRunSummarySerializedChars(withCandidate) <= budget) {
+      projected[key] = candidate;
+    } else {
+      stats.omittedItems++;
+      noteCodeRunSummaryPath(stats, `summary.${key}`);
+    }
+  }
+  for (const [key, entry] of entries.filter(([, candidate]) => !isCodeRunSummaryScalar(candidate))) {
+    const empty = Array.isArray(entry) ? [] : {};
+    const withCandidate = { ...projected, [key]: empty };
+    if (codeRunSummarySerializedChars(withCandidate) <= budget) {
+      projected[key] = empty;
+      stats.valuesTruncated++;
+      stats.omittedItems++;
+      noteCodeRunSummaryPath(stats, `summary.${key}`);
+    }
+  }
+  return projected;
+}
+
+function newCodeRunSummaryProjectionStats(): CodeRunSummaryProjectionStats {
+  return { arraysTruncated: 0, stringsTruncated: 0, valuesTruncated: 0, omittedItems: 0, paths: [] };
+}
+
+/**
+ * EI-20981474230843769: bound the arbitrary value returned by a code:run script before the
+ * generic result door sees it. A marker monitor commonly returns scalar counters alongside a
+ * nested `lines` array; keep those counters, cap nested arrays/strings, and disclose every cut.
+ * The identity fast path is intentional: summaries already below the budget remain
+ * byte-identical to the historical code:run response.
+ */
+export function shapeCodeRunSummary<T extends { summary?: unknown }>(
+  result: T,
+): T | (T & { summaryNotice: CodeRunSummaryNotice }) {
+  const summary = result.summary;
+  if (summary === undefined) return result;
+
+  const originalChars = codeRunSummarySerializedChars(summary);
+  if (originalChars <= CODE_RUN_SUMMARY_CHAR_BUDGET) return result;
+
+  let projected: unknown;
+  let stats = newCodeRunSummaryProjectionStats();
+  for (const options of CODE_RUN_SUMMARY_PROJECTION_STEPS) {
+    const candidateStats = newCodeRunSummaryProjectionStats();
+    const candidate = projectCodeRunSummaryValue(summary, 'summary', 0, options, candidateStats);
+    if (codeRunSummarySerializedChars(candidate) <= CODE_RUN_SUMMARY_CHAR_BUDGET) {
+      projected = candidate;
+      stats = candidateStats;
+      break;
+    }
+  }
+
+  if (projected === undefined) {
+    stats = newCodeRunSummaryProjectionStats();
+    projected = minimalCodeRunSummaryProjection(summary, CODE_RUN_SUMMARY_CHAR_BUDGET, stats);
+  }
+
+  const returnedChars = codeRunSummarySerializedChars(projected);
+  return {
+    ...result,
+    summary: projected,
+    summaryNotice: {
+      truncated: true,
+      originalChars,
+      returnedChars,
+      arraysTruncated: stats.arraysTruncated,
+      stringsTruncated: stats.stringsTruncated,
+      valuesTruncated: stats.valuesTruncated,
+      omittedItems: stats.omittedItems,
+      paths: stats.paths,
+      note:
+        'code:run summary was bounded before transport; scalar marker fields are preserved where possible and nested arrays/strings are explicitly truncated',
+    },
+  };
 }
 
 /**
