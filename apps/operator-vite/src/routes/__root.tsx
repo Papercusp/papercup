@@ -65,6 +65,7 @@ import NotFound from '../components/NotFound';
 import { NavigationProgress } from '../components/NavigationProgress';
 import ChunkReloadPrompt from '../components/ChunkReloadPrompt';
 import OfflineIndicator from '../components/OfflineIndicator';
+import ServerConnectionGate from '../components/ServerConnectionGate';
 import StaleOperatorIndicator from '../components/StaleOperatorIndicator';
 import VersionBadge from '../components/VersionBadge';
 // Cross-platform env switcher top bar (dogfood-silent-canonical-hive-join P-013/P-014/
@@ -355,6 +356,10 @@ function RootComponent() {
               {/* Operator-unreachable persistent toast (EI-239) — fed by the
                   @papercusp/sync connectivity store. */}
               <OfflineIndicator />
+              {/* P-007: the GUI ships no backend runtime. If Rust cannot find or
+                  launch the separate Server product, show the explicit local
+                  install/retry and remote/hosted connection routes. */}
+              <ServerConnectionGate />
               {/* Version-skewed operator persistent toast (WI-5956) — fed by the
                   @papercusp/sync stale-operator store: the origin is reachable
                   but is running OLDER code than this rebuilt client. */}
