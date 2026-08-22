@@ -228,6 +228,29 @@ The workspace's peer-dep tree has unresolvable conflicts that make `npm install`
 * **Bundled-Node PATH**: GUI-launched apps on macOS inherit `$PATH = /usr/bin:/bin` — Homebrew Node, nvm Node, brew-installed `pg_dump` / `libpq` are all invisible. `main.rs:bundled_path_env()` builds a `PATH` with the shipped `sidecar/bin/` (node/gh) prepended, and every node-based spawn (currently the `serve.mjs` sidecar) runs through it. **If you add a new spawn**, route it through the same helper.
 * **Gatekeeper**: the DMG is unsigned. First launch will be blocked. The install-mac-dmg `/admin` command strips quarantine via `xattr -dr com.apple.quarantine /Applications/Papercusp.app`. If launching by hand, you'll need to do this too.
 
+## Windows VM preflight: host storage and QEMU state
+
+Before and after a Windows install/relaunch, run the host-side preflight:
+
+```sh
+cd papercusp-desktop
+VM_DISK_PATH=/mnt/data/offload/windows-vm/windows_hdd.qcow2 \
+VM_MONITOR_SOCKET=/mnt/data/offload/windows-vm/qemu-monitor.sock \
+bash bin/vm-preflight.sh --json
+```
+
+The JSON verdict includes `hostFreeGb`, `minHostFreeGb`, `qemuStatus`, and
+`qemuIoStatus`. It fails when the qcow2 filesystem has less than 10 GB free,
+when QEMU reports `paused (io-error)`, or when the disk reports a failing
+I/O status such as `nospace`. Override the image or threshold with
+`--disk-path PATH` and `--min-host-free-gb GB` (or the matching environment
+variables) when a rig uses a different layout.
+
+The HMP probes are read-only: the preflight sends only `info status` and
+`info block`; it never sends `cont` or `quit`. If the check reports a
+paused/io-error VM, first verify the backing filesystem with `df -h` and
+inspect the qcow2 before using the separate, supervised recovery procedure.
+
 ## Windows VM crashes routinely
 
 The Windows VM crashed **6+ times during a single build session** (2026-05-13). Symptoms: SSH hangs indefinitely, `qemu-system-x86_64` process disappears, `/tmp/win-boot.log` last line is a kernel power error.

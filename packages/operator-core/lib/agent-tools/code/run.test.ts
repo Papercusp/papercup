@@ -1,10 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
-import {
-  applyResultDoor,
-  beginResultDoorAggregate,
-  resetResultDoorAggregatesForTests,
-} from '../../result-door';
+import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
 
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
@@ -65,6 +61,8 @@ import {
   buildFacadeHelp,
   shapeCodeRunSimilarRecipes,
   isRecipeCaptureEligible,
+  codeRunReturnedContextBytes,
+  codeRunFailureClass,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
@@ -78,7 +76,7 @@ describe('code:run registration (B-CX-2A)', () => {
     expect(tool).toBeDefined();
     expect(tool?.effect).toBe('write');
     expect(tool?.skipWorkspaceTx).toBe(true);
-    expect((tool?.agentRoles?.length ?? 0)).toBeGreaterThan(0);
+    expect(tool?.agentRoles?.length ?? 0).toBeGreaterThan(0);
     // All-roles widening: roles excluded under the old [...SU_ROLES,'cup'] gate now qualify.
     for (const role of ['worker', 'cup', 'papercup', 'kettle', 'reviewer']) {
       expect(tool?.agentRoles).toContain(role);
@@ -88,7 +86,8 @@ describe('code:run registration (B-CX-2A)', () => {
   it('documents JavaScript escaping for shell backslash-zero commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ?? '';
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
     expect(scriptDescription).toContain("tr '\\\\0' ' '");
     expect(scriptDescription).toContain('two backslashes in the script source');
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
@@ -97,7 +96,8 @@ describe('code:run registration (B-CX-2A)', () => {
   it('documents the explicit final-media return contract', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     const scriptDescription =
-      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ?? '';
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ??
+      '';
     expect(scriptDescription).toContain('{ summary, media:');
     expect(scriptDescription).toContain('"image"|"audio"');
     expect(scriptDescription).toContain('intermediate tool calls is never emitted implicitly');
@@ -126,7 +126,7 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
   });
 
   it('preserves summary JSON once and appends validated image/audio content items', async () => {
-    const res = await codeRun().fn(
+    const res = (await codeRun().fn(
       {
         script: `return {
           summary: { rendered: 2, kept: true },
@@ -137,7 +137,7 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
         };`,
       },
       mkCtx(),
-    ) as unknown as { content: Array<Record<string, unknown>> };
+    )) as unknown as { content: Array<Record<string, unknown>> };
 
     expect(res.content).toEqual([
       expect.objectContaining({ type: 'text' }),
@@ -151,14 +151,14 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
   });
 
   it('rejects invalid final media without placing a non-text item on the wire', async () => {
-    const res = await codeRun().fn(
+    const res = (await codeRun().fn(
       {
         script:
           `return { summary: { kept: true }, ` +
           `media: [{ type: 'audio', data: 'not base64!', mimeType: 'audio/mpeg' }] };`,
       },
       mkCtx(),
-    ) as unknown as { content: Array<Record<string, unknown>> };
+    )) as unknown as { content: Array<Record<string, unknown>> };
 
     expect(res.content).toHaveLength(1);
     expect(res.content[0].type).toBe('text');
@@ -169,14 +169,14 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
   });
 
   it('counts emitted media bytes toward the shared aggregate budget and spills on exhaustion', async () => {
-    const res = await codeRun().fn(
+    const res = (await codeRun().fn(
       {
         script:
           `return { summary: { rendered: true }, ` +
           `media: [{ type: 'image', data: 'YWFh'.repeat(1250), mimeType: 'image/png' }] };`,
       },
       mkCtx(),
-    ) as unknown as Parameters<typeof applyResultDoor>[0];
+    )) as unknown as Parameters<typeof applyResultDoor>[0];
     const aggregateScope = beginResultDoorAggregate({
       sessionKey: 'p027-media-accounting',
       outputGroupId: 'turn-1',
@@ -191,21 +191,25 @@ describe('code:run → explicit final media (P-027 / D-021)', () => {
         aggregateScope,
       });
       const aggregate = (
-        doored._meta as {
-          resultDoor?: { aggregate?: { exceeded?: boolean; sourceBytes?: number } };
-        } | undefined
+        doored._meta as
+          | {
+              resultDoor?: { aggregate?: { exceeded?: boolean; sourceBytes?: number } };
+            }
+          | undefined
       )?.resultDoor?.aggregate;
       if (aggregate?.exceeded) break;
     }
 
     const resultDoor = (
-      doored._meta as {
-        resultDoor?: {
-          reason?: string;
-          nonTextBytes?: number;
-          aggregate?: { exceeded?: boolean; sourceBytes?: number };
-        };
-      } | undefined
+      doored._meta as
+        | {
+            resultDoor?: {
+              reason?: string;
+              nonTextBytes?: number;
+              aggregate?: { exceeded?: boolean; sourceBytes?: number };
+            };
+          }
+        | undefined
     )?.resultDoor;
     expect(resultDoor?.reason).toBe('aggregate-output-budget-exceeded');
     expect(resultDoor?.aggregate?.exceeded).toBe(true);
@@ -249,7 +253,10 @@ describe('code:run → recipe capture (P-003)', () => {
     expect(payload.ok).toBe(true);
 
     expect(captureRecipeMock).toHaveBeenCalledTimes(1);
-    const [, input] = captureRecipeMock.mock.calls[0] as unknown as [unknown, { script: string; workspaceId: string; title?: string }];
+    const [, input] = captureRecipeMock.mock.calls[0] as unknown as [
+      unknown,
+      { script: string; workspaceId: string; title?: string },
+    ];
     expect(input.script).toBe('return 1 + 1;');
     expect(input.workspaceId).toBe('ws-test');
     expect(input.title).toBe('add');
@@ -287,22 +294,19 @@ describe('code:run → recipe capture (P-003)', () => {
 
     it('rejects a semantic write failure, a thrown child, and an unknown reference', () => {
       expect(
-        isRecipeCaptureEligible(
-          { ok: true, childFailures: [{ tool: 'work_items:set_state', kind: 'semantic' }] },
-          [read, write],
-        ),
+        isRecipeCaptureEligible({ ok: true, childFailures: [{ tool: 'work_items:set_state', kind: 'semantic' }] }, [
+          read,
+          write,
+        ]),
       ).toBe(false);
       expect(
-        isRecipeCaptureEligible(
-          { ok: false, childFailures: [{ tool: 'dev:pg-query', kind: 'uncertain' }] },
-          [read, write],
-        ),
+        isRecipeCaptureEligible({ ok: false, childFailures: [{ tool: 'dev:pg-query', kind: 'uncertain' }] }, [
+          read,
+          write,
+        ]),
       ).toBe(false);
       expect(
-        isRecipeCaptureEligible(
-          { ok: true, unknownRefs: ['nope.doStuff'], childFailures: [] },
-          [read, write],
-        ),
+        isRecipeCaptureEligible({ ok: true, unknownRefs: ['nope.doStuff'], childFailures: [] }, [read, write]),
       ).toBe(false);
     });
   });
@@ -310,21 +314,62 @@ describe('code:run → recipe capture (P-003)', () => {
   it('stamps effective error metadata when the script fails', async () => {
     const tool = codeRun();
     const metadata = vi.fn();
-    const ctx = { ...mkCtx(), metadata } as never;
+    const ctx = { ...(mkCtx() as unknown as Record<string, unknown>), metadata } as never;
     await tool.fn({ script: 'throw new Error("boom");' }, ctx);
-    expect(metadata).toHaveBeenCalledWith(expect.objectContaining({
-      effectiveStatus: 'error',
-      childFailureCount: 1,
-    }));
+    expect(metadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        backend: 'server',
+        toolCalls: 1,
+        intermediateBytes: 0,
+        spilledBytes: 0,
+        failureClass: 'script-error',
+        effectiveStatus: 'error',
+        childFailureCount: 1,
+      }),
+    );
+  });
+
+  it('stamps exact pre-door run metrics and captured recipe identity without content', async () => {
+    captureRecipeMock.mockResolvedValueOnce({
+      row: {
+        id: 'metric-recipe',
+        script: 'return { kept: true };',
+        updatedAt: '2026-08-22T20:00:00.000Z',
+      } as never,
+      similarRecipes: [],
+    });
+    const metadata = vi.fn();
+    const ctx = { ...(mkCtx() as unknown as Record<string, unknown>), metadata } as never;
+    const res = (await codeRun().fn({ script: 'return { kept: true };' }, ctx)) as {
+      content: Array<{ type: string; text?: string }>;
+    };
+    const stamped = metadata.mock.calls[0][0] as Record<string, unknown>;
+    const payload = JSON.parse(String(res.content[0]?.text));
+
+    expect(stamped).toMatchObject({
+      backend: 'server',
+      toolCalls: 1,
+      intermediateBytes: 0,
+      returnedContextBytes: codeRunReturnedContextBytes(payload, undefined),
+      spilledBytes: 0,
+      failureClass: null,
+      recipeCapture: 'captured',
+      recipeReuse: false,
+      recipeCacheHit: false,
+      recipeCandidateCount: 0,
+      recipeId: 'metric-recipe',
+    });
+    expect(stamped.recipeRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(stamped.durationMs).toEqual(expect.any(Number));
+    expect(JSON.stringify(stamped)).not.toContain('kept');
+    expect(codeRunFailureClass({ ok: true })).toBeNull();
   });
 
   it('shapes console logs before serializing the code:run payload and keeps a small summary unchanged', async () => {
     const tool = codeRun();
     const res = await tool.fn(
       {
-        script:
-          'console.log("raw \\u001b[31mred\\u001b[0m bell \\u0007 newline\\nnext");\n' +
-          'return { kept: true };',
+        script: 'console.log("raw \\u001b[31mred\\u001b[0m bell \\u0007 newline\\nnext");\n' + 'return { kept: true };',
       },
       mkCtx(),
     );
@@ -518,7 +563,14 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     return tool;
   };
   const mkCtx = () =>
-    ({ log: () => {}, workspaceId: 'ws-test', harnessSlug: 'alpha', role: 'su', isSuperuser: true, uiClientId: 'su-test' }) as never;
+    ({
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'su',
+      isSuperuser: true,
+      uiClientId: 'su-test',
+    }) as never;
 
   beforeEach(() => captureRecipeMock.mockClear());
 
@@ -550,24 +602,23 @@ describe('code:run → inline facade help on unknown refs (P-007)', () => {
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    'workItems.notARealMethod',
-    'work_items.notARealMethod',
-    'work_items:notARealMethod',
-  ])('returns typed signatures for an unknown member under the %s namespace spelling', (unknownRef) => {
-    const tools = [
-      {
-        expose: { mcp: { name: 'work_items:list' } },
-        description: 'List work items',
-        inputSchema: { type: 'object', properties: {}, additionalProperties: false },
-      },
-    ] as never;
-    const help = buildFacadeHelp([unknownRef], tools, new Set(['work_items:list']));
+  it.each(['workItems.notARealMethod', 'work_items.notARealMethod', 'work_items:notARealMethod'])(
+    'returns typed signatures for an unknown member under the %s namespace spelling',
+    (unknownRef) => {
+      const tools = [
+        {
+          expose: { mcp: { name: 'work_items:list' } },
+          description: 'List work items',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        },
+      ] as never;
+      const help = buildFacadeHelp([unknownRef], tools, new Set(['work_items:list']));
 
-    expect(help.note).toContain('Typed signatures for the namespaces you referenced');
-    expect(help.signatures).toContain('workItems: {');
-    expect(help.namespaces).toBeUndefined();
-  });
+      expect(help.note).toContain('Typed signatures for the namespaces you referenced');
+      expect(help.signatures).toContain('workItems: {');
+      expect(help.namespaces).toBeUndefined();
+    },
+  );
 });
 
 /**
@@ -603,7 +654,13 @@ describe('code:run → per-inner-call workspace/identity rebinding (WI-1411)', (
   });
 
   it('fast path: a concrete-workspace (bee) ctx with no per-call override dispatches under the SAME binding — zero extra tx', async () => {
-    const outerCtx = { workspaceId: 'ws-bee', role: 'cup', isSuperuser: false, tx: 'OUTER_TX', principal: 'OUTER_PRINCIPAL' };
+    const outerCtx = {
+      workspaceId: 'ws-bee',
+      role: 'cup',
+      isSuperuser: false,
+      tx: 'OUTER_TX',
+      principal: 'OUTER_PRINCIPAL',
+    };
     const result = (await bindInnerDispatch(readTool, 'fleet:assignments', {}, outerCtx as never, echoNext)) as Record<
       string,
       unknown
@@ -1002,7 +1059,9 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
       dryRun: false,
       partial: true,
       plannedMutations: [{ tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' } }],
-      okFalseMutations: [{ tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' }, result: okFalseResult }],
+      okFalseMutations: [
+        { tool: 'work_items:set_state', args: { id: 'WI-1', state: 'resolved' }, result: okFalseResult },
+      ],
     }) as Record<string, unknown>;
     expect(shaped.ok).toBe(true); // the script itself completed — this is exactly the misleading bit
     expect(shaped.partial).toBe(true);
@@ -1051,9 +1110,7 @@ describe('annotateChildFailureWarning — a failed READ-effect child call is nam
       partial: true,
       plannedMutations: [],
       okFalseMutations: [],
-      childFailures: [
-        { tool: 'work_items:get', kind: 'semantic', result: { ok: false, error: 'not_found' } },
-      ],
+      childFailures: [{ tool: 'work_items:get', kind: 'semantic', result: { ok: false, error: 'not_found' } }],
     }) as Record<string, unknown>;
 
     expect(annotated.ok).toBe(true); // still true — the script did run. This is the misleading bit.
@@ -1070,9 +1127,7 @@ describe('annotateChildFailureWarning — a failed READ-effect child call is nam
       partial: true,
       plannedMutations: [],
       okFalseMutations: [],
-      childFailures: [
-        { tool: 'work_items:get', kind: 'semantic', result: { ok: false, error: 'not_found' } },
-      ],
+      childFailures: [{ tool: 'work_items:get', kind: 'semantic', result: { ok: false, error: 'not_found' } }],
     }) as Record<string, unknown>;
     expect(echoOnly.childFailureWarning).toBeUndefined();
     expect(echoOnly.okFalseWarning).toBeUndefined();
@@ -1089,9 +1144,7 @@ describe('annotateChildFailureWarning — a failed READ-effect child call is nam
       okFalseMutations: [
         { tool: 'coord:send', args: { to: ['nobody'] }, result: { ok: false, error: 'unknown_recipient' } },
       ],
-      childFailures: [
-        { tool: 'coord:send', kind: 'semantic', result: { ok: false, error: 'unknown_recipient' } },
-      ],
+      childFailures: [{ tool: 'coord:send', kind: 'semantic', result: { ok: false, error: 'unknown_recipient' } }],
     }) as Record<string, unknown>;
 
     expect(annotated.childFailureWarning).toBeUndefined();

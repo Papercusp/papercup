@@ -36,6 +36,11 @@ import {
 // The sweep that has to REFILL whatever a width migration wipes — asserted
 // against the widened set below, so the two lists cannot drift apart again.
 import { TARGETS } from './embed-backfill';
+// Personal Vault is intentionally not part of TARGETS: its dedicated target
+// hard-pins the local-only EmbeddingGemma path and is invoked as a separate leg.
+import { PERSONAL_EMBED_TARGET } from '../personal-vault/embedding';
+
+const REFILL_TARGETS = [...TARGETS, PERSONAL_EMBED_TARGET];
 
 describe('the prose column width contract', () => {
   it('every prose-eligible mode emits EXACTLY the column width', () => {
@@ -220,18 +225,19 @@ describe('the prose column width contract', () => {
    * A width change necessarily WIPES every column it touches (pgvector cannot
    * cast between widths, so migration 727 ALTERs `USING NULL`). That is only
    * acceptable because the backfill sweep refills them — which is true ONLY for
-   * columns the sweep actually visits. A column in PROSE_VECTOR_COLUMNS but NOT
-   * in TARGETS is wiped by the migration and refilled by nothing: a PERMANENT
-   * loss dressed up as a temporary degradation.
+   * columns the refill paths actually visit. A column in PROSE_VECTOR_COLUMNS but
+   * in neither the general TARGETS sweep nor a dedicated target is wiped by the
+   * migration and refilled by nothing: a PERMANENT loss dressed up as a temporary
+   * degradation.
    *
    * Measured before this guard existed: `code_recipes` (8,165 vectors) and
    * `datatype_registry` (8) were in the widened set and absent from TARGETS,
    * with no other re-embed path. Both are among the exact tables this module's
    * own docblock records as having been silently missed once already, which is
    * why the fix is an assertion rather than two more hand-maintained rows.
-   */
+  */
   it('every column the migration WIPES has a backfill target that refills it', () => {
-    const swept = new Set(TARGETS.map((t) => `${t.table}.${t.embedCol}`));
+    const swept = new Set(REFILL_TARGETS.map((t) => `${t.table}.${t.embedCol}`));
     const memoryVec = new Set(PROSE_MEMORY_VEC_COLUMNS.map((c) => `${c.table}.${c.column}`));
     // The base-table half of the wipe set. memory_vec_* is excluded here because
     // its refill path is a DIFFERENT mechanism (asserted by the two tests below);
@@ -242,11 +248,17 @@ describe('the prose column width contract', () => {
     expect(
       orphaned,
       `These prose columns are widened (and therefore NULLed) by a width migration but have no ` +
-        `entry in embed-backfill's TARGETS, so nothing ever refills them — the vectors are lost ` +
-        `permanently, not temporarily: ${orphaned.join(', ')}. Add a TARGETS entry (bodySql + the ` +
-        `real PRIMARY KEY in keyCols), or remove the column from PROSE_VECTOR_COLUMNS if it is ` +
+        `registered refill target, so nothing ever refills them — the vectors are lost permanently, ` +
+        `not temporarily: ${orphaned.join(', ')}. Add the target to the owning refill path (with ` +
+        `the real PRIMARY KEY in keyCols), or remove the column from PROSE_VECTOR_COLUMNS if it is ` +
         `genuinely not a shared prose surface.`,
     ).toEqual([]);
+  });
+
+  it('keeps Personal Vault on its dedicated local-only refill path', () => {
+    const key = `${PERSONAL_EMBED_TARGET.table}.${PERSONAL_EMBED_TARGET.embedCol}`;
+    expect(TARGETS.some((t) => `${t.table}.${t.embedCol}` === key)).toBe(false);
+    expect(key).toBe('harness_shared.personal_documents.embedding');
   });
 
   /**

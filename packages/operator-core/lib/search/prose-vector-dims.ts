@@ -112,6 +112,12 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   { table: 'harness_shared.harness_decisions', column: 'body_embedding' },
   { table: 'harness_shared.code_recipes', column: 'embedding' },
   { table: 'harness_shared.datatype_registry', column: 'embedding' },
+  // Migration 874 adds the owner-local Personal Vault corpus. Its EmbeddingGemma
+  // vector is still part of the 768-dim storage contract, so a future width
+  // migration must include it, but its refill is deliberately kept off the
+  // general TARGETS sweep: personal-vault/embedding.ts hard-pins the local-only
+  // embedder and runs this target as a separate governed leg.
+  { table: 'harness_shared.personal_documents', column: 'embedding' },
   // WI-39840. Both are QUERY vectors compared against `session_turns.text_embedding`,
   // so they are governed by the shared prose width — but both were created AFTER
   // migration 727 moved that width to 768 and each declared `vector(384)` anyway

@@ -39,31 +39,39 @@ A passing scorecard is one complete current-revision observation by a non-implem
 
 Build the candidate universe before consulting COUNT_SURFACE_DECLARATIONS. From the repository root, run both searches:
 
-    rg -n --glob '*.{ts,tsx}' --glob '!*.{test,spec}.{ts,tsx}' 'useColumnFilters\(|countEvidence|\.length\b|\b(total|matched|count|facets|kind_facets|next_cursor|has_more)\b|Showing\s+.*\s+of\s+|latest\s+.*(events|commits|matches)' apps/operator/app apps/operator-vite/src apps/operator-public/src packages/operator-core/lib/endpoint-route/routes packages/operator-core/lib/agent-tools/cupboard packages/operator-core/lib/cupboard
+```bash
+rg -n --glob '*.{ts,tsx}' --glob '!*.{test,spec}.{ts,tsx}' 'useColumnFilters\(|countEvidence|\.length\b|\b(total|matched|count|facets|kind_facets|next_cursor|has_more)\b|Showing\s+.*\s+of\s+|latest\s+.*(events|commits|matches)' apps/operator/app apps/operator-vite/src apps/operator-public/src packages/operator-core/lib/endpoint-route/routes packages/operator-core/lib/agent-tools/cupboard packages/operator-core/lib/cupboard
 
-    rg -n --glob '*.tsx' --glob '!*.{test,spec}.tsx' '(aria-label|aria-live|title=).*(count|total|showing|latest)|formatCountEvidence|countEvidence' apps/operator/app apps/operator-vite/src apps/operator-public/src packages/operator-core/lib/endpoint-route/routes packages/operator-core/lib/agent-tools/cupboard packages/operator-core/lib/cupboard
+rg -n --glob '*.tsx' --glob '!*.{test,spec}.tsx' '(aria-label|aria-live|title=).*(count|total|showing|latest)|formatCountEvidence|countEvidence' apps/operator/app apps/operator-vite/src apps/operator-public/src packages/operator-core/lib/endpoint-route/routes packages/operator-core/lib/agent-tools/cupboard packages/operator-core/lib/cupboard
 
-    rg -n --glob '*.rs' '\.len\(\)|\b(total|matched|count|facets|kind_facets|next_cursor|has_more)\b|Showing|latest' apps/tui/src
+rg -n --glob '*.rs' '\.len\(\)|\b(total|matched|count|facets|kind_facets|next_cursor|has_more)\b|Showing|latest' apps/tui/src
 
+```
 Review every positive. Attach a renewed-inventory table to WI-40590 with: candidate path and line; visible count copy; data writer; active-defect, latent-defect, window-disclosure, control, or false-positive disposition; COUNT_SURFACE_DECLARATIONS id when applicable; evidence variant; cap; and the exact semantic test name that proves the disposition. Record every false positive with a reason so absence is not inferred from omission.
 
 Only after the independent table exists, compare it with:
 
-    apps/operator/app/harness/filters/count-surface-contract.ts
-    apps/operator/app/harness/filters/count-surface-contract.guard.test.ts
+```bash
+apps/operator/app/harness/filters/count-surface-contract.ts
+apps/operator/app/harness/filters/count-surface-contract.guard.test.ts
 
+```
 The inventory criterion is healthy only when every true candidate maps exactly once, active/latent rows use corpus evidence with a behavior guard, deliberate histories use named window evidence, controls name a semantic no-change assertion, and UNARMED_COUNT_BEHAVIOR_BASELINE is exactly empty. A test-path existence check is insufficient; cite the exact it/test case and its passing result.
 
 Run the executable guard:
 
-    npm run test:file -- apps/operator/app/harness/filters/count-surface-contract.guard.test.ts
+```bash
+npm run test:file -- apps/operator/app/harness/filters/count-surface-contract.guard.test.ts
 
+```
 ## 3. Core real-Postgres matrix
 
 Run this exact command from the repository root:
 
-    npm run test:file -- packages/operator-core/lib/sync-resolver/count-contract-testkit.test.ts packages/operator-core/lib/sync-resolver/companion-summary.integration.test.ts packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts packages/operator-core/lib/sync-resolver/learning-observations-query.integration.test.ts packages/operator-core/lib/sync-resolver/learning-improve-view-query.integration.test.ts packages/operator-core/lib/sync-resolver/learning-retain-query.integration.test.ts packages/operator-core/lib/sync-resolver/agent-runs-list-query.integration.test.ts packages/operator-core/lib/scorecards.integration.test.ts packages/operator-core/lib/sync-resolver/adv-sessions-list-query.integration.test.ts packages/operator-core/lib/sync-resolver/design-features-list-query.integration.test.ts
+```bash
+npm run test:file -- packages/operator-core/lib/sync-resolver/count-contract-testkit.test.ts packages/operator-core/lib/sync-resolver/companion-summary.integration.test.ts packages/operator-core/lib/sync-resolver/work-items-list-query.integration.test.ts packages/operator-core/lib/sync-resolver/learning-observations-query.integration.test.ts packages/operator-core/lib/sync-resolver/learning-improve-view-query.integration.test.ts packages/operator-core/lib/sync-resolver/learning-retain-query.integration.test.ts packages/operator-core/lib/sync-resolver/agent-runs-list-query.integration.test.ts packages/operator-core/lib/scorecards.integration.test.ts packages/operator-core/lib/sync-resolver/adv-sessions-list-query.integration.test.ts packages/operator-core/lib/sync-resolver/design-features-list-query.integration.test.ts
 
+```
 Map results to these required semantic assertions:
 
 - Shared testkit: seed the distinguished match strictly beyond the cap; one normalized predicate feeds rows/totals/drill-down facets; adjacent snapshots converge after one paired invalidation and non-convergence fails.
@@ -92,18 +100,22 @@ Read the constants from packages/operator-core/lib/sync-resolver/bounded-list-re
 
 Run this exact 26-file command from the repository root:
 
-    npm run test:file -- apps/operator/app/harness/filters/ColumnFilterBar.test.tsx apps/operator/app/harness/filters/filter-count-label.test.ts apps/operator/app/harness/filters/useColumnFilters.test.tsx apps/operator/app/harness/filters/count-surface-contract.guard.test.ts apps/operator/app/adv/harnesses/WorkItemsPanel.test.tsx apps/operator/app/adv/create/ObservationsPanel.test.tsx apps/operator-vite/src/components/adv/LearningTab.test.tsx apps/operator/app/adv/harnesses/AdvAgentsPanel.test.tsx apps/operator/app/_components/RubricDetailPanel.test.tsx apps/operator/app/adv/sessions/AdvSessionsClient.test.tsx 'apps/operator/app/design/[slug]/DesignDashboard.test.tsx' apps/operator/app/cupboard/__tests__/CupboardClient.test.tsx apps/operator/app/adv/harnesses/AdvLogsPanel.test.tsx apps/operator/app/adv/harnesses/AdvGitGraphPanel.test.tsx apps/operator/app/coord/CoordHistory.test.tsx apps/operator-vite/src/components/adv/AdvConversationsTab.test.tsx apps/operator/app/adv/harnesses/MemberWorkPanel.component.test.tsx apps/operator/app/admin/plans/PlansClient.test.tsx apps/operator/app/_components/RubricsPanel.test.tsx apps/operator-vite/src/components/adv/MemoryHealthCard.test.tsx apps/operator/app/adv/harnesses/DetailPanel.workitem-dedup.test.tsx apps/operator/app/admin/testing/_components/CoverageTab.test.ts apps/operator/app/adv/hud/HudEntityColumns.test.tsx apps/operator/app/admin/_components/TableAdmin.test.tsx apps/operator/app/adv/sessions/__tests__/AgentDossier.test.tsx apps/operator/app/adv/harnesses/PotContentPanel.component.test.tsx
+```bash
+npm run test:file -- apps/operator/app/harness/filters/ColumnFilterBar.test.tsx apps/operator/app/harness/filters/filter-count-label.test.ts apps/operator/app/harness/filters/useColumnFilters.test.tsx apps/operator/app/harness/filters/count-surface-contract.guard.test.ts apps/operator/app/adv/harnesses/WorkItemsPanel.test.tsx apps/operator/app/adv/create/ObservationsPanel.test.tsx apps/operator-vite/src/components/adv/LearningTab.test.tsx apps/operator/app/adv/harnesses/AdvAgentsPanel.test.tsx apps/operator/app/_components/RubricDetailPanel.test.tsx apps/operator/app/adv/sessions/AdvSessionsClient.test.tsx 'apps/operator/app/design/[slug]/DesignDashboard.test.tsx' apps/operator/app/cupboard/__tests__/CupboardClient.test.tsx apps/operator/app/adv/harnesses/AdvLogsPanel.test.tsx apps/operator/app/adv/harnesses/AdvGitGraphPanel.test.tsx apps/operator/app/coord/CoordHistory.test.tsx apps/operator-vite/src/components/adv/AdvConversationsTab.test.tsx apps/operator/app/adv/harnesses/MemberWorkPanel.component.test.tsx apps/operator/app/admin/plans/PlansClient.test.tsx apps/operator/app/_components/RubricsPanel.test.tsx apps/operator-vite/src/components/adv/MemoryHealthCard.test.tsx apps/operator/app/adv/harnesses/DetailPanel.workitem-dedup.test.tsx apps/operator/app/admin/testing/_components/CoverageTab.test.ts apps/operator/app/adv/hud/HudEntityColumns.test.tsx apps/operator/app/admin/_components/TableAdmin.test.tsx apps/operator/app/adv/sessions/__tests__/AgentDossier.test.tsx apps/operator/app/adv/harnesses/PotContentPanel.component.test.tsx
 
+```
 For each migrated client, cite the exact test names proving that visual copy and accessible text identify the same population; exact corpus, explicit window, floor, and unknown/updating states are distinguishable; and mixed paired-query refetches never render stale combinations. For the no-change controls, cite the semantic count/population assertion from each regressionGuardPaths file. A broad file that passes without exercising the claimed count semantics is not evidence.
 
 Run Cupboard worker and TUI legs separately:
 
-    cd apps/operator-public && bash ../../scripts/pc-heavy.sh npx vitest run
+```bash
+cd apps/operator-public && bash ../../scripts/pc-heavy.sh npx vitest run
 
-    cd apps/tui && bash ../../scripts/pc-heavy.sh cargo test cupboard
+cd apps/tui && bash ../../scripts/pc-heavy.sh cargo test cupboard
 
-    cd apps/tui && bash ../../scripts/pc-heavy.sh cargo check
+cd apps/tui && bash ../../scripts/pc-heavy.sh cargo check
 
+```
 Cupboard must preserve cursor, total, and kind facets through worker, proxy, web, and TUI; exclude banned publishers before LIMIT; render Showing N of M; stop on exhaustion or no growth; and never infer corpus kind counts from page one.
 
 ## 6. Isolated live desktop
@@ -112,8 +124,10 @@ Use only the canonical isolated verifier against the current frozen bundle. Exis
 
 Set VERIFY_TAURI_AGENT_TOOLS_BIN to the explicit managed tauri-agent-tools executable, then run:
 
-    VERIFY_TAURI_AGENT_TOOLS_BIN=/home/marsh-office/.local/node25/bin/tauri-agent-tools scripts/verify-tauri-headless.sh -- scripts/verify-count-surfaces-tauri.sh
+```bash
+VERIFY_TAURI_AGENT_TOOLS_BIN=/home/marsh-office/.local/node25/bin/tauri-agent-tools scripts/verify-tauri-headless.sh -- scripts/verify-count-surfaces-tauri.sh
 
+```
 The checked-in assertion script is the decisive probe, not a placeholder. It uses the read-only papercusp harness and live authoritative writers as its deterministic dataset precondition; records the exact values observed during the run; navigates /adv?tab=harnesses&slug=papercusp for Work items and Run log, /adv?tab=learning&lview=observations, /adv?tab=learning&lview=improvements, /adv?tab=learning&lview=learnings, /adv?tab=git&slug=papercusp, /coord?panel=history, and /cupboard; asserts [data-testid=wi-count], [data-testid=observations-count], exact-zero Improve/Retain companion counts under a unique impossible-match query, .pc-adv-gitgrid__count, the latest-300 log scope, the latest-matches-up-to-200 coordination window, Cupboard kind facets, and Showing N of M; compares visible and accessible population copy; refuses loaded/page-only substitutions; captures route-specific screenshot/DOM/state/log/error manifests; and prints exactly one P014_TAURI_ACCEPTANCE_OK marker only after all assertions and console checks pass. Any selector, copy, facet-sum, console, provenance, or tool failure exits nonzero. Its source contract is pinned by apps/operator/lib/verify-tauri-headless-quoting.test.ts.
 
 The assertion command must navigate and prove all of the following in the Tauri webview, not a browser-only page:
@@ -130,16 +144,18 @@ Every assertion must exit nonzero on mismatch. The verifier must tear down succe
 
 Type-clean in this rubric means every named command exits zero with no ratchet regression; it does not mean the repository has zero historical diagnostics unless the bare command itself reports that. Run:
 
-    npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/plans/get.ts,packages/operator-core/lib/format-check-script.test.ts,packages/operator-core/lib/scheduler/get-next.ts,packages/operator-core/lib/check-assert-integrity.test.ts,packages/operator-core/lib/agent-tools/cupboard/search.ts,packages/operator-core/lib/cupboard/browse-listings.ts,packages/operator-core/lib/endpoint-route/routes/cupboard.ts
+```bash
+npm run lint:tsc -- --files=packages/operator-core/lib/agent-tools/plans/get.ts,packages/operator-core/lib/format-check-script.test.ts,packages/operator-core/lib/scheduler/get-next.ts,packages/operator-core/lib/check-assert-integrity.test.ts,packages/operator-core/lib/agent-tools/cupboard/search.ts,packages/operator-core/lib/cupboard/browse-listings.ts,packages/operator-core/lib/endpoint-route/routes/cupboard.ts
 
-    npm run lint:tsc:operator -- --files=apps/operator/app/harness/filters/count-surface-contract.ts,apps/operator/app/harness/filters/count-surface-contract.guard.test.ts
+npm run lint:tsc:operator -- --files=apps/operator/app/harness/filters/count-surface-contract.ts,apps/operator/app/harness/filters/count-surface-contract.guard.test.ts
 
-    cd apps/operator-public && npm run typecheck
+cd apps/operator-public && npm run typecheck
 
-    npm run lint:tsc:operator-vite -- --files=apps/operator-vite/src/components/adv/LearningTab.tsx,apps/operator-vite/src/components/adv/AdvConversationsTab.tsx
+npm run lint:tsc:operator-vite -- --files=apps/operator-vite/src/components/adv/LearningTab.tsx,apps/operator-vite/src/components/adv/AdvConversationsTab.tsx
 
-    npm run lint:tsc
+npm run lint:tsc
 
+```
 After all acceptance bytes are committed by git-sync, trigger a fresh release:checkpoint-run for the touched paths. Record the containing commit C, the candidate commit judged by the checkpoint G, the terminal green verdict, and the deployed pin D from release:deploy status. Acceptance requires C to be an ancestor of or equal to G and D to equal G. If the gate is red, fix its actual failures, rerun the verdict, then trigger the green deploy; never grade an older green pin or force past red.
 
 ## 8. Predecessor resolution map

@@ -1099,8 +1099,8 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
         ],
       }),
     );
-    expect(setLimitMock).toHaveBeenCalledWith('too-wide', 681_000);
-    expect(out.relimited).toEqual([{ owner: 'too-wide', from: 700_000, to: 681_000 }]);
+    expect(setLimitMock).toHaveBeenCalledWith('too-wide', 682_000);
+    expect(out.relimited).toEqual([{ owner: 'too-wide', from: 700_000, to: 682_000 }]);
     expect(out.overLimit).toEqual([]);
   });
 

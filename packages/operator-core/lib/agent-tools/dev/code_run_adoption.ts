@@ -16,26 +16,37 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
-import { readCodeRunAdoption, rollupAdoption, gradeToolUtilization, type RunQuery } from '../../code-run-adoption';
+import {
+  gradeToolUtilization,
+  readCodeRunAdoption,
+  readCodeRunInstrumentation,
+  readNativeExecRouting,
+  rollupAdoption,
+  type RunQuery,
+} from '../../code-run-adoption';
 import { NUDGE_CONVERSION_SQL } from '../../code-run-nudge-telemetry';
+import {
+  clientResidueBounds,
+  FUNCTIONS_EXEC_CLIENT_RESIDUE_SNAPSHOT,
+  MEASURED_SUMMARY_BUDGET_CHARS,
+  ORCHESTRATION_BENCHMARK_CORPUS,
+} from '../../orchestration-benchmark-corpus';
 
 export default defineTool({
   name: 'dev:code_run_adoption',
   profile: 'engineer',
   description:
     'code:run adoption: of spawns that COULD batch (same-tool burst / fan-out), how many folded the ' +
-    'flow into one code:run — per role/day, a fleet rollup, and the graded tool-utilization rating. Last N days.',
+    'flow into one code:run — plus per-run instrumentation, aggregate-output escape alerts, native-exec routing, ' +
+    'and the frozen P-002 comparison baseline. Last N days.',
   capability: 'intel:read',
   guidance: {
     when:
       'Grading pot-coordination-health tool-utilization, or checking whether the code:run nudges / ' +
-      'recipes-at-orient are moving adoption. Returns the fleet rate + a ready rating + the per-role/day breakdown.',
-    notWhen:
-      'Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence).',
-    seeAlso: [
-      'dev:telemetry (raw per-tool call counts)',
-      'dev:tool_cooccurrence (which tools co-occur in a spawn)',
-    ],
+      'recipes-at-orient are moving adoption. Also use it to inspect run quality, aggregate-output escapes, ' +
+      'or D-017 migration away from native client execution.',
+    notWhen: 'Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence).',
+    seeAlso: ['dev:telemetry (raw per-tool call counts)', 'dev:tool_cooccurrence (which tools co-occur in a spawn)'],
   },
   requirePrincipal: false,
   // ALL roles — a read-only metric the whole fleet (esp. the Overwatch grading tool-utilization) can pull.
@@ -48,9 +59,50 @@ export default defineTool({
     const { sql } = getOrgPg();
     const runQuery: RunQuery = async <T = unknown>(query: string, params: unknown[]) =>
       (await sql.unsafe(query, params as never)) as unknown as T[];
-    const byRoleDay = await readCodeRunAdoption(runQuery, { sinceDays });
+    const [byRoleDay, instrumentation, nativeExecRouting] = await Promise.all([
+      readCodeRunAdoption(runQuery, { sinceDays }),
+      readCodeRunInstrumentation(runQuery, sinceDays),
+      readNativeExecRouting(runQuery, sinceDays),
+    ]);
     const fleet = rollupAdoption(byRoleDay);
     const grade = gradeToolUtilization(fleet);
+    const incident = ORCHESTRATION_BENCHMARK_CORPUS.find((entry) => entry.id === 'incident-01a02a75-nine-read-fanout');
+    if (!incident) throw new Error('P-002 incident baseline missing from orchestration benchmark corpus');
+    const residue = clientResidueBounds();
+    const perRun = (total: number): number | null => (instrumentation.runs > 0 ? total / instrumentation.runs : null);
+    const runQuality = {
+      totals: instrumentation,
+      perRun: {
+        toolCalls: perRun(instrumentation.toolCalls),
+        intermediateBytes: perRun(instrumentation.intermediateBytes),
+        returnedContextBytes: perRun(instrumentation.returnedContextBytes),
+        spilledBytes: perRun(instrumentation.spilledBytes),
+        durationMs: perRun(instrumentation.durationMs),
+      },
+      p002Baseline: {
+        incidentId: incident.id,
+        incidentMetrics: incident.metrics,
+        authoredSummaryBudgetChars: MEASURED_SUMMARY_BUDGET_CHARS,
+        clientOnlyResidue: {
+          source: FUNCTIONS_EXEC_CLIENT_RESIDUE_SNAPSHOT.source,
+          capturedThroughTs: FUNCTIONS_EXEC_CLIENT_RESIDUE_SNAPSHOT.capturedThroughTs,
+          totalCalls: FUNCTIONS_EXEC_CLIENT_RESIDUE_SNAPSHOT.totalCalls,
+          ...residue,
+        },
+      },
+    };
+    const alerts = {
+      aggregateOutputEscape: {
+        status: instrumentation.aggregateOutputEscapes > 0 ? 'firing' : 'clear',
+        severity: 'critical',
+        threshold: 0,
+        count: instrumentation.aggregateOutputEscapes,
+        message:
+          instrumentation.aggregateOutputEscapes > 0
+            ? `${instrumentation.aggregateOutputEscapes} code:run result(s) exceeded the aggregate output budget in the last ${sinceDays} day(s)`
+            : `No code:run result exceeded the aggregate output budget in the last ${sinceDays} day(s)`,
+      },
+    };
     // Nudge→conversion funnel (P-005): of sessions that received a batch-hint in the window,
     // how many then called code:run/recipes:run. Best-effort — the fires table (mig 482) may
     // not exist yet on an un-migrated host; the adoption read must not fail for it.
@@ -71,7 +123,20 @@ export default defineTool({
     }
     return {
       content: [
-        { type: 'text', text: JSON.stringify({ ok: true, sinceDays, fleet, grade, nudge, byRoleDay }) },
+        {
+          type: 'text',
+          text: JSON.stringify({
+            ok: true,
+            sinceDays,
+            fleet,
+            grade,
+            nudge,
+            runQuality,
+            nativeExecRouting,
+            alerts,
+            byRoleDay,
+          }),
+        },
       ],
     };
   },

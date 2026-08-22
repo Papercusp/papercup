@@ -18,9 +18,11 @@ import {
   applyResultDoor,
   beginResultDoorAggregate,
   buildProjectionHint,
+  measureResultContextBytes,
   resetResultDoorAggregatesForTests,
   RESULT_DOOR_TOKENS,
 } from './result-door';
+import { parseScratchReference } from './scratch-reference';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555555';
@@ -61,7 +63,10 @@ function readSpill(ws: string, tool: string, runId: string): string {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, ws, tool, runId);
   const files = readdirSync(dir);
   expect(files).toHaveLength(1);
-  return readFileSync(join(dir, files[0]), 'utf8');
+  const bytes = readFileSync(join(dir, files[0]));
+  const reference = parseScratchReference(bytes);
+  expect(reference).not.toBeNull();
+  return reference!.payload.toString('utf8');
 }
 
 function boundedBody(result: DoorableResult): {
@@ -73,9 +78,9 @@ function boundedBody(result: DoorableResult): {
     truncated: boolean;
   };
 } {
-  const textItems = result.content.filter(
-    (item) => (item as { type?: unknown }).type === 'text',
-  ) as Array<{ text: string }>;
+  const textItems = result.content.filter((item) => (item as { type?: unknown }).type === 'text') as Array<{
+    text: string;
+  }>;
   expect(textItems).toHaveLength(1);
   return JSON.parse(textItems[0].text) as {
     text?: string;
@@ -101,20 +106,22 @@ describe('applyResultDoor', () => {
       { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID },
     );
     const body = boundedBody(doored);
+    const resultDoor = (doored as unknown as { _meta: { resultDoor: { originalBytes: number } } })._meta.resultDoor;
+    expect(resultDoor.originalBytes).toBe(Buffer.byteLength(original, 'utf8'));
+    expect(measureResultContextBytes(doored)).toBeLessThan(Buffer.byteLength(original, 'utf8'));
     expect(body.text).toContain('line 0 of a very long tool result');
     expect(body.text).not.toBe(original);
     expect(body._projection).toMatchObject({ kind: 'bounded-payload', truncated: true });
-    expect(JSON.stringify(body._projection.cursor)).toContain(
-      'papercusp://scratch/ws-1/plans:get/' + RUN_ID,
-    );
+    expect(JSON.stringify(body._projection.cursor)).toContain('papercusp://scratch/ws-1/plans:get/' + RUN_ID);
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('# tool: plans:get');
     expect(spill.endsWith(original)).toBe(true);
   });
 
   it('EI-20435986111760474: oversized code:tools TypeScript stays valid JSON for direct and nested calls', () => {
-    const signatures = Array.from({ length: 80 }, (_, i) =>
-      `declare const tools${i}: { dev: { pgQuery(args: { sql: string }): Promise<unknown> } };`,
+    const signatures = Array.from(
+      { length: 80 },
+      (_, i) => `declare const tools${i}: { dev: { pgQuery(args: { sql: string }): Promise<unknown> } };`,
     ).join('\n');
     expect(signatures.length).toBeGreaterThan(BUDGET_CHARS);
 
@@ -147,7 +154,9 @@ describe('applyResultDoor', () => {
       { content: [{ type: 'text' as const, text: original }], structuredContent: { ok: true, rows } },
       { toolName: 'work_items:list', workspaceId: 'ws-1', runId: RUN_ID },
     ) as DoorableResult;
-    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{ text: string }>;
+    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{
+      text: string;
+    }>;
     expect(textItems).toHaveLength(1);
     expect(textItems[0].text.length).toBeLessThan(BUDGET_CHARS);
     const parsed = JSON.parse(textItems[0].text) as {
@@ -176,23 +185,31 @@ describe('applyResultDoor', () => {
     // lossless schema-bearing response and must therefore survive unchanged.
     expect(doored.structuredContent).toEqual({ ok: true, rows });
     expect((doored.structuredContent as { rows: typeof rows }).rows).toHaveLength(300);
-    expect((doored.structuredContent as { rows: typeof rows }).rows.every(
-      (row) => typeof row.id === 'string' && typeof row.state === 'string' && typeof row.detail === 'string',
-    )).toBe(true);
+    expect(
+      (doored.structuredContent as { rows: typeof rows }).rows.every(
+        (row) => typeof row.id === 'string' && typeof row.state === 'string' && typeof row.detail === 'string',
+      ),
+    ).toBe(true);
     expect((doored._meta!.resultDoor as { structural: boolean }).structural).toBe(true);
     expect(readSpill('ws-1', 'work_items:list', RUN_ID).endsWith(original)).toBe(true);
   });
 
   it('finds and structurally projects JSON accompanied by advisory prose', () => {
-    const original = JSON.stringify({ rows: Array.from({ length: 300 }, (_, i) => ({ id: i, detail: 'z'.repeat(100) })) });
+    const original = JSON.stringify({
+      rows: Array.from({ length: 300 }, (_, i) => ({ id: i, detail: 'z'.repeat(100) })),
+    });
     const doored = applyResultDoor(
-      { content: [
-        { type: 'text' as const, text: 'See also: work_items:claimable' },
-        { type: 'text' as const, text: original },
-      ] },
+      {
+        content: [
+          { type: 'text' as const, text: 'See also: work_items:claimable' },
+          { type: 'text' as const, text: original },
+        ],
+      },
       { toolName: 'tools:invoke', workspaceId: 'ws-1', runId: RUN_ID },
     );
-    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{ text: string }>;
+    const textItems = doored.content.filter((item) => (item as { type?: string }).type === 'text') as Array<{
+      text: string;
+    }>;
     expect(textItems).toHaveLength(1);
     expect(() => JSON.parse(textItems[0].text)).not.toThrow();
     expect(JSON.parse(textItems[0].text)._projection.cursor.tool).toBe('capability:read');
@@ -234,7 +251,15 @@ describe('applyResultDoor', () => {
       summaryProvenance: 'authored',
       state: 'incomplete',
       incomplete: { reason: 'non-text-result-budget-exceeded', omittedItems: 3 },
-      content: [{ kind: 'reference', byteCount: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/) }],
+      content: [
+        {
+          kind: 'reference',
+          byteCount: expect.any(Number),
+          sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+          expiresAt: expect.any(String),
+          audience: 'workspace',
+        },
+      ],
     });
     const spill = readSpill('ws-1', 'plans:get', RUN_ID);
     expect(spill).toContain('trailing text fully over budget');
@@ -298,7 +323,9 @@ describe('applyResultDoor', () => {
     // The session's resolved constants double the floor → resultEach 3000 tokens.
     doorConstantsMock.mockReturnValue({ ...BAKED_DOOR_CONSTANTS, maxTurnFloorTokens: 16_000 });
     const result = { content: [{ type: 'text' as const, text: original }] };
-    expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, ownerId: 'su-x' })).toBe(result);
+    expect(
+      applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID, ownerId: 'su-x' }),
+    ).toBe(result);
     expect(doorConstantsMock).toHaveBeenCalledWith('su-x'); // keyed on the caller's identity
   });
 
@@ -344,9 +371,7 @@ describe('applyResultDoor', () => {
       const result = {
         content: [{ type: 'text' as const, text: 'small' }, bigImage(64)],
       };
-      expect(
-        applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID }),
-      ).toBe(result);
+      expect(applyResultDoor(result, { toolName: 'plans:get', workspaceId: 'ws-1', runId: RUN_ID })).toBe(result);
     });
 
     it('counts non-text UTF-8 bytes in structural metadata when the result is doored', () => {
@@ -358,8 +383,7 @@ describe('applyResultDoor', () => {
         workspaceId: 'ws-1',
         runId: RUN_ID,
       });
-      const meta = (doored._meta as { resultDoor?: { nonTextBytes?: number } } | undefined)
-        ?.resultDoor;
+      const meta = (doored._meta as { resultDoor?: { nonTextBytes?: number } } | undefined)?.resultDoor;
       expect(meta?.nonTextBytes).toBe(5_000);
     });
 
@@ -367,10 +391,7 @@ describe('applyResultDoor', () => {
       writeFileSync(join(sandbox, 'scratch'), 'not a directory');
       const original = bigImage(BUDGET_CHARS * 3);
       const input: DoorableResult = { content: [original] };
-      const doored = applyResultDoor(
-        input,
-        { toolName: 'computer:screenshot', workspaceId: 'ws-1', runId: RUN_ID },
-      );
+      const doored = applyResultDoor(input, { toolName: 'computer:screenshot', workspaceId: 'ws-1', runId: RUN_ID });
       const envelope = JSON.parse((doored.content[0] as { text: string }).text);
       expect(envelope).toMatchObject({
         state: 'error',
@@ -404,8 +425,7 @@ describe('applyResultDoor', () => {
       expect((second._meta as { resultDoor?: unknown } | undefined)?.resultDoor).toBeUndefined();
       const envelope = JSON.parse((third.content[0] as { text: string }).text);
       expect(envelope.incomplete.reason).toBe('aggregate-output-budget-exceeded');
-      const aggregate = (third._meta as { resultDoor?: { aggregate?: Record<string, unknown> } })
-        .resultDoor?.aggregate;
+      const aggregate = (third._meta as { resultDoor?: { aggregate?: Record<string, unknown> } }).resultDoor?.aggregate;
       expect(aggregate).toMatchObject({
         mode: 'explicit',
         budgetBytes: 12_000,
@@ -591,7 +611,7 @@ describe('applyResultDoor', () => {
     it(
       'a result WITHOUT any marker gets the HONEST default wording — never an unconditional ' +
         '"FULL result" claim (EI-18762253154342502: no marker firing proves nothing was cut ' +
-        "upstream, only that no known marker fired — a tool can silently truncate a field with " +
+        'upstream, only that no known marker fired — a tool can silently truncate a field with ' +
         'a bare ellipsis and no `_truncated` flag, as plans:items did before its own fix)',
       () => {
         const doored = applyResultDoor(

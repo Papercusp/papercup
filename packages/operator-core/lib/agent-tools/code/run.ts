@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { Buffer } from 'node:buffer';
 import { withWorkspace, getOrgPg } from '@papercusp/db-org';
 import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
@@ -20,6 +21,7 @@ import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { captureRecipe } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
+import { recipeRevision } from '../../recipe-authority';
 import { runWithWorkspaceIfConcrete } from '../../workspace-als';
 import {
   dispatchNeedsTx,
@@ -48,7 +50,7 @@ export default defineTool({
   name: 'code:run',
   description:
     'Run a multi-step tool-orchestration script (tools.ns.verb(args) + JS control flow) in ONE ' +
-    'call, returning only the script\'s summary (plus explicitly returned image/audio blocks) — ' +
+    "call, returning only the script's summary (plus explicitly returned image/audio blocks) — " +
     'collapsing N sequential model turns into one and ' +
     'keeping intermediate payloads out of context. Write the ' +
     'script directly; a wrong tool name returns typed signatures inline to fix. dryRun:true ' +
@@ -65,7 +67,7 @@ export default defineTool({
       'tools.ns.verb(args) is exposed (no require/process/import) — use capability:bash + npx tsx.',
     chaining:
       'script → code:run { dryRun:true } → inspect plannedMutations → code:run. A correct tool ' +
-      'name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool\'s ' +
+      "name with a WRONG field mapping fails SILENTLY (ok:true, blank rows) — check the tool's " +
       '`returns` (tools:find), or return one raw result before mapping a batch. ORDERING: a ' +
       'rejected/thrown call aborts every LATER call in the same script — put durable writes ' +
       '(checkpoint, facts:assert) FIRST, never last.',
@@ -97,62 +99,62 @@ export default defineTool({
   // AGENT_ROLES is the complete built-in role universe; keep the companion tools (code:tools,
   // recipes:run/search/list/get) and CODE_RUN_CAPABLE_ROLES (the batch-nudge audience) in lockstep.
   agentRoles: [...AGENT_ROLES],
-  args: z
-    .object({
-      script: z
-        .string()
-        .min(1)
-        .max(20_000)
-        .describe(
-            'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
-            'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
-            'media from intermediate tool calls is never emitted implicitly. ' +
-            'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
-            'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
-            'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
-            "Shell commands inside the JS body need JS escaping too: write `tr '\\\\0' ' ' </proc/self/cmdline` " +
-            '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs.',
-        ),
-      title: z
-        .string()
-        .max(120)
-        .optional()
-        .describe(
-          'Short title for the reusable RECIPE saved on a successful run — make it discoverable ' +
-            'by other agents (e.g. "triage stale work-items"). Optional: a fallback is derived ' +
-            'from the script when omitted.',
-        ),
-      description: z
-        .string()
-        .max(2_000)
-        .optional()
-        .describe(
-          'One/two lines on what this recipe does + when to reuse it. Optional: derived from the ' +
-            'tool-set when omitted.',
-        ),
-      dryRun: z
-        .boolean()
-        .optional()
-        .describe('Preview: record effect:write tool calls without executing them (reads still run).'),
-      timeoutSec: z
-        .number()
-        .int()
-        .min(1)
-        .max(120)
-        .optional()
-        .describe(
-          `Wall-clock budget (default 30s). EI-9239: code:run has no run_in_background — every call is ` +
-            `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
-            `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
-            `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
-            `of an opaque transport request_timeout — the script itself may keep running server-side past ` +
-            `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
-            `into multiple code:run calls or fall back to individual tool calls.`,
-        ),
-    }),
+  args: z.object({
+    script: z
+      .string()
+      .min(1)
+      .max(20_000)
+      .describe(
+        'JS/TS body. Call tools via `await tools.ns.verb(args)`; `return` a compact summary. ' +
+          'To emit final media, return exactly `{ summary, media: [{ type: "image"|"audio", data: "<base64>", mimeType }] }`; ' +
+          'media from intermediate tool calls is never emitted implicitly. ' +
+          'No setTimeout or setInterval usage -- neither is ambient in this sandbox -- use `await sleep(ms)` for a ' +
+          'short bounded delay (e.g. write-then-reverify) instead. sleep() caps at 10s and returns the ' +
+          'actual ms waited -- use that (not ms) when measuring a window, e.g. a rate over a delta. ' +
+          "Shell commands inside the JS body need JS escaping too: write `tr '\\\\0' ' ' </proc/self/cmdline` " +
+          '(two backslashes in the script source); a single `\\0` JS escape becomes a NUL and is rejected before bash runs.',
+      ),
+    title: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Short title for the reusable RECIPE saved on a successful run — make it discoverable ' +
+          'by other agents (e.g. "triage stale work-items"). Optional: a fallback is derived ' +
+          'from the script when omitted.',
+      ),
+    description: z
+      .string()
+      .max(2_000)
+      .optional()
+      .describe(
+        'One/two lines on what this recipe does + when to reuse it. Optional: derived from the ' +
+          'tool-set when omitted.',
+      ),
+    dryRun: z
+      .boolean()
+      .optional()
+      .describe('Preview: record effect:write tool calls without executing them (reads still run).'),
+    timeoutSec: z
+      .number()
+      .int()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        `Wall-clock budget (default 30s). EI-9239: code:run has no run_in_background — every call is ` +
+          `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
+          `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
+          `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
+          `of an opaque transport request_timeout — the script itself may keep running server-side past ` +
+          `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
+          `into multiple code:run calls or fall back to individual tool calls.`,
+      ),
+  }),
   async handler(args, ctx) {
+    const runStartedAtMs = Date.now();
     const script = args.script;
-    
+
     const all = listAllProjectedTools();
     // Scope the facade to tools this agent's role may call (mirrors the dispatcher role-allowlist);
     // exclude code:run itself so a script cannot recursively nest code-mode.
@@ -186,15 +188,14 @@ export default defineTool({
     // similarRecipes is ADVISORY/SOFT: the run STILL ran + STILL captured. It tells the agent
     // "recipes X/Y already do this — next time recipes:run(X) instead of re-authoring".
     let similarRecipes: SimilarRecipe[] = [];
+    let recipeCapture: CodeRunRecipeCapture | null = null;
     // Don't SAVE a recipe that references an unknown tool (F8): the run may have limped through by
     // isolating the bad ref, but a captured recipe with a known-bad name is a poor thing to reuse.
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
     // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
-    if (
-      !(args.dryRun ?? false) &&
-      isRecipeCaptureEligible(result, all)
-    ) {
-      similarRecipes = await maybeCaptureRecipe(args, ctx, all, allowed);
+    if (!(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
+      recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed);
+      similarRecipes = recipeCapture?.similarRecipes ?? [];
     }
 
     // P-007 (agent-tooling-token-efficiency): cut the discovery ritual. The old flow demanded a
@@ -205,10 +206,7 @@ export default defineTool({
     // dryRun safety is untouched: write-effect mutations still require the dryRun preview as before.
     // Surface the self-service fix whenever the script referenced an unknown tool — even if the run
     // limped through by isolating it (F8): the agent still wants the correct name for next time.
-    const facadeHelp =
-      result.unknownRefs?.length
-        ? buildFacadeHelp(result.unknownRefs, all, allowed)
-        : undefined;
+    const facadeHelp = result.unknownRefs?.length ? buildFacadeHelp(result.unknownRefs, all, allowed) : undefined;
 
     // EI-19301148486657755: the FIELD-name counterpart of facadeHelp above. A wrong TOOL name
     // already hands back typed signatures; a wrong FIELD name was silent, because `undefined` is
@@ -307,12 +305,29 @@ export default defineTool({
       // Telemetry is never allowed to fail a run that otherwise succeeded.
     }
 
-    const childFailureRefs = [...new Set([
-      ...(result.childFailures ?? []).map((failure) => failure.tool),
-      ...(result.unknownRefs ?? []),
-    ])];
-    const childFailureCount = (result.childFailures?.length ?? 0) +
-      (!result.ok && childFailureRefs.length === 0 ? 1 : 0);
+    const childFailureRefs = [
+      ...new Set([...(result.childFailures ?? []).map((failure) => failure.tool), ...(result.unknownRefs ?? [])]),
+    ];
+    const childFailureCount =
+      (result.childFailures?.length ?? 0) + (!result.ok && childFailureRefs.length === 0 ? 1 : 0);
+    // P-008: one telemetry vocabulary for every orchestration run. These are
+    // measured at the last pre-door point; result-door backfills the two
+    // output fields when it later projects/spills the response.
+    invocationMetadata.backend = 'server';
+    invocationMetadata.toolCalls = 1 + (result.dispatchCount ?? 0);
+    invocationMetadata.intermediateBytes = result.intermediateBytes ?? 0;
+    invocationMetadata.returnedContextBytes = codeRunReturnedContextBytes(payload, media);
+    invocationMetadata.spilledBytes = 0;
+    invocationMetadata.durationMs = Math.max(0, Date.now() - runStartedAtMs);
+    invocationMetadata.failureClass = codeRunFailureClass(result);
+    invocationMetadata.recipeCapture = recipeCapture ? 'captured' : 'not-captured';
+    invocationMetadata.recipeReuse = false;
+    invocationMetadata.recipeCacheHit = false;
+    invocationMetadata.recipeCandidateCount = similarRecipes.length;
+    if (recipeCapture) {
+      invocationMetadata.recipeId = recipeCapture.id;
+      invocationMetadata.recipeRevision = recipeCapture.revision;
+    }
     invocationMetadata.effectiveStatus = !result.ok
       ? 'error'
       : result.partial || childFailureCount > 0
@@ -332,10 +347,7 @@ export default defineTool({
     ctx.metadata?.(invocationMetadata);
 
     return {
-      content: [
-        { type: 'text' as const, text: JSON.stringify(payload) },
-        ...(media ?? []),
-      ],
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }, ...(media ?? [])],
     } as unknown as ToolResult;
   },
 });
@@ -505,9 +517,46 @@ export function isRecipeCaptureEligible(
       .map((tool) => tool.expose?.mcp?.name)
       .filter((name): name is string => typeof name === 'string'),
   );
-  return (result.childFailures ?? []).every(
-    (failure) => failure.kind === 'semantic' && readTools.has(failure.tool),
-  );
+  return (result.childFailures ?? []).every((failure) => failure.kind === 'semantic' && readTools.has(failure.tool));
+}
+
+interface CodeRunRecipeCapture {
+  id: string;
+  revision: string;
+  similarRecipes: SimilarRecipe[];
+}
+
+/** Exact context-bearing bytes before the shared result door runs. Text is
+ * already the serialized authored payload; media contributes its base64 data,
+ * matching result-door's source-byte accounting without logging content. */
+export function codeRunReturnedContextBytes(
+  payload: unknown,
+  media: ReadonlyArray<{ data?: unknown }> | undefined,
+): number {
+  let bytes = Buffer.byteLength(JSON.stringify(payload) ?? '', 'utf8');
+  for (const item of media ?? []) {
+    if (typeof item.data === 'string') bytes += Buffer.byteLength(item.data, 'utf8');
+  }
+  return bytes;
+}
+
+export function codeRunFailureClass(result: {
+  ok: boolean;
+  partial?: boolean;
+  error?: string;
+  childFailures?: Array<{ kind: string }>;
+}): string | null {
+  if (result.ok && !result.partial && !result.childFailures?.length) return null;
+  if (result.partial || result.childFailures?.length) {
+    const kinds = new Set(result.childFailures?.map((failure) => failure.kind) ?? []);
+    if (kinds.has('uncertain')) return 'child-uncertain';
+    if (kinds.has('rejected')) return 'child-rejected';
+    return 'child-semantic';
+  }
+  const error = result.error ?? '';
+  if (/timeout/i.test(error)) return 'timeout';
+  if (error.startsWith('invalid_media_result:')) return 'invalid-output';
+  return 'script-error';
 }
 
 const DRY_RUN_MUTATION_PREVIEW_CHAR_BUDGET = 20_000;
@@ -641,12 +690,7 @@ export function shapeCodeRunLogs<T extends { logs?: unknown }>(
 
   const limited = deduped.slice(0, CODE_RUN_LOG_LINE_LIMIT);
   const droppedAfterLimit = Math.max(0, deduped.length - limited.length);
-  if (
-    sanitizedLines === 0 &&
-    truncatedLines === 0 &&
-    adjacentDuplicatesCollapsed === 0 &&
-    droppedAfterLimit === 0
-  ) {
+  if (sanitizedLines === 0 && truncatedLines === 0 && adjacentDuplicatesCollapsed === 0 && droppedAfterLimit === 0) {
     return result;
   }
 
@@ -660,8 +704,7 @@ export function shapeCodeRunLogs<T extends { logs?: unknown }>(
       sanitizedLines,
       truncatedLines,
       droppedAfterLimit,
-      note:
-        'code:run logs were shaped to keep terminal noise bounded; the script return value in `summary` is unchanged',
+      note: 'code:run logs were shaped to keep terminal noise bounded; the script return value in `summary` is unchanged',
     },
   };
 }
@@ -768,9 +811,9 @@ function projectCodeRunSummaryValue(
   }
 
   if (Array.isArray(value)) {
-    const shown = value.slice(0, options.arrayLimit).map((entry, index) =>
-      projectCodeRunSummaryValue(entry, `${path}[${index}]`, depth + 1, options, stats),
-    );
+    const shown = value
+      .slice(0, options.arrayLimit)
+      .map((entry, index) => projectCodeRunSummaryValue(entry, `${path}[${index}]`, depth + 1, options, stats));
     if (value.length > options.arrayLimit) {
       stats.arraysTruncated++;
       stats.omittedItems += value.length - options.arrayLimit;
@@ -782,13 +825,7 @@ function projectCodeRunSummaryValue(
   if (isCodeRunSummaryRecord(value)) {
     const projected: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
-      projected[key] = projectCodeRunSummaryValue(
-        entry,
-        path ? `${path}.${key}` : key,
-        depth + 1,
-        options,
-        stats,
-      );
+      projected[key] = projectCodeRunSummaryValue(entry, path ? `${path}.${key}` : key, depth + 1, options, stats);
     }
     return projected;
   }
@@ -813,9 +850,10 @@ function minimalCodeRunSummaryProjection(
   // Keep scalar marker fields first in the last-resort shape. These are the values a monitor
   // uses to interpret the bounded nested collection (markerCount, lineCount, etc.).
   for (const [key, entry] of entries.filter(([, candidate]) => isCodeRunSummaryScalar(candidate))) {
-    const candidate = typeof entry === 'string'
-      ? clipCodeRunSummaryString(entry, `summary.${key}`, CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS, stats)
-      : entry;
+    const candidate =
+      typeof entry === 'string'
+        ? clipCodeRunSummaryString(entry, `summary.${key}`, CODE_RUN_SUMMARY_FALLBACK_STRING_CHARS, stats)
+        : entry;
     const withCandidate = { ...projected, [key]: candidate };
     if (codeRunSummarySerializedChars(withCandidate) <= budget) {
       projected[key] = candidate;
@@ -890,8 +928,7 @@ export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<str
       valuesTruncated: stats.valuesTruncated,
       omittedItems: stats.omittedItems,
       paths: stats.paths,
-      note:
-        'code:run summary was bounded before transport; scalar marker fields are preserved where possible and nested arrays/strings are explicitly truncated',
+      note: 'code:run summary was bounded before transport; scalar marker fields are preserved where possible and nested arrays/strings are explicitly truncated',
     },
   };
 }
@@ -941,7 +978,7 @@ export function shapeCodeRunSummary<T extends { summary?: unknown } | Record<str
 const ORDERING_HINT =
   'Ordering tip: a rejected/thrown call aborts every call written AFTER it in the same script — ' +
   'nothing past that line even dispatches. Put durable/continuity writes (work_items:checkpoint, ' +
-  'loop:checkpoint, facts:assert) FIRST in a batch so a later call\'s failure can never strand them.';
+  "loop:checkpoint, facts:assert) FIRST in a batch so a later call's failure can never strand them.";
 
 /**
  * P-020: the writes that never ran. Rendered from `strandedWrites` (computed at the
@@ -1014,19 +1051,13 @@ export function buildFailureWarning(
   // always said. Only the false-alarm case (nothing landed) gets new text.
   const parts: string[] = [];
   if (landedCount > 0) {
-    parts.push(
-      `${landedCount} write-effect call(s) already executed before this failure (${render(landedBy)})`,
-    );
+    parts.push(`${landedCount} write-effect call(s) already executed before this failure (${render(landedBy)})`);
   }
   if (uncertain.length > 0) {
-    parts.push(
-      `${uncertain.length} threw mid-flight and MAY have landed (${tally(uncertain)})`,
-    );
+    parts.push(`${uncertain.length} threw mid-flight and MAY have landed (${tally(uncertain)})`);
   }
   if (inFlight.length > 0) {
-    parts.push(
-      `${inFlight.length} still IN FLIGHT when the script returned (${tally(inFlight)}) and may settle later`,
-    );
+    parts.push(`${inFlight.length} still IN FLIGHT when the script returned (${tally(inFlight)}) and may settle later`);
   }
   const suffix =
     rejected.length > 0
@@ -1072,9 +1103,10 @@ export function annotateChildFailureWarning<T extends OrchestrationRunResult | R
   if (!Array.isArray(childFailures) || childFailures.length === 0) return result;
 
   const namedByOkFalse = new Set(
-    (((result as { okFalseMutations?: unknown }).okFalseMutations as
-      | ReadonlyArray<{ tool?: unknown }>
-      | undefined) ?? [])
+    (
+      ((result as { okFalseMutations?: unknown }).okFalseMutations as ReadonlyArray<{ tool?: unknown }> | undefined) ??
+      []
+    )
       .map((m) => (typeof m?.tool === 'string' ? m.tool : undefined))
       .filter((t): t is string => t !== undefined),
   );
@@ -1101,9 +1133,7 @@ export function annotateChildFailureWarning<T extends OrchestrationRunResult | R
   };
 }
 
-export function shapeMutationEcho(
-  result: OrchestrationRunResult,
-): OrchestrationRunResult | Record<string, unknown> {
+export function shapeMutationEcho(result: OrchestrationRunResult): OrchestrationRunResult | Record<string, unknown> {
   if (result.plannedMutations.length === 0) return result;
   if (result.dryRun) {
     const serialized = JSON.stringify(result.plannedMutations);
@@ -1130,8 +1160,7 @@ export function shapeMutationEcho(
         byTool,
         sample,
         sampleOmittedCount: plannedMutations.length - sample.length,
-        note:
-          'dryRun preview summarized to keep the result bounded and reviewable; sample shows a few representative writes per tool',
+        note: 'dryRun preview summarized to keep the result bounded and reviewable; sample shows a few representative writes per tool',
       },
     };
   }
@@ -1158,20 +1187,20 @@ export function shapeMutationEcho(
       else delete landedByTool[m.tool];
     }
   }
-  const landedCount = attempts.length > 0
-    ? settledAttempts.length
-    : Math.max(plannedMutations.length - rejected.length, 0);
+  const landedCount =
+    attempts.length > 0 ? settledAttempts.length : Math.max(plannedMutations.length - rejected.length, 0);
   const settledPrefixCount = attempts.findIndex((a) => a.disposition !== 'settled');
-  const dispositionIndexes = attempts.length > 0
-    ? Object.fromEntries(
-        ['settled', 'in_flight', 'semantic_rejected', 'rejected', 'uncertain']
-          .map((disposition) => [
-            disposition,
-            attempts.filter((a) => a.disposition === disposition).map((a) => a.index),
-          ])
-          .filter(([, indexes]) => (indexes as number[]).length > 0),
-      )
-    : undefined;
+  const dispositionIndexes =
+    attempts.length > 0
+      ? Object.fromEntries(
+          ['settled', 'in_flight', 'semantic_rejected', 'rejected', 'uncertain']
+            .map((disposition) => [
+              disposition,
+              attempts.filter((a) => a.disposition === disposition).map((a) => a.index),
+            ])
+            .filter(([, indexes]) => (indexes as number[]).length > 0),
+        )
+      : undefined;
   return {
     ...rest,
     mutations: {
@@ -1184,9 +1213,7 @@ export function shapeMutationEcho(
             settledPrefixCount: settledPrefixCount === -1 ? attempts.length : settledPrefixCount,
             dispositions: dispositionIndexes,
             ...(inFlightAttempts.length > 0 ? { inFlightCount: inFlightAttempts.length } : {}),
-            ...(semanticRejectedAttempts.length > 0
-              ? { semanticRejectedCount: semanticRejectedAttempts.length }
-              : {}),
+            ...(semanticRejectedAttempts.length > 0 ? { semanticRejectedCount: semanticRejectedAttempts.length } : {}),
           }
         : {}),
       note:
@@ -1290,7 +1317,10 @@ export function buildFacadeHelp(
       const rawNs = toolName.slice(0, sep);
       namespaceAliases.set(rawNs, entry.ns);
       namespaceAliases.set(rawNs.replace(/-/g, '_'), entry.ns);
-      namespaceAliases.set(rawNs.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase()), entry.ns);
+      namespaceAliases.set(
+        rawNs.replace(/[-_]+([a-z0-9])/gi, (_m, c: string) => c.toUpperCase()),
+        entry.ns,
+      );
     }
   }
 
@@ -1305,9 +1335,7 @@ export function buildFacadeHelp(
 
   const present = [...referencedNs].filter((ns) => known.has(ns));
   const missing = [...referencedNs].filter((ns) => !known.has(ns));
-  const signatures = present.length
-    ? generateToolFacadeTypes(all, { allowed, namespaces: present })
-    : undefined;
+  const signatures = present.length ? generateToolFacadeTypes(all, { allowed, namespaces: present }) : undefined;
 
   // Rank every known namespace by closeness to each missing ref; keep only the closest
   // FACADE_HELP_NAMESPACE_SUGGESTIONS overall (maxRatio:1 ⇒ always returns the top-k rather than
@@ -1358,10 +1386,10 @@ async function maybeCaptureRecipe(
   ctx: UnifiedToolContext,
   tools: ReturnType<typeof listAllProjectedTools>,
   allowed: ReadonlySet<string>,
-): Promise<SimilarRecipe[]> {
+): Promise<CodeRunRecipeCapture | null> {
   try {
     const workspaceId = ctx.workspaceId;
-    if (!workspaceId) return []; // no workspace ⇒ nothing to scope a recipe to
+    if (!workspaceId) return null; // no workspace ⇒ nothing to scope a recipe to
 
     const { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } = await import('../search/embedder');
     const { potHomeSlugForHarness } = await import('../../hive-federation');
@@ -1395,9 +1423,15 @@ async function maybeCaptureRecipe(
         allowed,
       },
     );
-    return captured?.similarRecipes ?? [];
+    return captured
+      ? {
+          id: captured.row.id,
+          revision: recipeRevision(captured.row.script, captured.row.updatedAt),
+          similarRecipes: captured.similarRecipes,
+        }
+      : null;
   } catch (err) {
     ctx.log(`code:run recipe capture wiring failed (swallowed): ${(err as Error)?.message ?? String(err)}`);
-    return [];
+    return null;
   }
 }

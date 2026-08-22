@@ -111,6 +111,7 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       runId: 'run-abc',
       outputRef: 'papercusp://scratch/papercusp-workspace/x:one/result-door-1.md',
       outputSize: 4200,
+      metadataJson: { returnedContextBytes: 512, spilledBytes: 4200 },
     });
 
     expect(unsafeCalls).toHaveLength(2);
@@ -123,9 +124,11 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
     //    workspaceId/spawnId/toolName/runId correlation key, in that order.
     expect(unsafeCalls[1].sql).toContain('UPDATE harness_shared.tool_invocations');
     expect(unsafeCalls[1].sql).toContain('output_ref IS NULL');
+    expect(unsafeCalls[1].sql).toContain("metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb");
     expect(unsafeCalls[1].params).toEqual([
       'papercusp://scratch/papercusp-workspace/x:one/result-door-1.md',
       4200,
+      JSON.stringify({ returnedContextBytes: 512, spilledBytes: 4200 }),
       'ws-test',
       's-test',
       'x:one',
@@ -141,7 +144,25 @@ describe('backfillResultDoorOutputRef (EI-19389431406847252)', () => {
       outputRef: 'papercusp://scratch/x',
       outputSize: 1,
     });
-    expect(unsafeCalls[1].params[5]).toBeNull();
+    expect(unsafeCalls[1].params[6]).toBeNull();
+  });
+
+  it('supports a metadata-only post-door merge when spill persistence failed', async () => {
+    await backfillResultDoorOutputRef({
+      workspaceId: 'ws-test',
+      spawnId: 's-test',
+      toolName: 'code:run',
+      metadataJson: {
+        returnedContextBytes: 600,
+        spilledBytes: 0,
+        aggregateOutputEscape: true,
+      },
+    });
+    expect(unsafeCalls[1].params.slice(0, 3)).toEqual([
+      null,
+      null,
+      JSON.stringify({ returnedContextBytes: 600, spilledBytes: 0, aggregateOutputEscape: true }),
+    ]);
   });
 
   it('swallows a PG failure and logs a warning instead of throwing', async () => {

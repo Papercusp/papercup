@@ -104,13 +104,21 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe('external-trigger admin route pair', () => {
-  it('keeps read and write desktop-callable under the same explicit trust gate', () => {
+  it('keeps owner-local and Slack routes under their explicit trust gates', () => {
     expect(read).toMatchObject({ method: 'GET', path: '/admin/triggers' });
     expect(mutate).toMatchObject({ method: 'PATCH', path: '/admin/triggers' });
     expect(read.auth).toEqual({ trust: ['verified', 'trusted', 'unverified-loopback'] });
     expect(mutate.auth).toEqual(read.auth);
-    expect(slackManifest).toMatchObject({ method: 'GET', path: '/admin/triggers/slack/manifest', auth: read.auth });
-    expect(slackConnect).toMatchObject({ method: 'POST', path: '/admin/triggers/slack/connect', auth: read.auth });
+    expect(slackManifest).toMatchObject({
+      method: 'GET',
+      path: '/admin/triggers/slack/manifest',
+      auth: { trust: ['verified', 'trusted'] },
+    });
+    expect(slackConnect).toMatchObject({
+      method: 'POST',
+      path: '/admin/triggers/slack/connect',
+      auth: { trust: ['verified', 'trusted'] },
+    });
   });
 
   it('returns the shared snapshot and the default-ON flag fails open on provider errors', async () => {

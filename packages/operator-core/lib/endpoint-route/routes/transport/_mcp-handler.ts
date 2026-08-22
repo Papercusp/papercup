@@ -66,14 +66,9 @@ import {
 import type { AgentRole } from '@papercusp/plugin-sdk';
 // Generic MCP↔dispatcher bridge primitives (plan P-031). The auth/spawn-context
 // assembly below stays host-side; only the reusable, host-agnostic glue moved.
-import {
-  bearerFromExtra,
-  urlFromExtra,
-  headersFromExtra,
-  dispatchProjectedToolToMcp,
-} from '@papercusp/tooldef-mcp';
+import { bearerFromExtra, urlFromExtra, headersFromExtra, dispatchProjectedToolToMcp } from '@papercusp/tooldef-mcp';
 import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
-import { applyResultDoor, beginResultDoorAggregate } from '../../../result-door';
+import { applyResultDoor, beginResultDoorAggregate, measureResultContextBytes } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import {
   PROJECTION_ARG,
@@ -123,16 +118,8 @@ import {
   getSessionSurface,
   activateSessionTools,
 } from './tool-allowlist';
-import {
-  validIdempotencyKey,
-  lookupStoredMcpResult,
-  storeMcpResult,
-  type StoredMcpResult,
-} from './_mcp-result-replay';
-import {
-  takeStoredInitializeHandler,
-  wrapInitializeWithInstructions,
-} from './_mcp-initialize-enrich';
+import { validIdempotencyKey, lookupStoredMcpResult, storeMcpResult, type StoredMcpResult } from './_mcp-result-replay';
+import { takeStoredInitializeHandler, wrapInitializeWithInstructions } from './_mcp-initialize-enrich';
 import { buildMcpPrelude } from '../../../memory/mcp-prelude';
 import { INSIGHTS_DIR } from '../../../memory/knowledge-read';
 import { getSessionUserOrDefault } from '../../../auth';
@@ -177,10 +164,7 @@ function nestedResultDoorSkipReason(result: McpCallResult): ResultDoorSkipReason
   return isResultDoorSkipReason(reason) ? reason : undefined;
 }
 
-function carryNestedResultDoorSkip(
-  result: McpCallResult,
-  reason: ResultDoorSkipReason | undefined,
-): McpCallResult {
+function carryNestedResultDoorSkip(result: McpCallResult, reason: ResultDoorSkipReason | undefined): McpCallResult {
   if (!reason) return result;
   return {
     ...result,
@@ -264,7 +248,10 @@ function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
   if (value && typeof value === 'object') {
     const obj = value as Record<string, unknown>;
-    return `{${Object.keys(obj).sort().map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`).join(',')}}`;
+    return `{${Object.keys(obj)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson(obj[k])}`)
+      .join(',')}}`;
   }
   return JSON.stringify(value);
 }
@@ -291,7 +278,7 @@ function resultRows(result: McpCallResult): unknown[] {
 
 function resultDelta(result: McpCallResult): Record<string, unknown> | undefined {
   const delta = result._meta?.delta;
-  return delta && typeof delta === 'object' ? delta as Record<string, unknown> : undefined;
+  return delta && typeof delta === 'object' ? (delta as Record<string, unknown>) : undefined;
 }
 
 function adaptDeltaResponse(result: McpCallResult): DeltaResponse {
@@ -333,17 +320,12 @@ async function maybeRunWithDeltaProxy(input: {
   // Object-property reads aren't subject to that narrowing, so this sidesteps it.
   const lastBox: { value: McpCallResult | null } = { value: null };
   try {
-    const out = await dispatchWithConveyedDelta(
-      session.client,
-      session.fields,
-      viewKey,
-      async (requestedDelta) => {
-        // DeltaToolClient stores the opaque server cursor only; the tool protocol
-        // expects the request mode plus cursor on the wire.
-        lastBox.value = await input.runRaw(requestedDelta ? `not_modified~${requestedDelta}` : undefined, true);
-        return adaptDeltaResponse(lastBox.value);
-      },
-    );
+    const out = await dispatchWithConveyedDelta(session.client, session.fields, viewKey, async (requestedDelta) => {
+      // DeltaToolClient stores the opaque server cursor only; the tool protocol
+      // expects the request mode plus cursor on the wire.
+      lastBox.value = await input.runRaw(requestedDelta ? `not_modified~${requestedDelta}` : undefined, true);
+      return adaptDeltaResponse(lastBox.value);
+    });
     const finalResult = lastBox.value;
     if (!finalResult || finalResult.isError || out.mode === 'full') {
       return finalResult ?? input.runRaw(undefined, true);
@@ -495,11 +477,7 @@ function isScopedSafeCrossWorkspaceTool(toolName: string): boolean {
  * global-config meta-controls. (Reviewed in the gate, not a self-asserted per-tool flag,
  * per the SCOPED_SAFE_CROSSWORKSPACE convention above.)
  */
-const SUPERUSER_GLOBAL_FLAG_ADMIN: ReadonlySet<string> = new Set([
-  'flags:get',
-  'flags:set',
-  'flags:list',
-]);
+const SUPERUSER_GLOBAL_FLAG_ADMIN: ReadonlySet<string> = new Set(['flags:get', 'flags:set', 'flags:list']);
 
 /** Whether a tool is a GLOBAL-config superuser meta-control (the flag system) that a
  *  scoped superuser may reach despite the clamp — no tenant-data reach (see above). */
@@ -714,8 +692,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // ?all_workspaces=1 for deliberate cross-workspace admin. Flag OFF → unchanged
     // (the `workspaceId || '*'` fallback below), byte-identical.
     if (await getFlag(FLAGS.SCOPED_SUPERUSER_CLAMP, 'system')) {
-      const optedUnscoped =
-        workspaceId === '*' || url.searchParams.get('all_workspaces') === '1';
+      const optedUnscoped = workspaceId === '*' || url.searchParams.get('all_workspaces') === '1';
       if (!workspaceId && !optedUnscoped) {
         // mcp-outage-triage-2026-07-02: an UNTRACKED session (resumed claude whose
         // env lost PAPERCUSP_WORKSPACE and whose fresh SID has no adv row — the hole
@@ -768,7 +745,9 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // http-projection.ts:~233 (audit5) for the cross-cancellation
         // hazard that the shared sentinel created.
         runId: globalThis.crypto.randomUUID(),
-        spawnId: `ephemeral-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+        spawnId: `ephemeral-${Array.from(buf)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('')}`,
         parentSpawnId: null,
         uiClientId: suIdentity.length > 0 ? suIdentity : null,
         // Caller backend + model (fleet-launch-agent-inheritance-2026-07-03): psu stamps them onto
@@ -776,13 +755,9 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // with the `x-papercusp-agent`/`-model` headers as a parallel carrier. fleet:launch-on-plan
         // reads these to default a spawned fleet's backend/model to the CURRENT caller's own.
         callerAgent:
-          (headers.get('x-papercusp-agent') ?? '').trim() ||
-          (url.searchParams.get('agent') ?? '').trim() ||
-          null,
+          (headers.get('x-papercusp-agent') ?? '').trim() || (url.searchParams.get('agent') ?? '').trim() || null,
         callerModel:
-          (headers.get('x-papercusp-model') ?? '').trim() ||
-          (url.searchParams.get('model') ?? '').trim() ||
-          null,
+          (headers.get('x-papercusp-model') ?? '').trim() || (url.searchParams.get('model') ?? '').trim() || null,
         planRunSessionId,
         isSuperuser: true,
         // gateBypass is computed in buildMcpToolContext from isSuperuser/isPowerUser.
@@ -832,7 +807,9 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         featureId: null,
         chunkId: null,
         runId: globalThis.crypto.randomUUID(),
-        spawnId: `poweruser-${Array.from(buf).map((b) => b.toString(16).padStart(2, '0')).join('')}`,
+        spawnId: `poweruser-${Array.from(buf)
+          .map((b) => b.toString(16).padStart(2, '0'))
+          .join('')}`,
         parentSpawnId: null,
         // Coordination owner identity (file-locking #2). Default: the
         // token's auth_session_id — stable per power-user session. But
@@ -844,8 +821,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
         // it is NOT a security boundary — the workspace clamp above
         // (from the verified token) is. So an explicit `?client=` is
         // safe to honor: it relabels the owner, it cannot escalate.
-        uiClientId:
-          headerClient || (clientParam.length > 0 ? clientParam : claims.authSessionId),
+        uiClientId: headerClient || (clientParam.length > 0 ? clientParam : claims.authSessionId),
         planRunSessionId,
         // Dispatch-layer parity with superuser (operator-tier catalog
         // + synthesized system principal + workspace tx). The clamp
@@ -882,9 +858,7 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
   // above; tools/call falls through to the "none" path which rejects
   // with invalid_request_context.)
   const claimsSpawn =
-    url.searchParams.has('role') ||
-    url.searchParams.has('spawn') ||
-    url.searchParams.has('workspace');
+    url.searchParams.has('role') || url.searchParams.has('spawn') || url.searchParams.has('workspace');
 
   let sigVerified = false;
   if (hasSig || hasExp) {
@@ -919,10 +893,8 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
             `harness=${harness}. It will ZOMBIE unless re-spawned or switched to scripts/mcp-call.mjs.`,
         );
       } else {
-
         console.warn(
-          `[spawn-signing] rejected MCP request: ${v.reason} (role=${role}, ` +
-            `harness=${harness}, spawn=${spawn})`,
+          `[spawn-signing] rejected MCP request: ${v.reason} (role=${role}, ` + `harness=${harness}, spawn=${spawn})`,
         );
       }
       // Enrich the agent-visible reason with actionable self-recovery guidance
@@ -956,7 +928,6 @@ async function tryBuildSpawnContext(extra: unknown): Promise<TrySpawnContextResu
     // Soft-warn period: allow unsigned URLs but log so we can see the
     // transition progress.
     if (url.searchParams.has('role') || url.searchParams.has('spawn')) {
-       
       console.warn(
         '[spawn-signing] accepting UNSIGNED spawn URL (set PAPERCUSP_REQUIRE_SPAWN_SIG=1 to reject). ' +
           `role=${url.searchParams.get('role')} harness=${url.searchParams.get('harness')} ` +
@@ -1244,10 +1215,7 @@ export async function __buildMcpToolContext_forTests(
  * context instead of synthesizing a framework-reserved tool argument: raw
  * ProjectedTool registrations must never observe transport controls in args.
  */
-function projectionMaterializationContext(
-  ctx: UnifiedToolContext,
-  needsFullSource: boolean,
-): UnifiedToolContext {
+function projectionMaterializationContext(ctx: UnifiedToolContext, needsFullSource: boolean): UnifiedToolContext {
   if (!needsFullSource) return ctx;
   return {
     ...ctx,
@@ -1283,9 +1251,10 @@ async function buildMcpToolContext(
   // or a WORKSPACE-LEVEL signed role session (operator/planner launched without
   // a harness, hive-agent-tabs P-003). Skip path resolution; per-tool fallbacks
   // ("workspace=/harness= arg required") will fire.
-  const paths = (spawn.workspaceId === '*' || spawn.harnessSlug === '*')
-    ? { projectDir: undefined as unknown as string, stateDir: undefined as unknown as string }
-    : await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
+  const paths =
+    spawn.workspaceId === '*' || spawn.harnessSlug === '*'
+      ? { projectDir: undefined as unknown as string, stateDir: undefined as unknown as string }
+      : await resolveHarnessPathsImpl(spawn.harnessSlug, spawn.workspaceId);
   // Plugin handlers call ctx.emit / ctx.progress. When the MCP client
   // supplied a progressToken, fan each call to JSON-RPC notifications
   // over the agent's MCP session. Otherwise no-op (client opted out).
@@ -1318,8 +1287,9 @@ async function buildMcpToolContext(
             method: 'notifications/papercusp/event',
             params: { progressToken, event: name, data: wireData },
           }).catch((err) => {
-             
-            console.warn(`[mcp-tool] sendNotification(papercusp/event) failed: ${err instanceof Error ? err.message : String(err)}`);
+            console.warn(
+              `[mcp-tool] sendNotification(papercusp/event) failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
           });
           // Spec-compliance: also fire the standard progress notification
           // for the 'progress' wire event so MCP-aware clients that only
@@ -1329,12 +1299,15 @@ async function buildMcpToolContext(
               method: 'notifications/progress',
               params: { progressToken, ...(data as Record<string, unknown>) },
             }).catch((err) => {
-               
-              console.warn(`[mcp-tool] sendNotification(progress) failed: ${err instanceof Error ? err.message : String(err)}`);
+              console.warn(
+                `[mcp-tool] sendNotification(progress) failed: ${err instanceof Error ? err.message : String(err)}`,
+              );
             });
           }
         }
-      : () => { /* streaming disabled by client (no progressToken) */ };
+      : () => {
+          /* streaming disabled by client (no progressToken) */
+        };
   const progress: UnifiedToolContext['progress'] = (pct, msg) => {
     emit('progress', {
       progress: typeof pct === 'number' ? pct : 0,
@@ -1358,8 +1331,9 @@ async function buildMcpToolContext(
         method: 'notifications/tools/list_changed',
         params: {},
       }).catch((err) => {
-         
-        console.warn(`[mcp-tool] sendNotification(tools/list_changed) failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(
+          `[mcp-tool] sendNotification(tools/list_changed) failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
       });
     }
     return added;
@@ -1400,7 +1374,7 @@ async function buildMcpToolContext(
     // same error shape), then apply it to the result below (fail-open) so
     // `tools:invoke` behaves identically to a direct call.
     let dispatchToolArgs: Record<string, unknown> =
-      (toolArgs && typeof toolArgs === 'object' ? (toolArgs as Record<string, unknown>) : {});
+      toolArgs && typeof toolArgs === 'object' ? (toolArgs as Record<string, unknown>) : {};
     let projectionSpec: ProjectionSpec | null = null;
     let projectionNeedsFullSource = false;
     if (PROJECTION_ARG in dispatchToolArgs) {
@@ -1408,15 +1382,17 @@ async function buildMcpToolContext(
       if (!parsed.ok) {
         return {
           isError: true,
-          content: [{
-            type: 'text' as const,
-            text:
-              `projection_invalid: ${parsed.error}\n` +
-              `The \`projection\` argument reduces ANY tool result: ` +
-              `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
-              `An ARRAY-root body (a bare list result) is selected with "[].field", not "field". ` +
-              `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
-          }],
+          content: [
+            {
+              type: 'text' as const,
+              text:
+                `projection_invalid: ${parsed.error}\n` +
+                `The \`projection\` argument reduces ANY tool result: ` +
+                `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+                `An ARRAY-root body (a bare list result) is selected with "[].field", not "field". ` +
+                `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
+            },
+          ],
         };
       }
       projectionSpec = parsed.spec;
@@ -1462,25 +1438,15 @@ async function buildMcpToolContext(
     const spawnCtx: BuiltSpawnContext =
       effectiveWs === spawn.workspaceId ? spawn : { ...spawn, workspaceId: effectiveWs };
     const baseCtx: UnifiedToolContext =
-      effectiveWs === ctxRef.current!.workspaceId
-        ? ctxRef.current!
-        : { ...ctxRef.current!, workspaceId: effectiveWs };
+      effectiveWs === ctxRef.current!.workspaceId ? ctxRef.current! : { ...ctxRef.current!, workspaceId: effectiveWs };
     const dispatched = (await dispatchWithSynthesizedTx(target, spawnCtx, baseCtx, (ctx) => {
       const materializationCtx = projectionMaterializationContext(ctx, projectionNeedsFullSource);
-      return dispatchProjectedToolToMcp(
-        target,
-        canonicalName,
-        dispatchToolArgs,
-        materializationCtx,
-        PROJECTED_DEPS,
-      );
+      return dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, materializationCtx, PROJECTED_DEPS);
     })) as McpCallResult;
     const freeFormProjected = projectionSpec
       ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
-    const projectedDispatched = namedView
-      ? applyNamedViewToResult(freeFormProjected, namedView)
-      : freeFormProjected;
+    const projectedDispatched = namedView ? applyNamedViewToResult(freeFormProjected, namedView) : freeFormProjected;
     // A projected call was temporarily promoted to payloadTier:'full' above.
     // Do not carry the target's door exemption across that seam: a successful
     // projection is already small so the outer door is a no-op, while a
@@ -1542,7 +1508,6 @@ async function buildMcpToolContext(
     requestedDelta,
     requestOrigin: spawn.requestOrigin,
     log: (msg) => {
-       
       console.log(`[mcp-tool][${spawn.harnessSlug}/${spawn.role}/${spawn.spawnId}] ${msg}`);
     },
     progress,
@@ -1804,32 +1769,31 @@ const handler = createMcpHandler(
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const sdk = require('@modelcontextprotocol/sdk/types.js');
 
-    server.server.setRequestHandler(
-      sdk.ListToolsRequestSchema,
-      async (_req: unknown, extra: unknown) => {
-        // Shared visibility walk — see resolveVisibleToolListings above
-        // (strict-mode + manifest + allowlist semantics documented there).
-        const vis = await resolveVisibleToolListings(extra);
-        if (vis.kind === 'failed') {
-          // WI-574 (loud auth-fail): a REJECTED auth context (expired per-spawn signed URL, invalid
-          // superuser bearer, bad signature) must NOT return a silent empty tool list — that is
-          // indistinguishable from a healthy server with no tools and is the root of the "toolless
-          // session that looks connected" class. Throw a specific JSON-RPC error so the client + agent
-          // KNOW the session is unauthenticated and WHY. (Mirrors tools/call, which already hard-fails
-          // a rejected spawn ctx.) A bare no-params probe is `kind:'none'`, not 'failed', and still lists.
-          throw new Error(
-            `mcp_auth_failed: ${vis.reason} — this MCP session is UNAUTHENTICATED, so it exposes NO tools ` +
-              '(this is NOT "a healthy server with zero tools"). Typical causes: an EXPIRED per-spawn signed ' +
-              'URL token (re-mint/reconnect) or a missing/invalid superuser bearer. Fix the credential and reconnect.',
-          );
-        }
-        const filtered = vis.listings;
-        // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
-        // consumers (Ollama) can parse the surface. This is THE tools/list
-        // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
-        // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
-        return {
-          tools: await Promise.all(filtered.map(async (t) => {
+    server.server.setRequestHandler(sdk.ListToolsRequestSchema, async (_req: unknown, extra: unknown) => {
+      // Shared visibility walk — see resolveVisibleToolListings above
+      // (strict-mode + manifest + allowlist semantics documented there).
+      const vis = await resolveVisibleToolListings(extra);
+      if (vis.kind === 'failed') {
+        // WI-574 (loud auth-fail): a REJECTED auth context (expired per-spawn signed URL, invalid
+        // superuser bearer, bad signature) must NOT return a silent empty tool list — that is
+        // indistinguishable from a healthy server with no tools and is the root of the "toolless
+        // session that looks connected" class. Throw a specific JSON-RPC error so the client + agent
+        // KNOW the session is unauthenticated and WHY. (Mirrors tools/call, which already hard-fails
+        // a rejected spawn ctx.) A bare no-params probe is `kind:'none'`, not 'failed', and still lists.
+        throw new Error(
+          `mcp_auth_failed: ${vis.reason} — this MCP session is UNAUTHENTICATED, so it exposes NO tools ` +
+            '(this is NOT "a healthy server with zero tools"). Typical causes: an EXPIRED per-spawn signed ' +
+            'URL token (re-mint/reconnect) or a missing/invalid superuser bearer. Fix the credential and reconnect.',
+        );
+      }
+      const filtered = vis.listings;
+      // Objectify boolean sub-schemas (z.unknown() → `true`) so strict
+      // consumers (Ollama) can parse the surface. This is THE tools/list
+      // the HTTP MCP transport serves (OMP/Claude/Codex bundles); applied
+      // post-manifest so pinned schemas are covered too. tool-schema-sanitize.ts.
+      return {
+        tools: await Promise.all(
+          filtered.map(async (t) => {
             const tt = t as { name?: string; inputSchema?: unknown; outputSchema?: unknown };
             const out: Record<string, unknown> = { ...t };
             if (tt.inputSchema) {
@@ -1857,10 +1821,10 @@ const handler = createMcpHandler(
             // outputSchema (P-010) gets the same boolean-subschema objectification.
             if (tt.outputSchema) out.outputSchema = sanitizeToolSchema(tt.outputSchema);
             return out;
-          })),
-        };
-      },
-    );
+          }),
+        ),
+      };
+    });
 
     server.server.setRequestHandler(
       sdk.CallToolRequestSchema,
@@ -1912,17 +1876,18 @@ const handler = createMcpHandler(
         // per-call `_meta.delta` wins over a connection-level `?delta=` (mirrors
         // `?format=`). The HARNESS — not the model — sets this and owns cursor
         // storage + base-presence tracking; absent ⇒ no negotiation (serve full).
-        const requestedDelta =
-          req.params._meta?.delta ?? urlFromExtra(extra)?.searchParams.get('delta') ?? undefined;
+        const requestedDelta = req.params._meta?.delta ?? urlFromExtra(extra)?.searchParams.get('delta') ?? undefined;
         const explicitDelta =
           req.params._meta?.delta !== undefined || urlFromExtra(extra)?.searchParams.has('delta') === true;
         // mcp-handler passes the protocol's RequestHandlerExtra here,
         // which exposes a sendNotification function bound to the right
         // session. Use it to fire notifications/progress events.
-        const sendNotification = (extra as {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
-        })?.sendNotification;
+        const sendNotification = (
+          extra as {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            sendNotification?: (n: { method: string; params: Record<string, unknown> }) => Promise<void>;
+          }
+        )?.sendNotification;
 
         // Dispatch priority:
         //   1. Projected dispatcher when a spawn ctx is present (per-spawn
@@ -1962,10 +1927,12 @@ const handler = createMcpHandler(
         if (spawnRes.kind === 'failed') {
           return {
             isError: true,
-            content: [{
-              type: 'text' as const,
-              text: `request_rejected: ${spawnRes.reason}`,
-            }],
+            content: [
+              {
+                type: 'text' as const,
+                text: `request_rejected: ${spawnRes.reason}`,
+              },
+            ],
           };
         }
 
@@ -1973,16 +1940,15 @@ const handler = createMcpHandler(
           // Profile gate: power-profile callers cannot invoke Group A tools
           // even if they know the name. Mirrors the tools/list filter so
           // direct-name calls can't bypass the listing restriction.
-          if (
-            spawnRes.ctx.profile === 'power' &&
-            projected.profile === 'engineer'
-          ) {
+          if (spawnRes.ctx.profile === 'power' && projected.profile === 'engineer') {
             return {
               isError: true,
-              content: [{
-                type: 'text' as const,
-                text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
-              }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `tool_not_available_for_profile: "${toolName}" is not available in the power-engineer profile`,
+                },
+              ],
             };
           }
           // scoped-superuser-workspace-clamp (P-006/P-007), flag-gated. A SCOPED
@@ -2010,10 +1976,12 @@ const handler = createMcpHandler(
           ) {
             return {
               isError: true,
-              content: [{
-                type: 'text' as const,
-                text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
-              }],
+              content: [
+                {
+                  type: 'text' as const,
+                  text: `workspace_forbidden: "${toolName}" spans workspaces, but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Use an unscoped (--all-workspaces) superuser session to span workspaces.`,
+                },
+              ],
             };
           }
           // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
@@ -2050,10 +2018,12 @@ const handler = createMcpHandler(
               } else {
                 return {
                   isError: true,
-                  content: [{
-                    type: 'text' as const,
-                    text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
-                  }],
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `harness_forbidden: harness:'${ah}' is the unscoped global escape; this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a concrete harness in scope, or use an unscoped (--all-workspaces) session.`,
+                    },
+                  ],
                 };
               }
             }
@@ -2090,10 +2060,12 @@ const handler = createMcpHandler(
               if (harnessWs && harnessWs !== spawnRes.ctx.workspaceId) {
                 return {
                   isError: true,
-                  content: [{
-                    type: 'text' as const,
-                    text: `harness_forbidden: harness "${ah}" belongs to workspace "${harnessWs}", but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a harness in scope, or use an unscoped (--all-workspaces) session.`,
-                  }],
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `harness_forbidden: harness "${ah}" belongs to workspace "${harnessWs}", but this session is scoped to workspace "${spawnRes.ctx.workspaceId}". Name a harness in scope, or use an unscoped (--all-workspaces) session.`,
+                    },
+                  ],
                 };
               }
             }
@@ -2109,18 +2081,17 @@ const handler = createMcpHandler(
           // memory surfaces per-hive (P-014b) — is a separate multi-subsystem change.
           if (scopedSuperuserClamp && spawnRes.ctx.harnessSlug !== '*') {
             const { potHomeSlugForHarness } = await import('../../../hive-federation');
-            const scopeHive = await potHomeSlugForHarness(
-              spawnRes.ctx.workspaceId,
-              spawnRes.ctx.harnessSlug,
-            );
+            const scopeHive = await potHomeSlugForHarness(spawnRes.ctx.workspaceId, spawnRes.ctx.harnessSlug);
             if (scopeHive) {
               if (toolName.startsWith('cross_harness:')) {
                 return {
                   isError: true,
-                  content: [{
-                    type: 'text' as const,
-                    text: `harness_forbidden: "${toolName}" reads other harnesses, but this session is confined to hive "${scopeHive}".`,
-                  }],
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `harness_forbidden: "${toolName}" reads other harnesses, but this session is confined to hive "${scopeHive}".`,
+                    },
+                  ],
                 };
               }
               const argHarness =
@@ -2150,10 +2121,12 @@ const handler = createMcpHandler(
                 if (escapes) {
                   return {
                     isError: true,
-                    content: [{
-                      type: 'text' as const,
-                      text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".`,
-                    }],
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `harness_forbidden: harness "${argHarness}" is outside this session's hive "${scopeHive}".`,
+                      },
+                    ],
                   };
                 }
               }
@@ -2175,10 +2148,12 @@ const handler = createMcpHandler(
                 if (escapes) {
                   return {
                     isError: true,
-                    content: [{
-                      type: 'text' as const,
-                      text: `harness_forbidden: harness_slug "${argHarnessSlug}" is outside this session's hive "${scopeHive}".`,
-                    }],
+                    content: [
+                      {
+                        type: 'text' as const,
+                        text: `harness_forbidden: harness_slug "${argHarnessSlug}" is outside this session's hive "${scopeHive}".`,
+                      },
+                    ],
                   };
                 }
               }
@@ -2197,29 +2172,28 @@ const handler = createMcpHandler(
               // search/memory stay workspace-scoped via the per-workspace F-C1
               // foundation; a per-hive subtree-narrowing of free-text search/recall is
               // a tracked follow-on (P-016b) — latent today (live workspace == 1 hive).
-              const hiveArgs =
-                args && typeof args === 'object' ? (args as Record<string, unknown>) : null;
-              const argHive =
-                hiveArgs && typeof hiveArgs.hive === 'string' ? hiveArgs.hive.trim() : '';
+              const hiveArgs = args && typeof args === 'object' ? (args as Record<string, unknown>) : null;
+              const argHive = hiveArgs && typeof hiveArgs.hive === 'string' ? hiveArgs.hive.trim() : '';
               if (argHive && argHive !== scopeHive) {
                 return {
                   isError: true,
-                  content: [{
-                    type: 'text' as const,
-                    text: `hive_forbidden: hive "${argHive}" is outside this session's hive "${scopeHive}".`,
-                  }],
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `hive_forbidden: hive "${argHive}" is outside this session's hive "${scopeHive}".`,
+                    },
+                  ],
                 };
               }
-              if (
-                toolName === 'coord:presence' &&
-                (hiveArgs?.scope === 'workspace' || hiveArgs?.scope === 'all')
-              ) {
+              if (toolName === 'coord:presence' && (hiveArgs?.scope === 'workspace' || hiveArgs?.scope === 'all')) {
                 return {
                   isError: true,
-                  content: [{
-                    type: 'text' as const,
-                    text: `hive_forbidden: coord:presence scope:'${String(hiveArgs?.scope)}' spans past this session's hive "${scopeHive}" — it reads your hive by default.`,
-                  }],
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: `hive_forbidden: coord:presence scope:'${String(hiveArgs?.scope)}' spans past this session's hive "${scopeHive}" — it reads your hive by default.`,
+                    },
+                  ],
                 };
               }
             }
@@ -2256,20 +2230,26 @@ const handler = createMcpHandler(
           // does not FIT the result fails open instead — see applyResultProjection.
           let projectionSpec: ProjectionSpec | null = null;
           let projectionNeedsFullSource = false;
-          if (dispatchArgs && typeof dispatchArgs === 'object' && PROJECTION_ARG in (dispatchArgs as Record<string, unknown>)) {
+          if (
+            dispatchArgs &&
+            typeof dispatchArgs === 'object' &&
+            PROJECTION_ARG in (dispatchArgs as Record<string, unknown>)
+          ) {
             const raw = (dispatchArgs as Record<string, unknown>)[PROJECTION_ARG];
             const parsed = parseProjection(raw);
             if (!parsed.ok) {
               return {
                 isError: true,
-                content: [{
-                  type: 'text' as const,
-                  text:
-                    `projection_invalid: ${parsed.error}\n` +
-                    `The \`projection\` argument reduces ANY tool result: ` +
-                    `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
-                    `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
-                }],
+                content: [
+                  {
+                    type: 'text' as const,
+                    text:
+                      `projection_invalid: ${parsed.error}\n` +
+                      `The \`projection\` argument reduces ANY tool result: ` +
+                      `{ pick?: ["results[].id"], pipe?: [{ op:"grep", pattern:"..." }, { op:"head", n:20 }] }. ` +
+                      `Operators: grep (fixed/ignoreCase/invert/before/after/context), head, tail, sort, uniq, cut, count.`,
+                  },
+                ],
               };
             }
             projectionSpec = parsed.spec;
@@ -2287,10 +2267,7 @@ const handler = createMcpHandler(
           // Named result views (P-001) — the DIRECT path. Same helper, same
           // semantics as the nested `tools:invoke` path above; routing both
           // through one function is what keeps them from drifting.
-          const takenView = takeNamedViewFromArgs(
-            dispatchArgs as Record<string, unknown> | undefined,
-            toolName,
-          );
+          const takenView = takeNamedViewFromArgs(dispatchArgs as Record<string, unknown> | undefined, toolName);
           if (takenView.kind === 'error') {
             return {
               isError: true,
@@ -2332,7 +2309,15 @@ const handler = createMcpHandler(
           const effectiveWs = effectiveDispatchWorkspace(spawnRes.ctx, dispatchArgs);
           const dispatchSpawnCtx =
             effectiveWs === spawnRes.ctx.workspaceId ? spawnRes.ctx : { ...spawnRes.ctx, workspaceId: effectiveWs };
-          const baseCtx = await buildMcpToolContext(dispatchSpawnCtx, progressToken, sendNotification, projected.pluginName, requestedFormat, requestedStructured, requestedDelta);
+          const baseCtx = await buildMcpToolContext(
+            dispatchSpawnCtx,
+            progressToken,
+            sendNotification,
+            projected.pluginName,
+            requestedFormat,
+            requestedStructured,
+            requestedDelta,
+          );
           // Replay lookup (P-046 / EI-68) — a call carrying an idempotencyKey whose
           // outcome is already stored is answered from the store WITHOUT re-running
           // the tool. Best-effort: a store outage degrades to normal execution,
@@ -2371,8 +2356,7 @@ const handler = createMcpHandler(
                     toolName,
                     pluginName: projected.pluginName,
                     ctx: baseCtx,
-                    windowKey:
-                      PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
+                    windowKey: PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
                     durationMs: Date.now() - callStartedAt,
                     // NOT 'ok' — quota counts `status='ok'` rows, and a replay does
                     // no work, so 'ok' would charge the caller for a call that never
@@ -2390,11 +2374,11 @@ const handler = createMcpHandler(
                   );
                 }
                 const storedResult = stored as {
-                    content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
-                    isError?: boolean;
-                    _meta?: Record<string, unknown>;
-                    structuredContent?: unknown;
-                  };
+                  content: Array<{ type: 'text'; text: string } | Record<string, unknown>>;
+                  isError?: boolean;
+                  _meta?: Record<string, unknown>;
+                  structuredContent?: unknown;
+                };
                 // P-006 / D-014: a replay is still model-facing output. Stored
                 // outcomes were already per-result-doored before persistence,
                 // but this request must consume the CURRENT aggregate cohort or
@@ -2414,13 +2398,9 @@ const handler = createMcpHandler(
                       })(),
                       aggregateScope,
                     });
-                return withScopeGuessWarning(
-                  replayedResult,
-                  dispatchSpawnCtx,
-                );
+                return withScopeGuessWarning(replayedResult, dispatchSpawnCtx);
               }
             } catch (err) {
-
               console.warn(
                 `[mcp-replay] lookup failed for ${toolName} (key=${idempotencyKey}): ` +
                   (err instanceof Error ? err.message : String(err)),
@@ -2491,26 +2471,23 @@ const handler = createMcpHandler(
               // ASKED for should pre-empt the door's fixed policy, never race it.
               const projectedResult = applyResultProjection(
                 await maybeRunWithDeltaProxy({
-                sessionKey: replayOwnerKey,
-                toolName,
-                args: dispatchArgs,
-                requestedFormat,
-                explicitDelta,
-                itemKeyField: projected.delta?.itemKeyField,
-                runRaw: async (autoRequestedDelta, overrideDelta = true) => {
-                  const deltaCtx = overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx;
-                  const materializationCtx = projectionMaterializationContext(
-                    deltaCtx,
-                    projectionNeedsFullSource,
-                  );
-                  return (await dispatchProjectedToolToMcp(
-                    projected,
-                    toolName,
-                    dispatchArgs,
-                    materializationCtx,
-                    PROJECTED_DEPS,
-                  )) as McpCallResult;
-                },
+                  sessionKey: replayOwnerKey,
+                  toolName,
+                  args: dispatchArgs,
+                  requestedFormat,
+                  explicitDelta,
+                  itemKeyField: projected.delta?.itemKeyField,
+                  runRaw: async (autoRequestedDelta, overrideDelta = true) => {
+                    const deltaCtx = overrideDelta ? { ...ctx, requestedDelta: autoRequestedDelta } : ctx;
+                    const materializationCtx = projectionMaterializationContext(deltaCtx, projectionNeedsFullSource);
+                    return (await dispatchProjectedToolToMcp(
+                      projected,
+                      toolName,
+                      dispatchArgs,
+                      materializationCtx,
+                      PROJECTED_DEPS,
+                    )) as McpCallResult;
+                  },
                 }),
                 projectionSpec,
                 { toolName, effect: projected?.effect },
@@ -2519,9 +2496,7 @@ const handler = createMcpHandler(
               // explicit `pick` still composes) and BEFORE the door, on the same
               // reasoning — a reduction the caller ASKED for pre-empts the
               // door's fixed policy rather than racing it.
-              const viewedResult = namedView
-                ? applyNamedViewToResult(projectedResult, namedView)
-                : projectedResult;
+              const viewedResult = namedView ? applyNamedViewToResult(projectedResult, namedView) : projectedResult;
               // EI-19386201256023240: a tool whose documented/near-exclusive
               // caller is a programmatic client (a shell hook `json.loads`-ing
               // the raw body — e.g. activity:report's hook_bundle fold — see
@@ -2538,29 +2513,27 @@ const handler = createMcpHandler(
               // that result even for an exempt tool: a successful reduction fits
               // and passes byte-identically, while a fail-open/miss is bounded
               // instead of exporting the full promoted source.
-              const resultDoorSkipReason = projectionSpec || namedView
-                ? undefined
-                : projected.skipResultDoor ?? nestedResultDoorSkipReason(viewedResult);
+              const resultDoorSkipReason =
+                projectionSpec || namedView
+                  ? undefined
+                  : (projected.skipResultDoor ?? nestedResultDoorSkipReason(viewedResult));
               const doored = resultDoorSkipReason
                 ? viewedResult
-                : applyResultDoor(
-                viewedResult,
-                {
-                  toolName,
-                  workspaceId: dispatchSpawnCtx.workspaceId,
-                  runId: dispatchSpawnCtx.runId ?? null,
-                  // P-023: key the per-session door override on the SAME identity
-                  // config:doors-set-session stamps (resolveAgentIdentity, never runId).
-                  ownerId: (() => {
-                    try {
-                      return resolveAgentIdentity(ctx).ownerId;
-                    } catch {
-                      return null;
-                    }
-                  })(),
-                  aggregateScope,
-                },
-              );
+                : applyResultDoor(viewedResult, {
+                    toolName,
+                    workspaceId: dispatchSpawnCtx.workspaceId,
+                    runId: dispatchSpawnCtx.runId ?? null,
+                    // P-023: key the per-session door override on the SAME identity
+                    // config:doors-set-session stamps (resolveAgentIdentity, never runId).
+                    ownerId: (() => {
+                      try {
+                        return resolveAgentIdentity(ctx).ownerId;
+                      } catch {
+                        return null;
+                      }
+                    })(),
+                    aggregateScope,
+                  });
               // EI-19415249247575123: a `not_found` returned while this process is KNOWN to
               // have talked to a DIFFERENT Postgres cluster is a confidently wrong answer —
               // the most expensive shape available here, because an agent that trusts it
@@ -2589,18 +2562,37 @@ const handler = createMcpHandler(
               // explicit backfill. Best-effort, fire-and-forget (never block the
               // client response on it), and unconditional on result.isError — an
               // error result can still have spilled real bytes worth tracking.
-              const doorMeta = (result._meta as Record<string, unknown> | undefined)
-                ?.resultDoor as
-                | { truncated?: boolean; spillUri?: string; originalChars?: number }
+              const doorMeta = (result._meta as Record<string, unknown> | undefined)?.resultDoor as
+                | {
+                    truncated?: boolean;
+                    spillUri?: string;
+                    originalChars?: number;
+                    originalBytes?: number;
+                    reason?: string;
+                    aggregate?: { exceeded?: boolean };
+                  }
                 | undefined;
-              if (doorMeta?.truncated && doorMeta.spillUri) {
+              if (doorMeta?.truncated && (doorMeta.spillUri || toolName === 'code:run')) {
+                const originalBytes = doorMeta.originalBytes ?? doorMeta.originalChars ?? 0;
                 void backfillResultDoorOutputRef({
                   workspaceId: dispatchSpawnCtx.workspaceId,
                   spawnId: dispatchSpawnCtx.spawnId,
                   toolName,
                   runId: dispatchSpawnCtx.runId ?? null,
-                  outputRef: doorMeta.spillUri,
-                  outputSize: doorMeta.originalChars ?? 0,
+                  outputRef: doorMeta.spillUri ?? null,
+                  outputSize: doorMeta.spillUri ? originalBytes : null,
+                  ...(toolName === 'code:run'
+                    ? {
+                        metadataJson: {
+                          returnedContextBytes: measureResultContextBytes(result),
+                          spilledBytes: doorMeta.spillUri ? originalBytes : 0,
+                          resultDoorReason: doorMeta.reason ?? 'per-result-budget-exceeded',
+                          aggregateOutputEscape:
+                            doorMeta.reason === 'aggregate-output-budget-exceeded' ||
+                            doorMeta.aggregate?.exceeded === true,
+                        },
+                      }
+                    : {}),
                 }).catch((err) => {
                   console.warn(
                     `[mcp-handler] backfillResultDoorOutputRef failed for ${toolName}: ${err instanceof Error ? err.message : String(err)}`,
@@ -2770,10 +2762,7 @@ const handler = createMcpHandler(
                     toolName,
                   });
                   if (orientHint && canAttachAdvisory && (await getFlag(FLAGS.ORIENT_DEDUP_NUDGE, 'system'))) {
-                    result.content = [
-                      ...result.content,
-                      { type: 'text' as const, text: `\n[nudge] ${orientHint}` },
-                    ];
+                    result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${orientHint}` }];
                   }
                 } catch {
                   // advisory only; a failure must never change the tool outcome.
@@ -2791,10 +2780,7 @@ const handler = createMcpHandler(
                     toolName,
                   });
                   if (planeHint && canAttachAdvisory && (await getFlag(FLAGS.STATE_PLANE_NUDGE, 'system'))) {
-                    result.content = [
-                      ...result.content,
-                      { type: 'text' as const, text: `\n[nudge] ${planeHint}` },
-                    ];
+                    result.content = [...result.content, { type: 'text' as const, text: `\n[nudge] ${planeHint}` }];
                   }
                 } catch {
                   // advisory only; a failure must never change the tool outcome.
@@ -2809,22 +2795,28 @@ const handler = createMcpHandler(
             // `timeoutSec` (e.g. chat:ask_choice / other human-interaction tools at
             // 600s) — effectiveMcpDeadlineMs honors the tool's own budget instead.
             const deadlineMs = effectiveMcpDeadlineMs(projected.timeoutSec);
-            return raceDeadline<McpCallResult>(deadlineMs, () => {
-              const outcome = execute();
-              raced.toolOutcome = outcome;
-              return outcome;
-            }, () => {
-              raced.deadlineFired = true;
-              return {
-                isError: true,
-                content: [{
-                  type: 'text' as const,
-                  text: idempotencyKey
-                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing).`
-                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
-                }],
-              };
-            });
+            return raceDeadline<McpCallResult>(
+              deadlineMs,
+              () => {
+                const outcome = execute();
+                raced.toolOutcome = outcome;
+                return outcome;
+              },
+              () => {
+                raced.deadlineFired = true;
+                return {
+                  isError: true,
+                  content: [
+                    {
+                      type: 'text' as const,
+                      text: idempotencyKey
+                        ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing).`
+                        : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
+                    },
+                  ],
+                };
+              },
+            );
           };
           // Establish the request-scoped workspace ALS for the duration of the
           // tool call (P-022) so handlers that resolve via `activeWorkspaceId()`
@@ -2857,8 +2849,7 @@ const handler = createMcpHandler(
                     toolName,
                     pluginName: projected.pluginName,
                     ctx: baseCtx,
-                    windowKey:
-                      PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
+                    windowKey: PROJECTED_DEPS.computeQuotaWindow?.(baseCtx, roleQuota, toolName).key ?? '',
                     durationMs: Date.now() - callStartedAt,
                     status: 'error',
                     errorMessage: error instanceof Error ? error.message : String(error),
@@ -2884,13 +2875,15 @@ const handler = createMcpHandler(
           // every subsequent retry replay the timeout forever.
           if (idempotencyKey && !skipReplayForReadOnly && raced.toolOutcome) {
             const persist = raced.toolOutcome
-              .then((result) => storeMcpResult({
-                ownerKey: replayOwnerKey,
-                idempotencyKey,
-                toolName,
-                workspaceId: dispatchSpawnCtx.workspaceId,
-                result: result as StoredMcpResult,
-              }))
+              .then((result) =>
+                storeMcpResult({
+                  ownerKey: replayOwnerKey,
+                  idempotencyKey,
+                  toolName,
+                  workspaceId: dispatchSpawnCtx.workspaceId,
+                  result: result as StoredMcpResult,
+                }),
+              )
               .catch((err: unknown) => {
                 // Best-effort by contract: a store outage (or a tool that rejected, in
                 // which case there is no outcome worth replaying) degrades to normal
@@ -2941,10 +2934,12 @@ const handler = createMcpHandler(
         if (projected && spawnRes.kind === 'none') {
           return {
             isError: true,
-            content: [{
-              type: 'text' as const,
-              text: 'invalid_request_context: projected tool calls require harness/workspace/role/run/spawn URL query params, or ?superuser=1 + bearer',
-            }],
+            content: [
+              {
+                type: 'text' as const,
+                text: 'invalid_request_context: projected tool calls require harness/workspace/role/run/spawn URL query params, or ?superuser=1 + bearer',
+              },
+            ],
           };
         }
 
@@ -2958,14 +2953,11 @@ const handler = createMcpHandler(
     );
 
     // ── Resources ────────────────────────────────────────────────────
-    server.server.setRequestHandler(
-      sdk.ListResourcesRequestSchema,
-      async (_req: unknown, extra: unknown) => {
-        const bearer = bearerFromExtra(extra);
-        const r = await listResources(bearer);
-        return { resources: r.ok ? (r.resources ?? []) : [] };
-      },
-    );
+    server.server.setRequestHandler(sdk.ListResourcesRequestSchema, async (_req: unknown, extra: unknown) => {
+      const bearer = bearerFromExtra(extra);
+      const r = await listResources(bearer);
+      return { resources: r.ok ? (r.resources ?? []) : [] };
+    });
     server.server.setRequestHandler(
       sdk.ReadResourceRequestSchema,
       async (req: { params: { uri: string } }, extra: unknown) => {
@@ -2984,57 +2976,49 @@ const handler = createMcpHandler(
     //      every tool this session can see (the exact tools/list walk)
     //      surfaces as a `tool:*` prompt so agent clients render the whole
     //      catalog as slash commands. Flag-gated (SLASH_EXPOSURE, default ON).
-    server.server.setRequestHandler(
-      sdk.ListPromptsRequestSchema,
-      async (_req: unknown, extra: unknown) => {
-        const bearer = bearerFromExtra(extra);
-        const prompts: Array<{
-          name: string;
-          description?: string;
-          arguments?: unknown;
-        }> = [];
-        const publicStatic = () =>
-          getPromptCatalog()
-            .filter((p) => !p.capability)
-            .map((p) => ({ name: p.name, description: p.description, arguments: p.arguments }));
-        if (!bearer) {
-          prompts.push(...publicStatic());
+    server.server.setRequestHandler(sdk.ListPromptsRequestSchema, async (_req: unknown, extra: unknown) => {
+      const bearer = bearerFromExtra(extra);
+      const prompts: Array<{
+        name: string;
+        description?: string;
+        arguments?: unknown;
+      }> = [];
+      const publicStatic = () =>
+        getPromptCatalog()
+          .filter((p) => !p.capability)
+          .map((p) => ({ name: p.name, description: p.description, arguments: p.arguments }));
+      if (!bearer) {
+        prompts.push(...publicStatic());
+      } else {
+        const { listPrompts } = await import('@papercusp/agent-mcp');
+        const r = await listPrompts(bearer);
+        if (r.ok && r.prompts) {
+          prompts.push(...r.prompts);
         } else {
-          const { listPrompts } = await import('@papercusp/agent-mcp');
-          const r = await listPrompts(bearer);
-          if (r.ok && r.prompts) {
-            prompts.push(...r.prompts);
-          } else {
-            // The bearer didn't resolve to a principal — true of the
-            // ?superuser=1 token, which is not a bearer-principal (see
-            // superuser-mode docs). The pre-slash behavior returned NOTHING
-            // here; serve the public (capability-less) static set instead so
-            // superuser sessions keep agent:role etc.
-            prompts.push(...publicStatic());
-          }
+          // The bearer didn't resolve to a principal — true of the
+          // ?superuser=1 token, which is not a bearer-principal (see
+          // superuser-mode docs). The pre-slash behavior returned NOTHING
+          // here; serve the public (capability-less) static set instead so
+          // superuser sessions keep agent:role etc.
+          prompts.push(...publicStatic());
         }
-        if (await getFlag(FLAGS.SLASH_EXPOSURE, 'system')) {
-          const vis = await resolveVisibleToolListings(extra);
-          if (vis.kind !== 'failed') {
-            prompts.push(...dynamicSlashListings(vis.listings));
-          }
+      }
+      if (await getFlag(FLAGS.SLASH_EXPOSURE, 'system')) {
+        const vis = await resolveVisibleToolListings(extra);
+        if (vis.kind !== 'failed') {
+          prompts.push(...dynamicSlashListings(vis.listings));
         }
-        return { prompts };
-      },
-    );
+      }
+      return { prompts };
+    });
     server.server.setRequestHandler(
       sdk.GetPromptRequestSchema,
-      async (
-        req: { params: { name: string; arguments?: Record<string, string> } },
-        extra: unknown,
-      ) => {
+      async (req: { params: { name: string; arguments?: Record<string, string> } }, extra: unknown) => {
         const name = req.params.name;
         const args = (req.params.arguments ?? {}) as Record<string, string>;
         if (isSlashPromptName(name)) {
           if (!(await getFlag(FLAGS.SLASH_EXPOSURE, 'system'))) {
-            throw new Error(
-              'slash_exposure_disabled: the papercusp-slash-exposure flag is off',
-            );
+            throw new Error('slash_exposure_disabled: the papercusp-slash-exposure flag is off');
           }
           return await getSlashPrompt(name, args, extra);
         }
@@ -3076,8 +3060,7 @@ const handler = createMcpHandler(
               const ctxHarness = spawnRes.ctx.harnessSlug;
               const prelude = await buildMcpPrelude({
                 userId: user.id,
-                workspaceId:
-                  ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
+                workspaceId: ctxWorkspace && ctxWorkspace !== '*' ? ctxWorkspace : activeWorkspaceId(),
                 url: urlFromExtra(extra),
                 // WI-4393: ctx.harnessSlug already resolved header (OMP)-vs-URL-param
                 // (claude/codex) precedence in tryBuildSpawnContext — pass it explicitly
@@ -3185,11 +3168,7 @@ export function effectiveMcpDeadlineMs(
  * `_meta.idempotencyKey` replays the completed outcome rather than re-executing or
  * leaving a half-applied mutating write. `deadlineMs<=0` ⇒ no race (await run).
  */
-export async function raceDeadline<T>(
-  deadlineMs: number,
-  run: () => Promise<T>,
-  onTimeout: () => T,
-): Promise<T> {
+export async function raceDeadline<T>(deadlineMs: number, run: () => Promise<T>, onTimeout: () => T): Promise<T> {
   const p = run();
   if (!(deadlineMs > 0)) return p;
   // Once the race settles on the timeout branch, the orphaned tool promise is still
@@ -3288,14 +3267,19 @@ export function primeSseResponse(res: Response, keepaliveMs: number = DEFAULT_KE
       // runs), so a pending consumer read is satisfied by the comment — resetting the
       // idle timers — without waiting on the tool to produce.
       if (keepaliveMs > 0) {
-        keepalive = managedSetInterval('mcp-sse-keepalive', keepaliveMs, () => {
-          if (cancelled || closed) return;
-          try {
-            controller.enqueue(SSE_KEEPALIVE);
-          } catch {
-            stopKeepalive(); // controller closed/errored between checks — stop pinging
-          }
-        }, { category: 'lifecycle', instanced: true });
+        keepalive = managedSetInterval(
+          'mcp-sse-keepalive',
+          keepaliveMs,
+          () => {
+            if (cancelled || closed) return;
+            try {
+              controller.enqueue(SSE_KEEPALIVE);
+            } catch {
+              stopKeepalive(); // controller closed/errored between checks — stop pinging
+            }
+          },
+          { category: 'lifecycle', instanced: true },
+        );
       }
     },
     pull(controller) {

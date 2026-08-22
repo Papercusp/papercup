@@ -22,12 +22,85 @@ import {
   CODE_RUN_ADOPTION_MAX_SINCE_DAYS,
   CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS,
   CODE_RUN_ADOPTION_ROW_CAP,
+  CODE_RUN_INSTRUMENTATION_SQL,
+  NATIVE_EXEC_ROUTING_SQL,
   clampSinceDays,
   buildCodeRunAdoptionQuery,
+  readCodeRunInstrumentation,
+  readNativeExecRouting,
   __resetCodeRunAdoptionCacheForTests,
   type CallRow,
   type SpawnAdoptionRow,
 } from './code-run-adoption';
+
+describe('P-008 run instrumentation and native-exec routing reads', () => {
+  it('maps every metadata-only run dimension without selecting content', async () => {
+    const calls: Array<{ query: string; params: unknown[] }> = [];
+    const runQuery = async <T>(query: string, params: unknown[]): Promise<T[]> => {
+      calls.push({ query, params });
+      return [
+        {
+          runs: '3',
+          backend_counts: { server: 2, unknown: '1' },
+          tool_calls: '9',
+          intermediate_bytes: '32485',
+          returned_context_bytes: '35336',
+          spilled_bytes: '31000',
+          duration_ms: '9488',
+          failed_runs: '1',
+          failure_class_counts: { timeout: '1' },
+          recipe_captures: '1',
+          recipe_reuses: '2',
+          recipe_cache_hits: '1',
+          recipe_candidates: '4',
+          recipe_revisions: '2',
+          aggregate_output_escapes: '1',
+        },
+      ] as unknown as T[];
+    };
+
+    await expect(readCodeRunInstrumentation(runQuery, 999)).resolves.toEqual({
+      runs: 3,
+      backendCounts: { server: 2, unknown: 1 },
+      toolCalls: 9,
+      intermediateBytes: 32_485,
+      returnedContextBytes: 35_336,
+      spilledBytes: 31_000,
+      durationMs: 9_488,
+      failedRuns: 1,
+      failureClassCounts: { timeout: 1 },
+      recipeCaptures: 1,
+      recipeReuses: 2,
+      recipeCacheHits: 1,
+      recipeCandidates: 4,
+      recipeRevisions: 2,
+      aggregateOutputEscapes: 1,
+    });
+    expect(calls).toEqual([{ query: CODE_RUN_INSTRUMENTATION_SQL, params: [90] }]);
+    expect(CODE_RUN_INSTRUMENTATION_SQL).toContain('metadata_json');
+    expect(CODE_RUN_INSTRUMENTATION_SQL).not.toMatch(/content|result_text|output_ref/i);
+  });
+
+  it('reports the D-017 route share with an honest null for an empty population', async () => {
+    const seen: unknown[][] = [];
+    const populated = await readNativeExecRouting(async <T>(query: string, params: unknown[]): Promise<T[]> => {
+      expect(query).toBe(NATIVE_EXEC_ROUTING_SQL);
+      seen.push(params);
+      return [{ native_calls: '3', native_sessions: '2', routed_calls: '7', routed_sessions: '5' }] as unknown as T[];
+    }, 14);
+    expect(populated).toEqual({
+      nativeExecCalls: 3,
+      nativeExecSessions: 2,
+      routedRunCalls: 7,
+      routedRunSessions: 5,
+      routedFraction: 0.7,
+    });
+    expect(seen).toEqual([[14]]);
+
+    const empty = await readNativeExecRouting(async <T>(): Promise<T[]> => [] as T[], 7);
+    expect(empty.routedFraction).toBeNull();
+  });
+});
 
 // The herd guard (EI-6889) is module-level state — reset it before every case so the memo/in-flight
 // maps never leak a result across tests.
@@ -55,12 +128,12 @@ function calls(
 
 describe('isBatchableSpawn — reuses the live nudge thresholds (turn-based, P-012)', () => {
   it('same-tool AT the threshold (by TURNS) is an opportunity; one below is not', () => {
-    expect(
-      isBatchableSpawn({ maxSameToolTurns: BATCH_NUDGE_THRESHOLD, distinctTools: 1, distinctTurns: 1 }),
-    ).toBe(true);
-    expect(
-      isBatchableSpawn({ maxSameToolTurns: BATCH_NUDGE_THRESHOLD - 1, distinctTools: 1, distinctTurns: 1 }),
-    ).toBe(false);
+    expect(isBatchableSpawn({ maxSameToolTurns: BATCH_NUDGE_THRESHOLD, distinctTools: 1, distinctTurns: 1 })).toBe(
+      true,
+    );
+    expect(isBatchableSpawn({ maxSameToolTurns: BATCH_NUDGE_THRESHOLD - 1, distinctTools: 1, distinctTurns: 1 })).toBe(
+      false,
+    );
   });
 
   it('distinct-tools AT the fan-out threshold, ALSO spanning that many turns, is an opportunity', () => {
@@ -83,17 +156,15 @@ describe('isBatchableSpawn — reuses the live nudge thresholds (turn-based, P-0
   it('distinct-tools AT the threshold but confined to ONE turn is NOT an opportunity (P-012)', () => {
     // The tool-diversity bar is hit, but every call landed in the SAME inference turn (already
     // collapsed to one round-trip via parallel dispatch) — nothing left to fold into code:run.
-    expect(
-      isBatchableSpawn({ maxSameToolTurns: 1, distinctTools: FANOUT_DISTINCT_THRESHOLD, distinctTurns: 1 }),
-    ).toBe(false);
+    expect(isBatchableSpawn({ maxSameToolTurns: 1, distinctTools: FANOUT_DISTINCT_THRESHOLD, distinctTurns: 1 })).toBe(
+      false,
+    );
   });
 });
 
 describe('spawnRowsFromCalls — excludes batch tools from the work counts', () => {
   it('does NOT count code:run / recipes:* toward work, but DOES set usedCodeRun', () => {
-    const rows = spawnRowsFromCalls([
-      ...calls('s1', 'cup', '2026-06-26', ['code:run', 'recipes:search', 'plans:get']),
-    ]);
+    const rows = spawnRowsFromCalls([...calls('s1', 'cup', '2026-06-26', ['code:run', 'recipes:search', 'plans:get'])]);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
       workCalls: 1,
@@ -201,11 +272,7 @@ describe('computeCodeRunAdoption — end-to-end raw rows → per-(role,day) summ
       ...calls('B', 'mug', '2026-06-26', fanTools),
       ...calls('C', 'cup', '2026-06-26', fanTools),
     ]);
-    expect(out.map((s) => `${s.role}/${s.day}`)).toEqual([
-      'cup/2026-06-25',
-      'cup/2026-06-26',
-      'mug/2026-06-26',
-    ]);
+    expect(out.map((s) => `${s.role}/${s.day}`)).toEqual(['cup/2026-06-25', 'cup/2026-06-26', 'mug/2026-06-26']);
   });
 });
 
@@ -237,8 +304,12 @@ describe('rollupAdoption + gradeToolUtilization — the learning-loop signal', (
   });
 
   it('grades a healthy fleet (≥60% folded) as healthy, a mid fleet as degraded', () => {
-    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 20, 14)))).rating).toBe('healthy');
-    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 20, 8)))).rating).toBe('degraded');
+    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 20, 14)))).rating).toBe(
+      'healthy',
+    );
+    expect(gradeToolUtilization(rollupAdoption(computeCodeRunAdoption(opportunityCalls('cup', 20, 8)))).rating).toBe(
+      'degraded',
+    );
   });
 
   it('too small a sample (< ADOPTION_MIN_SAMPLE opportunities) is honest unknown, not broken', () => {
@@ -265,7 +336,7 @@ describe('summarizeSpawnAdoption — adoptionRate edge', () => {
 describe('readCodeRunAdoption — runs the BOUNDED query (WI-3815) through an injected runner', () => {
   it('runs the bounded, empty-params query and maps DB rows into a summary', async () => {
     const captured: { query: string; params: unknown[] }[] = [];
-    const fakeRun = async <T,>(query: string, params: unknown[]): Promise<T[]> => {
+    const fakeRun = async <T>(query: string, params: unknown[]): Promise<T[]> => {
       captured.push({ query, params });
       return [
         {
@@ -304,7 +375,7 @@ describe('readCodeRunAdoption — runs the BOUNDED query (WI-3815) through an in
 
   it('defaults to a 7-day window', async () => {
     let seenQuery = '';
-    await readCodeRunAdoption(async <T,>(q: string, _p: unknown[]): Promise<T[]> => {
+    await readCodeRunAdoption(async <T>(q: string, _p: unknown[]): Promise<T[]> => {
       seenQuery = q;
       return [] as unknown as T[];
     });
@@ -314,7 +385,7 @@ describe('readCodeRunAdoption — runs the BOUNDED query (WI-3815) through an in
   it('clamps an out-of-range sinceDays instead of passing it straight to PG', async () => {
     let seenQuery = '';
     await readCodeRunAdoption(
-      async <T,>(q: string, _p: unknown[]): Promise<T[]> => {
+      async <T>(q: string, _p: unknown[]): Promise<T[]> => {
         seenQuery = q;
         return [] as unknown as T[];
       },
@@ -355,7 +426,9 @@ describe('CODE_RUN_ADOPTION_SQL — kept parameterized for ad-hoc dev:pg_query u
 describe('buildCodeRunAdoptionQuery (WI-3815)', () => {
   it('embeds a SET LOCAL statement_timeout ahead of the scan, in the same batch', () => {
     const q = buildCodeRunAdoptionQuery(7);
-    expect(q.trim().startsWith(`SET LOCAL statement_timeout = '${CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS}ms';`)).toBe(true);
+    expect(q.trim().startsWith(`SET LOCAL statement_timeout = '${CODE_RUN_ADOPTION_STATEMENT_TIMEOUT_MS}ms';`)).toBe(
+      true,
+    );
   });
   it('inlines the CLAMPED window as an interval literal, not a $1 param', () => {
     expect(buildCodeRunAdoptionQuery(200)).toContain(`interval '${CODE_RUN_ADOPTION_MAX_SINCE_DAYS} days'`);
@@ -389,7 +462,7 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
     let scans = 0;
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
-    const runQuery = async <T,>(): Promise<T[]> => {
+    const runQuery = async <T>(): Promise<T[]> => {
       scans += 1;
       await gate; // hold every scan open so all callers overlap in-flight
       return rows as unknown as T[];
@@ -408,7 +481,7 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
     let scans = 0;
     let t = 1_000_000;
     const now = (): number => t;
-    const runQuery = async <T,>(): Promise<T[]> => {
+    const runQuery = async <T>(): Promise<T[]> => {
       scans += 1;
       return rows as unknown as T[];
     };
@@ -422,7 +495,7 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
     let scans = 0;
     let t = 1_000_000;
     const now = (): number => t;
-    const runQuery = async <T,>(): Promise<T[]> => {
+    const runQuery = async <T>(): Promise<T[]> => {
       scans += 1;
       return rows as unknown as T[];
     };
@@ -435,7 +508,7 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
   it('keys the memo by sinceDays — a different window is a distinct scan', async () => {
     let scans = 0;
     const now = (): number => 1_000_000;
-    const runQuery = async <T,>(): Promise<T[]> => {
+    const runQuery = async <T>(): Promise<T[]> => {
       scans += 1;
       return rows as unknown as T[];
     };
@@ -446,7 +519,7 @@ describe('readCodeRunAdoption — thundering-herd guard (EI-6889)', () => {
 
   it('does NOT memoize a failed scan — the next call retries', async () => {
     let scans = 0;
-    const runQuery = async <T,>(): Promise<T[]> => {
+    const runQuery = async <T>(): Promise<T[]> => {
       scans += 1;
       if (scans === 1) throw new Error('pool exhausted');
       return rows as unknown as T[];

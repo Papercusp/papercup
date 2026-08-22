@@ -10,6 +10,7 @@ import {
   buildDispatcherStalenessSignal,
   collectDispatcherStalenessSignals,
   DEFAULT_DISPATCHER_STALENESS_THRESHOLD_MS,
+  type DispatcherRoutineState,
   type DispatcherStalenessDeps,
   type EligibleDispatchItem,
 } from './dispatcher-staleness';
@@ -48,7 +49,12 @@ describe('buildDispatcherStalenessSignal — the pure fire decision (EI-2150)', 
 
   it('does NOT fire when the lane is disarmed', () => {
     expect(
-      buildDispatcherStalenessSignal({ armed: false, lastDispatchAt: hoursAgo(34), eligible: [eligible({ id: 'EI-1' })], nowMs: NOW }),
+      buildDispatcherStalenessSignal({
+        armed: false,
+        lastDispatchAt: hoursAgo(34),
+        eligible: [eligible({ id: 'EI-1' })],
+        nowMs: NOW,
+      }),
     ).toEqual([]);
   });
 
@@ -86,13 +92,23 @@ describe('buildDispatcherStalenessSignal — the pure fire decision (EI-2150)', 
 
   it('does NOT fire when the dispatcher has never dispatched (lastDispatchAt null — out of scope)', () => {
     expect(
-      buildDispatcherStalenessSignal({ armed: true, lastDispatchAt: null, eligible: [eligible({ id: 'EI-1' })], nowMs: NOW }),
+      buildDispatcherStalenessSignal({
+        armed: true,
+        lastDispatchAt: null,
+        eligible: [eligible({ id: 'EI-1' })],
+        nowMs: NOW,
+      }),
     ).toEqual([]);
   });
 
   it('does NOT fire on an unparseable lastDispatchAt (fail-closed — never alarm on a parse glitch)', () => {
     expect(
-      buildDispatcherStalenessSignal({ armed: true, lastDispatchAt: 'not-a-date', eligible: [eligible({ id: 'EI-1' })], nowMs: NOW }),
+      buildDispatcherStalenessSignal({
+        armed: true,
+        lastDispatchAt: 'not-a-date',
+        eligible: [eligible({ id: 'EI-1' })],
+        nowMs: NOW,
+      }),
     ).toEqual([]);
   });
 
@@ -161,6 +177,7 @@ function armedDeps(over: Partial<DispatcherStalenessDeps> = {}): Partial<Dispatc
     flagEnabled: async () => true,
     runnerHarness: () => 'papercup',
     maxPerRun: () => 1,
+    routineState: async (): Promise<DispatcherRoutineState> => ({ active: true, pauseReason: null }),
     readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405' })],
     readItems: async () => [bug({ id: 'EI-1' }), bug({ id: 'EI-2' })],
     ownerFullAutonomy: async () => false,
@@ -208,6 +225,38 @@ describe('collectDispatcherStalenessSignals — the glue (EI-2150)', () => {
     expect(res.note).toMatch(/cap 0/);
   });
 
+  it('skips (note) when the improvement-implement routine is deliberately paused', async () => {
+    const readDispatches = vi.fn(async () => [] as ImprovementDispatchRow[]);
+    const readItems = vi.fn(async () => [] as ImprovementCandidate[]);
+    const res = await collectDispatcherStalenessSignals('ws', {
+      nowMs: NOW,
+      installSlug: 'papercup',
+      deps: armedDeps({
+        routineState: async () => ({
+          active: false,
+          pauseReason: 'owner-directed inventory/public-release-defaults hold',
+        }),
+        readDispatches,
+        readItems,
+      }),
+    });
+    expect(res.signals).toEqual([]);
+    expect(res.note).toContain('routine inactive');
+    expect(res.note).toContain('owner-directed inventory/public-release-defaults hold');
+    expect(readDispatches).not.toHaveBeenCalled();
+    expect(readItems).not.toHaveBeenCalled();
+  });
+
+  it('fails open when the improvement-implement routine row is unavailable', async () => {
+    const res = await collectDispatcherStalenessSignals('ws', {
+      nowMs: NOW,
+      installSlug: 'papercup',
+      deps: armedDeps({ routineState: async () => null }),
+    });
+    expect(res.signals).toHaveLength(1);
+    expect(res.note).toBeUndefined();
+  });
+
   it('skips (note) when the dispatch ledger table is absent (migration 238 not applied)', async () => {
     const missing = Object.assign(new Error('relation "harness_shared.improvement_dispatches" does not exist'), {
       code: '42P01',
@@ -240,7 +289,9 @@ describe('collectDispatcherStalenessSignals — the glue (EI-2150)', () => {
   it('does NOT fire when the dispatcher fired recently (within the threshold)', async () => {
     const res = await collectDispatcherStalenessSignals('ws', {
       nowMs: NOW,
-      deps: armedDeps({ readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405', firedAt: hoursAgo(1) })] }),
+      deps: armedDeps({
+        readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405', firedAt: hoursAgo(1) })],
+      }),
     });
     expect(res.signals).toEqual([]);
     expect(res.note).toMatch(/within the 6h staleness threshold/);
@@ -293,6 +344,7 @@ describe('collectDispatcherStalenessSignals — the glue (EI-2150)', () => {
       // (env || installSlug || null) decides armed-ness off the install slug.
       const deps: Partial<DispatcherStalenessDeps> = {
         flagEnabled: async () => true,
+        routineState: async () => ({ active: true, pauseReason: null }),
         maxPerRun: () => 1,
         readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405' })],
         readItems: async () => [bug({ id: 'EI-1' }), bug({ id: 'EI-2' })],
@@ -313,6 +365,7 @@ describe('collectDispatcherStalenessSignals — the glue (EI-2150)', () => {
     try {
       const deps: Partial<DispatcherStalenessDeps> = {
         flagEnabled: async () => true,
+        routineState: async () => ({ active: true, pauseReason: null }),
         maxPerRun: () => 1,
         readDispatches: async () => [dispatchRow({ id: 'd1', itemId: 'EI-1405' })],
         readItems: async () => [bug({ id: 'EI-1' })],

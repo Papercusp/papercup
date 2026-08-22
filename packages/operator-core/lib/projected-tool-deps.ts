@@ -17,8 +17,8 @@
  * column lands.
  */
 
-import { generated, getOrgPg } from "@papercusp/db-org";
-import { mergeRoleQuota } from "./quota-overrides";
+import { generated, getOrgPg } from '@papercusp/db-org';
+import { mergeRoleQuota } from './quota-overrides';
 import {
   PASS_THROUGH,
   papercuspComputeQuotaWindow,
@@ -28,35 +28,26 @@ import {
   type PreconditionFireRequest,
   type ToolDispatchOverrideFn,
   type UnifiedToolContext,
-} from "@papercusp/agent-mcp";
+} from '@papercusp/agent-mcp';
 
-import { getFlag } from "@papercusp/flags/server";
-import { FLAGS } from "@papercusp/flags";
+import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 
-import {
-  getOverride,
-  PASS_THROUGH as TESTING_SHELL_PASS_THROUGH,
-} from "@papercusp/testing-shell/llm";
-import { recordToolAuthzEvent } from "./tool-authz-audit";
-import { maybeBeatPresenceOnDispatch } from "./agent-tools/coordination/dispatch-heartbeat";
-import {
-  evaluateCapabilityEnvelope,
-  ROLE_ENVELOPES,
-} from "./capability-envelope/policy";
+import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
+import { recordToolAuthzEvent } from './tool-authz-audit';
+import { maybeBeatPresenceOnDispatch } from './agent-tools/coordination/dispatch-heartbeat';
+import { evaluateCapabilityEnvelope, ROLE_ENVELOPES } from './capability-envelope/policy';
 // live-configurability-audit-2026-06-20 P-009 — runtime envelope overrides (D-010 sync-cache).
 // Getters return empty when the dark flag is off ⇒ byte-identical envelope resolution.
-import {
-  envelopeRoleOverrides,
-  envelopeProtectedAdditions,
-} from "./capability-envelope-overrides";
+import { envelopeRoleOverrides, envelopeProtectedAdditions } from './capability-envelope-overrides';
 // live-configurability-audit-2026-06-20 P-020 — runtime telemetry-buffer sizing (D-010 sync-cache).
 // Returns the baked defaults when the kill-switch flag is off / no override ⇒ byte-identical.
-import { telemetryBufferConfig } from "./telemetry-buffer-config";
-import { recordDecisionLedger } from "./decision-ledger/emit";
-import { resolveAgentIdentity } from "./agent-tools/coordination/identity";
-import { readAgentStateStamp } from "./agent-state-stamp";
-import { classifyCallOrigin } from "./telemetry-call-origin";
-import { recordMcpTraffic } from "./coverage-census/attribution/sink";
+import { telemetryBufferConfig } from './telemetry-buffer-config';
+import { recordDecisionLedger } from './decision-ledger/emit';
+import { resolveAgentIdentity } from './agent-tools/coordination/identity';
+import { readAgentStateStamp } from './agent-state-stamp';
+import { classifyCallOrigin } from './telemetry-call-origin';
+import { recordMcpTraffic } from './coverage-census/attribution/sink';
 
 /**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
@@ -72,9 +63,7 @@ export function jsonbSafeStringify(value: unknown): string {
   // Referenced via fromCharCode so a raw NUL byte never appears in this source.
   const NUL = String.fromCharCode(0);
   return JSON.stringify(value, (_key, val) =>
-    typeof val === "string" && val.includes(NUL)
-      ? val.split(NUL).join("")
-      : val,
+    typeof val === 'string' && val.includes(NUL) ? val.split(NUL).join('') : val,
   );
 }
 
@@ -86,9 +75,7 @@ export function jsonbSafeStringify(value: unknown): string {
  * `events → dispatch-reaction → projected-tool-deps`. Unset ⇒ no reactions.
  */
 let reactionPostInvoke: ((event: PostInvokeEvent) => void) | null = null;
-export function setReactionPostInvoke(
-  handler: ((event: PostInvokeEvent) => void) | null,
-): void {
+export function setReactionPostInvoke(handler: ((event: PostInvokeEvent) => void) | null): void {
   reactionPostInvoke = handler;
 }
 
@@ -101,11 +88,8 @@ export function setReactionPostInvoke(
  * projected-tool-deps` cycle. Unset ⇒ auto-correct preconditions FAIL CLOSED
  * (the dispatcher rejects with a message naming the uninstalled port).
  */
-let preconditionFire: ((req: PreconditionFireRequest) => Promise<void>) | null =
-  null;
-export function setPreconditionFire(
-  handler: ((req: PreconditionFireRequest) => Promise<void>) | null,
-): void {
+let preconditionFire: ((req: PreconditionFireRequest) => Promise<void>) | null = null;
+export function setPreconditionFire(handler: ((req: PreconditionFireRequest) => Promise<void>) | null): void {
   preconditionFire = handler;
 }
 
@@ -126,9 +110,7 @@ async function readQuotaStateImpl(
   try {
     const { sql } = getOrgPg();
     const result = await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [
-        workspaceId,
-      ]);
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
       return await tx.unsafe(
         // ('ok','refused') — NOT just 'ok'. A 'refused' row is a call that
         // dispatched and RAN (handler, gates, often a dedup index search) and then
@@ -142,7 +124,7 @@ async function readQuotaStateImpl(
             AND role = $3
             AND window_key = $4
             AND status IN ('ok', 'refused')`,
-        [workspaceId, toolName, ctx.role ?? "", windowKey],
+        [workspaceId, toolName, ctx.role ?? '', windowKey],
       );
     });
     // postgres.js's tx.unsafe() resolves a RowList<Row[]> whose structural shape doesn't
@@ -150,9 +132,7 @@ async function readQuotaStateImpl(
     const n = (result as unknown as Array<{ n: number }>)[0]?.n ?? 0;
     return { count: n };
   } catch (err) {
-    console.warn(
-      `[projected-tool-deps] readQuotaState failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    console.warn(`[projected-tool-deps] readQuotaState failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
 }
@@ -164,12 +144,12 @@ interface RecordInvocationInput {
   windowKey: string;
   durationMs: number;
   status:
-    | "ok"
-    | "error"
-    | "quota-exceeded"
-    | "role-not-allowed"
-    | "timeout"
-    | "invalid-input"
+    | 'ok'
+    | 'error'
+    | 'quota-exceeded'
+    | 'role-not-allowed'
+    | 'timeout'
+    | 'invalid-input'
     /**
      * EI-20184794555427363: the call dispatched cleanly and the handler then
      * self-reported failure by returning `isError: true` (a business-level
@@ -180,7 +160,7 @@ interface RecordInvocationInput {
      * UNLIKE `replayed`, this is NOT quota-neutral: the handler really ran. The
      * quota reader below counts ('ok','refused') for exactly that reason.
      */
-    | "refused"
+    | 'refused'
     /**
      * WI-6792: the call was served from the idempotency-key replay store — the
      * tool never ran. Written by the MCP handler's replay branch, which returns
@@ -193,7 +173,7 @@ interface RecordInvocationInput {
      * quota-neutral. No migration: tool_invocations.status has no CHECK
      * constraint (verified via pg_constraint), only NOT NULL.
      */
-    | "replayed";
+    | 'replayed';
   outputRef?: string | null;
   outputSize?: number | null;
   errorMessage?: string | null;
@@ -288,18 +268,18 @@ async function emitTelemetryInsertErrorToast(err: unknown): Promise<void> {
     const tl = generated.toastLogInHarnessShared;
     const { db } = getOrgPg();
     await db.insert(tl).values({
-      level: "error",
-      message: "Telemetry insert errors detected",
+      level: 'error',
+      message: 'Telemetry insert errors detected',
       description:
-        "The deferred tool-invocation telemetry writer just swallowed its first insert error. dev:service_health now reports telemetry.insertErrorCount and telemetry.lastInsertErrorAt; dashboards may under-report fleet activity until this is fixed. First error: " +
+        'The deferred tool-invocation telemetry writer just swallowed its first insert error. dev:service_health now reports telemetry.insertErrorCount and telemetry.lastInsertErrorAt; dashboards may under-report fleet activity until this is fixed. First error: ' +
         (err instanceof Error ? err.message : String(err)),
       harnessSlug: null,
       createdAt: Date.now(),
       actionLabel: null,
       actionHref: null,
     });
-    const { notifySyncInvalidate } = await import("./sync-sse");
-    void notifySyncInvalidate("toastLog.recent", undefined).catch(() => {});
+    const { notifySyncInvalidate } = await import('./sync-sse');
+    void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
   } catch {
     // Telemetry health notifications are best-effort and must never break the
     // already best-effort telemetry flush path.
@@ -339,10 +319,7 @@ export async function flushPendingTelemetry(): Promise<void> {
     try {
       const { sql } = getOrgPg();
       while (telemetryQueue.length > 0) {
-        const batch = telemetryQueue.splice(
-          0,
-          telemetryBufferConfig().maxBatch,
-        );
+        const batch = telemetryQueue.splice(0, telemetryBufferConfig().maxBatch);
         // Group by workspace — RLS needs one set_config('app.workspace_id') per tx.
         const byWorkspace = new Map<string, TelemetryRow[]>();
         for (const row of batch) {
@@ -353,20 +330,14 @@ export async function flushPendingTelemetry(): Promise<void> {
         for (const [workspaceId, rows] of byWorkspace) {
           try {
             await sql.begin(async (tx) => {
-              await tx.unsafe(
-                `SELECT set_config('app.workspace_id', $1, true)`,
-                [workspaceId],
-              );
+              await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
               for (const row of rows) {
                 // `TelemetryRow.params` is `unknown[]` (each row's values are snapshotted
                 // generically at capture time); `tx.unsafe`'s param array type doesn't
                 // sufficiently overlap with `unknown[]` for a direct cast, so go through
                 // `unknown` first — derived from `tx` itself so this file need not import
                 // postgres.js's ParameterOrJSON type.
-                await tx.unsafe(
-                  TELEMETRY_INSERT_SQL,
-                  row.params as unknown as Parameters<typeof tx.unsafe>[1],
-                );
+                await tx.unsafe(TELEMETRY_INSERT_SQL, row.params as unknown as Parameters<typeof tx.unsafe>[1]);
               }
             });
           } catch (err) {
@@ -428,8 +399,11 @@ export async function backfillResultDoorOutputRef(input: {
   spawnId: string | null | undefined;
   toolName: string;
   runId?: string | null;
-  outputRef: string;
-  outputSize: number;
+  outputRef?: string | null;
+  outputSize?: number | null;
+  /** Door-only facts unavailable when the dispatcher snapshots the row. Shallow
+   * merged so handler-authored run metadata is preserved. */
+  metadataJson?: Record<string, unknown>;
 }): Promise<void> {
   // Captured into locals so the narrowing survives into the `sql.begin`
   // closure below — TS does not narrow a property access (`input.workspaceId`)
@@ -437,6 +411,7 @@ export async function backfillResultDoorOutputRef(input: {
   const workspaceId = input.workspaceId;
   const spawnId = input.spawnId;
   if (!workspaceId || !spawnId) return;
+  if (!input.outputRef && !input.metadataJson) return;
   const toolName = input.toolName;
   const runId = input.runId ?? null;
   try {
@@ -444,24 +419,25 @@ export async function backfillResultDoorOutputRef(input: {
     await flushPendingTelemetry();
     const { sql } = getOrgPg();
     await sql.begin(async (tx) => {
-      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [
-        workspaceId,
-      ]);
+      await tx.unsafe(`SELECT set_config('app.workspace_id', $1, true)`, [workspaceId]);
       await tx.unsafe(
         `UPDATE harness_shared.tool_invocations
-            SET output_ref = $1, output_size = $2
+            SET output_ref = COALESCE($1, output_ref),
+                output_size = COALESCE($2, output_size),
+                metadata_json = COALESCE(metadata_json, '{}'::jsonb) || $3::jsonb
           WHERE id = (
             SELECT id FROM harness_shared.tool_invocations
-             WHERE workspace_id = $3 AND spawn_id = $4 AND tool_name = $5
-               AND output_ref IS NULL
+             WHERE workspace_id = $4 AND spawn_id = $5 AND tool_name = $6
+               AND ($1::text IS NULL OR output_ref IS NULL)
                AND invoked_at >= now() - interval '30 seconds'
-               AND ($6::text IS NULL OR run_id = $6)
+               AND ($7::text IS NULL OR run_id = $7)
              ORDER BY invoked_at DESC
              LIMIT 1
           )`,
         [
-          input.outputRef,
-          input.outputSize,
+          input.outputRef ?? null,
+          input.outputSize ?? null,
+          jsonbSafeStringify(input.metadataJson ?? {}),
           workspaceId,
           spawnId,
           toolName,
@@ -544,14 +520,14 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     workspaceId: input.ctx.workspaceId,
     params: [
       input.ctx.workspaceId,
-      input.ctx.harnessSlug ?? "",
+      input.ctx.harnessSlug ?? '',
       input.pluginName,
       input.toolName,
-      input.ctx.role ?? "",
+      input.ctx.role ?? '',
       input.ctx.featureId ?? null,
       input.ctx.chunkId ?? null,
       input.ctx.runId ?? null,
-      input.ctx.spawnId ?? "",
+      input.ctx.spawnId ?? '',
       input.ctx.parentSpawnId ?? null,
       input.windowKey,
       input.durationMs,
@@ -614,35 +590,28 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
  * a tick and (b) cleanly read-vs-write separable by args. Pure + exported for
  * unit tests.
  */
-const PALETTE_POLL_READ_TOOLS: Record<
-  string,
-  (args: Record<string, unknown>) => boolean
-> = {
+const PALETTE_POLL_READ_TOOLS: Record<string, (args: Record<string, unknown>) => boolean> = {
   // Wake-board snapshot: `list` (the default action) is the read; release / skip /
   // release_all / skip_all mutate and must stay audited.
-  "coord:wake-queue": (a) => a.action === undefined || a.action === "list",
+  'coord:wake-queue': (a) => a.action === undefined || a.action === 'list',
   // Wake-mode: a read omits `mode` (a set carries one); agent absent = the GLOBAL
   // default read the board polls.
-  "coord:wake-mode": (a) => a.mode === undefined,
+  'coord:wake-mode': (a) => a.mode === undefined,
 };
 
 export function isPaletteUiPollRead(input: {
   toolName: string;
-  ctx: Pick<UnifiedToolContext, "spawnId">;
+  ctx: Pick<UnifiedToolContext, 'spawnId'>;
   args?: unknown;
 }): boolean {
-  if (input.ctx.spawnId !== "palette") return false;
+  if (input.ctx.spawnId !== 'palette') return false;
   const isRead = PALETTE_POLL_READ_TOOLS[input.toolName];
   if (!isRead) return false;
-  const args = (
-    input.args && typeof input.args === "object" ? input.args : {}
-  ) as Record<string, unknown>;
+  const args = (input.args && typeof input.args === 'object' ? input.args : {}) as Record<string, unknown>;
   return isRead(args);
 }
 
-async function recordInvocationImpl(
-  input: RecordInvocationInput,
-): Promise<void> {
+async function recordInvocationImpl(input: RecordInvocationInput): Promise<void> {
   // Turn-level presence beat (liveness-hardening P-001): every settled dispatch
   // keeps its owner's presence warm, throttled per owner. Stays SYNCHRONOUS on
   // the hot path (cheap, throttled) — before the workspace guard, since a beat
@@ -681,9 +650,7 @@ async function recordInvocationImpl(
     telemetryQueue.splice(0, dropped);
     telemetryDropped += dropped;
     if (telemetryDropped === dropped || telemetryDropped % 1000 === 0) {
-      console.warn(
-        `[projected-tool-deps] telemetry queue overflow — dropped ${telemetryDropped} row(s)`,
-      );
+      console.warn(`[projected-tool-deps] telemetry queue overflow — dropped ${telemetryDropped} row(s)`);
     }
   }
   scheduleTelemetryFlush();
@@ -712,27 +679,22 @@ async function checkCapabilityEnvelopeImpl(input: {
     toolName: input.toolName,
     capabilities: input.capabilities,
     ctx: input.ctx,
-    envelopes:
-      Object.keys(roleOverrides).length > 0
-        ? { ...ROLE_ENVELOPES, ...roleOverrides }
-        : undefined,
-    protectedAdditions:
-      protectedAdditions.length > 0 ? protectedAdditions : undefined,
+    envelopes: Object.keys(roleOverrides).length > 0 ? { ...ROLE_ENVELOPES, ...roleOverrides } : undefined,
+    protectedAdditions: protectedAdditions.length > 0 ? protectedAdditions : undefined,
   });
   if (!decision.applied) return null; // exempt — no verdict; ledger records posture 'auto'
-  if (decision.withinEnvelope)
-    return { decision: "allow", posture: "auto", applied: true };
-  const enforce = await getFlag(FLAGS.CAPABILITY_ENVELOPE, "system");
+  if (decision.withinEnvelope) return { decision: 'allow', posture: 'auto', applied: true };
+  const enforce = await getFlag(FLAGS.CAPABILITY_ENVELOPE, 'system');
   return enforce
     ? {
-        decision: "deny",
-        posture: "rejected",
+        decision: 'deny',
+        posture: 'rejected',
         applied: true,
         reason: decision.reason,
       }
     : {
-        decision: "observe",
-        posture: "gated",
+        decision: 'observe',
+        posture: 'gated',
         applied: true,
         reason: decision.reason,
       };
@@ -751,15 +713,10 @@ async function checkCapabilityEnvelopeImpl(input: {
  *
  * Plan §10.4.
  */
-const overrideToolImpl: ToolDispatchOverrideFn = async (
-  toolName,
-  args,
-  ctx,
-) => {
+const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => {
   const uic = ctx.uiClientId;
-  if (typeof uic !== "string" || !uic.startsWith("llm-testing/"))
-    return PASS_THROUGH;
-  const runId = uic.slice("llm-testing/".length);
+  if (typeof uic !== 'string' || !uic.startsWith('llm-testing/')) return PASS_THROUGH;
+  const runId = uic.slice('llm-testing/'.length);
   const override = getOverride(runId);
   if (!override) return PASS_THROUGH;
   const result = await override.override(toolName, args);
@@ -783,10 +740,7 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // P-018: a runtime per-(tool,role) override (quota:set_tool) is MERGED over the baked
   // rolesQuota[role] before the window/ceiling is resolved — empty override map ⇒ byte-identical.
   computeQuotaWindow: (ctx, roleQuota, toolName) =>
-    papercuspComputeQuotaWindow(
-      ctx,
-      toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota,
-    ),
+    papercuspComputeQuotaWindow(ctx, toolName ? mergeRoleQuota(roleQuota, toolName, ctx.role) : roleQuota),
   readQuotaState: readQuotaStateImpl,
   recordInvocation: recordInvocationImpl,
   overrideTool: overrideToolImpl,
@@ -822,9 +776,7 @@ export const PROJECTED_DEPS: DispatchProjectedDeps = {
   // the trigger fail-closed. Installed by `lib/events` at startup.
   firePrecondition: async (req) => {
     if (!preconditionFire) {
-      throw new Error(
-        "precondition fire port not installed (lib/events not loaded)",
-      );
+      throw new Error('precondition fire port not installed (lib/events not loaded)');
     }
     await preconditionFire(req);
   },

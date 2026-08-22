@@ -124,7 +124,9 @@ const mutate = defineTool({
 const slackManifest = defineTool({
   method: 'GET',
   path: '/admin/triggers/slack/manifest',
-  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
+  // Provider-token setup stays behind the admin contract's verified/trusted
+  // gate; it must not inherit the parent route's cookie-less fallback.
+  auth: { trust: ['verified', 'trusted'] },
   async handler(): Promise<Response> {
     return Response.json({ ok: true, manifest: SLACK_APP_MANIFEST_TEMPLATE });
   },
@@ -141,7 +143,9 @@ const slackConnectSchema = z.object({
 const slackConnect = defineTool({
   method: 'POST',
   path: '/admin/triggers/slack/connect',
-  auth: { trust: ['verified', 'trusted', 'unverified-loopback'] },
+  // Provider-token setup stays behind the admin contract's verified/trusted
+  // gate; it must not inherit the parent route's cookie-less fallback.
+  auth: { trust: ['verified', 'trusted'] },
   async handler(req): Promise<Response> {
     const csrf = requireAllowedOriginOr403(req);
     if (csrf) return csrf;

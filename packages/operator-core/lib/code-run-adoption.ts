@@ -38,6 +38,135 @@ import { BATCH_NUDGE_THRESHOLD, FANOUT_DISTINCT_THRESHOLD, TURN_GAP_MS, clusterT
 /** Injectable query runner (mirrors harness-insights/load-token-rollups.ts). */
 export type RunQuery = <T = unknown>(query: string, params: unknown[]) => Promise<T[]>;
 
+/** P-008 run-quality rollup. Every value is derived from metadata_json written
+ * by code:run/result-door; payload text is never selected or logged. */
+export interface CodeRunInstrumentationRollup {
+  runs: number;
+  backendCounts: Record<string, number>;
+  toolCalls: number;
+  intermediateBytes: number;
+  returnedContextBytes: number;
+  spilledBytes: number;
+  durationMs: number;
+  failedRuns: number;
+  failureClassCounts: Record<string, number>;
+  recipeCaptures: number;
+  recipeReuses: number;
+  recipeCacheHits: number;
+  recipeCandidates: number;
+  recipeRevisions: number;
+  aggregateOutputEscapes: number;
+}
+
+export const CODE_RUN_INSTRUMENTATION_SQL = `
+WITH code_runs AS (
+  SELECT metadata_json
+  FROM harness_shared.tool_invocations
+  WHERE invoked_at >= now() - (($1)::int || ' days')::interval
+    AND transport = 'mcp'
+    AND lower(replace(replace(tool_name, ':', ''), '_', '')) = 'coderun'
+), backend_counts AS (
+  SELECT COALESCE(NULLIF(metadata_json->>'backend', ''), 'unknown') AS backend,
+         count(*)::int AS runs
+  FROM code_runs
+  GROUP BY 1
+), failure_class_counts AS (
+  SELECT metadata_json->>'failureClass' AS failure_class,
+         count(*)::int AS runs
+  FROM code_runs
+  WHERE metadata_json->>'failureClass' IS NOT NULL
+  GROUP BY 1
+)
+SELECT
+  count(*)::int AS runs,
+  COALESCE((SELECT jsonb_object_agg(backend, runs) FROM backend_counts), '{}'::jsonb) AS backend_counts,
+  COALESCE(sum(CASE WHEN (metadata_json->>'toolCalls') ~ '^[0-9]+$' THEN (metadata_json->>'toolCalls')::bigint ELSE 0 END), 0) AS tool_calls,
+  COALESCE(sum(CASE WHEN (metadata_json->>'intermediateBytes') ~ '^[0-9]+$' THEN (metadata_json->>'intermediateBytes')::bigint ELSE 0 END), 0) AS intermediate_bytes,
+  COALESCE(sum(CASE WHEN (metadata_json->>'returnedContextBytes') ~ '^[0-9]+$' THEN (metadata_json->>'returnedContextBytes')::bigint ELSE 0 END), 0) AS returned_context_bytes,
+  COALESCE(sum(CASE WHEN (metadata_json->>'spilledBytes') ~ '^[0-9]+$' THEN (metadata_json->>'spilledBytes')::bigint ELSE 0 END), 0) AS spilled_bytes,
+  COALESCE(sum(CASE WHEN (metadata_json->>'durationMs') ~ '^[0-9]+$' THEN (metadata_json->>'durationMs')::bigint ELSE 0 END), 0) AS duration_ms,
+  count(*) FILTER (WHERE metadata_json->>'failureClass' IS NOT NULL)::int AS failed_runs,
+  COALESCE((SELECT jsonb_object_agg(failure_class, runs) FROM failure_class_counts), '{}'::jsonb) AS failure_class_counts,
+  count(*) FILTER (WHERE metadata_json->>'recipeCapture' = 'captured')::int AS recipe_captures,
+  count(*) FILTER (WHERE metadata_json->>'recipeReuse' = 'true')::int AS recipe_reuses,
+  count(*) FILTER (WHERE metadata_json->>'recipeCacheHit' = 'true')::int AS recipe_cache_hits,
+  COALESCE(sum(CASE WHEN (metadata_json->>'recipeCandidateCount') ~ '^[0-9]+$' THEN (metadata_json->>'recipeCandidateCount')::bigint ELSE 0 END), 0) AS recipe_candidates,
+  count(*) FILTER (WHERE NULLIF(metadata_json->>'recipeRevision', '') IS NOT NULL)::int AS recipe_revisions,
+  count(*) FILTER (WHERE metadata_json->>'aggregateOutputEscape' = 'true')::int AS aggregate_output_escapes
+FROM code_runs
+`;
+
+export async function readCodeRunInstrumentation(
+  runQuery: RunQuery,
+  sinceDays: number,
+): Promise<CodeRunInstrumentationRollup> {
+  const [row] = await runQuery<Record<string, unknown>>(CODE_RUN_INSTRUMENTATION_SQL, [clampSinceDays(sinceDays)]);
+  const n = (key: string): number => Number(row?.[key]) || 0;
+  const counts = (key: string): Record<string, number> => {
+    const value = row?.[key];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).map(([name, count]) => [name, Number(count) || 0]));
+  };
+  return {
+    runs: n('runs'),
+    backendCounts: counts('backend_counts'),
+    toolCalls: n('tool_calls'),
+    intermediateBytes: n('intermediate_bytes'),
+    returnedContextBytes: n('returned_context_bytes'),
+    spilledBytes: n('spilled_bytes'),
+    durationMs: n('duration_ms'),
+    failedRuns: n('failed_runs'),
+    failureClassCounts: counts('failure_class_counts'),
+    recipeCaptures: n('recipe_captures'),
+    recipeReuses: n('recipe_reuses'),
+    recipeCacheHits: n('recipe_cache_hits'),
+    recipeCandidates: n('recipe_candidates'),
+    recipeRevisions: n('recipe_revisions'),
+    aggregateOutputEscapes: n('aggregate_output_escapes'),
+  };
+}
+
+export interface NativeExecRoutingRollup {
+  nativeExecCalls: number;
+  nativeExecSessions: number;
+  routedRunCalls: number;
+  routedRunSessions: number;
+  routedFraction: number | null;
+}
+
+export const NATIVE_EXEC_ROUTING_SQL = `
+WITH native AS (
+  SELECT count(*)::int AS calls, count(DISTINCT session_id)::int AS sessions
+  FROM harness_shared.session_turn_parts
+  WHERE workspace_id = 'default' AND source_kind = 'codex'
+    AND ts >= now() - (($1)::int || ' days')::interval
+    AND part_kind = 'tool' AND tool_name = 'exec'
+), routed AS (
+  SELECT count(*)::int AS calls, count(DISTINCT spawn_id)::int AS sessions
+  FROM harness_shared.tool_invocations
+  WHERE invoked_at >= now() - (($1)::int || ' days')::interval
+    AND transport = 'mcp' AND spawn_id IS NOT NULL
+    AND lower(replace(replace(tool_name, ':', ''), '_', '')) IN ('coderun','recipesrun')
+)
+SELECT native.calls AS native_calls, native.sessions AS native_sessions,
+       routed.calls AS routed_calls, routed.sessions AS routed_sessions
+FROM native CROSS JOIN routed
+`;
+
+export async function readNativeExecRouting(runQuery: RunQuery, sinceDays: number): Promise<NativeExecRoutingRollup> {
+  const [row] = await runQuery<Record<string, number | string>>(NATIVE_EXEC_ROUTING_SQL, [clampSinceDays(sinceDays)]);
+  const nativeExecCalls = Number(row?.native_calls) || 0;
+  const routedRunCalls = Number(row?.routed_calls) || 0;
+  const denominator = nativeExecCalls + routedRunCalls;
+  return {
+    nativeExecCalls,
+    nativeExecSessions: Number(row?.native_sessions) || 0,
+    routedRunCalls,
+    routedRunSessions: Number(row?.routed_sessions) || 0,
+    routedFraction: denominator > 0 ? routedRunCalls / denominator : null,
+  };
+}
+
 /** Normalized names of the batch tools — excluded from the "work" counts (mirrors the nudge's
  *  EXCLUDED set; kept in lockstep by the agent-insight doc + the metric test). */
 const BATCH_TOOL_NORMS = [
@@ -189,10 +318,7 @@ export function spawnRowsFromCalls(calls: CallRow[]): SpawnAdoptionRow[] {
     }
     const norm = normalize(c.toolName);
     if (BATCH_RUNNER_NORMS.has(norm)) a.usedCodeRun = true;
-    if (
-      !BATCH_TOOL_NORMS.includes(norm as (typeof BATCH_TOOL_NORMS)[number]) &&
-      !POLLER_TOOL_NORMS.has(norm)
-    ) {
+    if (!BATCH_TOOL_NORMS.includes(norm as (typeof BATCH_TOOL_NORMS)[number]) && !POLLER_TOOL_NORMS.has(norm)) {
       a.workCalls.push({ toolName: c.toolName, at: c.invokedAt });
     }
   }
@@ -380,9 +506,7 @@ LEFT JOIN spawn_turns st USING (spawn_id)
  *  parameterized for that ad-hoc/manual use. `readCodeRunAdoption` itself does NOT run this
  *  directly; it runs the bounded `buildCodeRunAdoptionQuery(...)` below (WI-3815). Mirrors the
  *  normalize() + BATCH_TOOL_NORMS / BATCH_RUNNER_NORMS sets above. */
-export const CODE_RUN_ADOPTION_SQL = adoptionQueryBody(
-  "invoked_at >= now() - (($1)::int || ' days')::interval",
-);
+export const CODE_RUN_ADOPTION_SQL = adoptionQueryBody("invoked_at >= now() - (($1)::int || ' days')::interval");
 
 /**
  * WI-3815: the query `readCodeRunAdoption` ACTUALLY runs — `CODE_RUN_ADOPTION_SQL`'s body,
@@ -598,7 +722,11 @@ export function gradeToolUtilization(roll: AdoptionRollup): ToolUtilizationGrade
   }
   const pct = Math.round(roll.adoptionRate * 100);
   const rating =
-    roll.adoptionRate >= ADOPTION_HEALTHY_AT ? 'healthy' : roll.adoptionRate >= ADOPTION_DEGRADED_AT ? 'degraded' : 'broken';
+    roll.adoptionRate >= ADOPTION_HEALTHY_AT
+      ? 'healthy'
+      : roll.adoptionRate >= ADOPTION_DEGRADED_AT
+        ? 'degraded'
+        : 'broken';
   return {
     rating,
     evidence:

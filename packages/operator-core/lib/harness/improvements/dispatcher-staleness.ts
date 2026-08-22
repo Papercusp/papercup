@@ -52,17 +52,14 @@
  * self-escalating the watchdog.
  */
 
+import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import type { CollectorResult, WatchdogSignal } from './watchdog';
 import { readImprovementItems } from './read-items';
 import { buildDigest } from './digest';
 import { readOwnerFullAutonomyGrant } from './full-autonomy-grant';
-import {
-  computeDispatchStats,
-  readRecentDispatches,
-  type ImprovementDispatchRow,
-} from './dispatch-ledger';
+import { computeDispatchStats, readRecentDispatches, type ImprovementDispatchRow } from './dispatch-ledger';
 import { isMissingLedgerTable, laneInEnvOutage } from './orphaned-dispatch';
 
 /**
@@ -76,6 +73,9 @@ export const DEFAULT_DISPATCHER_STALENESS_THRESHOLD_MS = 6 * 60 * 60 * 1000;
 
 /** How many ledger rows the glue reads to compute `lastDispatchAt` + env-outage. */
 export const DISPATCHER_STALENESS_SCAN_READ_LIMIT = 200;
+
+/** The scheduled routine whose active state gates the dispatcher-staleness alarm. */
+export const IMPROVEMENT_IMPLEMENT_ROUTINE_NAME = 'improvement-implement';
 
 /** One never-dispatched, auto-eligible improvement awaiting the dispatcher. */
 export interface EligibleDispatchItem {
@@ -196,9 +196,17 @@ export interface DispatcherStalenessDeps {
    *  "disarmed" (EI-2150). */
   runnerHarness: (installSlug: string | null) => string | null;
   maxPerRun: () => number;
+  /** Read the dispatcher routine's live active/pause state. Unknown rows fail open. */
+  routineState: (workspaceId: string, installSlug: string) => Promise<DispatcherRoutineState | null>;
   readDispatches: (workspaceId: string) => Promise<ImprovementDispatchRow[]>;
   readItems: typeof readImprovementItems;
   ownerFullAutonomy: (workspaceId: string) => Promise<boolean>;
+}
+
+export interface DispatcherRoutineState {
+  active: boolean;
+  /** `metadata.pause.reason`, when the inactive row carries a deliberate hold. */
+  pauseReason: string | null;
 }
 
 /** Parse PAPERCUSP_IMPROVEMENT_MAX_PER_RUN exactly as the dispatcher does (default 1, min 0). */
@@ -210,6 +218,36 @@ function maxPerRunFromEnv(): number {
   return n;
 }
 
+/**
+ * Read the exact routine row that owns the auto-implement cadence. A missing row is
+ * intentionally represented as `null`: the watchdog should still surface a stale
+ * armed lane when the routine was never seeded, while an explicit `active:false`
+ * is the authoritative pause/resume state and must suppress this alarm.
+ */
+async function readImprovementImplementRoutineState(
+  workspaceId: string,
+  installSlug: string,
+): Promise<DispatcherRoutineState | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ active: boolean; metadata: Record<string, unknown> | null }>>`
+    SELECT active, metadata
+      FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId}
+       AND install_slug = ${installSlug}
+       AND name = ${IMPROVEMENT_IMPLEMENT_ROUTINE_NAME}
+     LIMIT 1
+  `;
+  const row = rows[0];
+  if (!row) return null;
+
+  const pause = row.metadata?.pause;
+  const pauseReason =
+    pause && typeof pause === 'object' && typeof (pause as Record<string, unknown>).reason === 'string'
+      ? ((pause as Record<string, unknown>).reason as string)
+      : null;
+  return { active: row.active === true, pauseReason };
+}
+
 const defaultDeps: DispatcherStalenessDeps = {
   flagEnabled: (_ws, distinctId) => getFlag(FLAGS.IMPROVEMENT_AUTO_IMPLEMENT, distinctId),
   // Mirror improvement-implement's runner resolution EXACTLY (WI-290): env override,
@@ -218,6 +256,7 @@ const defaultDeps: DispatcherStalenessDeps = {
   // yet this collector would skip as "disarmed" and never fire).
   runnerHarness: (installSlug) => process.env.PAPERCUSP_IMPROVEMENT_RUNNER_HARNESS || installSlug || null,
   maxPerRun: maxPerRunFromEnv,
+  routineState: readImprovementImplementRoutineState,
   readDispatches: (ws) => readRecentDispatches(ws, { limit: DISPATCHER_STALENESS_SCAN_READ_LIMIT }),
   readItems: readImprovementItems,
   ownerFullAutonomy: readOwnerFullAutonomyGrant,
@@ -260,6 +299,30 @@ export async function collectDispatcherStalenessSignals(
     };
   }
 
+  // The flag/runner/cap describe the dispatcher's CONFIGURATION, but the routine's
+  // active bit is its live execution gate. An owner-directed pause leaves those
+  // configuration inputs armed while correctly preventing fires; without this read,
+  // an old lastDispatchAt plus queued work becomes a false stall alarm on every tick.
+  // A missing slug/row or a read failure is unknown and fails open: that is a real
+  // configuration/stall condition worth surfacing, unlike an explicit pause.
+  if (installSlug) {
+    let routineState: DispatcherRoutineState | null = null;
+    try {
+      routineState = await deps.routineState(workspaceId, installSlug);
+    } catch {
+      routineState = null;
+    }
+    if (routineState && !routineState.active) {
+      return {
+        signals: [],
+        note:
+          `improvement-implement routine inactive` +
+          (routineState.pauseReason ? ` (paused: ${routineState.pauseReason})` : '') +
+          ` — dispatcher-staleness check skipped`,
+      };
+    }
+  }
+
   // 2. Dispatch ledger → lastDispatchAt + env-outage (one read; the table may be absent).
   let rows: ImprovementDispatchRow[];
   try {
@@ -273,7 +336,10 @@ export async function collectDispatcherStalenessSignals(
   // A credential/env outage legitimately PAUSES the lane (plan-implement 'paused') and
   // is surfaced separately (service-down / the orphan collector's outage note) — suppress.
   if (laneInEnvOutage(rows, { nowMs })) {
-    return { signals: [], note: 'lane in a credential/env outage — dispatcher legitimately paused, staleness suppressed' };
+    return {
+      signals: [],
+      note: 'lane in a credential/env outage — dispatcher legitimately paused, staleness suppressed',
+    };
   }
   const { lastDispatchAt } = computeDispatchStats(rows, { nowMs });
 
