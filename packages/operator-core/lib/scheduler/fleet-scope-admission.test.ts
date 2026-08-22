@@ -2114,6 +2114,7 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
       workspaceId: 'papercusp-workspace',
     });
     expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_violation' });
+    expect(admission).toMatchObject({ reporter: 'su-leader' });
   });
 
   it('keeps atomic create+assign atomic for a server-attributed leader dispatch', async () => {
@@ -2147,6 +2148,7 @@ describe('self-filed fallout admission (EI-18732199386440540)', () => {
       workspaceId: 'papercusp-workspace',
     });
     expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_violation' });
+    expect(admission).toMatchObject({ reporter: 'su-other-member' });
   });
 
   it('does not let atomic self-filing bypass a winding-down fleet', async () => {

@@ -113,6 +113,8 @@ export type FleetScopeAdmission =
       code: 'fleet_scope_missing' | 'fleet_scope_violation' | 'fleet_winding_down';
       reason: string;
       scope: FleetScopeContext;
+      /** Server-derived original author, when the refused subject is an existing work-item. */
+      reporter?: string | null;
     };
 
 export type FleetDependencyEscapeCall = {
@@ -501,6 +503,10 @@ export async function admitWorkItemForFleetTarget(args: {
     scoped: true,
     code: 'fleet_scope_violation',
     scope,
+    // Preserve the item's server-derived author for the caller-facing refusal hint. A
+    // cross-fleet tracker can be completed without acquiring the item, but only when the
+    // claimant knows which reporter can close the ledger row against the result.
+    reporter: item.createdBy,
     reason:
       `work-item ${item.id} does not match ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
       `for fleet '${scope.fleetSlug}'` +
@@ -550,6 +556,9 @@ export async function admitSubjectForFleetTarget(args: {
     scoped: true,
     code: 'fleet_scope_violation',
     scope,
+    // The create+assign seam has no row yet, but its creator is server-derived and is the
+    // same reporter that will be persisted if the item is downgraded to unassigned.
+    reporter: args.createdBy ?? null,
     reason:
       `assignment does not match ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
       `for fleet '${scope.fleetSlug}'`,
@@ -943,6 +952,17 @@ export function fleetScopeLeaderRemedy(
         `'${fleetSlug}' right now. The work-item is NOT lost: it stays filed, unassigned, on the ledger — it will ` +
         `surface to whichever lane/agent next admits it — or complete it yourself.`
       : `(Or route the work elsewhere / complete it yourself.)`;
+  // EI-20271090543139343: a tracker row may be deliberately out of the claimant's lane
+  // because the actual deliverable is an independent tool call. When the server-derived
+  // reporter is a different agent, expose that third route in the same refusal hint. Keep
+  // it silent for self-authored rows (the reporter already owns the ledger decision) and
+  // unknown authors (there is no safe recipient to name).
+  const reporter = admission.reporter?.trim();
+  const trackerNote =
+    reporter && reporter !== admission.scope.ownerId
+      ? `If this item only TRACKS work you can perform without holding it, do the work and ask the reporter ` +
+        `(${reporter}) to close the item against your result.`
+      : '';
   return (
     // EI-19484346966003625 (R1): the class reading LEADS, because it can invalidate the
     // per-row advice that follows it — a leader who reads only the first sentence must not
@@ -951,7 +971,7 @@ export function fleetScopeLeaderRemedy(
     // a malformed class filter, and a missing plan_item stamp has a safer row-local remedy.
     `${retiredPlanNote}${planStampNote}${planScoped ? '' : fleetScopeClassRefusalNote(classRefusal)}` +
     `To let this member self-claim it, ${laneAction} — the member picks it up on its next scheduler:get_next, ` +
-    `no re-dispatch. ${routeElsewhereNote}`
+    `no re-dispatch. ${routeElsewhereNote}${trackerNote ? ` ${trackerNote}` : ''}`
   );
 }
 

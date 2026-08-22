@@ -36,6 +36,7 @@ function reading(matchedByFilter: number, poolTotal: number): FleetScopeClassRef
  */
 function refusal(
   code: 'fleet_scope_violation' | 'fleet_winding_down' = 'fleet_scope_violation',
+  reporter?: string | null,
 ): Extract<FleetScopeAdmission, { allowed: false }> {
   return {
     allowed: false,
@@ -57,6 +58,7 @@ function refusal(
         // stub to the shape the remedy actually consumes without asserting the whole type.
       } as unknown as Extract<FleetScopeAdmission, { allowed: false }>['scope']['record'],
     },
+    ...(reporter === undefined ? {} : { reporter }),
   };
 }
 
@@ -125,6 +127,18 @@ describe('fleetScopeClassRefusalNote — the decision boundary', () => {
 });
 
 describe('fleetScopeLeaderRemedy — how the class reading reaches the leader', () => {
+  it('offers the tracker fallback only when a different reporter is known', () => {
+    const peerReporter = fleetScopeLeaderRemedy(refusal('fleet_scope_violation', 'su-reporter'), true);
+    expect(peerReporter).toContain('only TRACKS work you can perform without holding it');
+    expect(peerReporter).toContain('ask the reporter (su-reporter) to close the item against your result');
+
+    const selfReporter = fleetScopeLeaderRemedy(refusal('fleet_scope_violation', 'su-member-0001'), true);
+    expect(selfReporter).not.toContain('only TRACKS work you can perform without holding it');
+
+    const unknownReporter = fleetScopeLeaderRemedy(refusal());
+    expect(unknownReporter).not.toContain('only TRACKS work you can perform without holding it');
+  });
+
   it('leads a plan-scoped refusal with a conditional plan_item backfill and suppresses the ratio warning', () => {
     const base = refusal();
     const planViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
