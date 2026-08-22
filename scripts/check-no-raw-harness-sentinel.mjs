@@ -54,6 +54,9 @@ export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
  * resolvePotHomeSlug (EI-20664974139266563), shrinking it to 62 — that binding
  * fed both the dedup lookup and the persisted predicate_watches.harness_slug,
  * so the two bare `harnessSlug,` uses downstream of it are fixed with it.
+ * The testing:flakiness fallback and work-item identity sites were then fixed
+ * through resolveConcreteHarnessSlug (8bbee8979e), shrinking the pending
+ * baseline to 60.
  * A source fingerprint makes a REWRITTEN or removed site fail closed.
  *
  * Keys are LINE-INSENSITIVE (`file:kind#occurrence:text`) — see `findingKey`.
@@ -83,8 +86,6 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/agent-tools/state/read.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
   "packages/operator-core/lib/agent-tools/state/read.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? undefined,",
   "packages/operator-core/lib/agent-tools/state/subscribe.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? undefined,",
-  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:fallback#1:const harnessSlug = args.harness ?? ctx.harnessSlug ?? undefined;",
-  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:identity-field#1:{ ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug },",
   "packages/operator-core/lib/agent-tools/tools/define.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
   "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#1:const planItemStampHarness = harnessForItem ?? ctx.harnessSlug ?? undefined;",
   "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#1:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
