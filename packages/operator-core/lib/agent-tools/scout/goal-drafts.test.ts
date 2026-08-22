@@ -70,8 +70,9 @@ describe('blender:goal-drafts', () => {
     expect(out.summary.total).toBe(0);
     // The whole point: a caller must not be able to read this as a fault.
     expect(out.empty).toBeDefined();
-    expect(out.empty!.meaning).toContain('MEASURED NORMAL STATE');
-    expect(out.empty!.meaning).toContain('proposal SUPPLY');
+    expect(out.empty!.meaning).toContain('MEASURED pre-D-016 corpus state');
+    expect(out.empty!.meaning).toContain('New direct goal hints route live');
+    expect(out.empty!.meaning).toContain('not evidence that the current rail is blocked');
     expect(out.empty!.reason).toContain('30 cycle');
   });
 

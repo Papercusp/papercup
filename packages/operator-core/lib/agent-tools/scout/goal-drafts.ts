@@ -2,9 +2,10 @@
  * blender:goal-drafts — read the write-nothing goal-draft queue
  * (plan blender-goal-amendment-rail-2026-08-19 P-002).
  *
- * THE QUESTION THIS ANSWERS: "what WOULD the Blender have proposed, if the goal rail were
- * open to it?" P-001 built the projection that answers it (`readGoalDraftQueue`); until
- * this verb existed the only way to ask was a hand-written SELECT against
+ * THE QUESTION THIS ANSWERS: "what goal-scale work did the pre-D-016 Blender ask for,
+ * and what plan-hinted work does the live override classify as goal-scale?" P-001 built
+ * the historical/projection read (`readGoalDraftQueue`); until this verb existed the only
+ * way to ask was a hand-written SELECT against
  * `harness_shared.scout_cycle_stage_artifacts`, which the repo's
  * hot-read-belongs-behind-a-tool rule forbids precisely because a hand-written query
  * re-derives the selection semantics and drifts from the live routing rule.
@@ -15,9 +16,10 @@
  * granted.
  *
  * ⚠ AN EMPTY RESULT IS THE MEASURED NORMAL STATE, NOT AN ERROR OR AN OUTAGE (D-012).
- * Across the full retained corpus — 30 cycles, 106 proposals — ZERO proposals ever carried
- * `routeHint:'goal'`, and intake has never coerced a hint on any rail. The goal rail is not
- * blocked; it is UNUSED. So this verb reports `empty` with the reason attached rather than
+ * Across the measured pre-D-016 corpus — 30 cycles, 106 proposals — ZERO proposals carried
+ * `routeHint:'goal'`, and intake coerced no hint on any rail. That historical queue was not
+ * blocked; it was UNUSED. Direct post-D-016 goal hints route live and belong in the routed-
+ * idea ledger, not this draft projection. So this verb reports `empty` with the reason attached rather than
  * letting a caller read "no rows" as "the read failed" or "something is holding drafts
  * back". Any consumer built on this must state what it does when the stream is empty,
  * because empty is what the stream measurably is.
@@ -178,7 +180,7 @@ export async function runGoalDrafts(
       result.empty = {
         reason: `no goal-scale drafts in the last ${limit} cycle(s)`,
         meaning:
-          'This is the MEASURED NORMAL STATE, not a fault and not a blocked rail (D-012): across 30 cycles / 106 proposals, zero proposals ever carried routeHint:"goal" and intake has never coerced a hint on any rail. The constraint is proposal SUPPLY — the model does not propose goal-scale work — so an empty queue is evidence about the ideator, not about intake or about this read.',
+          'This is the MEASURED pre-D-016 corpus state, not a fault and not evidence that the current rail is blocked (D-012/D-016): across those 30 cycles / 106 proposals, zero proposals carried routeHint:"goal" and intake coerced no hint on any rail. New direct goal hints route live and appear in the routed-idea ledger, not this historical draft queue; an empty queue therefore says only that no historical dropped ask or current override projection matched this window.',
       };
     }
     return result;
@@ -190,13 +192,13 @@ export async function runGoalDrafts(
 export default defineTool({
   name: 'blender:goal-drafts',
   description:
-    'Read-only: what the Blender WOULD have proposed as goal-scale work, from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns each draft with the rails the goal rail would have set (killCriterion, budgetCents) and, ALWAYS, the marker provenance that triggered it (markerHits: which fields, and whether the match is only inside quoted code). An EMPTY result is the measured normal state, not a fault — it comes back with `empty.meaning` explaining that the rail is unused rather than blocked.',
+    'Read-only historical/override projection of goal-scale work from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns pre-D-016 dropped asks and plan-hinted proposals the live override would bump, with drafted rails (killCriterion, budgetCents) and marker provenance. Accepted post-D-016 direct goal hints route live and are intentionally absent. An EMPTY result comes with `empty.meaning` so it is not misread as a blocked current rail.',
   capability: 'curation:read',
   guidance: {
     when:
-      'Deciding whether the Blender should be given any authority near goals, or auditing what goal-scale work it has actually been generating. This is the evidence surface that argument is supposed to rest on.',
+      'Auditing historical pre-D-016 goal asks or reviewing which persisted plan-hinted proposals the current override classifies as goal-scale, without writing anything.',
     notWhen:
-      'Creating or amending a goal (goals:create / goals:update) — this verb only reports what a draft WOULD have been. Reading routed ideas that actually landed on a rail is the routed-idea ledger, not this.',
+      'Creating or amending a goal (goals:create / goals:update), or reading accepted post-D-016 direct goal routes — use the routed-idea ledger for work that actually landed on a rail.',
     chaining:
       'Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row.',
     seeAlso: [
