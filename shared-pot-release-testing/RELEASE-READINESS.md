@@ -2,19 +2,29 @@
 
 **Question:** can we confidently ship the shared-pot (P2P federated) feature to public production?
 
-**VERDICT — updated and signed 2026-08-20T07:36Z (su-416b5, `WI-39359`, owner-directed AUTO):
-NO-GO for unconditional public ship.** In the non-git/non-coordination P2P lane, the remaining
-release-readiness gap is one evidence wall, not a second code defect: the distinct-account live
-rig cannot enter a scenario until the `aviynw` frame has a valid GitHub token.
+**VERDICT — re-signed 2026-08-22T05:30Z (su-6651e, `WI-40548`, per
+`p2p-public-release-remaining-lanes-2026-07-16#D-046`): NO-GO for unconditional public ship.**
+The verdict is unchanged; this signature corrects a rationale that current executed evidence has
+overtaken. Two independent blockers now stand in the non-git/non-coordination P2P lane, and both
+must resolve on live evidence before any GO:
 
-The retained gate run `/tmp/live-fed-gate-20260820-002304` proves the current boundary. It built
-and verified the sidecar, repacked `Papercusp_gate.deb`, and its exact production
-attestation-write probe returned `{"user":"papercupai","ok":true,"cleanedUp":true}`. The
-`local_matrix` leg then failed its side-effect-free host preflight on **only** the missing/invalid
-`aviynw` token, before frame-image construction, container provisioning, core eviction, or any
-federation scenario. This is a **NO-GO on absent current live evidence, not evidence that P2P is
-broken**. The flip condition is a valid `aviynw` token followed by a real distinct-account gate
-run whose applicable live legs execute and pass.
+1. **W1 remains open and structurally unobserved.** Every run through `m1787374736` queried the
+   owner frame's self-classification only once at `peer_connect`, roughly 30 scenario orders
+   before the restart, so no retained result can say how the owner classifies itself afterward.
+   `WI-40534` has now landed a measure-only order-82 re-poll. The **next** qualifying run is the
+   first one capable of measuring W1's post-restart half; until it does, a green scenario verdict
+   is not evidence that W1 cleared.
+2. **`WI-40537` (revocation k-cut) is unresolved.** Run `m1787374736` produced a red that still
+   needs two discriminator legs: whether banned frame B can decrypt post-ban content, and whether
+   the result reproduces on current HEAD. Pending those answers, this is a release blocker but
+   **not a confirmed read-access breach** and must not be described as one.
+
+**CLOSED-BY-EXECUTION — the `aviynw` credential precondition is no longer a wall.** Run
+`m1787374736` cleared the distinct-account host preflight with `aviynw` on frame B; its final
+matrix summary records **15 passed, 2 failed, and 1 skipped of 18 registered**. That closes the
+token gap specifically; it does not clear W1, resolve `WI-40537`, or change the NO-GO verdict.
+There is therefore no valid single-step flip condition at this signature: both blockers above
+need attributable executed evidence.
 
 Git, coordination metadata, code-signing inputs, and the separately governed shipped-seed
 artifact mismatch are outside this lane and are not additional P2P evidence walls. The dated
