@@ -65,6 +65,20 @@ export function neutralizeToolCallTags<T extends string | null | undefined>(text
   return text.replace(TAG_PATTERN, (_m, slash: string, name: string) => `＜${slash}${name}`) as T;
 }
 
+/**
+ * Remove control characters that cannot be meaningfully stored in persisted
+ * agent-authored text. Keep tab/newline/carriage-return because they carry
+ * ordinary formatting semantics in titles, descriptions, and source excerpts;
+ * strip the remaining C0 controls plus DEL, including NUL (U+0000), which
+ * PostgreSQL rejects from text values. The operation is intentionally silent
+ * and idempotent: a control byte in a pasted source excerpt must not discard
+ * the entire filing at the database boundary.
+ */
+export function sanitizePersistedText<T extends string | null | undefined>(text: T): T {
+  if (!text) return text;
+  return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '') as T;
+}
+
 /** True iff `text` contains a tool-call-lookalike tag — for logging/telemetry
  *  without necessarily mutating the stored text. */
 export function containsToolCallLookalike(text: string | null | undefined): boolean {

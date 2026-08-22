@@ -8,7 +8,7 @@
  * against) — a live demonstration of the bug, not just a theoretical risk.
  */
 import { describe, it, expect } from 'vitest';
-import { neutralizeToolCallTags, containsToolCallLookalike } from './text-safety';
+import { neutralizeToolCallTags, containsToolCallLookalike, sanitizePersistedText } from './text-safety';
 
 const OPEN = '<';
 const CLOSE = '>';
@@ -93,5 +93,21 @@ describe('containsToolCallLookalike', () => {
     expect(containsToolCallLookalike(null)).toBe(false);
     expect(containsToolCallLookalike(undefined)).toBe(false);
     expect(containsToolCallLookalike('')).toBe(false);
+  });
+});
+
+describe('sanitizePersistedText', () => {
+  it('removes NUL and other non-formatting controls while preserving text formatting', () => {
+    const controls = String.fromCharCode(0, 1, 8, 11, 12, 14, 31, 127);
+    const source = `before${controls}after\tline one\nline two\rline three`;
+    expect(sanitizePersistedText(source)).toBe('beforeafter\tline one\nline two\rline three');
+  });
+
+  it('is idempotent and passes through nullish values', () => {
+    const once = sanitizePersistedText(`a${String.fromCharCode(0)}b`);
+    expect(sanitizePersistedText(once)).toBe(once);
+    expect(sanitizePersistedText(null)).toBeNull();
+    expect(sanitizePersistedText(undefined)).toBeUndefined();
+    expect(sanitizePersistedText('')).toBe('');
   });
 });

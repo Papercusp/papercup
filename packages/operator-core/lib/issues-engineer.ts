@@ -23,7 +23,7 @@ import type { OrgSql } from './work-items';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { resolveWorkItemPot } from './pot-membership';
 import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
-import { neutralizeToolCallTags } from './text-safety';
+import { neutralizeToolCallTags, sanitizePersistedText } from './text-safety';
 import {
   PgTaggableStore,
   PgThreadStore,
@@ -802,8 +802,9 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
   // issue-family create path (improvements:capture, work_items:create) funnels
   // through, so a pasted-in or planted fake tool-call block can never later be
   // misread by a reading agent as a live continuation of its own tool stream.
-  const safeTitle = neutralizeToolCallTags(input.title);
-  const safeBody = neutralizeToolCallTags(input.body);
+  const safeTitle = sanitizePersistedText(neutralizeToolCallTags(input.title));
+  const safeBody = sanitizePersistedText(neutralizeToolCallTags(input.body));
+  const safeFoundDuring = sanitizePersistedText(input.foundDuring);
   const issue = await boundedOrgTxn(async (tx) => {
     const id = input.id ?? (await nextIssueId(tx));
     const rows = await tx<IssueRowDb[]>`
@@ -814,7 +815,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
       VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
               ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, ${input.state ?? 'open'}, ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
-              ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${input.foundDuring ?? null},
+              ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${safeFoundDuring ?? null},
               ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created},
               ${input.parent ?? null})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;

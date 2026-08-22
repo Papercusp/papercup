@@ -202,6 +202,28 @@ describe('engineer issues surface (real PG)', () => {
     expect(got?.title).toBe('shop freezes');
   });
 
+  it('sanitizes unstorable controls at the create boundary without flattening formatting (EI-19422582795094229)', async () => {
+    const nul = String.fromCharCode(0);
+    const issue = await issues.createIssue({
+      title: `title${nul}${String.fromCharCode(1)}after`,
+      body: `first line${nul}\nsecond line`,
+      foundDuring: `source excerpt${nul}${String.fromCharCode(31)}after`,
+      createdBy: 'agA',
+    });
+
+    expect(issue.title).toBe('titleafter');
+    expect(issue.body).toBe('first line\nsecond line');
+    expect(issue.foundDuring).toBe('source excerptafter');
+
+    const stored = await db.sql<{ title: string; body: string; found_during: string }[]>`
+      SELECT title, body, found_during
+        FROM harness_shared.engineer_issues
+       WHERE issue_id = ${issue.id}`;
+    expect(stored).toEqual([
+      { title: 'titleafter', body: 'first line\nsecond line', found_during: 'source excerptafter' },
+    ]);
+  });
+
   it('preserves issue-family duplicate/child parent through create, read, update, and clear (EI-20018021869343311)', async () => {
     const parent = await issues.createIssue({ title: 'canonical defect', createdBy: 'agA' });
     const child = await issues.createIssue({
