@@ -268,9 +268,12 @@ describe("plans:get — cache wiring", () => {
         ],
       },
     });
+    // EI-21124863090048444: harnessSlug is deliberately NOT passed — see the
+    // comment on this call site in get.ts. `row.harnessSlug` is the plan's
+    // Hive-home slug, not the audit's citation-context harness, so filtering on
+    // it would silently drop a real audit recorded from a member/sub-harness.
     expect(M.getLatestPlanAudit).toHaveBeenCalledWith("alpha", {
       workspaceId: "ws-get",
-      harnessSlug: "papercup",
     });
   });
 
