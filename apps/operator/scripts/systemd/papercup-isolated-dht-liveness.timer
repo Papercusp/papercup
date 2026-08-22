@@ -2,16 +2,11 @@
 Description=Run the Papercusp isolated-DHT liveness probe every 5 minutes (EI-8892) — catches a silent bootstrap wedge within minutes instead of by chance
 
 [Timer]
-# Give the box a couple minutes after boot before the first probe, then every
-# 5 min. 5 min keeps the "3-day silent outage" class down to a ~5-min detection
-# window without hammering the bootstrap node.
-OnBootSec=3min
-OnUnitActiveSec=5min
+# Wall-clock scheduling survives systemd user-manager restarts (EI-10733/
+# EI-11989); Persistent catches up a probe missed during the restart.
+OnCalendar=*:0/5
 AccuracySec=30s
-# No catch-up on missed runs while the box was asleep — a fresh probe is what
-# matters, and the wrapper's own staleness check (DHT_STALE_H) catches a timer
-# that stopped firing.
-Persistent=false
+Persistent=true
 Unit=papercup-isolated-dht-liveness.service
 
 [Install]

@@ -4,8 +4,10 @@
 Description=Run the embed-sidecar liveness probe every 60s
 
 [Timer]
-OnBootSec=120
-OnUnitActiveSec=60
+# Wall-clock scheduling survives systemd user-manager restarts (EI-10733/
+# EI-11989); Persistent catches up a probe missed during the restart.
+OnCalendar=*:0/1
+Persistent=true
 
 [Install]
 WantedBy=timers.target

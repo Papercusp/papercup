@@ -42,7 +42,7 @@ import { normalizeMcpName } from '@papercusp/tooldef';
 // The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
 // the route it probes cannot drift apart (WI-6743).
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -104,6 +104,14 @@ function failureLogPath(): string {
   // Resolved per-call (not cached at module load) so the sink is env-overridable at runtime + testable.
   return process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG || join(homedir(), '.papercusp', 'mcp-proxy-failures.jsonl');
 }
+export const DEFAULT_FAILURE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+function failureLogMaxBytes(): number {
+  const configured = Number(process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : DEFAULT_FAILURE_LOG_MAX_BYTES;
+}
+export function shouldRotateFailureLog(sizeBytes: number, maxBytes = DEFAULT_FAILURE_LOG_MAX_BYTES): boolean {
+  return sizeBytes >= maxBytes;
+}
 /**
  * PURE: should `recordProxyFailure` skip writing this call entirely? EI-19388683897769817 —
  * a test that constructs a proxy WITHOUT setting PAPERCUSP_MCP_PROXY_FAILURE_LOG must never
@@ -126,6 +134,13 @@ function recordProxyFailure(rec: Record<string, unknown>): void {
   try {
     const path = failureLogPath();
     mkdirSync(dirname(path), { recursive: true }); // idempotent; failures are rare so this is cheap
+    try {
+      if (shouldRotateFailureLog(statSync(path).size, failureLogMaxBytes())) {
+        renameSync(path, `${path}.1`);
+      }
+    } catch {
+      // A missing file is normal; concurrent writers may also win the rotation race.
+    }
     appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), ...rec }) + '\n');
   } catch {
     /* telemetry must never break the proxy */

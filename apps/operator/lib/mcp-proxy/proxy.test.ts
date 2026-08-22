@@ -25,6 +25,7 @@ import {
   DEFAULT_MAX_IN_FLIGHT,
   isReservedControlPlaneCall,
   shouldSkipDefaultFailureLog,
+  shouldRotateFailureLog,
   type McpProxyTarget,
 } from './proxy';
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -56,6 +57,13 @@ describe('shouldSkipDefaultFailureLog — the write-site guard against test poll
   it('WRITES outside vitest (real production/dev process) regardless of override — never silently drops real telemetry', () => {
     expect(shouldSkipDefaultFailureLog(false, false)).toBe(false);
     expect(shouldSkipDefaultFailureLog(false, true)).toBe(false);
+  });
+});
+
+describe('failure ledger rotation — bounded diagnostic-path storage', () => {
+  it('rotates at the configured byte ceiling and leaves smaller files in place', () => {
+    expect(shouldRotateFailureLog(10, 10)).toBe(true);
+    expect(shouldRotateFailureLog(9, 10)).toBe(false);
   });
 });
 
@@ -489,6 +497,34 @@ describe('createMcpProxy — forwarding + restart recovery', () => {
     } finally {
       if (prev === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
       else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = prev;
+    }
+  });
+
+  it('rotates the durable failure sink before it exceeds the configured ceiling', async () => {
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const logFile = path.join(os.tmpdir(), `mcp-proxy-rotate-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+    const prevPath = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+    const prevMax = process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = logFile;
+    process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES = '32';
+    try {
+      fs.writeFileSync(logFile, 'x'.repeat(64));
+      const targetPort = await freePort();
+      const proxy = track(createMcpProxy({ listenPort: 0, targetHost: '127.0.0.1', targetPort, retryWindowMs: 120, retryBackoffMs: 20, log: () => {} }));
+      await listen(proxy);
+      expect((await request(port(proxy))).status).toBe(503);
+      expect(fs.existsSync(`${logFile}.1`)).toBe(true);
+      expect(fs.readFileSync(`${logFile}.1`, 'utf8')).toBe('x'.repeat(64));
+      expect(fs.readFileSync(logFile, 'utf8')).toContain('"kind":"exhausted_refused"');
+    } finally {
+      fs.rmSync(logFile, { force: true });
+      fs.rmSync(`${logFile}.1`, { force: true });
+      if (prevPath === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG = prevPath;
+      if (prevMax === undefined) delete process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES;
+      else process.env.PAPERCUSP_MCP_PROXY_FAILURE_LOG_MAX_BYTES = prevMax;
     }
   });
 

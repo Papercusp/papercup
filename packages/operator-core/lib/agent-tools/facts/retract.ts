@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { retractFact, findFactKeyElsewhere, findFactKeyMatches, FACT_SCOPES } from '../../agent-facts/store';
+import { retractFact, findFactKeyElsewhere, findFactKeyMatches, findFactKeyState, FACT_SCOPES } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 
 export default defineTool({
@@ -95,7 +95,20 @@ export default defineTool({
       scopeRef: scopeRef ?? '',
       key: args.key,
     });
-    if (!elsewhere.length) return { data: { ok: true, retracted: false } };
+    if (!elsewhere.length) {
+      const state = await findFactKeyState({
+        scope,
+        scopeRef: scopeRef ?? null,
+        key: args.key,
+      });
+      return {
+        data: {
+          ok: true,
+          retracted: false,
+          reason: state === 'already-retracted' || state === 'already-superseded' ? state : 'not-found',
+        },
+      };
+    }
 
     const first = elsewhere[0]!;
     return {

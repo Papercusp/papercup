@@ -2,15 +2,11 @@
 Description=Run the Papercusp orphaned-vitest-worker reaper every 5 minutes (EI-18686031108193522)
 
 [Timer]
-# Fire shortly after boot, then every 5 min — the same cadence as
-# papercup-webkit-reaper.timer for the same class of problem (a leaked
-# child process from an abruptly-killed parent).
-OnBootSec=3min
-OnUnitActiveSec=5min
+# Wall-clock scheduling survives systemd user-manager restarts (EI-10733/
+# EI-11989); Persistent catches up a sweep missed during the restart.
+OnCalendar=*:0/5
 AccuracySec=30s
-# No catch-up on missed runs — a fresh sweep is what matters, not auditing
-# how many accumulated while the box was asleep.
-Persistent=false
+Persistent=true
 Unit=papercup-vitest-orphan-reaper.service
 
 [Install]

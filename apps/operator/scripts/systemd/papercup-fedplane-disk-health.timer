@@ -2,10 +2,11 @@
 Description=Run the Papercusp fed-plane disk-health probe every 5 minutes (EI-8982) — catches a disk-full wedge before it takes down federation
 
 [Timer]
-OnBootSec=3min
-OnUnitActiveSec=5min
+# Wall-clock scheduling survives systemd user-manager restarts (EI-10733/
+# EI-11989); Persistent catches up a probe missed during the restart.
+OnCalendar=*:0/5
 AccuracySec=30s
-Persistent=false
+Persistent=true
 Unit=papercup-fedplane-disk-health.service
 
 [Install]

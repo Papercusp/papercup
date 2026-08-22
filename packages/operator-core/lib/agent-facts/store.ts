@@ -1734,6 +1734,31 @@ export async function retractFact(
   return rows.length > 0;
 }
 
+export type FactKeyState = 'live' | 'already-retracted' | 'already-superseded' | 'not-found';
+
+/** Read the newest local row for an exact fact identity after a retract miss. */
+export async function findFactKeyState(
+  args: { scope: FactScope; scopeRef?: string | null; key: string; workspaceId?: string },
+  inject?: Sql,
+): Promise<FactKeyState> {
+  const sql = sqlOf(inject);
+  const ws = args.workspaceId ?? activeWorkspaceId();
+  const ref = args.scope === 'workspace' ? '' : (args.scopeRef ?? '').trim();
+  const rows = await sql<{ retracted_at: string | null; superseded_at: string | null }[]>`
+    SELECT retracted_at::text, superseded_at::text
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws} AND scope = ${args.scope}
+       AND coalesce(scope_ref,'') = ${ref} AND key = ${args.key.trim()}
+       AND source_hive IS NULL
+     ORDER BY id DESC
+     LIMIT 1`;
+  const row = rows[0];
+  if (!row) return 'not-found';
+  if (row.retracted_at) return 'already-retracted';
+  if (row.superseded_at) return 'already-superseded';
+  return 'live';
+}
+
 /** One live fact sharing a key, found at a DIFFERENT (scope, scopeRef) than the one searched. */
 export interface FactElsewhereMatch {
   id: number;

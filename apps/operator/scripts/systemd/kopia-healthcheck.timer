@@ -2,8 +2,10 @@
 Description=Run kopia healthcheck every 15 minutes
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=15min
+# Wall-clock scheduling survives systemd user-manager restarts (EI-10733/
+# EI-11989); Persistent catches up a healthcheck missed during the restart.
+OnCalendar=*:0/15
+Persistent=true
 Unit=kopia-healthcheck.service
 
 [Install]

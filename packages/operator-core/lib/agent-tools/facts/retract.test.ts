@@ -1,15 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { retractFactM, findFactKeyMatchesM, findFactKeyElsewhereM } = vi.hoisted(() => ({
+const { retractFactM, findFactKeyMatchesM, findFactKeyElsewhereM, findFactKeyStateM } = vi.hoisted(() => ({
   retractFactM: vi.fn(),
   findFactKeyMatchesM: vi.fn(),
   findFactKeyElsewhereM: vi.fn(),
+  findFactKeyStateM: vi.fn(),
 }));
 vi.mock('../../agent-facts/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-facts/store')>()),
   retractFact: retractFactM,
   findFactKeyMatches: findFactKeyMatchesM,
   findFactKeyElsewhere: findFactKeyElsewhereM,
+  findFactKeyState: findFactKeyStateM,
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-retractor' }),
@@ -22,6 +24,7 @@ describe('facts:retract audit metadata', () => {
     retractFactM.mockReset().mockResolvedValue(true);
     findFactKeyMatchesM.mockReset().mockResolvedValue([]);
     findFactKeyElsewhereM.mockReset().mockResolvedValue([]);
+    findFactKeyStateM.mockReset().mockResolvedValue('not-found');
   });
 
   it('requires and forwards the retraction reason with the caller identity', async () => {
@@ -75,5 +78,19 @@ describe('facts:retract audit metadata', () => {
   it('keeps the audit reason required even when scope is resolved from a unique key', () => {
     expect(tool.args.safeParse({ key: 'stale' }).success).toBe(false);
     expect(tool.args.safeParse({ key: 'stale', reason: 'it is no longer true' }).success).toBe(true);
+  });
+
+  it.each([
+    ['already-retracted', 'a prior retract already removed this fact'],
+    ['already-superseded', 'a newer assertion superseded this fact'],
+    ['not-found', 'the key was never asserted here'],
+  ] as const)('diagnoses a retract miss as %s', async (reason, auditReason) => {
+    retractFactM.mockResolvedValueOnce(false);
+    findFactKeyStateM.mockResolvedValueOnce(reason);
+    const out = await tool.handler(
+      { scope: 'workspace', key: 'stale', reason: auditReason },
+      {} as never,
+    );
+    expect(out).toMatchObject({ data: { ok: true, retracted: false, reason } });
   });
 });
