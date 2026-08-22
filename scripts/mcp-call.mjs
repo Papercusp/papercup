@@ -11,11 +11,17 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
+ *   printf '%s\n' '{"id":"EI-1750","summary":"it's safe"}' | node scripts/mcp-call.mjs work_items:complete --json - --harness papercup
+ *   node scripts/mcp-call.mjs work_items:complete --json-file payload.json --harness papercup
  *   node scripts/mcp-call.mjs plans:search '{"query":"infra","harness":"papercup"}' --client su-1234
+ *
+ * Prefer `--json -` or `--json-file <path>` for payloads containing apostrophes
+ * or other shell-hostile text; the positional JSON form remains for compact,
+ * quote-free arguments.
  *
  * Notes: tool names use COLONS (coord:whoami, plans:new, work_items:set_state —
  * arg is `itemId` not `item`). `tools/list` returns empty in this mode, but
@@ -109,6 +115,52 @@ export function parseArgs(argv) {
     } else pos.push(a);
   }
   return { tool: pos[0], jsonArgs: pos[1], flags };
+}
+
+/**
+ * Select the JSON input source. `--json-file` takes priority over `--json`,
+ * matching the ptool contract; the legacy positional form remains supported.
+ * The source selection is pure so every quoting-safe path is testable without
+ * spawning a shell or contacting the operator.
+ */
+export function jsonSourceKind({ jsonArgs, flags = {} } = {}) {
+  if (flags.jsonFile) return 'file';
+  if (flags.json === '-') return 'stdin';
+  if (flags.json !== undefined) return 'inline';
+  if (jsonArgs !== undefined) return 'inline';
+  return null;
+}
+
+/**
+ * Read and parse the selected JSON args source. `readFile` is injectable for
+ * tests; descriptor 0 is used for the `--json -` stdin sentinel.
+ */
+export function readJsonArgs(
+  { jsonArgs, flags = {} } = {},
+  { readFile = readFileSync } = {},
+) {
+  const kind = jsonSourceKind({ jsonArgs, flags });
+  if (kind === null) return {};
+
+  const label = kind === 'file'
+    ? `--json-file ${flags.jsonFile}`
+    : kind === 'stdin'
+      ? 'stdin'
+      : 'inline JSON';
+  let jsonText;
+  try {
+    if (kind === 'file') jsonText = readFile(flags.jsonFile, 'utf8');
+    else if (kind === 'stdin') jsonText = readFile(0, 'utf8');
+    else jsonText = flags.json ?? jsonArgs;
+  } catch (error) {
+    throw new Error(`could not read ${label}: ${error?.message ?? error}`);
+  }
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON: ${error?.message ?? error}`);
+  }
 }
 
 /**
@@ -213,7 +265,7 @@ export function isInvokedDirectly(
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (!tool || tool === '--help' || tool === '-h') {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--json -|--json-file <path>] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
     process.exit(tool ? 0 : 2);
   }
   let tok;
@@ -223,7 +275,13 @@ async function main() {
     console.error('mcp-call: no ~/.papercusp/superuser-token — run on a host that has it.');
     process.exit(3);
   }
-  const args = jsonArgs ? JSON.parse(jsonArgs) : {};
+  let args;
+  try {
+    args = readJsonArgs({ jsonArgs, flags });
+  } catch (error) {
+    console.error(`mcp-call: ${error?.message ?? error}`);
+    process.exit(2);
+  }
   // EI-6631: an empty/whitespace-only --client (e.g. `--client "$UNSET_VAR"`) must fall
   // back to the generated id, not be sent as a blank client= — `??` alone only catches
   // null/undefined, not "".
