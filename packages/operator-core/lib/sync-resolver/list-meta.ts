@@ -70,6 +70,7 @@ export function attachListPageMeta<T extends object>(
   const cursorAdvances =
     rows.length > 0 &&
     input.nextCursor !== null &&
+    input.nextCursor.length > 0 &&
     input.nextCursor !== (input.previousCursor ?? null);
   const hasMore = input.hasMore && cursorAdvances;
   const { previousCursor: _previousCursor, ...meta } = input;
@@ -109,9 +110,8 @@ export function readListHasMore<T extends object>(
 ): boolean {
   if (!rows || rows.length === 0) return false;
   const meta = readListMeta(rows);
-  return typeof meta?.hasMore === 'boolean'
-    ? meta.hasMore
-    : typeof meta?.nextCursor === 'string' && meta.nextCursor.length > 0;
+  const cursorAdvances = typeof meta?.nextCursor === 'string' && meta.nextCursor.length > 0;
+  return typeof meta?.hasMore === 'boolean' ? meta.hasMore && cursorAdvances : cursorAdvances;
 }
 
 /**

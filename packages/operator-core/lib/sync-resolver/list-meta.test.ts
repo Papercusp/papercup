@@ -82,6 +82,7 @@ describe('attachListPageMeta / readListHasMore', () => {
   it.each([
     ['empty page', [], 'cursor-b', 'cursor-a'],
     ['missing next cursor', rows(), null, 'cursor-a'],
+    ['empty next cursor', rows(), '', 'cursor-a'],
     ['repeated cursor', rows(), 'cursor-a', 'cursor-a'],
   ] as const)('normalizes a no-growth %s to exhausted', (_label, page, nextCursor, previousCursor) => {
     const out = attachListPageMeta([...page], { nextCursor, previousCursor, hasMore: true });
@@ -103,6 +104,11 @@ describe('attachListPageMeta / readListHasMore', () => {
   it('reads the legacy nextCursor convention when hasMore is absent', () => {
     const legacy = attachListMeta(rows(), { nextCursor: 'legacy-cursor' });
     expect(readListHasMore(legacy)).toBe(true);
+  });
+
+  it('refuses contradictory hasMore=true metadata without a cursor', () => {
+    const malformed = attachListMeta(rows(), { nextCursor: null, hasMore: true });
+    expect(readListHasMore(malformed)).toBe(false);
   });
 });
 
