@@ -18,6 +18,13 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(lintCarrySurfaceProvenance(text)).toEqual({ flagged: false, matches: [] });
   });
 
+  it('EI-20340458419044934: does NOT flag observational live-state evidence from a WAKE checkpoint', () => {
+    const text =
+      'No scorecard emitted. mode:get ... still shows goal + auto + ideate + grade. ' +
+      'coord:presence shows the subject live and wakeable ...';
+    expect(lintCarrySurfaceProvenance(text)).toEqual({ flagged: false, matches: [] });
+  });
+
   it('flags an untagged "the owner said" imperative', () => {
     const r = lintCarrySurfaceProvenance('the owner said to hold off on deploying until Friday');
     expect(r.flagged).toBe(true);
