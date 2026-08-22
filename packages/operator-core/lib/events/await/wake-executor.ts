@@ -104,6 +104,7 @@ import {
 import {
   getLoopCarryNote,
   getLoopCarryNoteWithMeta as defaultGetLoopCarryNoteWithMeta,
+  shortCarryHash,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
 } from '../../carry-note';
@@ -568,12 +569,27 @@ export async function rehydrateLoopWakeText(
     // this high-priority block (not only walls/checks): those fields carry the candidate
     // and next action that a stale wake can otherwise resurrect.
     const liveNote = meta.note ? clipLoopCheckpointForWake(meta.note, 2_200) : null;
-    const checkpointState = liveNote
-      ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}):\n${liveNote}`
-      :
-        `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness}. ` +
-        `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
-        `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
+    // A note body alone is not enough to call the delivery-time read current: a
+    // legacy/corrupt row (or a degraded reader) can return text without the
+    // committed write timestamp needed to order it against later checkpoint writes.
+    // Derive the same short hash the checkpoint writer returns so the recipient can
+    // compare this exact body with a verified loop:checkpoint result.
+    const checkpointHash = meta.note ? shortCarryHash(meta.note) : null;
+    const hasCommittedTimestamp =
+      typeof meta.updatedAtMs === 'number' && Number.isFinite(meta.updatedAtMs) && meta.updatedAtMs > 0;
+    const checkpointProvenCurrent = Boolean(liveNote && checkpointHash && hasCommittedTimestamp);
+    const checkpointState = checkpointProvenCurrent
+      ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}; ` +
+        `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}):\n${liveNote}`
+      : liveNote
+        ? `⚠ UNPROVEN delivery-time loop:checkpoint for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+          `The latest committed checkpoint could not be established (contentHash or write timestamp is unavailable); ` +
+          `treat this note as a stale snapshot and do not trust or re-execute it. Reconcile the carry-note store ` +
+          `identity and write loop:checkpoint before ending this turn:\n${liveNote}`
+        :
+          `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+          `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
+          `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
 
     // EI-18825117783927950: best-effort, SEPARATELY caught so a status-read hiccup
     // degrades only this banner, never the walls/checks rehydration above it.

@@ -559,6 +559,23 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     // The delivery-time block leads the fire-time snapshot so the injection door's
     // head-keep behavior cannot spill the only state that was read at delivery.
     expect(out.indexOf('LIVE RE-CHECK')).toBeLessThan(out.indexOf(STALE_TEXT));
+    expect(out).toMatch(/contentHash=[0-9a-f]{12}/);
+    expect(out).toMatch(/writtenAt=\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it('does not call a note current when its committed write timestamp is unavailable', async () => {
+    const d = work({ payload: { harness: 'papercusp', wakeCount: 5 }, subscriberId: 'su-loop-unproven' });
+    const out = await rehydrateLoopWakeText(d, STALE_TEXT, {
+      getLoopCarryNoteWithMetaFn: vi.fn(async () => ({
+        note: '## Next action\nDo not repeat the completed write.',
+        updatedAtMs: null,
+      })),
+    });
+
+    expect(out).toContain('UNPROVEN delivery-time loop:checkpoint');
+    expect(out).toContain('latest committed checkpoint could not be established');
+    expect(out).not.toContain('Current verified loop:checkpoint');
+    expect(out).toContain('Do not repeat the completed write.');
   });
 
   it('a LOOP wake whose FRESH carry-note STILL has an open wall renders it in the re-check block', async () => {
