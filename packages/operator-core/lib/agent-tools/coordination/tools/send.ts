@@ -62,7 +62,12 @@ import { resolvePremiseStamps, PREMISE_STAMPS_FIELD } from '../premise-resolve';
 // bodies (dynamic), so this adds nothing to the send path's module graph. See
 // EI-19281789650149592: one static store import here red a 95-test suite.
 import { premiseProbes } from '../premise-probes';
-import { sendMessage, getMessageById, getUnresolvedAudienceSelectors } from '../messages';
+import {
+  sendMessage,
+  getMessageById,
+  resolveMessageRef,
+  getUnresolvedAudienceSelectors,
+} from '../messages';
 import { DIRECTIVE_EFFECT_KINDS, type DirectiveEffectSpec } from '../directive-effect';
 import { parseSlotSelector } from '../slot-selector';
 // NB `audience-host` is imported LAZILY at the one use site below, never statically:
@@ -488,7 +493,7 @@ export const itemSpec = z.object({
     .string()
     .optional()
     .describe(
-      "Replying? The EXACT msg_id you are answering (copy from coord:inbox) — this fires the asker's wake-on-reply. A dangling id refuses the send (related_msg_not_found); never hand-type or placeholder it.",
+      "Replying? The full msg_id you are answering (or a UNIQUE leading prefix copied from coord:inbox) — this fires the asker's wake-on-reply. The server persists the canonical full id; dangling or ambiguous refs refuse the send (related_msg_not_found / related_msg_ambiguous). Never hand-type or use a placeholder.",
     ),
   // D-048: REQUIRED here — not `.optional()`. The items[] axis enforces the gate
   // STRUCTURALLY: because itemSpec is what the generated tool schema advertises for
@@ -586,7 +591,8 @@ async function sendOne(
 
   // Reply-threading honesty (WI-5072): related_msg_id is the edge the ENTIRE
   // reply-wake contract fires on — the asker's wakeOnReply can only match a
-  // reply whose related_msg_id resolves to their message. A dangling id
+  // reply whose related_msg_id resolves to their message. A dangling or
+  // ambiguous ref
   // (hand-typed, placeholder, stale) silently voided that contract for BOTH
   // sides: the replier's send returned ok, the asker slept until a human
   // prodded them (live incident 2026-07-16: a reply threaded to the literal id
@@ -599,10 +605,28 @@ async function sendOne(
   // `goneRepliedTo` — resolved BEFORE recipient resolution so that block can
   // tell "closing a loop with a since-ended sender" apart from a bad address).
   let relatedOriginal: Awaited<ReturnType<typeof getMessageById>> = null;
+  // Keep the caller's ref for diagnostics, but persist and reuse the canonical
+  // full id when resolveMessageRef accepted a unique leading prefix.
+  let relatedMsgIdForSend = msg.related_msg_id;
   if (msg.related_msg_id) {
     let lookupErrored = false;
+    let relatedLookup: Awaited<ReturnType<typeof resolveMessageRef>> | null = null;
     try {
-      relatedOriginal = await getMessageById(msg.related_msg_id);
+      relatedLookup = await resolveMessageRef(msg.related_msg_id);
+      if (relatedLookup.status === 'found') {
+        relatedOriginal = relatedLookup.message;
+        relatedMsgIdForSend = relatedLookup.msgId;
+      } else if (relatedLookup.status === 'ambiguous') {
+        return {
+          ok: false,
+          to: msg.to,
+          error: 'related_msg_ambiguous',
+          message:
+            `related_msg_id '${msg.related_msg_id}' matches multiple coord messages ` +
+            `(${relatedLookup.candidates.join(', ')}) — nothing was sent. ` +
+            'Use the full msg_id or a longer unique leading prefix.',
+        };
+      }
     } catch {
       lookupErrored = true; // infra hiccup — deliver anyway (fail-soft)
     }
@@ -614,9 +638,12 @@ async function sendOne(
         message:
           `related_msg_id '${msg.related_msg_id}' matches no coord message — nothing was sent. ` +
           `A dangling threading id silently voids the asker's wake-on-reply (they sleep while ` +
-          `you believe you replied). Copy the EXACT msg_id from coord:inbox / the message you ` +
-          `are answering — never hand-type or placeholder it. If the original is genuinely ` +
-          `old/pruned, resend without related_msg_id.`,
+          `you believe you replied). Copy the full msg_id from coord:inbox / the message you ` +
+          `are answering, or use a unique leading prefix — never hand-type or use a ` +
+          `placeholder. If the original is genuinely old/pruned, resend without related_msg_id.` +
+          (relatedLookup?.status === 'not-found' && relatedLookup.looksTruncated
+            ? ' A shortened ref is accepted only when it uniquely matches one stored message.'
+            : ''),
       };
     }
   }
@@ -971,7 +998,7 @@ async function sendOne(
     body: bodyText,
     files: msg.files,
     plan_slug: msg.plan_slug,
-    related_msg_id: msg.related_msg_id,
+    related_msg_id: relatedMsgIdForSend,
     ...(expectsReply ? { expectsReply: true } : {}),
     // WI-3653: pass the resolved scope THROUGH, including the explicit-local
     // null — omitting it would re-trigger sendMessage's AUTO default and defeat
@@ -1114,11 +1141,11 @@ async function sendOne(
         suppressionReason?: string;
       }
     | undefined;
-  if (wakeOnReplyFlag && msg.related_msg_id) {
+  if (wakeOnReplyFlag && relatedMsgIdForSend) {
     try {
       // WI-5072: the send-time validation above already fetched the original;
       // re-fetch only in the rare fail-soft path where that lookup errored.
-      const original = relatedOriginal ?? (await getMessageById(msg.related_msg_id));
+      const original = relatedOriginal ?? (await getMessageById(relatedMsgIdForSend));
       const originalFrom = original?.from;
       const optedIn =
         original != null && (original as { wakeOnReply?: unknown }).wakeOnReply === true;
@@ -1958,11 +1985,11 @@ export default defineTool({
     files: z.array(z.string()).optional(),
     plan_slug: z.string().optional(),
     related_msg_id: z
-    .string()
-    .optional()
-    .describe(
-      "Replying? The EXACT msg_id you are answering (copy from coord:inbox) — this fires the asker's wake-on-reply. A dangling id refuses the send (related_msg_not_found); never hand-type or placeholder it.",
-    ),
+      .string()
+      .optional()
+      .describe(
+        "Replying? The full msg_id you are answering (or a UNIQUE leading prefix copied from coord:inbox) — this fires the asker's wake-on-reply. The server persists the canonical full id; dangling or ambiguous refs refuse the send (related_msg_not_found / related_msg_ambiguous). Never hand-type or use a placeholder.",
+      ),
     // D-048: `.optional()` ONLY so an items[]-only call need not carry one. The
     // requirement for the single form is enforced in the preprocess above — see the
     // comment there for why it cannot live on this field.

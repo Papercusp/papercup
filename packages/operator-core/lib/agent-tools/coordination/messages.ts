@@ -1218,14 +1218,9 @@ export async function readInvolvingOwner(
  * upserting). PG fast path mirrors readInbox's convention above and rides the
  * (workspace_id, msg_id) index a peer already landed on this same plan
  * (migration 543 — WI-3817 — built exactly for this `WHERE workspace_id = $1 AND
- * msg_id = $2` shape). A zero-row fast-path result is not definitive, though:
- * `coord:inbox` can have obtained the same envelope through the authoritative
- * `coordLog.readLines` path while a workspace scope is still settling, a
- * federated projection is being observed through its cache, or an older row's
- * envelope id differs from its indexed column id. A miss therefore falls
- * through to `readLines` instead of being reported as a clean not-found. That
- * fallback also covers the test/dev backends (small in-memory datasets, a scan
- * is fine) and is now the CORRECT behavior there, not just the compiling one.
+ * msg_id = $2` shape); the readLines fallback covers the test/dev backends
+ * (small in-memory datasets, a scan is fine) and is now also the CORRECT
+ * behavior there, not just the compiling one.
  */
 export async function getMessageById(msgId: string): Promise<CoordEnvelope | null> {
   if (!msgId) return null;
@@ -1241,11 +1236,7 @@ export async function getMessageById(msgId: string): Promise<CoordEnvelope | nul
          LIMIT 1
       `;
       if (rows.length) return (typeof rows[0].body === 'string' ? JSON.parse(rows[0].body) : rows[0].body) as CoordEnvelope;
-      // A fast-path miss is provisional. The inbox may have read this envelope
-      // through the coord-log seam (including its cache / federated projection)
-      // under a scope that this direct query did not yet observe. Let the seam
-      // perform its scope-ready, column/body-normalizing read before declaring a
-      // genuine not-found.
+      return null;
     } catch {
       // Fall through to the authoritative full-surface read below.
     }

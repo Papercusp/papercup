@@ -20,6 +20,17 @@ import {
   mockReturnTyped,
 } from '../../../testing/typed-mock';
 
+const { getMessageByIdMock, resolveMessageRefMock } = vi.hoisted(() => {
+  const getMessageByIdMock = vi.fn(async (_ref: string): Promise<any> => null);
+  const resolveMessageRefMock = vi.fn(async (ref: string) => {
+    const message = await getMessageByIdMock(ref);
+    return message
+      ? { status: 'found' as const, msgId: message.msg_id, message, resolvedFrom: 'exact' as const }
+      : { status: 'not-found' as const, msgId: ref, looksTruncated: false };
+  });
+  return { getMessageByIdMock, resolveMessageRefMock };
+});
+
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
 // importOriginal. A bare factory replaces the whole module, so send.ts's
 // `ADMIN_COORD_UI_OWNER` import resolves to a vitest getter that THROWS on first access —
@@ -37,7 +48,8 @@ vi.mock('../dead-session-recipient-guidance', async (importOriginal) => ({
 }));
 vi.mock('../messages', () => ({
   sendMessage: vi.fn(),
-  getMessageById: vi.fn(async () => null),
+  getMessageById: getMessageByIdMock,
+  resolveMessageRef: resolveMessageRefMock,
   getUnresolvedAudienceSelectors: vi.fn(() => []),
 }));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
@@ -118,7 +130,7 @@ vi.mock('../premise-resolve', async (importOriginal) => ({
   resolvePremiseStamps: vi.fn(async () => []),
 }));
 
-import { sendMessage, getMessageById, getUnresolvedAudienceSelectors } from '../messages';
+import { sendMessage, getMessageById, resolveMessageRef, getUnresolvedAudienceSelectors } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
@@ -134,6 +146,7 @@ const premiseM = vi.mocked(resolvePremiseStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
+const resolveRefM = vi.mocked(resolveMessageRef);
 const unresolvedAudienceM = vi.mocked(getUnresolvedAudienceSelectors);
 const resolveM = vi.mocked(resolveRecipients);
 const remoteIdsM = vi.mocked(remoteSessionOwnerIds);
@@ -776,6 +789,46 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect((b.results[0] as { error?: string }).error).toBe('related_msg_not_found');
     expect(sendM).not.toHaveBeenCalled(); // nothing was persisted
     expect(wakeM).not.toHaveBeenCalled();
+  });
+
+  it('EI-21082987688691539: a unique related_msg_id prefix is persisted as the canonical full id', async () => {
+    const fullId = 'mt3739cx-0000-c96716c2167f40afbb8a8c09cd5037f5';
+    const original = envelope({ msg_id: fullId, from: 'peer', to: ['me'] });
+    mockResolvedOnceTyped(resolveRefM, {
+      status: 'found',
+      msgId: fullId,
+      message: original,
+      resolvedFrom: 'prefix',
+    });
+
+    const b = await body({
+      to: ['peer'],
+      summary: 'my reply',
+      related_msg_id: 'mt3739cx-0000-c96716c2167f40afbb8a8c09cd5037f',
+    });
+
+    expect(b.results[0].ok).toBe(true);
+    expect(resolveRefM).toHaveBeenCalledWith('mt3739cx-0000-c96716c2167f40afbb8a8c09cd5037f');
+    const opts = sendM.mock.calls[0][1] as { related_msg_id?: string };
+    expect(opts.related_msg_id).toBe(fullId);
+  });
+
+  it('EI-21082987688691539: an ambiguous related_msg_id prefix refuses without sending', async () => {
+    mockResolvedOnceTyped(resolveRefM, {
+      status: 'ambiguous',
+      msgId: 'mt',
+      candidates: [
+        'mt-a-0000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        'mt-b-0000-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      ],
+    });
+
+    const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'mt' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'related_msg_ambiguous' });
+    expect(b.results[0].message).toContain('mt-a-0000-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    expect(b.results[0].message).toContain('longer unique leading prefix');
+    expect(sendM).not.toHaveBeenCalled();
   });
 
   it('WI-5072: a getMessageById INFRA error stays fail-soft — the reply still sends (never refuse on a read hiccup)', async () => {
