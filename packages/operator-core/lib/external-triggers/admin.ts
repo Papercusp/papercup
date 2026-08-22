@@ -243,31 +243,34 @@ export async function loadExternalTriggerAdminSnapshot(
     ...row,
     lastConnectedAt: iso(row.lastConnectedAt),
   }));
-  const bindings = bindingRows.map((row): ExternalTriggerBindingAdminRow => ({
-    id: row.id,
-    sourceId: row.sourceId,
-    sourceKind: row.sourceKind,
-    sourceStatus: row.sourceStatus,
-    planHarnessSlug: row.planHarnessSlug,
-    planSlug: row.planSlug,
-    eventPattern: row.eventPattern,
-    eventFilter: row.eventFilter,
-    action: row.action,
-    armed: row.armed,
-    stormPolicy: row.stormPolicy,
-    createdBy: row.createdBy,
-    createdAt: iso(row.createdAt) as string,
-    updatedAt: iso(row.updatedAt) as string,
-    lastRun: row.lastRunId && row.lastRunStatus && row.lastRunTriggeredAt
-      ? {
-          id: row.lastRunId,
-          status: row.lastRunStatus,
-          triggeredAt: iso(row.lastRunTriggeredAt) as string,
-          completedAt: iso(row.lastRunCompletedAt),
-          error: row.lastRunError,
-        }
-      : null,
-  }));
+  const bindings = bindingRows.map(
+    (row): ExternalTriggerBindingAdminRow => ({
+      id: row.id,
+      sourceId: row.sourceId,
+      sourceKind: row.sourceKind,
+      sourceStatus: row.sourceStatus,
+      planHarnessSlug: row.planHarnessSlug,
+      planSlug: row.planSlug,
+      eventPattern: row.eventPattern,
+      eventFilter: row.eventFilter,
+      action: row.action,
+      armed: row.armed,
+      stormPolicy: row.stormPolicy,
+      createdBy: row.createdBy,
+      createdAt: iso(row.createdAt) as string,
+      updatedAt: iso(row.updatedAt) as string,
+      lastRun:
+        row.lastRunId && row.lastRunStatus && row.lastRunTriggeredAt
+          ? {
+              id: row.lastRunId,
+              status: row.lastRunStatus,
+              triggeredAt: iso(row.lastRunTriggeredAt) as string,
+              completedAt: iso(row.lastRunCompletedAt),
+              error: row.lastRunError,
+            }
+          : null,
+    }),
+  );
   const recentRuns = runRows.map((row) => ({
     ...row,
     triggeredAt: iso(row.triggeredAt) as string,
@@ -317,11 +320,13 @@ export async function updateExternalTriggerBindingStormPolicy(
     windowSeconds: parsed.windowSeconds,
     ...(parsed.maxRuns === null ? {} : { maxRuns: parsed.maxRuns }),
   };
-  const rows = await sql<Array<{
-    id: string;
-    stormPolicy: Record<string, unknown>;
-    updatedAt: Date | string;
-  }>>`
+  const rows = await sql<
+    Array<{
+      id: string;
+      stormPolicy: Record<string, unknown>;
+      updatedAt: Date | string;
+    }>
+  >`
     UPDATE harness_shared.trigger_bindings
        SET storm_policy = ${JSON.stringify(stormPolicy)}::text::jsonb,
            updated_at = now()

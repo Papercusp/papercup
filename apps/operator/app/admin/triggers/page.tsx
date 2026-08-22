@@ -1,5 +1,5 @@
-import AdminShell from '../_components/AdminShell';
-import TriggersClient from './TriggersClient';
+import AdminShell from "../_components/AdminShell";
+import TriggersClient from "./TriggersClient";
 
 export default function AdminTriggersPage() {
   return (
