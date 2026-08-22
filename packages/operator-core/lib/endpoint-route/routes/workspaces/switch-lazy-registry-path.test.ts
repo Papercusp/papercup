@@ -37,7 +37,8 @@ vi.mock('../../../workspace-registry', () => ({
 
 // Complete (not partial) — switch.ts uses exactly these two, so this mock
 // keeps the test about the workspace-registry seam and nothing else.
-vi.mock('@papercusp/agent-mcp', () => ({
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
   defineTool: (def: unknown) => def,
   dispatchWorkspaceSwitch: vi.fn(),
 }));
