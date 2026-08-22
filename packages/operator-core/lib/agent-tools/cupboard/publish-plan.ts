@@ -11,13 +11,12 @@
  * stripped, because a sanitizer nobody inspects is one nobody notices has stopped.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+/** Canonical `{ data }` envelope — the framework owns wire encoding (auto-TOON on the MCP transport). */
+const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'cupboard:publish-plan',
@@ -55,13 +54,13 @@ export default defineTool({
     title: hardText(LIMITS.SHORT_TITLE).optional().describe("Override the listing title (else the plan's title)."),
     description: hardText(LIMITS.ANNOTATION).optional().describe("Override the description (else the plan's first prose paragraph)."),
     version: z.string().max(40).optional().describe('Template version recorded in listing.json (storefront only).'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 
     if (!args.githubUrl && args.exportOnly !== true) {
-      return text({
+      return ok({
         ok: false,
         error: 'githubUrl required (the public mirror repo the exported dir lives in)',
         hint: 'Run with exportOnly: true first to materialize the dir, push it, then re-run with githubUrl.',
@@ -83,7 +82,7 @@ export default defineTool({
     });
 
     if (!result.ok) {
-      return text({ ok: false, error: result.error, detail: result.detail, status: result.status });
+      return ok({ ok: false, error: result.error, detail: result.detail, status: result.status });
     }
 
     const e = result.export;
@@ -99,7 +98,7 @@ export default defineTool({
     };
 
     if (result.exportedOnly) {
-      return text({
+      return ok({
         ok: true,
         exportedOnly: true,
         ...common,
@@ -108,7 +107,7 @@ export default defineTool({
     }
 
     const data = result.listing as { id?: string; review_status?: string; pending_review?: boolean };
-    return text({
+    return ok({
       ok: true,
       exportedOnly: false,
       listingId: data.id,

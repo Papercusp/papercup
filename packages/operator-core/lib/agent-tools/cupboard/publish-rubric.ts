@@ -9,13 +9,12 @@
  * subdir. Title/description default from the local rubric when the ref resolves.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+/** Canonical `{ data }` envelope — the framework owns wire encoding (auto-TOON on the MCP transport). */
+const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'cupboard:publish-rubric',
@@ -50,7 +49,7 @@ export default defineTool({
     projectRef: z.string().max(200).optional().describe('Papercupai project remote (owner/repo).'),
     title: hardText(LIMITS.SHORT_TITLE).optional().describe('Override the listing title (else the local rubric title, else the ref).'),
     description: hardText(LIMITS.ANNOTATION).optional().describe('Override the listing description (else the local rubric description / characteristic).'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
@@ -66,10 +65,10 @@ export default defineTool({
     });
 
     if (!result.ok) {
-      return text({ ok: false, error: result.error, detail: result.detail, status: result.status });
+      return ok({ ok: false, error: result.error, detail: result.detail, status: result.status });
     }
     const data = result.listing as { id?: string; review_status?: string; pending_review?: boolean };
-    return text({
+    return ok({
       ok: true,
       listingId: data.id,
       review_status: data.review_status ?? 'pending',

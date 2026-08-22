@@ -17,12 +17,11 @@
  *  - It is NO-CLOBBER on the plan slug: an existing plan of that slug always wins.
  */
 import { z } from 'zod';
-import { defineTool } from '@papercusp/agent-mcp';
+import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 
-const text = (payload: Record<string, unknown>) => ({
-  content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
-});
+/** Canonical `{ data }` envelope — the framework owns wire encoding (auto-TOON on the MCP transport). */
+const ok = (payload: Record<string, unknown>) => ({ data: payload });
 
 export default defineTool({
   name: 'cupboard:install-plan',
@@ -51,13 +50,13 @@ export default defineTool({
       .describe('Accept the co-install of required rubrics this workspace lacks. Without it a resolvable-but-missing requirement refuses rather than silently pulling in extra units.'),
     harness: z.string().max(120).optional().describe('Harness scope for the seeded plan row.'),
     skipSeed: z.boolean().optional().describe('Place the dir only — do not create the plan row.'),
-    workspace: z.string().max(120).optional(),
+    workspace: entityRef('workspace', { max: 120 }).optional(),
   }),
   async handler(args, ctx) {
     void (args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId());
 
     if (!args.listingId && !args.githubUrl) {
-      return text({ ok: false, error: 'listingId or githubUrl required' });
+      return ok({ ok: false, error: 'listingId or githubUrl required' });
     }
 
     const { installPlanFromCupboard } = await import('../../cupboard/install-plan-io');
@@ -71,7 +70,7 @@ export default defineTool({
     });
 
     if (!outcome.ok) {
-      return text({
+      return ok({
         ok: false,
         error: outcome.error,
         detail: outcome.detail,
@@ -80,7 +79,7 @@ export default defineTool({
       });
     }
     const r = outcome.result;
-    return text({
+    return ok({
       ok: true,
       ref: r.ref,
       templateSlug: r.templateSlug,
