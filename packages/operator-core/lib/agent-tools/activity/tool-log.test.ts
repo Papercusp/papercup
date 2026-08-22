@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   rows: vi.fn(),
+  knownOwnerIdSet: vi.fn(),
+  resolveRecipientsAgainst: vi.fn(),
+  identity: vi.fn(() => ({
+    ownerId: 'su-b2cecf28-09b6-47f9-bb60-8b93863d52ea',
+    workspaceId: 'ws-test',
+  })),
 }));
 
 vi.mock('../../tool-call-log-store', () => ({
@@ -9,7 +15,12 @@ vi.mock('../../tool-call-log-store', () => ({
 }));
 
 vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({ ownerId: 'owner-test' }),
+  resolveAgentIdentity: h.identity,
+}));
+
+vi.mock('../coordination/recipient-resolve', () => ({
+  knownOwnerIdSet: h.knownOwnerIdSet,
+  resolveRecipientsAgainst: h.resolveRecipientsAgainst,
 }));
 
 const { default: tool } = await import('./tool-log');
@@ -21,6 +32,22 @@ type Guidance = { when?: string };
 
 const argsSchema = (tool as unknown as { args: ArgsSchema }).args;
 const guidance = (tool as unknown as { guidance?: Guidance }).guidance;
+
+type HandlerResult = {
+  isError?: boolean;
+  content?: Array<{ text?: string }>;
+};
+
+function errorBody(result: unknown) {
+  const text = (result as HandlerResult).content?.[0]?.text;
+  if (!text) throw new Error('expected an error body');
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  h.rows.mockResolvedValue([]);
+});
 
 describe('activity:tool-log timestamp boundaries', () => {
   it('rejects relative durations before they reach the timestamptz query', () => {
@@ -43,11 +70,74 @@ describe('activity:tool-log timestamp boundaries', () => {
     await tool.handler(parsed.data as never, {} as never);
 
     expect(h.rows).toHaveBeenCalledWith({
-      ownerId: 'owner-test',
+      ownerId: 'su-b2cecf28-09b6-47f9-bb60-8b93863d52ea',
       sessionId: undefined,
       sinceIso: '2026-08-12T22:00:00.000Z',
       untilIso: '2026-08-12T18:30:00.000Z',
     });
+  });
+
+  it('resolves a unique displayed short owner handle before querying the ledger', async () => {
+    const short = 'su-b2cecf28';
+    const full = 'su-b2cecf28-09b6-47f9-bb60-8b93863d52ea';
+    h.knownOwnerIdSet.mockResolvedValue(new Set([full]));
+    h.resolveRecipientsAgainst.mockReturnValue({ resolved: [full], unknown: [], ambiguous: [] });
+
+    await tool.handler(argsSchema.safeParse({ owner: short }).data as never, {} as never);
+
+    expect(h.resolveRecipientsAgainst).toHaveBeenCalledWith([short], [full]);
+    expect(h.rows).toHaveBeenCalledWith(expect.objectContaining({ ownerId: full }));
+  });
+
+  it('refuses an ambiguous short owner handle instead of returning a valid-looking zero', async () => {
+    const short = 'su-b2cecf28';
+    const matches = [
+      'su-b2cecf28-09b6-47f9-bb60-8b93863d52ea',
+      'su-b2cecf28-2a1e-4cc1-a40d-fd6e5ebd8a10',
+    ];
+    h.knownOwnerIdSet.mockResolvedValue(new Set(matches));
+    h.resolveRecipientsAgainst.mockReturnValue({
+      resolved: [],
+      unknown: [],
+      ambiguous: [{ id: short, matches }],
+    });
+
+    const result = await tool.handler(argsSchema.safeParse({ owner: short }).data as never, {} as never);
+
+    expect((result as HandlerResult).isError).toBe(true);
+    expect(errorBody(result)).toMatchObject({ ok: false, error: 'owner_ambiguous', owner: short, matches });
+    expect(h.rows).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unknown short owner handle instead of querying an empty history', async () => {
+    const short = 'su-does-not-exist';
+    h.knownOwnerIdSet.mockResolvedValue(new Set(['su-b2cecf28-09b6-47f9-bb60-8b93863d52ea']));
+    h.resolveRecipientsAgainst.mockReturnValue({ resolved: [], unknown: [short], ambiguous: [] });
+
+    const result = await tool.handler(argsSchema.safeParse({ owner: short }).data as never, {} as never);
+
+    expect(errorBody(result)).toMatchObject({ ok: false, error: 'owner_not_found', owner: short });
+    expect(h.rows).not.toHaveBeenCalled();
+  });
+
+  it('reports roster unavailability for a non-canonical handle', async () => {
+    const short = 'su-b2cecf28';
+    h.knownOwnerIdSet.mockResolvedValue(null);
+
+    const result = await tool.handler(argsSchema.safeParse({ owner: short }).data as never, {} as never);
+
+    expect(errorBody(result)).toMatchObject({ ok: false, error: 'owner_resolution_unavailable', owner: short });
+    expect(h.rows).not.toHaveBeenCalled();
+  });
+
+  it('keeps a full session-shaped owner id usable for historical queries when the roster is unavailable', async () => {
+    const full = 'su-b2cecf28-09b6-47f9-bb60-8b93863d52ea';
+    h.knownOwnerIdSet.mockResolvedValue(null);
+
+    await tool.handler(argsSchema.safeParse({ owner: full }).data as never, {} as never);
+
+    expect(h.knownOwnerIdSet).not.toHaveBeenCalled();
+    expect(h.rows).toHaveBeenCalledWith(expect.objectContaining({ ownerId: full }));
   });
 
   it('documents that both boundaries are absolute ISO timestamps', () => {
