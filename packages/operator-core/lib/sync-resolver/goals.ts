@@ -568,12 +568,15 @@ export async function resolveGoalsList(args: {
          AND (${status}::text IS NULL OR g.status = ${status}::text)
          AND ${
            harnessSlugs
-             ? sql`EXISTS (
-                 SELECT 1 FROM harness_shared.goal_pots scoped_gp
-                  WHERE scoped_gp.workspace_id = g.workspace_id
-                    AND scoped_gp.goal_id = g.id
-                    AND scoped_gp.removed_at IS NULL
-                    AND scoped_gp.harness_slug = ANY(${harnessSlugs as string[]}::text[])
+             ? sql`(
+                 g.install_slug = ANY(${harnessSlugs as string[]}::text[])
+                 OR EXISTS (
+                   SELECT 1 FROM harness_shared.goal_pots scoped_gp
+                    WHERE scoped_gp.workspace_id = g.workspace_id
+                      AND scoped_gp.goal_id = g.id
+                      AND scoped_gp.removed_at IS NULL
+                      AND scoped_gp.harness_slug = ANY(${harnessSlugs as string[]}::text[])
+                 )
                )`
              : sql`TRUE`
          }
@@ -595,12 +598,15 @@ export async function resolveGoalsList(args: {
          AND (${status}::text IS NULL OR g.status = ${status}::text)
          AND ${
            harnessSlugs
-             ? sql`EXISTS (
-                 SELECT 1 FROM harness_shared.goal_pots scoped_gp
-                  WHERE scoped_gp.workspace_id = g.workspace_id
-                    AND scoped_gp.goal_id = g.id
-                    AND scoped_gp.removed_at IS NULL
-                    AND scoped_gp.harness_slug = ANY(${harnessSlugs as string[]}::text[])
+             ? sql`(
+                 g.install_slug = ANY(${harnessSlugs as string[]}::text[])
+                 OR EXISTS (
+                   SELECT 1 FROM harness_shared.goal_pots scoped_gp
+                    WHERE scoped_gp.workspace_id = g.workspace_id
+                      AND scoped_gp.goal_id = g.id
+                      AND scoped_gp.removed_at IS NULL
+                      AND scoped_gp.harness_slug = ANY(${harnessSlugs as string[]}::text[])
+                 )
                )`
              : sql`TRUE`
          }

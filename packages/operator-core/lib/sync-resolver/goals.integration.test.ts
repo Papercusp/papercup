@@ -301,6 +301,17 @@ describe('goals.* resolvers against real SQL', () => {
     expect(cut.truncatedByLimit).toBe(true);
   });
 
+  it('harness-scoped listing includes an installed goal with no pot attachment', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal();
+
+    const out = await resolveGoalsList({ workspaceId: WS, harnessSlugs: ['papercusp'] });
+    expect(out.goals).toHaveLength(1);
+    expect(out.goals[0]?.id).toBe(GOAL);
+    expect(out.totalGoals).toBe(1);
+    expect(out.truncatedByLimit).toBe(false);
+  });
+
   it('does not expose a legacy hand-entered spend snapshot as measured', async () => {
     const { resolveGoalsList } = await import('./goals');
     await goal({ metadata: { spentCents: 302 } });
