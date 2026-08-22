@@ -2307,16 +2307,18 @@ export async function runTscBaselineGate({
   // --seed copies foreign rows into this gate's own baseline and effectiveBaselineByFile can never
   // inherit the owner's canonical count on later runs.
   //
-  // Fail-SOFT per source: an unreadable foreign baseline degrades to the old absent⇒0 behaviour
-  // (a possible false red we WARN about) rather than crashing the gate or silently passing. The
-  // ownership prefix still applies when the source is unreadable, so a seed never creates a
-  // duplicate owner record merely because the owner baseline could not be read right now.
+  // Fail-SOFT per source on ordinary checks: an unreadable foreign baseline degrades to the old
+  // absent⇒0 behaviour (a possible false red we WARN about) rather than silently passing. Seeding
+  // is stricter below: it refuses when any owner baseline is unavailable because it cannot safely
+  // partition canonical owner rows from consumer-context-only diagnostics.
   const loadedForeign = [];
+  const unavailableForeign = [];
   for (const source of foreignBaselines) {
     try {
       const parsed = JSON.parse(readFileSync(source.baselineFile, 'utf-8'));
       loadedForeign.push({ ...source, files: parsed.files ?? {} });
     } catch {
+      unavailableForeign.push(source);
       console.warn(
         `⚠ Could not read the baseline owning ${source.prefix} (${source.baselineFile}) — ` +
           `files under it fall back to an implicit 0 baseline and may report as false regressions.`,
@@ -2354,15 +2356,37 @@ export async function runTscBaselineGate({
       process.exit(1);
       return;
     }
-    // A foreign prefix is owned by another package's gate, even if that owner's baseline is
-    // temporarily unreadable. Persisting the current count here would make this gate's explicit
-    // row win over effectiveBaselineByFile forever and silently fork the owner's debt record.
-    const foreignSeedFiles = Object.keys(currentByFile).filter((file) =>
-      foreignBaselines.some((source) => file.startsWith(source.prefix)),
+    // Seeding needs the owning baselines in hand so it can distinguish a canonical owner row from
+    // a diagnostic that exists ONLY in this consumer's compile context. Guessing either way is
+    // unsafe: dropping every foreign-prefix row makes context-only diagnostics permanently red,
+    // while retaining every row forks debt already tracked by the owner.
+    if (unavailableForeign.length > 0) {
+      console.error(
+        `❌ --seed refused: ${unavailableForeign.length} owning baseline(s) could not be read. ` +
+          `Restore them before partitioning inherited and consumer-context diagnostics.`,
+      );
+      process.exit(1);
+      return;
+    }
+
+    // Reuse the normal effective-baseline resolver as the ownership authority. Only files with a
+    // real row in the owning package are omitted here and inherited later. A foreign-prefix file
+    // absent from the owner baseline is a consumer-context delta (for example, an error introduced
+    // by this package's tsconfig options) and MUST remain in this gate's own baseline.
+    const { inherited: inheritedSeed } = effectiveBaselineByFile({
+      baselineByFile: {},
+      currentByFile,
+      foreignBaselines: loadedForeign,
+    });
+    const inheritedSeedFiles = new Set(inheritedSeed.map((entry) => entry.file));
+    const contextOnlyForeignSeedFiles = Object.keys(currentByFile).filter(
+      (file) =>
+        foreignBaselines.some((source) => file.startsWith(source.prefix)) &&
+        !inheritedSeedFiles.has(file),
     );
     const ownSeedByFile = Object.fromEntries(
       Object.entries(currentByFile)
-        .filter(([file]) => !foreignSeedFiles.includes(file))
+        .filter(([file]) => !inheritedSeedFiles.has(file))
         .sort(([a], [b]) => a.localeCompare(b)),
     );
     baseline.files = ownSeedByFile;
@@ -2372,10 +2396,16 @@ export async function runTscBaselineGate({
     console.log(
       `✓ seeded: baseline → ${sumValues(ownSeedByFile)} errors across ${Object.keys(ownSeedByFile).length} file(s) (${baselineFile})`,
     );
-    if (foreignSeedFiles.length > 0) {
+    if (inheritedSeedFiles.size > 0) {
       console.log(
-        `   (${foreignSeedFiles.length} cross-package file(s) omitted from this baseline; ` +
+        `   (${inheritedSeedFiles.size} cross-package file(s) omitted from this baseline; ` +
           `they inherit from their owning package on later runs.)`,
+      );
+    }
+    if (contextOnlyForeignSeedFiles.length > 0) {
+      console.log(
+        `   (${contextOnlyForeignSeedFiles.length} foreign-prefix file(s) retained because their ` +
+          `diagnostics exist only in this gate's compile context.)`,
       );
     }
     return;

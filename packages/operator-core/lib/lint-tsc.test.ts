@@ -1918,7 +1918,7 @@ describe('a first seed preserves foreign-baseline inheritance (EI-21159980101594
   const REPO_ROOT_S = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   const GATE_S = pathToFileURL(join(REPO_ROOT_S, 'scripts', 'lib', 'tsc-baseline-gate.mjs')).href;
 
-  it('does not persist a measured foreign file into the new gate baseline', () => {
+  it('inherits owner-baselined files while retaining consumer-context-only foreign diagnostics', () => {
     const root = mkdtempSync(join(tmpdir(), 'tsc-gate-seed-inheritance-'));
     const baselineFile = join(root, 'baseline.json');
     const foreignBaselineFile = join(root, 'operator-core-baseline.json');
@@ -1928,6 +1928,7 @@ describe('a first seed preserves foreign-baseline inheritance (EI-21159980101594
         [
           "packages/agent-mcp/src/own.ts(1,1): error TS2322: Type 'string' is not assignable to type 'number'.",
           'packages/operator-core/lib/owned.ts(2,1): error TS2339: Property x does not exist.',
+          'packages/operator-core/lib/context-only.ts(3,1): error TS2339: Property y does not exist.',
         ].join('\n') + '\n',
       );
       writeFileSync(baselineFile, JSON.stringify({ files: {} }));
@@ -1957,8 +1958,46 @@ describe('a first seed preserves foreign-baseline inheritance (EI-21159980101594
         errorCount?: number;
         files: Record<string, number>;
       };
-      expect(seeded.files).toEqual({ 'packages/agent-mcp/src/own.ts': 1 });
-      expect(seeded.errorCount).toBe(1);
+      expect(seeded.files).toEqual({
+        'packages/agent-mcp/src/own.ts': 1,
+        'packages/operator-core/lib/context-only.ts': 1,
+      });
+      expect(seeded.errorCount).toBe(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refuses to seed when an owning baseline is unreadable', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-seed-missing-owner-'));
+    const baselineFile = join(root, 'baseline.json');
+    try {
+      writeFileSync(
+        join(root, 'tsc-output.txt'),
+        'packages/operator-core/lib/owned.ts(2,1): error TS2339: Property x does not exist.\n',
+      );
+      writeFileSync(baselineFile, JSON.stringify({ files: {} }));
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE_S)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(baselineFile)},\n` +
+          `  label: 'missing-owner-seed-test',\n` +
+          `  argv: ['--seed'],\n` +
+          `  foreignBaselines: [{\n` +
+          `    prefix: 'packages/operator-core/',\n` +
+          `    baselineFile: ${JSON.stringify(join(root, 'missing-owner-baseline.json'))},\n` +
+          `    label: 'operator-core',\n` +
+          `  }],\n` +
+          `});\n`,
+      );
+
+      expect(() =>
+        execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' }),
+      ).toThrow();
+      expect(JSON.parse(readFileSync(baselineFile, 'utf-8'))).toEqual({ files: {} });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
