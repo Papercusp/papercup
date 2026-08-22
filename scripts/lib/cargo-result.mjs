@@ -3,8 +3,20 @@
 // scripts are gate entry points, so a helper import must not pull in a service
 // or database module and turn a diagnostic into a runner failure.
 
-import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  readlinkSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 const GIB = 1024 ** 3;
 
@@ -82,6 +94,284 @@ export function cargoDiskPolicyFromEnv(env = process.env) {
     freeBytesMin:
       positiveEnvNumber(env, 'PAPERCUSP_DISK_ALARM_FREE_GB', DEFAULT_CARGO_DISK_POLICY.freeBytesMin / GIB) * GIB,
   };
+}
+
+/**
+ * Host-local cleanup is deliberately conservative and bounded.  The Cargo
+ * admission guard is one of the few places that still runs when the hourly
+ * janitors have fallen behind, so it is the last safe opportunity to reclaim
+ * artifacts which their producers explicitly describe as disposable.
+ *
+ * The limits are intentionally large enough to clear one genuinely bad build
+ * backlog, but finite so a malformed path/glob can never turn admission into
+ * an unbounded recursive delete.
+ */
+export const DEFAULT_CARGO_RECLAIM_POLICY = Object.freeze({
+  ephemeralTtlMs: 6 * 3_600_000,
+  cargoTtlMs: 24 * 3_600_000,
+  maxEntries: 12,
+  maxBytes: 128 * GIB,
+  minCargoArtifactBytes: 512 * 1024 * 1024,
+});
+
+const EPHEMERAL_PREFIXES = Object.freeze(['verify-tauri-headless.', 'deb-hzfed.']);
+const CARGO_TARGET_NAME_RE = /^\.cargo-target(?:-dev\d+|-pid\d+)?$/;
+
+function safeStat(path) {
+  try { return statSync(path); } catch { return null; }
+}
+
+function safeDirBytes(path) {
+  const stat = (() => {
+    try { return lstatSync(path); } catch { return null; }
+  })();
+  if (!stat || stat.isSymbolicLink()) return 0;
+  if (stat.isFile()) return stat.size;
+  if (!stat.isDirectory()) return 0;
+  let total = 0;
+  let entries;
+  try { entries = readdirSync(path, { withFileTypes: true }); } catch { return 0; }
+  for (const entry of entries) total += safeDirBytes(join(path, entry.name));
+  return total;
+}
+
+function pathIsInside(root, candidate) {
+  const normalizedRoot = resolve(root);
+  const normalized = resolve(candidate.replace(/ \(deleted\)$/, ''));
+  return normalized === normalizedRoot || normalized.startsWith(`${normalizedRoot}/`);
+}
+
+/**
+ * Check the kernel's live descriptor/executable/cwd view instead of trusting a
+ * pid file or a directory mtime.  This runs only on a low-disk admission path,
+ * and returns on the first match; it never emits the raw /proc scan.
+ */
+function defaultPathIsLive(root) {
+  let processes;
+  try { processes = readdirSync('/proc'); } catch { return true; }
+  for (const name of processes) {
+    if (!/^\d+$/.test(name)) continue;
+    const pid = Number(name);
+    if (pid === process.pid) continue;
+    const proc = `/proc/${name}`;
+    for (const special of ['cwd', 'exe']) {
+      try {
+        if (pathIsInside(root, readlinkSync(`${proc}/${special}`))) return true;
+      } catch { /* process exited or access was denied */ }
+    }
+    let fds;
+    try { fds = readdirSync(`${proc}/fd`); } catch { continue; }
+    for (const fd of fds) {
+      try {
+        if (pathIsInside(root, readlinkSync(`${proc}/fd/${fd}`))) return true;
+      } catch { /* descriptor closed during the scan */ }
+    }
+  }
+  return false;
+}
+
+function processStartTicks(pid) {
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const afterComm = stat.slice(stat.lastIndexOf(')') + 2).trim().split(/\s+/);
+    return afterComm[19] ?? null; // field 22 (starttime), after field 3 (state)
+  } catch { return null; }
+}
+
+function activeRunMarker(path) {
+  const markerPath = join(path, '.papercusp-run');
+  try {
+    const values = Object.fromEntries(
+      readFileSync(markerPath, 'utf8')
+        .split('\n')
+        .map((line) => line.split('='))
+        .filter(([key, value]) => key && value)
+        .map(([key, ...value]) => [key, value.join('=')]),
+    );
+    const pid = Number(values.pid);
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    process.kill(pid, 0);
+    if (values.start_ticks && processStartTicks(pid) !== values.start_ticks) return false;
+    return true;
+  } catch { return false; }
+}
+
+function freshHeartbeat(path, now, ttlMs) {
+  const heartbeat = safeStat(join(path, '.heartbeat'));
+  return Boolean(heartbeat && now - heartbeat.mtimeMs < ttlMs);
+}
+
+function cargoSlotLockIsHeld(targetDir, homeDir) {
+  const name = targetDir.split('/').pop() ?? '';
+  const slot = name === '.cargo-target'
+    ? 0
+    : /^\.cargo-target-dev(\d+)$/.exec(name)?.[1]
+      ? Number(/^\.cargo-target-dev(\d+)$/.exec(name)[1]) - 1
+      : null;
+  if (slot === null) return false;
+  const lock = join(homeDir, '.papercusp', 'desktop-dev-slots', `slot${slot}.lock`);
+  if (!existsSync(lock)) return false;
+  try {
+    execFileSync('flock', ['-n', lock, '-c', 'true'], { stdio: 'ignore' });
+    return false;
+  } catch {
+    // Missing flock or a held lock both fail closed.  A cleanup pass must never
+    // trade a cold rebuild for corrupting a live desktop target.
+    return true;
+  }
+}
+
+function knownCargoRoots(homeDir, configuredTargetDir) {
+  const roots = [];
+  if (configuredTargetDir) roots.push(resolve(process.cwd(), configuredTargetDir));
+  try {
+    for (const entry of readdirSync(homeDir, { withFileTypes: true })) {
+      if (entry.isDirectory() && CARGO_TARGET_NAME_RE.test(entry.name)) {
+        roots.push(join(homeDir, entry.name));
+      }
+    }
+  } catch { /* no home scan means no default roots */ }
+  return [...new Set(roots)];
+}
+
+function cargoArtifactCandidates(root) {
+  if (/-pid\d+$/.test(root.split('/').pop() ?? '')) {
+    // Private overflow targets have no stable slot and are safe to remove as a
+    // whole once their owner has died. Removing the root in one operation also
+    // avoids re-evaluating a parent whose mtime changed after a child removal.
+    return [root];
+  }
+  const candidates = [];
+  const releaseBundle = join(root, 'release', 'bundle');
+  if (safeStat(releaseBundle)?.isDirectory()) candidates.push(releaseBundle);
+  let entries;
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return candidates; }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[A-Za-z0-9_]+-[A-Za-z0-9_]+-/.test(entry.name)) continue;
+    const release = join(root, entry.name, 'release');
+    if (safeStat(release)?.isDirectory()) candidates.push(release);
+  }
+  return [...new Set(candidates)];
+}
+
+/**
+ * Reclaim explicitly-owned, inactive build artifacts before Cargo admission.
+ * This is intentionally synchronous: it runs immediately before a child would
+ * otherwise be spawned and must finish before the refreshed statfs decision.
+ *
+ * @param {{ tmpDir?: string, cargoRoots?: string[], configuredTargetDir?: string,
+ *   now?: number, policy?: object, dryRun?: boolean,
+ *   pathIsLive?: (path: string) => boolean,
+ *   slotLockIsHeld?: (path: string, homeDir: string) => boolean }} options
+ * @returns {{ scanned: number, reclaimed: number, bytesReclaimed: number,
+ *   skipped: Array<{ path: string, reason: string }>, dryRun: boolean }}
+ */
+export function reclaimInactiveCargoArtifacts(options = {}) {
+  const policy = { ...DEFAULT_CARGO_RECLAIM_POLICY, ...(options.policy ?? {}) };
+  const now = options.now ?? Date.now();
+  const dryRun = options.dryRun === true;
+  const tmpRoot = options.tmpDir ?? tmpdir();
+  const homeDir = homedir();
+  const pathIsLive = options.pathIsLive ?? defaultPathIsLive;
+  const slotLockIsHeld = options.slotLockIsHeld ?? cargoSlotLockIsHeld;
+  const result = { scanned: 0, reclaimed: 0, bytesReclaimed: 0, skipped: [], dryRun };
+  const reclaimed = (path, bytes) => {
+    if (!dryRun) {
+      try {
+        const stat = lstatSync(path);
+        if (stat.isSymbolicLink()) throw new Error('symbolic link');
+        rmSync(path, { recursive: true, force: true });
+      } catch (error) {
+        result.skipped.push({ path, reason: `remove failed: ${error.message}` });
+        return;
+      }
+    }
+    result.reclaimed += 1;
+    result.bytesReclaimed += bytes;
+  };
+  const canReclaim = (path, ttlMs) => {
+    const stat = safeStat(path);
+    if (!stat || !stat.isDirectory()) return { ok: false, reason: 'missing or not a directory' };
+    result.scanned += 1;
+    if (now - stat.mtimeMs < ttlMs) return { ok: false, reason: 'younger than ttl' };
+    if (activeRunMarker(path)) return { ok: false, reason: 'active run marker' };
+    if (freshHeartbeat(path, now, ttlMs)) return { ok: false, reason: 'fresh heartbeat' };
+    if (pathIsLive(path)) return { ok: false, reason: 'live descriptor or executable' };
+    if (existsSync(join(path, '.papercusp-keep'))) return { ok: false, reason: 'explicit keep marker' };
+    return { ok: true };
+  };
+
+  let tmpEntries = [];
+  try { tmpEntries = readdirSync(tmpRoot, { withFileTypes: true }); } catch { tmpEntries = []; }
+  for (const entry of tmpEntries) {
+    if (result.reclaimed >= policy.maxEntries) break;
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !EPHEMERAL_PREFIXES.some((p) => entry.name.startsWith(p))) continue;
+    const path = join(tmpRoot, entry.name);
+    const decision = canReclaim(path, policy.ephemeralTtlMs);
+    if (!decision.ok) {
+      result.skipped.push({ path, reason: decision.reason });
+      continue;
+    }
+    if (entry.name.startsWith('deb-hzfed.')) {
+      let servers = '';
+      try {
+        servers = readFileSync(join(path, 'servers'), 'utf8');
+      } catch (error) {
+        if (error?.code !== 'ENOENT') {
+          result.skipped.push({ path, reason: 'server ledger unreadable' });
+          continue;
+        }
+      }
+      if (servers.trim()) {
+        result.skipped.push({ path, reason: 'server ledger is non-empty' });
+        continue;
+      }
+    }
+    const bytes = safeDirBytes(path);
+    if (result.bytesReclaimed + bytes > policy.maxBytes) {
+      result.skipped.push({ path, reason: 'reclaim byte cap' });
+      continue;
+    }
+    reclaimed(path, bytes);
+    if (result.reclaimed >= policy.maxEntries) break;
+  }
+
+  const roots = options.cargoRoots ?? knownCargoRoots(homeDir, options.configuredTargetDir ?? process.env.CARGO_TARGET_DIR);
+  for (const root of roots) {
+    if (result.reclaimed >= policy.maxEntries) break;
+    const name = root.split('/').pop() ?? '';
+    if (!CARGO_TARGET_NAME_RE.test(name) || !safeStat(root)?.isDirectory()) continue;
+    if (existsSync(join(root, '.papercusp-keep'))) {
+      result.skipped.push({ path: root, reason: 'explicit keep marker' });
+      continue;
+    }
+    const slotHeld = slotLockIsHeld(root, homeDir);
+    const live = pathIsLive(root);
+    if (slotHeld || live) {
+      result.skipped.push({ path: root, reason: slotHeld ? 'target slot is held' : 'live target descriptor' });
+      continue;
+    }
+    for (const path of cargoArtifactCandidates(root)) {
+      const decision = canReclaim(path, policy.cargoTtlMs);
+      if (!decision.ok) {
+        result.skipped.push({ path, reason: decision.reason });
+        continue;
+      }
+      const bytes = safeDirBytes(path);
+      if (bytes < policy.minCargoArtifactBytes) {
+        result.skipped.push({ path, reason: 'below cargo artifact size floor' });
+        continue;
+      }
+      if (result.bytesReclaimed + bytes > policy.maxBytes) {
+        result.skipped.push({ path, reason: 'reclaim byte cap' });
+        continue;
+      }
+      reclaimed(path, bytes);
+      if (result.reclaimed >= policy.maxEntries) return result;
+    }
+    if (result.reclaimed >= policy.maxEntries) break;
+  }
+  return result;
 }
 
 /**

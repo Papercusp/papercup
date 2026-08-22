@@ -355,6 +355,31 @@ ISOLATED_WEBVIEW_CONFIG=""
 
 log() { printf '\n[verify-tauri-headless] %s\n' "$*" >&2; }
 
+# EI-21150371868241728: leave an accountable owner marker in the otherwise
+# disposable workdir. The admission-path reaper validates both PID liveness and
+# Linux start ticks, so a reused PID cannot protect an abandoned directory. The
+# --boot-only path replaces this marker with its persistent port-lock keeper
+# below; the parent shell exits after handing the environment to its caller.
+write_run_marker() {
+  local pid="${1:-$$}" start_ticks marker_tmp
+  start_ticks="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+  marker_tmp="$WORK/.papercusp-run.tmp.$$"
+  umask 077
+  {
+    printf 'pid=%s\n' "$pid"
+    [ -n "$start_ticks" ] && printf 'start_ticks=%s\n' "$start_ticks"
+  } >"$marker_tmp" 2>/dev/null || return 1
+  mv -f "$marker_tmp" "$WORK/.papercusp-run" 2>/dev/null || {
+    rm -f "$marker_tmp" 2>/dev/null || true
+    return 1
+  }
+}
+
+write_run_marker "$$" || {
+  echo "FATAL: could not write verifier ownership marker under $WORK" >&2
+  exit 1
+}
+
 # EI-18805100008031244 (correct-state ask #3, "report contention honestly at
 # boot"): when the port picker retries or a bind loses a race, the caller was
 # left with an opaque EADDRINUSE and no sense of scale — "is this a one-off
@@ -1900,6 +1925,10 @@ if [ "${1:-}" = "--boot-only" ]; then
     while kill -0 "$XVFB_PID" 2>/dev/null; do sleep 2; done
     wait_owned_ports_free ) &
   PORT_LOCK_KEEPER_PID=$!
+  write_run_marker "$PORT_LOCK_KEEPER_PID" || {
+    echo "FATAL: could not transfer verifier ownership marker to boot-only keeper under $WORK" >&2
+    exit 1
+  }
   trap - EXIT INT TERM   # caller owns teardown from here
   write_stop_script
 

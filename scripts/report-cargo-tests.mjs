@@ -48,6 +48,7 @@ import {
   formatCargoDiskRefusal,
   formatCargoResultLine,
   parseCargoTestResultLines,
+  reclaimInactiveCargoArtifacts,
 } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -127,18 +128,44 @@ function parseArgs(argv) {
 
 function runCargoTest(manifestAbs, extraArgs) {
   const startedAt = new Date();
-  let diskAdmission;
-  try {
-    const fsst = statfsSync(manifestAbs);
-    const totalBytes = Number(fsst.blocks) * Number(fsst.bsize);
-    const freeBytes = Number(fsst.bavail) * Number(fsst.bsize);
-    diskAdmission = assessCargoDiskAdmission(
-      { totalBytes, freeBytes },
-      cargoDiskPolicyFromEnv(),
-    );
-  } catch (err) {
-    diskAdmission = assessCargoDiskAdmission({ totalBytes: Number.NaN, freeBytes: Number.NaN });
-    console.warn(`[report-cargo-tests] disk admission probe unreadable; continuing fail-open: ${err.message}`);
+  const diskPolicy = cargoDiskPolicyFromEnv();
+  const readDiskAdmission = () => {
+    try {
+      const fsst = statfsSync(manifestAbs);
+      return assessCargoDiskAdmission(
+        { totalBytes: Number(fsst.blocks) * Number(fsst.bsize), freeBytes: Number(fsst.bavail) * Number(fsst.bsize) },
+        diskPolicy,
+      );
+    } catch (err) {
+      console.warn(`[report-cargo-tests] disk admission probe unreadable; continuing fail-open: ${err.message}`);
+      return assessCargoDiskAdmission({ totalBytes: Number.NaN, freeBytes: Number.NaN }, diskPolicy);
+    }
+  };
+
+  let diskAdmission = readDiskAdmission();
+  let reclaim = { reclaimed: 0, bytesReclaimed: 0, scanned: 0, skipped: [], dryRun: false };
+  // The periodic janitors keep this path cheap during normal operation. When
+  // the percentage/absolute alarm is approaching, run one bounded, producer-
+  // aware sweep before refusing to spawn Cargo, then measure the same mount
+  // again. A stale refusal must not persist merely because the janitor tick
+  // missed a run (EI-21150371868241728).
+  if (diskAdmission.status === 'blocked') {
+    try {
+      reclaim = reclaimInactiveCargoArtifacts();
+      if (reclaim.reclaimed > 0) diskAdmission = readDiskAdmission();
+      if (reclaim.reclaimed > 0) {
+        console.warn(
+          `[report-cargo-tests] reclaimed ${reclaim.reclaimed} inactive artifact(s) ` +
+          `(${Math.floor(reclaim.bytesReclaimed / 1024 ** 3)} GiB) before Cargo admission; ` +
+          `${reclaim.skipped.length} protected/skipped`,
+        );
+      }
+    } catch (err) {
+      // Cleanup is a best-effort pressure valve; an unexpected probe failure
+      // must leave the authoritative admission decision fail-closed, not turn
+      // a diagnostic into a new runner crash.
+      console.warn(`[report-cargo-tests] artifact reclaim unavailable; continuing with disk admission: ${err.message}`);
+    }
   }
 
   if (!diskAdmission.allowed) {
