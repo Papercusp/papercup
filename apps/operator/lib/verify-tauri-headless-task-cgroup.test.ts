@@ -30,6 +30,16 @@ describe('EI-21080873216359703 — verifier children stay in the managed bash ta
     expect(scopeSelection).toContain('VERIFY_SCOPE_MODE="sibling"');
   });
 
+  it('inherits a visible terminal cgroup for direct launches instead of making a verifier sibling', () => {
+    expect(scopeSelection).toBeTruthy();
+    expect(src).toContain('verifier_caller_is_terminal_scope()');
+    expect(src).toContain('*/vte-spawn-*.scope');
+    expect(src).toContain('*/papercup-console-*.scope');
+    expect(scopeSelection).toContain('elif verifier_caller_is_terminal_scope; then');
+    expect(scopeSelection).toContain('VERIFY_SCOPE_MODE="terminal"');
+    expect(scopeSelection).toContain('terminal window owns lifecycle');
+  });
+
   it('launches inherited-mode processes with setsid, reserving systemd-run for sibling fallback', () => {
     expect(launcher).toBeTruthy();
     expect(launcher).toContain('if [ "$VERIFY_SCOPE_MODE" = "sibling" ]; then');
