@@ -4909,7 +4909,7 @@ export default function register(pi: HookApi): void {
     await safe(() => new Promise<void>((resolveWait) => setTimeout(resolveWait, smoothingMs)), undefined);
   });
 
-  pi.on('tool_call', async (event) => {
+  pi.on('tool_call', async (event, ctx) => {
     // heartbeat: a tool is starting — mark it in flight so a long-but-legit tool
     // (build/test) EXTENDS the watchdog instead of tripping it, then rearm.
     noteStallToolInFlight(true);

@@ -254,6 +254,26 @@ describe('supersede — row transaction', () => {
     expect(second).toMatchObject({ error: 'not_open', conversation: { superseded_by: 'new-gate' } });
     expect(await store.get('newer-gate')).toBeNull();
   });
+
+  it('reuses an existing TransactionSql handle instead of opening a nested transaction', async () => {
+    await sql.begin(async (tx) => {
+      const txStore = new PgConversationStore({
+        getSql: () => tx,
+        ensureSchema: async () => {},
+        workspaceId: WS,
+      });
+      await txStore.create(input('tx-old'));
+      const result = await txStore.supersede('tx-old', input('tx-new'), {
+        now_ts: T1,
+      });
+      if ('error' in result) throw new Error(result.error);
+      expect(result).toMatchObject({
+        conversation: { id: 'tx-old', state: 'superseded' },
+        replacement: { id: 'tx-new', state: 'open' },
+      });
+    });
+    expect(await store.get('tx-new')).toMatchObject({ state: 'open' });
+  });
 });
 
 describe('setPromoted', () => {
