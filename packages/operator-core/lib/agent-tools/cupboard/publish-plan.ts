@@ -38,7 +38,7 @@ export default defineTool({
   crossWorkspace: true,
   args: z.object({
     slug: z.string().min(1).max(LIMITS.IDENT).describe('The SOURCE plan slug in this workspace — what gets sanitized and published.'),
-    harness: z.string().max(120).optional().describe('Harness scope for the plan lookup.'),
+    harness: entityRef('harness', { soft: true, max: 120, describe: 'Harness scope for the plan lookup.' }).optional(),
     githubUrl: z
       .string()
       .max(500)
