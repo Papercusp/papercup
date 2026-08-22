@@ -8,8 +8,8 @@
 // mocked with a hoisted mutable holder (the OperatorActionLog pattern) so each
 // test seeds its own rows without a live transport.
 //
-// WI-4374: Tests for real COUNT query (learning.observations.counts),
-// "500+" render guard, and staleness tone (based on newest observation age).
+// P-005: Tests for paired learning.observations.summary totals/facets,
+// cursor paging, and staleness tone (based on newest observation age).
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -22,7 +22,7 @@ import {
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
 import type { ReactNode } from "react";
 
-const { sync, counts, filters } = vi.hoisted(() => ({
+const { sync, summary, filters } = vi.hoisted(() => ({
   sync: {
     data: [] as unknown[],
     loading: false,
@@ -37,11 +37,12 @@ const { sync, counts, filters } = vi.hoisted(() => ({
     args: null as unknown,
     invalidate: vi.fn(),
   },
-  counts: {
+  summary: {
     data: [] as unknown[],
     loading: false,
     fetching: false,
     error: null as { message: string } | null,
+    args: null as unknown,
     invalidate: vi.fn(),
   },
   filters: { itemPlans: [] as string[] },
@@ -49,14 +50,15 @@ const { sync, counts, filters } = vi.hoisted(() => ({
 
 vi.mock("@papercusp/sync", () => ({
   useSyncQuery: (opts: { queryName?: string; args?: unknown }) => {
-    if (opts.queryName === "learning.observations.counts") {
+    if (opts.queryName === "learning.observations.summary") {
+      summary.args = opts.args;
       return {
-        data: counts.data,
-        loading: counts.loading,
-        error: counts.error,
-        fetching: counts.fetching,
+        data: summary.data,
+        loading: summary.loading,
+        error: summary.error,
+        fetching: summary.fetching,
         transport: "sse" as const,
-        invalidate: counts.invalidate,
+        invalidate: summary.invalidate,
       };
     }
     sync.args = opts.args;
@@ -107,7 +109,16 @@ vi.mock("./use-create-data", () => ({
 // they exercise the shared label the Work Queue renders. Stubbing it would let
 // this pane's count drift from that contract while the suite stayed green.
 vi.mock("@/app/harness/filters", async () => ({
-  useColumnFilters: <T,>(_cols: unknown, rows: readonly T[]) => ({
+  useColumnFilterState: () => ({
+    state: {},
+    setValue: () => {},
+    remove: () => {},
+    clearAll: () => {},
+  }),
+  useColumnFiltersFromState: <T,>(
+    _cols: unknown,
+    rows: readonly T[],
+  ) => ({
     rows,
     controller: null,
     activeChips: [],
@@ -157,6 +168,28 @@ function mkRow(over: Partial<Row> = {}): Row {
   };
 }
 
+function setSummary(
+  total: number,
+  matched = total,
+  kinds: Array<[string, number]> = [],
+) {
+  summary.data = [
+    {
+      total,
+      matched,
+      facets: kinds.length
+        ? [
+            {
+              key: "kind",
+              label: "Signal",
+              values: kinds.map(([value, count]) => ({ value, count })),
+            },
+          ]
+        : [],
+    },
+  ];
+}
+
 beforeEach(() => {
   sync.data = [];
   sync.loading = false;
@@ -166,11 +199,12 @@ beforeEach(() => {
   sync.failureReason = null;
   sync.args = null;
   sync.invalidate.mockReset();
-  counts.data = [];
-  counts.loading = false;
-  counts.fetching = false;
-  counts.error = null;
-  counts.invalidate.mockReset();
+  summary.data = [{ total: 0, matched: 0, facets: [] }];
+  summary.loading = false;
+  summary.fetching = false;
+  summary.error = null;
+  summary.args = null;
+  summary.invalidate.mockReset();
   filters.itemPlans = [];
 });
 afterEach(() => cleanup());
@@ -219,25 +253,29 @@ describe("<ObservationsPanel />", () => {
     ).toBeTruthy();
   });
 
-  it("filters observations by the selected plan refs", () => {
+  it("sends selected plan refs through the server predicate", () => {
     filters.itemPlans = ["plan-alpha"];
     sync.data = [
       mkRow({ id: "a", title: "Alpha exact", refs: ["plan-alpha"] }),
       mkRow({ id: "b", title: "Alpha tagged", refs: ["plan:plan-alpha"] }),
-      mkRow({ id: "c", title: "Beta", refs: ["plan-beta"] }),
-      mkRow({ id: "d", title: "Prefix only", refs: ["plan-alphabet"] }),
     ];
+    setSummary(100, 2);
     renderPanel();
     expect(screen.getAllByTestId("observation-row")).toHaveLength(2);
-    expect(screen.getByText("Alpha exact")).toBeTruthy();
-    expect(screen.getByText("Alpha tagged")).toBeTruthy();
-    expect(screen.queryByText("Beta")).toBeNull();
-    expect(screen.queryByText("Prefix only")).toBeNull();
+    expect(sync.args).toMatchObject({
+      filters: { plans: ["plan-alpha"] },
+      limit: 200,
+    });
+    expect(summary.args).toEqual({
+      q: "",
+      filters: { plans: ["plan-alpha"] },
+    });
   });
 
-  it("shows a selected-plan empty state when the filter removes every observation", () => {
+  it("shows a selected-plan empty state when the server returns no match", () => {
     filters.itemPlans = ["plan-alpha"];
-    sync.data = [mkRow({ id: "b", title: "Beta", refs: ["plan-beta"] })];
+    sync.data = [];
+    setSummary(100, 0);
     renderPanel();
     expect(
       screen.getByText(/no observations match the current filter \/ search/i),
@@ -261,10 +299,7 @@ describe("<ObservationsPanel />", () => {
       mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
       mkRow({ id: "g1", title: "Gap row", kind: "gap" }),
     ];
-    counts.data = [
-      { kind: "friction", count: 1 },
-      { kind: "gap", count: 1 },
-    ];
+    setSummary(2, 2, [["friction", 1], ["gap", 1]]);
     renderPanel();
     const friction = screen.getByRole("button", {
       name: "Filter by Friction, 1",
@@ -281,15 +316,11 @@ describe("<ObservationsPanel />", () => {
 
   it("puts semantic signals before Other and shows the authoritative store total", () => {
     sync.data = [
-      { ...mkRow({ id: "o1", title: "Other row" }), _meta: { total: 2569 } },
+      mkRow({ id: "o1", title: "Other row" }),
       mkRow({ id: "f1", title: "Friction row", kind: "friction" }),
       mkRow({ id: "s1", title: "Surprise row", kind: "surprise" }),
     ];
-    counts.data = [
-      { kind: "friction", count: 500 },
-      { kind: "surprise", count: 300 },
-      { kind: "other", count: 1769 },
-    ];
+    setSummary(2569, 2569, [["friction", 500], ["surprise", 300], ["other", 1769]]);
     renderPanel();
     const chips = screen.getByLabelText(
       "Signal distribution (database counts)",

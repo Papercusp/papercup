@@ -15,7 +15,10 @@ vi.mock('../harness/improvements/read-items', () => ({
 }));
 
 import { knownQueryNamesV2 } from './index';
-import { computeLearningObservations, normalizeLearningObservationsArgs } from './learning-observations-read';
+import {
+  computeLearningObservations,
+  normalizeLearningObservationsArgs,
+} from './learning-observations-read';
 import { readListMeta, readListTotal } from './list-meta';
 import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 

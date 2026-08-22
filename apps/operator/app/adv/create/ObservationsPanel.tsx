@@ -200,7 +200,11 @@ export default function ObservationsPanel({
   const itemPlanKey = itemPlans.join("\0");
   const serverFilters = useMemo(
     () =>
-      observationServerFilters(filterBinding.state, itemPlans, signalFilter),
+      observationServerFilters(
+        filterBinding.state,
+        itemPlans,
+        signalFilter,
+      ),
     [filterBinding.state, itemPlanKey, signalFilter],
   );
   const filterFingerprint = JSON.stringify(serverFilters);
@@ -317,7 +321,9 @@ export default function ObservationsPanel({
   const stalenessLevel = getStalenessFromNewest(newestCreatedAt);
 
   useEffect(() => {
-    onStatus?.(query.error ? "bad" : allRows.length > 0 ? "good" : "neutral");
+    onStatus?.(
+      query.error ? "bad" : allRows.length > 0 ? "good" : "neutral",
+    );
   }, [onStatus, query.error, allRows.length]);
 
   // Perf settle point for PERF_INTERACTIONS.learningViewSwitch — LearningTab
@@ -336,9 +342,9 @@ export default function ObservationsPanel({
   // switch would measure nothing (EI-19383745196363732).
   const settled = Boolean(
     !query.loading &&
-    !summaryQuery.loading &&
-    (query.data !== undefined || query.error) &&
-    (summaryQuery.data !== undefined || summaryQuery.error),
+      !summaryQuery.loading &&
+      (query.data !== undefined || query.error) &&
+      (summaryQuery.data !== undefined || summaryQuery.error),
   );
   useInteractionSettle(PERF_INTERACTIONS.learningViewSwitch, settled, active);
   const loadMore = useCallback(() => {
@@ -379,16 +385,10 @@ export default function ObservationsPanel({
           // at a sentence boundary (headline + rest) instead of repeating the
           // title's text; otherwise keep title as headline and body as-is.
           const subsumed =
-            selected && row.body
-              ? bodySubsumesTitle(row.title, row.body)
-              : false;
+            selected && row.body ? bodySubsumesTitle(row.title, row.body) : false;
           const split = subsumed ? splitBodyHeadline(row.body ?? "") : null;
           const headline = split ? split.headline : row.title;
-          const bodyTail = selected
-            ? split
-              ? split.rest || null
-              : row.body
-            : null;
+          const bodyTail = selected ? (split ? split.rest || null : row.body) : null;
           return (
             <button
               type="button"
@@ -609,11 +609,7 @@ export default function ObservationsPanel({
             : "No observations yet — they appear as agents reflect at the end of their turns."}
         </div>
       ) : obsView === "stacks" ? (
-        <ObservationStacks
-          rows={rows}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-        />
+        <ObservationStacks rows={rows} selectedId={selectedId} onSelect={setSelectedId} />
       ) : (
         <VirtualGrid<ObservationRow>
           columns={columns}
@@ -752,7 +748,9 @@ function ObservationStacks({
               <ObservationCard
                 row={row}
                 selected={selectedId === row.id}
-                onToggle={() => onSelect(selectedId === row.id ? null : row.id)}
+                onToggle={() =>
+                  onSelect(selectedId === row.id ? null : row.id)
+                }
               />
             )}
           />

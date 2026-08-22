@@ -21,7 +21,10 @@ vi.mock('../derived-reads/registry', () => ({
   readDerivedSnapshotRows: readDerivedSnapshotRowsMock,
   registerDerivedRead: registerDerivedReadMock,
 }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: {} }),
+}));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../issues-engineer', () => ({
   resolveIssuesScopeWorkspace: () => 'ws-test',
