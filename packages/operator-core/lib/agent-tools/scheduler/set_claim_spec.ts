@@ -15,6 +15,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveClaimSpecWorkspace, setClaimSpec } from '../../scheduler/claim-spec-store';
+import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
+export { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { resolveWorkspaceHiveScope } from '../coordination/federation-scope';
 import { fetchWakeability } from '../coordination/presence-wakeability';
 import { positiveIdCohortIds, validateClaimSpec, type ClaimSpec } from '../../scheduler/claim-spec';
@@ -93,23 +95,6 @@ export function claimSpecWakeabilityWarning(cupId: string, wakeable: boolean | n
     'whenever the bee next calls scheduler:get_next), but do not rely on warm-injecting THIS bee ' +
     'until coord:presence shows it wakeable — relaunch/re-check instead of assuming reuse.'
   );
-}
-
-/**
- * Resolve the hive scope for a claim-spec write. An explicit harness argument
- * is the target scope even when tools:invoke is dispatched from an unscoped
- * (`*`) operator context; otherwise inherit the concrete ambient harness.
- * Keeping this precedence in one helper makes direct and wrapped calls agree.
- */
-export function resolveClaimSpecPotSlug(
-  explicitHarness: string | undefined,
-  ambientHarness: unknown,
-): string | undefined {
-  const explicit = explicitHarness?.trim();
-  if (explicit && explicit !== '*') return explicit;
-  if (typeof ambientHarness !== 'string') return undefined;
-  const ambient = ambientHarness.trim();
-  return ambient && ambient !== '*' ? ambient : undefined;
 }
 
 export interface ClaimSpecAdmissionPreview {
