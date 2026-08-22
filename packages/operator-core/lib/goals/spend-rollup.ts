@@ -17,15 +17,13 @@
  *     goals (a shared pot bills in full to each — D-021).
  *  2. SESSION leg — the gap the pot leg cannot see: the goal SUBJECT's own
  *     interactive session and inherited descendants whose samples carry a
- *     harness OUTSIDE the goal's pots (or none at all). Membership is the same
- *     two tables resolveGoalContext reads (never agent self-report): agent_modes
- *     (mode='goal', subject=goalId — the session RUNNING the goal) UNION
- *     session_briefs.goal_id (launch-inherited descendants). Owners map to native
- *     session ids via adv_sessions.coord_owner_id — the whole carry-respawn
- *     chain, not just the current rung — and samples join on session_id (the
- *     loop-cost-cap attribution path, loop-cost-cap.ts). Samples whose
- *     harness_slug IS one of the goal's pot harnesses are EXCLUDED here because
- *     the pot leg already counted them; the union is therefore exact.
+ *     harness OUTSIDE the goal's pots (or none at all). New samples carry
+ *     `agent_usage_samples.goal_id`, resolved at INSERT time from the native
+ *     session's mode/brief context (migration 881), so their attribution is
+ *     historical even after live membership disappears. Pre-881 NULL rows use
+ *     the current membership fallback below. Samples whose harness_slug IS one
+ *     of the goal's pot harnesses are EXCLUDED here because the pot leg already
+ *     counted them; the union is therefore exact.
  *
  * The snapshot is stamped `spentCentsSource: GOAL_SPEND_TICK_SOURCE` — a marker
  * DISTINCT from GOAL_SPEND_SNAPSHOT_SOURCE ('goal-pots-rollup') because the value
@@ -81,13 +79,13 @@ export interface GoalSpendRollup {
  * The SESSION leg: samples attributed (via adv_sessions) to owners under the
  * goal, excluding samples already covered by the pot leg's harness match.
  *
- * Owner→goal membership deliberately reads the SAME two tables as
- * resolveGoalContext (modes/goal-context.ts) rather than any agent-supplied
- * list. adv_sessions is NOT workspace-filtered on purpose: coord owner ids are
- * globally unique and a respawn chain can carry rows under more than one
- * workspace label, while the SAMPLE-side workspace_id filter still holds the
- * tenancy line. The goal-lifetime lower bound mirrors goalSpend(): a subject's
- * spend from before the goal existed never bills to it.
+ * For legacy NULL rows, owner→goal membership deliberately reads the SAME two
+ * tables as resolveGoalContext (modes/goal-context.ts) rather than any
+ * agent-supplied list. adv_sessions is NOT workspace-filtered on purpose: coord
+ * owner ids are globally unique and a respawn chain can carry rows under more
+ * than one workspace label, while the SAMPLE-side workspace_id filter still
+ * holds the tenancy line. The goal-lifetime lower bound mirrors goalSpend(): a
+ * subject's spend from before the goal existed never bills to it.
  */
 export async function sessionSpendForGoal(
   sql: Sql,
@@ -113,20 +111,26 @@ export async function sessionSpendForGoal(
         ON g.id = ${opts.goalId}
        AND g.workspace_id = ${opts.workspaceId}
      WHERE s.workspace_id = ${opts.workspaceId}
-       AND s.session_id IN (
-         SELECT a.session_id
-           FROM harness_shared.adv_sessions a
-          WHERE a.session_id IS NOT NULL
-            AND a.coord_owner_id IN (
-              SELECT m.owner_id FROM harness_shared.agent_modes m
-               WHERE m.workspace_id = ${opts.workspaceId}
-                 AND m.mode = ${GOAL_MODE}
-                 AND m.subject = ${opts.goalId}
-              UNION
-              SELECT b.owner_id FROM harness_shared.session_briefs b
-               WHERE b.workspace_id = ${opts.workspaceId}
-                 AND b.goal_id = ${opts.goalId}
-            )
+       AND (
+         s.goal_id = ${opts.goalId}
+         OR (
+           s.goal_id IS NULL
+           AND s.session_id IN (
+             SELECT a.session_id
+               FROM harness_shared.adv_sessions a
+              WHERE a.session_id IS NOT NULL
+                AND a.coord_owner_id IN (
+                  SELECT m.owner_id FROM harness_shared.agent_modes m
+                   WHERE m.workspace_id = ${opts.workspaceId}
+                     AND m.mode = ${GOAL_MODE}
+                     AND m.subject = ${opts.goalId}
+                  UNION
+                  SELECT b.owner_id FROM harness_shared.session_briefs b
+                   WHERE b.workspace_id = ${opts.workspaceId}
+                     AND b.goal_id = ${opts.goalId}
+                )
+           )
+         )
        )
        AND (s.harness_slug IS NULL OR s.harness_slug NOT IN (
          SELECT gp.harness_slug FROM harness_shared.goal_pots gp

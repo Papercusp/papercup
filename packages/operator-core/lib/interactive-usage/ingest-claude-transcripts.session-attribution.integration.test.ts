@@ -80,6 +80,29 @@ describe('ingestInteractiveUsage — session_id attribution (P3)', () => {
     expect(rows[0].source).toBe('interactive');
   });
 
+  it('stamps goal_id from the session GOAL-mode subject at write time', async () => {
+    const uuid = 'eeee5555-ffff-6666-aaaa-777788889999';
+    await sql`INSERT INTO harness_shared.adv_sessions
+      (workspace_id, mode, coord_owner_id, session_id)
+      VALUES (${WS}, 'console', 'goal-owner', ${uuid})`;
+    await sql`INSERT INTO harness_shared.agent_modes
+      (workspace_id, owner_id, axis_key, mode, subject, set_by)
+      VALUES (${WS}, 'goal-owner', 'overlay:goal', 'goal', 'goal-write-time', 'test')`;
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'p3-goal-'));
+    tmpDirs.push(dir);
+    await fs.writeFile(
+      path.join(dir, `${uuid}.jsonl`),
+      JSON.stringify({ type: 'assistant', message: { model: 'claude-opus-4-8', usage: { input_tokens: 100, output_tokens: 200 } } }) + '\n',
+    );
+
+    await ingestInteractiveUsage({ adapters: [{ name: 'claude', root: dir, parse: parseTranscriptChunk }] });
+    const rows = await sql<Array<{ goal_id: string | null }>>`
+      SELECT goal_id FROM harness_shared.agent_usage_samples
+       WHERE workspace_id = ${WS} AND session_id = ${uuid}`;
+    expect(rows).toHaveLength(1);
+    expect(rows[0].goal_id).toBe('goal-write-time');
+  });
+
   it('the exact readLoopSpendCents attribution query now sums interactive spend by session_id', async () => {
     // Mirror what readLoopSpendCents runs (owner→session_id resolved upstream): SUM(cost_usd)
     // WHERE session_id = <native uuid>. With the fix, interactive samples are now summed.

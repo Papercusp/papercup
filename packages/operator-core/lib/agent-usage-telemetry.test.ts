@@ -75,6 +75,10 @@ const COLS = [
   'rl_tokens_remaining',
   'rl_reset_at',
   'session_id',
+  // goal_id is resolved by a SQL function at INSERT time; these are its
+  // bound workspace/session arguments, not persisted result columns.
+  'goal_attribution_workspace_id',
+  'goal_attribution_session_id',
   'tool_name',
   'turn_trigger',
   'account_id',
