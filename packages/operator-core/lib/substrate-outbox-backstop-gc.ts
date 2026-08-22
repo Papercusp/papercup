@@ -141,6 +141,43 @@ export interface BackstopGcOptions {
 }
 
 /**
+ * EI-21111467164675531: the set of harness_slug values in `workspaceId` that
+ * currently have SOME possible drain-loop owner — a `harness_registry`
+ * project entry, or a currently-STARTED pot (the identical two conditions
+ * this module's own NON_REGISTRY reap leg above checks via `NOT EXISTS`).
+ * Exported so the outbox-health SLO monitor (`coord-invariant-actions.ts`
+ * `runSharedHiveLeg`) can defer to the EXACT same classification this GC uses
+ * instead of re-deriving a second copy that could disagree.
+ *
+ * Why this matters: a harness_slug with neither owner can NEVER boot a drain
+ * loop, so its undrained rows are this GC's job alone (see the module header)
+ * — yet this GC only sweeps on a 6-HOURLY cadence (`dbos/periodic-workflows.ts`
+ * `outboxBackstopGc`), far coarser than the monitor's default 30-min age SLO.
+ * Without this, the monitor fires — and re-files the SAME "shared-hive
+ * invariant" bug every tick, forever — on a structurally undrainable row long
+ * before this GC's next sweep can land, for a scope nobody can ever green (no
+ * drain loop exists to fix). Live case: `larkfield-android-20260821`, a
+ * harness with zero registry/started presence, alarmed on a single row aged
+ * past the 30-min SLO although the GC had already reaped it by the time the
+ * ticket was investigated.
+ */
+export async function loadKnownOutboxOwnerSlugs(
+  sql: postgres.Sql,
+  workspaceId: string,
+  startedHives: ReadonlyArray<{ workspaceId: string; installSlug: string }> = [],
+): Promise<Set<string>> {
+  const rows = await sql<Array<{ slug: string | null }>>`
+    SELECT DISTINCT project->>'slug' AS slug
+      FROM harness_shared.harness_registry r,
+           jsonb_array_elements(COALESCE(r.payload->'projects', '[]'::jsonb)) AS project
+     WHERE r.workspace_id = ${workspaceId}`;
+  const known = new Set<string>();
+  for (const r of rows) if (r.slug) known.add(r.slug);
+  for (const h of startedHives) if (h.workspaceId === workspaceId) known.add(h.installSlug);
+  return known;
+}
+
+/**
  * Run one global backstop sweep. Returns the number of outbox rows deleted.
  * Best-effort: the caller (the scheduled tick) tolerates a thrown error.
  */
