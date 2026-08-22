@@ -174,6 +174,8 @@ describe('Kopia managed entrypoint contract', () => {
     expect(hotScript).toContain('--mode scheduled --label hot');
     expect(homeScript).toContain('--mode wait --label daily-home-vm');
     expect(protectedScript).toContain('--mode wait --label protected-manual');
+    expect(dbService).toContain('kopia-backup-guard.sh --mode wait --label db-dump');
+    expect(dbService).toContain('-- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh');
     expect(hotScript).not.toContain('snapshot-all.lock');
     expect(homeScript).not.toContain('home-snapshot.lock');
     expect(hotService).toContain('ExecStopPost=%h/.config/kopia/snapshot-all.sh --cleanup');
@@ -237,7 +239,7 @@ describe('Kopia managed entrypoint contract', () => {
       .join('\n');
 
     expect(dbService).toContain(
-      'ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh',
+      '-- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh',
     );
     expect(dbService).not.toContain('%h/.config/kopia/db-backup.sh');
     expect(executableDbScript.match(/--compress=none/g)).toHaveLength(2);

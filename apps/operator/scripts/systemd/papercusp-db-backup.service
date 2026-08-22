@@ -16,4 +16,9 @@ OnFailure=papercusp-db-backup-alert.service
 Type=oneshot
 Nice=19
 IOSchedulingClass=idle
-ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh
+# The dump atomically rewrites the same source tree Kopia snapshots. Hold the
+# shared backup guard for the whole rewrite so the hourly dump and the
+# 30-minute snapshot timer cannot saturate I/O together or capture different
+# generations from the same run. Wait rather than defer to preserve the hourly
+# database recovery-point objective from D-003.
+ExecStart=%h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/kopia-backup-guard.sh --mode wait --label db-dump -- %h/papercupai-workspace/papercusp/apps/operator/scripts/systemd/papercusp-db-backup.sh
