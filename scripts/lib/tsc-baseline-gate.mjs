@@ -1557,14 +1557,22 @@ export function formatUncoveredFilesBanner({
   lines.push(`   \`--files=\` scopes this gate's VERDICT; it does not widen what tsc compiles.`);
   lines.push('');
 
-  /** @type {Map<string, string[]>} */
+  /** @type {Map<string, {files: string[], scoped: boolean}>} */
   const byCommand = new Map();
   const ungated = [];
+  const addCommand = (command, file, scoped) => {
+    const entry = byCommand.get(command) ?? { files: [], scoped: false };
+    entry.files.push(file);
+    entry.scoped ||= scoped;
+    byCommand.set(command, entry);
+  };
   for (const file of uncovered) {
     const s = suggestions.get(file);
     if (s?.command) {
-      if (!byCommand.has(s.command)) byCommand.set(s.command, []);
-      byCommand.get(s.command).push(file);
+      // A workspace's own `typecheck` script usually invokes raw `tsc` and does not promise
+      // to accept the caller's `--files` selector. Run that command for the whole workspace;
+      // sibling lint:tsc* gates below explicitly support exact-file scoping.
+      addCommand(s.command, file, false);
       continue;
     }
     // EI-19461218392796337 — before concluding anything is uncovered, ask the SIBLING gates.
@@ -1574,19 +1582,20 @@ export function formatUncoveredFilesBanner({
     const sibling = gateCoveringFile(siblingGates, file);
     if (sibling) {
       const command = `npm run ${sibling.npmScript}`;
-      if (!byCommand.has(command)) byCommand.set(command, []);
-      byCommand.get(command).push(file);
+      addCommand(command, file, true);
       continue;
     }
     ungated.push({ file, workspaceDir: s?.workspaceDir ?? null });
   }
 
-  for (const [command, files] of byCommand) {
+  for (const [command, entry] of byCommand) {
     // Preserve the caller's scoped-verdict contract when handing off to a sibling gate. A bare
     // sibling command would typecheck its whole project (and lose the exact file attribution
-    // that led us here), while the caller explicitly named these paths for a focused check.
-    lines.push(`   RUN THIS to check them:  ${command} -- --files=${files.join(',')}`);
-    for (const f of files) lines.push(`     - ${f}`);
+    // that led us here), while a workspace-owned `typecheck` command is not assumed to support
+    // the same selector and must be run without an appended compiler flag.
+    const scope = entry.scoped ? ` -- --files=${entry.files.join(',')}` : '';
+    lines.push(`   RUN THIS to check them:  ${command}${scope}`);
+    for (const f of entry.files) lines.push(`     - ${f}`);
   }
   if (ungated.length) {
     // Deliberately NOT "no gate covers these / nothing local will ever catch a type error here".

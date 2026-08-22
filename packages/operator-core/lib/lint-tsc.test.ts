@@ -2185,6 +2185,21 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
       expect(text).toContain('npm run --workspace apps/operator-vite typecheck');
     });
 
+    it('does not append --files to a workspace typecheck script that invokes raw tsc', () => {
+      const file = 'libs/papercusp/libs/db/src/connection.ts';
+      const command = 'npm run --workspace libs/papercusp/libs/db typecheck';
+      const text = formatUncoveredFilesBanner({
+        label: 'operator-core',
+        uncovered: [file],
+        suggestions: new Map([
+          [file, { workspaceDir: 'libs/papercusp/libs/db', packageName: '@papercusp/db-org', command }],
+        ]),
+        fatal: true,
+      }).join('\n');
+      expect(text).toContain(`RUN THIS to check them:  ${command}`);
+      expect(text).not.toContain(`${command} -- --files=`);
+    });
+
     it('warns but does not claim total failure when SOME files were covered', () => {
       const text = formatUncoveredFilesBanner({
         label: 'operator-core',
