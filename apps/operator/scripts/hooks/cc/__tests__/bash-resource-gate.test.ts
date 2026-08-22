@@ -3182,6 +3182,30 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     );
   });
 
+  /**
+   * EI-19301210652900510 — a quoted expansion with a path suffix is still an
+   * unresolved redirect operand, not an empty span. If quote normalization
+   * erases `"$BAD/superuser-token"`, the same-line scanner borrows the next
+   * bare word (`timeout`) as the target and falsely denies an out-of-tree
+   * scratch write. The newline-separated form is the exact filed command;
+   * the adjacent form pins the normalization failure that originally named
+   * `timeout`.
+   */
+  it.each([
+    [
+      'the exact filed newline-separated timeout/env command',
+      'BAD=$(mktemp -d); echo "not-the-real-token" > "$BAD/superuser-token"\n'
+        + 'timeout 8 env HOME="$BAD" ... node apps/operator/lib/mcp-proxy/watchdog.mjs >/dev/null 2>&1',
+    ],
+    [
+      'same-line text after the unresolved redirect operand',
+      'BAD=$(mktemp -d); echo "not-the-real-token" > "$BAD/superuser-token" '
+        + 'timeout 8 env HOME="$BAD" ... node apps/operator/lib/mcp-proxy/watchdog.mjs >/dev/null 2>&1',
+    ],
+  ])('allows %s without naming the neighboring command word', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
   it('denies `tee` writing into the tree', () => {
     const reason = expectShellWriteDeny(
       runGate(bashCmd('echo hi | tee apps/operator/foo.txt', { cwd: CANON }), CANON_ENV),

@@ -552,8 +552,8 @@ def _strip_quotes_and_comments(s, preserve_expansions=False):
     # preserving arbitrary quoted text would re-open the operator false-positive
     # class this normalizer exists to prevent.
     _quoted_expansion_only = re.compile(
-        r'^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*'
-        r'(?:\[[^]]+\])?\}|[0-9@*#?$!-])$'
+        r'^\$(?:(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*'
+        r'(?:\[[^]]+\])?\}|[0-9@*#?$!-])[/._A-Za-z0-9-]*)$'
     )
     out, i, n = [], 0, len(s)
     while i < n:
