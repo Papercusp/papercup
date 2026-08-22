@@ -75,6 +75,29 @@ export type {
   WorkspaceHostProvider,
 } from './workspace-host-types';
 export { WORKSPACE_HOST_LIFECYCLE_ACTIONS } from './workspace-host-types';
+export type {
+  WorkspaceHostWorkflowIdentity,
+  WorkspaceHostWorkflowKeys,
+  WorkspaceHostRetryClass,
+  WorkspaceHostCompensationPlan,
+  WorkspaceHostDurableResourcePlan,
+  WorkspaceHostDurableWorkflowSpec,
+  WorkspaceHostResourceCheckpointState,
+  WorkspaceHostResourceCheckpoint,
+  WorkspaceHostRecoveryAction,
+  WorkspaceHostWorkflowValidation,
+  WorkspaceHostControllerAction,
+} from './workspace-host-workflow';
+export {
+  WORKSPACE_HOST_RETRY_CLASSES,
+  WORKSPACE_HOST_RESOURCE_CHECKPOINT_STATES,
+  workspaceHostWorkflowKeys,
+  workspaceHostRecoveryAction,
+  validateWorkspaceHostWorkflow,
+  workspaceHostCompensationOrder,
+  workspaceHostDestroyIsConfirmed,
+  nextWorkspaceHostControllerAction,
+} from './workspace-host-workflow';
 export {
   registerWorkspaceHostProvider,
   configureWorkspaceHostProviders,

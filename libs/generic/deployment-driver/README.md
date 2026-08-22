@@ -57,6 +57,25 @@ data; destroy requires a disposition and a fresh provider-read absence proof.
 There is no implicit local workspace-host provider. Concrete backends register
 through `configureWorkspaceHostProviders({ providers })` at host bootstrap.
 
+`WorkspaceHostDurableWorkflowSpec` is the provider-neutral controller contract
+that sits above those adapters. It gives one client operation a stable DBOS
+workflow id, serializes desired mutations per host, records every logical
+resource plan before the first provider call, and makes an interrupted
+`applying` checkpoint resume through `reconcile` with the same provider
+idempotency key. Retry classes distinguish bounded transient/throttled retries
+from ambiguous results and terminal failures. Cancellation first resolves any
+in-flight ambiguity, then compensates only operation-created resources in
+reverse dependency order; retained data and pre-existing resources are explicit
+non-targets. Destroy remains blocked until every delete target carries a fresh
+provider-read absence receipt.
+
+The eventual operator controller should adapt DBOS's idempotent registration,
+queue isolation, per-resource `runStep` checkpoints, and injected-executor test
+seams. It must not route workspace hosts through the existing whole-plugin
+provision workflow or its `provision_state` JSONB blob. The provision audit bus
+is reusable as an implementation pattern for workspace-host events, but its
+harness/plugin-keyed table is not the workspace-host state model.
+
 Generic + host-clean: the frame surface names no provider except `local`; the
 workspace-host surface names none. Each backend narrows and validates its own
 provider state host-side. The contracts stay separate because their ownership
