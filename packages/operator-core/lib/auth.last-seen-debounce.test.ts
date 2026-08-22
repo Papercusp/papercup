@@ -48,6 +48,8 @@ const liveSession = (userId = 'u1') => [
     username: 'alice',
     display_name: 'Alice',
     password_hash: null,
+    workspace_id: 'papercusp-workspace',
+    capabilities: [],
   },
 ];
 
