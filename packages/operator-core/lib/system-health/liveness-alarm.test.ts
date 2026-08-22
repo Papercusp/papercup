@@ -2102,7 +2102,12 @@ describe('EI-21025158485847408 — ambient host memory-pressure infra crit downg
 
     expect(escalated).toHaveLength(1);
     expect(escalated[0]?.severity).toBe('advisory');
-    expect(open?.severity).toBe('advisory');
+    // The assignment happens inside the injected async escalation writer, which
+    // TypeScript's local control-flow analysis cannot prove ran. The preceding
+    // length assertion and three awaited ticks are the runtime proof; retain the
+    // nullable cast so this checks the persisted row without widening production
+    // types or pretending the callback assignment is synchronous.
+    expect((open as EscalationRecord | null)?.severity).toBe('advisory');
     expect(pages).toEqual([]);
   });
 });

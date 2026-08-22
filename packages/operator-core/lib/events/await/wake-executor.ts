@@ -538,7 +538,8 @@ export function wakeTurnText(d: DeliveryWork): string {
 
 type LoopStatusSnapshot = Awaited<ReturnType<typeof getLoopStatus>>;
 type LoopDeliverySupersession =
-  | { kind: 'ended' | 're-armed' }
+  | { kind: 'ended' }
+  | { kind: 're-armed' }
   | { kind: 'lineage-mismatch'; markerHarness: string; currentHarness: string };
 
 /**
