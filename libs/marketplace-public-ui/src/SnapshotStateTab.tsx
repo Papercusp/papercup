@@ -291,7 +291,7 @@ interface ColSpec {
   badge?: Record<string, string>;
 }
 
-function RowList({ rows, columns }: { rows: Record<string, unknown>[]; columns: ColSpec[] }) {
+function RowList({ rows, columns }: { rows: object[]; columns: ColSpec[] }) {
   return (
     <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 12 }}>
       <thead>
@@ -304,10 +304,12 @@ function RowList({ rows, columns }: { rows: Record<string, unknown>[]; columns: 
         </tr>
       </thead>
       <tbody>
-        {rows.map((row, i) => (
-          <tr key={String(row.id ?? i)}>
+        {rows.map((row, i) => {
+          const record = row as Record<string, unknown>;
+          return (
+          <tr key={String(record.id ?? i)}>
             {columns.map((col) => {
-              const raw = row[col.key];
+              const raw = record[col.key];
               const v = raw == null ? '' : String(raw);
               const tdStyle: React.CSSProperties = {
                 padding: '6px 8px 6px 0',
@@ -334,7 +336,8 @@ function RowList({ rows, columns }: { rows: Record<string, unknown>[]; columns: 
               return <td key={col.key} style={tdStyle}>{v}</td>;
             })}
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
   );

@@ -65,7 +65,9 @@ interface Props {
 
 function CardIcon({ name, kind }: { name: string | null | undefined; kind: 'plugin' | 'template' | 'snapshot' }) {
   const fallback = kind === 'plugin' ? Lucide.Puzzle : kind === 'snapshot' ? Lucide.Layers : Lucide.Package;
-  const Icon = (name && (Lucide as Record<string, unknown>)[name] as React.ComponentType<{ size?: number }>) ?? fallback;
+  const Icon = (name
+    ? (Lucide as Record<string, unknown>)[name] as React.ComponentType<{ size?: number }>
+    : undefined) ?? fallback;
   return (
     <span className={`pc-marketplace-card-icon ${kind}`}>
       <Icon size={18} />

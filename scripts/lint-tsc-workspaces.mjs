@@ -127,7 +127,8 @@ export const PROMOTE_ROOTS = ['libs'];
  *                                 each — a package with .ts sources and NO tsconfig is invisible
  *                                 even to the invisible-set report, which keys on tsconfig.json)
  *   libs/marketplace-public-ui 6
- * The three that still fail are held BY NAME in UNTYPECHECKABLE below with those counts.
+ * The three that failed at widening were held BY NAME in UNTYPECHECKABLE with those counts;
+ * all three are now clean and gated, so the map below is empty.
  */
 
 /**
@@ -165,31 +166,6 @@ export const PROMOTE_ROOTS = ['libs'];
  * @type {Record<string, { detail: string, errors: number, filedAs: string }>}
  */
 export const UNTYPECHECKABLE = {
-  'libs/agent-chat': {
-    detail:
-      'measured 2026-08-15 the day this package first got a tsconfig at all: 5 TS6133 unused ' +
-      'imports, 2 TS2493 (indexing an empty tuple in a test), 1 TS2352 and 1 TS2322 — the last a ' +
-      'REAL defect at src/useHarnessChatRuntime.ts:174, a `() => void` assigned where ' +
-      '`() => Promise<void>` is required, so a caller awaiting it awaits nothing. Held rather ' +
-      'than hand-fixed because that one is a behaviour question, not a lint. Clear them and ' +
-      'DELETE this entry — that is the whole exit path.',
-    errors: 9,
-    filedAs: 'WI-39342',
-  },
-  // libs/papercusp-shared WAS here (4 errors, measured 2026-08-15) and is deliberately GONE:
-  // its 2 TS7006 implicit-any params and 2 TS6133 unused bindings were fixed the same hour, so
-  // it is now gated. That is the intended lifecycle of an entry here — held only for as long as
-  // it takes to clear, never as an accepted state. It mattered most of the three: 51 files
-  // import it.
-  'libs/marketplace-public-ui': {
-    detail:
-      'measured 2026-08-15: 6 errors — 2 TS2339/TS2604 pairs where a dynamic `Icon` element ' +
-      'resolves to an empty JSX.IntrinsicElements key, plus 2 TS2322 row-type mismatches in ' +
-      'SnapshotStateTab. Nothing in the tree imports this package (0 import sites), which is ' +
-      'why it drifted unnoticed.',
-    errors: 6,
-    filedAs: 'WI-39342',
-  },
 };
 
 /**
