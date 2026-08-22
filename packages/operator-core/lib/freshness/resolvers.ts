@@ -35,6 +35,7 @@ import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize, resolve, sep } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { detectPapercupRoot } from '../harness/register-papercusp';
+import { loadHarnessRegistry, resolveHarnessContentPath } from '../harness-registry';
 
 /** Context a resolver needs to scope its lookups. */
 export interface FreshnessResolverCtx {
@@ -91,9 +92,29 @@ function allNull(refs: readonly string[]): Map<string, string | null> {
  * a touch moves mtime without changing meaning, and a false stale here would train
  * agents to ignore the verdict.
  */
+async function resolveHarnessRepoRoot(ctx: FreshnessResolverCtx): Promise<string | null> {
+  if (ctx.repoRoot !== undefined && ctx.repoRoot !== null) return ctx.repoRoot;
+
+  // A checkpoint's file dependencies belong to the item's harness, not to the
+  // operator process's current/release checkout. Keep the detected root as a
+  // compatibility fallback for unscoped items and for installs where the
+  // registry cannot be read.
+  if (ctx.harness) {
+    try {
+      const registry = await loadHarnessRegistry(ctx.workspaceId);
+      const harnessRoot = resolveHarnessContentPath(registry, ctx.harness);
+      if (harnessRoot) return harnessRoot;
+    } catch {
+      // Registry reads are best-effort here; an unavailable registry must not
+      // make the freshness resolver throw or change its existing fallback.
+    }
+  }
+  return detectPapercupRoot();
+}
+
 const resolveFiles: DepResolver = async (refs, ctx) => {
   const out = new Map<string, string | null>();
-  const root = ctx.repoRoot ?? detectPapercupRoot();
+  const root = await resolveHarnessRepoRoot(ctx);
   if (!root) return allNull(refs);
   const rootResolved = resolve(root);
   await Promise.all(
