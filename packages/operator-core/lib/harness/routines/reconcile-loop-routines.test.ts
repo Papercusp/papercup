@@ -111,6 +111,57 @@ describe('reconcileLoopRoutines — string-typed timestamptz columns (pooled pre
   });
 });
 
+describe('reconcileLoopRoutines — stale pure-loop parked snapshot cannot overwrite a re-arm (EI-21122026530854360)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  it('skips the stale completion UPDATE after loop:arm has installed a fresh finite schedule', async () => {
+    const statements: string[] = [];
+    // The SELECT snapshot says the pure loop is parked, but loop:arm won the race afterward
+    // and the live row now has a fresh finite next_fire_at. An unguarded LEAST UPDATE would
+    // match this state and regress that schedule to the stale completion + interval value.
+    const sql = ((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+      const query = strings.join(' ? ');
+      if (/^\s*UPDATE/i.test(query)) {
+        statements.push(query);
+        const hasPureLoopParkGuard =
+          query.includes("jsonb_exists(trigger_config, 'cron')") &&
+          query.includes("next_fire_at = 'infinity'::timestamptz");
+        // Simulate the live row's WHERE evaluation: it is finite now, so the fixed guard
+        // yields zero rows. The pre-fix statement would report one matched row here.
+        return Promise.resolve(hasPureLoopParkGuard ? [] : [{ id: 'rt-race' }]);
+      }
+      return Promise.resolve([
+        {
+          id: 'rt-race',
+          target_owner_id: 'su-race',
+          interval_sec: 60,
+          parked: true,
+          is_cron: false,
+          install_slug: 'papercusp',
+          name: 'loop-su-race',
+          routine_workspace_id: 'ws-papercusp',
+          last_fired_at: pgString(T0),
+          lifecycle_completed_at: pgString(T0 + 5_000),
+          presence_last_active_at: null,
+        },
+      ]);
+    }) as unknown as Sql;
+
+    const res = await reconcile({
+      sql,
+      nowMs: T0 + 10_000,
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+
+    expect(res.rearmed).toBe(0);
+    expect(res.loops).toEqual([]);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain("jsonb_exists(trigger_config, 'cron')");
+    expect(statements[0]).toContain("next_fire_at = 'infinity'::timestamptz");
+  });
+});
+
 describe('reconcileLoopRoutines — cold settle ladder (su-cold-auto 2026-07-03)', () => {
   const T0 = 1_782_000_000_000;
   const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');

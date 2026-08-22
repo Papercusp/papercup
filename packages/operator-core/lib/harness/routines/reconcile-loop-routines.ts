@@ -1365,6 +1365,13 @@ export async function reconcileLoopRoutines(
            AND reschedule_interval_sec IS NOT NULL
            AND ( next_fire_at = 'infinity'::timestamptz
                  OR next_fire_at > ${reArmIso}::timestamptz )
+           -- EI-21122026530854360: the SELECT above is intentionally unlocked, so a pure
+           -- loop may have been re-armed by loop:arm after this row said it was parked. Do
+           -- not let that stale snapshot fold the fresh finite schedule backwards. A cron+loop
+           -- remains eligible for the existing never-later LEAST fold; only a pure loop must
+           -- still be parked when this completion re-arm wins.
+           AND ( jsonb_exists(trigger_config, 'cron')
+                 OR next_fire_at = 'infinity'::timestamptz )
         RETURNING id
       `;
       if (updated.length > 0) {
