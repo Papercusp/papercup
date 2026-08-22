@@ -799,13 +799,12 @@ describe('EI-18736669939338784 — second-terminal-close must not clobber the fi
     expect(conflicts).toEqual(['upgraded']);
     const att = await attestations('engineer_issues', 'issue_id', bug.id);
     expect(att).toHaveLength(1);
-    expect(att![0]).toMatchObject({
-      by: 'watchdog-auto-close',
-      outcome: 'superseded',
-      completionRef: null,
-      completionAuthority: null,
-      evidence: null,
-    });
+    expect(att![0]).toMatchObject({ by: 'watchdog-auto-close', outcome: 'superseded' });
+    // The compatibility-view write may strip explicit JSON nulls; either absent
+    // or null is the same legacy value, and neither is a manufactured authority.
+    expect(att![0].completionRef ?? null).toBeNull();
+    expect(att![0].completionAuthority ?? null).toBeNull();
+    expect(att![0].evidence ?? null).toBeNull();
   });
 
   // DELIBERATELY EXEMPT, and pinned so the exemption is a decision rather than an

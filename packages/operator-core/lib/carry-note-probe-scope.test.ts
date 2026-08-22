@@ -201,6 +201,35 @@ describe('detectScopeOverreach — the advisory lint', () => {
     ).toHaveLength(1);
   });
 
+  it('does NOT flag quantifiers used to disclaim the writer\'s own scope', () => {
+    const narrowing = [
+      {
+        claim: 'I split the badge and added never run by me to the recheck.',
+        recheck: 'npm run lint:tsc:operator | tail -25',
+        verified: 'peer assertion',
+      },
+      {
+        claim: 'MEASURED (this is the whole of what my probe saw).',
+        recheck: 'npm run lint:tsc:operator | tail -25',
+        verified: 'yes',
+      },
+    ];
+
+    expect(detectScopeOverreach(narrowing)).toEqual([]);
+  });
+
+  it('still flags a broad assertion that shares a row with a scope disclaimer', () => {
+    expect(
+      detectScopeOverreach([
+        {
+          claim: 'No gate run produced a verdict today; the peer result was never run by me.',
+          recheck: 'npm run lint:tsc:operator | tail -25',
+          verified: 'split evidence',
+        },
+      ]),
+    ).toMatchObject([{ quantifier: 'No', probeScope: 'last 25 lines' }]);
+  });
+
   it('bounds its output and is total on junk input', () => {
     const many = Array.from({ length: 20 }, () => overreaching);
     expect(detectScopeOverreach(many)).toHaveLength(3);

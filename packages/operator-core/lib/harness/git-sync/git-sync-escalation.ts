@@ -72,6 +72,10 @@ export function gitSyncLegPhrase(leg: GitSyncFailingLeg | null): string {
 }
 
 export interface EscalationInput {
+  /** The harness/install slug whose git-sync tick produced this decision.
+   * Broadcasts are fleet-global, so omitting this makes a sibling harness's
+   * repo-relative paths and failure streak look like the caller's own. */
+  installSlug: string;
   /** `skipped-locked` is intentionally neither a failure escalation nor a clean
    * pass: a live peer lock deferred work, so preserve any existing escalation
    * until a later measured sync/nothing outcome can clear it. */
@@ -118,7 +122,7 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
     // commit-leg faults that never reached the network.
     const leg = classifyGitSyncFailingLeg(i.errors.map((e) => e.message).join('; ') || null, i.pushMode ?? null);
     parts.push(
-      `⚠ git-sync has FAILED ${i.consecutiveErrorTicks} consecutive ticks — ${gitSyncLegPhrase(leg)}${detail ? ` (${detail})` : ''}`,
+      `⚠ git-sync on ${i.installSlug} has FAILED ${i.consecutiveErrorTicks} consecutive ticks — ${gitSyncLegPhrase(leg)}${detail ? ` (${detail})` : ''}`,
     );
   }
   const newOversized = i.oversized.filter((f) => !i.prevOversizedKeys.includes(oversizedKey(f)));
@@ -128,7 +132,7 @@ export function decideGitSyncEscalation(i: EscalationInput): EscalationDecision 
       .join(', ')
       .slice(0, 400);
     parts.push(
-      `⚠ git-sync EXCLUDED oversized file(s) from the auto-commit — they will never push (GitHub 100MB limit); gitignore or remove them: ${list}`,
+      `⚠ git-sync on ${i.installSlug} EXCLUDED oversized file(s) from the auto-commit — they will never push (GitHub 100MB limit); gitignore or remove them: ${list}`,
     );
   }
 

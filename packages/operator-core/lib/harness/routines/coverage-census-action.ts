@@ -15,15 +15,28 @@
  * with an empty provider set it is a correct no-op, because no provider reporting success means
  * no kind is retirable and the census cannot write a retirement.
  */
-import { getOrgPg } from '@papercusp/db-org';
-import { runCensus } from '@papercusp/testing-shell/census';
-import { createPgCensusStore } from '../../coverage-census/pg-store';
-import { censusProviders } from '../../coverage-census/provider-registry';
-import { resolveCensusScope } from '../../coverage-census/scope';
-import { notifySyncInvalidate } from '../../sync-sse';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
 registerSystemAction('coverage-census', async (_ctx: SystemActionCtx) => {
+  // Keep the registry side-effect import cheap. These modules pull the complete census/provider
+  // graph (and the sync invalidation path); loading them only when the cadence actually fires
+  // avoids making every host boot and registration test pay that cost.
+  const [
+    { getOrgPg },
+    { runCensus },
+    { createPgCensusStore },
+    { censusProviders },
+    { resolveCensusScope },
+    { notifySyncInvalidate },
+  ] = await Promise.all([
+    import('@papercusp/db-org'),
+    import('@papercusp/testing-shell/census'),
+    import('../../coverage-census/pg-store'),
+    import('../../coverage-census/provider-registry'),
+    import('../../coverage-census/scope'),
+    import('../../sync-sse'),
+  ]);
+
   const providers = censusProviders();
   // D-011: the SAME resolver the attribution layer uses, so evidence rows can only ever
   // land in the scope these surfaces are written under. Inlining the two resolvers here

@@ -5,6 +5,7 @@ import type { ScopedOversized } from './run-git-sync';
 const big: ScopedOversized = { scope: 'superproject', path: 'apps/tui/target/huge.rlib', sizeBytes: 200 * 1048576 };
 
 const base = {
+  installSlug: 'papercusp',
   status: 'synced' as const,
   consecutiveErrorTicks: 0,
   errors: [],
@@ -48,6 +49,7 @@ describe('decideGitSyncEscalation (EI-18)', () => {
     expect(d.escalate).toBe(true);
     expect(d.reasons).toEqual(['push-failure']);
     expect(d.broadcast).toContain(`FAILED ${PUSH_FAILURE_ESCALATION_TICKS} consecutive ticks`);
+    expect(d.broadcast).toContain('git-sync on papercusp');
     expect(d.broadcast).toContain('HTTP 500');
     expect(d.broadcast).not.toContain('send-pack'); // first line only
   });
@@ -68,6 +70,7 @@ describe('decideGitSyncEscalation (EI-18)', () => {
     expect(d.escalate).toBe(true);
     expect(d.reasons).toEqual(['oversized-blobs']);
     expect(d.clear).toBe(false); // the unpushable file still sits in the tree
+    expect(d.broadcast).toContain('git-sync on papercusp');
     expect(d.broadcast).toContain('apps/tui/target/huge.rlib');
     expect(d.broadcast).toContain('200.0MB');
   });

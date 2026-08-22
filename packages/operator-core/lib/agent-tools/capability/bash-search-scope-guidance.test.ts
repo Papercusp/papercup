@@ -1,0 +1,29 @@
+/**
+ * capability:bash search guidance regression for EI-21133502363929449.
+ *
+ * A repository-root `rg --hidden` search traverses generated public docs in
+ * this checkout; the rendered snapshots can overwhelm the caller before the
+ * source matches are useful. Keep the actionable source-root/exclusion rule
+ * in the tool guidance, backed by the shared code-intelligence contract.
+ */
+import { describe, expect, it } from 'vitest';
+import bashTool from './bash';
+import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
+
+type GuidanceTool = {
+  guidance?: {
+    when?: string;
+  };
+};
+
+describe('capability:bash — repository search scope guidance', () => {
+  it('warns against generated public snapshots and names bounded source roots', () => {
+    const guidance = (bashTool as unknown as GuidanceTool).guidance?.when ?? '';
+
+    expect(guidance).toContain(RIPGREP_SCOPE_GUIDANCE);
+    expect(guidance).toContain('apps/operator/lib');
+    expect(guidance).toContain('packages/operator-core/lib');
+    expect(guidance).toContain('apps/operator/public/internal/docs');
+    expect(guidance).toContain('Do not run an unbounded search from the repository root');
+  });
+});

@@ -44,6 +44,7 @@ import { displayForHive } from '../computer/desktop-lease';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { maskIntegrationKey, readIntegrationKey } from '../../integration-credentials';
+import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
 
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const INTEGRATION_KEY_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -74,7 +75,10 @@ export default defineTool({
   description:
     'Run a shell command (bash -c) server-side in the project dir. Streams combined output; large output spills to a log file. Set run_in_background for long jobs (build/test/dev-server) and poll with capability:bash_output. Operator-authority callers may bind encrypted integration credentials into named child-only environment variables by reference; exact values are redacted from all returned/streamed/spilled output.',
   guidance: {
-    when: 'Run shell commands for builds, tests, status checks, file inspection, or scripts. For literal searches, use fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick fails before `rg` runs. For jobs over 1–2 minutes, set run_in_background:true and read with capability:bash_output. Background jobs have deadlines (4h default, 12h max); raise `timeout` when needed.',
+    when:
+      'Run shell commands for builds, tests, status checks, file inspection, or scripts. For literal searches, use fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick fails before `rg` runs. For repository text/regex searches, ' +
+      `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root when generated output is not the target. ` +
+      'For jobs over 1–2 minutes, set run_in_background:true and read with capability:bash_output. Background jobs have deadlines (4h default, 12h max); raise `timeout` when needed.',
     notWhen:
       'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.',
     chaining:

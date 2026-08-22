@@ -24,6 +24,8 @@ import {
 } from './match';
 import { loadPairFixtures } from './corpus';
 import { BASH_GATE_PAIRS } from './pairs';
+import { unsafeDependencyInstall } from './pairs/dependency-install';
+import { fileLockCoordinationDomain } from '../agent-tools/locks/coordination-domain';
 
 /** A registry row with sane defaults, overridable per test. */
 function row(over: Partial<SubstitutionRow> = {}): SubstitutionRow {
@@ -72,6 +74,42 @@ describe('matchCommandToSubstitutions — per-atom semantics', () => {
   it('returns nothing for an empty command or an empty registry', () => {
     expect(matchCommandToSubstitutions('   ', [row()])).toEqual([]);
     expect(matchCommandToSubstitutions("sed -n '1,2p' a.ts", [])).toEqual([]);
+  });
+});
+
+describe('matchCommandToSubstitutions — cwd-aware shared-tree policy (EI-204040)', () => {
+  const dependencyRow = () =>
+    row({
+      intentLabel: unsafeDependencyInstall.intentLabel,
+      bashPattern: unsafeDependencyInstall.bashPattern.source,
+      bashPatternFlags: unsafeDependencyInstall.bashPattern.flags,
+      toolName: unsafeDependencyInstall.toolName,
+      tier: 'deny',
+      advisoryText: unsafeDependencyInstall.advisoryText,
+      equivalenceVerdict: unsafeDependencyInstall.expectedVerdict,
+    });
+  const canonicalTree = fileLockCoordinationDomain();
+
+  it('keeps the historical deny when the caller supplies no cwd context', () => {
+    expect(matchCommandToSubstitutions('npm install', [dependencyRow()])).toHaveLength(1);
+  });
+
+  it('denies a bare install in the file-lock coordination tree', () => {
+    expect(matchCommandToSubstitutions('npm install', [dependencyRow()], { cwd: canonicalTree })).toHaveLength(1);
+  });
+
+  it('does not claim a bare install whose cwd is an independent tree', () => {
+    expect(matchCommandToSubstitutions('npm install', [dependencyRow()], { cwd: '/tmp/wi204040-scratch' })).toEqual([]);
+  });
+
+  it('uses a leading literal cd to exempt a scratch tree even when the outer cwd is canonical', () => {
+    const command = `cd /tmp/wi204040-scratch && npm install`;
+    expect(matchCommandToSubstitutions(command, [dependencyRow()], { cwd: canonicalTree })).toEqual([]);
+  });
+
+  it('uses a leading literal cd to retain the deny when it enters the canonical tree', () => {
+    const command = `cd ${canonicalTree} && npm install`;
+    expect(matchCommandToSubstitutions(command, [dependencyRow()], { cwd: '/tmp/wi204040-scratch' })).toHaveLength(1);
   });
 });
 

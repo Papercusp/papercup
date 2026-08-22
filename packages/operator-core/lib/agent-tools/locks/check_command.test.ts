@@ -21,6 +21,8 @@ vi.mock('../../bash-substitution/registry', () => ({ getSubstitutionRows: vi.fn(
 
 import { checkBashCommand } from './resource-command-match';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
+import { fileLockCoordinationDomain } from './coordination-domain';
+import { unsafeDependencyInstall } from '../../bash-substitution/pairs/dependency-install';
 const checkM = vi.mocked(checkBashCommand);
 const rowsM = vi.mocked(getSubstitutionRows);
 const tool = (await import('./check_command')).default;
@@ -34,6 +36,16 @@ const sedRow = {
   tier: 'advise' as const,
   advisoryText: 'capability:read { file_path, offset, limit } reads a line range directly.',
   equivalenceVerdict: 'equivalent' as const,
+};
+
+const dependencyRow = {
+  intentLabel: unsafeDependencyInstall.intentLabel,
+  bashPattern: unsafeDependencyInstall.bashPattern.source,
+  bashPatternFlags: unsafeDependencyInstall.bashPattern.flags,
+  toolName: unsafeDependencyInstall.toolName,
+  tier: 'deny' as const,
+  advisoryText: unsafeDependencyInstall.advisoryText,
+  equivalenceVerdict: unsafeDependencyInstall.expectedVerdict,
 };
 
 type Out = { content: { text: string }[] };
@@ -106,5 +118,31 @@ describe('substitution verdict fold (P-015)', () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
     await tool.handler({ command: 'ls' } as never, { workspaceId: '*' } as never);
     expect(rowsM).toHaveBeenCalledWith('ws');
+  });
+
+  it('uses the handler cwd to exempt an install in an independent tree', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    rowsM.mockResolvedValue([dependencyRow]);
+
+    const out = body((await tool.handler(
+      { command: 'npm install', cwd: '/tmp/wi204040-scratch' } as never,
+      {} as never,
+    )) as Out);
+
+    expect(out.substitutions).toEqual([]);
+    expect(out.substitutionTier).toBeNull();
+  });
+
+  it('keeps the deny for an install in the canonical file-lock tree', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    rowsM.mockResolvedValue([dependencyRow]);
+
+    const out = body((await tool.handler(
+      { command: 'npm install', cwd: fileLockCoordinationDomain() } as never,
+      {} as never,
+    )) as Out);
+
+    expect(out.substitutions).toHaveLength(1);
+    expect(out.substitutionTier).toBe('deny');
   });
 });

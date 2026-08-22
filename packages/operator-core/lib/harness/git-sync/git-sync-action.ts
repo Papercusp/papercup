@@ -4472,6 +4472,7 @@ async function recordAndEscalateTick(a: {
   // row never clobbers an open conflict escalation (conditional upsert); the coord
   // broadcast fires on transitions only.
   const decision = decideGitSyncEscalation({
+    installSlug: slug,
     status: outcome.status,
     consecutiveErrorTicks: errTicks,
     errors: 'errors' in outcome ? outcome.errors : [],

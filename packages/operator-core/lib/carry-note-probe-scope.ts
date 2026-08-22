@@ -218,6 +218,24 @@ const QUANTIFIER_RE =
   /\b(no|none|nothing|never|every|all|any|always|zero|entire|whole|today|mostly|at all|so far|ever)\b/i;
 
 /**
+ * Quantifier-shaped words that are explicitly LIMITING the writer's claim,
+ * rather than asserting breadth. These phrases are the language the scope lint
+ * tells a writer to add when splitting a verified observation from a peer's or
+ * an unobserved one. Mask the whole phrase before looking for a claim
+ * quantifier, so a real broad assertion elsewhere in the same claim still
+ * remains visible to the lint.
+ */
+const SCOPE_DISCLAIMER_RE =
+  /\b(?:never|not)\s+(?:[a-z][a-z'-]*\s+){0,3}by\s+me\b|\b(?:the\s+)?(?:whole|entire)\s+of\s+what\s+my\s+probe(?:'s)?\s+(?:saw|observed|checked|measured)\b/gi;
+
+function findClaimQuantifier(claim: string): RegExpExecArray | null {
+  // Preserve offsets and the original match text while hiding only
+  // quantifiers that occur inside an explicit scope disclaimer.
+  const claimWithoutDisclaimers = claim.replace(SCOPE_DISCLAIMER_RE, (match) => ' '.repeat(match.length));
+  return QUANTIFIER_RE.exec(claimWithoutDisclaimers);
+}
+
+/**
  * ALL-CAPS imperatives and the ⛔/⚠/🚨 markers this fleet writes standing
  * discipline with. A prescriptive row is advice, not a bounded observation, so
  * it has no scope to mismatch and must never be flagged.
@@ -272,7 +290,7 @@ export function detectScopeOverreach(
     if (!claim) continue;
     if (!(row?.verified ?? '').trim()) continue;
     if (isPrescriptiveClaim(claim)) continue;
-    const q = QUANTIFIER_RE.exec(claim);
+    const q = findClaimQuantifier(claim);
     if (!q) continue;
     const scope = describeProbeScope(row?.recheck);
     if (!scope) continue;
