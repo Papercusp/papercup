@@ -334,7 +334,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
         -- WI-2990/WI-3006 (migration 509): thread last_progress_at through the view's
         -- UPDATE path (parity with the app-side markIssueProgress direct base-table write).
         last_progress_at = NEW.last_progress_at,
-        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(v_payload - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref, authority=NEW.authority, parent_id=NEW.parent_id
+        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=COALESCE(payload, '{}'::jsonb) || (v_payload - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref, authority=NEW.authority, parent_id=NEW.parent_id
       WHERE workspace_id=OLD.workspace_id AND harness_slug=OLD.base_harness_slug AND feature_id=OLD.issue_id AND item_kind=OLD.kind
         -- 655 (claim-race guard): re-verify ownership against the CURRENT taken_by
         -- (fresh, at lock-acquisition time), not the OLD pre-commit snapshot the

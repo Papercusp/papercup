@@ -215,4 +215,30 @@ describe('WI-5493 — engineer_issues_view_dml() payload `||` merge must not arr
     expect(Array.isArray(rows[0]!.payload)).toBe(false);
     expect(rows[0]!.payload).toMatchObject({ baz: 'qux' });
   });
+
+  it('preserves existing control state when UPDATE supplies a partial payload object', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.engineer_issues (workspace_id, issue_id, title, body, state, kind, payload)
+      VALUES ('default', 'WI-404', 'partial payload', '', 'open', 'bug', ${db.sql.json({
+        _claimHold: true,
+        claim_hold_by: 'owner',
+        held_open_by: 'owner',
+        keep: 'yes',
+      })})`;
+
+    await db.sql`
+      UPDATE harness_shared.engineer_issues
+         SET payload = ${db.sql.json({ changed: 'yes' })}
+       WHERE issue_id = 'WI-404'`;
+
+    const rows = await db.sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload FROM harness_shared.work_items WHERE feature_id = 'WI-404'`;
+    expect(rows[0]!.payload).toMatchObject({
+      _claimHold: true,
+      claim_hold_by: 'owner',
+      held_open_by: 'owner',
+      keep: 'yes',
+      changed: 'yes',
+    });
+  });
 });
