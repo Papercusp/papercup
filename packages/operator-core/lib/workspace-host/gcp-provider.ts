@@ -540,19 +540,10 @@ function labels(desired: WorkspaceHostDesiredSpec, workspaceId: string): Readonl
   return Object.fromEntries([...entries.entries()].sort(([left], [right]) => left.localeCompare(right)));
 }
 
-function assertManagedHostResource(
-  observed: GcpResourceObservation,
-  hostId: string,
-  resourceLabel: string,
-): void {
+function assertManagedHostResource(observed: GcpResourceObservation, hostId: string, resourceLabel: string): void {
   const expectedHostLabel = gcpLabel(hostId);
-  if (
-    observed.labels?.['papercusp-managed'] !== 'true' ||
-    observed.labels['papercusp-host-id'] !== expectedHostLabel
-  ) {
-    throw new Error(
-      `GCP ${resourceLabel} '${observed.name}' is not labeled as managed by workspace host '${hostId}'`,
-    );
+  if (observed.labels?.['papercusp-managed'] !== 'true' || observed.labels['papercusp-host-id'] !== expectedHostLabel) {
+    throw new Error(`GCP ${resourceLabel} '${observed.name}' is not labeled as managed by workspace host '${hostId}'`);
   }
 }
 
@@ -573,7 +564,7 @@ function metadata(
 
 function durableFilesystemStartupScript(settings: GcpWorkspaceHostDesiredProviderSettings): string {
   const device = `/dev/disk/by-id/google-${settings.dataDeviceName}`;
-  const userScript = settings.startupScript?.trim();
+  const userScript = settings.startupScript?.trim().replace(/^#![^\n]*(?:\n|$)/, '');
   return [
     '#!/usr/bin/env bash',
     'set -euo pipefail',
@@ -802,7 +793,10 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           idempotencyKey: `${request.idempotencyKey}:quiesce:${instance.providerId}`,
           destructive: false,
           input: {
-            op: 'stop-instance', projectId, zone, instanceName: instance.providerId,
+            op: 'stop-instance',
+            projectId,
+            zone,
+            instanceName: instance.providerId,
             requestId: gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:quiesce:${instance.providerId}`),
             hostId: request.host.hostId,
           } satisfies GcpStepInput,
@@ -816,9 +810,16 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
         idempotencyKey: `${request.idempotencyKey}:snapshot:${disk.providerId}`,
         destructive: false,
         input: {
-          op: 'create-snapshot', projectId, zone: requireString(disk.zone, 'GCP snapshot disk zone'), requestId,
+          op: 'create-snapshot',
+          projectId,
+          zone: requireString(disk.zone, 'GCP snapshot disk zone'),
+          requestId,
           hostId: request.host.hostId,
-          request: { name, sourceDisk: disk.providerId, labels: { 'papercusp-host-id': gcpLabel(request.host.hostId) } },
+          request: {
+            name,
+            sourceDisk: disk.providerId,
+            labels: { 'papercusp-host-id': gcpLabel(request.host.hostId) },
+          },
         } satisfies GcpStepInput,
       });
       if (quiesce) {
@@ -830,7 +831,10 @@ export class GcpWorkspaceHostProvider implements WorkspaceHostProvider {
           idempotencyKey: `${request.idempotencyKey}:resume:${instance.providerId}`,
           destructive: false,
           input: {
-            op: 'start-instance', projectId, zone, instanceName: instance.providerId,
+            op: 'start-instance',
+            projectId,
+            zone,
+            instanceName: instance.providerId,
             requestId: gcpWorkspaceHostRequestUuid(`${request.idempotencyKey}:resume:${instance.providerId}`),
             hostId: request.host.hostId,
           } satisfies GcpStepInput,

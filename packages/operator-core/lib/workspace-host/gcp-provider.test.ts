@@ -1,7 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  GCP_DATA_DISK_RESIZE_POLICY,
-  GCP_DATA_MOUNT_POINT,
   WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
   runFakeWorkspaceHostProviderContractSuite,
   type WorkspaceHostApplyResult,
@@ -12,6 +10,8 @@ import {
 } from '@papercusp/deployment-driver';
 import {
   GCP_CLOUD_PLATFORM_SCOPE,
+  GCP_DATA_DISK_RESIZE_POLICY,
+  GCP_DATA_MOUNT_POINT,
   GCP_IAP_TCP_FORWARDING_RANGE,
   createGcpWorkspaceHostProvider,
   gcpWorkspaceHostRequestUuid,
@@ -116,6 +116,12 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     this.networks.set('shared-vpc', { name: 'shared-vpc', observedAt: NOW });
     this.subnetworks.set('shared-subnet', { name: 'shared-subnet', observedAt: NOW });
     this.firewalls.set('shared-iap-firewall', { name: 'shared-iap-firewall', observedAt: NOW });
+  }
+
+  rewriteDisk(name: string, patch: Partial<GcpDiskObservation>): void {
+    const current = this.disks.get(name);
+    if (!current) throw new Error(`fake GCP disk '${name}' is absent`);
+    this.disks.set(name, { ...current, ...patch });
   }
 
   async validateConnection() {
@@ -504,6 +510,28 @@ describe('GCP workspace-host provider planning', () => {
     ).rejects.toThrow('projectId must match desired.scope.id');
     expect(() => createGcpWorkspaceHostProvider({ client: undefined as never })).toThrow('requires an injected');
   });
+
+  it('uses provider-managed encryption by default and treats a customer-managed key as an explicit option', async () => {
+    const { provider } = providerAndClient();
+    const withoutCmk = desired();
+    withoutCmk.provider = { ...withoutCmk.provider, kmsKeyName: undefined };
+    const plan = await provider.plan(
+      { action: 'provision', operationId: 'no-cmk', idempotencyKey: 'no-cmk', desired: withoutCmk },
+      context(),
+    );
+    const disk = (
+      plan.steps.find(({ id }) => id === 'create-data-disk')!.input as unknown as {
+        request: GcpDiskInsertInput;
+      }
+    ).request;
+    const instance = (
+      plan.steps.find(({ id }) => id === 'create-instance')!.input as unknown as {
+        request: GcpInstanceInsertInput;
+      }
+    ).request;
+    expect(disk).not.toHaveProperty('diskEncryptionKey');
+    expect(instance.disks[0].initializeParams).not.toHaveProperty('diskEncryptionKey');
+  });
 });
 
 describe('GCP workspace-host provider contract and lifecycle', () => {
@@ -621,5 +649,79 @@ describe('GCP workspace-host provider contract and lifecycle', () => {
     expect(reconciled.state).toBe('unchanged');
     expect('resource' in reconciled && reconciled.resource?.providerId).toBe('pc-host-gcp-1-vm');
     expect(client.insertInstanceCalls).toHaveLength(1);
+  });
+
+  it('upgrades by replacing only the boot/runtime VM and reattaching the exact retained data disk', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan(
+      {
+        action: 'upgrade',
+        operationId: 'operation:upgrade',
+        idempotencyKey: 'operation:upgrade',
+        host,
+        image: { id: 'projects/papercusp/global/images/papercusp-v2' },
+      },
+      context(),
+    );
+    expect(plan.steps.map(({ id, dependsOn }) => ({ id, dependsOn }))).toEqual([
+      { id: 'delete-boot-runtime', dependsOn: [] },
+      { id: 'create-boot-runtime', dependsOn: ['delete-boot-runtime'] },
+    ]);
+    for (const step of plan.steps) {
+      await provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step, knownResources: resources },
+        context(),
+      );
+    }
+    const replacement = client.insertInstanceCalls.at(-1)!.input;
+    expect(replacement.disks[0].initializeParams.sourceImage).toBe('projects/papercusp/global/images/papercusp-v2');
+    expect(replacement.disks[1]).toMatchObject({
+      autoDelete: false,
+      source: 'projects/papercusp-dev-123/zones/us-central1-a/disks/pc-host-gcp-1-data',
+    });
+    expect(await client.getDisk('papercusp-dev-123', 'us-central1-a', 'pc-host-gcp-1-data')).toMatchObject({
+      status: 'READY',
+      attachedInstanceNames: ['pc-host-gcp-1-vm'],
+    });
+  });
+
+  it('refuses to delete a data disk with a foreign attachment or mismatched host labels', async () => {
+    const { client, provider } = providerAndClient();
+    const { host, resources } = await provision(client, provider);
+    const plan = await provider.plan(
+      {
+        action: 'destroy',
+        operationId: 'operation:safe-destroy',
+        idempotencyKey: 'operation:safe-destroy',
+        host,
+        disposition: 'discard',
+        confirmation: { expectedHostId: host.hostId, confirmedBy: 'vitest', confirmedAt: NOW },
+      },
+      context(),
+    );
+    const deleteVm = plan.steps.find(({ resourceKind }) => resourceKind === 'vm')!;
+    const deleteDisk = plan.steps.find(({ resourceKind }) => resourceKind === 'disk')!;
+    await provider.apply(
+      { planId: plan.planId, operationId: plan.operationId, step: deleteVm, knownResources: resources },
+      context(),
+    );
+    client.rewriteDisk('pc-host-gcp-1-data', { attachedInstanceNames: ['foreign-vm'] });
+    await expect(
+      provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step: deleteDisk, knownResources: resources },
+        context(),
+      ),
+    ).rejects.toThrow('still attached to foreign-vm');
+    client.rewriteDisk('pc-host-gcp-1-data', {
+      attachedInstanceNames: [],
+      labels: { 'papercusp-managed': 'true', 'papercusp-host-id': 'another-host' },
+    });
+    await expect(
+      provider.apply(
+        { planId: plan.planId, operationId: plan.operationId, step: deleteDisk, knownResources: resources },
+        context(),
+      ),
+    ).rejects.toThrow("not labeled as managed by workspace host 'host-gcp-1'");
   });
 });
