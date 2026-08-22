@@ -291,6 +291,26 @@ describe('plans:lint — decision_done_items_todo (EI-101)', () => {
     const r = await lintDoc(planDoc({ itemStatus: 'todo', decisionBody: 'We will scope P-001 and P-002 next.' }));
     expect(has(r)).toBe(false);
   });
+
+  it('does NOT treat a negated completion phrase as proof that todo items landed', async () => {
+    const r = await lintDoc(
+      planDoc({
+        itemStatus: 'todo',
+        decisionBody: 'Partial output is not a completed release; P-001 and P-002 remain todo.',
+      }),
+    );
+    expect(has(r)).toBe(false);
+  });
+
+  it('still warns when a negated phrase is followed by an affirmative completion', async () => {
+    const r = await lintDoc(
+      planDoc({
+        itemStatus: 'todo',
+        decisionBody: 'P-001 was not completed, but P-002 was executed successfully.',
+      }),
+    );
+    expect(has(r)).toBe(true);
+  });
 });
 
 /**

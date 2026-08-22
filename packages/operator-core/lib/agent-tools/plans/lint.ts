@@ -514,10 +514,25 @@ export async function lintParsed(
   // itemRefs is still `todo`: flip the items (or note why they remain open) so the
   // completed work isn't re-briefed. WARNING, never error (lints advise — CLAUDE.md).
   // Low-FP: needs BOTH a completion verb in the body AND a referenced item at todo.
+  // A completion verb in a decision is only evidence when it is affirmative.
+  // Keep the negation guard bounded to the same clause so an earlier sentence
+  // such as "the prior attempt was not accepted. The migration completed" does
+  // not suppress the later affirmative completion.
   const DECISION_DONE_RE =
-    /\b(?:landed|shipped|executed|merged|deployed|implemented|completed|all\s+done|fully\s+done)\b/i;
+    /\b(?:landed|shipped|executed|merged|deployed|implemented|completed|all\s+done|fully\s+done)\b/gi;
+  const DECISION_DONE_NEGATION_RE =
+    /\b(?:not|never|no|doesn['’]t|didn['’]t|isn['’]t|wasn['’]t|aren['’]t|weren['’]t)\b(?:\W+\w+){0,4}\W*$/i;
+  const readsAsCompleted = (body: string): boolean => {
+    for (const match of body.matchAll(DECISION_DONE_RE)) {
+      const start = match.index ?? 0;
+      const prefix = body.slice(Math.max(0, start - 96), start);
+      const clause = prefix.split(/[.!?;:\n]/).at(-1) ?? prefix;
+      if (!DECISION_DONE_NEGATION_RE.test(clause)) return true;
+    }
+    return false;
+  };
   for (const d of parsed.decisions) {
-    if (!DECISION_DONE_RE.test(d.body ?? '')) continue;
+    if (!readsAsCompleted(d.body ?? '')) continue;
     const todoRefs = (d.itemRefs ?? []).filter((ref) => itemById.get(ref)?.storedStatus === 'todo');
     if (todoRefs.length > 0) {
       report.warnings.push({
