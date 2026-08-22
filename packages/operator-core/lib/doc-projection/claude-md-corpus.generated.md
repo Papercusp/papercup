@@ -1885,7 +1885,17 @@ does not exist", run the same query for something you KNOW is there — if the
 control also comes back empty, the instrument is broken, not the subject — and
 state the scope you actually searched. For "where is this symbol defined" use
 `gitnexus.context { name }` (no path argument to get wrong); for "does this TOOL
-exist", `tools:find`.The natural next action is to conclude a job died and re-run it. Use
+exist", `tools:find`.
+
+⚠ **Line-oriented matching cannot see a phrase split by hard wrapping.** Generated
+or rendered prose may insert a newline inside a multi-word phrase, so
+`grep -c 'IN THIS SAME TURN' rendered.md` → 0 does **not** prove the clause is
+absent. Inspect the surrounding lines; flatten newlines before matching, for
+example with a newline-flattening `tr` transform, or use a
+short single-token discriminator that cannot wrap. For deploy/render checks,
+measure both the OLD and NEW text after flattening so a zero is corroborated by
+the expected transition rather than treated as a bare absence.
+The natural next action is to conclude a job died and re-run it. Use
 `proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
 NAME, so argv cannot fool it at all), or `kill -0 <pid>`
 (EI-19446554284039165).
