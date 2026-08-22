@@ -224,12 +224,15 @@ describe('composeNewApp', () => {
  */
 describe('composeNewApp — compensating rollback after a durable create (WI-37768)', () => {
   /** An inner whose pot:create succeeds; obliterate is recorded (and can be made to fail). */
-  function rollbackInner(opts: { failObliterate?: boolean; createThrows?: unknown } = {}) {
+  function rollbackInner(
+    opts: { failObliterate?: boolean; createThrows?: unknown; createReturnsFailure?: { error: string; message?: string } } = {},
+  ) {
     const calls: Array<{ name: string; args: any }> = [];
     const inner = vi.fn(async (name: string, args: any) => {
       calls.push({ name, args });
       if (name === 'pot:create') {
         if (opts.createThrows !== undefined) throw opts.createThrows;
+        if (opts.createReturnsFailure) return { ok: false, ...opts.createReturnsFailure };
         const path = join(args.parentDir ?? join(scratch, 'apps'), args.slug);
         mkdirSync(path, { recursive: true });
         return { ok: true, slug: args.slug, path };
@@ -291,6 +294,30 @@ describe('composeNewApp — compensating rollback after a durable create (WI-377
     expect(calls.map((c) => c.name)).toEqual(['pot:create', 'pot:obliterate']);
     expect(payload.error).toContain('CONNECTION_CLOSED');
     expect(payload.error).toContain('ROLLED BACK');
+  });
+
+  it('rolls back when pot:create returns { ok:false } WITHOUT throwing — the connection-level class (EI-21107910194803524)', async () => {
+    // createPotHarness's own outer catch already ran its BEST-EFFORT internal
+    // rollback() and returned { ok:false } as ordinary business data (never a
+    // thrown error) — exactly what a connection-level fault mid-provisioning
+    // produces when createPotHarness's OWN rollback silently fails to fully
+    // revert (each undo step is individually try/catch-swallowed). Before this
+    // fix, composeNewApp threw a bare error on THIS path with no compensation
+    // attempt at all, stranding the schema/registry/checkout the same way the
+    // THROWN-error case (the test above) already covers.
+    const { inner, calls } = rollbackInner({
+      createReturnsFailure: { error: 'create_failed', message: 'write CONNECTION_CLOSED 127.0.0.1:6432' },
+    });
+    const result = await composeNewApp(baseArgs(), inner, baseDeps());
+    const payload = parse(result);
+
+    expect(payload.ok).toBe(false);
+    // The pot really was obliterated — not just a differently-worded failure.
+    expect(calls.map((c) => c.name)).toEqual(['pot:create', 'pot:obliterate']);
+    expect(calls[1].args).toMatchObject({ slug: 'my-app', confirm: true });
+    expect(payload.error).toContain('CONNECTION_CLOSED');
+    expect(payload.error).toContain('ROLLED BACK');
+    expect(payload.error).toContain('retrying with the same slug is safe');
   });
 
   it('NEVER rolls back on slug_exists — that pot belongs to an earlier call', async () => {
