@@ -33,6 +33,7 @@ import launchOnPlan, {
   resolveRemotePlacementHive,
   isSelfPublishedSeatOffer,
   extractKickoffWorkItemIds,
+  runLaunchWavesBeforeVerification,
   looksLikeInlineLaunchContextText,
   computeFleetTopUpWave,
   describeFleetFillOutcome,
@@ -1149,6 +1150,50 @@ describe('computeFleetTopUpWave (WI-40199 — target size is not the per-wave la
       requestedOpenCount: 12,
       waveCapped: true,
     });
+  });
+});
+
+describe('runLaunchWavesBeforeVerification (WI-39368 — slow verification cannot starve later members)', () => {
+  it('opens every bounded wave before a slow first-wave verifier is allowed to settle', async () => {
+    const events: string[] = [];
+    let releaseVerification!: () => void;
+    let resolveVerificationStarted!: () => void;
+    const verificationStarted = new Promise<void>((resolve) => {
+      resolveVerificationStarted = resolve;
+    });
+    const verificationGate = new Promise<void>((resolve) => {
+      releaseVerification = resolve;
+    });
+
+    const run = runLaunchWavesBeforeVerification(
+      [[0], [1, 2, 3]],
+      ['member-1', 'member-2', 'member-3', 'member-4'],
+      async (_waveIndex, _indices, ownerIds) => {
+        events.push(`spawn:${ownerIds.join(',')}`);
+        return { payload: ownerIds.join(','), stopAfterSpawn: false };
+      },
+      async ({ payload }) => {
+        events.push(`verify:${payload}`);
+        if (payload === 'member-1') {
+          resolveVerificationStarted();
+          await verificationGate;
+        }
+      },
+    );
+
+    try {
+      await verificationStarted;
+      expect(events).toEqual(['spawn:member-1', 'spawn:member-2,member-3,member-4', 'verify:member-1']);
+    } finally {
+      releaseVerification();
+    }
+    await run;
+    expect(events).toEqual([
+      'spawn:member-1',
+      'spawn:member-2,member-3,member-4',
+      'verify:member-1',
+      'verify:member-2,member-3,member-4',
+    ]);
   });
 });
 

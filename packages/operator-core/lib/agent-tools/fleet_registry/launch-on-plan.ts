@@ -210,6 +210,45 @@ export function computeFleetTopUpWave(
 }
 
 /**
+ * Open every planned wave before waiting on any wave's boot verification.
+ *
+ * A launch wave's verifier intentionally has a bounded wait, but that wait is still
+ * long enough to consume the whole launch call on a slow first member. Keeping the
+ * phase boundary explicit prevents a slow verifier from serialising later spawns.
+ * Positive spawn failures still stop new waves; already-opened waves are verified in
+ * the second phase so the transaction reports every observation it can.
+ */
+export async function runLaunchWavesBeforeVerification<T>(
+  waveIndices: readonly (readonly number[])[],
+  requestedMemberIds: readonly string[],
+  spawnWave: (
+    waveIndex: number,
+    indices: readonly number[],
+    ownerIds: readonly string[],
+  ) => Promise<{ payload: T; stopAfterSpawn: boolean }>,
+  verifyWave: (record: { waveIndex: number; indices: readonly number[]; ownerIds: readonly string[]; payload: T }) => Promise<void>,
+): Promise<void> {
+  const records: Array<{
+    waveIndex: number;
+    indices: readonly number[];
+    ownerIds: readonly string[];
+    payload: T;
+  }> = [];
+
+  for (let waveIndex = 0; waveIndex < waveIndices.length; waveIndex += 1) {
+    const indices = waveIndices[waveIndex].slice();
+    const ownerIds = indices.map((i) => requestedMemberIds[i]);
+    const spawned = await spawnWave(waveIndex, indices, ownerIds);
+    records.push({ waveIndex, indices, ownerIds, payload: spawned.payload });
+    if (spawned.stopAfterSpawn) break;
+  }
+
+  for (const record of records) {
+    await verifyWave(record);
+  }
+}
+
+/**
  * Map a zero-based launch-wave position to the fleet member-spec index.
  * Top-up waves append after the members already live; reusing wave position 0
  * on a deficit relaunch silently gives the new member member 1's brief.
@@ -3119,155 +3158,158 @@ export default defineTool({
     for (let start = 1; start < openCount; start += 3) {
       waveIndices.push(Array.from({ length: Math.min(3, openCount - start) }, (_v, offset) => start + offset));
     }
-    for (let waveIndex = 0; waveIndex < waveIndices.length; waveIndex += 1) {
-      const indices = waveIndices[waveIndex];
-      const ownerIds = indices.map((i) => requestedMemberIds[i]);
-      const wave: FleetLaunchTransaction['waves'][number] = { index: waveIndex, ownerIds, state: 'opening' };
-      launchTransaction.waves.push(wave);
-      await persistLaunchTransaction();
+    // Spawn and verification are deliberately separate phases. A slow first-member
+    // verifier must not consume the call budget before later bounded waves have even
+    // been opened (WI-39368). A positive spawn failure still stops NEW waves, while
+    // every wave that did open is verified below and reported in the transaction.
+    await runLaunchWavesBeforeVerification(
+      waveIndices,
+      requestedMemberIds,
+      async (waveIndex, indices, ownerIds) => {
+        const wave: FleetLaunchTransaction['waves'][number] = {
+          index: waveIndex,
+          ownerIds: [...ownerIds],
+          state: 'opening',
+        };
+        launchTransaction.waves.push(wave);
+        await persistLaunchTransaction();
 
-      const waveResults = await Promise.all(
-        indices.map((i) =>
-          args.headless
-            ? spawnHeadless({
-                envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-                label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-                logDir: headlessLogDir,
-              })
-            : spawnConsole({
-                envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-                label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-                writeMcpJson: false,
-                scheme,
-                allowDesktopBridge: true,
-                displayOverride: args.display,
-                preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
-              }),
-        ),
-      );
-      const openedThisWave: string[] = [];
-      waveResults.forEach((result, offset) => {
-        const i = indices[offset];
-        const ownerId = requestedMemberIds[i];
-        if (result.status === 'ok') {
-          openedThisWave.push(ownerId);
-          launchTransaction.openedMemberIds.push(ownerId);
-          opened.push({
-            ownerId,
-            terminal: result.terminal,
-            pid: result.pid,
-            display: result.display,
-            desktopEnvResolvedVia: result.desktopEnvResolvedVia,
-            command: memberCommands[i],
-          });
-        } else {
-          failed.push({ ownerId, error: result.error, code: result.code });
-          launchTransaction.failed.push({ ownerId, phase: 'spawn', reason: result.error });
-        }
-      });
-      wave.openedOwnerIds = openedThisWave;
-
-      let waveVerified = false;
-      if (openedThisWave.length > 0) {
-        try {
-          const waveArgs = {
-            workspaceId,
-            launcherOwnerId: ownerId,
-            since: launchRequestedAt,
-            expected: openedThisWave.length,
-            expectedOwnerIds: openedThisWave,
-            expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
-          };
-          let verdict = await verifyFreshLaunchStarted(waveArgs);
-          if (verdict.agentStarted === null) {
-            // EI-20437060078324174: an expired window is the ABSENCE of an
-            // observation, not death — the measured false-negative registered
-            // 5.5s past the first window and went straight on to claim work.
-            // One bounded re-probe BEFORE any gate decision, so a slow boot
-            // verifies here and only a genuinely dark member stays unconfirmed.
-            verdict = await verifyFreshLaunchStarted(waveArgs, {
-              timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
-            });
-          }
-          waveVerified = verdict.agentStarted === true;
-          if (waveVerified) {
-            launchTransaction.verifiedMemberIds.push(...openedThisWave);
-            wave.verifiedOwnerIds = openedThisWave.slice();
-          } else if (verdict.agentStarted === null) {
-            // Still unconfirmed after the re-probe. NOT a failure: no 502, no
-            // failed[] entry — the members are reported as unverified, and the
-            // EI-20497372063255974 resume path re-opens the unopened remainder
-            // once they prove live. Session-level split first: a member whose
-            // session already took a real turn IS verified even when the wave
-            // as a whole is not.
-            const verifiedNow = new Set(
-              verdict.sessions
-                .filter((s) => s.ownerId != null && s.successfulCalls > 0)
-                .map((s) => s.ownerId as string),
-            );
-            const confirmed = openedThisWave.filter((id) => verifiedNow.has(id));
-            const pending = openedThisWave.filter((id) => !verifiedNow.has(id));
-            if (confirmed.length > 0) {
-              launchTransaction.verifiedMemberIds.push(...confirmed);
-              wave.verifiedOwnerIds = confirmed.slice();
-            }
-            for (const memberOwnerId of pending) {
-              unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
-            }
-            launchTransaction.unconfirmedMemberIds = [...(launchTransaction.unconfirmedMemberIds ?? []), ...pending];
-          } else {
-            const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
-            for (const memberOwnerId of openedThisWave) {
-              launchTransaction.failed.push({ ownerId: memberOwnerId, phase, reason: verdict.note });
-              failed.push({ ownerId: memberOwnerId, error: verdict.note, code: 502 });
-            }
-          }
-        } catch (e: any) {
-          // The instrument broke — say THAT. A probe fault is not an observation
-          // about the member, so it must not masquerade as a 502 launch failure
-          // (the rule capability:launch-agent already applies to this verifier).
-          for (const memberOwnerId of openedThisWave) {
-            unconfirmed.push({
+        const waveResults = await Promise.all(
+          indices.map((i) =>
+            args.headless
+              ? spawnHeadless({
+                  envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+                  label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
+                  logDir: headlessLogDir,
+                })
+              : spawnConsole({
+                  envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
+                  label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
+                  writeMcpJson: false,
+                  scheme,
+                  allowDesktopBridge: true,
+                  displayOverride: args.display,
+                  preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
+                }),
+          ),
+        );
+        const openedThisWave: string[] = [];
+        waveResults.forEach((result, offset) => {
+          const i = indices[offset];
+          const memberOwnerId = requestedMemberIds[i];
+          if (result.status === 'ok') {
+            openedThisWave.push(memberOwnerId);
+            launchTransaction.openedMemberIds.push(memberOwnerId);
+            opened.push({
               ownerId: memberOwnerId,
-              note:
-                `⏳ launch verification could not run (${e?.message ?? e}) — the member may be ` +
-                `fine; this says nothing either way. Verify with coord:presence { owner: '${memberOwnerId}' }.`,
+              terminal: result.terminal,
+              pid: result.pid,
+              display: result.display,
+              desktopEnvResolvedVia: result.desktopEnvResolvedVia,
+              command: memberCommands[i],
             });
+          } else {
+            failed.push({ ownerId: memberOwnerId, error: result.error, code: result.code });
+            launchTransaction.failed.push({ ownerId: memberOwnerId, phase: 'spawn', reason: result.error });
           }
-          launchTransaction.unconfirmedMemberIds = [
-            ...(launchTransaction.unconfirmedMemberIds ?? []),
-            ...openedThisWave,
-          ];
+        });
+        wave.openedOwnerIds = openedThisWave;
+        const spawnFailed = waveResults.some((result) => result.status !== 'ok');
+        return {
+          payload: { wave, openedThisWave, spawnFailed },
+          stopAfterSpawn: spawnFailed,
+        };
+      },
+      async ({ payload }) => {
+        const { wave, openedThisWave, spawnFailed } = payload;
+        let waveVerified = false;
+        if (openedThisWave.length > 0) {
+          try {
+            const waveArgs = {
+              workspaceId,
+              launcherOwnerId: ownerId,
+              since: launchRequestedAt,
+              expected: openedThisWave.length,
+              expectedOwnerIds: openedThisWave,
+              expectedAttestations: expectedAttestations.filter((item) => openedThisWave.includes(item.ownerId)),
+            };
+            let verdict = await verifyFreshLaunchStarted(waveArgs);
+            if (verdict.agentStarted === null) {
+              // EI-20437060078324174: an expired window is the ABSENCE of an
+              // observation, not death — the measured false-negative registered
+              // 5.5s past the first window and went straight on to claim work.
+              // One bounded re-probe BEFORE any gate decision, so a slow boot
+              // verifies here and only a genuinely dark member stays unconfirmed.
+              verdict = await verifyFreshLaunchStarted(waveArgs, {
+                timeoutMs: LATE_VERIFY_RECHECK_TIMEOUT_MS,
+              });
+            }
+            waveVerified = verdict.agentStarted === true;
+            if (waveVerified) {
+              launchTransaction.verifiedMemberIds.push(...openedThisWave);
+              wave.verifiedOwnerIds = openedThisWave.slice();
+            } else if (verdict.agentStarted === null) {
+              // Still unconfirmed after the re-probe. NOT a failure: no 502, no
+              // failed[] entry — the members are reported as unverified, and the
+              // EI-20497372063255974 resume path re-opens the unopened remainder
+              // once they prove live. Session-level split first: a member whose
+              // session already took a real turn IS verified even when the wave
+              // as a whole is not.
+              const verifiedNow = new Set(
+                verdict.sessions
+                  .filter((s) => s.ownerId != null && s.successfulCalls > 0)
+                  .map((s) => s.ownerId as string),
+              );
+              const confirmed = openedThisWave.filter((id) => verifiedNow.has(id));
+              const pending = openedThisWave.filter((id) => !verifiedNow.has(id));
+              if (confirmed.length > 0) {
+                launchTransaction.verifiedMemberIds.push(...confirmed);
+                wave.verifiedOwnerIds = confirmed.slice();
+              }
+              for (const memberOwnerId of pending) {
+                unconfirmed.push({ ownerId: memberOwnerId, note: verdict.note });
+              }
+              launchTransaction.unconfirmedMemberIds = [
+                ...(launchTransaction.unconfirmedMemberIds ?? []),
+                ...pending,
+              ];
+            } else {
+              const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
+              for (const memberOwnerId of openedThisWave) {
+                launchTransaction.failed.push({ ownerId: memberOwnerId, phase, reason: verdict.note });
+                failed.push({ ownerId: memberOwnerId, error: verdict.note, code: 502 });
+              }
+            }
+          } catch (e: any) {
+            // The instrument broke — say THAT. A probe fault is not an observation
+            // about the member, so it must not masquerade as a 502 launch failure
+            // (the rule capability:launch-agent already applies to this verifier).
+            for (const memberOwnerId of openedThisWave) {
+              unconfirmed.push({
+                ownerId: memberOwnerId,
+                note:
+                  `⏳ launch verification could not run (${e?.message ?? e}) — the member may be ` +
+                  `fine; this says nothing either way. Verify with coord:presence { owner: '${memberOwnerId}' }.`,
+              });
+            }
+            launchTransaction.unconfirmedMemberIds = [
+              ...(launchTransaction.unconfirmedMemberIds ?? []),
+              ...openedThisWave,
+            ];
+          }
         }
-      }
 
-      const spawnFailed = waveResults.some((result) => result.status !== 'ok');
-      if (waveVerified && !spawnFailed && openedThisWave.length === ownerIds.length) {
-        wave.state = 'verified';
+        // A positive spawn failure still leaves the wave partial; an unconfirmed or
+        // failed verification is likewise reported without being mistaken for a
+        // successful wave. Later waves have already been spawned by this point.
+        if (waveVerified && !spawnFailed && openedThisWave.length === wave.ownerIds.length) {
+          wave.state = 'verified';
+        } else {
+          wave.state = 'partial';
+        }
         await persistLaunchTransaction();
-        continue;
-      }
-      // A wave with a positive spawn/verification failure stops the transaction: do not
-      // multiply a launch whose members are known-bad. An opened wave that is merely
-      // UNCONFIRMED is different — keep opening the pre-pinned cohort so one backend's
-      // slow first turn cannot serialise or abort the rest of the requested launch.
-      // Positive failures still stop immediately, and unresolved members remain in
-      // `unconfirmed`/`recovery.retryOwnerIds` for later liveness reconciliation.
-      wave.state = 'partial';
-      const waveFullyOpened = openedThisWave.length === ownerIds.length;
-      const wavePositivelyFailed = spawnFailed || openedThisWave.some((id) => failed.some((f) => f.ownerId === id));
-      const waveUnconfirmed =
-        !waveVerified && openedThisWave.some((id) => unconfirmed.some((member) => member.ownerId === id));
-      const canContinueAfterUnconfirmedWave =
-        waveUnconfirmed && waveFullyOpened && !wavePositivelyFailed;
-      if (canContinueAfterUnconfirmedWave) {
-        await persistLaunchTransaction();
-        continue;
-      }
-      launchTransaction.state = 'partial';
-      await persistLaunchTransaction();
-      break;
-    }
+      },
+    );
     if (launchTransaction.verifiedMemberIds.length === requestedMemberIds.length) {
       launchTransaction.state = 'verified';
     } else {
