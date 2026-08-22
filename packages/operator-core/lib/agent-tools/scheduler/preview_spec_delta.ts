@@ -26,8 +26,29 @@ import {
   getClaimSpecRecord,
   fleetSpecBeeKey,
 } from '../../scheduler/claim-spec-store';
+import { resolveClaimSpecPotSlug } from '../../scheduler/claim-spec-workspace';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 import { readClaimSpecDelta, type ClaimSpecDeltaReading } from '../../scheduler/get-next';
+
+/**
+ * Resolve the concrete harness used by the delta read. Operator-context `'*'`
+ * is a sentinel, not a database harness slug; passing it through would make
+ * the issue query return an empty 0/0 reading that looks like a no-op.
+ *
+ * Prefer a concrete explicit argument, then a concrete stored spec scope, and
+ * finally a concrete ambient session scope. Wildcard values are skipped at
+ * each layer so stale rows cannot mask a valid scoped session.
+ */
+export function resolvePreviewHarness(
+  explicitHarness: string | undefined,
+  storedHarness: string | null | undefined,
+  ambientHarness: unknown,
+): string | undefined {
+  return (
+    resolveClaimSpecPotSlug(explicitHarness, storedHarness) ??
+    resolveClaimSpecPotSlug(undefined, ambientHarness)
+  );
+}
 
 /**
  * The prominent warnings a delta earns — pure, so the judgment is unit-testable without a DB
@@ -99,7 +120,10 @@ export function deriveSpecDeltaNote(reading: ClaimSpecDeltaReading): string {
       (reading.truncated.newlyExcluded || reading.truncated.newlyAdmitted ? ' (one or both lists are truncated)' : '') +
       '. Treat this reading as a change, not a no-op; the changed item(s) could not be fully enumerated. ';
   } else if (net === 0 && reading.newlyExcludedCount === 0 && reading.newlyAdmittedCount === 0) {
-    summary = 'NO CHANGE: the proposed spec admits exactly the same items as the current one. ';
+    summary =
+      reading.currentClaimable === 0 && reading.proposedClaimable === 0
+        ? 'UNDETERMINED: both specs admit zero currently claimable items; this empty snapshot cannot establish equivalence for future work. '
+        : 'NO CHANGE: the proposed spec admits exactly the same items as the current one. ';
   } else {
     summary =
       `${reading.newlyExcludedCount} item(s) would be DROPPED, ${reading.newlyAdmittedCount} PICKED UP ` +
@@ -191,10 +215,11 @@ export default defineTool({
 
     // The lane. A delta is meaningless without one, and guessing a default harness here would
     // silently preview against the wrong backlog — so this refuses instead.
-    const harness =
-      args.harness ??
-      record.harnessSlug ??
-      ((ctx as { harnessSlug?: string | null }).harnessSlug || undefined);
+    const harness = resolvePreviewHarness(
+      args.harness,
+      record.harnessSlug,
+      (ctx as { harnessSlug?: string | null }).harnessSlug,
+    );
     if (!harness) {
       return {
         data: {

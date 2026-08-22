@@ -323,4 +323,17 @@ describe('deriveSpecDeltaNote — never hide a count/list contradiction', () => 
   it('keeps the no-op wording for a coherent zero delta', () => {
     expect(deriveSpecDeltaNote(baseReading())).toContain('NO CHANGE');
   });
+
+  it('does not call an empty 0/0 snapshot equivalent for future work', () => {
+    const note = deriveSpecDeltaNote({
+      ...baseReading(),
+      currentClaimable: 0,
+      proposedClaimable: 0,
+      retained: 0,
+    });
+
+    expect(note).not.toContain('NO CHANGE');
+    expect(note).toContain('UNDETERMINED');
+    expect(note).toContain('future work');
+  });
 });
