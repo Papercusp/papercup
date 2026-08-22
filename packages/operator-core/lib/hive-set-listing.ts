@@ -10,7 +10,7 @@
  *               public — existing rows count as rowsExisted; local bindings)
  */
 
-import { saveOwnedHiveMeta } from './hive-directory-meta';
+import { getOwnedHiveMeta, saveOwnedHiveMeta } from './hive-directory-meta';
 import type { HiveDirectoryMeta } from './hive-publish';
 import { getHiveDirectory } from './hive-directory-deps';
 import {
@@ -51,16 +51,26 @@ export async function setHiveListing(
   input: SetHiveListingInput,
   workspaceId: string,
 ): Promise<SetHiveListingResult> {
+  // `saveOwnedHiveMeta` replaces the per-pot entry wholesale. Read the prior
+  // listing first so an edit that omits stable/derived fields cannot reset the
+  // creation stamp or erase join metadata. Explicit empty arrays still clear
+  // their corresponding fields; omission means preserve.
+  const previous = await getOwnedHiveMeta(input.potId, workspaceId);
+  const inviteSecret = input.inviteSecret ?? (input.visibility === 'invite' ? previous?.inviteSecret : undefined);
   const meta: HiveDirectoryMeta = {
     potId: input.potId,
     title: input.title,
-    description: input.description ?? '',
+    description: input.description ?? previous?.description ?? '',
     workspaceId, // P-004: the announce-build enricher derives against this
     visibility: input.visibility,
-    memberTopics: input.memberTopics ?? [],
-    ...(input.memberLinks ? { memberLinks: input.memberLinks } : {}),
-    createdAt: input.createdAt ?? Date.now(),
-    ...(input.inviteSecret ? { inviteSecret: input.inviteSecret } : {}),
+    memberTopics: input.memberTopics ?? previous?.memberTopics ?? [],
+    ...(input.memberLinks !== undefined
+      ? { memberLinks: input.memberLinks }
+      : previous?.memberLinks !== undefined
+        ? { memberLinks: previous.memberLinks }
+        : {}),
+    createdAt: input.createdAt ?? previous?.createdAt ?? Date.now(),
+    ...(inviteSecret ? { inviteSecret } : {}),
   };
 
   // Persist the listing (durable — survives restart, read by the boot-join).

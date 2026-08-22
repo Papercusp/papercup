@@ -12,7 +12,11 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const saveOwnedHiveMeta = vi.fn<(...a: any[]) => Promise<void>>(async () => {});
-vi.mock('./hive-directory-meta', () => ({ saveOwnedHiveMeta: (...a: any[]) => saveOwnedHiveMeta(...a) }));
+const getOwnedHiveMeta = vi.fn<(...a: any[]) => Promise<any>>(async () => null);
+vi.mock('./hive-directory-meta', () => ({
+  getOwnedHiveMeta: (...a: any[]) => getOwnedHiveMeta(...a),
+  saveOwnedHiveMeta: (...a: any[]) => saveOwnedHiveMeta(...a),
+}));
 
 const getHiveDirectory = vi.fn<() => unknown>(() => ({}));
 vi.mock('./hive-directory-deps', () => ({ getHiveDirectory: () => getHiveDirectory() }));
@@ -35,6 +39,7 @@ const base = { potId: 'h', title: 'T' } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  getOwnedHiveMeta.mockResolvedValue(null);
   saveOwnedHiveMeta.mockResolvedValue(undefined);
   ensureHiveDirectoryWired.mockResolvedValue(null);
 });
@@ -47,6 +52,44 @@ describe('setHiveListing — always persists first', () => {
     const [meta, ws] = saveOwnedHiveMeta.mock.calls[0];
     expect(meta).toMatchObject({ potId: 'h', title: 'T', visibility: 'public', workspaceId: 'ws' });
     expect(ws).toBe('ws');
+  });
+
+  it('preserves omitted stable and join metadata on edit, while public flips drop invite secrets', async () => {
+    getOwnedHiveMeta.mockResolvedValue({
+      potId: 'h',
+      title: 'Old title',
+      description: 'Keep this description',
+      workspaceId: 'ws',
+      visibility: 'invite',
+      memberTopics: ['old-topic'],
+      memberLinks: ['papercusp://harness?old'],
+      createdAt: 1_700_000_000_000,
+      inviteSecret: 'do-not-publish-again',
+    });
+    republishHiveAfterMemberAdd.mockResolvedValue({ announced: true });
+
+    await setHiveListing({ potId: 'h', title: 'New title', visibility: 'public' }, 'ws');
+
+    expect(getOwnedHiveMeta).toHaveBeenCalledWith('h', 'ws');
+    expect(saveOwnedHiveMeta.mock.calls[0][0]).toMatchObject({
+      potId: 'h',
+      title: 'New title',
+      description: 'Keep this description',
+      visibility: 'public',
+      memberTopics: ['old-topic'],
+      memberLinks: ['papercusp://harness?old'],
+      createdAt: 1_700_000_000_000,
+    });
+    expect('inviteSecret' in saveOwnedHiveMeta.mock.calls[0][0]).toBe(false);
+  });
+
+  it('explicitly supplied empty join links clear the preserved links', async () => {
+    getOwnedHiveMeta.mockResolvedValue({ memberLinks: ['papercusp://harness?old'], createdAt: 1234 });
+    republishHiveAfterMemberAdd.mockResolvedValue({ announced: true });
+
+    await setHiveListing({ ...base, visibility: 'public', memberLinks: [] }, 'ws');
+
+    expect(saveOwnedHiveMeta.mock.calls[0][0]).toMatchObject({ memberLinks: [], createdAt: 1234 });
   });
 });
 
