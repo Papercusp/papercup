@@ -104,6 +104,48 @@ describe('auth.ts integration', () => {
     await authMod!.logout(session.token);
   });
 
+  itPg('persists and resolves workspace-bound capability claims', async () => {
+    const name = uname();
+    await authMod!.signup(name, 'Remote User', 'sup3rsecret');
+    const session = await authMod!.login(name, 'sup3rsecret', {
+      workspace_id: 'ws-remote',
+      capabilities: ['*', 'operator:remote', 'operator:remote'],
+    });
+    expect(session.user.workspace_id).toBe('ws-remote');
+    expect(session.user.capabilities).toEqual(['*', 'operator:remote']);
+
+    const rows = await db!.adminSql<{ workspace_id: string; capabilities: string[] }[]>`
+      SELECT workspace_id, capabilities
+        FROM harness_shared.user_sessions
+       WHERE token = ${session.token}`;
+    expect(rows).toEqual([{
+      workspace_id: 'ws-remote',
+      capabilities: ['*', 'operator:remote'],
+    }]);
+
+    const resolved = await authMod!.getSessionUser(new Headers({
+      cookie: `${authMod!.SESSION_COOKIE}=${session.token}`,
+    }));
+    expect(resolved).toMatchObject({
+      id: session.user.id,
+      workspace_id: 'ws-remote',
+      capabilities: ['*', 'operator:remote'],
+    });
+    await authMod!.logout(session.token);
+  });
+
+  itPg('rejects legacy sessions with no workspace claim', async () => {
+    const name = uname();
+    const user = await authMod!.signup(name, 'Legacy User', 'sup3rsecret');
+    const token = randomBytes(32).toString('hex');
+    await db!.adminSql`
+      INSERT INTO harness_shared.user_sessions (token, user_id, expires_at, workspace_id)
+      VALUES (${token}, ${user.id}, now() + interval '1 day', NULL)`;
+    expect(await authMod!.getSessionUser(new Headers({
+      cookie: `${authMod!.SESSION_COOKIE}=${token}`,
+    }))).toBeNull();
+  });
+
   itPg('login rejects wrong password with code bad_password', async () => {
     const name = uname();
     await authMod!.signup(name, 'T', 'right');

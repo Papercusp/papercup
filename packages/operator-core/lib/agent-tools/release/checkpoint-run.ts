@@ -39,7 +39,10 @@ import {
   scheduleCheckpointEligibilityWait,
   type CheckpointEligibilityWaitReceipt,
 } from '../../release-checkpoint-launch';
-import { assessRequiredAncestorPreflight } from '../../release/checkpoint-required-ancestor';
+import {
+  assessFrozenRepairQueuePreflight,
+  assessRequiredAncestorPreflight,
+} from '../../release/checkpoint-required-ancestor';
 import { integrationRoot } from '../../release-deploy-launch';
 import {
   attributeRetriageToRun,
@@ -469,6 +472,14 @@ export default defineTool({
     // declared paths, a run already in flight, an unresolved candidate, an undecidable or
     // uncommitted miss, or a wait we cannot compute all LAUNCH. `force` skips it entirely.
     const preflight = await assessPreLaunchExclusion({ paths: args.paths, force: args.force });
+    // D-001 / EI-21137440735672596: the detached writer applies the persisted frozen-repair
+    // queue BEFORE selecting the moving staging tip. A queue decision such as dispatch-fixer or
+    // wait-for-fixer returns `repair-in-progress` without running a suite, so launching here
+    // would spend the singleton and hand the caller a misleading `launched:true` receipt.
+    // The explicit required-ancestor path already performs this queue-aware read as part of its
+    // lineage check; avoid a second read there so both answers cannot drift across a DB update.
+    const frozenRepairQueuePreflight =
+      !preflight.refuse && !args.requiredAncestorSha ? await assessFrozenRepairQueuePreflight() : null;
     const requiredAncestorPreflight =
       !preflight.refuse && args.requiredAncestorSha
         ? await assessRequiredAncestorPreflight(args.requiredAncestorSha, preflight.candidate)

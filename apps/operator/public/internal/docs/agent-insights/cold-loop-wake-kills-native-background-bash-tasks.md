@@ -1,15 +1,17 @@
-# A loop/carry process respawn kills native Bash run_in_background tasks — TaskOutput \"No task found\" (EI-16611)
+# Native Bash background tasks survive context resets but not process replacement — verify before relaunching (EI-19333267623373946)
 URL: /internal/docs/agent-insights/cold-loop-wake-kills-native-background-bash-tasks
 
->
+Native Bash run_in_background task ids survive context-reset/recycle wakes that reuse the host process, but not a genuinely replaced CLI process; verify process identity and logs before relaunching to avoid duplicate jobs.
 
 ## The report (EI-16611)
+
+> **Scope correction (EI-19333267623373946):** A cold wake is not synonymous with a new CLI process. A context RESET/RECYCLE wake rebuilds the context while reusing the host process, so native children and their task registry can survive. The task id is lost only when the CLI process is actually replaced; verify the process and artifact before relaunching.
 
 Driving a fix in a **cold-carry** AUTO loop, one wake launched a long-running
 integration test via the native Bash tool's `run_in_background: true` (task id
 e.g. `bfdsrowp3`) and checkpointed `"await background task result"` as the
 `next` action in its `loop:checkpoint` carry-note. The loop's next fire was a
-**cold** reset (fresh context/process, carry-note-only continuity — by design,
+**cold carry-respawn** (fresh context **and a new process**, carry-note-only continuity — by design,
 see [engine-managed-loops](/internal/docs/agent-insights/engine-managed-loops)).
 The successor called `TaskOutput('bfdsrowp3')` and got `"No task found with ID:
 bfdsrowp3"` — the task, its output, and any partial progress were gone.
@@ -29,16 +31,16 @@ keeps taking turns itself; the moment that process is replaced by a different
 one, the registry is gone, even when the *logical* session/transcript
 continues.
 
-**Every one of these replaces the process**, so all of them lose native
-background tasks, not just the "cold" case the report named:
+\*\*Only transitions that actually replace the CLI process lose native background tasks; a context
+RESET/RECYCLE wake can reuse the existing process and preserve them:
 
-| Trigger                                                                                                                                                                                                              | What happens to the OS process                                                       | Background task survives?                                                 |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Wake lands on the "alive + injectable pty" rung (`fireLoopWake`'s liveness ladder, [engine-managed-loops](/internal/docs/agent-insights/engine-managed-loops)) — the common warm case                                | Same process, just injected a turn ("press enter")                                   | **Yes**                                                                   |
-| Wake lands on the "process exited → `claude --resume <sid>`" rung — still a **warm** loop                                                                                                                            | Old process is dead; `--resume` boots a **new** process reading the saved transcript | **No** — new process, empty registry, even though it's "the same session" |
-| **Cold**-carry loop fire (`loop:arm { carry:'cold' }`)                                                                                                                                                               | Deliberate fresh context/process every fire, carry-note-only continuity              | **No**, by design                                                         |
-| Compaction carry-respawn / cold-loop RECYCLE (`psu-pty-host.mjs`'s `recycleChild`, see [carry-respawn must reanchor native session id](/internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id)) | Old child killed, fresh `--session-id` minted for the successor                      | **No**                                                                    |
-| `session:request-compaction` (the deliberate P-022 carry-respawn cut)                                                                                                                                                | Same shape as above                                                                  | **No**                                                                    |
+| Trigger                                                                                                                                                                                                              | What happens to the OS process                                                       | Background task survives?                                                    |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| Wake lands on the "alive + injectable pty" rung (`fireLoopWake`'s liveness ladder, [engine-managed-loops](/internal/docs/agent-insights/engine-managed-loops)) — the common warm case                                | Same process, just injected a turn ("press enter")                                   | **Yes**                                                                      |
+| Wake lands on the "process exited → `claude --resume <sid>`" rung — still a **warm** loop                                                                                                                            | Old process is dead; `--resume` boots a **new** process reading the saved transcript | **No** — new process, empty registry, even though it's "the same session"    |
+| **Cold**-carry loop fire (`loop:arm { carry:'cold' }`)                                                                                                                                                               | Context reset/recycle rebuilds context but reuses the host process                   | **Yes** — unless the host process dies and the wake takes the respawn ladder |
+| Compaction carry-respawn / cold-loop RECYCLE (`psu-pty-host.mjs`'s `recycleChild`, see [carry-respawn must reanchor native session id](/internal/docs/agent-insights/carry-respawn-must-reanchor-native-session-id)) | Old child killed, fresh `--session-id` minted for the successor                      | **No**                                                                       |
+| `session:request-compaction` (the deliberate P-022 carry-respawn cut)                                                                                                                                                | Same shape as above                                                                  | **No**                                                                       |
 
 So "same session" in the
 [mid-turn-delivery backgrounding matrix](/internal/docs/agent-insights/coord-mid-turn-delivery)
@@ -47,15 +49,9 @@ So "same session" in the
 "survives a loop/carry process boundary." Read literally out of context it's
 easy to over-generalize into exactly this bug.
 
-## The fix: never checkpoint a native task id across a process-respawn boundary
+## The fix: treat CLI process replacement—not context reset—as the boundary
 
-1. **Don't write `"await background task <id>"` (or any native `TaskOutput` id)
-   as a loop's `next` action, ever** — cold loops always cross the boundary;
-   warm loops cross it whenever the ladder lands on `--resume` (you cannot
-   control or reliably predict which rung a given wake will hit), and a
-   self-triggered `session:request-compaction` crosses it deliberately. Treat
-   every loop/carry wake boundary as certain death for a native background
-   task id.
+1. **Do not assume a native task id survives a CLI process replacement.** Checkpointing `await background task <id>` across a carry-respawn, a warm wake whose old process exited and was resumed with `--resume`, or `session:request-compaction` is unsafe: the successor has an empty native registry. A context-reset/recycle wake that reuses the same host process is different — the task may still be alive. Before relaunching, verify the actual process and artifact below.
 2. **If the work fits in one wake, run it in the foreground instead.** A
    blocking `Bash` call before you checkpoint/end the turn is simpler and
    strictly safer than backgrounding-then-hoping the same process resumes.
@@ -74,6 +70,16 @@ easy to over-generalize into exactly this bug.
 4. **Polling within the same turn** (no wake boundary crossed) is unaffected —
    native `run_in_background` + `TaskOutput` remains the right, lightweight
    choice there.
+
+## Before relaunching: verify the process, not the wake label
+
+A cold wake alone does not prove that a native background job is gone. Check the command and its PID before starting a replacement:
+
+```bash
+ps -eo pid,etime,args --sort=start_time | grep '[y]our-cmd'
+```
+
+Do not pipe that query through `head`: a newly launched job has the highest PID and sorts last, so `head` can hide exactly the process you are trying to find. If the original process or its log is still active, keep it and do not launch a duplicate. If it is absent, treat the native task id as stale and relaunch only after checking the artifact for partial output.
 
 No code change is proposed for the native Bash tool itself: it is Anthropic's
 own CLI internals, outside this repo, and "make it durable across an arbitrary

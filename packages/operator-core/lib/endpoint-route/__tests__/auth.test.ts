@@ -39,6 +39,10 @@ vi.mock('../../auth-rate-limit', () => ({
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 // signup's open-signup gate reads the flag server-side (dynamic import).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn(async () => false) }));
+vi.mock('../../remote-auth-policy', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../remote-auth-policy')>();
+  return { ...actual, isRemoteRequest: vi.fn(() => false) };
+});
 
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
@@ -55,6 +59,7 @@ import {
 import { checkSoftPerIp, checkHardPerUser } from '../../auth-rate-limit';
 import { getFlag } from '@papercusp/flags/server';
 import { verifySetupToken } from '../../auth-setup-token';
+import { isRemoteRequest, REMOTE_OPERATOR_CAPABILITY } from '../../remote-auth-policy';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -64,7 +69,10 @@ function appWith(entry: AnyRoute | AnyRoute[]): Hono {
   return app;
 }
 
-const USER = { id: 'u1', username: 'alice', display_name: 'Alice', has_password: true };
+const USER = {
+  id: 'u1', username: 'alice', display_name: 'Alice', has_password: true,
+  workspace_id: 'ws-local', capabilities: ['*'],
+};
 const SESSION = { token: 'tok_abc', user: USER, expires_at: new Date(Date.now() + 86_400_000) };
 const json = (b: unknown) => ({
   method: 'POST',
@@ -87,6 +95,7 @@ beforeEach(() => {
   // Default USER already has_password:true, so this never gates the existing tests;
   // set explicitly true so a stray call still "passes" unless a test wants it to fail.
   vi.mocked(verifySetupToken).mockReturnValue(true);
+  vi.mocked(isRemoteRequest).mockReturnValue(false);
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -121,6 +130,33 @@ describe('POST /auth/login', () => {
     expect(res.status).toBe(429);
     expect(await res.json()).toMatchObject({ error: 'rate_limited', retry_after_s: 42 });
   });
+
+  it('requires password + explicit workspace remotely and mints a Secure scoped session', async () => {
+    vi.mocked(isRemoteRequest).mockReturnValue(true);
+    const missingWorkspace = await app.request('https://app.example.com/auth/login', json({
+      username: 'alice', password: 'pw',
+    }));
+    expect(missingWorkspace.status).toBe(400);
+    expect(await missingWorkspace.json()).toEqual({ error: 'workspace_required' });
+
+    const missingPassword = await app.request('https://app.example.com/auth/login', {
+      ...json({ username: 'alice' }),
+      headers: { 'content-type': 'application/json', 'x-papercusp-workspace': 'ws-remote' },
+    });
+    expect(missingPassword.status).toBe(403);
+    expect(await missingPassword.json()).toEqual({ error: 'password_required' });
+
+    const ok = await app.request('https://app.example.com/auth/login', {
+      ...json({ username: 'alice', password: 'pw' }),
+      headers: { 'content-type': 'application/json', 'x-papercusp-workspace': 'ws-remote' },
+    });
+    expect(ok.status).toBe(200);
+    expect(login).toHaveBeenLastCalledWith('alice', 'pw', expect.objectContaining({
+      workspace_id: 'ws-remote',
+      capabilities: ['*', REMOTE_OPERATOR_CAPABILITY],
+    }));
+    expect(ok.headers.get('set-cookie') ?? '').toContain('Secure');
+  });
 });
 
 describe('POST /auth/logout', () => {
@@ -131,6 +167,16 @@ describe('POST /auth/logout', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true });
     expect(res.headers.get('set-cookie') ?? '').toContain('Max-Age=0');
+  });
+
+  it('clears a remote session with matching Secure cookie attributes', async () => {
+    const res = await app.request('https://app.example.com/auth/logout', { method: 'POST' });
+    expect(res.status).toBe(200);
+    const cookie = res.headers.get('set-cookie') ?? '';
+    expect(cookie).toContain('Max-Age=0');
+    expect(cookie).toContain('HttpOnly');
+    expect(cookie).toContain('SameSite=Strict');
+    expect(cookie).toContain('Secure');
   });
 });
 
@@ -244,6 +290,16 @@ describe('GET + PATCH /auth/me', () => {
     const res = await app.request('/auth/me');
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ autoLogin: true });
+  });
+
+  it('GET never exposes or auto-mints the local default user remotely', async () => {
+    vi.mocked(isRemoteRequest).mockReturnValue(true);
+    const res = await app.request('https://app.example.com/auth/me');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ user: null, autoLogin: false, available: [] });
+    expect(getSessionUserOrDefault).not.toHaveBeenCalled();
+    expect(listUsers).not.toHaveBeenCalled();
+    expect(login).not.toHaveBeenCalled();
   });
 
   it('GET auto-mints a session for a passwordless cookie-capable caller', async () => {

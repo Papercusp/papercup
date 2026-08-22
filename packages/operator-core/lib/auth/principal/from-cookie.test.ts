@@ -9,36 +9,32 @@
  *   - label precedence (display_name over username, falls back to username).
  *
  * Hermetic: `getSessionUser` (the only PG-touching dep — it calls getOrgPg
- * internally) and `activeWorkspaceId` are mocked, so nothing hits PG.
+ * internally) is mocked, so nothing hits PG.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { User } from '../../auth';
+import type { SessionUser } from '../../auth';
 
 vi.mock('../../auth', () => ({
   getSessionUser: vi.fn(async () => null),
 }));
-vi.mock('../../workspace-registry', () => ({
-  activeWorkspaceId: vi.fn(() => 'ws-active'),
-}));
-
 import { principalFromCookie } from './from-cookie';
 import { getSessionUser } from '../../auth';
-import { activeWorkspaceId } from '../../workspace-registry';
 
 const h = (init: Record<string, string> = {}) => new Headers(init);
 
-const user = (over: Partial<User> = {}): User => ({
+const user = (over: Partial<SessionUser> = {}): SessionUser => ({
   id: 'user_1',
   username: 'alice',
   display_name: 'Alice',
   has_password: true,
+  workspace_id: 'ws-session',
+  capabilities: ['*', 'operator:remote'],
   ...over,
 });
 
 beforeEach(() => {
   vi.mocked(getSessionUser).mockResolvedValue(null);
-  vi.mocked(activeWorkspaceId).mockReturnValue('ws-active');
 });
 
 afterEach(() => {
@@ -64,7 +60,7 @@ describe('principalFromCookie', () => {
     expect(p).toMatchObject({
       kind: 'user',
       slug: 'user_1',
-      workspaceId: 'ws-active',
+      workspaceId: 'ws-session',
       authMethod: 'cookie-session',
       trust: 'verified',
       label: 'Alice',
@@ -73,11 +69,14 @@ describe('principalFromCookie', () => {
     expect(p!.capabilities.has('*')).toBe(true);
   });
 
-  it('uses the active workspace id (cookie sessions are workspace-scoped in v1)', async () => {
-    vi.mocked(getSessionUser).mockResolvedValue(user());
-    vi.mocked(activeWorkspaceId).mockReturnValue('ws-scoped');
+  it('uses the workspace and capabilities fixed in the session row', async () => {
+    vi.mocked(getSessionUser).mockResolvedValue(user({
+      workspace_id: 'ws-fixed-at-mint',
+      capabilities: ['operator:remote'],
+    }));
     const p = await principalFromCookie(h());
-    expect(p!.workspaceId).toBe('ws-scoped');
+    expect(p!.workspaceId).toBe('ws-fixed-at-mint');
+    expect([...p!.capabilities]).toEqual(['operator:remote']);
   });
 
   it('prefers display_name for the label', async () => {

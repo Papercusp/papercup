@@ -16,6 +16,9 @@ vi.mock('../../auth/require-principal', async () => {
   );
   return { ...actual, requirePrincipal: vi.fn() };
 });
+vi.mock('../../auth/principal/from-cookie', () => ({
+  principalFromCookie: vi.fn(async () => null),
+}));
 
 // Telemetry writes to PG — out of scope for route-stack mechanics tests.
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
@@ -32,6 +35,7 @@ import { registerRoute } from '../define-route';
 import { DEFAULT_ROUTE_STACK } from '../route-stack';
 import { registerAllRoutes } from '../register';
 import { requirePrincipal, PrincipalCheckError } from '../../auth/require-principal';
+import { principalFromCookie } from '../../auth/principal/from-cookie';
 import { getFlag } from '@papercusp/flags/server';
 import { recordRouteInvocation } from '../telemetry';
 
@@ -41,6 +45,8 @@ function freshApp(): Hono {
 
 beforeEach(() => {
   vi.mocked(requirePrincipal).mockReset();
+  vi.mocked(principalFromCookie).mockReset();
+  vi.mocked(principalFromCookie).mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -97,6 +103,126 @@ describe('auth step', () => {
     expect(res.status).toBe(403);
     expect((await res.json()).error.message).toBe('trust denied');
     expect(handlerRan).toBe(false);
+  });
+});
+
+describe('auth step — native direct-remote policy (P-016 / D-025)', () => {
+  const saved = {
+    bind: process.env.PAPERCUSP_BIND_HOST,
+    allow: process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN,
+    origins: process.env.PAPERCUSP_REMOTE_ORIGINS,
+  };
+
+  beforeEach(() => {
+    process.env.PAPERCUSP_BIND_HOST = '0.0.0.0';
+    process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = '1';
+    process.env.PAPERCUSP_REMOTE_ORIGINS = 'https://app.example.com';
+  });
+
+  afterEach(() => {
+    if (saved.bind === undefined) delete process.env.PAPERCUSP_BIND_HOST;
+    else process.env.PAPERCUSP_BIND_HOST = saved.bind;
+    if (saved.allow === undefined) delete process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN;
+    else process.env.PAPERCUSP_ALLOW_REMOTE_ADMIN = saved.allow;
+    if (saved.origins === undefined) delete process.env.PAPERCUSP_REMOTE_ORIGINS;
+    else process.env.PAPERCUSP_REMOTE_ORIGINS = saved.origins;
+  });
+
+  const remotePost = (headers: Record<string, string> = {}) => ({
+    method: 'POST',
+    headers: { origin: 'https://app.example.com', ...headers },
+  });
+
+  it('preserves public compatibility for an SSH-forwarded loopback request', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/pub', auth: 'public',
+      handler: () => Response.json({ ok: true }),
+    }));
+    expect((await app.request('http://localhost/pub')).status).toBe(200);
+  });
+
+  it('rejects an unconfigured authority before any handler runs', async () => {
+    const app = freshApp();
+    let ran = false;
+    registerRoute(app, defineTool({
+      method: 'GET', path: '/pub', auth: 'public',
+      handler: () => { ran = true; return Response.json({}); },
+    }));
+    const res = await app.request('https://evil.example.com/pub');
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('remote_authority_denied');
+    expect(ran).toBe(false);
+  });
+
+  it('requires exact Origin on unsafe remote methods', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'POST', path: '/mutate', auth: 'public',
+      handler: () => Response.json({ ok: true }),
+    }));
+    const res = await app.request('https://app.example.com/mutate', { method: 'POST' });
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe('remote_origin_denied');
+  });
+
+  it('requires explicit workspace, verified cookie, capability, and matching claim', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'POST', path: '/mutate', auth: 'public',
+      handler: (_req, ctx) => Response.json({ principal: ctx.principal?.slug }),
+    }));
+
+    const missingWorkspace = await app.request('https://app.example.com/mutate', remotePost());
+    expect(missingWorkspace.status).toBe(400);
+    expect((await missingWorkspace.json()).error.code).toBe('workspace_required');
+
+    const noCookie = await app.request('https://app.example.com/mutate', remotePost({
+      'x-papercusp-workspace': 'ws-1',
+    }));
+    expect(noCookie.status).toBe(401);
+
+    vi.mocked(principalFromCookie).mockResolvedValue({
+      kind: 'user', slug: 'u1', workspaceId: 'ws-1',
+      authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['*']),
+    });
+    const noCapability = await app.request('https://app.example.com/mutate', remotePost({
+      'x-papercusp-workspace': 'ws-1',
+    }));
+    expect(noCapability.status).toBe(403);
+    expect((await noCapability.json()).error.code).toBe('remote_capability_denied');
+
+    vi.mocked(principalFromCookie).mockResolvedValue({
+      kind: 'user', slug: 'u1', workspaceId: 'ws-other',
+      authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['operator:remote']),
+    });
+    const mismatch = await app.request('https://app.example.com/mutate', remotePost({
+      'x-papercusp-workspace': 'ws-1',
+    }));
+    expect(mismatch.status).toBe(403);
+    expect((await mismatch.json()).error.code).toBe('workspace_mismatch');
+
+    vi.mocked(principalFromCookie).mockResolvedValue({
+      kind: 'user', slug: 'u1', workspaceId: 'ws-1',
+      authMethod: 'cookie-session', trust: 'verified', capabilities: new Set(['operator:remote']),
+    });
+    const allowed = await app.request('https://app.example.com/mutate', remotePost({
+      'x-papercusp-workspace': 'ws-1',
+    }));
+    expect(allowed.status).toBe(200);
+    expect(await allowed.json()).toEqual({ principal: 'u1' });
+    expect(requirePrincipal).not.toHaveBeenCalled();
+  });
+
+  it('allows the login bootstrap only after exact authority and Origin checks', async () => {
+    const app = freshApp();
+    registerRoute(app, defineTool({
+      method: 'POST', path: '/auth/login', auth: 'public',
+      handler: () => Response.json({ ok: true }),
+    }));
+    const res = await app.request('https://app.example.com/auth/login', remotePost());
+    expect(res.status).toBe(200);
+    expect(principalFromCookie).not.toHaveBeenCalled();
   });
 });
 

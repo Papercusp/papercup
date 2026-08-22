@@ -65,10 +65,17 @@ const MAX_COMMITMENTS_PER_SUBJECT = 50;
  * deliberately does not reuse event_awaits.workspace_id (which is the corpus
  * partition literal `default`, not the active coordination workspace).
  */
+interface ReferencedWorkItemLookup {
+  /** Rows that resolved, including rows whose status was unexpectedly null. */
+  found: Set<string>;
+  /** Known non-null statuses for the resolved rows. */
+  states: Map<string, string>;
+}
+
 async function readReferencedWorkItemStates(
   ids: readonly string[],
-): Promise<Map<string, string> | null> {
-  if (ids.length === 0) return new Map();
+): Promise<ReferencedWorkItemLookup | null> {
+  if (ids.length === 0) return { found: new Set(), states: new Map() };
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ feature_id: string; status: string | null }[]>`
@@ -76,11 +83,18 @@ async function readReferencedWorkItemStates(
         FROM harness_shared.work_items
        WHERE feature_id = ANY(${[...ids]})
     `;
-    return new Map(
+    return {
+      found: new Set(
+        rows
+          .filter((row) => row.feature_id)
+          .map((row) => row.feature_id.toUpperCase()),
+      ),
+      states: new Map(
       rows
         .filter((row) => row.feature_id && row.status)
         .map((row) => [row.feature_id.toUpperCase(), row.status as string]),
-    );
+      ),
+    };
   } catch {
     return null;
   }
@@ -91,11 +105,15 @@ async function readReferencedWorkItemStates(
  * stale wait edge. Keep summaries with no work-item reference, with a live
  * reference, or when the lookup itself failed (fail-open on uncertainty).
  */
-function referencesLiveWorkItem(summary: string | undefined, states: Map<string, string>): boolean {
+function referencesLiveWorkItem(
+  summary: string | undefined,
+  lookup: ReferencedWorkItemLookup,
+): boolean {
   const ids = extractWorkItemIds(summary ?? '');
   if (ids.length === 0) return true;
   return ids.some((id) => {
-    const state = states.get(id);
+    if (!lookup.found.has(id)) return false;
+    const state = lookup.states.get(id);
     return state === undefined || !TERMINAL_WORK_ITEM_STATES.has(state.toLowerCase());
   });
 }
@@ -130,8 +148,8 @@ async function gatherAwaitingReply(subjectIds: readonly string[]): Promise<Commi
     const referencedIds = [
       ...new Set(entries.flatMap(({ entry }) => extractWorkItemIds(entry.summary ?? ''))),
     ];
-    const states = await readReferencedWorkItemStates(referencedIds);
-    if (states === null) {
+    const lookup = await readReferencedWorkItemStates(referencedIds);
+    if (lookup === null) {
       // Keep the old fail-soft behavior: a DB read failure cannot turn into a
       // false claim that a waiting agent's work has already settled.
       return entries.flatMap(({ subjectId, entry }) => {
@@ -146,7 +164,7 @@ async function gatherAwaitingReply(subjectIds: readonly string[]): Promise<Commi
     }
     const out: Commitment[] = [];
     for (const { subjectId, entry } of entries) {
-      if (!entry.from || !referencesLiveWorkItem(entry.summary, states)) continue;
+      if (!entry.from || !referencesLiveWorkItem(entry.summary, lookup)) continue;
       out.push({
           receiverId: entry.from,
           subjectId,
