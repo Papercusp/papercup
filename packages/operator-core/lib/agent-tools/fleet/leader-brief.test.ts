@@ -14,6 +14,7 @@ import {
   computeIdleWithClaimableAlert,
   computeSpecStarvedFleetAlert,
   computeSpecAuthorshipAlert,
+  computeDeclaredPlanSpecDivergenceAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
   compactLeaderBriefMemberVerdicts,
@@ -1420,6 +1421,76 @@ describe('computeSpecAuthorshipAlert (P-005 — a fleet spec rewritten under the
     const alert = computeSpecAuthorshipAlert({ ...INCIDENT, revision: null, updatedAt: null });
     expect(alert?.reason).toMatch(/revision unknown/);
     expect(alert?.reason).not.toContain('null');
+  });
+});
+
+describe('computeDeclaredPlanSpecDivergenceAlert (EI-21165759529778617)', () => {
+  const members = [
+    { agentId: 'su-a', alive: true, declaredPlanSlug: 'plan-a' },
+    { agentId: 'su-b', alive: true, declaredPlanSlug: 'plan-b' },
+    { agentId: 'su-dead', alive: false, declaredPlanSlug: 'plan-b' },
+    { agentId: 'su-unknown', alive: true, declaredPlanSlug: null },
+  ];
+
+  it('fires only for live members whose declared plan is outside an exact positive scope', () => {
+    const alert = computeDeclaredPlanSpecDivergenceAlert({
+      members,
+      specFilter: { field: 'plan', op: '=', value: 'plan-a' },
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+    });
+    expect(alert?.positivePlanSlugs).toEqual(['plan-a']);
+    expect(alert?.divergentMembers).toEqual([{ agentId: 'su-b', declaredPlanSlug: 'plan-b' }]);
+    expect(alert?.reason).toMatch(/su-b=plan-b/);
+    expect(alert?.reason).not.toContain('claimedItems');
+    expect(alert?.falsifier.tool).toBe('fleet:assignments');
+  });
+
+  it('supports an exact positive in-list and does not flag an admitted member', () => {
+    const alert = computeDeclaredPlanSpecDivergenceAlert({
+      members: [members[0], members[1]],
+      specFilter: { field: 'plan', op: 'in', value: ['plan-a', 'plan-b'] },
+    });
+    expect(alert).toBeUndefined();
+  });
+
+  it('handles boolean positive scopes conservatively and fails open on ambiguous branches', () => {
+    expect(
+      computeDeclaredPlanSpecDivergenceAlert({
+        members: [members[1]],
+        specFilter: {
+          all: [
+            { field: 'plan', op: '=', value: 'plan-a' },
+            { field: 'kind', op: '=', value: 'bug' },
+          ],
+        },
+      })?.divergentMembers,
+    ).toEqual([{ agentId: 'su-b', declaredPlanSlug: 'plan-b' }]);
+
+    expect(
+      computeDeclaredPlanSpecDivergenceAlert({
+        members: [members[1]],
+        specFilter: {
+          any: [
+            { field: 'plan', op: '=', value: 'plan-a' },
+            { field: 'kind', op: '=', value: 'bug' },
+          ],
+        },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('ignores negative, missing, malformed, and not-nested plan evidence', () => {
+    for (const specFilter of [
+      { field: 'plan', op: '!=', value: 'plan-a' },
+      { not: { field: 'plan', op: '=', value: 'plan-a' } },
+      undefined,
+      { field: 'plan', op: '=', value: 42 },
+    ] as const) {
+      expect(
+        computeDeclaredPlanSpecDivergenceAlert({ members: [members[1]], specFilter: specFilter as never }),
+      ).toBeUndefined();
+    }
   });
 });
 

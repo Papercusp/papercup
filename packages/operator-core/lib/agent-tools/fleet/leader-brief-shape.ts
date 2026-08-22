@@ -108,6 +108,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'abandoned_unclaimed',
     'admission_blocked',
     'fleet_paused',
+    'declaredPlanSpecDivergenceAlert',
   ];
   const out = pick(source, metricKeys, 120) ?? {};
 

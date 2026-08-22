@@ -24,6 +24,7 @@ import {
   computeStrandedFleetAlert,
   computeSpecStarvedFleetAlert,
   computeSpecAuthorshipAlert,
+  computeDeclaredPlanSpecDivergenceAlert,
   computeIdleWithClaimableAlert,
   computeFloorStarvedFleetAlert,
   renderFalsifierCall,
@@ -68,6 +69,17 @@ const FIRING: { name: string; fired: { reason: string; falsifier: AlertFalsifier
       updatedBy: 's-1786236383559',
       revision: 4,
       updatedAt: '2026-08-09T01:12:00.000Z',
+      harness: 'papercusp',
+      fleet: 'my-fleet',
+    }),
+  },
+  {
+    name: 'declaredPlanSpecDivergence',
+    fired: computeDeclaredPlanSpecDivergenceAlert({
+      members: [
+        { agentId: 'su-divergent', alive: true, declaredPlanSlug: 'other-plan' },
+      ],
+      specFilter: { field: 'plan', op: '=', value: 'intended-plan' },
       harness: 'papercusp',
       fleet: 'my-fleet',
     }),

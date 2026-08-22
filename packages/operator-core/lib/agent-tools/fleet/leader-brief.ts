@@ -104,6 +104,7 @@ import {
   type VerifiedWaitTakeoverAlert,
 } from '../../events/await/store';
 import type { TimeoutBehavior } from '../../events/await/types';
+import type { FilterNode } from '../../scheduler/claim-spec';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport } from '../../fleet/capacity-dispatch';
@@ -905,6 +906,172 @@ export interface AlertFalsifier {
   measurement: string;
   /** The concrete output that KILLS this alert — and what to do instead. */
   kills: string;
+}
+
+type PositivePlanFilterVerdict = true | false | 'unknown';
+
+interface PositivePlanFilterEvaluation {
+  verdict: PositivePlanFilterVerdict;
+  positivePlanSlugs: string[];
+}
+
+function uniquePlanSlugs(values: readonly string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))];
+}
+
+/**
+ * Extract only exact positive `plan` predicates from a filter tree. Negative,
+ * broad, malformed, and `not`-nested predicates are deliberately ignored: this
+ * detector is a fail-soft backstop for a settled positive lane, not a second
+ * claim-spec evaluator.
+ */
+function positivePlanSlugsFromFilter(node: FilterNode | null | undefined): string[] {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) return [];
+  if ('not' in node) return [];
+  if ('all' in node || 'any' in node) {
+    const children = 'all' in node ? node.all : node.any;
+    return uniquePlanSlugs(children.flatMap((child) => positivePlanSlugsFromFilter(child)));
+  }
+  const leaf = node as { field?: unknown; op?: unknown; value?: unknown };
+  if (leaf.field !== 'plan') return [];
+  if (leaf.op === '=' && typeof leaf.value === 'string') return uniquePlanSlugs([leaf.value]);
+  if (leaf.op === 'in' && Array.isArray(leaf.value)) {
+    return uniquePlanSlugs(leaf.value.filter((value): value is string => typeof value === 'string'));
+  }
+  return [];
+}
+
+/**
+ * Evaluate only what positive plan predicates can prove about one declared
+ * plan. Non-plan leaves are unknown, so a branch that could still admit the
+ * member never produces a false divergence. `not` is unknown by design: a
+ * negative scope is outside this detector's evidence contract.
+ */
+function evaluatePositivePlanFilter(
+  node: FilterNode | null | undefined,
+  declaredPlanSlug: string,
+): PositivePlanFilterEvaluation {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) {
+    return { verdict: 'unknown', positivePlanSlugs: [] };
+  }
+  if ('not' in node) return { verdict: 'unknown', positivePlanSlugs: [] };
+  if ('all' in node || 'any' in node) {
+    const children = 'all' in node ? node.all : node.any;
+    if (!Array.isArray(children) || children.length === 0) {
+      return { verdict: 'unknown', positivePlanSlugs: [] };
+    }
+    const evaluations = children.map((child) => evaluatePositivePlanFilter(child, declaredPlanSlug));
+    const positivePlanSlugs = uniquePlanSlugs(evaluations.flatMap((evaluation) => evaluation.positivePlanSlugs));
+    if ('all' in node) {
+      if (evaluations.some((evaluation) => evaluation.verdict === false)) {
+        return { verdict: false, positivePlanSlugs };
+      }
+      if (evaluations.every((evaluation) => evaluation.verdict === true)) {
+        return { verdict: true, positivePlanSlugs };
+      }
+      return { verdict: 'unknown', positivePlanSlugs };
+    }
+    if (evaluations.some((evaluation) => evaluation.verdict === true)) {
+      return { verdict: true, positivePlanSlugs };
+    }
+    if (evaluations.every((evaluation) => evaluation.verdict === false)) {
+      return { verdict: false, positivePlanSlugs };
+    }
+    return { verdict: 'unknown', positivePlanSlugs };
+  }
+  const leaf = node as { field?: unknown; op?: unknown; value?: unknown };
+  if (leaf.field !== 'plan') return { verdict: 'unknown', positivePlanSlugs: [] };
+  if (leaf.op === '=' && typeof leaf.value === 'string' && leaf.value.length > 0) {
+    return {
+      verdict: leaf.value === declaredPlanSlug,
+      positivePlanSlugs: [leaf.value],
+    };
+  }
+  if (leaf.op === 'in' && Array.isArray(leaf.value)) {
+    const positivePlanSlugs = uniquePlanSlugs(
+      leaf.value.filter((value): value is string => typeof value === 'string'),
+    );
+    if (positivePlanSlugs.length === 0) return { verdict: 'unknown', positivePlanSlugs };
+    return {
+      verdict: positivePlanSlugs.includes(declaredPlanSlug),
+      positivePlanSlugs,
+    };
+  }
+  return { verdict: 'unknown', positivePlanSlugs: [] };
+}
+
+export interface DeclaredPlanSpecDivergentMember {
+  agentId: string;
+  declaredPlanSlug: string;
+}
+
+/**
+ * EI-21165759529778617: detect the structural starvation shape where a live
+ * member has declared a plan that the fleet's effective positive plan scope
+ * cannot admit. This compares the live member-plan declaration to the spec;
+ * it never infers work-item ownership from presence fields such as
+ * `claimedItems: []`, which is also emitted for genuine holders.
+ *
+ * The AST evaluator is intentionally conservative. It reports only plans that
+ * are provably rejected by positive `=`/`in` predicates and stays silent for
+ * missing, malformed, negative, or otherwise ambiguous filter evidence.
+ * PURE: exported for direct unit-testing.
+ */
+export function computeDeclaredPlanSpecDivergenceAlert(input: {
+  members: ReadonlyArray<{
+    agentId: string;
+    alive: boolean;
+    declaredPlanSlug: string | null;
+  }>;
+  specFilter?: FilterNode | null;
+  harness?: string | null;
+  fleet?: string | null;
+}): {
+  reason: string;
+  falsifier: AlertFalsifier;
+  positivePlanSlugs: string[];
+  divergentMembers: DeclaredPlanSpecDivergentMember[];
+} | undefined {
+  try {
+    const positivePlanSlugs = positivePlanSlugsFromFilter(input.specFilter);
+    if (positivePlanSlugs.length === 0) return undefined;
+    const divergentMembers = input.members
+      .filter((member) => member.alive === true && typeof member.declaredPlanSlug === 'string' && member.declaredPlanSlug.length > 0)
+      .filter((member) => evaluatePositivePlanFilter(input.specFilter, member.declaredPlanSlug!).verdict === false)
+      .map((member) => ({ agentId: member.agentId, declaredPlanSlug: member.declaredPlanSlug! }));
+    if (divergentMembers.length === 0) return undefined;
+
+    const shownMembers = divergentMembers
+      .slice(0, 8)
+      .map((member) => `${member.agentId}=${member.declaredPlanSlug}`)
+      .join(', ');
+    const more = divergentMembers.length > 8 ? ` (+${divergentMembers.length - 8} more)` : '';
+    return {
+      positivePlanSlugs,
+      divergentMembers,
+      falsifier: {
+        tool: 'fleet:assignments',
+        check: renderFalsifierCall('fleet:assignments', { fleet: input.fleet }),
+        measurement:
+          'the FRESH live member declarations (`declaredPlanSlug`) from fleet:assignments — ' +
+          'independent of this brief\'s roster snapshot and effective-spec read',
+        kills:
+          'no live member still declares a plan outside the positive plan predicates, or the ' +
+          'current spec no longer carries those predicates → the divergence was stale; re-run ' +
+          'fleet:leader-brief before acting.',
+      },
+      reason:
+        `${divergentMembers.length} live member(s) declare a plan the fleet's effective claim spec ` +
+        `cannot admit. Positive plan predicate(s): [${positivePlanSlugs.join(', ')}]. ` +
+        `Divergent declarations: ${shownMembers}${more}. Their plan-item ownership can look ` +
+        'healthy while work-item claims on the declared plan are refused; inspect the effective ' +
+        'spec before nudging or replacing these members (EI-21165759529778617).',
+    };
+  } catch {
+    // A malformed or unexpectedly shaped persisted filter must never take down
+    // the health brief or manufacture an alert from incomplete evidence.
+    return undefined;
+  }
 }
 
 /**
@@ -2571,7 +2738,7 @@ export async function buildLeaderBrief(
     // pair whose conflation (1037 harness-wide vs 0 spec-scoped) produced the false
     // spec-starved ruling this item's own root-cause section documents. Best-effort/optional:
     // a preview failure must never block the rest of the brief.
-    let specFilter: unknown;
+    let specFilter: FilterNode | null | undefined;
     let harnessWidePool: number | undefined;
     let specMatched: number | undefined;
     // P-005: the spec row's own authorship, surfaced beside the filter it describes. A
@@ -2581,6 +2748,7 @@ export async function buildLeaderBrief(
     let specUpdatedBy: string | null | undefined;
     let specUpdatedAt: string | null | undefined;
     let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
+    let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
     try {
       const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
       const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
@@ -2618,6 +2786,12 @@ export async function buildLeaderBrief(
           /* best-effort — a pool-effect failure must not cost the authorship read above */
         }
       }
+      declaredPlanSpecDivergenceAlert = computeDeclaredPlanSpecDivergenceAlert({
+        members: grouped,
+        specFilter: rec.spec.view?.filter,
+        harness: args.harness ?? null,
+        fleet,
+      });
     } catch {
       /* best-effort — never block the brief on a spec-effect preview failure */
     }
@@ -2764,6 +2938,7 @@ export async function buildLeaderBrief(
           ...summary,
           strandedFleetAlert: strandedFleetAlert != null,
           specStarvedAlert: specStarvedAlert != null,
+          declaredPlanSpecDivergenceAlert: declaredPlanSpecDivergenceAlert != null,
           // P-005: unlike its siblings this one is not about SUPPLY — it says the lane you
           // are reading was authored by someone else, so every other spec figure here
           // describes a scope you have not ratified.
@@ -2873,6 +3048,12 @@ export async function buildLeaderBrief(
           ? {
               specAuthorshipAlertReason: specAuthorshipAlert.reason,
               specAuthorshipAlertFalsifier: specAuthorshipAlert.falsifier,
+            }
+          : {}),
+        ...(declaredPlanSpecDivergenceAlert
+          ? {
+              declaredPlanSpecDivergenceAlertReason: declaredPlanSpecDivergenceAlert.reason,
+              declaredPlanSpecDivergenceAlertFalsifier: declaredPlanSpecDivergenceAlert.falsifier,
             }
           : {}),
         ...(idleWithClaimableAlert
