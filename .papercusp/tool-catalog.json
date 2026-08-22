@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 761,
+  "count": 763,
   "tools": [
     {
       "name": "ablation:report",
@@ -6506,6 +6506,24 @@
       }
     },
     {
+      "name": "cupboard:install-recipe",
+      "http": {
+        "path": "/api/agent-tools/cupboard/install-recipe",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Install a recipe from the Cupboard into this workspace: give a listingId (resolves the mirror repo + ref from the listing) OR a githubUrl + listingRef directly; the operator clones the mirror, validates <listingRef>/recipe.json, drops the dir into ~/.papercusp/recipes/<ref>/, then seeds a code_recipes row so recipes:search / recipes:get / recipes:run can see it. NO-CLOBBER: an existing recipe of that id is never overwritten. Returns { ok, ref, recipeId, title, toolsUsed, authorityUnresolved, seeded }.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Installing a published recipe so this workspace can run it — you found a recipe listing (cupboard:search kind='recipe') and want the orchestration locally.",
+        "notWhen": "Capturing a recipe here (code:run captures automatically). Finding recipes this workspace already has (recipes:search). Installing a plan template (cupboard:install-plan) or a rubric (cupboard:install-rubric).",
+        "chaining": "cupboard:search { kind:'recipe' } → cupboard:install-recipe { listingId } → recipes:get { id: recipeId } to read the script BEFORE recipes:run. Read `authorityUnresolved` first: true means the publisher's analyzer could not prove the script's effects statically, so read it before running it."
+      }
+    },
+    {
       "name": "cupboard:install-rubric",
       "http": {
         "path": "/api/agent-tools/cupboard/install-rubric",
@@ -6593,6 +6611,24 @@
         "when": "Sharing a plugin or code-tool pack you have INSTALLED (its manifest name is the slug), so others can install it from the Cupboard — one tool for both (the manifest's kind decides plugin vs pack).",
         "notWhen": "Publishing a blueprint (blueprint:publish), a knowledge pack (knowledge_packs:publish), a whole standalone app (cupboard:publish-app), or an app-template (cupboard:publish-template). If the unit is not installed locally, pass githubUrl pointing at its repo; either way the code must be pushed to GitHub first.",
         "chaining": "Publish points at the GitHub repo, so commit + push the unit first. The response carries the listing + its review_status — a reviewed kind lands PENDING until an operator approves it at /admin/cupboard-moderation."
+      }
+    },
+    {
+      "name": "cupboard:publish-recipe",
+      "http": {
+        "path": "/api/agent-tools/cupboard/publish-recipe",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List a recipe on the Cupboard's Recipes tab. Sanitizes first (usage + attribution columns — runCount, potSlug, createdBy, status … — are dropped; the per-run authority proof was never stored), materializes recipe.json + listing.json under ~/.papercusp/recipes/<ref>/, then points a kind='recipe' listing at the public mirror repo you pushed that dir to, with provides_tools from the recipe's toolsUsed. REFUSES a recipe whose script names concrete workspace-scoped refs (plan slug / work-item id / fleet / workspace) — it would not work elsewhere and is not rewritten silently. Pass exportOnly to materialize without publishing. Recipes are a reviewed kind: the publish lands PENDING until an operator approves it.",
+      "capabilities": [
+        "harness:write"
+      ],
+      "guidance": {
+        "when": "Sharing a captured tool orchestration you authored so other workspaces can install and run it.",
+        "notWhen": "Capturing or editing a recipe here (code:run captures automatically; recipes:*). Running one (recipes:run). Publishing a plan template (cupboard:publish-plan) or a rubric (cupboard:publish-rubric).",
+        "chaining": "recipes:search to find the id → cupboard:publish-recipe { id, exportOnly: true } → push the returned dir to a public mirror repo → cupboard:publish-recipe { id, githubUrl }. A localRefs refusal names exactly which scoped values block it."
       }
     },
     {
