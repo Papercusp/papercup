@@ -2629,22 +2629,9 @@ export async function buildLeaderBrief(
     // itself as errored rather than costing the leader the rest of the brief.
     let customInvariants: InvariantEvaluation[] | undefined;
     let customInvariantAlert: { reason: string } | undefined;
-    try {
-      const { listFleetInvariants, evaluateFleetInvariants, computeCustomInvariantAlert } =
-        await import('./invariants');
-      const registered = await listFleetInvariants({ workspaceId, fleetSlug: fleet });
-      if (registered.length > 0) {
-        const evaluations = await evaluateFleetInvariants({
-          invariants: registered,
-          workspaceId,
-          fleetSlug: fleet,
-        });
-        customInvariants = evaluations;
-        customInvariantAlert = computeCustomInvariantAlert(evaluations);
-      }
-    } catch {
-      /* best-effort — never block the brief on the custom-invariant registry */
-    }
+    const { readFleetInvariantEvaluations, computeCustomInvariantAlert } = await import('./invariants');
+    customInvariants = await readFleetInvariantEvaluations({ workspaceId, fleetSlug: fleet });
+    if (customInvariants) customInvariantAlert = computeCustomInvariantAlert(customInvariants);
     // P-023: the PER-MEMBER "why is this idle" verdict, computed AFTER `blockedAt` because it
     // is deliberately subordinate to it. Attributing idleness to a member while the pool is at
     // factor 0 is exactly the inversion P-002 measured; deriving a per-member answer

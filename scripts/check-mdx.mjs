@@ -17,23 +17,25 @@
  * TypeScript ../packages/operator-core/lib/content-lint/mdx module, which the
  * plain node ESM loader can't resolve (ERR_MODULE_NOT_FOUND) without tsx.
  *
- * Detection is the REAL MDX compiler, not a regex: each tracked .mdx is
+ * Detection is the REAL MDX compiler, not a regex: each tracked or
+ * nonignored-untracked .mdx is
  * compiled with `@mdx-js/mdx` (the same MDX core astro runs). Undefined
  * components (`<Aside>`, `<Steps>` — provided by Starlight at render, never
  * imported in the source) compile cleanly; only genuine SYNTAX errors fail, so
  * there are zero false positives on the docs that currently build. Fix a hit
  * by backticking the placeholder (`` `<date>` ``) or escaping it.
  *
- * Scope: tracked .mdx under apps/operator-docs/src/content/docs/ (exactly the
- * astro-built set). remark-gfm is applied to match starlight's pipeline so
+ * Scope: tracked or nonignored-untracked .mdx under
+ * apps/operator-docs/src/content/docs/ (exactly the astro-built set).
+ * remark-gfm is applied to match starlight's pipeline so
  * table cells with inline-code angle brackets (`` `<ArchitectChat>` ``) don't
  * false-positive. YAML frontmatter (--- … ---) is blanked before compile —
  * `@mdx-js/mdx` has no remark-frontmatter here — with line count preserved so
  * reported positions still point at source.
  */
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, relative, dirname, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // D-003 (git-sync-content-guard): the pure detector now lives in ONE importable
 // module shared by this CI lint, the git-sync content guard, and the
@@ -59,24 +61,79 @@ const isExcluded = (f) =>
   f.includes('/node_modules/') ||
   f.includes('/dist/');
 
-async function main() {
-  // --fix: deterministically repair the safe `<`+digit offender in place (WI-276)
-  // before reporting; anything still broken (e.g. `<word>` components) is reported
-  // for a human/LLM fixer as before.
-  const doFix = process.argv.includes('--fix');
-  const tracked = execSync('git ls-files', { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 })
-    .split('\n')
+/**
+ * Return repo-relative MDX paths in the Astro content tree.
+ *
+ * `git ls-files` alone is a false-green for a newly-authored quarantined doc:
+ * git-sync sees the dirty file before it is committed, while this lint used to
+ * see nothing. The combined `--cached --others --exclude-standard` form is the
+ * same tracked + untracked-not-ignored population that git would stage, and
+ * `-z` keeps a filename with whitespace/newlines from corrupting the scan.
+ */
+export function listMdxFiles() {
+  const files = execFileSync(
+    'git',
+    ['ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', DOCS_PREFIX],
+    { cwd: ROOT, maxBuffer: 256 * 1024 * 1024 },
+  )
+    .toString()
+    .split('\0')
     .filter(Boolean);
 
+  return [...new Set(files)]
+    .filter((f) => !isExcluded(f))
+    .filter((f) => f.endsWith('.mdx') && f.startsWith(DOCS_PREFIX))
+    .sort();
+}
+
+function normalizeRepoPath(file) {
+  const absolute = resolve(ROOT, file);
+  const repoPath = relative(ROOT, absolute).split(sep).join('/');
+  if (!repoPath || repoPath === '..' || repoPath.startsWith('../')) return null;
+  return repoPath;
+}
+
+function requestedMdxFiles(args) {
+  const requested = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--files') {
+      const value = args[++i];
+      if (!value) throw new Error('--files requires at least one path');
+      requested.push(value);
+    } else if (arg.startsWith('--files=')) {
+      const value = arg.slice('--files='.length);
+      if (!value) throw new Error('--files requires at least one path');
+      requested.push(value);
+    }
+  }
+  if (requested.length === 0) return null;
+
+  const normalized = requested.map(normalizeRepoPath);
+  const invalid = normalized.findIndex((f) =>
+    !f || !f.startsWith(DOCS_PREFIX) || !f.endsWith('.mdx') || isExcluded(f),
+  );
+  if (invalid !== -1) {
+    throw new Error(
+      `--files only accepts .mdx paths under ${DOCS_PREFIX}: ${requested[invalid]}`,
+    );
+  }
+  return [...new Set(normalized)];
+}
+
+/** Select the default corpus or the exact file(s) named by a content-fixer. */
+export function selectMdxFiles(args = []) {
+  return requestedMdxFiles(args) ?? listMdxFiles();
+}
+
+/** Scan selected paths and return the same offender records the CLI reports. */
+export async function scanMdxFiles(files, { doFix = false } = {}) {
   const offenders = [];
   const autofixed = [];
-  for (const f of tracked) {
-    if (isExcluded(f)) continue;
-    if (!f.endsWith('.mdx')) continue;
-    if (!f.startsWith(DOCS_PREFIX)) continue; // only the astro-built docs set
+  for (const f of files) {
     let text;
     try {
-      text = readFileSync(new URL(f, `file://${ROOT}/`), 'utf8');
+      text = readFileSync(resolve(ROOT, f), 'utf8');
     } catch {
       continue;
     }
@@ -84,7 +141,7 @@ async function main() {
     if (hit && doFix) {
       const res = autoFixMdxAngles(text);
       if (res.changed) {
-        writeFileSync(new URL(f, `file://${ROOT}/`), res.fixed); // <+digit escape is always valid
+        writeFileSync(resolve(ROOT, f), res.fixed); // <+digit escape is always valid
         autofixed.push(f);
         text = res.fixed;
         hit = await findMdxCompileError(f, text); // re-check; may still have a `<word>` offender
@@ -95,6 +152,16 @@ async function main() {
       offenders.push(`${f}${at}  ${hit.reason}`);
     }
   }
+  return { offenders, autofixed };
+}
+
+async function main() {
+  // --fix: deterministically repair the safe `<`+digit offender in place (WI-276)
+  // before reporting; anything still broken (e.g. `<word>` components) is reported
+  // for a human/LLM fixer as before.
+  const doFix = process.argv.includes('--fix');
+  const files = selectMdxFiles(process.argv.slice(2));
+  const { offenders, autofixed } = await scanMdxFiles(files, { doFix });
 
   if (autofixed.length > 0) {
     console.log(`✓ auto-fixed (escaped \`<\`+digit) in ${autofixed.length} file(s):`);
@@ -102,7 +169,7 @@ async function main() {
   }
 
   if (offenders.length === 0) {
-    console.log('✓ every tracked .mdx compiles (MDX core).');
+    console.log('✓ every selected tracked/untracked-not-ignored .mdx compiles (MDX core).');
     process.exit(0);
   }
 

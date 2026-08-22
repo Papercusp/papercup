@@ -12,11 +12,22 @@
  *      over-eager would slip past the clean-tree run but is caught here.
  */
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its detector only.
-import { findMdxCompileError, blankFrontmatter } from '../../../../scripts/check-mdx.mjs';
+import {
+  findMdxCompileError,
+  blankFrontmatter,
+  listMdxFiles,
+  selectMdxFiles,
+  scanMdxFiles,
+} from '../../../../scripts/check-mdx.mjs';
 
 const FM = '---\ntitle: x\n---\n';
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+const DOCS_ROOT = join(ROOT, 'apps/operator-docs/src/content/docs');
 
 describe('check-mdx guard detector (EI-438)', () => {
   it('FLAGS a bare <word> placeholder in prose (the unclosed-JSX-tag break)', async () => {
@@ -56,5 +67,22 @@ describe('check-mdx guard detector (EI-438)', () => {
   it('leaves a doc with no frontmatter untouched', () => {
     const src = '# No frontmatter\n\ntext\n';
     expect(blankFrontmatter(src)).toBe(src);
+  });
+
+  it('includes a nonignored untracked .mdx in the default lint corpus', async () => {
+    const tempDir = mkdtempSync(join(DOCS_ROOT, '.check-mdx-untracked-'));
+    const file = join(tempDir, 'broken.mdx');
+    const relative = `apps/operator-docs/src/content/docs/${basename(tempDir)}/broken.mdx`;
+    try {
+      writeFileSync(file, `${FM}\nA "resets <date>" string breaks the build.\n`);
+      expect(listMdxFiles()).toContain(relative);
+      expect(selectMdxFiles([`--files=${relative}`])).toEqual([relative]);
+      const { offenders } = await scanMdxFiles([relative]);
+      expect(offenders).toHaveLength(1);
+      expect(offenders[0]).toMatch(new RegExp(`${relative}:\\d+`));
+      expect(offenders[0]).toMatch(/closing tag for `<date>`/i);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

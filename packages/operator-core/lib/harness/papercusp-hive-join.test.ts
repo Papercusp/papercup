@@ -55,7 +55,12 @@ describe('joinCanonicalPapercuspHive', () => {
       joinInviteTopic: async () => undefined,
       confirmInviteAnnounce: async () => ({
         found: true,
-        hive: { potId: 'papercusp', hivePubkey: 'PUB==', memberLinks: ['link1'] },
+        hive: {
+          potId: 'papercusp',
+          hivePubkey: 'PUB==',
+          ownerDevicePubkey: 'OWNER_DEVICE',
+          memberLinks: ['link1'],
+        },
       }),
     }),
     joinHive: async () => ({ ok: true, potSlug: 'papercusp' }),
@@ -139,7 +144,7 @@ describe('joinCanonicalPapercuspHive', () => {
   });
 
   it('found + member-links → joins → joined', async () => {
-    let joined: { memberLinks?: string[]; workspaceId?: string } | undefined;
+    let joined: { memberLinks?: string[]; workspaceId?: string; ownerDevicePubkey?: string } | undefined;
     const res = await joinCanonicalPapercuspHive(INVITE, {
       ...baseDeps(),
       joinHive: async (o) => {
@@ -151,6 +156,7 @@ describe('joinCanonicalPapercuspHive', () => {
     expect(res.slug).toBe('papercusp');
     expect(joined?.memberLinks).toEqual(['link1']);
     expect(joined?.workspaceId).toBeTruthy();
+    expect(joined?.ownerDevicePubkey).toBe('OWNER_DEVICE');
   });
 
   it('falls back to listDiscovered for member-links when the confirm omits them', async () => {

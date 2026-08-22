@@ -408,6 +408,7 @@ describe('wireHiveDirectoryAtBoot (P-003 boot-join)', () => {
       // The caller can JOIN straight off this — no second listDiscovered + pubkey re-match.
       expect(res.hive?.memberLinks).toEqual(['papercusp://m1', 'papercusp://m2']);
       expect(res.hive?.hivePubkey).toBe('HIVEPUB');
+      expect(res.hive?.ownerDevicePubkey).toBe(frame.owner_device_pubkey);
       await wiring.stop();
     });
 

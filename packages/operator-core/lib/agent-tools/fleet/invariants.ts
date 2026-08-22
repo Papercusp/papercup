@@ -334,3 +334,51 @@ export async function evaluateFleetInvariants(
   }
   return out;
 }
+
+/**
+ * Read and evaluate the registry as one leader-brief-safe operation.
+ *
+ * `evaluateFleetInvariants` already turns a failure of ONE invariant into that
+ * invariant's own error row. The orchestration around it used to have a wider
+ * failure hole, though: a registry-read failure (or an unexpected evaluator
+ * failure) was caught by leader-brief and collapsed to an absent/empty
+ * `customInvariants` array. That is the exact false-clean state this feature is
+ * meant to prevent — the reader cannot distinguish "no checks registered" from
+ * "the checks could not be read".
+ *
+ * `undefined` therefore means ONLY a successful registry read with zero active
+ * invariants. Every failure becomes a synthetic critical error evaluation so
+ * the existing alert roll-up and response shape carry it without a parallel
+ * health channel.
+ */
+export async function readFleetInvariantEvaluations(
+  args: { workspaceId: string; fleetSlug: string },
+  deps: {
+    list?: typeof listFleetInvariants;
+    evaluate?: typeof evaluateFleetInvariants;
+  } = {},
+): Promise<InvariantEvaluation[] | undefined> {
+  const startedAt = Date.now();
+  try {
+    const registered = await (deps.list ?? listFleetInvariants)({
+      workspaceId: args.workspaceId,
+      fleetSlug: args.fleetSlug,
+    });
+    if (registered.length === 0) return undefined;
+    return await (deps.evaluate ?? evaluateFleetInvariants)({
+      invariants: registered,
+      workspaceId: args.workspaceId,
+      fleetSlug: args.fleetSlug,
+    });
+  } catch (error) {
+    return [
+      {
+        name: 'fleet-invariant-registry',
+        severity: 'critical',
+        status: 'error',
+        error: `custom invariant registry/evaluation failed: ${error instanceof Error ? error.message : String(error)}`,
+        elapsedMs: Date.now() - startedAt,
+      },
+    ];
+  }
+}

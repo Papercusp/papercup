@@ -10,6 +10,9 @@ import { tmpdir } from 'node:os';
 vi.mock('./canonical-hive-invite', () => ({
   CANONICAL_PAPERCUSP_HIVE_INVITE: null,
 }));
+vi.mock('../hive-store', () => ({
+  getHiveByPubkey: vi.fn(async () => ({ homeSlug: 'papercusp' })),
+}));
 // Team allowlist moved to its own SERVER-ONLY module (WI-38322): co-locating it with the
 // invite shipped the real team GitHub logins into the client bundle. Mocked separately here,
 // still to [], preserving this suite's existing behaviour.
@@ -200,6 +203,32 @@ describe('bootstrapPapercuspHive — clone-on-first-boot dogfood hive', () => {
     expect(findJoinedCanonical).toHaveBeenCalledWith('CANON_PUB');
     expect(deps.setHomeWorkspace).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID);
     expect(deps.clone).not.toHaveBeenCalled();
+  });
+
+  it('P-005 repair: an incomplete remote view does not trip the canonical latch', async () => {
+    const loadRegistry = vi.fn(async () => ({
+      projects: [
+        {
+          slug: PAPERCUSP_HIVE_SLUG,
+          path: '/remote-hives/papercusp',
+          remote_hive: true,
+          hive_pubkey: 'CANON_PUB',
+          // owner_device_pubkey is intentionally absent: this is the pre-fix view.
+        },
+      ],
+    }));
+    const joinCanonical = vi.fn(async () => ({ state: 'joined' as const, slug: 'papercusp' }));
+    const deps = spyDeps({
+      canonicalInvite: { pubkeyBase64: 'CANON_PUB', inviteSecret: 'sec' },
+      loadRegistry,
+      joinCanonical,
+    });
+
+    const res = await bootstrapPapercuspHive(deps);
+
+    expect(res.state).toBe('cloned-and-created');
+    expect(joinCanonical).toHaveBeenCalledOnce();
+    expect(loadRegistry).toHaveBeenCalledWith(PAPERCUSP_WORKSPACE_ID, { fresh: true });
   });
 
   it('P-006: bootstrap dispatches to the JOIN path on a baked invite (joined → cloned-and-created)', async () => {

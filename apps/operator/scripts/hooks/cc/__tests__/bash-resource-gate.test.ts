@@ -5531,3 +5531,103 @@ describe('ancestor-chain kill guard (WI-36926)', () => {
     );
   });
 });
+
+describe('schema skew between the hook and the deployed tool (WI-40602)', () => {
+  // THE FAILURE THIS PINS DOWN, because a green suite already hid it once:
+  // this hook is read LIVE from the staging tree, while `locks:check_command`
+  // is served by the release checkout pinned to green `main`. Staging commit
+  // 8b824cae7f added a `cwd` argument to both halves; the client half went live
+  // instantly, the server half could not promote behind a red gate, and every
+  // call was rejected `Unrecognized key: "cwd"`. An error envelope carries no
+  // `result`, so all 549 of them (8 agents, ~4h) fell through to the fail-open
+  // allow() — the resource gate stopped blocking real collisions and NOTHING
+  // surfaced it.
+  //
+  // This case is the CONTROL: point the gate at an operator that rejects `cwd`
+  // exactly as the deployed one does, and hand it a decision it MUST act on.
+  // Against the pre-fix hook it fails (allow), which is the only reason it is
+  // worth having — the 805 assertions around it passed identically before and
+  // after the fix and so could not tell a working gate from an inert one.
+  let child: ReturnType<typeof spawn>;
+  let url = '';
+  let requestFile = '';
+
+  beforeAll(async () => {
+    requestFile = join(fakeHome, 'skew-requests.jsonl');
+    writeFileSync(requestFile, '');
+    const serverJs = join(fakeHome, 'skew-operator.mjs');
+    writeFileSync(
+      serverJs,
+      `import { createServer } from 'node:http';
+       import { appendFileSync } from 'node:fs';
+       const s = createServer((req, res) => {
+         let raw = '';
+         req.on('data', (c) => { raw += c; });
+         req.on('end', () => {
+           appendFileSync(process.argv[2], raw + '\\n');
+           let hasCwd = false;
+           try {
+             const a = JSON.parse(raw)?.params?.arguments ?? {};
+             hasCwd = Object.prototype.hasOwnProperty.call(a, 'cwd');
+           } catch {}
+           res.writeHead(200, { 'Content-Type': 'application/json' });
+           if (hasCwd) {
+             // Byte-for-byte the deployed operator's refusal.
+             res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32602,
+               message: 'invalid_args: Unrecognized key: "cwd" — this tool accepts ONLY: command.' } }));
+             return;
+           }
+           res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text',
+             text: JSON.stringify({ ok: true, decision: 'block', matched: [{ resource: 'dev:restart' }] }) }] } }));
+         });
+       });
+       s.listen(0, '127.0.0.1', () => console.log('PORT=' + s.address().port));`,
+    );
+
+    child = spawn(process.execPath, [serverJs, requestFile], { stdio: ['ignore', 'pipe', 'ignore'] });
+    url = await new Promise<string>((ok, fail) => {
+      const t = setTimeout(() => fail(new Error('skew operator did not start')), 10_000);
+      child.stdout!.on('data', (b: Buffer) => {
+        const m = /PORT=(\d+)/.exec(String(b));
+        if (m) {
+          clearTimeout(t);
+          ok(`http://127.0.0.1:${m[1]}`);
+        }
+      });
+    });
+  });
+
+  afterAll(() => {
+    child?.kill();
+  });
+
+  it('still enforces a resource BLOCK when the deployed tool rejects `cwd`', () => {
+    writeFileSync(requestFile, '');
+    const out = runGate(bashCmd('cat packages/operator-core/lib/foo.ts'), {
+      PAPERCUSP_OPERATOR_URL: url,
+    });
+    const hook = JSON.parse(out.stdout).hookSpecificOutput;
+    // Pre-fix this reads 'allow': the rejection produced no `result` and the
+    // gate fell straight through to fail-open.
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain('resource-gate');
+  });
+
+  it('sends `cwd` first and only DROPS it on the rejection, so the arg is not abandoned', () => {
+    writeFileSync(requestFile, '');
+    runGate(bashCmd('cat packages/operator-core/lib/foo.ts'), { PAPERCUSP_OPERATOR_URL: url });
+    const sent = readFileSync(requestFile, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l).params.arguments);
+
+    // Exactly two: the optimistic call, then the degraded retry. A third would
+    // mean the retry itself is looping.
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toHaveProperty('cwd');
+    expect(sent[1]).not.toHaveProperty('cwd');
+    // The retry must still carry the thing actually being judged.
+    expect(sent[1].command).toContain('cat packages/operator-core/lib/foo.ts');
+  });
+});

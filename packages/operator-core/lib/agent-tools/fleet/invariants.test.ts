@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 import {
   computeCustomInvariantAlert,
   evaluateFleetInvariants,
+  readFleetInvariantEvaluations,
   substituteInvariantPlaceholders,
   summarizeInvariantEvaluations,
   type FleetInvariant,
@@ -233,5 +234,53 @@ describe('evaluateFleetInvariants', () => {
       { runQuery: (async () => ({ rows: [], truncated: false })) as never },
     );
     expect(out).toEqual([]);
+  });
+});
+
+describe('readFleetInvariantEvaluations', () => {
+  it('uses undefined only for a successful read with no active invariants', async () => {
+    const out = await readFleetInvariantEvaluations(
+      { workspaceId: 'ws', fleetSlug: 'f' },
+      { list: async () => [] },
+    );
+    expect(out).toBeUndefined();
+  });
+
+  it('turns a registry-read failure into a visible critical error evaluation', async () => {
+    const out = await readFleetInvariantEvaluations(
+      { workspaceId: 'ws', fleetSlug: 'f' },
+      {
+        list: async () => {
+          throw new Error('registry unavailable');
+        },
+      },
+    );
+    expect(out).toEqual([
+      expect.objectContaining({
+        name: 'fleet-invariant-registry',
+        severity: 'critical',
+        status: 'error',
+        error: expect.stringContaining('registry unavailable'),
+      }),
+    ]);
+    expect(computeCustomInvariantAlert(out ?? [])?.reason).toContain('FAILED TO RUN');
+  });
+
+  it('turns an unexpected evaluator failure into the same visible error channel', async () => {
+    const out = await readFleetInvariantEvaluations(
+      { workspaceId: 'ws', fleetSlug: 'f' },
+      {
+        list: async () => [inv()],
+        evaluate: async () => {
+          throw new Error('evaluation orchestration failed');
+        },
+      },
+    );
+    expect(out?.[0]).toMatchObject({
+      name: 'fleet-invariant-registry',
+      severity: 'critical',
+      status: 'error',
+    });
+    expect(out?.[0]?.error).toContain('evaluation orchestration failed');
   });
 });
