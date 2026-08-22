@@ -19,6 +19,16 @@ const agentChatUnexemptMigrationPath = resolve(
   '../../../../libs/papercusp/libs/db/sql/743-backfill-agent-chat-counts-wi4297.sql',
 );
 
+const partsBackfillMigrationPath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  '../../../../libs/papercusp/libs/db/sql/880-session-turn-parts-backfill.sql',
+);
+
+const sessionIngestSourcePath = resolve(
+  dirname(fileURLToPath(import.meta.url)),
+  './session-ingest.ts',
+);
+
 describe('WI-4297 historical counter backfill migration', () => {
   it('uses an independent resumable cursor and never resets the indexed cursor', async () => {
     const migration = await readFile(migrationPath, 'utf8');
@@ -65,5 +75,28 @@ describe('WI-4297 follow-up: migration 601 wrongly exempted agent_chat rows', ()
     expect(migration).toMatch(/transcript\s+IS\s+NOT\s+NULL/i);
     // Must never touch the __hwm__ bookkeeping row.
     expect(migration).toMatch(/__hwm__/);
+  });
+});
+
+describe('P-001 historical faithful-part backfill', () => {
+  it('adds an independent resumable cursor without reopening the live turn cursor', async () => {
+    const migration = await readFile(partsBackfillMigrationPath, 'utf8');
+
+    expect(migration).toContain('parts_backfill_offset BIGINT NOT NULL DEFAULT 0');
+    expect(migration).toContain('parts_backfilled_at TIMESTAMPTZ');
+    expect(migration).toContain('parts_backfilled_at IS NULL');
+    expect(migration).toContain("source_kind NOT IN ('claude', 'codex')");
+    expect(migration).not.toMatch(/SET\s+byte_offset\s*=\s*0/i);
+  });
+
+  it('runs the EOF repair before ordinary tailing and writes faithful parts', async () => {
+    const source = await readFile(sessionIngestSourcePath, 'utf8');
+
+    // This is the recurrence guard for the filed defect: a completed file has
+    // no new bytes, so only the independent historical path can reach it.
+    expect(source).toContain('async function backfillHistoricalParts');
+    expect(source).toMatch(/parts_backfill_offset\s+IS NULL|parts_backfill_offset\s*>\s*0/);
+    expect(source).toContain('partRowsFrom(result.parts');
+    expect(source).toContain('stats.partsBackfillFiles = await backfillHistoricalParts(sql)');
   });
 });

@@ -93,6 +93,9 @@ const LINE_YIELD_EVERY = 1000;
 /** Historical EI-9970 counter repair caps. The cursor persists across ticks. */
 const MAX_COUNT_BACKFILL_FILES_PER_TICK = 25;
 const MAX_COUNT_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
+/** Historical P-001 faithful-part repair caps. The cursor persists across ticks. */
+const MAX_PART_BACKFILL_FILES_PER_TICK = 25;
+const MAX_PART_BACKFILL_BYTES_PER_TICK = 50 * 1024 * 1024;
 /** Per-turn text cap (chars). */
 const TEXT_CAP = 8000;
 /** Skip micro-turns ("ok", "y") — noise for recall. */
@@ -196,6 +199,8 @@ export interface IngestStats {
   chatsIngested: number;
   /** Historical session_ingest_state rows whose EI-9970 counters advanced. */
   countBackfillFiles: number;
+  /** Historical session_ingest_state rows whose P-001 parts advanced. */
+  partsBackfillFiles: number;
   errors: number;
   /** First few error messages of the sweep — diagnosis without log spam. */
   errorSample?: string[];
@@ -1629,6 +1634,10 @@ interface IngestState {
   counts_backfill_offset: number;
   counts_backfill_last_inference_id: string | null;
   counts_backfilled_at: string | null;
+  /** P-001: independent cursor for repairing rows whose file cursor already
+   * reached EOF before session_turn_parts existed or was wired. */
+  parts_backfill_offset?: number;
+  parts_backfilled_at?: string | null;
 }
 
 const EMPTY_STATE: IngestState = {
@@ -1642,6 +1651,8 @@ const EMPTY_STATE: IngestState = {
   counts_backfill_offset: 0,
   counts_backfill_last_inference_id: null,
   counts_backfilled_at: null,
+  parts_backfill_offset: 0,
+  parts_backfilled_at: null,
 };
 
 async function readState(sql: Sql, sourceKind: string, filePath: string): Promise<IngestState> {
@@ -1650,9 +1661,11 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     prompt_count: number; response_count: number; tool_call_count: number; last_inference_id: string | null;
     counts_backfill_offset: string | number; counts_backfill_last_inference_id: string | null;
     counts_backfilled_at: string | null;
+    parts_backfill_offset: string | number; parts_backfilled_at: string | null;
   }>>`
     SELECT byte_offset, turn_count, part_count, prompt_count, response_count, tool_call_count, last_inference_id,
            counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at
+           , parts_backfill_offset, parts_backfilled_at
       FROM harness_shared.session_ingest_state
      WHERE source_kind = ${sourceKind} AND file_path = ${filePath}
   `;
@@ -1669,6 +1682,8 @@ async function readState(sql: Sql, sourceKind: string, filePath: string): Promis
     counts_backfill_offset: Number(r.counts_backfill_offset ?? 0),
     counts_backfill_last_inference_id: r.counts_backfill_last_inference_id ?? null,
     counts_backfilled_at: r.counts_backfilled_at ?? null,
+    parts_backfill_offset: Number(r.parts_backfill_offset ?? 0),
+    parts_backfilled_at: r.parts_backfilled_at ?? null,
   };
 }
 
@@ -1678,16 +1693,18 @@ async function writeState(
   filePath: string,
   st: Pick<IngestState, 'byte_offset' | 'turn_count'> &
     Partial<Pick<IngestState, 'part_count' | 'prompt_count' | 'response_count' | 'tool_call_count' | 'last_inference_id' | 'counts_backfill_offset' | 'counts_backfill_last_inference_id' | 'counts_backfilled_at'>> &
+    Partial<Pick<IngestState, 'parts_backfill_offset' | 'parts_backfilled_at'>> &
     { sessionId?: string | null; mtimeMs?: number; lastError?: string | null },
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.session_ingest_state
       (source_kind, file_path, byte_offset, turn_count, part_count, prompt_count, response_count,
        tool_call_count, last_inference_id, counts_backfill_offset, counts_backfill_last_inference_id, counts_backfilled_at,
-       session_id, mtime_ms, last_error, updated_at)
+       parts_backfill_offset, parts_backfilled_at, session_id, mtime_ms, last_error, updated_at)
     VALUES (${sourceKind}, ${filePath}, ${st.byte_offset}, ${st.turn_count}, ${st.part_count ?? 0},
             ${st.prompt_count ?? 0}, ${st.response_count ?? 0}, ${st.tool_call_count ?? 0}, ${st.last_inference_id ?? null},
             ${st.counts_backfill_offset ?? st.byte_offset}, ${st.counts_backfill_last_inference_id ?? null}, ${st.counts_backfilled_at ?? null},
+            ${st.parts_backfill_offset ?? 0}, ${st.parts_backfilled_at ?? null},
             ${st.sessionId ?? null}, ${st.mtimeMs != null ? Math.round(st.mtimeMs) : null}, ${st.lastError ?? null}, now())
     ON CONFLICT (source_kind, file_path) DO UPDATE SET
       byte_offset       = EXCLUDED.byte_offset,
@@ -1707,6 +1724,8 @@ async function writeState(
       counts_backfill_offset = EXCLUDED.counts_backfill_offset,
       counts_backfill_last_inference_id = COALESCE(EXCLUDED.counts_backfill_last_inference_id, harness_shared.session_ingest_state.counts_backfill_last_inference_id),
       counts_backfilled_at = COALESCE(EXCLUDED.counts_backfilled_at, harness_shared.session_ingest_state.counts_backfilled_at),
+      parts_backfill_offset = COALESCE(${st.parts_backfill_offset ?? null}, harness_shared.session_ingest_state.parts_backfill_offset),
+      parts_backfilled_at = COALESCE(${st.parts_backfilled_at ?? null}, harness_shared.session_ingest_state.parts_backfilled_at),
       session_id        = COALESCE(EXCLUDED.session_id, harness_shared.session_ingest_state.session_id),
       mtime_ms          = EXCLUDED.mtime_ms,
       last_error        = EXCLUDED.last_error,
@@ -1803,6 +1822,154 @@ async function backfillFileCounts(
   }
   if (progressed || complete) budget.files -= 1;
   return progressed || complete;
+}
+
+interface PartsBackfillStateRow {
+  file_path: string;
+  byte_offset: number;
+  turn_count: number;
+  part_count: number;
+  parts_backfill_offset: number;
+  parts_backfilled_at: string | null;
+  session_id: string | null;
+}
+
+/** Replay only the faithful-part signal for one historical file. The live
+ * byte_offset/turn_count cursors remain untouched: this is specifically for
+ * rows that reached EOF before the P-001 writer existed or completed. A
+ * separate cursor makes the repair resumable without replaying text turns. */
+async function backfillFileParts(
+  sql: Sql,
+  adapter: FileAdapter,
+  row: PartsBackfillStateRow,
+  budget: CountBackfillBudget,
+): Promise<boolean> {
+  if (budget.files <= 0 || budget.bytes <= 0 || !adapter.parseParts) return false;
+  const meta = adapter.meta(row.file_path);
+  let sourceSize: number;
+  try {
+    const source = await stat(row.file_path);
+    if (!source.isFile()) throw new Error('not a file');
+    sourceSize = source.size;
+  } catch {
+    // Archive cleanup can win the race after indexing. Do not leave a missing
+    // source eligible forever; the archive reader remains the recovery surface
+    // for sessions whose bytes are no longer on disk.
+    await writeState(sql, adapter.sourceKind, row.file_path, {
+      byte_offset: row.byte_offset,
+      turn_count: row.turn_count,
+      part_count: row.part_count,
+      parts_backfill_offset: row.parts_backfill_offset,
+      parts_backfilled_at: new Date().toISOString(),
+      sessionId: row.session_id ?? meta.sessionId,
+      lastError: 'parts_backfill_source_missing',
+    });
+    budget.files -= 1;
+    return true;
+  }
+
+  // A replaced/truncated source cannot honor an old independent cursor. Start
+  // from zero so the part index is rebuilt from the bytes that exist now.
+  let cursor = row.parts_backfill_offset > sourceSize ? 0 : row.parts_backfill_offset;
+  let partCount = row.part_count;
+  let progressed = false;
+  while (cursor < sourceSize && budget.bytes > 0) {
+    const result = await readNewLines(
+      row.file_path,
+      cursor,
+      adapter.parseLine,
+      adapter.classifyLine,
+      null,
+      undefined,
+      [],
+      adapter.parseParts,
+    );
+    if (result.newOffset === cursor) break;
+
+    // If this write fails, leave the cursor at the last successful chunk so a
+    // later sweep retries the same parts instead of declaring them repaired.
+    await insertParts(sql, partRowsFrom(result.parts, {
+      sourceKind: adapter.sourceKind,
+      sessionId: row.session_id ?? meta.sessionId,
+      owner: meta.owner,
+      partCount,
+    }));
+
+    const advanced = result.newOffset - cursor;
+    cursor = result.newOffset;
+    partCount += result.parts.length;
+    budget.bytes -= advanced;
+    progressed = true;
+    await writeState(sql, adapter.sourceKind, row.file_path, {
+      byte_offset: row.byte_offset,
+      turn_count: row.turn_count,
+      part_count: partCount,
+      parts_backfill_offset: cursor,
+      parts_backfilled_at: null,
+      sessionId: row.session_id ?? meta.sessionId,
+    });
+  }
+
+  const complete = cursor >= sourceSize;
+  if (complete) {
+    await writeState(sql, adapter.sourceKind, row.file_path, {
+      byte_offset: row.byte_offset,
+      turn_count: row.turn_count,
+      part_count: partCount,
+      parts_backfill_offset: cursor,
+      parts_backfilled_at: new Date().toISOString(),
+      sessionId: row.session_id ?? meta.sessionId,
+    });
+  }
+  if (progressed || complete) budget.files -= 1;
+  return progressed || complete;
+}
+
+/** Backfill faithful parts for pre-P-001 rows in bounded, resumable slices.
+ * Only file adapters with parseParts participate; agent_chat and OMP retain
+ * their prior zero-parts semantics. */
+async function backfillHistoricalParts(sql: Sql): Promise<number> {
+  const budget: CountBackfillBudget = {
+    files: MAX_PART_BACKFILL_FILES_PER_TICK,
+    bytes: MAX_PART_BACKFILL_BYTES_PER_TICK,
+  };
+  let progressed = 0;
+  for (const adapter of FILE_ADAPTERS) {
+    if (budget.files <= 0 || budget.bytes <= 0 || !adapter.parseParts) break;
+    const rows = await sql<Array<{
+      file_path: string;
+      byte_offset: string | number;
+      turn_count: number;
+      part_count: number | null;
+      parts_backfill_offset: string | number;
+      parts_backfilled_at: string | null;
+      session_id: string | null;
+    }>>`
+      SELECT file_path, byte_offset, turn_count, part_count,
+             parts_backfill_offset, parts_backfilled_at, session_id
+        FROM harness_shared.session_ingest_state
+       WHERE source_kind = ${adapter.sourceKind}
+         AND byte_offset > 0
+         AND parts_backfilled_at IS NULL
+         AND (part_count = 0 OR parts_backfill_offset > 0)
+       ORDER BY updated_at ASC, file_path ASC
+       LIMIT ${MAX_PART_BACKFILL_FILES_PER_TICK}
+    `;
+    for (const r of rows) {
+      if (budget.files <= 0 || budget.bytes <= 0) break;
+      const changed = await backfillFileParts(sql, adapter, {
+        file_path: r.file_path,
+        byte_offset: Number(r.byte_offset),
+        turn_count: r.turn_count,
+        part_count: r.part_count ?? 0,
+        parts_backfill_offset: Number(r.parts_backfill_offset ?? 0),
+        parts_backfilled_at: r.parts_backfilled_at ?? null,
+        session_id: r.session_id ?? null,
+      }, budget);
+      if (changed) progressed += 1;
+    }
+  }
+  return progressed;
 }
 
 /** Backfill pre-579 file and agent-chat rows in small resumable slices. This
@@ -2166,6 +2333,7 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
   const started = Date.now();
   const stats: IngestStats = {
     filesScanned: 0, filesIngested: 0, turnsInserted: 0, chatsIngested: 0, countBackfillFiles: 0,
+    partsBackfillFiles: 0,
     errors: 0, durationMs: 0,
   };
   if (__sweep.running) return { ...stats, skipped: 'already_running' };
@@ -2180,6 +2348,12 @@ export async function runSessionIngestOnce(): Promise<IngestStats> {
     if (!enabled) return { ...stats, skipped: 'flag_off' };
 
     const { sql } = getOrgPg();
+    try {
+      stats.partsBackfillFiles = await backfillHistoricalParts(sql);
+    } catch (err) {
+      stats.errors += 1;
+      console.warn(`[session-ingest] historical parts backfill skipped (non-fatal): ${(err as Error).message}`);
+    }
     try {
       stats.countBackfillFiles = await backfillHistoricalCounts(sql);
     } catch (err) {
