@@ -10,6 +10,7 @@ import {
   auditMigrationList,
   formatStaleMigrationList,
   migrationNumber,
+  objectsTouchedBySql,
   stripSqlComments,
   tablesTouchedBySql,
 } from '../test/_pg-helpers';
@@ -67,6 +68,23 @@ describe('tablesTouchedBySql', () => {
     // Fails under a mask that SKIPS `$tag$` bodies instead of recursing into them.
     const sql = `DO $$ BEGIN\n  -- CREATE TABLE harness_shared.not_real (id text);\n  PERFORM 1;\nEND $$;`;
     expect(tablesTouchedBySql(sql)).toEqual(new Set());
+  });
+});
+
+describe('objectsTouchedBySql', () => {
+  it('tracks function replacements and trigger creation without treating table references as declarations', () => {
+    const sql = `
+      CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked(p text)
+      RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;
+      CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE ON harness_shared.work_items
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.wir_status_sync_dependents();
+    `;
+    expect(objectsTouchedBySql(sql)).toEqual(
+      new Set([
+        'function:harness_shared.work_item_is_blocked',
+        'trigger:wir_status_sync_dependents_trg',
+      ]),
+    );
   });
 });
 
@@ -146,6 +164,37 @@ describe('auditMigrationList', () => {
     expect(audit.missing.map((m) => m.file)).toContain('650-push-delivery-extra.sql');
     expect(audit.missing.find((m) => m.file === '650-push-delivery-extra.sql')?.tables).toEqual([
       'harness_shared.push_delivery',
+    ]);
+  });
+
+  it('catches a later function/trigger-only migration such as 640', () => {
+    const migrations: [string, string][] = [
+      [
+        '379-maintained-ready-column.sql',
+        `CREATE TABLE harness_shared.work_items (id text);
+         CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked(p text)
+         RETURNS boolean LANGUAGE sql AS $$ SELECT true $$;
+         CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE ON harness_shared.work_items
+         FOR EACH ROW EXECUTE FUNCTION harness_shared.wir_status_sync_dependents();`,
+      ],
+      [
+        '640-unify-workitem-readiness-triggers.sql',
+        `CREATE OR REPLACE FUNCTION harness_shared.work_item_is_blocked(p text)
+         RETURNS boolean LANGUAGE sql AS $$ SELECT false $$;
+         CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE ON harness_shared.work_items
+         FOR EACH ROW EXECUTE FUNCTION harness_shared.wir_status_sync_dependents();`,
+      ],
+    ];
+    const audit = auditMigrationList(['379-maintained-ready-column.sql'], migrations);
+    expect(audit.missing).toEqual([
+      {
+        file: '640-unify-workitem-readiness-triggers.sql',
+        tables: [],
+        objects: [
+          'function:harness_shared.work_item_is_blocked',
+          'trigger:wir_status_sync_dependents_trg',
+        ],
+      },
     ]);
   });
 

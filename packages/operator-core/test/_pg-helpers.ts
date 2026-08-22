@@ -156,6 +156,19 @@ export function tablesTouchedBySql(sqlText: string): Set<string> {
   return out;
 }
 
+/** PURE — functions and triggers a migration creates or replaces. */
+export function objectsTouchedBySql(sqlText: string): Set<string> {
+  const body = stripSqlComments(sqlText);
+  const out = new Set<string>();
+  const functionRe =
+    /\bCREATE(?:\s+OR\s+REPLACE)?\s+FUNCTION\s+([a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*)\s*\(/gi;
+  const triggerRe =
+    /\bCREATE\s+TRIGGER\s+([a-z_][a-z0-9_]*)\s+(?:BEFORE|AFTER|INSTEAD\s+OF)\b/gi;
+  for (const m of body.matchAll(functionRe)) out.add(`function:${m[1].toLowerCase()}`);
+  for (const m of body.matchAll(triggerRe)) out.add(`trigger:${m[1].toLowerCase()}`);
+  return out;
+}
+
 /** PURE — leading migration number (`689-agent-facts-…sql` → 689), else null. */
 export function migrationNumber(fileName: string): number | null {
   const m = /^(\d+)-/.exec(fileName);
@@ -165,12 +178,14 @@ export function migrationNumber(fileName: string): number | null {
 export interface MigrationListAudit {
   /** Later migrations that touch ONLY the fixture's own tables — these are real,
    *  actionable gaps and are what `applyMigrationsForTest` throws on. */
-  missing: { file: string; tables: string[] }[];
+  missing: { file: string; tables: string[]; objects?: string[] }[];
   /** Later migrations touching the fixture's tables AND others — not applicable
    *  to a partial fixture, so advisory context only, never a failure. */
-  wider: { file: string; tables: string[] }[];
+  wider: { file: string; tables: string[]; objects?: string[] }[];
   /** The tables the declared list itself builds. */
   tables: string[];
+  /** The functions and triggers the declared list itself builds or replaces. */
+  objects: string[];
 }
 
 /**
@@ -182,11 +197,17 @@ export function auditMigrationList(
   allMigrations: Iterable<readonly [string, string]>,
 ): MigrationListAudit {
   const declaredSet = new Set(declared);
-  const byFile = new Map<string, Set<string>>();
-  for (const [file, text] of allMigrations) byFile.set(file, tablesTouchedBySql(text));
+  const byFile = new Map<string, { tables: Set<string>; objects: Set<string> }>();
+  for (const [file, text] of allMigrations) {
+    byFile.set(file, { tables: tablesTouchedBySql(text), objects: objectsTouchedBySql(text) });
+  }
 
   const tables = new Set<string>();
-  for (const file of declared) for (const t of byFile.get(file) ?? []) tables.add(t);
+  const objects = new Set<string>();
+  for (const file of declared) {
+    for (const t of byFile.get(file)?.tables ?? []) tables.add(t);
+    for (const object of byFile.get(file)?.objects ?? []) objects.add(object);
+  }
 
   // The watermark is PER TABLE, not global. A global "newest declared" hides a
   // real gap behind an unrelated table: a list carrying 693 (agent_facts) and
@@ -194,29 +215,43 @@ export function auditMigrationList(
   // because 650 < 693. Per table, 650 > 609 and is correctly flagged.
   // Below a table's own watermark, an omission is a deliberate choice, not rot.
   const watermark = new Map<string, number>();
+  const objectWatermark = new Map<string, number>();
   for (const file of declared) {
     const n = migrationNumber(file) ?? 0;
-    for (const t of byFile.get(file) ?? []) {
+    for (const t of byFile.get(file)?.tables ?? []) {
       watermark.set(t, Math.max(watermark.get(t) ?? 0, n));
+    }
+    for (const object of byFile.get(file)?.objects ?? []) {
+      objectWatermark.set(object, Math.max(objectWatermark.get(object) ?? 0, n));
     }
   }
 
-  const missing: { file: string; tables: string[] }[] = [];
-  const wider: { file: string; tables: string[] }[] = [];
+  const missing: { file: string; tables: string[]; objects?: string[] }[] = [];
+  const wider: { file: string; tables: string[]; objects?: string[] }[] = [];
   for (const [file, touched] of [...byFile].sort(
     (a, b) => (migrationNumber(a[0]) ?? 0) - (migrationNumber(b[0]) ?? 0),
   )) {
     if (declaredSet.has(file)) continue;
     const n = migrationNumber(file);
     if (n === null) continue;
-    // Relevant for any of OUR tables that this file post-dates.
-    const overlap = [...touched].filter((t) => tables.has(t) && n > (watermark.get(t) ?? 0));
-    if (!overlap.length) continue;
-    // Every table it touches is one we already build ⇒ we can actually apply it.
-    if (touched.size === overlap.length) missing.push({ file, tables: overlap.sort() });
-    else wider.push({ file, tables: overlap.sort() });
+    const overlapTables = [...touched.tables].filter(
+      (t) => tables.has(t) && n > (watermark.get(t) ?? 0),
+    );
+    const overlapObjects = [...touched.objects].filter(
+      (object) => objects.has(object) && n > (objectWatermark.get(object) ?? 0),
+    );
+    if (!overlapTables.length && !overlapObjects.length) continue;
+    const allTouched = touched.tables.size + touched.objects.size;
+    const allOverlapping = overlapTables.length + overlapObjects.length;
+    const entry = {
+      file,
+      tables: overlapTables.sort(),
+      ...(overlapObjects.length ? { objects: overlapObjects.sort() } : {}),
+    };
+    if (allTouched === allOverlapping) missing.push(entry);
+    else wider.push(entry);
   }
-  return { missing, wider, tables: [...tables].sort() };
+  return { missing, wider, tables: [...tables].sort(), objects: [...objects].sort() };
 }
 
 /** PURE — the self-describing failure text. Names the FILE and the TABLE that
@@ -229,14 +264,20 @@ export function formatStaleMigrationList(audit: MigrationListAudit, label: strin
     ``,
     `Migrations landed since that touch ONLY those tables and are NOT in the list —`,
     `add them (in numeric order) to fix this:`,
-    ...audit.missing.map((m) => `  + '${m.file}'   (touches ${m.tables.join(', ')})`),
+    ...audit.missing.map(
+      (m) =>
+        `  + '${m.file}'   (touches ${[...m.tables, ...(m.objects ?? [])].join(', ')})`,
+    ),
   ];
   if (audit.wider.length) {
     lines.push(
       ``,
       `FYI only — these also touch your tables but touch others too, so a partial`,
       `fixture cannot apply them wholesale. Not a failure; listed for diagnosis:`,
-      ...audit.wider.map((m) => `  ~ ${m.file}   (overlaps ${m.tables.join(', ')})`),
+      ...audit.wider.map(
+        (m) =>
+          `  ~ ${m.file}   (overlaps ${[...m.tables, ...(m.objects ?? [])].join(', ')})`,
+      ),
     );
   }
   return lines.join('\n');
