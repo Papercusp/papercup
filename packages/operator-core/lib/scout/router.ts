@@ -34,7 +34,7 @@
  * `router-deps.ts`.
  */
 
-import type { CreativeLens, Proposal } from './types';
+import type { CreativeLens, Proposal, ProposalConsultation, ProposalSourceIdeaProvenance } from './types';
 import type { RoutedIdeaProvenance, RoutedRail } from './outcome-feedback';
 import type { ScoutIdeaView, SeedDistantResult } from './gym-bridge';
 
@@ -75,6 +75,12 @@ export interface RoutingDecision {
   routedRef?: string;
   /** Dispatch error — defensive: one failed sink never aborts the batch. */
   error?: string;
+  /** D-010 review disposition for goal creation/amendment. */
+  consultation?: ProposalConsultation;
+  /** A pending consult is a deliberate defer, not a failed dispatch. */
+  deferred?: 'goal-consult';
+  /** Lens snapshot used when an asynchronously reviewed proposal resumes later. */
+  sourceIdeaProvenance?: ProposalSourceIdeaProvenance[];
 }
 
 export interface ClassifyOptions {
@@ -146,17 +152,18 @@ export function classifyProposal(
     return { rail: p.routeHint, reason: `followed recombine routeHint → ${p.routeHint}`, followedHint: true };
   }
   const def = opts.defaultRail ?? DEFAULT_ROUTING_RAIL;
-  return { rail: def, reason: `no routeHint → default ${def} (smallest-footprint, reversible rail)`, followedHint: false };
+  return {
+    rail: def,
+    reason: `no routeHint → default ${def} (smallest-footprint, reversible rail)`,
+    followedHint: false,
+  };
 }
 
 /**
  * Decide rails for a batch — the pure planning step (no IO, no `routedRef`).
  * Order-preserving so a caller can zip decisions back to proposals by index.
  */
-export function decideRoutes(
-  proposals: readonly Proposal[],
-  opts: ClassifyOptions = {},
-): RoutingDecision[] {
+export function decideRoutes(proposals: readonly Proposal[], opts: ClassifyOptions = {}): RoutingDecision[] {
   const maxGoals = opts.maxGoalsPerCycle ?? DEFAULT_MAX_GOALS_PER_CYCLE;
   let goalsDecided = 0;
   return proposals.map((p) => {
@@ -196,6 +203,10 @@ export function decideRoutes(
       ...(title ? { title } : {}),
       ...(refs.length ? { addressesPatternRefs: [...refs] } : {}),
       ...(seededByRefs.length ? { seededByRefs: [...seededByRefs] } : {}),
+      ...(p.sourceIdeaProvenance?.length
+        ? { sourceIdeaProvenance: p.sourceIdeaProvenance.map((source) => ({ ...source })) }
+        : {}),
+      ...(p.consultation ? { consultation: { ...p.consultation } } : {}),
     };
   });
 }
@@ -274,9 +285,19 @@ export interface GoalAmendmentDispatchRequest {
 
 /** goal-with-target → goals:update. Returns the amended id for the ordinary
  * `goal:<id>` provenance ref — amendment is the goal rail, not a sixth rail. */
-export type GoalAmendmentDispatchPort = (
-  req: GoalAmendmentDispatchRequest,
-) => Promise<{ goalId: string }>;
+export type GoalAmendmentDispatchPort = (req: GoalAmendmentDispatchRequest) => Promise<{ goalId: string }>;
+
+export interface GoalFeedbackConsultRequest {
+  proposal: Proposal;
+  /** Present for amendment, absent for creation. */
+  targetGoalId?: string;
+}
+
+/** D-010 high-stakes review. The port returns the proposal carrying a durable
+ * disposition; an answered consult may also fold critique into it. */
+export type GoalFeedbackConsultPort = (
+  req: GoalFeedbackConsultRequest,
+) => Promise<{ proposal: Proposal; consultation: ProposalConsultation }>;
 
 /**
  * The injected effect port. Every rail's side-effect goes through here so
@@ -306,6 +327,8 @@ export interface RouterPorts {
    * merely because this port is absent.
    */
   goalAmendmentDispatch?: GoalAmendmentDispatchPort;
+  /** D-010: consult:get_feedback before either shape consumes the goal rail. */
+  goalFeedbackConsult?: GoalFeedbackConsultPort;
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -315,7 +338,11 @@ export interface RouterPorts {
 /** First non-empty line of the framing, capped — the proposal's human title. */
 export function proposalTitle(p: Proposal): string {
   const framing = (p.framing ?? '').trim();
-  const firstLine = framing.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  const firstLine =
+    framing
+      .split('\n')
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? '';
   return firstLine.slice(0, 200);
 }
 
@@ -333,7 +360,10 @@ export function proposalToGymView(p: Proposal): ScoutIdeaView {
   return {
     id: p.id,
     rationale: title,
-    text: [p.framing, p.mechanism].map((s) => (s ?? '').trim()).filter(Boolean).join(' — '),
+    text: [p.framing, p.mechanism]
+      .map((s) => (s ?? '').trim())
+      .filter(Boolean)
+      .join(' — '),
   };
 }
 
@@ -347,7 +377,10 @@ export function proposalToInstanceView(p: Proposal): InstanceVariantView {
   return {
     id: p.id,
     rationale: title,
-    text: [p.framing, p.mechanism].map((s) => (s ?? '').trim()).filter(Boolean).join(' — '),
+    text: [p.framing, p.mechanism]
+      .map((s) => (s ?? '').trim())
+      .filter(Boolean)
+      .join(' — '),
   };
 }
 
@@ -387,10 +420,7 @@ export const WHOLE_SYSTEM_MARKERS = [
  * proposal text is scanned for the genome-axis vocabulary (a conservative heuristic — the
  * recombine step may set the hint directly for a stronger signal).
  */
-export function isWholeSystemProposal(
-  p: Proposal,
-  markers: readonly string[] = WHOLE_SYSTEM_MARKERS,
-): boolean {
+export function isWholeSystemProposal(p: Proposal, markers: readonly string[] = WHOLE_SYSTEM_MARKERS): boolean {
   if (p.routeHint === 'instance') return true;
   const hay = [p.framing, p.mechanism, p.whyNew].map((s) => (s ?? '').toLowerCase()).join(' \n ');
   return markers.some((m) => hay.includes(m));
@@ -645,6 +675,8 @@ export interface RouteResult {
   instanceSeed?: InstanceSeedResult;
   /** proposalIds whose dispatch threw (their decision carries the `error`). */
   failed: string[];
+  /** proposalIds waiting on a live consult reply; deliberately not failures. */
+  deferred: string[];
 }
 
 export interface RouteOptions extends ClassifyOptions {
@@ -653,6 +685,8 @@ export interface RouteOptions extends ClassifyOptions {
   /** Spend ceiling drafted onto auto-created goals (default {@link DEFAULT_GOAL_BUDGET_CENTS});
    *  the P-009 scout-config seam carries it as `routing.goalBudgetCentsCap`. */
   goalBudgetCentsCap?: number;
+  /** Stable cycle id stamped on a pre-open consult failure disposition. */
+  cycleId?: string;
 }
 
 /**
@@ -714,6 +748,50 @@ export async function routeProposals(
         d.routedRef = `plan:${slug}`;
       } else if (d.rail === 'goal') {
         const targetGoalId = p.targetGoalId?.trim();
+        let reviewedProposal = p;
+
+        // D-010: review both creation and amendment BEFORE either write port.
+        // A live reply is asynchronous: persist the pending disposition and
+        // resume it from the existing stage-artifact store in a later cycle.
+        // Unavailable/failed review is recorded but is not a permission gate.
+        if (!p.consultation) {
+          if (!ports.goalFeedbackConsult) {
+            d.error = 'no goal feedback consult wired (goalFeedbackConsult port missing)';
+            continue;
+          }
+          try {
+            const reviewed = await ports.goalFeedbackConsult({
+              proposal: p,
+              ...(targetGoalId ? { targetGoalId } : {}),
+            });
+            reviewedProposal = reviewed.proposal;
+            // The cycle persists its original proposal array after routing. Mutate
+            // that exact object so the stage-artifact row becomes the durable
+            // continuation record; no second queue or table is introduced.
+            Object.assign(p, reviewedProposal);
+            d.consultation = reviewed.consultation;
+          } catch (e) {
+            const consultation: ProposalConsultation = {
+              originCycleId: opts.cycleId ?? 'unscoped-cycle',
+              originalProposalId: p.id,
+              conversationId: null,
+              status: 'unavailable',
+              state: 'binding_error',
+              verdict: 'failed',
+              reason: errMsg(e).slice(0, 1000),
+            };
+            p.consultation = consultation;
+            d.consultation = consultation;
+          }
+        } else {
+          d.consultation = p.consultation;
+        }
+
+        if (d.consultation?.status === 'pending') {
+          d.deferred = 'goal-consult';
+          continue;
+        }
+        reviewedProposal = p;
         if (targetGoalId) {
           // D-004/D-013: goal WITH a target is an amendment through the existing
           // goals:update door. Never fall through to creation if the amendment
@@ -721,7 +799,10 @@ export async function routeProposals(
           if (!ports.goalAmendmentDispatch) {
             d.error = 'no goal amendment dispatch wired (goalAmendmentDispatch port missing)';
           } else {
-            const { goalId } = await ports.goalAmendmentDispatch({ proposal: p, targetGoalId });
+            const { goalId } = await ports.goalAmendmentDispatch({
+              proposal: reviewedProposal,
+              targetGoalId,
+            });
             d.routedRef = `goal:${goalId}`;
           }
         } else {
@@ -730,12 +811,12 @@ export async function routeProposals(
           if (!ports.goalDispatch) {
             d.error = 'no goal dispatch wired (goalDispatch port missing)';
           } else {
-            const rails = draftGoalRails(p, {
+            const rails = draftGoalRails(reviewedProposal, {
               ...(opts.goalBudgetCentsCap !== undefined ? { budgetCentsCap: opts.goalBudgetCentsCap } : {}),
             });
             const { goalId } = await ports.goalDispatch({
-              proposal: p,
-              title: proposalTitle(p) || `Scout goal ${p.id}`,
+              proposal: reviewedProposal,
+              title: proposalTitle(reviewedProposal) || `Scout goal ${reviewedProposal.id}`,
               ...rails,
             });
             d.routedRef = `goal:${goalId}`;
@@ -753,8 +834,16 @@ export async function routeProposals(
   const byRail: Record<RoutedRail, number> = { plan: 0, gym: 0, improvement: 0, instance: 0, goal: 0 };
   for (const d of decisions) byRail[d.rail] += 1;
   const failed = decisions.filter((d) => d.error).map((d) => d.proposalId);
+  const deferred = decisions.filter((d) => d.deferred).map((d) => d.proposalId);
 
-  return { decisions, byRail, ...(gymSeed ? { gymSeed } : {}), ...(instanceSeed ? { instanceSeed } : {}), failed };
+  return {
+    decisions,
+    byRail,
+    ...(gymSeed ? { gymSeed } : {}),
+    ...(instanceSeed ? { instanceSeed } : {}),
+    failed,
+    deferred,
+  };
 }
 
 /* ────────────────────────────────────────────────────────────────────────
@@ -790,7 +879,8 @@ export function decisionsToProvenance(
   for (const d of decisions) {
     if (!d.routedRef) continue;
     for (const ideaId of d.sourceIdeaIds) {
-      const lens = lensOf(ideaId);
+      const carried = d.sourceIdeaProvenance?.find((source) => source.id === ideaId);
+      const lens = lensOf(ideaId) ?? carried?.lens;
       if (!lens) continue;
       out.push({
         ideaId,
@@ -800,7 +890,13 @@ export function decisionsToProvenance(
         ...(ctx.cycleId ? { cycleId: ctx.cycleId } : {}),
         ...(d.title ? { title: d.title } : {}),
         ...(ctx.routedAt ? { routedAt: ctx.routedAt } : {}),
-        ...(d.addressesPatternRefs?.length ? { addressesPatternRefs: [...d.addressesPatternRefs] } : {}),
+        ...(d.addressesPatternRefs?.length || carried?.addressesPatternRefs?.length
+          ? {
+              addressesPatternRefs: [
+                ...new Set([...(carried?.addressesPatternRefs ?? []), ...(d.addressesPatternRefs ?? [])]),
+              ],
+            }
+          : {}),
       });
     }
   }

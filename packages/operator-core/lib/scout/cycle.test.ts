@@ -11,21 +11,45 @@
  * Run from inside the package: `cd packages/operator-core && npx vitest run lib/scout/cycle`.
  */
 import { describe, it, expect } from 'vitest';
-import {
-  makeFakeScoutLlm,
-  fixtureCorpusDigest,
-  fixtureIdeasAllLenses,
-  FIXTURE_PATTERN_REFS,
-} from './test-support';
+import { makeFakeScoutLlm, fixtureCorpusDigest, fixtureIdeasAllLenses, FIXTURE_PATTERN_REFS } from './test-support';
 import type { CorpusEntry } from './critique-core';
 import type { RoutingDecision } from './router';
 import type { Idea, Proposal, ScoredIdea } from './types';
-import {
-  runScoutCycle,
-  selectSurvivors,
-  type ScoutCycleDeps,
-  type ScoutCyclePorts,
-} from './cycle';
+import { deriveProvenance, runScoutCycle, selectSurvivors, type ScoutCycleDeps, type ScoutCyclePorts } from './cycle';
+
+describe('deriveProvenance — consult-deferred resume', () => {
+  it('uses the carried source snapshot when the origin cycle ideas are no longer in memory', () => {
+    const decisions: RoutingDecision[] = [
+      {
+        proposalId: 'consulted:old-cycle:proposal-1',
+        sourceIdeaIds: ['idea-old'],
+        rail: 'goal',
+        reason: 'resumed after independent review',
+        followedHint: true,
+        routedRef: 'goal:goal-1',
+        addressesPatternRefs: ['plan:decision-ref'],
+        sourceIdeaProvenance: [
+          {
+            id: 'idea-old',
+            lens: 'analogical',
+            addressesPatternRefs: ['plan:source-ref'],
+          },
+        ],
+      },
+    ];
+
+    expect(deriveProvenance(decisions, [], 'cycle-resume')).toEqual([
+      {
+        ideaId: 'idea-old',
+        lens: 'analogical',
+        rail: 'goal',
+        routedRef: 'goal:goal-1',
+        cycleId: 'cycle-resume',
+        addressesPatternRefs: ['plan:source-ref', 'plan:decision-ref'],
+      },
+    ]);
+  });
+});
 
 /* ── fixture builders ─────────────────────────────────────────────────── */
 
@@ -69,15 +93,17 @@ function decisionFor(p: Proposal, rail: RoutingDecision['rail']): RoutingDecisio
  * calls `ctx.llmCall` so the cycle's recorder + cost accounting are exercised.
  * Knobs let each test shape the per-step output + observe what the ports saw.
  */
-function makeDeps(opts: {
-  ideas?: Idea[];
-  verdicts?: ScoredIdea['verdict'][]; // one per idea (default: all 'keep')
-  proposals?: (scored: ScoredIdea[]) => Proposal[];
-  routed?: (proposals: Proposal[]) => RoutingDecision[];
-  costUsd?: number;
-  limits?: ScoutCycleDeps['limits'];
-  onPhase?: ScoutCycleDeps['onPhase'];
-} = {}): {
+function makeDeps(
+  opts: {
+    ideas?: Idea[];
+    verdicts?: ScoredIdea['verdict'][]; // one per idea (default: all 'keep')
+    proposals?: (scored: ScoredIdea[]) => Proposal[];
+    routed?: (proposals: Proposal[]) => RoutingDecision[];
+    costUsd?: number;
+    limits?: ScoutCycleDeps['limits'];
+    onPhase?: ScoutCycleDeps['onPhase'];
+  } = {},
+): {
   deps: ScoutCycleDeps;
   seen: { maxIdeators?: number; critiqueCorpus?: CorpusEntry[]; recombineInput?: ScoredIdea[] };
 } {
@@ -104,13 +130,22 @@ function makeDeps(opts: {
       if (opts.proposals) return opts.proposals(scored);
       const survivors = selectSurvivors(scored);
       // one fused proposal over all surviving ideas (the realistic recombine output)
-      return survivors.length ? [proposalFrom('P-1', survivors.map((s) => s.idea.id))] : [];
+      return survivors.length
+        ? [
+            proposalFrom(
+              'P-1',
+              survivors.map((s) => s.idea.id),
+            ),
+          ]
+        : [];
     },
-    route: async (proposals) =>
-      opts.routed ? opts.routed(proposals) : proposals.map((p) => decisionFor(p, 'plan')),
+    route: async (proposals) => (opts.routed ? opts.routed(proposals) : proposals.map((p) => decisionFor(p, 'plan'))),
   };
 
-  return { deps: { ...ports, llmCall: fake.call, limits: opts.limits, ...(opts.onPhase ? { onPhase: opts.onPhase } : {}) }, seen };
+  return {
+    deps: { ...ports, llmCall: fake.call, limits: opts.limits, ...(opts.onPhase ? { onPhase: opts.onPhase } : {}) },
+    seen,
+  };
 }
 
 /* ── happy path ───────────────────────────────────────────────────────── */
@@ -144,7 +179,7 @@ describe('runScoutCycle — full pass', () => {
     const phases: string[] = [];
     const { deps } = makeDeps({ onPhase: (phase) => phases.push(phase) });
     await runScoutCycle(deps);
-    expect(phases).toEqual(['read-corpus', 'ideate', 'read-novelty-corpus', 'critique', 'recombine', 'route']);
+    expect(phases).toEqual(['route', 'read-corpus', 'ideate', 'read-novelty-corpus', 'critique', 'recombine', 'route']);
   });
 
   it('feeds the novelty corpus to the critique step and the budget cap to ideate', async () => {
@@ -208,9 +243,13 @@ describe('runScoutCycle — provenance (P-013)', () => {
     const { deps } = makeDeps({
       ideas,
       proposals: (scored) => [
-        proposalFrom('P-1', scored.map((s) => s.idea.id), {
-          seededByRefs: ['elite:peer-a:module|sync|low:c1'],
-        }),
+        proposalFrom(
+          'P-1',
+          scored.map((s) => s.idea.id),
+          {
+            seededByRefs: ['elite:peer-a:module|sync|low:c1'],
+          },
+        ),
       ],
       routed: (proposals) =>
         proposals.map((p) => ({
@@ -227,6 +266,28 @@ describe('runScoutCycle — provenance (P-013)', () => {
 /* ── short-circuits + budget (D-010) ──────────────────────────────────── */
 
 describe('runScoutCycle — early exits', () => {
+  it('drains an answered goal consult even when fresh ideation returns no ideas', async () => {
+    const resumed: RoutingDecision = {
+      proposalId: 'consulted:old-cycle:proposal-1',
+      sourceIdeaIds: ['idea-old'],
+      rail: 'goal',
+      reason: 'independent review answered',
+      followedHint: true,
+      routedRef: 'goal:goal-reviewed',
+      sourceIdeaProvenance: [{ id: 'idea-old', lens: 'analogical' }],
+    };
+    const { deps } = makeDeps({
+      ideas: [],
+      routed: (proposals) => (proposals.length === 0 ? [resumed] : []),
+    });
+
+    const r = await runScoutCycle(deps);
+
+    expect(r.stop).toBe('no-ideas');
+    expect(r.routed).toEqual([resumed]);
+    expect(r.provenance).toMatchObject([{ ideaId: 'idea-old', lens: 'analogical', routedRef: 'goal:goal-reviewed' }]);
+  });
+
   it('stops at no-ideas when the ideators return nothing', async () => {
     const { deps } = makeDeps({ ideas: [] });
     const r = await runScoutCycle(deps);

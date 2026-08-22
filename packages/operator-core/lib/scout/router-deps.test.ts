@@ -43,6 +43,27 @@ describe('improvementBody', () => {
     expect(body).toContain('Falsified if: spins unchanged');
     expect(body).toContain('Source ideas: idea-1, idea-2');
   });
+
+  it('folds the independent consult disposition + critique into the routed artifact body', () => {
+    const body = improvementBody(
+      proposal({
+        consultation: {
+          originCycleId: 'cycle-1',
+          originalProposalId: 'prop-1',
+          conversationId: 'conv-1',
+          status: 'answered',
+          state: 'closed_answered',
+          verdict: 'routed',
+          reviewerId: 'reviewer-1',
+          feedback: 'Bound the first rollout to one workspace and measure rollback latency.',
+        },
+      }),
+    );
+    expect(body).toContain('Independent Blender consult (answered)');
+    expect(body).toContain('conv-1');
+    expect(body).toContain('Consult feedback folded into this route');
+    expect(body).toContain('measure rollback latency');
+  });
 });
 
 describe('buildCapturePort', () => {

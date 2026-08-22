@@ -376,6 +376,39 @@ export interface ScoutExperiment {
   falsifiableSignal: string;
 }
 
+/** Durable disposition for the D-010 peer review that precedes a goal-rail
+ * dispatch. It rides on the persisted proposal itself, so an asynchronous
+ * consult can resume in a later Scout cycle without a second queue/table. */
+export interface ProposalConsultation {
+  /** Cycle that first opened the consult (the stable half of the resume key). */
+  originCycleId: string;
+  /** Proposal id in that origin cycle (proposal ids are positional and may repeat). */
+  originalProposalId: string;
+  /** The durable consult conversation, or null when the attempt failed before open. */
+  conversationId: string | null;
+  /** Workflow disposition, deliberately separate from the consult row's raw state. */
+  status: 'pending' | 'answered' | 'unavailable';
+  /** Raw consult state/result label for audit and forward compatibility. */
+  state: string;
+  /** The get_feedback verdict that created this disposition. */
+  verdict: 'routed' | 'served_from_archive' | 'no_qualified_responder' | 'failed';
+  /** Selected/answering reviewer when known. */
+  reviewerId?: string;
+  /** Critique folded into the routed artifact once an answer is available. */
+  feedback?: string;
+  /** Honest explanation for an unavailable/failed review. */
+  reason?: string;
+}
+
+/** Source-idea snapshot carried only when a consult-deferred proposal resumes in
+ * a later cycle. The original cycle's ideas are otherwise out of scope, so this
+ * preserves the lens-attribution ledger without inventing a parallel queue. */
+export interface ProposalSourceIdeaProvenance {
+  id: string;
+  lens: CreativeLens;
+  addressesPatternRefs?: string[];
+}
+
 /**
  * A recombined proposal (P-006 output → P-007 routing input). Surviving critiques
  * are debated + *merged* (A's mechanism + B's framing — the best ideas are usually
@@ -438,4 +471,8 @@ export interface Proposal {
   addressesPatternRefs: string[];
   /** Federated mutation seeds preserved from the source ideas. */
   seededByRefs?: string[];
+  /** D-010: independent feedback disposition before the goal rail is consumed. */
+  consultation?: ProposalConsultation;
+  /** Cross-cycle provenance snapshot for a consult-deferred proposal. */
+  sourceIdeaProvenance?: ProposalSourceIdeaProvenance[];
 }

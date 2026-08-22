@@ -63,9 +63,14 @@ function fakeSeed(ideas: readonly ScoutIdeaView[]): SeedDistantResult {
 
 function makeFakePorts(over: Partial<RouterPorts> = {}): {
   ports: RouterPorts;
-  calls: { plansNew: unknown[]; gymDispatch: ScoutIdeaView[][]; capture: unknown[] };
+  calls: { plansNew: unknown[]; gymDispatch: ScoutIdeaView[][]; capture: unknown[]; goalConsult: unknown[] };
 } {
-  const calls = { plansNew: [] as unknown[], gymDispatch: [] as ScoutIdeaView[][], capture: [] as unknown[] };
+  const calls = {
+    plansNew: [] as unknown[],
+    gymDispatch: [] as ScoutIdeaView[][],
+    capture: [] as unknown[],
+    goalConsult: [] as unknown[],
+  };
   const ports: RouterPorts = {
     plansNew:
       over.plansNew ??
@@ -84,6 +89,21 @@ function makeFakePorts(over: Partial<RouterPorts> = {}): {
       (async (req) => {
         calls.capture.push(req);
         return { id: `EI-${calls.capture.length}`, created: true };
+      }),
+    goalFeedbackConsult:
+      over.goalFeedbackConsult ??
+      (async (req) => {
+        calls.goalConsult.push(req);
+        const consultation = {
+          originCycleId: 'test-cycle',
+          originalProposalId: req.proposal.id,
+          conversationId: 'conv-unavailable',
+          status: 'unavailable' as const,
+          state: 'no_qualified_responder',
+          verdict: 'no_qualified_responder' as const,
+          reason: 'no live reviewer in the unit fixture',
+        };
+        return { proposal: { ...req.proposal, consultation }, consultation };
       }),
   };
   return { ports, calls };
@@ -155,10 +175,7 @@ describe('decideRoutes', () => {
   });
 
   it('gymEnabled:false reroutes gym-bound proposals to improvement (D-003 — never route onto a disabled gym)', () => {
-    const proposals = [
-      fixtureProposal({ id: 'a', routeHint: 'gym' }),
-      fixtureProposal({ id: 'b', routeHint: 'plan' }),
-    ];
+    const proposals = [fixtureProposal({ id: 'a', routeHint: 'gym' }), fixtureProposal({ id: 'b', routeHint: 'plan' })];
     const decisions = decideRoutes(proposals, { gymEnabled: false });
     expect(decisions[0].rail).toBe('improvement');
     expect(decisions[0].reason).toContain('gym rail gated OFF');
@@ -289,8 +306,7 @@ describe('routeProposals', () => {
 /* ── the goal rail (blender-loop-repair-and-opus5-xhigh P-013 / D-005) ── */
 
 describe('goal rail', () => {
-  const goalHinted = (id: string, over: Partial<Proposal> = {}) =>
-    fixtureProposal({ id, routeHint: 'goal', ...over });
+  const goalHinted = (id: string, over: Partial<Proposal> = {}) => fixtureProposal({ id, routeHint: 'goal', ...over });
 
   // Unit-level contract only: this proves how the router handles a Proposal that
   // already carries the hint. Production reachability is pinned separately in
@@ -347,12 +363,8 @@ describe('goal rail', () => {
     });
 
     it('strips backticked and fenced code too', () => {
-      expect(isGoalScaleProposal(fixtureProposal({ mechanism: 'set `goal mode` on the row' }))).toBe(
-        false,
-      );
-      expect(
-        isGoalScaleProposal(fixtureProposal({ mechanism: '```\nmode = goal mode\n```' })),
-      ).toBe(false);
+      expect(isGoalScaleProposal(fixtureProposal({ mechanism: 'set `goal mode` on the row' }))).toBe(false);
+      expect(isGoalScaleProposal(fixtureProposal({ mechanism: '```\nmode = goal mode\n```' }))).toBe(false);
     });
 
     it('does NOT eat prose containing apostrophes (the over-strip failure)', () => {
@@ -448,6 +460,103 @@ describe('goal rail', () => {
     expect(requests[0].title.length).toBeGreaterThan(0);
     expect(requests[0].killCriterion).toContain('spin count unchanged');
     expect(requests[0].budgetCents).toBe(7500);
+    expect(res.decisions[0].consultation).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('defers a goal write while a routed get_feedback consult is pending (not a failure)', async () => {
+    const creations: GoalDispatchRequest[] = [];
+    const { ports } = makeFakePorts({
+      goalFeedbackConsult: async ({ proposal }) => {
+        const consultation = {
+          originCycleId: 'cycle-1',
+          originalProposalId: proposal.id,
+          conversationId: 'conv-live',
+          status: 'pending' as const,
+          state: 'awaiting_responder',
+          verdict: 'routed' as const,
+        };
+        return { proposal: { ...proposal, consultation }, consultation };
+      },
+    });
+    ports.goalDispatch = async (req) => {
+      creations.push(req);
+      return { goalId: 'must-not-start-yet' };
+    };
+
+    const proposal = goalHinted('pending-goal');
+    const res = await routeProposals([proposal], ports, { cycleId: 'cycle-1' });
+
+    expect(creations).toEqual([]);
+    expect(res.failed).toEqual([]);
+    expect(res.deferred).toEqual(['pending-goal']);
+    expect(res.decisions[0]).toMatchObject({
+      deferred: 'goal-consult',
+      consultation: { conversationId: 'conv-live', status: 'pending' },
+    });
+    // The exact proposal object later persisted by the cycle carries continuity.
+    expect(proposal.consultation).toMatchObject({ conversationId: 'conv-live' });
+  });
+
+  it('records a consult binding failure honestly and still dispatches (review is not a permission gate)', async () => {
+    const creations: GoalDispatchRequest[] = [];
+    const { ports } = makeFakePorts({
+      goalFeedbackConsult: async () => {
+        throw new Error('consult router unavailable');
+      },
+    });
+    ports.goalDispatch = async (req) => {
+      creations.push(req);
+      return { goalId: 'goal-after-honest-degrade' };
+    };
+
+    const res = await routeProposals([goalHinted('degraded-goal')], ports, { cycleId: 'cycle-2' });
+
+    expect(res.failed).toEqual([]);
+    expect(res.deferred).toEqual([]);
+    expect(creations).toHaveLength(1);
+    expect(res.decisions[0]).toMatchObject({
+      routedRef: 'goal:goal-after-honest-degrade',
+      consultation: { status: 'unavailable', state: 'binding_error', verdict: 'failed' },
+    });
+  });
+
+  it('refuses a structurally unreviewed goal when the consult port is not wired', async () => {
+    const creations: GoalDispatchRequest[] = [];
+    const { ports } = makeFakePorts();
+    delete ports.goalFeedbackConsult;
+    ports.goalDispatch = async (req) => {
+      creations.push(req);
+      return { goalId: 'must-not-start' };
+    };
+
+    const res = await routeProposals([goalHinted('unreviewed-goal')], ports);
+
+    expect(creations).toEqual([]);
+    expect(res.decisions[0].error).toMatch(/goalFeedbackConsult port missing/);
+    expect(res.failed).toEqual(['unreviewed-goal']);
+  });
+
+  it('preserves a resumed consult key when the goal kill switch reroutes creation to plan', async () => {
+    const consultation = {
+      originCycleId: 'cycle-origin',
+      originalProposalId: 'goal-original',
+      conversationId: 'conv-answered',
+      status: 'answered' as const,
+      state: 'closed_answered',
+      verdict: 'routed' as const,
+      feedback: 'Keep the fallback plan explicit.',
+    };
+    const { ports } = makeFakePorts();
+    delete ports.goalFeedbackConsult;
+    const res = await routeProposals([goalHinted('consulted:cycle-origin:goal-original', { consultation })], ports, {
+      goalEnabled: false,
+    });
+
+    expect(res.decisions[0]).toMatchObject({
+      rail: 'plan',
+      routedRef: expect.stringMatching(/^plan:/),
+      consultation: { originCycleId: 'cycle-origin', originalProposalId: 'goal-original' },
+    });
   });
 
   it('routeProposals sends goal-with-target to amendment, never creation', async () => {
@@ -479,10 +588,7 @@ describe('goal rail', () => {
       creations.push(req);
       return { goalId: 'wrong-new-goal' };
     };
-    const res = await routeProposals(
-      [goalHinted('amend-1', { targetGoalId: 'goal-existing' })],
-      ports,
-    );
+    const res = await routeProposals([goalHinted('amend-1', { targetGoalId: 'goal-existing' })], ports);
     expect(res.decisions[0].error).toMatch(/goalAmendmentDispatch port missing/);
     expect(res.decisions[0].routedRef).toBeUndefined();
     expect(res.failed).toEqual(['amend-1']);
@@ -491,7 +597,10 @@ describe('goal rail', () => {
 
   it('a goal-routed decision with NO goalDispatch port fails defensively, never aborting the batch', async () => {
     const { ports } = makeFakePorts(); // no goalDispatch wired
-    const res = await routeProposals([goalHinted('g1'), fixtureProposal({ id: 'imp', routeHint: 'improvement' })], ports);
+    const res = await routeProposals(
+      [goalHinted('g1'), fixtureProposal({ id: 'imp', routeHint: 'improvement' })],
+      ports,
+    );
     const goal = res.decisions.find((d) => d.proposalId === 'g1')!;
     expect(goal.error).toMatch(/goalDispatch port missing/);
     expect(goal.routedRef).toBeUndefined();
@@ -504,7 +613,10 @@ describe('goal rail', () => {
     ports.goalDispatch = async () => {
       throw new Error('goals table busy');
     };
-    const res = await routeProposals([goalHinted('g1'), fixtureProposal({ id: 'imp', routeHint: 'improvement' })], ports);
+    const res = await routeProposals(
+      [goalHinted('g1'), fixtureProposal({ id: 'imp', routeHint: 'improvement' })],
+      ports,
+    );
     expect(res.decisions.find((d) => d.proposalId === 'g1')!.error).toMatch(/busy/);
     expect(res.decisions.find((d) => d.proposalId === 'imp')!.routedRef).toBe('wi:EI-1');
     expect(res.failed).toEqual(['g1']);
@@ -545,7 +657,14 @@ describe('decisionsToProvenance', () => {
   it('skips undispatched decisions and unresolvable lenses', () => {
     const decisions: RoutingDecision[] = [
       { proposalId: 'p1', sourceIdeaIds: ['ia'], rail: 'gym', reason: 'x', followedHint: true }, // no routedRef
-      { proposalId: 'p2', sourceIdeaIds: ['ia', 'unknown'], rail: 'gym', reason: 'x', followedHint: true, routedRef: 'gym:p2' },
+      {
+        proposalId: 'p2',
+        sourceIdeaIds: ['ia', 'unknown'],
+        rail: 'gym',
+        reason: 'x',
+        followedHint: true,
+        routedRef: 'gym:p2',
+      },
     ];
     const prov = decisionsToProvenance(decisions, lensOf);
     // p1 skipped (no routedRef); p2 keeps only 'ia' (lens resolved), 'unknown' dropped.

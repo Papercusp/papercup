@@ -70,8 +70,20 @@ export interface CapturePortOptions {
 
 /** Compose a readable improvement body from a proposal's structured fields. */
 export function improvementBody(p: Proposal): string {
+  const consultation = p.consultation;
+  const consultationBlock = consultation
+    ? [
+        `\n**Independent Blender consult (${consultation.status}):** ` +
+          `${consultation.conversationId ?? 'no conversation opened'}; state=${consultation.state}.`,
+        consultation.feedback ? `\n**Consult feedback folded into this route:** ${consultation.feedback}` : '',
+        consultation.reason ? `\n_Consult unavailable: ${consultation.reason}_` : '',
+      ]
+        .filter(Boolean)
+        .join('')
+    : '';
   const lines = [
     p.whyNew?.trim(),
+    consultationBlock,
     p.mechanism ? `\n**Mechanism:** ${p.mechanism.trim()}` : '',
     p.bet ? `\n**The bet:** ${p.bet.trim()}` : '',
     p.cheapExperiment
@@ -79,7 +91,10 @@ export function improvementBody(p: Proposal): string {
       : '',
     p.sourceIdeaIds?.length ? `\n_Scout-generated. Source ideas: ${p.sourceIdeaIds.join(', ')}._` : '',
   ];
-  return lines.filter((l) => l && l.length > 0).join('\n').trim();
+  return lines
+    .filter((l) => l && l.length > 0)
+    .join('\n')
+    .trim();
 }
 
 /**
@@ -141,11 +156,7 @@ export function buildGymDispatchPort(archive: ArchivePort, opts: SeedDistantOpti
  * so the ctx-coupling lives in the wiring layer (P-008 / cb4b9's runScoutCycle),
  * not here. Returns the created (or pre-existing) draft plan's slug.
  */
-export type PlanDraftCreator = (args: {
-  slug: string;
-  title: string;
-  rationale?: string;
-}) => Promise<{ slug: string }>;
+export type PlanDraftCreator = (args: { slug: string; title: string; rationale?: string }) => Promise<{ slug: string }>;
 
 /**
  * Production `plansNew` port — shapes a proposal into a draft-plan create call

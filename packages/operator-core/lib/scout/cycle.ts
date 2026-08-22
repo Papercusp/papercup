@@ -40,13 +40,7 @@
  * {@link decisionsToProvenance}, supplying a lens resolver over its own ideas —
  * the canonical rows su-80be9's `recordRoutedIdea` ledger persists.
  */
-import type {
-  CorpusDigest,
-  Idea,
-  Proposal,
-  ScoredIdea,
-  ScoutLlmCall,
-} from './types';
+import type { CorpusDigest, Idea, Proposal, ScoredIdea, ScoutLlmCall } from './types';
 import type { CorpusEntry } from './critique-core';
 import type { RoutingDecision } from './router';
 import type { RoutedIdeaProvenance } from './outcome-feedback';
@@ -259,7 +253,8 @@ export function deriveProvenance(
     // the real router always sets it, router.ts) yields no attribution rather than
     // crashing the whole cycle (matches the skip-non-attributable philosophy below).
     for (const ideaId of d.sourceIdeaIds ?? []) {
-      const idea = ideaById.get(ideaId);
+      const carried = d.sourceIdeaProvenance?.find((source) => source.id === ideaId);
+      const idea = ideaById.get(ideaId) ?? carried;
       if (!idea) continue;
       const seededByTags = (d.seededByRefs ?? []).map((ref) => `seededBy:${ref}`);
       const addressesPatternRefs = [
@@ -346,6 +341,15 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
     return cap != null && spent() > cap;
   };
 
+  // D-010 continuation is cost-free and higher priority than fresh ideation.
+  // Drain it before ANY early-exit branch so an answered consult cannot remain
+  // stranded merely because this cycle's digest/ideator/recombine output is empty.
+  // buildScoutCycleDeps makes this the only continuation read per deps instance;
+  // the ordinary route call later handles current proposals without replaying it.
+  markPhase('route');
+  const resumedRouted = await deps.route([]);
+  const resumedProvenance = deriveProvenance(resumedRouted, [], deps.cycleId);
+
   const finish = (
     stop: ScoutCycleStop,
     partial: {
@@ -364,8 +368,8 @@ export async function runScoutCycle(deps: ScoutCycleDeps): Promise<ScoutCycleRes
     scored: partial.scored ?? [],
     survivors: partial.survivors ?? [],
     proposals: partial.proposals ?? [],
-    routed: partial.routed ?? [],
-    provenance: partial.provenance ?? [],
+    routed: [...resumedRouted, ...(partial.routed ?? [])],
+    provenance: [...resumedProvenance, ...(partial.provenance ?? [])],
     calls,
     costUsd: spent(),
     overBudget: overBudget(),
