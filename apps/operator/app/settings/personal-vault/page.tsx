@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '../../harness/Button';
 import { Checkbox } from '../../harness/Checkbox';
 import { Modal } from '../../harness/Modal';
+import { Table, type TableColumn } from '../../harness/Table';
 
 interface SourceStats {
   source: string;
@@ -236,6 +237,86 @@ export default function PersonalVaultSettingsPage() {
     }
   }, [load]);
 
+  const sourceColumns: TableColumn<SourceStats>[] = [
+    {
+      key: 'source',
+      header: 'Source',
+      render: (source) => <code>personal:{source.source}</code>,
+    },
+    {
+      key: 'records',
+      header: 'Records',
+      headerStyle: { textAlign: 'right' },
+      cellStyle: { textAlign: 'right' },
+      render: (source) => source.documents.toLocaleString(),
+    },
+    {
+      key: 'newest',
+      header: 'Newest',
+      render: (source) => formatDate(source.newest_at),
+    },
+    {
+      key: 'actions',
+      header: '',
+      cellStyle: { textAlign: 'right' },
+      render: (source) => (
+        <Button
+          variant="destructive"
+          onClick={() => setPurgeTarget({ source: source.source })}
+          disabled={busy !== null}
+        >
+          Purge source
+        </Button>
+      ),
+    },
+  ];
+
+  const grantColumns: TableColumn<PersonalGrant>[] = [
+    {
+      key: 'principal',
+      header: 'Principal',
+      render: (grant) => (
+        <>
+          <strong>{grant.principal_id}</strong>
+          <span className="pc-settings-note" style={{ display: 'block' }}>{grant.principal_type}</span>
+        </>
+      ),
+    },
+    {
+      key: 'scopes',
+      header: 'Scopes',
+      render: (grant) => (
+        <>{grant.scopes.map((scope) => <code key={scope} style={{ marginRight: 6 }}>{scope}</code>)}</>
+      ),
+    },
+    {
+      key: 'state',
+      header: 'State',
+      render: (grant) => {
+        const active = activeGrant(grant);
+        return active ? 'Active' : grant.revoked_at ? 'Revoked' : 'Expired';
+      },
+    },
+    {
+      key: 'granted',
+      header: 'Granted',
+      render: (grant) => formatDate(grant.granted_at),
+    },
+    {
+      key: 'actions',
+      header: '',
+      cellStyle: { textAlign: 'right' },
+      render: (grant) => {
+        const active = activeGrant(grant);
+        return active ? (
+          <Button variant="destructive" onClick={() => void revoke(grant)} disabled={busy !== null}>
+            {busy === `revoke:${grant.id}` ? 'Revoking…' : 'Revoke'}
+          </Button>
+        ) : null;
+      },
+    },
+  ];
+
   if (loading || !status) {
     return <main className="pc-settings-page"><h1>Personal Vault</h1><p role="status">Loading…</p></main>;
   }
@@ -328,27 +409,7 @@ export default function PersonalVaultSettingsPage() {
         <h2 id="vault-sources-heading">Imported sources</h2>
         {status.stats.sources.length ? (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th align="left">Source</th><th align="right">Records</th><th align="left">Newest</th><th /></tr></thead>
-              <tbody>
-                {status.stats.sources.map((source) => (
-                  <tr key={source.source}>
-                    <td><code>personal:{source.source}</code></td>
-                    <td align="right">{source.documents.toLocaleString()}</td>
-                    <td>{formatDate(source.newest_at)}</td>
-                    <td align="right">
-                      <Button
-                        variant="destructive"
-                        onClick={() => setPurgeTarget({ source: source.source })}
-                        disabled={busy !== null}
-                      >
-                        Purge source
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <Table columns={sourceColumns} rows={status.stats.sources} getRowKey={(source) => source.source} />
           </div>
         ) : <p className="pc-settings-note">No personal records imported yet.</p>}
         <div className="pc-settings-actions" style={{ marginTop: 16 }}>
@@ -387,29 +448,7 @@ export default function PersonalVaultSettingsPage() {
         <h2 id="vault-grants-heading">Grant history</h2>
         {status.grants.length ? (
           <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-              <thead><tr><th align="left">Principal</th><th align="left">Scopes</th><th align="left">State</th><th align="left">Granted</th><th /></tr></thead>
-              <tbody>
-                {status.grants.map((grant) => {
-                  const active = activeGrant(grant);
-                  return (
-                    <tr key={grant.id}>
-                      <td><strong>{grant.principal_id}</strong><span className="pc-settings-note" style={{ display: 'block' }}>{grant.principal_type}</span></td>
-                      <td>{grant.scopes.map((scope) => <code key={scope} style={{ marginRight: 6 }}>{scope}</code>)}</td>
-                      <td>{active ? 'Active' : grant.revoked_at ? 'Revoked' : 'Expired'}</td>
-                      <td>{formatDate(grant.granted_at)}</td>
-                      <td align="right">
-                        {active ? (
-                          <Button variant="destructive" onClick={() => void revoke(grant)} disabled={busy !== null}>
-                            {busy === `revoke:${grant.id}` ? 'Revoking…' : 'Revoke'}
-                          </Button>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <Table columns={grantColumns} rows={status.grants} getRowKey={(grant) => grant.id} />
           </div>
         ) : <p className="pc-settings-note">No Personal Vault grants have been approved.</p>}
       </section>
