@@ -15,6 +15,11 @@ import { describe, expect, it } from 'vitest';
 
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
+const COUNT_SURFACES_SCRIPT = resolve(
+  __dirname,
+  '../../../scripts/verify-count-surfaces-tauri.sh',
+);
+const countSurfacesSrc = readFileSync(COUNT_SURFACES_SCRIPT, 'utf8');
 const EXPRESSION = 'window.__TSR_ROUTER__?.navigate({ to: "/settings/p2p" })';
 
 function fakeCommandDir() {
@@ -75,5 +80,50 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
     expect(readFileSync(pollCapture, 'utf8')).toBe(
       '--selector\nbody\n--text\nPeer\n--no-errors\n',
     );
+  });
+});
+
+describe('P-014 corpus-count Tauri acceptance recipe', () => {
+  it('pins every required route and decisive selector without a placeholder', () => {
+    expect(countSurfacesSrc).not.toContain('<exit-coded assertion command>');
+    expect(countSurfacesSrc).toContain('tab: "harnesses", slug: "papercusp"');
+    expect(countSurfacesSrc).toContain('tab: "learning", lview: "observations"');
+    expect(countSurfacesSrc).toContain('tab: "learning", lview: "improvements"');
+    expect(countSurfacesSrc).toContain('tab: "learning", lview: "learnings"');
+    expect(countSurfacesSrc).toContain('tab: "git", slug: "papercusp"');
+    expect(countSurfacesSrc).toContain('to: "/coord", search: { panel: "history" }');
+    expect(countSurfacesSrc).toContain('to: "/cupboard"');
+    expect(countSurfacesSrc).toContain('[data-testid=wi-count]');
+    expect(countSurfacesSrc).toContain('[data-testid=observations-count]');
+    expect(countSurfacesSrc).toContain('.pc-learning__matchcount');
+    expect(countSurfacesSrc).toContain('.pc-learning__retained .pc-advpanel__count');
+    expect(countSurfacesSrc).toContain('.pc-adv-gitgrid__count');
+    expect(countSurfacesSrc).toContain('Filter option counts cover latest 300 events.');
+    expect(countSurfacesSrc).toContain('latest matches · up to 200');
+    expect(countSurfacesSrc).toContain('[data-testid=cupboard-pagination]');
+  });
+
+  it('makes population mismatches, console errors, and missing provenance fail closed', () => {
+    expect(countSurfacesSrc).toContain('set -euo pipefail');
+    expect(countSurfacesSrc).toContain('missing PAPERCUSP_SID provenance');
+    expect(countSurfacesSrc).toContain('--no-errors');
+    expect(countSurfacesSrc).toContain('/loaded/i.test');
+    expect(countSurfacesSrc).toContain('facets.reduce((a, b) => a + b, 0) === total');
+  });
+
+  it('writes route-specific captures and one unambiguous terminal marker', () => {
+    for (const capture of [
+      'p014_capture work-items',
+      'p014_capture learning-observations',
+      'p014_capture learning-improve',
+      'p014_capture learning-retain',
+      'p014_capture git-history',
+      'p014_capture logs',
+      'p014_capture coordination-history',
+      'p014_capture cupboard',
+    ]) {
+      expect(countSurfacesSrc).toContain(capture);
+    }
+    expect(countSurfacesSrc).toContain('P014_TAURI_ACCEPTANCE_OK');
   });
 });
