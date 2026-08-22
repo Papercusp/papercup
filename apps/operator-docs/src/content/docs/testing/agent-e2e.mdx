@@ -323,6 +323,12 @@ the shell is up: the gate fires at CLOSE time, long after an isolated instance h
 been torn down, so discovering it there costs a second full boot (~4 min) purely to
 re-run assertions you already ran.
 
+`--json` belongs to **`check`**, not `eval`, in `tauri-agent-tools` 0.7.0. Do not
+mechanically append it while converting an exploratory probe: `tauri-agent-tools eval
+--pid "$PID" "<expression>"` is valid, but `eval ... --json` exits with
+`unknown option '--json'`. Switch the verb to `check` when you need a falsifiable
+assertion and structured JSON output.
+
 Cheapest compliant form — falsifiable, and it needs no image on disk:
 
 ```sh
