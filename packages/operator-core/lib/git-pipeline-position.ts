@@ -230,11 +230,13 @@ export interface RuntimeOwnership {
   host: RuntimeHost;
   /**
    * Does the release pipeline (git-sync → green main → :3070 deploy) actually
-   * carry this code into the process that runs it? FALSE for every staging-tree
-   * tsx host — for those, a deploy is a no-op and a restart is the activation.
+   * carry this code into the process that runs it? FALSE for staging-tree
+   * hosts and fresh-invocation CLIs — for those, a deploy is a no-op and the
+   * activation is either a restart or the next invocation, respectively.
    */
   releasePipelineApplies: boolean;
-  /** The `dev:restart` target that loads the edit, when a restart is the activation. */
+  /** The `dev:restart` target that loads the edit, when a restart is the activation.
+   * Null means there is no restart lever (compiled code or a fresh-invocation CLI). */
   restartTarget: RestartTargetName | null;
   /** One line: how THIS edit becomes live. */
   activation: string;
@@ -571,28 +573,26 @@ const RUNTIME_OWNERS: RuntimeOwnerEntry[] = [
   },
   // EI-19323821719374642: green-checkpoint.ts has ZERO non-test importers repo-wide (verified by
   // grep) — it is never `await import`ed or loaded in-process by any long-lived host. It exists
-  // purely as a standalone CLI, always launched as a DETACHED systemd-run unit
-  // (release-checkpoint-launch.ts's buildCheckpointSystemdArgv, `--working-directory=<root>`
-  // pinned to `PAPERCUSP_INTEGRATION_ROOT` — the STAGING tree) regardless of whether the launch
-  // was triggered by the `system:green-checkpoint` cron routine (dispatched by routinesTick,
-  // bg-host-only) or a manual `release:checkpoint-run` MCP call. Absent this entry the path fell
+  // purely as a standalone CLI. The scheduled `system:green-checkpoint` path launches it as a
+  // fresh child through release-actions.ts's runScript; the manual `release:checkpoint-run` path
+  // launches it in a detached transient systemd unit. Both set their working directory to the
+  // STAGING integration root. Absent this entry the path fell
   // through to DEFAULT_OWNER (operator-release, releasePipelineApplies:true) — which told an
   // agent to wait on a :3070 DEPLOY for code a deploy can never carry, and produced a false "gate
   // deadlock" diagnosis during a live green-checkpoint incident (four agents mid-incident; it
   // survived only because the finding was labelled a question rather than asserted).
   //
-  // `host: 'bg-host'` / `restartTarget: 'bg-host'` is the closest fit in the existing enum, not a
-  // literal claim that this runs INSIDE the bg-host process — the activation text below spells
-  // out the more precise truth (fresh spawn every run, so the very next invocation already
-  // carries the edit; no restart is strictly required at all).
+  // `host: 'bg-host'` names the scheduled trigger owner, not a literal claim that this runs
+  // INSIDE the bg-host process. `restartTarget: null` is load-bearing: every invocation is a
+  // fresh spawn, so a long-lived-process staleness probe and restart lever are both inapplicable.
   {
     match: /^apps\/operator\/lib\/release\/green-checkpoint\.ts$/,
     own: {
       host: 'bg-host',
       releasePipelineApplies: false,
-      restartTarget: 'bg-host',
+      restartTarget: null,
       activation:
-        'green-checkpoint.ts is a DETACHED CLI (systemd-run, unit papercup-green-checkpoint-*) — every run, whether fired by the bg-host cron routine (`system:green-checkpoint`) or a manual `release:checkpoint-run` call, is launched with --working-directory pinned to the STAGING integration tree, never the release checkout. A :3070 deploy NEVER changes what this file executes. Because it is a fresh tsx spawn each run (not a long-lived daemon), your edit is already what the NEXT invocation runs — the periodic cron tick, or fire one now with release:checkpoint-run. dev:restart { target: "bg-host", confirm: true } is not required but is harmless if you want to be sure the cron-side trigger path also sees it.',
+        'green-checkpoint.ts is a fresh CLI process on every run: the scheduled `system:green-checkpoint` path spawns it as a child and manual `release:checkpoint-run` uses a detached transient unit, both from the STAGING integration tree. A :3070 deploy NEVER changes what this file executes, and no long-lived host restart is involved. Your edit is already what the NEXT invocation runs — wait for the periodic cron tick, or fire one now with release:checkpoint-run.',
     },
   },
   // EI-19369080695408825 — MUST STAY LAST. The catch-all for routinesTick-dispatched
@@ -1367,7 +1367,7 @@ const SERVING_UNIT_BY_HOST: Record<RuntimeHost, string | null> = {
 };
 
 /** The lever that makes code live for each host, given its restart target. */
-function servingRestartLever(rt: RuntimeOwnership): string {
+function servingRestartLever(rt: RuntimeOwnership): string | null {
   if (rt.host === 'tauri-desktop') {
     return 'Rebuild the desktop shell: cd papercusp-desktop && npm run dev';
   }
@@ -1378,7 +1378,14 @@ function servingRestartLever(rt: RuntimeOwnership): string {
   }
   return rt.restartTarget
     ? `dev:restart { target: "${rt.restartTarget}", confirm: true, authorize: true, reason: "<why>" }`
-    : 'restart the host process';
+    : null;
+}
+
+/** A standalone CLI that reads the working tree at invocation time has no serving daemon
+ * to probe or restart. `tauri-desktop` also has no restart target, but it is compiled rather
+ * than fresh-invoked and therefore keeps its separate not-applicable branch below. */
+function isFreshInvocationRuntime(rt: RuntimeOwnership): boolean {
+  return !rt.releasePipelineApplies && rt.restartTarget === null && rt.host !== 'tauri-desktop';
 }
 
 /**
@@ -1407,7 +1414,8 @@ export function evaluateServing(args: {
 }): ServingTruth {
   const { runtime, process: proc, codeAsOfMs, codeAsOfSource, deployInFlight } = args;
   const host = runtime?.host ?? null;
-  const unit = host ? SERVING_UNIT_BY_HOST[host] : null;
+  const freshInvocation = runtime ? isFreshInvocationRuntime(runtime) : false;
+  const unit = host && !freshInvocation ? SERVING_UNIT_BY_HOST[host] : null;
   const restartLever = runtime ? servingRestartLever(runtime) : null;
   const base: ServingTruth = {
     host,
@@ -1448,6 +1456,17 @@ export function evaluateServing(args: {
         'not-applicable',
         'No path was given (sha-only probe), so no serving process can be identified.',
       ),
+    };
+  }
+  if (freshInvocation) {
+    return {
+      ...base,
+      // "Live" for this route means the next invocation will execute the current source.
+      // There is deliberately no persistent pid/start time and no restart lever to wait on.
+      pid: null,
+      startedAtMs: null,
+      startedSinceCodeChange: true,
+      unknownReason: null,
     };
   }
   if (!unit) {
@@ -2945,6 +2964,9 @@ export function computeStages(
   const servingHealth: StageHealth =
     sv.startedSinceCodeChange === false ? 'stalled' : sv.startedSinceCodeChange === true ? 'advancing' : 'unknown';
   const servingDetail = ((): string | null => {
+    if (p.runtime && isFreshInvocationRuntime(p.runtime)) {
+      return 'This is a fresh-invocation CLI: the next run loads the current staging-tree source directly, so no serving daemon restart is required.';
+    }
     if (sv.startedSinceCodeChange === false) {
       const src =
         sv.codeAsOfSource === 'deploy'
@@ -3686,7 +3708,9 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
     // this is the exact shape of the bg-host-runs-stale-routine-code class.
     const sv = p.serving;
     const live =
-      sv.startedSinceCodeChange === false
+      isFreshInvocationRuntime(p.runtime)
+        ? ' ✓ fresh-invocation route: the next run loads the current staging-tree source directly; no host restart is required.'
+        : sv.startedSinceCodeChange === false
         ? ` ⚠ RUNNING STALE: ${sv.unit} started ~${sv.behindMin}m before this file last changed on disk, so the host is still executing the OLD version — ${sv.restartLever}.`
         : sv.startedSinceCodeChange === true
           ? ` ✓ ${sv.unit} started after this file last changed, so the running host has loaded it.`
@@ -3697,14 +3721,18 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
     // SECOND consumer of the same file and judges a COMMITTED candidate, so for IT an
     // uncommitted edit is invisible. One reassurance, two consumers, opposite answers:
     // qualify it rather than letting the true half cover the false one.
-    const gateBlind = p.dirtyUncommitted
+    const freshInvocation = isFreshInvocationRuntime(p.runtime);
+    const gateBlind = p.dirtyUncommitted && !freshInvocation
       ? ' ⚠ but the GREEN GATE is a different consumer of this same file and judges a COMMITTED candidate — your uncommitted edit is INVISIBLE to it, so a gate run fired now tests the code WITHOUT it (commit first: git-sync:run).'
       : '';
+    const sourceRead = freshInvocation
+      ? 'the next invocation reads THIS TREE directly, including an uncommitted edit.'
+      : 'the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.';
     return `${label} @${p.targetShortSha}${subj}: runs in ${p.runtime.host} — NOT carried by the staging→main→:3070 deploy.${live} ${
       p.runtime.activation
     } (git position: committed ${tick(p.positions.committedLocal)} · staging ${tick(
       p.positions.onStaging,
-    )}${dirty} — durability/peer-visibility only; the running host reads THIS TREE, so even an uncommitted edit is what it loads on restart.)${gateBlind}`;
+    )}${dirty} — durability/peer-visibility only; ${sourceRead})${gateBlind}`;
   }
 
   if (p.submodule) {
@@ -4462,7 +4490,7 @@ export async function gitPipelinePosition(
   //   - a WORKING-TREE tsx host (bg-host / gateway / embed-sidecar) imports the file
   //     itself, so the file's own mtime is what a restart would pick up — committed
   //     or not, which is why an uncommitted edit is already "the code" for those.
-  const servingUnit = runtime ? SERVING_UNIT_BY_HOST[runtime.host] : null;
+  const servingUnit = runtime && !isFreshInvocationRuntime(runtime) ? SERVING_UNIT_BY_HOST[runtime.host] : null;
   let servingProcess: { pid: number | null; startedAtMs: number | null } | null = null;
   if (servingUnit) {
     servingProcess = await (deps.probeUnitStart ?? realProbeUnitStart)(servingUnit);

@@ -1592,25 +1592,49 @@ describe('runtime-owner map (EI-10895)', () => {
   });
 
   /* ---------------------------------------------------------------------- *
-   * EI-19323821719374642: green-checkpoint.ts has zero non-test importers and is ALWAYS
-   * launched as a detached systemd-run unit pinned to the STAGING integration tree
-   * (release-checkpoint-launch.ts), whether fired by the bg-host cron routine or a manual
-   * release:checkpoint-run call. Absent a dedicated entry this fell through to DEFAULT_OWNER
+   * EI-19323821719374642 / EI-21175951870654462: green-checkpoint.ts has zero non-test
+   * importers and is always fresh-launched from the STAGING integration tree: scheduled runs
+   * are child processes from release-actions.ts, while manual runs use a detached systemd unit.
+   * Absent a dedicated entry this fell through to DEFAULT_OWNER
    * (operator-release, releasePipelineApplies:true) — telling an agent to wait on a :3070
    * deploy for code a deploy can never carry, and it produced a false "gate deadlock" during a
    * live incident.
    * ---------------------------------------------------------------------- */
-  it('EI-19323821719374642: green-checkpoint.ts is NOT deploy-carried — it always runs as a detached staging-tree CLI', () => {
+  it('EI-21175951870654462: green-checkpoint.ts is a fresh staging-tree CLI with no restart lever', () => {
     const own = classifyRuntimeOwner('apps/operator/lib/release/green-checkpoint.ts')!;
     expect(own.host).toBe('bg-host');
     expect(own.releasePipelineApplies).toBe(false);
-    expect(own.restartTarget).toBe('bg-host');
-    expect(own.activation).toMatch(/detached/i);
+    expect(own.restartTarget).toBeNull();
+    expect(own.activation).toMatch(/fresh CLI process/i);
     expect(own.activation).toMatch(/staging/i);
+    expect(own.activation).not.toMatch(/dev:restart/);
     // Must name BOTH triggers — the cron routine AND the manual tool — since either can fire it
     // and both land on the same staging-tree spawn.
     expect(own.activation).toMatch(/system:green-checkpoint/);
     expect(own.activation).toMatch(/release:checkpoint-run/);
+  });
+
+  it('EI-21175951870654462: the full pipeline read does not prescribe a bg-host restart', async () => {
+    const path = 'apps/operator/lib/release/green-checkpoint.ts';
+    const git = fakeGit({
+      pathCommit: 'fresh12345',
+      contains: { HEAD: ['fresh12345'], 'origin/staging': ['fresh12345'] },
+    });
+    const res = await gitPipelinePosition(
+      { path },
+      {
+        git,
+        loadDeploy: async () => deploy(),
+        loadSnapshot: async () => snap(),
+      },
+    );
+
+    expect(res.runtime?.restartTarget).toBeNull();
+    expect(res.serving).toMatchObject({ unit: null, startedSinceCodeChange: true, restartLever: null });
+    expect(res.blockedOn).toBeNull();
+    expect(res.nextAction).toBeNull();
+    expect(res.summary).toMatch(/fresh-invocation route/i);
+    expect(res.summary).not.toMatch(/dev:restart/);
   });
 
   it('ordinary operator code still reads as release-pipeline-carried (no false positives)', () => {
@@ -1784,6 +1808,20 @@ describe('computeStages: position x health', () => {
   it('a clean committed path reads past/advancing with no noise', () => {
     const s = computeStages(input());
     expect(stage(s, 'committed')).toMatchObject({ position: 'past', health: 'advancing', detail: null });
+  });
+
+  it('EI-21175951870654462: a fresh-invocation route is past serving with no restart blocker', () => {
+    const runtime = classifyRuntimeOwner('apps/operator/lib/release/green-checkpoint.ts')!;
+    const serving = evaluateServing({
+      runtime,
+      process: { pid: 99, startedAtMs: 1 },
+      codeAsOfMs: 2,
+      codeAsOfSource: 'file-mtime',
+    });
+    const stages = computeStages(input({ runtime, serving }));
+    expect(stage(stages, 'serving')).toMatchObject({ position: 'past', health: 'advancing', lever: null });
+    expect(stage(stages, 'serving').detail).toMatch(/fresh-invocation CLI/i);
+    expect(deriveBlocker(stages)).toMatchObject({ blockedOn: null, nextAction: null });
   });
 
   const unpushed = { committedLocal: true, onStaging: false, inMain: false, deployed: false };
@@ -2350,6 +2388,26 @@ describe('mainBufferStallReason — an advance only suppresses when it CONSUMED 
 describe('evaluateServing: process truth, never a git inference', () => {
   const releaseRuntime = classifyRuntimeOwner('packages/operator-core/lib/x.ts')!;
   const bgHostRuntime = classifyRuntimeOwner('packages/operator-core/lib/scout/cycle.ts')!;
+
+  it('EI-21175951870654462: a fresh-invocation CLI is ready without probing or restarting a daemon', () => {
+    const runtime = classifyRuntimeOwner('apps/operator/lib/release/green-checkpoint.ts')!;
+    const sv = evaluateServing({
+      runtime,
+      // Even a deliberately old process must be ignored: it is the trigger owner, not the
+      // process that executes this file.
+      process: { pid: 99, startedAtMs: 1 },
+      codeAsOfMs: 2,
+      codeAsOfSource: 'file-mtime',
+    });
+    expect(sv).toMatchObject({
+      unit: null,
+      pid: null,
+      startedSinceCodeChange: true,
+      restartLever: null,
+      unknownReason: null,
+    });
+
+  });
 
   it('a process that started BEFORE the deploy is NOT serving the deployed code', () => {
     const sv = evaluateServing({
