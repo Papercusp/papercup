@@ -330,6 +330,17 @@ describe('work_items:complete (keyed-array)', () => {
     expect(fireReactionInProcess).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
+        fire: 'plan-item.resyncLane',
+        args: {
+          dependencies: [
+            { planSlug: 'release-plan', itemId: 'P-007', harnessSlug: 'papercup' },
+          ],
+        },
+      }),
+    );
+    expect(fireReactionInProcess).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
         fire: 'plan_items:release',
         args: { harness: 'papercup', plan: 'release-plan', item: 'P-007' },
       }),
