@@ -32,10 +32,18 @@ import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   killPty, markActive, resizePty, spawnPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
 } from '../../../pty-bridge';
+import {
+  issuePtyTicket,
+  localPtyHostId,
+  ptyAccessScopeKey,
+  type PtyAccessScope,
+} from '../../../pty-ticket';
 import { papercuspPath } from '../../../papercusp-root';
 import { resolveProjectDir, resolveStateDir, resolveSpawnCwd, resolveContextEnv } from '../../../spawn-config';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
-import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { requestWorkspaceId } from '../../../remote-auth-policy';
+import { defineTool, type Principal } from '@papercusp/agent-mcp';
 
 interface SpawnBody {
   command?: string;
@@ -45,6 +53,64 @@ interface SpawnBody {
   rows?: number;
   env?: Record<string, string>;
   resumePtyId?: string;
+}
+
+export const LOCAL_PTY_PRINCIPAL_ID = 'local-loopback';
+
+/**
+ * Resolve the authorization scope already established by the route stack.
+ * Direct-remote PTY requests always arrive with a verified, workspace-bound
+ * principal. Local/SSH-forwarded compatibility gets one explicit loopback
+ * identity instead of silently sharing a wildcard/global handle namespace.
+ */
+export function resolvePtyAccessScope(
+  req: Request,
+  principal: Principal | null,
+  harnessSlug: string,
+): PtyAccessScope | null {
+  const explicitWorkspace = requestWorkspaceId(req);
+  if (principal) {
+    if (!explicitWorkspace || explicitWorkspace !== principal.workspaceId) return null;
+    return {
+      tenantId: principal.workspaceId,
+      workspaceId: principal.workspaceId,
+      harnessSlug,
+      hostId: localPtyHostId(),
+      principalId: principal.slug,
+    };
+  }
+  const workspaceId = explicitWorkspace && explicitWorkspace !== '*'
+    ? explicitWorkspace
+    : activeWorkspaceId();
+  return {
+    tenantId: workspaceId,
+    workspaceId,
+    harnessSlug,
+    hostId: localPtyHostId(),
+    principalId: LOCAL_PTY_PRINCIPAL_ID,
+  };
+}
+
+function scopeOrDenial(
+  req: Request,
+  principal: Principal | null,
+  harnessSlug: string,
+): PtyAccessScope | Response {
+  const scope = resolvePtyAccessScope(req, principal, harnessSlug);
+  return scope ?? Response.json(
+    { error: 'pty scope does not match the authenticated workspace' },
+    { status: 403 },
+  );
+}
+
+function exactRequestOrigin(req: Request): string | null {
+  const origin = req.headers.get('origin')?.trim();
+  if (!origin || origin === 'null') return null;
+  try {
+    return new URL(origin).origin === origin ? origin : null;
+  } catch {
+    return null;
+  }
 }
 
 const stateDirForSlug = resolveStateDir;
@@ -162,12 +228,13 @@ type PrewarmEntry = {
 const prewarmed = new Map<string, PrewarmEntry>();
 const PREWARM_TTL_MS = 60_000;
 
-function prewarmKey(slug: string, laneId: string | undefined, command: string): string {
-  return `${slug}|${laneId ?? ''}|${command}`;
+function prewarmKey(accessScope: PtyAccessScope, laneId: string | undefined, command: string): string {
+  return `${ptyAccessScopeKey(accessScope)}|${laneId ?? ''}|${command}`;
 }
 
 function reservePrewarmSlot(opts: {
   slug: string;
+  accessScope: PtyAccessScope;
   laneId: string | undefined;
   command: string;
   buildCfg: () => Promise<
@@ -175,8 +242,8 @@ function reservePrewarmSlot(opts: {
     | { kind: 'unknown-slug' }
   >;
 }): PrewarmEntry {
-  const { slug, laneId, command, buildCfg } = opts;
-  const key = prewarmKey(slug, laneId, command);
+  const { slug, accessScope, laneId, command, buildCfg } = opts;
+  const key = prewarmKey(accessScope, laneId, command);
   const existing = prewarmed.get(key);
   if (existing) return existing;
 
@@ -197,12 +264,13 @@ function reservePrewarmSlot(opts: {
         return;
       }
       const handle = spawnPty({
+        accessScope,
         command: cfg.command, args: cfg.args, cwd: cfg.cwd, cols: 80, rows: 24, env: cfg.env,
       });
       attachAuditExport(handle, cfg.sd, cfg.command, laneId);
       entry.reaper = setTimeout(() => {
         if (prewarmed.get(key) === entry) prewarmed.delete(key);
-        try { killPty(handle.id); } catch { /* ignore */ }
+        try { killPty(handle.id, accessScope); } catch { /* ignore */ }
       }, PREWARM_TTL_MS);
       entry.reaper.unref?.();
 
@@ -287,6 +355,8 @@ const spawn = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
     let body: SpawnBody;
     try { body = ((await req.json()) as SpawnBody) ?? {}; } catch { body = {}; }
 
@@ -295,9 +365,9 @@ const spawn = defineTool({
 
     // Resume path: adopt an alive pty by id (PiPanel remount fast path).
     if (body.resumePtyId) {
-      const existing = getPtyMeta(body.resumePtyId);
+      const existing = getPtyMeta(body.resumePtyId, accessScope);
       if (existing) {
-        try { resizePty(body.resumePtyId, cols, rows); } catch { /* ignore */ }
+        try { resizePty(body.resumePtyId, cols, rows, accessScope); } catch { /* ignore */ }
         return Response.json({ ...existing, resumed: true });
       }
     }
@@ -305,13 +375,14 @@ const spawn = defineTool({
     // Compute the prewarm key synchronously so we can adopt an in-flight
     // prewarm slot without awaiting buildSpawnConfig.
     const command = body.command ?? resolvePiBinary();
-    const key = prewarmKey(slug, body.laneId, command);
+    const key = prewarmKey(accessScope, body.laneId, command);
     const reserved = prewarmed.get(key);
     const refill = () => {
       setImmediate(() => {
         try {
           reservePrewarmSlot({
             slug,
+            accessScope,
             laneId: body.laneId,
             command,
             buildCfg: () => buildSpawnConfig({ slug, body, requestUrl: req.url }),
@@ -346,6 +417,7 @@ const spawn = defineTool({
 
     try {
       const handle = spawnPty({
+        accessScope,
         command: cfg.command, args: cfg.args, cwd: cfg.cwd, cols, rows, env: cfg.env,
       });
       attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
@@ -372,6 +444,8 @@ const resolve = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
     let body: SpawnBody;
     try { body = ((await req.json()) as SpawnBody) ?? {}; } catch { body = {}; }
     const cfg = await buildSpawnConfig({ slug, body, requestUrl: req.url });
@@ -388,11 +462,13 @@ const prewarm = defineTool({
   auth: 'loopback',
   async handler(req, ctx) {
     const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
     let body: SpawnBody;
     try { body = ((await req.json()) as SpawnBody) ?? {}; } catch { body = {}; }
 
     const command = body.command ?? resolvePiBinary();
-    const key = prewarmKey(slug, body.laneId, command);
+    const key = prewarmKey(accessScope, body.laneId, command);
     const existing = prewarmed.get(key);
     if (existing) {
       const handle = await existing.promise.catch(() => null);
@@ -403,6 +479,7 @@ const prewarm = defineTool({
 
     const entry = reservePrewarmSlot({
       slug,
+      accessScope,
       laneId: body.laneId,
       command,
       buildCfg: () => buildSpawnConfig({ slug, body, requestUrl: req.url }),
@@ -415,6 +492,36 @@ const prewarm = defineTool({
   },
 });
 
+const ticket = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/pty/:id/ticket',
+  auth: 'loopback',
+  handler(req, ctx) {
+    const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
+    const origin = exactRequestOrigin(req);
+    if (!origin) {
+      return Response.json({ error: 'an exact Origin header is required' }, { status: 403 });
+    }
+    const handle = getPty(ctx.params.id, accessScope);
+    if (!handle) {
+      return Response.json({ error: 'unknown pty id', id: ctx.params.id }, { status: 404 });
+    }
+    const issued = issuePtyTicket({
+      ...accessScope,
+      ptyId: handle.id,
+      origin,
+    });
+    return Response.json(issued, {
+      headers: {
+        'cache-control': 'no-store',
+        pragma: 'no-cache',
+      },
+    });
+  },
+});
+
 const stream = defineTool({
   method: 'GET',
   path: '/harness/:slug/pty/:id/stream',
@@ -422,8 +529,11 @@ const stream = defineTool({
   // Pure SSE transport — don't flood route_invocations per connection.
   sampleRate: 0,
   handler(req, ctx) {
+    const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
     const id = ctx.params.id;
-    const handle = getPty(id);
+    const handle = getPty(id, accessScope);
     if (!handle) {
       return Response.json({ error: 'unknown pty id', id }, { status: 404 });
     }
@@ -443,7 +553,7 @@ const stream = defineTool({
         };
 
         // Replay full session history into the new subscriber.
-        const history = getHistory(id);
+        const history = getHistory(id, accessScope);
         if (history && history.length > 0) {
           try { onData(history); } catch { /* see onData */ }
         }
@@ -458,7 +568,7 @@ const stream = defineTool({
 
         // Keep the SSE consumer counted as activity so the reaper spares it.
         const ticker = managedSetInterval('pty-sse-active-ticker', 15_000, () => {
-          if (!sink.closed) markActive(id);
+          if (!sink.closed) markActive(id, accessScope);
         }, { category: 'lifecycle', instanced: true });
 
         sink.onClose(() => {
@@ -478,11 +588,14 @@ const input = defineTool({
   path: '/harness/:slug/pty/:id/input',
   auth: 'loopback',
   async handler(req, ctx) {
+    const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
     const id = ctx.params.id;
     let body: { data?: string };
     try { body = ((await req.json()) as { data?: string }) ?? {}; } catch { body = {}; }
     if (!body.data) return Response.json({ error: 'missing data' }, { status: 400 });
-    const ok = writePty(id, Buffer.from(body.data, 'base64'));
+    const ok = writePty(id, Buffer.from(body.data, 'base64'), accessScope);
     if (!ok) return Response.json({ error: 'unknown or killed pty' }, { status: 404 });
     return new Response(null, { status: 204 });
   },
@@ -493,12 +606,15 @@ const resize = defineTool({
   path: '/harness/:slug/pty/:id/resize',
   auth: 'loopback',
   async handler(req, ctx) {
+    const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
     const id = ctx.params.id;
     let body: { cols?: number; rows?: number };
     try { body = ((await req.json()) as { cols?: number; rows?: number }) ?? {}; } catch { body = {}; }
     const cols = Math.max(20, Math.min(500, Math.floor(body.cols ?? 80)));
     const rows = Math.max(5, Math.min(200, Math.floor(body.rows ?? 24)));
-    const ok = resizePty(id, cols, rows);
+    const ok = resizePty(id, cols, rows, accessScope);
     if (!ok) return Response.json({ error: 'unknown or killed pty' }, { status: 404 });
     return new Response(null, { status: 204 });
   },
@@ -508,8 +624,11 @@ const kill = defineTool({
   method: 'POST',
   path: '/harness/:slug/pty/:id/kill',
   auth: 'loopback',
-  handler(_req, ctx) {
-    const ok = killPty(ctx.params.id);
+  handler(req, ctx) {
+    const slug = ctx.params.slug ?? '';
+    const accessScope = scopeOrDenial(req, ctx.principal, slug);
+    if (accessScope instanceof Response) return accessScope;
+    const ok = killPty(ctx.params.id, accessScope);
     if (!ok) return Response.json({ error: 'unknown pty' }, { status: 404 });
     return new Response(null, { status: 204 });
   },
@@ -609,4 +728,4 @@ const tools = defineTool({
   },
 });
 
-export default [spawn, resolve, prewarm, stream, input, resize, kill, auditList, auditFile, tools];
+export default [spawn, resolve, prewarm, ticket, stream, input, resize, kill, auditList, auditFile, tools];

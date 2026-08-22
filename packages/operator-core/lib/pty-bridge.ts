@@ -332,6 +332,15 @@ export function getPty(id: string, accessScope: PtyAccessScope): PtyHandle | und
   return handle && samePtyAccessScope(handle.accessScope, accessScope) ? handle : undefined;
 }
 
+/**
+ * Return only the authorization boundary for an id. The WebSocket upgrade
+ * verifier uses this to validate a signed ticket before any handle is exposed.
+ */
+export function getPtyAccessScope(id: string): PtyAccessScope | null {
+  const handle = handles.get(id);
+  return handle ? { ...handle.accessScope } : null;
+}
+
 /** Write user keystrokes to the pty stdin. No-op if killed. */
 export function writePty(id: string, data: Buffer, accessScope: PtyAccessScope): boolean {
   const handle = getPty(id, accessScope);
