@@ -279,6 +279,25 @@ export function listedFiles(output, cwd) {
 }
 
 /**
+ * Keep Vitest's listed files to the canonical files the caller explicitly requested.
+ *
+ * Vitest applies positional paths as filters, but an explicit path can still cause a config's
+ * collection to report a matching copy from a sibling `.papercusp/worktrees/` checkout. Passing
+ * that raw list to `vitest run` makes the router execute the sibling copy too, even though the
+ * caller named only the canonical staging path. The requested route set is the authority: an
+ * extra listed path is ignored, while a requested path that was not listed remains unmatched and
+ * is refused by `evaluateMatch` below.
+ *
+ * @param {{ absolute: string }[]} routes
+ * @param {string[]} matched files reported by `vitest list`
+ * @returns {string[]} only listed files that are one of the requested canonical paths
+ */
+export function canonicalMatch(routes, matched) {
+  const requested = new Set(routes.map((route) => route.absolute));
+  return matched.filter((file) => requested.has(file));
+}
+
+/**
  * The false-green refusal decision, isolated from I/O so it is unit-testable (P-009 / WI-4534).
  *
  * A run is SAFE only when three things all hold: Vitest's own `list` exited cleanly, every
@@ -1277,7 +1296,11 @@ export function main(argv = process.argv.slice(2)) {
       });
       continue;
     }
-    const matched = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd);
+    const listedMatches = listedFiles(`${listed.stdout ?? ''}\n${listed.stderr ?? ''}`, group.cwd);
+    // EI-21108362231170830: do not trust every path Vitest emits after an explicit request. A
+    // matching test in `.papercusp/worktrees/` is not part of this run and must never reach the
+    // exact `vitest run` argument list below.
+    const matched = canonicalMatch(group.routes, listedMatches);
     const verdict = evaluateMatch({ routes: group.routes, matched, listStatus: listed.status });
     if (!verdict.ok) {
       if (listed.stdout) process.stdout.write(listed.stdout);

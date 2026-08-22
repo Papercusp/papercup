@@ -5,6 +5,7 @@ import { join, resolve } from 'node:path';
 // The production entrypoint deliberately stays executable by plain Node.
 import {
   aggregateGroupResults,
+  canonicalMatch,
   collectionAttributionMarker,
   discoverVitestRoute,
   evaluateMatch,
@@ -128,6 +129,20 @@ describe('test-files router', () => {
       resolve(cwd, 'src/a.test.ts'),
       resolve(cwd, 'src/b.test.ts'),
     ]);
+  });
+
+  // EI-21108362231170830: an explicit Vitest path can also list a matching test from a sibling
+  // frozen candidate under `.papercusp/worktrees/`. Only the canonical requested path may be
+  // passed to the subsequent `vitest run`; otherwise the duplicate suite executes too.
+  it('filters matching sibling worktree paths out of the exact execution set', () => {
+    const canonical = resolve(REPO_ROOT, 'packages/operator-core/lib/agent-tools/docs/_guidance-adapter.live.test.ts');
+    const sibling = resolve(
+      REPO_ROOT,
+      '.papercusp/worktrees/green-candidate-papercusp-06d8c9478aef/packages/operator-core/lib/agent-tools/docs/_guidance-adapter.live.test.ts',
+    );
+    const routes = [{ absolute: canonical, requested: 'lib/agent-tools/docs/_guidance-adapter.live.test.ts' }];
+
+    expect(canonicalMatch(routes, [sibling, canonical])).toEqual([canonical]);
   });
 
   it('rejects a missing request before running Vitest', () => {
