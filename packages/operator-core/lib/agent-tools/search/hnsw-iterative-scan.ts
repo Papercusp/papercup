@@ -61,10 +61,12 @@ import type { PgHandle } from '@papercusp/search';
 /**
  * Does this server understand `hnsw.iterative_scan` (pgvector >= 0.8)?
  *
- * Probed ONCE per handle and cached. An older build rejects the GUC with
- * `unrecognized configuration parameter`, so it must never be assumed: failing
- * open (a narrower candidate list, i.e. exactly today's behaviour) beats failing
- * the search outright.
+ * Probed once per handle and cached when the result is stable. An older build
+ * rejects the GUC with `unrecognized configuration parameter`, so that
+ * permanent capability answer is cached. A transient connection failure must
+ * not poison the process: failing open for that call (a narrower candidate
+ * list, i.e. exactly today's behaviour) beats failing the search outright, and
+ * the next call gets another chance to probe.
  *
  * Keyed by handle rather than module-global because a process legitimately holds
  * several handles (org-app, org-admin, a test harness against a fresh db) and
@@ -73,10 +75,22 @@ import type { PgHandle } from '@papercusp/search';
  */
 const supportByHandle = new WeakMap<PgHandle, Promise<boolean>>();
 
+function isMissingIterativeScanParameter(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown } | null;
+  const code = candidate?.code;
+  const message = typeof candidate?.message === 'string' ? candidate.message : '';
+  // PostgreSQL's SQLSTATE for an unknown configuration parameter is
+  // undefined_object (42704). The message fallback keeps test doubles and
+  // drivers that omit SQLSTATE from taking the transient path.
+  return code === '42704' || /unrecognized configuration parameter[\s\S]*hnsw\.iterative_scan/i.test(message);
+}
+
 function probeIterativeScan(sql: PgHandle): Promise<boolean> {
   const cached = supportByHandle.get(sql);
   if (cached) return cached;
-  const probe = (async () => {
+
+  let probe!: Promise<boolean>;
+  probe = (async () => {
     try {
       // Inside a transaction so the SET is rolled back either way and can never
       // leak onto a pooled connection.
@@ -84,7 +98,19 @@ function probeIterativeScan(sql: PgHandle): Promise<boolean> {
         await tx`SET LOCAL hnsw.iterative_scan = relaxed_order`;
       });
       return true;
-    } catch {
+    } catch (error) {
+      const permanentUnsupported = isMissingIterativeScanParameter(error);
+      console.warn(
+        permanentUnsupported
+          ? '[hnsw-iterative-scan] server does not support hnsw.iterative_scan; using the legacy capped scan'
+          : '[hnsw-iterative-scan] capability probe failed transiently; using the legacy capped scan for this call and will retry',
+      );
+      // An undefined GUC is a stable server capability result and remains
+      // cached. Any other failure may be a pool hiccup or restart; remove only
+      // THIS probe so a newer probe that raced with it is never deleted.
+      if (!permanentUnsupported && supportByHandle.get(sql) === probe) {
+        supportByHandle.delete(sql);
+      }
       return false;
     }
   })();
