@@ -246,6 +246,28 @@ describe('with the task manager ON', () => {
     );
   });
 
+  it('closes only after the asynchronous registration insert has completed', async () => {
+    let releaseRegistration!: () => void;
+    const registration = new Promise<void>((resolve) => {
+      releaseRegistration = resolve;
+    });
+    registerTask.mockImplementationOnce(async () => {
+      await registration;
+      return {};
+    });
+
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    completeSyncEnrolment(e, spec as never, 4242);
+    finishSyncEnrolment(e, { state: 'exited', exitCode: 0 });
+
+    // Before the INSERT resolves, closeTask must not be able to miss the row.
+    expect(closeTask).not.toHaveBeenCalled();
+
+    releaseRegistration();
+    await vi.waitFor(() => expect(closeTask).toHaveBeenCalledWith(e.taskId, { state: 'exited', exitCode: 0 }));
+    expect(registerTask.mock.invocationCallOrder[0]).toBeLessThan(closeTask.mock.invocationCallOrder[0]!);
+  });
+
   it('logs a bounded diagnostic when fire-and-forget enrolment fails, while remaining fail-open', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     registerTask.mockRejectedValueOnce(new Error('database unavailable'));
@@ -325,6 +347,6 @@ describe('a flag flip mid-job', () => {
     // must still be closed — otherwise it stays `running` forever.
     taskManagerEnabledSync.mockReturnValue(false);
     finishSyncEnrolment(e, { state: 'exited', exitCode: 0 });
-    expect(closeTask).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(closeTask).toHaveBeenCalledTimes(1));
   });
 });

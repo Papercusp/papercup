@@ -91,6 +91,12 @@ export interface SyncEnrolment {
    *  a flip mid-job cannot leave a half-written row (a `complete` with no
    *  `register`, or a `finish` closing a row that never existed). */
   enrolled: boolean;
+  /** Set by `completeSyncEnrolment`; resolves after the ledger row is inserted.
+   *  `finishSyncEnrolment` waits on this before closing so a fast child cannot win
+   *  the INSERT-vs-UPDATE race. It intentionally covers registration only, not the
+   *  later identity update: a terminal close may safely win against `markSpawned`'s
+   *  `state = 'pending'` guard once the row exists. */
+  registrationReady: Promise<void> | null;
   /** Wrap a resolved binary+argv into the task's scope. Identity when unconfined. */
   wrap: (
     binary: string,
@@ -150,6 +156,7 @@ export function beginSyncEnrolment(
     unitKind,
     scopeUnit,
     enrolled,
+    registrationReady: null,
     wrap: (binary, argv, env) =>
       confined
         ? {
@@ -180,31 +187,39 @@ export function completeSyncEnrolment(
 ): void {
   if (!enrolment.enrolled) return;
   const fs = opts.fs ?? nodeCgroupFs;
-  void (async () => {
-    await registerTask(spec, {
-      taskId: enrolment.taskId,
-      workspaceId: opts.workspaceId,
-      reserveScope: enrolment.confined,
-      unitKind: enrolment.unitKind,
+  // Keep the registration promise on the enrolment. The spawn seam cannot await
+  // this write, but its exit handler can await it indirectly; without this handoff
+  // a fast child calls closeTask before the INSERT exists, and the late INSERT then
+  // resurrects the already-finished task as `running`.
+  const registrationReady = registerTask(spec, {
+    taskId: enrolment.taskId,
+    workspaceId: opts.workspaceId,
+    reserveScope: enrolment.confined,
+    unitKind: enrolment.unitKind,
+  }).then(() => undefined);
+  enrolment.registrationReady = registrationReady;
+
+  void registrationReady
+    .then(async () => {
+      await markSpawned(enrolment.taskId, {
+        pid,
+        processIdentity: pid ? readProcessIdentity(pid) : null,
+        scopeUnit: enrolment.scopeUnit,
+        cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
+        confined: enrolment.confined,
+        unconfinedReason: enrolment.unconfinedReason,
+      });
+    })
+    .catch((error: unknown) => {
+      // Fail open — see the header — but never fail silently. The reconciler can
+      // identify the scope later; this line preserves the causal error that made
+      // the live process unaccounted in the first place.
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[task-manager] sync enrollment failed for task ${enrolment.taskId}: ${reason.slice(0, 500)} — ` +
+          'process continues unledgered and will surface as unaccounted',
+      );
     });
-    await markSpawned(enrolment.taskId, {
-      pid,
-      processIdentity: pid ? readProcessIdentity(pid) : null,
-      scopeUnit: enrolment.scopeUnit,
-      cgroupPath: pid ? readProcessCgroupPath(pid, fs) : null,
-      confined: enrolment.confined,
-      unconfinedReason: enrolment.unconfinedReason,
-    });
-  })().catch((error: unknown) => {
-    // Fail open — see the header — but never fail silently. The reconciler can
-    // identify the scope later; this line preserves the causal error that made
-    // the live process unaccounted in the first place.
-    const reason = error instanceof Error ? error.message : String(error);
-    console.warn(
-      `[task-manager] sync enrollment failed for task ${enrolment.taskId}: ${reason.slice(0, 500)} — ` +
-        'process continues unledgered and will surface as unaccounted',
-    );
-  });
 }
 
 /** Close an enrolled row when the job ends. Fire-and-forget, same contract. */
@@ -229,7 +244,19 @@ export function finishSyncEnrolment(
     else console.warn(message);
     return;
   }
-  void closeTask(enrolment.taskId, outcome).catch(() => {});
+  const close = () => {
+    void closeTask(enrolment.taskId, outcome).catch(() => {});
+  };
+  // `completeSyncEnrolment` is deliberately fire-and-forget for synchronous spawn
+  // callers, so the INSERT may still be in flight here. UPDATE-before-INSERT is a
+  // lost close: the row is then inserted and marked running forever. Wait only for
+  // registration; `markSpawned` remains independently best-effort and its pending
+  // state guard makes a close that wins after insertion safe.
+  if (enrolment.registrationReady) {
+    void enrolment.registrationReady.then(close, () => {});
+  } else {
+    close();
+  }
 }
 
 /** True only on a positive cgroup read; an unreadable/empty scope may close normally. */
