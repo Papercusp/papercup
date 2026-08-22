@@ -1122,6 +1122,28 @@ export function rubricCompleteness(rubric: Rubric): RubricCompleteness {
   };
 }
 
+/**
+ * Acceptance criteria use a light profile where model/method/driftMarkers are optional.
+ * The legacy `Rubric` projection maps omitted fields to empty strings to preserve its
+ * required-string shape, so a read → re-propose round-trip can hand those empty strings
+ * back here. Treat blank optional prose as omitted again; standard criteria remain
+ * untouched and continue to fail the full-field validation when a required field is
+ * missing.
+ */
+function normalizeAcceptanceCriteria(
+  criteria: ProposeRubricCriterion[],
+  kind: RubricKind | undefined,
+): ProposeRubricCriterion[] {
+  if ((kind ?? 'standard') !== 'acceptance') return criteria;
+  return criteria.map((criterion) => {
+    const normalized = { ...criterion };
+    for (const field of ['model', 'method', 'driftMarkers'] as const) {
+      if (normalized[field]?.trim() === '') delete normalized[field];
+    }
+    return normalized;
+  });
+}
+
 /** Build the validated `template_data` for a rubric-template plan from a propose input.
  *  Throws (fail-loud, D-004) if the rubric data is malformed — never persists a broken
  *  rubric. Returns the schema-coerced data. */
@@ -1145,6 +1167,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
           .join('; '),
     );
   }
+  const criteria = normalizeAcceptanceCriteria(input.criteria, input.kind);
   const data = {
     // Kind + acceptance links (acceptance-rubrics-on-every-plan-2026-08-11) — the schema's
     // per-kind superRefine validates the combination (subjectPlan/classRef acceptance-only,
@@ -1154,7 +1177,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     ...(input.subjectGoal ? { subjectGoal: input.subjectGoal } : {}),
     ...(input.classRef ? { classRef: input.classRef } : {}),
     characteristic: input.characteristic,
-    criteria: input.criteria,
+    criteria,
     ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),

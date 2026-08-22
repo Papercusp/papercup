@@ -147,6 +147,20 @@ describe('emitWorkItemSettledEvents', () => {
     expect(arg.to.sort()).toEqual(['su-grand', 'su-parent']);
   });
 
+  it('emits targeted claim:released when terminalization clears a prior assignee without broad claimable co-fire', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    await emitWorkItemSettledEvents(wi({ id: 'WI-TERMINAL', assignee: null, state: 'done' }), {
+      emit: emit as never,
+      priorAssignee: 'su-former-holder',
+      listOut: vi.fn(async () => []) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+
+    const keys = emit.mock.calls.map((c) => (c as unknown as [{ key: string }])[0].key);
+    expect(keys).toEqual(['claim:released:WI-TERMINAL', 'work-item:done:WI-TERMINAL']);
+    expect(keys).not.toContain('work-item:claimable');
+  });
+
   it('runs critical-alert reconciliation as an independent settle leg', async () => {
     const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
     const reconcile = vi.fn(async () => {});

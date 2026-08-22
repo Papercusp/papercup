@@ -1510,6 +1510,12 @@ export async function defaultPage(s: AlarmSignal, ws: string): Promise<void> {
         `routine engine. Signal: ${s.key}. Workspace: ${ws}. See harness_escalations for the durable record.${beesScopeCaveat}`,
       category: 'severe-event',
       conditionKey: `infra-liveness:${s.key}`,
+      // The request-path alarm pages only on the rising edge of a durable
+      // open escalation; while the underlying signal remains true, the open
+      // row suppresses repeat broadcasts until an explicit recovery. Mark
+      // that envelope one-shot so condition-staleness-alarm does not mistake
+      // the intentional silence for evidence that the signal recovered.
+      oneShot: true,
       ...(route ? { route: { ownerSelector: route.ownerSelector, reason: route.reason } } : {}),
     });
   } catch {

@@ -788,6 +788,18 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
     failSoft(`critical-alert-reconcile for ${wi.id}`, e);
   }
 
+  // Terminal writes clear the row's assignee inline before this fan-out runs.
+  // Preserve the targeted wake for agents awaiting the claim to become free,
+  // but do not announce the broad claimable pool: terminalization is not a
+  // return-to-pool transition, and the item is already settled/non-claimable.
+  if (deps.priorAssignee) {
+    try {
+      await emitClaimReleasedEventAwaited(wi, { emit, announceClaimable: false });
+    } catch (e) {
+      failSoft(`settled claim-release-event for ${wi.id}`, e);
+    }
+  }
+
   // P-008 (linking-notify-family-hardening) durability split: the done-emit and
   // the unblocked loop each run in their OWN fail-soft scope. A single try used
   // to wrap BOTH, so a throw while resolving/emitting `work-item:done` (a parent

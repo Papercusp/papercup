@@ -48,10 +48,23 @@ const DB_ROWS = [
   },
 ];
 
+const ALL_PROVISIONAL_ROWS = DB_ROWS.map((row) => ({
+  ...row,
+  payload: {
+    ...row.payload,
+    observation: {
+      ...row.payload.observation,
+      provisional: { violatableKeys: ['alpha'], stampedAt: row.created_at },
+    },
+  },
+}));
+
+let rowsForQuery = DB_ROWS;
+
 const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
-    return Promise.resolve(DB_ROWS) as unknown as Promise<unknown[]>;
+    return Promise.resolve(rowsForQuery) as unknown as Promise<unknown[]>;
   }
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
 }, { begin: vi.fn() });
@@ -96,5 +109,20 @@ describe('scorecardTrend — provisional cards are excluded and the exclusion re
     expect(alpha.distribution).toEqual({ healthy: 2 });
     expect(alpha.direction).toBe('stable');
     expect(alpha.latest.at).toBe('2026-08-03T00:00:00.000Z');
+  });
+
+  it('names a provisional-only window instead of claiming the rubric was never graded', async () => {
+    rowsForQuery = ALL_PROVISIONAL_ROWS;
+    const { scorecardTrend } = await import('./scorecards');
+
+    const trend = await scorecardTrend({ rubricRef: 'test-rubric' });
+
+    expect(trend.scorecardCount).toBe(0);
+    expect(trend.provisionalExcluded).toBe(3);
+    expect(trend.staleness.reason).toContain('3 scorecards in the window were excluded');
+    expect(trend.staleness.reason).toContain('3 provisional');
+    expect(trend.staleness.reason).not.toContain('never been graded');
+
+    rowsForQuery = DB_ROWS;
   });
 });

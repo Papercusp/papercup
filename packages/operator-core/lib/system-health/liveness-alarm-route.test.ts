@@ -33,6 +33,7 @@ describe('defaultPage — EI-10060 route leg', () => {
     // The unchanged parts of the call stay exactly as before this feature.
     expect(opts.conditionKey).toBe('infra-liveness:dead-routines');
     expect(opts.category).toBe('severe-event');
+    expect(opts.oneShot).toBe(true);
   });
 
   it('an UNREGISTERED signal key omits route entirely (no owner to route to)', async () => {
@@ -41,6 +42,9 @@ describe('defaultPage — EI-10060 route leg', () => {
     expect(opts.route).toBeUndefined();
     // The broadcast itself is UNCHANGED regardless — ownership is additive, not gating.
     expect(opts.conditionKey).toBe('infra-liveness:accounts-starved');
+    // accounts-starved is emitted only on the rising edge; silence while the
+    // durable blocker remains open is not evidence of recovery.
+    expect(opts.oneShot).toBe(true);
   });
 
   it('is fail-soft: a broadcastSevereEvent rejection never throws out of defaultPage', async () => {

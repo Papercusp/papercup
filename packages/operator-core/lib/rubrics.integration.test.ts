@@ -338,6 +338,47 @@ describe('writes — propose / ratify author + promote a rubric-template plan', 
     expect(r.ratifiedBy).toBe('seed');
   });
 
+  it('acceptance re-propose tolerates blank optional prose from the legacy projection', async () => {
+    const subjectPlan = 'acceptance-roundtrip-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Acceptance round-trip subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
+              false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+
+    const first = await rubrics.proposeRubric({
+      rubricId: 'acceptance-empty-prose',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'acceptance-roundtrip',
+      title: 'Acceptance round-trip',
+      criteria: [{ key: 'outcome', title: 'Outcome', model: '', method: '', driftMarkers: '' }],
+      by: 'su-test',
+    });
+    expect(first.status).toBe('active');
+
+    const [stored] = await db.adminSql<{ template_data: { criteria: Record<string, unknown>[] } }[]>`
+      SELECT template_data FROM harness_shared.harness_plans
+       WHERE plan_slug = 'acceptance-empty-prose' AND template = 'rubric'`;
+    expect(stored.template_data.criteria[0]).toEqual({ key: 'outcome', title: 'Outcome' });
+
+    // getRubric maps the optional fields back to '' for the legacy Rubric shape. A
+    // read → re-propose must accept that projection instead of rejecting the revision.
+    const fromRead = await rubrics.getRubric('acceptance-empty-prose');
+    const revised = await rubrics.proposeRubric({
+      rubricId: fromRead!.rubricId,
+      kind: fromRead!.kind,
+      subjectPlan: fromRead!.subjectPlan!,
+      characteristic: fromRead!.characteristic,
+      title: fromRead!.title,
+      criteria: fromRead!.criteria,
+      by: 'su-reviser',
+    });
+    expect(revised.status).toBe('active');
+  });
+
   it('re-propose is an idempotent upsert — updates content, never a duplicate row', async () => {
     await rubrics.proposeRubric({ rubricId: 'seed', characteristic: 'c', title: 'v1', criteria: sampleCriteria, status: 'active', by: 'seed' });
     const r2 = await rubrics.proposeRubric({ rubricId: 'seed', characteristic: 'c', title: 'v2', criteria: sampleCriteria, status: 'active', by: 'seed' });

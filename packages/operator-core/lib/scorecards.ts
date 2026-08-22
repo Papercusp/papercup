@@ -1448,12 +1448,36 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
       };
     });
 
+  const supersededExcluded = inGeneration.length - live.length;
+  const staleness = computeRubricStaleness(criteria);
+  // Trend-only exclusions happen before criteria are built. When every input card
+  // is excluded, an empty criteria list otherwise looks identical to a rubric that
+  // had no scorecards at all, which makes the diagnostic claim "never been graded"
+  // false (EI-21167213678011223). Keep computeRubricStaleness's pure/direct-call
+  // contract intact and add the aggregation context only where it is available.
+  const excludedPopulations = [
+    ['superseded', supersededExcluded],
+    ['pre-contract-reset', preContractResetExcluded],
+    ['provisional', provisionalExcluded],
+    ['grading-audit-pending', gradingAuditPendingExcluded],
+  ].filter(([, count]) => count > 0);
+  const excludedTotal = excludedPopulations.reduce((total, [, count]) => total + count, 0);
+  const stalenessWithExclusionContext =
+    finalCards.length === 0 && !staleness.assessed && excludedTotal > 0
+      ? {
+          ...staleness,
+          reason: `UNKNOWN, not clean — ${excludedTotal} scorecard${excludedTotal === 1 ? '' : 's'} in the window were excluded from trend aggregation (${excludedPopulations
+            .map(([kind, count]) => `${count} ${kind}`)
+            .join(', ')}); no scorecards remained to judge staleness.`,
+        }
+      : staleness;
+
   return {
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
     scorecardCount: finalCards.length,
     sample: { limit: sampleLimit, inputCount: rows.length },
-    supersededExcluded: inGeneration.length - live.length,
+    supersededExcluded,
     preContractResetExcluded,
     provisionalExcluded,
     gradingAuditPendingExcluded,
@@ -1465,6 +1489,6 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     ...(trendRubric ? { status: trendRubric.status } : {}),
     proposedBy: trendRubric?.proposedBy ?? null,
     ratifiedBy: trendRubric?.ratifiedBy ?? null,
-    staleness: computeRubricStaleness(criteria),
+    staleness: stalenessWithExclusionContext,
   };
 }
