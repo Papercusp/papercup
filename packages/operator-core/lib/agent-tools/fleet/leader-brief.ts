@@ -2649,6 +2649,7 @@ export async function buildLeaderBrief(
           throttled: (m as { throttled?: unknown }).throttled,
           loopMode: m.loopMode,
           nextFireAt: m.nextFireAt,
+          parkedOn: m.parkedOn,
         },
         { blockedAtLayer: blockedAt?.layer ?? null, midTurnFreshnessMs: VERDICT_SPEAKING_FRESH_MS },
       ),

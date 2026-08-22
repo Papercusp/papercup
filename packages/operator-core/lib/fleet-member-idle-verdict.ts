@@ -52,6 +52,8 @@ export type MemberIdleCause =
   | 'session-ending'
   /** Alive but nothing will ever wake it: no armed loop and no pending wake. */
   | 'no-self-wake'
+  /** Intentionally parked on a live events:await; the event, not a loop, will wake it. */
+  | 'parked-awaiting-event'
   /** About to compact, so it is not going to pick anything up first. */
   | 'context-exhausted'
   /** Everything upstream is healthy, work is claimable, and it still took nothing. */
@@ -98,6 +100,12 @@ export interface MemberIdleInput {
   loopMode?: string | null;
   /** A scheduled next fire, if any. */
   nextFireAt?: string | null;
+  /**
+   * Active event keys derived from the same parked-await read exposed by fleet:assignments and
+   * events:status. A non-empty list is a real self-wake mechanism even when no engine loop is
+   * armed, so it must not be classified as `no-self-wake`.
+   */
+  parkedOn?: readonly unknown[] | null;
   /** True when the member has its own bee-level claim spec rather than inheriting the fleet's. */
   hasOwnSpec?: boolean | null;
 }
@@ -213,7 +221,21 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 6. Alive, but nothing is ever going to wake it. This is the one that looks identical to
+  // 6. Intentionally parked on a live event await. This is a real self-wake mechanism even
+  //    without an engine loop; waking it would only re-arm the same await unless the dispatch
+  //    is for the event it is waiting on.
+  if ((member.parkedOn?.length ?? 0) > 0) {
+    return {
+      cause: 'parked-awaiting-event',
+      reason:
+        `Parked on ${member.parkedOn?.length} live event await(s) — the event will wake this ` +
+        'member; it is intentionally waiting rather than permanently dormant.',
+      remedy: 'None — wait for the parked event; waking it would re-arm the same await.',
+      ...ownSpec,
+    };
+  }
+
+  // 7. Alive, but nothing is ever going to wake it. This is the one that looks identical to
   //    'genuinely-idle' in a flat brief and has the opposite remedy: an idle member with an
   //    armed loop will pick work up by itself, one without a loop never will.
   if (member.loopMode == null && !member.nextFireAt) {
@@ -228,7 +250,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 7. About to compact — it will not pick work up before it does.
+  // 8. About to compact — it will not pick work up before it does.
   if (member.contextPressure === 'critical') {
     return {
       cause: 'context-exhausted',
@@ -238,7 +260,7 @@ export function computeMemberIdleVerdict(
     };
   }
 
-  // 8. The residual, and the ONLY case where waking is the right act — the same place
+  // 9. The residual, and the ONLY case where waking is the right act — the same place
   //    `computeFleetBlockVerdict` puts its 'members' layer, for the same reason.
   return {
     cause: 'genuinely-idle',

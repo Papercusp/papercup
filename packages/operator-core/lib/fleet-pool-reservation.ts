@@ -96,6 +96,7 @@ const NOT_CONTENDING: ReadonlySet<MemberIdleCause> = new Set<MemberIdleCause>([
   'throttled',
   'session-ending',
   'no-self-wake',
+  'parked-awaiting-event',
   'context-exhausted',
   'fleet-blocked',
 ]);

@@ -70,7 +70,8 @@ describe('computePoolReservation — invariant: a holder is NEVER held back', ()
   it('no member holding work is ever held back, across every cause and both pool states', () => {
     const causes: MemberIdleCause[] = [
       'working', 'mid-turn', 'stalled-holder', 'fleet-blocked', 'throttled',
-      'session-ending', 'no-self-wake', 'context-exhausted', 'genuinely-idle',
+      'session-ending', 'no-self-wake', 'parked-awaiting-event', 'context-exhausted',
+      'genuinely-idle',
     ];
     for (const pool of [SCARCE, HEALTHY, { factor: null, queueDepth: null }]) {
       const plan = computePoolReservation(causes.map((c) => m(c, c)), pool);
@@ -116,7 +117,8 @@ describe('computePoolReservation — the third option', () => {
   it('never recommends a bench for ANY member in ANY state', () => {
     const causes: MemberIdleCause[] = [
       'working', 'mid-turn', 'stalled-holder', 'fleet-blocked', 'throttled',
-      'session-ending', 'no-self-wake', 'context-exhausted', 'genuinely-idle',
+      'session-ending', 'no-self-wake', 'parked-awaiting-event', 'context-exhausted',
+      'genuinely-idle',
     ];
     for (const pool of [SCARCE, HEALTHY]) {
       for (const row of computePoolReservation(causes.map((c) => m(c, c)), pool).members) {
@@ -125,7 +127,14 @@ describe('computePoolReservation — the third option', () => {
     }
   });
 
-  it.each(['throttled', 'session-ending', 'no-self-wake', 'context-exhausted', 'fleet-blocked'] as const)(
+  it.each([
+    'throttled',
+    'session-ending',
+    'no-self-wake',
+    'parked-awaiting-event',
+    'context-exhausted',
+    'fleet-blocked',
+  ] as const)(
     '%s is not contending, so it is unaffected rather than held back',
     (cause) => {
       const plan = computePoolReservation([m('a', cause)], SCARCE);

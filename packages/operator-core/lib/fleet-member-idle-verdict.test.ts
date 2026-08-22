@@ -73,6 +73,16 @@ describe('computeMemberIdleVerdict — single causes', () => {
     expect(v.cause).not.toBe('no-self-wake');
   });
 
+  it('a loopless member parked on a live event await is parked-awaiting-event, not no-self-wake', () => {
+    const v = computeMemberIdleVerdict(
+      idle({ loopMode: null, nextFireAt: null, parkedOn: ['fleet:item-completed:alpha'] }),
+      ctx(),
+    );
+    expect(v.cause).toBe('parked-awaiting-event');
+    expect(v.reason).toContain('live event await');
+    expect(v.remedy).toContain('wait for the parked event');
+  });
+
   it('critical context is context-exhausted', () => {
     expect(computeMemberIdleVerdict(idle({ contextPressure: 'critical' }), ctx()).cause).toBe(
       'context-exhausted',
@@ -92,6 +102,7 @@ describe('computeMemberIdleVerdict — single causes', () => {
       idle({ lastToolCallAgeMs: 5_000 }),
       idle({ throttled: {} }),
       idle({ sessionState: 'ended' }),
+      idle({ loopMode: null, nextFireAt: null, parkedOn: ['fleet:item-completed:alpha'] }),
       idle({ contextPressure: 'critical' }),
     ];
     for (const m of cases) {
