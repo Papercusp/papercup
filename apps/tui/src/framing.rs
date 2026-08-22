@@ -2,8 +2,8 @@
 //! and `papercusp-desktop/src-tauri/src/endpoint_ipc_framing.rs` — encoder output
 //! and decoder behaviour must match byte-for-byte.
 //!
-//! ⚠ Unlike those two, this mirror asserts NO shared golden byte-vector, so
-//! nothing here actually FAILS if it drifts from them (EI filed 2026-08-03).
+//! The cross-language golden vector below pins this mirror to the shared TS
+//! source and desktop Rust mirror, so drift fails all participating suites.
 //! The `apps/operator/...` paths this header used to name have not existed
 //! since the codec moved to `libs/generic/ipc-framing`.
 //!
@@ -172,6 +172,20 @@ mod tests {
             encode_frame(FrameType::EventBin, &huge),
             Err(FrameError::TooLarge(_)),
         ));
+    }
+
+    #[test]
+    fn golden_request_frame_matches_ts_and_desktop_rust() {
+        // Keep this byte vector identical to
+        // libs/generic/ipc-framing/src/index.test.ts and
+        // papercusp-desktop/src-tauri/src/endpoint_ipc_framing.rs.
+        const GOLDEN_REQUEST_FRAME: &[u8] = &[
+            0x00, 0x00, 0x00, 0x08, // length = 8
+            0x01, // type = Request
+            b'{', b'"', b'i', b'd', b'"', b':', b'1', b'}', // {"id":1}
+        ];
+        let frame = encode_frame(FrameType::Request, br#"{"id":1}"#).unwrap();
+        assert_eq!(frame.as_slice(), GOLDEN_REQUEST_FRAME);
     }
 
     #[test]
