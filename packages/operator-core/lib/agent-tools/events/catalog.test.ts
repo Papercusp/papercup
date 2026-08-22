@@ -31,6 +31,17 @@ beforeEach(() => {
 });
 
 describe('events:catalog — live_awaiters', () => {
+  it('advertises and applies q/limit family filters', async () => {
+    expect(catalog.args.safeParse({ q: 'deploy-failed', limit: 1 }).success).toBe(true);
+
+    const out = await call({ q: 'deploy-failed', limit: 1, announced: false, installed: false, liveAwaiters: false });
+    expect(out.count).toBe(1);
+    expect(out.total).toBe(EVENT_CATALOG.length);
+    expect(out.families).toEqual([
+      expect.objectContaining({ family: 'deploy-failed' }),
+    ]);
+  });
+
   it('attaches live_awaiters per row by default, keyed via familyKeyPrefix', async () => {
     countMock.mockImplementation(async (prefixes: string[]) => {
       const m = new Map(prefixes.map((p) => [p, 0]));

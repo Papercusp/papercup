@@ -26,10 +26,25 @@ import { announcementVisibleTo } from '../../events/await/announce-key';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
 
+const MAX_CATALOG_LIMIT = 200;
+
+function catalogRowMatches(row: CatalogRow, query: string): boolean {
+  return [
+    row.family,
+    row.key,
+    row.await_example,
+    row.describe,
+    row.emitter,
+    row.provenance,
+    row.replaces_poll,
+    row.sugar,
+  ].some((value) => typeof value === 'string' && value.toLowerCase().includes(query));
+}
+
 export default defineTool({
   name: 'events:catalog',
   description:
-    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
+    'List the awaitable event-key families — the answer to "what can I wait on instead of polling?". Each row: the key template (+ a ready events:await example), what it means, who emits it, whether it fires TODAY, the poll it replaces, its sugar verb (e.g. deploy:await), and `live_awaiters` — how many agents are registered on that key RIGHT NOW (EI-9000). Supports case-insensitive free-text `q` over family/key/description/emitter and a bounded `limit` for family rows. Check here before you poll dev:pipeline_position / dev:build_status / a peer\'s status.',
   capability: 'events:read',
   guidance: {
     when: 'Before you POLL for something (a deploy landing, the gate going green, a peer\'s work-item settling, a service recovering) — look here for an awaitable key so you can events:await + END YOUR TURN instead of re-polling. Also when you\'re unsure whether an event even exists for X, OR you (an emitter/leader) want to see WHO is actually listening on a key before you trust an events:emit alone (live_awaiters).',
@@ -45,6 +60,18 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
   args: z.object({
+    q: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Case-insensitive substring over family, key, await example, description, emitter, provenance, and sugar.'),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_CATALOG_LIMIT)
+      .optional()
+      .describe(`Max family rows returned (default all; maximum ${MAX_CATALOG_LIMIT}).`),
     family: z
       .string()
       .max(64)
@@ -89,10 +116,13 @@ export default defineTool({
     // EVENT_CATALOG alone would silently leave every installed family without one).
     const merged = mergeInstalledEventCatalog(installedUnits);
     const collisions: EventFamilyCollision[] = merged.collisions;
+    const query = args.q?.trim().toLowerCase();
 
     let rows = renderCatalog(installedUnits);
     if (args.family) rows = rows.filter((r) => r.family === args.family);
     if (args.awaitable_now) rows = rows.filter((r) => r.awaitable_now);
+    if (query) rows = rows.filter((r) => catalogRowMatches(r, query));
+    if (args.limit !== undefined) rows = rows.slice(0, args.limit);
 
     // EI-9000: live awaiter counts — "is anyone actually listening" per family,
     // the read-time twin of events:emit's waiters/woken. Best-effort: a DB hiccup
@@ -147,7 +177,15 @@ export default defineTool({
               harnessSlug: typeof ctxHarnessRaw === 'string' && ctxHarnessRaw !== '*' ? ctxHarnessRaw : null,
             };
           } catch { /* unresolvable reader → global-only visibility */ }
-          const visible = anns.filter((a) => announcementVisibleTo(a, reader)).slice(0, 25);
+          const visible = anns
+            .filter((a) => announcementVisibleTo(a, reader))
+            .filter((a) => {
+              if (!query) return true;
+              return [a.eventKey, a.note, a.scopeKind, a.scopeRef, a.subscriberId].some(
+                (value) => typeof value === 'string' && value.toLowerCase().includes(query),
+              );
+            })
+            .slice(0, 25);
           let counts: Map<string, number> | null = null;
           try {
             counts = await countActiveAwaitsByPrefixes(visible.map((a) => a.eventKey));
