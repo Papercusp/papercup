@@ -1,5 +1,5 @@
 // P-005 resolver GATES (whole-app-sync-payload-audit phase2): learning.observations
-// (default view → precomputed snapshot; state/limit filter → live inline compute)
+// (default view → precomputed snapshot; every predicate/cursor → live keyset read)
 // and learning.releaseReadiness (no args → unconditional snapshot SELECT). Both
 // are filled by the `system:precompute-derived-reads` routine (see
 // derived-reads/producers.ts). Mirrors the dev.* / coord-history gate tests.
@@ -7,22 +7,35 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { knownQueryNamesV2 } from './index';
 
-const { readDerivedSnapshotRowsMock, registerDerivedReadMock, computeObservationsMock } = vi.hoisted(() => ({
+const { readDerivedSnapshotRowsMock, registerDerivedReadMock, readPageMock } = vi.hoisted(() => ({
   readDerivedSnapshotRowsMock: vi.fn(async (_key: string) => [] as unknown[]),
   registerDerivedReadMock: vi.fn(),
-  computeObservationsMock: vi.fn(async (_a: unknown) => [] as unknown[]),
+  readPageMock: vi.fn(async () => ({
+    rows: [{ id: 'EI-9', title: 'live', refs: [], createdAt: '2026-08-21T00:00:00.000Z' }],
+    nextCursor: null,
+    hasMore: false,
+  })),
 }));
 
 vi.mock('../derived-reads/registry', () => ({
   readDerivedSnapshotRows: readDerivedSnapshotRowsMock,
   registerDerivedRead: registerDerivedReadMock,
 }));
-vi.mock('./learning-observations-read', () => ({ computeLearningObservations: computeObservationsMock }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: {} }) }));
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
+vi.mock('../issues-engineer', () => ({
+  resolveIssuesScopeWorkspace: () => 'ws-test',
+}));
+vi.mock('./learning-observations-read', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./learning-observations-read')>()),
+  readLearningObservationsPageFromStore: readPageMock,
+}));
 
 describe('P-005 resolver gates', () => {
-  it('registers both query names', () => {
+  it('registers the row, summary, and retained snapshot query names', () => {
     const names = knownQueryNamesV2();
     expect(names).toContain('learning.observations');
+    expect(names).toContain('learning.observations.summary');
     expect(names).toContain('learning.releaseReadiness');
   });
 
@@ -30,27 +43,32 @@ describe('P-005 resolver gates', () => {
     beforeEach(() => {
       vi.resetModules();
       readDerivedSnapshotRowsMock.mockClear();
-      computeObservationsMock.mockClear();
+      readPageMock.mockClear();
     });
     afterEach(() => vi.resetModules());
 
     it('learning.observations DEFAULT view (limit 200) reads the snapshot — never the inline compute', async () => {
-      const snap = [{ id: 'EI-1', body: 'x' }];
+      const snap = [{ id: 'EI-1', title: 'snapshot', body: 'x', refs: [], createdAt: '2026-08-21T00:00:00.000Z' }];
       readDerivedSnapshotRowsMock.mockImplementation(async () => snap);
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.observations', { limit: 200 })) as unknown[];
-      expect(rows).toBe(snap);
+      expect(rows).toMatchObject(snap);
       expect(readDerivedSnapshotRowsMock).toHaveBeenCalledWith('learning.observations');
-      expect(computeObservationsMock).not.toHaveBeenCalled();
+      expect(readPageMock).not.toHaveBeenCalled();
     });
 
-    it('learning.observations with a state filter falls through to the inline compute', async () => {
-      computeObservationsMock.mockImplementation(async () => [{ id: 'EI-9' }]);
+    it('learning.observations with a state filter falls through to the live keyset reader', async () => {
       const { resolveNamedQueryV2: r } = await import('./index');
       const rows = (await r('learning.observations', { state: 'resolved', limit: 200 })) as unknown[];
       expect(rows).toHaveLength(1);
       expect(readDerivedSnapshotRowsMock).not.toHaveBeenCalled();
-      expect(computeObservationsMock).toHaveBeenCalledWith(expect.objectContaining({ state: 'resolved' }));
+      expect(readPageMock).toHaveBeenCalledWith(
+        expect.anything(),
+        'ws-test',
+        expect.objectContaining({
+          args: expect.objectContaining({ state: 'resolved' }),
+        }),
+      );
     });
 
     it('learning.releaseReadiness (no args) reads the snapshot', async () => {

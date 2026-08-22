@@ -15,7 +15,10 @@ vi.mock('../harness/improvements/read-items', () => ({
 }));
 
 import { knownQueryNamesV2, resolveNamedQueryV2 } from './index';
-import { computeLearningObservations } from './learning-observations-read';
+import {
+  computeLearningObservations,
+  normalizeLearningObservationsArgs,
+} from './learning-observations-read';
 import { readListMeta, readListTotal } from './list-meta';
 import { assertShapeMatchesRecordedVersion } from '../derived-reads/shape-fingerprint';
 
@@ -45,6 +48,7 @@ describe('learning.observations — Work Queue pagination contract', () => {
   // total/sort/args contract against that function directly.
   it('is registered', () => {
     expect(knownQueryNamesV2()).toContain('learning.observations');
+    expect(knownQueryNamesV2()).toContain('learning.observations.summary');
   });
 
   it('carries the authoritative store total on the flat row list, newest-first', async () => {
@@ -144,17 +148,12 @@ describe('learning.observations — Work Queue pagination contract', () => {
     ]);
   });
 
-  it('clamps an over-large window instead of rejecting the query (non-default → inline)', async () => {
-    // A state filter makes this a NON-default view → the resolver takes the live
-    // inline path AND applies the argsSchema clamp (50000 → 2000) before compute.
-    await resolveNamedQueryV2('learning.observations', { state: 'open', limit: 50_000 });
-    expect(listIssues).toHaveBeenCalledWith({
-      lane: 'observation',
-      excludeRubricGraded: true,
+  it('clamps an over-large request to one immutable cursor page', () => {
+    const normalized = normalizeLearningObservationsArgs({
       state: 'open',
-      limit: 2000,
+      limit: 50_000,
     });
-    expect(countIssues).toHaveBeenCalledWith({ lane: 'observation', excludeRubricGraded: true, state: 'open' });
+    expect(normalized).toMatchObject({ state: 'open', limit: 200 });
   });
 
   // ── WI-7289 shape guard ──────────────────────────────────────────────────
