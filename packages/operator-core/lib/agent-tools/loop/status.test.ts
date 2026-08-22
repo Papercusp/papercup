@@ -82,6 +82,26 @@ describe('loop:status owner-scoped argument contract (EI-20232692935534790)', ()
   });
 });
 
+describe('loop:status return guidance matches the emitted loop record', () => {
+  it('documents lastFiredAt, the field emitted by loop:status', async () => {
+    const emitted = {
+      active: true,
+      intervalSec: 60,
+      parked: false,
+      nextFireAt: null,
+      lastFiredAt: '2026-08-22T09:15:00.000Z',
+    };
+    getLoopStatusMock.mockResolvedValue(emitted);
+
+    const out = await run();
+    const returns = (statusTool as unknown as { guidance?: { returns?: string } }).guidance?.returns ?? '';
+
+    expect(out.loop).toMatchObject(emitted);
+    expect(returns).toContain('lastFiredAt');
+    expect(returns).not.toMatch(/\blastFireAt\b/);
+  });
+});
+
 beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();

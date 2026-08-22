@@ -32,6 +32,46 @@ import { egressCanonicalRefs, type EgressResult, type EgressInput } from './gith
 import { collectDivergenceSignals, classifyDivergence, recordDivergenceVerdict, type DivergenceVerdict } from './github-divergence';
 import { resolveForkPushTarget, type ForkPushTarget } from '../../harness/git-sync/fork-remote';
 
+/** The URL-scoped helper key used by GitHub checkouts created by Papercusp. */
+export const GITHUB_CREDENTIAL_HELPER_KEY = 'credential.https://github.com.helper';
+
+const GITHUB_REMOTE_RE = /^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)/i;
+
+/**
+ * Route only GitHub network commands through a helper selected from the
+ * registered checkout's local config. The bridge operates in a bare store, so
+ * changing its cwd would lose the destination for fetch/update refs; process-
+ * local `-c` values preserve the bare-store cwd and also survive the spawner
+ * sidecar, which receives the exact argv unchanged.
+ *
+ * The empty value is intentional: Git supports multiple credential helpers,
+ * and the machine-global helper may return a different GitHub account before
+ * the checkout-pinned helper gets a chance to answer. Resetting the key first
+ * makes the checkout's selected helper authoritative for this one command.
+ */
+export function withGithubCredentialHelper(
+  runGit: RunGit,
+  helper: string | null | undefined,
+): RunGit {
+  const selected = helper?.trim();
+  if (!selected || /[\r\n]/.test(selected)) return runGit;
+
+  return (args, cwd, opts) => {
+    if (!args.some((arg) => GITHUB_REMOTE_RE.test(arg))) return runGit(args, cwd, opts);
+    return runGit(
+      [
+        '-c',
+        `${GITHUB_CREDENTIAL_HELPER_KEY}=`,
+        '-c',
+        `${GITHUB_CREDENTIAL_HELPER_KEY}=${selected}`,
+        ...args,
+      ],
+      cwd,
+      opts,
+    );
+  };
+}
+
 /** The canonical staging mirror the worktree bridge maintains in the bare repo. */
 export const BRIDGE_CANONICAL_REF = 'refs/hive/staging';
 /** Where the canonical staging egresses to on the GitHub remote. */
@@ -50,6 +90,12 @@ export interface BridgeTickInput {
   branches: string[];
   /** GitHub `permissions.push` on the upstream (null/undefined = unknown). */
   upstreamWrite?: boolean | null;
+  /**
+   * The last non-empty `credential.https://github.com.helper` value from the
+   * registered checkout's local config. The bridge's bare store does not have
+   * that checkout config, so network commands apply it process-locally.
+   */
+  githubCredentialHelper?: string | null;
   /** The last ADMITTED github-origin head (caller-persisted watermark). */
   lastAdmitted: string | null;
   /**
@@ -131,7 +177,10 @@ async function countStrictlyBehind(
 
 export async function runGithubBridgeTick(input: BridgeTickInput): Promise<BridgeTickOutcome> {
   const errors: string[] = [];
-  const runGit = input.deps?.runGit ?? defaultRunGit;
+  const runGit = withGithubCredentialHelper(
+    input.deps?.runGit ?? defaultRunGit,
+    input.githubCredentialHelper,
+  );
   const repoPath = input.deps?.repoPath ?? hiveGitRepoPath(input.potHomeSlug, input.repoKey);
   const record = input.deps?.record ?? ((h, w, v) => recordDivergenceVerdict(h, w, v));
 

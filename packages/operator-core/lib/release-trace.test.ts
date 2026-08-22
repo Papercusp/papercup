@@ -623,6 +623,47 @@ describe('buildReleaseTrace', () => {
       expect(out.constraints.find((c) => c.code === 'gate-red')?.summary).toContain('spawn-77');
     });
 
+    it('does not bind the wait to a terminal red candidate whose producer is already idle', () => {
+      const checkpointRun = {
+        active: false,
+        activeSource: 'run-lock' as const,
+        candidate: null,
+        startedAtMs: null,
+        elapsedSec: null,
+        asOfAgeMs: 0,
+      };
+      const out = buildReleaseTrace(
+        input({
+          position: position({
+            positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false },
+            gate: { ...position().gate, observedCandidate: sha, checkpointRunInFlight: checkpointRun },
+          }),
+          gate: {
+            ...redGate({
+              state: 'owned-live',
+              covered: true,
+              spawnId: 'spawn-77',
+              ownerSignature: 'x.test.ts',
+              ageMs: 20 * 60_000,
+              label: 'OWNED — release-fixer spawn-77 is alive for the terminal red.',
+            }),
+            observedCandidate: sha,
+            checkpointRunInFlight: checkpointRun,
+          },
+        }),
+      );
+
+      expect(out.gate.candidateVerdict).toMatchObject({
+        state: 'red',
+        status: 'red',
+        green: false,
+        candidate: sha,
+      });
+      expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
+      expect(out.nextVerb?.args).not.toHaveProperty('candidateSha');
+      expect(out.nextVerb?.reason).toContain('already latched');
+    });
+
     it('still sends a reader to diagnose when the recorded fixer is CONFIRMED GONE', () => {
       // The property that keeps "a red gate is everyone's problem" intact: an uncovered red
       // must still recruit whoever reads it, or this fix trades a stampede for a stalled gate.

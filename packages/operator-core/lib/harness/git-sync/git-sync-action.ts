@@ -56,7 +56,11 @@ import { gitSyncEligibility, type GitSyncEligibility } from './git-sync-eligibil
 import { getPotGitMode, type PotGitMode } from './hive-git-mode';
 import { parseGithubUrl } from '../clone-github';
 import { fetchRepoPushPermission } from '../github-repo-permissions';
-import { BRIDGE_CANONICAL_REF, runGithubBridgeTick } from '../../sync/pot-git/github-bridge-tick';
+import {
+  BRIDGE_CANONICAL_REF,
+  GITHUB_CREDENTIAL_HELPER_KEY,
+  runGithubBridgeTick,
+} from '../../sync/pot-git/github-bridge-tick';
 import { runIntegratorTick } from '../../sync/pot-git/integrator-tick';
 import {
   runWorktreeBridgeTick,
@@ -105,6 +109,7 @@ import {
   pathExists,
   readNamespaceRef,
   sweepStalePackTmpFiles,
+  type RunGit as PotGitRunGit,
 } from '../../sync/pot-git/storage';
 import { STAGING_REF } from '../../sync/pot-git/integrator';
 // EI-19442274898324113: the ONLY sanctioned way to build an `integrator_progress`
@@ -244,6 +249,26 @@ async function newlyEgressedCommitShas(
     }
   }
   return [];
+}
+
+/**
+ * Read the checkout-pinned GitHub helper without changing either checkout's
+ * config. GitHub bridge work runs against a bare pot-git store, while the
+ * registered clone may carry a per-account helper in `.git/config`; selecting
+ * the last non-empty local value lets the bridge reuse that auth contract.
+ */
+export async function resolveGithubCredentialHelper(
+  checkoutPath: string,
+  runGit: PotGitRunGit = defaultRunGit,
+): Promise<string | null> {
+  if (!checkoutPath) return null;
+  const result = await runGit(['config', '--local', '--get-all', GITHUB_CREDENTIAL_HELPER_KEY], checkoutPath);
+  if (result.code !== 0) return null;
+  const values = result.stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.at(-1) ?? null;
 }
 /**
  * The `harness_escalations` row key for ALL git-sync escalations is
@@ -2139,6 +2164,13 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       if (parsed) upstreamWrite = await fetchRepoPushPermission(parsed.owner, parsed.repo);
     }
 
+    // The bridge's bare store does not inherit the per-account helper that may
+    // be pinned in the registered checkout's `.git/config` (oddsmith's
+    // `gh-credential-aviynw.sh` is the live example). Read that local config
+    // once and let the bridge apply it to network argv only; local bare-store
+    // plumbing and the configured remote remain untouched.
+    const githubCredentialHelper = await resolveGithubCredentialHelper(entry.path);
+
     const outcome = await runGithubBridgeTick({
       potHomeSlug,
       workspaceId,
@@ -2147,6 +2179,7 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       forkRemote: entry.fork_remote,
       branches: [entry.github_default_branch ?? 'main'],
       upstreamWrite,
+      githubCredentialHelper,
       lastAdmitted,
       // EI-18751829787526583: the same watermark the catch-up pin above just
       // re-derived from — passed through as a BACKSTOP so a case the pin
