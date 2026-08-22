@@ -1,6 +1,8 @@
+import AdmZip from 'adm-zip';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { buildPersonalAmbientContextBlock, type PersonalAmbientDeps } from './ambient';
+import { parsePersonalArchive } from './archive-import';
 import { authorizePersonalAccess } from './authorization';
 import {
   createPersonalGrant,
@@ -74,11 +76,19 @@ describe('Personal Vault core', () => {
   });
 
   it('ambient recall is positive only for the granted context and byte-empty otherwise', async () => {
-    await upsertPersonalDocuments(org.adminSql, WS, userId, [{
-      source: 'gmail', kind: 'message', externalId: 'ambient-mail-1',
-      participants: ['ada@example.com'], title: 'Acme renewal review',
-      text: 'Ada requested a renewal timeline review before Friday.', dedupeKey: 'ambient-mail-1',
-    }]);
+    const archive = new AdmZip();
+    archive.addFile('Takeout/Mail/All mail Including Spam and Trash.mbox', Buffer.from(
+      'From sender@example.com Tue Jan 1 00:00:00 2026\n'
+      + 'Message-ID: <ambient-mail-1@example.com>\n'
+      + 'Date: Tue, 01 Jan 2026 00:00:00 +0000\n'
+      + 'From: Ada <ada@example.com>\n'
+      + 'To: Owner <owner@example.com>\n'
+      + 'Subject: Acme renewal review\n\n'
+      + 'Ada requested a renewal timeline review before Friday.',
+    ));
+    const parsed = parsePersonalArchive('takeout.zip', archive.toBuffer());
+    expect(parsed).toMatchObject({ sources: ['gmail'], warnings: [] });
+    await upsertPersonalDocuments(org.adminSql, WS, userId, parsed.documents);
     await createPersonalGrant(org.adminSql, {
       workspaceId: WS, userId, principalType: 'agent-role', principalId: 'meeting-prep',
       scopes: ['gmail'], grantedBy: 'owner',
