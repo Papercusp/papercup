@@ -54,4 +54,20 @@ describe('workspaces/switch — lazy registry path (WI-40369)', () => {
     const mod = (await import('../../../workspace-registry')) as Record<string, unknown>;
     expect(() => (mod as { workspacesRoot: unknown }).workspacesRoot).toThrow();
   });
+
+  it('NEGATIVE CONTROL: the eager form really does die at import', async () => {
+    // This is what makes the first test non-vacuous. `__fixtures__/eager-registry-path`
+    // is a permanent, deliberately-wrong copy of the ORIGINAL switch.ts line —
+    // `const X = join(workspacesRoot(), 'registry.json')` at module scope. Under
+    // the same partial mock installed above, importing it MUST reject.
+    //
+    // Using a fixture rather than mutating switch.ts is deliberate: mutating a
+    // tracked file on this shared tree races the git-sync sweep, which commits
+    // the working tree on a schedule and can capture the mutant even when
+    // nothing goes wrong. This control has no such window and cannot be skipped.
+    //
+    // If this test starts PASSING-BY-NOT-THROWING, the guard above is measuring
+    // nothing — re-derive it before trusting a green run.
+    await expect(import('./__fixtures__/eager-registry-path')).rejects.toThrow();
+  });
 });
