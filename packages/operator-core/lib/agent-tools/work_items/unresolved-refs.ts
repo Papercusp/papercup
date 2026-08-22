@@ -165,7 +165,8 @@ export function unresolvedRefsWarning(subjectId: string, missing: readonly strin
     `reader who follows it cannot tell whether the item was deleted, lives in another harness, or never existed. ` +
     `Measured 2026-08-03: one agent miscited a freshly-minted id twice in 20 minutes, the second time after ` +
     `explicitly drawing the lesson from the first — the citing sentence is composed in the same step that mints ` +
-    `the id, so care does not bind it. If these refs are federated, from another harness, or deliberately quoted ` +
-    `as phantoms, ignore this. Otherwise re-read the id off the call that returned it and post a correction.`
+    `the id, so care does not bind it. If these refs are federated, from another harness, deliberately quoted as ` +
+    `phantoms, or are illustrative slash-separated id shapes in prose, ignore this advisory. Otherwise re-read ` +
+    `the id off the call that returned it and post a correction.`
   );
 }

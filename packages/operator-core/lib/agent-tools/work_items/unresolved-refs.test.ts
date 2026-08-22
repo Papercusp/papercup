@@ -185,4 +185,10 @@ describe('unresolvedRefsWarning', () => {
     expect(w).toMatch(/federated|another harness|deliberately quoted/i);
     expect(w).toContain('RECORDED');
   });
+
+  it('names illustrative slash-separated id shapes as safe to ignore', () => {
+    const w = unresolvedRefsWarning('EI-1', ['WI-2', 'WI-3']);
+    expect(w).toMatch(/illustrative slash-separated id shapes/i);
+    expect(w).toMatch(/ignore this advisory/i);
+  });
 });
