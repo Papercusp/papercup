@@ -554,6 +554,36 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     }
   });
 
+  it('drops an ended loop fire folded into a newer sibling wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const oldLoop = work({
+      id: 20,
+      payload: loopPayload,
+      createdAt: new Date(Date.now() - 60_000).toISOString(),
+    });
+    const newerSibling = work({
+      id: 21,
+      payload: { ok: true },
+      createdAt: new Date().toISOString(),
+    });
+    const coalesced = coalesceDeliveries([oldLoop, newerSibling]);
+    const d = deps({ getLoopStatusFn: vi.fn(async () => null) as never });
+
+    const out = await executeWake(
+      { ...coalesced, wakeHandle: advHandle() },
+      d,
+    );
+
+    expect(out).toMatchObject({ kind: 'drop' });
+    expect((out as { reason: string }).reason).toContain('queued loop delivery');
+    expect((out as { reason: string }).reason).toContain('no current active row');
+    expect(d.getLoopStatusFn).toHaveBeenCalledWith('su-abc');
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.injectPsuHost).not.toHaveBeenCalled();
+    expect(d.resumePlanRun).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+  });
+
   it('drops a delivery from the prior arm when the current loop was re-armed after it was queued', async () => {
     const d = deps({
       getLoopStatusFn: vi.fn(async () => ({

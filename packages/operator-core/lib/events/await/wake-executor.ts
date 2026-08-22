@@ -99,6 +99,7 @@ import {
   readColdLoopMarker,
   renderColdWakeInjection,
   COLD_NOTE_POST_TURN_FLOOR_MS,
+  type ColdLoopMarker,
   type ColdWakeDecision,
 } from '../../su-cold-loop';
 import {
@@ -431,6 +432,74 @@ export function withWakeTimeout<T>(p: Promise<T>, label: string, ms: number): Pr
  *  TURN_SUBMIT_CR_DELAY_MS above. */
 const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
 
+type LoopDeliveryMarker = {
+  marker: ColdLoopMarker;
+  /** The source delivery's timestamp. Absent on a non-coalesced payload. */
+  createdAt?: string;
+};
+
+/**
+ * Read loop-fire markers from either a plain delivery or a coalesced union.
+ *
+ * Coalescing replaces the headline payload with an envelope, so inspecting only
+ * `d.payload` loses a loop marker carried by an older sibling. The union keeps
+ * the original payloads and (now) their creation timestamps; enumerate every
+ * marker so lifecycle checks can reject any stale loop fire in the group.
+ */
+function readLoopDeliveryMarkers(payload: unknown): LoopDeliveryMarker[] {
+  if (!payload || typeof payload !== 'object') return [];
+  const record = payload as {
+    coalesced?: unknown;
+    events?: unknown;
+    latest?: unknown;
+  };
+
+  if (record.coalesced === true) {
+    const markers: LoopDeliveryMarker[] = [];
+    if (Array.isArray(record.events)) {
+      for (const event of record.events) {
+        if (!event || typeof event !== 'object') continue;
+        const entry = event as { payload?: unknown; createdAt?: unknown };
+        const marker = readColdLoopMarker(entry.payload);
+        if (!marker) continue;
+        markers.push({
+          marker,
+          ...(typeof entry.createdAt === 'string' ? { createdAt: entry.createdAt } : {}),
+        });
+      }
+    }
+    if (markers.length > 0) return markers;
+
+    // Keep compatibility with an envelope produced before `events[].createdAt`
+    // was added, or with a hand-authored latest-only payload.
+    if (record.latest && typeof record.latest === 'object') {
+      const latest = record.latest as { payload?: unknown; createdAt?: unknown };
+      const marker = readColdLoopMarker(latest.payload);
+      if (marker) {
+        return [{
+          marker,
+          ...(typeof latest.createdAt === 'string' ? { createdAt: latest.createdAt } : {}),
+        }];
+      }
+    }
+    return [];
+  }
+
+  const marker = readColdLoopMarker(payload);
+  return marker ? [{ marker }] : [];
+}
+
+/** The newest loop marker in a delivery, used by text/provenance/channel paths. */
+function readLoopDeliveryMarker(payload: unknown): ColdLoopMarker | null {
+  const markers = readLoopDeliveryMarkers(payload);
+  return markers.length > 0 ? markers[markers.length - 1].marker : null;
+}
+
+function readLatestLoopDeliveryMarker(payload: unknown): LoopDeliveryMarker | null {
+  const markers = readLoopDeliveryMarkers(payload);
+  return markers.length > 0 ? markers[markers.length - 1] : null;
+}
+
 /** Compose the single-line wake turn injected/submitted into the woken session. */
 export function wakeTurnText(d: DeliveryWork): string {
   // EI-20130618357432548 — the owner's own chat-pane message is delivered AS the
@@ -551,8 +620,12 @@ type LoopDeliverySupersession =
 function classifyLoopDeliverySupersession(
   d: DeliveryWork,
   status: LoopStatusSnapshot,
+  candidate?: LoopDeliveryMarker,
 ): LoopDeliverySupersession | null {
   if (!status || status.active === false) return { kind: 'ended' };
+
+  const marker = candidate?.marker ?? readLoopDeliveryMarker(d.payload);
+  if (!marker) return null;
 
   // A queued fire carries the routine's install_slug in its marker. If the same
   // owner now has an active loop under a different harness, the fire belongs to
@@ -560,14 +633,14 @@ function classifyLoopDeliverySupersession(
   // can legitimately have a fresh note under the current routine's harness, and
   // selecting the old row would make the delivery-time re-check authoritative for
   // the wrong mission (EI-21164618811036992).
-  const markerHarness = readColdLoopMarker(d.payload)?.harness;
+  const markerHarness = marker.harness;
   const currentHarness = typeof status.harnessSlug === 'string' ? status.harnessSlug.trim() : '';
   if (markerHarness && currentHarness && markerHarness !== currentHarness) {
     return { kind: 'lineage-mismatch', markerHarness, currentHarness };
   }
 
   const armedAtMs = status.armedAt ? new Date(status.armedAt).getTime() : NaN;
-  const createdAtMs = new Date(d.createdAt).getTime();
+  const createdAtMs = new Date(candidate?.createdAt ?? d.createdAt).getTime();
   if (Number.isFinite(armedAtMs) && Number.isFinite(createdAtMs) && armedAtMs > createdAtMs) {
     return { kind: 're-armed' };
   }
@@ -579,9 +652,18 @@ async function readLoopDeliverySupersession(
   d: DeliveryWork,
   getStatus: typeof getLoopStatus,
 ): Promise<LoopDeliverySupersession | null> {
-  if (!readColdLoopMarker(d.payload)) return null;
+  const candidates = readLoopDeliveryMarkers(d.payload);
+  if (candidates.length === 0) return null;
   try {
-    return classifyLoopDeliverySupersession(d, await getStatus(d.subscriberId));
+    const status = await getStatus(d.subscriberId);
+    // A coalesced wake is one delivery attempt. If any folded loop fire is
+    // ended, re-armed, or from another lineage, suppress the whole attempt so
+    // its stale imperative cannot ride along with the newer headline event.
+    for (const candidate of candidates) {
+      const supersession = classifyLoopDeliverySupersession(d, status, candidate);
+      if (supersession) return supersession;
+    }
+    return null;
   } catch {
     // Status lookup is a safety signal, not a new delivery dependency. If it is
     // unavailable, preserve the existing wake rather than dropping on inference.
@@ -598,7 +680,8 @@ export async function rehydrateLoopWakeText(
   } = {},
 ): Promise<string> {
   try {
-    const marker = readColdLoopMarker(d.payload);
+    const markerCandidate = readLatestLoopDeliveryMarker(d.payload);
+    const marker = markerCandidate?.marker ?? null;
     if (!marker?.harness) return baseText; // not a loop wake — untouched, no DB read
     const getNoteMeta = deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
     const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
@@ -607,7 +690,7 @@ export async function rehydrateLoopWakeText(
     try {
       const status = await getStatus(d.subscriberId);
       statusRead = true;
-      deliverySupersession = classifyLoopDeliverySupersession(d, status);
+      deliverySupersession = classifyLoopDeliverySupersession(d, status, markerCandidate ?? undefined);
     } catch {
       // Status is a safety signal, not a new delivery dependency. If it is
       // unavailable, preserve the existing fail-soft carry-note read below.
@@ -780,7 +863,7 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * UNVERIFIED at the hook — visible, never a dropped wake).
  */
 function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInjection): string {
-  const origin = readColdLoopMarker(d.payload)
+  const origin = readLoopDeliveryMarker(d.payload)
     ? 'loop-fire'
     : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
       // owner INBOX reply — both are authored by the authenticated human through an
@@ -1363,7 +1446,7 @@ async function injectPsuHostWake(
   // stale-fire guard (psu-pty-host.mjs), not only the cold path's carry
   // decision. A non-loop wake (no marker) yields undefined for both — the
   // guard is then a no-op for this delivery, exactly like today.
-  const loopMarker = readColdLoopMarker(d.payload);
+  const loopMarker = readLoopDeliveryMarker(d.payload);
   const fireNumber = loopMarker?.wakeCount;
   const routineId = loopMarker?.routineId;
   const injectWarm = async (): Promise<WakeOutcome | null> => {
@@ -2050,7 +2133,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // scope remains the preferred source, and a wake must never stall on bookkeeping.
     let resumeHarnessSlug = fresh?.harnessSlug ?? null;
     if (!resumeHarnessSlug) {
-      const markerHarness = readColdLoopMarker(d.payload)?.harness;
+      const markerHarness = readLoopDeliveryMarker(d.payload)?.harness;
       resumeHarnessSlug = markerHarness ?? null;
       if (!resumeHarnessSlug) {
         const loopStatus = await withWakeTimeout(

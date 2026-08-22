@@ -874,6 +874,33 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(coalesced.payload).toMatchObject({ coalesced: true, count: 2, eventCount: 1, timeoutCount: 1 });
   });
 
+  it('preserves each folded delivery timestamp for delivery-time lifecycle checks', () => {
+    const older = workRow({
+      id: 106,
+      eventKey: 'loop:rt-old',
+      payload: { harness: 'papercusp', wakeCount: 3, routineId: 'rt-old' },
+      createdAt: new Date(1000).toISOString(),
+    });
+    const headline = workRow({
+      id: 107,
+      eventKey: 'lock:grant:t-2',
+      payload: { ok: true },
+      createdAt: new Date(2000).toISOString(),
+    });
+
+    const coalesced = coalesceDeliveries([older, headline]);
+    expect(coalesced.payload).toMatchObject({
+      events: [
+        { delivery_id: 106, createdAt: older.createdAt, payload: older.payload },
+        { delivery_id: 107, createdAt: headline.createdAt, payload: headline.payload },
+      ],
+      latest: {
+        delivery_id: 107,
+        createdAt: headline.createdAt,
+      },
+    });
+  });
+
   it('per-subscriber min_sleep floor: a wake inside the window defers until the floor allows it', async () => {
     // su-a was woken 10s ago; a min_sleep=60 watch fires now → defer (within floor), no turn.
     h.store.lastWokenAtForSubscribers.mockResolvedValueOnce(new Map([['su-a', Date.now() - 10_000]]));

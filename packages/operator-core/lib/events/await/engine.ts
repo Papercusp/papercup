@@ -789,8 +789,18 @@ export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
       count: group.length,
       eventCount: eventDeliveries.length,
       timeoutCount: timeoutDeliveries.length,
-      events: group.map((d) => ({ event: d.eventKey, summary: d.summary, payload: d.payload, delivery_id: d.id })),
-      latest: { event: headline.eventKey, payload: headline.payload },
+      // Preserve the original delivery timestamp inside the union. Consumers that
+      // enforce delivery-time lifecycle gates (notably loop-fire suppression) must
+      // compare a folded sibling with the loop instance that produced it, rather
+      // than with the newer headline's timestamp.
+      events: group.map((d) => ({
+        event: d.eventKey,
+        summary: d.summary,
+        payload: d.payload,
+        delivery_id: d.id,
+        createdAt: d.createdAt,
+      })),
+      latest: { event: headline.eventKey, payload: headline.payload, createdAt: headline.createdAt, delivery_id: headline.id },
     },
     coalescedCount: group.length,
   };
