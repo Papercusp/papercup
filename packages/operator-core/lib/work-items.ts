@@ -3551,10 +3551,14 @@ export async function setWorkItemStateWithAliasInfo(
   opts: Parameters<typeof setWorkItemState>[2] = {},
 ): Promise<{ workItem: WorkItem | null } & LifecycleAliasInfo> {
   const requestedLower = requestedState.trim().toLowerCase().replaceAll('_', '-');
+  // Keep the pre-write row for transition-specific cleanup below. The row returned by
+  // setWorkItemState is already post-transition, so it cannot tell us whether the
+  // blocked auto-gate lease was the state that this call just left.
+  const priorWorkItem = await getWorkItem(id, opts.harness);
   let stateToApply = requestedState;
   let needsHumanRoute: 'strict-owner-action' | 'leader-triage' | null = null;
   if (requestedLower === 'needs-human') {
-    const current = await getWorkItem(id, opts.harness);
+    const current = priorWorkItem;
     if (current?.family === 'issue') {
       const review = readAgentReviewState(current.payload);
       if (current.origin === 'remote' || review?.status === 'pending' || review?.status === 'revision-requested') {
@@ -3596,13 +3600,6 @@ export async function setWorkItemStateWithAliasInfo(
   const appliedLower = (appliedState ?? '').trim().toLowerCase();
   if (workItem && workItem.family === 'issue') {
     try {
-      console.error('[EI-204903-debug]', {
-        id,
-        priorState: wi.state,
-        appliedState,
-        family: workItem.family,
-        payload: wi.payload,
-      });
       if (appliedLower === 'needs-human') {
         await mergeIssuePayload(id, { needsOwnerAction: true }, { unset: ['needsHuman'] });
         autoGateNote =
@@ -3625,9 +3622,9 @@ export async function setWorkItemStateWithAliasInfo(
         // The blocked auto-gate is a temporary lease, not a durable park. Once the
         // applied state leaves blocked, remove only that lease so an intentional
         // claim_hold_* park can continue to exclude the item from self-selection.
-        wi.state === 'blocked' &&
+        priorWorkItem?.state === 'blocked' &&
         appliedLower !== 'blocked' &&
-        (wi.payload as Record<string, unknown> | null)?.held_open_reason === 'blocked'
+        (priorWorkItem.payload as Record<string, unknown> | null)?.held_open_reason === 'blocked'
       ) {
         const cleared = await setWorkItemClaimHold(id, false, { harness: opts.harness, leaseOnly: true });
         if (cleared?.applicable) {
