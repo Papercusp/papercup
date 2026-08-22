@@ -7,6 +7,7 @@ import {
   facetSelectionSize,
   serializeFacetSelection,
   parseFacetSelection,
+  composeCompanionSummary,
   type FacetDef,
   type FacetSelection,
 } from './index';
@@ -171,6 +172,87 @@ describe('facetPredicate / applyFacetSelection', () => {
   it('matches multi-valued rows when any value is selected', () => {
     const selection = sel({ owner: ['z'] });
     expect(applyFacetSelection(rows, defs, selection).map((r) => r.id)).toEqual(['c']);
+  });
+});
+
+describe('composeCompanionSummary', () => {
+  it('returns exact totals and drill-down facets from one aggregate row set', () => {
+    const summary = composeCompanionSummary([
+      { kind: 'totals', total: 12, matched: 3 },
+      { kind: 'facet', facet: 'state', label: 'State', value: 'open', count: 7 },
+      { kind: 'facet', facet: 'state', label: 'State', value: 'done', count: 5 },
+      { kind: 'facet', facet: 'kind', value: 'bug', count: 3, meta: { color: 'red' } },
+      { kind: 'facet', facet: 'kind', value: 'change', count: 3 },
+    ]);
+
+    expect(summary).toEqual({
+      total: 12,
+      matched: 3,
+      facets: [
+        {
+          key: 'state',
+          label: 'State',
+          values: [
+            { value: 'open', count: 7, meta: undefined },
+            { value: 'done', count: 5, meta: undefined },
+          ],
+          hiddenValueCount: 0,
+          distinctCount: 2,
+        },
+        {
+          key: 'kind',
+          label: undefined,
+          values: [
+            { value: 'bug', count: 3, meta: { color: 'red' } },
+            { value: 'change', count: 3, meta: undefined },
+          ],
+          hiddenValueCount: 0,
+          distinctCount: 2,
+        },
+      ],
+    });
+  });
+
+  it('preserves zero-match truth with the mandatory totals row', () => {
+    expect(composeCompanionSummary([{ kind: 'totals', total: 31_133, matched: 0 }])).toEqual({
+      total: 31_133,
+      matched: 0,
+      facets: [],
+    });
+  });
+
+  it('keeps a selected value at zero without manufacturing a positive count', () => {
+    const summary = composeCompanionSummary(
+      [
+        { kind: 'totals', total: 4, matched: 0 },
+        { kind: 'facet', facet: 'state', value: 'open', count: 2 },
+      ],
+      { selection: sel({ state: ['blocked'], kind: ['bug'] }) },
+    );
+
+    expect(summary.facets.find((group) => group.key === 'state')?.values).toEqual([
+      { value: 'open', count: 2, meta: undefined },
+      { value: 'blocked', count: 0, meta: undefined },
+    ]);
+    expect(summary.facets.find((group) => group.key === 'kind')?.values).toEqual([
+      { value: 'bug', count: 0, meta: undefined },
+    ]);
+  });
+
+  it('rejects aggregate shapes that could silently lie', () => {
+    expect(() => composeCompanionSummary([])).toThrow(/exactly one totals row/);
+    expect(() =>
+      composeCompanionSummary([
+        { kind: 'totals', total: 2, matched: 3 },
+      ]),
+    ).toThrow(/matched count cannot exceed total/);
+    expect(() =>
+      composeCompanionSummary([
+        { kind: 'totals', total: 2, matched: 1 },
+        { kind: 'facet', facet: 'state', value: 'open', count: 1 },
+        { kind: 'facet', facet: 'state', value: 'open', count: 1 },
+      ]),
+    ).toThrow(/duplicate companion facet row/);
   });
 });
 

@@ -24,7 +24,18 @@
  *  read's filter, independent of any LIMIT. Open-ended for future fields. */
 export interface ListMeta {
   total?: number;
+  /** Opaque keyset cursor for the next page; null means exhausted. */
+  nextCursor?: string | null;
+  /** Authoritative exhaustion bit. False whenever no fresh cursor exists. */
+  hasMore?: boolean;
   [k: string]: unknown;
+}
+
+export interface ListPageMetaInput extends Omit<ListMeta, 'nextCursor' | 'hasMore'> {
+  nextCursor: string | null;
+  hasMore: boolean;
+  /** Cursor used to request this page. Repeating it is no growth, so exhaust. */
+  previousCursor?: string | null;
 }
 
 /** A row that MAY carry list metadata (only row[0] does, by convention). */
@@ -44,6 +55,32 @@ export function attachListMeta<T extends object>(rows: T[], meta: ListMeta): T[]
 }
 
 /**
+ * Attach normalized cursor metadata to a bounded flat-row page.
+ *
+ * A server may optimistically report `hasMore` after a full page, but an empty
+ * page, a missing cursor, or a cursor equal to the request cursor cannot make
+ * forward progress. All three normalize to `{ hasMore:false,nextCursor:null }`
+ * so a consumer cannot spin forever on a no-growth page. An empty array has no
+ * metadata carrier; that is still unambiguous exhaustion.
+ */
+export function attachListPageMeta<T extends object>(
+  rows: T[],
+  input: ListPageMetaInput,
+): T[] {
+  const cursorAdvances =
+    rows.length > 0 &&
+    input.nextCursor !== null &&
+    input.nextCursor !== (input.previousCursor ?? null);
+  const hasMore = input.hasMore && cursorAdvances;
+  const { previousCursor: _previousCursor, ...meta } = input;
+  return attachListMeta(rows, {
+    ...meta,
+    nextCursor: hasMore ? input.nextCursor : null,
+    hasMore,
+  });
+}
+
+/**
  * Read metadata from the row that currently carries it.
  *
  * `attachListMeta` always writes row[0], but a set-based delta merge preserves
@@ -60,6 +97,21 @@ export function readListMeta<T extends object>(
     if (row._meta !== undefined) return row._meta;
   }
   return undefined;
+}
+
+/**
+ * Whether the bounded page can advance. Reads the explicit bit first, then the
+ * legacy `nextCursor` convention. Empty pages are always exhausted even if a
+ * malformed row somehow carries contradictory metadata.
+ */
+export function readListHasMore<T extends object>(
+  rows: ReadonlyArray<WithListMeta<T>> | null | undefined,
+): boolean {
+  if (!rows || rows.length === 0) return false;
+  const meta = readListMeta(rows);
+  return typeof meta?.hasMore === 'boolean'
+    ? meta.hasMore
+    : typeof meta?.nextCursor === 'string' && meta.nextCursor.length > 0;
 }
 
 /**
