@@ -130,6 +130,11 @@ shared green-checkpoint pipeline, so call it with only the arguments its live
 schema declares (or no arguments), even when the surrounding diagnosis names a
 specific harness.
 
+`release:trace` is also workspace-global, not harness-scoped. Its live schema
+accepts only `path`, `sha`, `work_item`, and `after_generation`; do **not** pass
+`harness` in its JSON arguments. It reads shared release truth, so the outer
+`--harness` ptool scope does not become a payload field.
+
 ## The tool surface
 
 `papercusp-su` exposes the **full catalog** at admin tier. It evolves fast —

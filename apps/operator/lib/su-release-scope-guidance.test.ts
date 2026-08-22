@@ -29,5 +29,17 @@ describe('SU release checkpoint scope guidance (EI-20223212233187962)', () => {
       );
       expect(prompt).toContain('do **not** pass `harness` to it');
     });
+
+    it(`${source} identifies release:trace as workspace-global`, () => {
+      const prompt = readFileSync(join(PROMPTS, source), 'utf8');
+
+      expect(prompt).toMatch(
+        /`release:trace` is also workspace-global, not\s+harness-scoped\./,
+      );
+      expect(prompt).toMatch(
+        /`release:trace` is also workspace-global[\s\S]*?live schema\s+accepts only `path`, `sha`, `work_item`, and `after_generation`/,
+      );
+      expect(prompt).toContain('`harness` in its JSON arguments');
+    });
   }
 });
