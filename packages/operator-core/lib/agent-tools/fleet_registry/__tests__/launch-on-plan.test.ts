@@ -1922,7 +1922,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.shortfall).toBe(41);
   });
 
-  it('stops before a later wave after attestation failure and returns the exact retry set', async () => {
+  it('opens every wave before a later attestation failure is observed and returns the exact retry set', async () => {
     launchTransaction.verify
       .mockResolvedValueOnce({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' })
       .mockResolvedValueOnce({ agentStarted: false, waitedMs: 1, sessions: [], note: 'ATTESTATION MISMATCH' });
@@ -1931,9 +1931,19 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       {} as never,
     );
     const payload = JSON.parse((res as any).content[0].text);
-    expect(spawnConsoleMock).toHaveBeenCalledTimes(4);
+    // Spawning and verification are separate phases (WI-39368): the final
+    // pre-pinned member is already open before the second wave's verifier can
+    // report its attestation mismatch.
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(5);
+    expect(
+      launchTransaction.verify.mock.calls.map(
+        (call) => (call[0] as { expectedOwnerIds: string[] }).expectedOwnerIds.length,
+      ),
+    ).toEqual([1, 3, 1]);
     expect(payload.launchTransaction.state).toBe('partial');
-    expect(payload.launchTransaction.recovery.retryOwnerIds).toHaveLength(4);
+    expect(payload.launchTransaction.verifiedMemberIds).toHaveLength(2);
+    expect(payload.launchTransaction.failed).toHaveLength(3);
+    expect(payload.launchTransaction.recovery.retryOwnerIds).toHaveLength(3);
   });
 });
 

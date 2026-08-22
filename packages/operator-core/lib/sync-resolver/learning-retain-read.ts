@@ -1687,18 +1687,22 @@ async function readInsightDocsIndex(
   contentDir: string,
 ): Promise<Array<{ slug: string; title: string; discovered: string | null; ts: string }>> {
   const names = (await fs.readdir(contentDir)).filter((name) => /\.(md|mdx)$/.test(name));
-  return Promise.all(
-    names.map(async (name) => {
-      const [stat, text] = await Promise.all([
-        fs.stat(path.join(contentDir, name)),
-        fs.readFile(path.join(contentDir, name), 'utf8'),
-      ]);
-      const slug = name.replace(/\.(md|mdx)$/, '');
-      return {
-        ...parseInsightFrontmatter(slug, text),
-        ts: new Date(Math.floor(stat.mtimeMs)).toISOString(),
-      };
-    }),
+  const withinBudget = createReadDeadline(RETAIN_READ_BUDGET_MS);
+  return withinBudget(
+    Promise.all(
+      names.map(async (name) => {
+        const [stat, text] = await Promise.all([
+          fs.stat(path.join(contentDir, name)),
+          fs.readFile(path.join(contentDir, name), 'utf8'),
+        ]);
+        const slug = name.replace(/\.(md|mdx)$/, '');
+        return {
+          ...parseInsightFrontmatter(slug, text),
+          ts: new Date(Math.floor(stat.mtimeMs)).toISOString(),
+        };
+      }),
+    ),
+    'insight docs index',
   );
 }
 

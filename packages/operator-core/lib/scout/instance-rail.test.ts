@@ -106,7 +106,16 @@ function makeFakePorts(over: Partial<RouterPorts> = {}): {
   const calls = { instanceDispatch: [] as InstanceVariantView[][] };
   const ports: RouterPorts = {
     plansNew: async (req) => ({ slug: `${req.slugStem}-2026-06-09` }),
-    gymDispatch: async () => ({ seeded: [], newNiches: [], skipped: [] }),
+    gymDispatch: async (views) => ({
+      seeded: views.map((view, index) => ({
+        ideaId: view.id,
+        nicheKey: `niche-${index}`,
+        admitted: true,
+        distance: 1,
+      })),
+      newNiches: views.map((_, index) => `niche-${index}`),
+      skipped: [],
+    }),
     capture: async () => ({ id: 'EI-1', created: true }),
     instanceDispatch:
       over.instanceDispatch ??

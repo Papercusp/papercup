@@ -143,8 +143,7 @@ const maskSealingBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText);
  * every `ON CONFLICT` written against the old shape. Sealing it is a FALSE NEGATIVE on a
  * safety lint.
  */
-const maskLiveBodies = (sqlText) =>
-  stripSqlCommentsAndStrings(sqlText, { dollarBodies: "code" });
+const maskLiveBodies = (sqlText) => stripSqlCommentsAndStrings(sqlText, { dollarBodies: "code" });
 
 /** Top-level transaction-control statements found in a migration file. */
 export function findRawTxControl(sqlText) {
