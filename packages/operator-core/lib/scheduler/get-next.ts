@@ -83,7 +83,7 @@ import {
   type OrgSql,
   type WorkItem,
 } from '../work-items';
-import { issuesScopeWorkspace } from '../issues-engineer';
+import { resolveIssuesScopeWorkspace } from '../issues-engineer';
 import { isIssueLocallyClaimableWhereSql } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
 import { agentReviewNormalExclusionSql } from '../harness/improvements/agent-review-policy';
@@ -999,6 +999,8 @@ export async function aggregateIssueClaimExclusions(
   filter: FilterNode | undefined,
   opts: {
     harness: string;
+    /** An already-resolved active workspace to survive async request-scope loss. */
+    workspaceId?: string;
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
@@ -1015,7 +1017,7 @@ export async function aggregateIssueClaimExclusions(
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
   // Mirror diagnoseClaimNextMiss's own resolution — the issue-family scope workspace,
   // never the caller's harness-scoped workspaceId (they can legitimately differ).
-  const issueWs = issuesScopeWorkspace();
+  const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
   const compiled = compileFilter(sql, filter);
@@ -1153,6 +1155,8 @@ export async function sampleIssueClaimExclusions(
   filter: FilterNode | undefined,
   opts: {
     harness: string;
+    /** An already-resolved active workspace to survive async request-scope loss. */
+    workspaceId?: string;
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
@@ -1166,7 +1170,7 @@ export async function sampleIssueClaimExclusions(
 ): Promise<IssueClaimExclusionSample> {
   const sql = opts.client ?? getOrgPg().sql;
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
-  const issueWs = issuesScopeWorkspace();
+  const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
   const compiled = compileFilter(sql, filter);
@@ -1288,6 +1292,8 @@ export async function listIssueClaimableRows(
   filter: FilterNode | undefined,
   opts: {
     harness: string;
+    /** An already-resolved active workspace to survive async request-scope loss. */
+    workspaceId?: string;
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
@@ -1305,7 +1311,7 @@ export async function listIssueClaimableRows(
 ): Promise<IssueClaimableRow[]> {
   const sql = opts.client ?? getOrgPg().sql;
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
-  const issueWs = issuesScopeWorkspace();
+  const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const assignee = opts.assignee ?? '';
   const compiled = compileFilter(sql, filter);
@@ -1465,6 +1471,8 @@ export async function aggregateAdmittedComposition(
   filter: FilterNode | undefined,
   opts: {
     harness: string;
+    /** An already-resolved active workspace to survive async request-scope loss. */
+    workspaceId?: string;
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
@@ -1475,7 +1483,7 @@ export async function aggregateAdmittedComposition(
 ): Promise<IssueClaimAdmittedComposition> {
   const sql = opts.client ?? getOrgPg().sql;
   const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
-  const issueWs = issuesScopeWorkspace();
+  const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
   const operatorScopeSlug = `operator:${issueWs}`;
   const sub = issueClaimCandidateSubquery(sql, {
     compiled: compileFilter(sql, filter),
@@ -1549,6 +1557,8 @@ export async function readIssueClaimability(
   filter: FilterNode | undefined,
   opts: {
     harness: string;
+    /** The caller's already-resolved active workspace; avoids ambient ALS drift after awaits. */
+    workspaceId?: string;
     states?: readonly string[];
     assignee?: string;
     rigAvailable?: boolean;
@@ -1571,6 +1581,7 @@ export async function readIssueClaimability(
   const stmtMs = Math.max(100, Math.trunc(readOpts.statementTimeoutMs ?? 15_000));
   const shared = {
     harness: opts.harness,
+    workspaceId: opts.workspaceId,
     states: opts.states,
     assignee: opts.assignee,
     rigAvailable: opts.rigAvailable,
@@ -1616,7 +1627,7 @@ export async function readIssueClaimability(
     // literal table name never collides across concurrent readIssueClaimability calls
     // (Postgres temp tables are per-backend-session, invisible across connections).
     const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
-    const issueWs = issuesScopeWorkspace();
+    const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
     const operatorScopeSlug = `operator:${issueWs}`;
     const assignee = opts.assignee ?? '';
     const sub = issueClaimCandidateSubquery(client, {

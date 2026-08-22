@@ -217,7 +217,7 @@ export async function claimableForFleet(fleetSlug: string, workspaceId: string):
     if (!spec || !harness) return 0;
     const { breakdown } = await readIssueClaimability(
       spec.view?.filter,
-      { harness, states: spec.states, spec },
+      { harness, states: spec.states, spec, workspaceId },
       { limit: 1, breakdownOnly: true },
     );
     return breakdown.claimable;
