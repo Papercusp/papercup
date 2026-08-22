@@ -22643,7 +22643,7 @@
           "POST"
         ]
       },
-      "description": "Run one OR many saved code:run RECIPEs by id — the reuse path. Each recipe's script executes under YOUR role-scoped tool envelope (NOT the author's — no privilege travels with a recipe); returns only each script's summary. For a recipes:search/code:run recommendation, pass its exact runArgs so the stored revision and entity authority are revalidated. Use dryRun:true to preview write-effect mutations. Single: { id, authority?, dryRun?, timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe failing never fails the rest.",
+      "description": "Run one OR many saved code:run RECIPEs by id — the reuse path. Each recipe's script executes under YOUR role-scoped tool envelope (NOT the author's — no privilege travels with a recipe); returns only each script's summary. Pass the exact runArgs from a recipes:search/code:run recommendation, or pass the authority metadata returned by recipes:get; both are revalidated against the stored revision and YOUR live lane. Use dryRun:true to preview write-effect mutations. Single: { id, authority?, dryRun?, timeoutSec? }. Many same options: { ids:[…], dryRun? }. Many heterogeneous: items:[{ id, dryRun?, timeoutSec? }]. Returns { ok, results:[{ ok, id, result? | error }], counts } — correlate by id, not by position; one recipe failing never fails the rest.",
       "capabilities": [
         "capability:bash"
       ],
@@ -22706,7 +22706,7 @@
       "guidance": {
         "when": "When a recipe already does what you need (found via recipes:search / recipes:list, or a code:run result's similarRecipes) — run it by id instead of re-authoring the same script. Run several at once via ids:[…] or items:[…]. Each runs under YOUR envelope, so you can only reuse recipes whose tools you may call.",
         "notWhen": "When no existing recipe fits — author a fresh code:run (which also auto-captures + dedups). Preview a recipe's mutations with dryRun before a committing run. On authority_unresolved, read `reason`.",
-        "chaining": "recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, dryRun:true } → recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
+        "chaining": "recipes:search { query } → recipes:get { ids:[…] } (inspect) → recipes:run { id, authority, dryRun:true } → recipes:run { id }. Bulk: single | items[] (or ids) → { ok, results, counts }; correlate by id not position; one failure never fails the rest."
       }
     },
     {
