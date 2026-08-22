@@ -9,6 +9,7 @@ import {
   collectionAttributionMarker,
   discoverVitestRoute,
   evaluateMatch,
+  formatRouteError,
   groupRoutes,
   listedFiles,
   main,
@@ -32,6 +33,13 @@ import {
 import { repoLockName } from '../../../../scripts/npm-install-safe.mjs';
 
 describe('test-files router', () => {
+  it('makes route refusals point to the supported testing:run surface', () => {
+    expect(formatRouteError('requested test file does not exist: missing.test.ts')).toBe(
+      'TEST_FILE_ROUTE_ERROR requested test file does not exist: missing.test.ts; ' +
+        'For the supported routed test surface, use testing:run { files: [...] }.',
+    );
+  });
+
   it('discovers the package cwd/config and rewrites the file relative to that cwd', () => {
     const route = discoverVitestRoute('libs/generic/tooldef/src/strict-args.test.ts');
     expect(route.cwd).toBe(resolve(REPO_ROOT, 'libs/generic/tooldef'));

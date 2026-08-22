@@ -1284,6 +1284,16 @@ function run(command, args, options) {
   return spawnSync(command, args, { encoding: 'utf8', ...options });
 }
 
+// `testing:run` is the supported routed surface for focused tests. Keep every
+// CLI refusal actionable: a bare TEST_FILE_ROUTE_ERROR leaves agents guessing
+// whether to retry the same command, hand-pick a Vitest config, or use the tool
+// that already owns this routing contract.
+export const TESTING_RUN_GUIDANCE = 'For the supported routed test surface, use testing:run { files: [...] }.';
+
+export function formatRouteError(detail) {
+  return `TEST_FILE_ROUTE_ERROR ${detail}; ${TESTING_RUN_GUIDANCE}`;
+}
+
 export function main(argv = process.argv.slice(2)) {
   const { dry, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
@@ -1295,7 +1305,7 @@ export function main(argv = process.argv.slice(2)) {
   try {
     routes = files.map((file) => discoverVitestRoute(isAbsolute(file) ? relative(REPO_ROOT, file) : file));
   } catch (error) {
-    console.error(`TEST_FILE_ROUTE_ERROR ${error instanceof Error ? error.message : String(error)}`);
+    console.error(formatRouteError(error instanceof Error ? error.message : String(error)));
     return 2;
   }
 
@@ -1344,7 +1354,7 @@ export function main(argv = process.argv.slice(2)) {
     });
     const listedOutput = `${listed.stdout ?? ''}\n${listed.stderr ?? ''}${listed.error ? listed.error.message : ''}`;
     if (listed.error) {
-      console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`);
+      console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${listed.error.message}`));
       if (looksLikeMidInstallCorruption(listedOutput)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1368,9 +1378,9 @@ export function main(argv = process.argv.slice(2)) {
       if (listed.stdout) process.stdout.write(listed.stdout);
       if (listed.stderr) process.stderr.write(listed.stderr);
       for (const route of verdict.unmatched) console.error(`  unmatched ${route.requested}`);
-      console.error(
-        `TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run for this group`,
-      );
+      console.error(formatRouteError(
+        `(group cwd=${cwdLabel}) requested=${verdict.requested} matched=${verdict.matched}; refusing a false-green zero/partial-match run for this group`,
+      ));
       if (looksLikeMidInstallCorruption(listedOutput)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1450,7 +1460,7 @@ export function main(argv = process.argv.slice(2)) {
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
     if (result.error) {
-      console.error(`TEST_FILE_ROUTE_ERROR (group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`);
+      console.error(formatRouteError(`(group cwd=${cwdLabel}) could not launch Vitest: ${result.error.message}`));
       if (looksLikeMidInstallCorruption(result.error.message)) {
         console.error(MID_INSTALL_HINT);
       }
@@ -1524,9 +1534,9 @@ export function main(argv = process.argv.slice(2)) {
   const summary = aggregateGroupResults(groupResults);
   if (summary.launchError) return 2;
   if (summary.anyUnmatched) {
-    console.error(
-      `TEST_FILE_ROUTE_ERROR requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
-    );
+    console.error(formatRouteError(
+      `requested=${summary.requested} matched=${summary.matched}; refusing a false-green zero/partial-match run`,
+    ));
     // EI-19462803905923939 / EI-19467022057492490: this aggregate line is the LAST thing a
     // `| tail -N` reads — the very idiom CLAUDE.md prescribes throughout — so the attribution has
     // to be restated HERE. Printing it only at the group level (where it also belongs, next to the
@@ -1566,10 +1576,10 @@ export function main(argv = process.argv.slice(2)) {
   // is ASSERTED rather than assumed: if a future edit ever makes executed=0 reachable here, this
   // refuses loudly instead of printing a verdict for a run that tested nothing.
   if (summary.executed < 1) {
-    console.error(
-      `TEST_FILE_ROUTE_ERROR requested=${summary.requested} matched=${summary.matched} executed=0; ` +
+    console.error(formatRouteError(
+      `requested=${summary.requested} matched=${summary.matched} executed=0; ` +
         `refusing to report a verdict for a run that executed no tests`,
-    );
+    ));
     return 1;
   }
 
