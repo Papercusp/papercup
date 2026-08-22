@@ -1591,6 +1591,107 @@ try:
 except Exception:
     pass  # advisory must never wedge a command
 
+# ── grep/rg → `| head` false-absence advisory (EI-20041520588565350) ───────
+# A recursive grep followed by `head` is especially dangerous when the caller
+# is checking whether a symbol has any importers. `head` limits the FIRST N
+# matching lines, while grep walks files in filesystem order; a real importer
+# can therefore sit after the slice and the output reads as a complete search.
+# This is a different claim from the SIGPIPE hazard below: even when the
+# upstream survives, a truncated match list cannot prove absence.
+#
+# Keep this narrow and advisory-only. A grep/rg invocation that explicitly asks
+# for one result per file (`-l`), a count (`-c`), or a quiet boolean (`-q`) has
+# declared a different intent and is outside this warning. Non-literal or
+# wrapper-heavy shapes are left alone rather than guessed at.
+try:
+    if not ADVISORY:
+        _grep_head_cmd = _strip_quotes_and_comments(command)
+        _GREP_HEAD_NAMES = frozenset(('grep', 'egrep', 'fgrep', 'rg'))
+        _GREP_HEAD_SAFE_LONG = frozenset((
+            '--files-with-matches', '--count', '--quiet', '--silent',
+        ))
+        # These consume the next token when written separately. Do not read a
+        # pattern such as `-q` after `grep -e` as the quiet flag itself.
+        _GREP_HEAD_VALUE_SHORT = frozenset(('e', 'f', 'm', 'A', 'B', 'C', 'D'))
+        _GREP_HEAD_VALUE_LONG = frozenset((
+            '--regexp', '--file', '--max-count', '--after-context',
+            '--before-context', '--context', '--include', '--exclude',
+            '--exclude-dir', '--glob', '--type', '--type-not', '--max-depth',
+        ))
+
+        def _grep_head_has_safe_flag(args):
+            _skip_next = False
+            for _arg in args:
+                if _skip_next:
+                    _skip_next = False
+                    continue
+                if _arg == '--':
+                    break
+                if _arg.startswith('--'):
+                    _long = _arg.split('=', 1)[0]
+                    if _long in _GREP_HEAD_SAFE_LONG:
+                        return True
+                    if '=' not in _arg and _long in _GREP_HEAD_VALUE_LONG:
+                        _skip_next = True
+                    continue
+                if not _arg.startswith('-') or _arg == '-':
+                    continue
+                _letters = _arg[1:]
+                for _letter_index, _letter in enumerate(_letters):
+                    if _letter in 'lcq':
+                        return True
+                    if _letter in _GREP_HEAD_VALUE_SHORT:
+                        if _letter_index == len(_letters) - 1:
+                            _skip_next = True
+                        break
+            return False
+
+        for _grep_head_pipeline in _scan_pipelines(_grep_head_cmd):
+            if len(_grep_head_pipeline) < 2:
+                continue
+            _head_cmds, _ = _scan_shell(_grep_head_pipeline[-1])
+            if not _head_cmds:
+                continue
+            _head_words = _head_cmds[0]
+            _head_start = _scan_command_start(_head_words)
+            if _head_start >= len(_head_words):
+                continue
+            if _head_words[_head_start].rsplit('/', 1)[-1] != 'head':
+                continue
+
+            _has_unbounded_grep = False
+            for _grep_head_stage in _grep_head_pipeline[:-1]:
+                _grep_head_cmds, _ = _scan_shell(_grep_head_stage)
+                if not _grep_head_cmds:
+                    continue
+                _grep_head_words = _grep_head_cmds[0]
+                _grep_head_start = _scan_command_start(_grep_head_words)
+                if _grep_head_start >= len(_grep_head_words):
+                    continue
+                _grep_head_name = _grep_head_words[_grep_head_start].rsplit('/', 1)[-1]
+                if _grep_head_name not in _GREP_HEAD_NAMES:
+                    continue
+                if not _grep_head_has_safe_flag(_grep_head_words[_grep_head_start + 1:]):
+                    _has_unbounded_grep = True
+                    break
+
+            if _has_unbounded_grep:
+                ADVISORY = (
+                    'grep-to-head false-absence advisory (EI-20041520588565350): '
+                    'this pipeline ends in `head` after a grep/rg that does not '
+                    'request files (`-l`), a count (`-c`), or a quiet boolean '
+                    '(`-q`). `head` keeps only the first N matching lines, while '
+                    'recursive search order is not a complete-file guarantee, so '
+                    'a later importer can be hidden and the truncated output '
+                    'cannot prove absence. For an existence check use `grep -rl` '
+                    'or `rg -l`, count with `grep -c`/`wc -l`, or let the search '
+                    'finish before drawing a negative conclusion. Advisory only; '
+                    'this command is proceeding as issued.'
+                )
+                break
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ── Foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592) ───────
 # `cmd | head -N` is a DIFFERENT hazard from the background-pipe exit-code
 # trap above, and it applies in the FOREGROUND too (that advisory only fires

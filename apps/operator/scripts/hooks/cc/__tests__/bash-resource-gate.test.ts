@@ -2622,6 +2622,73 @@ describe('foreground `| head` SIGPIPE-kill advisory (EI-18787618439028592)', () 
 });
 
 /**
+ * EI-20041520588565350 — a recursive grep/rg piped into `head` can make a
+ * partial match list look like a complete absence search. This is separate
+ * from the SIGPIPE warning above: even when the writer is harmless, the first
+ * N lines do not establish that later files contain no matches.
+ */
+describe('grep/rg → `| head` false-absence advisory (EI-20041520588565350)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-test',
+  });
+
+  const expectFalseAbsenceAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('grep-to-head false-absence advisory');
+    expect(hso.additionalContext).toContain('cannot prove absence');
+    expect(hso.additionalContext).toContain('grep -rl');
+  };
+
+  it('fires on the reported recursive grep pipeline', () => {
+    expectFalseAbsenceAdvisory(
+      runGate(
+        bashWithInput({
+          command: 'grep -rn "PotHealthPane" apps --include=*.tsx | grep -v "PotHealthPane.tsx:" | head',
+        }),
+      ),
+    );
+  });
+
+  it('fires for rg as well as grep', () => {
+    expectFalseAbsenceAdvisory(runGate(bashWithInput({ command: "rg -n 'PotHealthPane' apps | head -10" })));
+  });
+
+  it.each([
+    ['files-with-matches', 'grep -rl foo apps | head -10'],
+    ['count', 'grep -rc foo apps | head -10'],
+    ['quiet boolean', 'grep -rq foo apps | head -10'],
+    ['long files-with-matches', 'grep --files-with-matches foo apps | head -10'],
+    ['long count', 'grep --count foo apps | head -10'],
+  ])('stays silent for an explicit %s search mode', (_label, command) => {
+    expectAllow(runGate(bashWithInput({ command })));
+  });
+
+  it('stays silent for a head pipeline with no grep/rg stage', () => {
+    expectAllow(runGate(bashWithInput({ command: 'git status --short | head -10' })));
+  });
+
+  it('does not treat a quoted pipe as a real pipeline', () => {
+    expectAllow(runGate(bashWithInput({ command: 'grep -E "a|head" some-file.ts' })));
+  });
+
+  it('a deny gate still WINS over the false-absence advisory', () => {
+    const out = runGate(
+      {
+        tool_name: 'Bash',
+        tool_input: { command: 'crontab -e; grep -rn foo apps | head' },
+        session_id: 's-test',
+      },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
+/**
  * EI-18764990059061608 — background-log-read-race advisory: reading a
  * background job's redirected-to-file output while the job is STILL WRITING
  * it is indistinguishable, at the read call, from the job having finished and
