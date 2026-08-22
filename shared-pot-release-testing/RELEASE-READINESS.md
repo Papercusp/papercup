@@ -8,12 +8,25 @@ The verdict is unchanged; this signature corrects a rationale that current execu
 overtaken. Two independent blockers now stand in the non-git/non-coordination P2P lane, and both
 must resolve on live evidence before any GO:
 
-1. **W1 remains open and structurally unobserved.** Every run through `m1787374736` queried the
+1. **W1's stated waiting-condition is now MET — and W1 is STILL OPEN, on different grounds.**
+   Rationale re-signed 2026-08-22T19:15Z (su-b1761, `WI-40656`, per
+   `p2p-public-release-remaining-lanes-2026-07-16#D-058`). **The verdict above is UNCHANGED and
+   this row does not bear on it.**
+   The prior text (D-046, ~06:00Z) recorded that every run through `m1787374736` queried the
    owner frame's self-classification only once at `peer_connect`, roughly 30 scenario orders
-   before the restart, so no retained result can say how the owner classifies itself afterward.
-   `WI-40534` has now landed a measure-only order-82 re-poll. The **next** qualifying run is the
-   first one capable of measuring W1's post-restart half; until it does, a green scenario verdict
-   is not evidence that W1 cleared.
+   before the restart, so no retained result could say how the owner classified itself
+   afterward; `WI-40534` had landed a measure-only order-82 re-poll, and the **next** qualifying
+   run would be the first capable of measuring W1's post-restart half.
+   **That run has since happened** — 2026-08-22T10:49:58Z, order 82, rig `m1787395184`
+   (see `#D-055`, binding) — i.e. AFTER the D-046 signature, which therefore could not have
+   accounted for it. It measured the branch as **0 rows `origin='remote'`** (both `pot_members`
+   rows `origin='local'` after the restart), corroborated by order 80 `PASS restart_durability`.
+   ⚠ **This does NOT retire W1, and the "structurally unobserved" framing above is what it
+   retires — not the blocker.** It is ONE run against ONE restart, weighed against 11×
+   OWNER-CONTENT at denominator 16 — and the not-reproduced branch is precisely what a healthy
+   run AND a lucky run both print, so a single clean observation cannot discriminate between
+   them. W1 therefore stands as a release blocker **on the merits**, where it previously stood
+   on absent evidence. Read `#D-055` before quoting this row.
 2. **`WI-40537` (revocation k-cut) is unresolved.** Run `m1787374736` produced a red that still
    needs two discriminator legs: whether banned frame B can decrypt post-ban content, and whether
    the result reproduces on current HEAD. Pending those answers, this is a release blocker but
