@@ -96,12 +96,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // Sessions tab is keyed by plan_slug, not a row PK — full-bust here so a new
   // session recorded for a plan (or one ending) live-refreshes the tab. Low
   // write rate + a small per-plan payload keep the broad bust cheap.
-  'harness_shared.adv_sessions': [
-    'advSessions.list',
-    'advSessions.summary',
-    'advRoster.list',
-    'planSessions.list',
-  ],
+  'harness_shared.adv_sessions': ['advSessions.list', 'advSessions.summary', 'advRoster.list', 'planSessions.list'],
   /* agent_modes — the standing MODE per agent per axis (auto / ideate / drain /
      grade). session-chat-popup-timestamps-and-modes-2026-08-09 P-003; trigger
      attached in migration 763.
