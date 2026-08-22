@@ -13,6 +13,7 @@ import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { probeDesktop } from './desktop-health';
 import { listListeningSockets, type ListeningSocket } from './listening-sockets';
+import { operatorApiBase } from './operator-api-base';
 import { emitServiceHealthTransitionEvent } from './service-health-events';
 
 export interface EndpointSpec {
@@ -112,6 +113,27 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // ODDSMITH_SIDECAR_DOWN_CONFIRM_TICKS for the measured restart rate.
   { name: 'oddsmith-sidecar', url: 'http://127.0.0.1:46229/health' },
 ];
+
+/**
+ * Resolve the runtime operator target for the default probe set.
+ *
+ * `HEALTH_ENDPOINTS` intentionally keeps the dev-box baseline visible and
+ * stable, but packaged `serve.ts` binds the operator to a sticky loopback port
+ * and exports that port through `operatorApiBase()` before importing this
+ * module's periodic health tick. Using that canonical base at probe time keeps
+ * the default operator probe on the actual packaged listener instead of the
+ * baked :3070 fallback. Callers that provide explicit specs are returned
+ * unchanged in value, so focused/custom probes retain their requested target.
+ */
+export function resolveHealthEndpoints(specs?: readonly EndpointSpec[]): EndpointSpec[] {
+  // An explicitly supplied list is an opt-in test/custom surface. Preserve its
+  // requested URLs even when it happens to contain an `operator`-named entry.
+  if (specs !== undefined) return specs.map((spec) => ({ ...spec }));
+
+  const operatorBase = operatorApiBase().replace(/\/+$/, '');
+  const operatorUrl = `${operatorBase}/api/desktop/version`;
+  return HEALTH_ENDPOINTS.map((spec) => (spec.name === 'operator' ? { ...spec, url: operatorUrl } : { ...spec }));
+}
 
 /**
  * WI-6149 (D-010 item 4): units agents DO shell out to `systemctl is-active`
@@ -1003,15 +1025,16 @@ export function supervisedProcesses(filter?: { layer?: SupervisionLayer; autoRes
   );
 }
 
-export async function probeAll(specs: EndpointSpec[] = HEALTH_ENDPOINTS): Promise<ProbeResult[]> {
+export async function probeAll(specs?: EndpointSpec[]): Promise<ProbeResult[]> {
   // The Tauri desktop has no HTTP endpoint — probe it from its local signals
   // (bridge eval + IPC socket + recent error toasts) alongside the HTTP ones; the
   // bg-host DBOS ticker has no port either — probe it from routine fire-freshness (EI-1832);
   // the substrate sidecar (WI-899) is a third portless process, probed via its own IPC RPC;
   // the embed sidecar HAS a port but is opt-in, so its probe is present:false-aware
   // rather than a raw HEALTH_ENDPOINTS entry (phantom-DOWN guard).
+  const probeSpecs = specs ?? resolveHealthEndpoints();
   const [http, desktop, bgHostTicker, bgHostCode, substrateSidecar, embedSidecar] = await Promise.all([
-    Promise.all(specs.map((s) => probeEndpoint(s))),
+    Promise.all(probeSpecs.map((s) => probeEndpoint(s))),
     probeDesktop(),
     probeBgHostTicker(),
     probeBgHostCodeDrift(),

@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   diffHealth,
   HEALTH_ENDPOINTS,
+  resolveHealthEndpoints,
   probeEndpoint,
   tcpPreflight,
   CONNECT_PREFLIGHT_MS,
@@ -289,6 +290,40 @@ describe('HEALTH_ENDPOINTS', () => {
     expect(byName.operator?.onDemand).toBeFalsy();
     expect(byName['staging-api']?.onDemand).toBeFalsy();
     expect(byName['oddsmith-sidecar']?.onDemand).toBeFalsy();
+  });
+});
+
+describe('resolveHealthEndpoints — packaged operator port (EI-20499210780607087)', () => {
+  const savedOperatorBase = process.env.PAPERCUSP_OPERATOR_BASE;
+  const savedHonoPort = process.env.PAPERCUSP_HONO_PORT;
+
+  afterEach(() => {
+    if (savedOperatorBase === undefined) delete process.env.PAPERCUSP_OPERATOR_BASE;
+    else process.env.PAPERCUSP_OPERATOR_BASE = savedOperatorBase;
+    if (savedHonoPort === undefined) delete process.env.PAPERCUSP_HONO_PORT;
+    else process.env.PAPERCUSP_HONO_PORT = savedHonoPort;
+  });
+
+  it('targets the packaged sticky operator port while preserving the baseline registry', () => {
+    process.env.PAPERCUSP_OPERATOR_BASE = 'http://127.0.0.1:18830';
+    process.env.PAPERCUSP_HONO_PORT = '18830';
+
+    expect(resolveHealthEndpoints().find((spec) => spec.name === 'operator')?.url).toBe(
+      'http://127.0.0.1:18830/api/desktop/version',
+    );
+    expect(HEALTH_ENDPOINTS.find((spec) => spec.name === 'operator')?.url).toBe(
+      'http://127.0.0.1:3070/api/desktop/version',
+    );
+  });
+
+  it('does not rewrite explicit custom probe specs', () => {
+    process.env.PAPERCUSP_OPERATOR_BASE = 'http://127.0.0.1:18830';
+    const custom = [
+      { name: 'operator', url: 'http://127.0.0.1:19999/api/desktop/version', timeoutMs: 25 },
+      { name: 'fixture', url: 'http://127.0.0.1:19998/health' },
+    ];
+
+    expect(resolveHealthEndpoints(custom)).toEqual(custom);
   });
 });
 
