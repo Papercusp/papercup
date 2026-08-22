@@ -1005,6 +1005,32 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect((await heldControlPlane).status).toBe(200);
   });
 
+  it('keeps the full reserved pool available when ordinary traffic reaches its ceiling, then enforces the hard ceiling', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 5_000, maxInFlight: 4, controlPlaneReserve: 2, log: () => {},
+    }));
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({ method: 'tools/call', params: { name: 'work_items:list', arguments: {} } });
+    const heldOrdinary = [request(port(proxy), ordinaryBody), request(port(proxy), ordinaryBody)];
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    const controlPlaneBody = JSON.stringify({ method: 'tools/call', params: { name: 'locks:acquire', arguments: {} } });
+    const heldControlPlane = [request(port(proxy), controlPlaneBody), request(port(proxy), controlPlaneBody)];
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), controlPlaneBody)).status).toBe(429);
+
+    releaseUpstream();
+    const results = await Promise.all([...heldOrdinary, ...heldControlPlane]);
+    expect(results.every((result) => result.status === 200)).toBe(true);
+  });
+
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
     expect(shouldShedForInFlight(4, 5)).toBe(false);
     expect(shouldShedForInFlight(5, 5)).toBe(true);
