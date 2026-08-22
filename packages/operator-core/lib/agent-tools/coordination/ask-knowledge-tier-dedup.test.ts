@@ -22,7 +22,7 @@
  * does NOT dedupe across pools, so the tier's own reduction is what's on trial.
  */
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { scopesOf, type MemoryBackend, type MemoryEntry } from '../../memory/backend';
 import {
@@ -56,6 +56,22 @@ const throwingSql = (() => {
   };
   return fn as unknown as Sql;
 })();
+
+// The deliberately throwing SQL seam exercises runKnowledgeTier's
+// search:semantic degradation path. Its HNSW capability probe consequently
+// emits the expected transient-fallback warning; capture only that known
+// diagnostic so vitest-fail-on-console still catches unrelated warnings.
+let warn: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+});
+afterEach(() => {
+  const unexpected = warn.mock.calls.filter(
+    ([message]) => typeof message !== 'string' || !message.startsWith('[hnsw-iterative-scan]'),
+  );
+  expect(unexpected).toEqual([]);
+  vi.restoreAllMocks();
+});
 
 function deps(backend: MemoryBackend): KnowledgeTierDeps {
   return { sql: throwingSql, backend };

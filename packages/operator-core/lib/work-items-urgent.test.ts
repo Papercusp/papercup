@@ -8,7 +8,7 @@
  * the urgent-wake module itself is unit-covered in pot/urgent-wake.test.ts —
  * here it is a spy seam.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 
 const requestUrgentPotWake = vi.fn(async (_opts: { reason: string; harness: string | null }) => ({
   fired: true,
@@ -119,10 +119,24 @@ vi.mock('./issues-engineer', () => ({
 import { createWorkItem } from './work-items';
 import createTool from './agent-tools/work_items/create';
 
+// The memory-injection leg deliberately reaches the HNSW capability probe in
+// this suite's test environment. A missing probe seam is an expected
+// fail-open diagnostic; capture only that warning so unrelated warnings still
+// fail the suite under vitest-fail-on-console.
+let warn: ReturnType<typeof vi.spyOn>;
 beforeEach(() => {
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   requestUrgentPotWake.mockClear();
   requestUrgentPotWake.mockResolvedValue({ fired: true, coalesced: false });
   createIssue.mockClear();
+});
+
+afterEach(() => {
+  const unexpected = warn.mock.calls.filter(
+    ([message]) => typeof message !== 'string' || !message.startsWith('[hnsw-iterative-scan]'),
+  );
+  expect(unexpected).toEqual([]);
+  vi.restoreAllMocks();
 });
 
 describe('createWorkItem urgent hook (P-006)', () => {
