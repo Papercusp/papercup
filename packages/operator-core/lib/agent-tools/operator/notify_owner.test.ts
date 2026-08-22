@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
 
 const { getMessageById, sendMessage, notifyAttentionOnce, resolveAgentIdentity } = vi.hoisted(() => ({
   getMessageById: vi.fn(),
@@ -47,6 +48,10 @@ describe('notifications:send_owner', () => {
     expect(tool.name).toBe('notifications:send_owner');
     expect(tool.capability).toBe('coord:write');
     expect(tool.guidance?.when).toContain('durable inbox');
+    const projected = lookupByMcpName('notifications:send_owner');
+    expect(projected).toBeDefined();
+    expect(projected?.capabilities).toContain('coord:write');
+    expect(projected?.agentRoles).toContain('worker');
   });
 
   it('uses one deterministic coord id and fans out through both existing rails', async () => {

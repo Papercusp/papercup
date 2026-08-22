@@ -177,11 +177,48 @@ export async function stampCarrySurfaceProvenance(
   return Object.keys(stamp).length ? stamp : undefined;
 }
 
+/** The optional second input to {@link carryProvenanceFields}. `retainedText` is
+ *  the exact portion of the final carry value that was inherited from an older
+ *  value, rather than supplied by this write. It is intentionally lint-only:
+ *  retained bytes cannot be attributed to the current turn. */
+export interface CarryProvenanceFieldsOptions {
+  retainedText?: string | null;
+}
+
+/**
+ * Return the lines in `storedText` that are not represented by the text the
+ * current writer supplied. Carry rows acquire a generated `(since …)` suffix
+ * while they are normalized, so compare a suffix-stripped key rather than raw
+ * bytes; otherwise every newly supplied row would be reported a second time as
+ * retained history.
+ */
+export function retainedProvenanceText(
+  storedText: string | null | undefined,
+  suppliedText: string | null | undefined,
+): string | undefined {
+  if (!storedText?.trim()) return undefined;
+  const suppliedLines = new Set(
+    (suppliedText ?? '')
+      .split('\n')
+      .map((line) => line.trim().replace(/\s+\(since\s+[^)]+\)\s*$/, ''))
+      .filter(Boolean),
+  );
+  const retained = storedText
+    .split('\n')
+    .filter((line) => !suppliedLines.has(line.trim().replace(/\s+\(since\s+[^)]+\)\s*$/, '')))
+    .join('\n')
+    .trim();
+  return retained || undefined;
+}
+
 /** Ready-to-spread response fields: `provenanceLint` keeps its pre-P-014 shape
- *  (consumer/response compat), `turnProvenance` carries the new mechanical
- *  stamp. Both absent on the common clean case. */
+ *  (consumer/response compat), `retainedProvenance` reports lint found only in
+ *  inherited bytes, and `turnProvenance` carries the new mechanical stamp. All
+ *  are absent on the common clean case. */
 export interface CarryProvenanceFields {
   provenanceLint?: NonNullable<CarryProvenanceStamp['lint']>;
+  /** Lint-only history: never carries current-turn refs or writtenDuring. */
+  retainedProvenance?: NonNullable<CarryProvenanceStamp['lint']>;
   /** P-015: owner-blocking-question prose that should be a coord:ask-owner
    *  record cited as [ask:<conversation_id>]. */
   typedSlotLint?: NonNullable<CarryProvenanceStamp['slotLint']>;
@@ -196,17 +233,20 @@ export interface CarryProvenanceFields {
 export async function carryProvenanceFields(
   text: string | null | undefined,
   ownerId: string | null | undefined,
+  options: CarryProvenanceFieldsOptions = {},
 ): Promise<CarryProvenanceFields> {
   const stamp = await stampCarrySurfaceProvenance(text, ownerId);
-  if (!stamp) return {};
+  const retainedProvenance = options.retainedText ? provenanceLintField(options.retainedText) : undefined;
+  if (!stamp && !retainedProvenance) return {};
   const out: CarryProvenanceFields = {};
-  if (stamp.lint) out.provenanceLint = stamp.lint;
-  if (stamp.slotLint) out.typedSlotLint = stamp.slotLint;
-  if (stamp.refs || stamp.writtenDuring || stamp.ownerTagsAutoVerified) {
+  if (stamp?.lint) out.provenanceLint = stamp.lint;
+  if (retainedProvenance) out.retainedProvenance = retainedProvenance;
+  if (stamp?.slotLint) out.typedSlotLint = stamp.slotLint;
+  if (stamp?.refs || stamp?.writtenDuring || stamp?.ownerTagsAutoVerified) {
     out.turnProvenance = {
-      ...(stamp.refs ? { refs: stamp.refs } : {}),
-      ...(stamp.writtenDuring ? { writtenDuring: stamp.writtenDuring } : {}),
-      ...(stamp.ownerTagsAutoVerified ? { ownerTagsAutoVerified: stamp.ownerTagsAutoVerified } : {}),
+      ...(stamp?.refs ? { refs: stamp.refs } : {}),
+      ...(stamp?.writtenDuring ? { writtenDuring: stamp.writtenDuring } : {}),
+      ...(stamp?.ownerTagsAutoVerified ? { ownerTagsAutoVerified: stamp.ownerTagsAutoVerified } : {}),
     };
   }
   return out;

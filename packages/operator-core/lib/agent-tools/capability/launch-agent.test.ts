@@ -109,6 +109,12 @@ vi.mock('../../console-spawn', () => ({
   spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
 }));
 
+const latestFleetMembershipMock = vi.hoisted(() => vi.fn());
+vi.mock('../../fleet-membership-store', () => ({
+  latestFleetMembership: (workspaceId: string, ownerId: string) =>
+    latestFleetMembershipMock(workspaceId, ownerId),
+}));
+
 vi.mock('../../agent-fleets-store', () => ({
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
@@ -207,6 +213,7 @@ beforeEach(() => {
     priorLaunchedBy: null,
   });
   fetchPresenceFleetMock.mockResolvedValue(new Map());
+  latestFleetMembershipMock.mockResolvedValue(null);
   fetchContextPressureMock.mockResolvedValue(new Map());
   verifyFreshLaunchStartedMock.mockResolvedValue({
     agentStarted: null,
@@ -450,6 +457,22 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead');
     expect(spawnedCommand()).not.toContain('--fork');
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
+  });
+
+  it("preserves the resumed target's durable fleet instead of inheriting the caller's fleet", async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    fetchPresenceFleetMock.mockResolvedValue(
+      new Map([['su-caller', { fleetSlug: 'caller-fleet', fleetRole: 'leader' }]]),
+    );
+
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+
+    expect(latestFleetMembershipMock).toHaveBeenCalledWith('ws-test', 'su-a1a71');
+    expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
+    expect(spawnedCommand()).toContain('--fleet=target-fleet');
+    expect(spawnedCommand()).not.toContain('--fleet=caller-fleet');
+    expect(dataOf(res)?.launch).toMatchObject({ fleet: 'target-fleet', resumedOwnerId: 'su-a1a71' });
   });
 
   it('propagates the caller DRAIN overlay to a resume/fork command', async () => {

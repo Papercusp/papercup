@@ -21,7 +21,7 @@ beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
   const migration = readFileSync(
-    path.join(REPO, 'libs/papercusp/libs/db/sql/878-external-trigger-dispatch-routine.sql.DRAFT'),
+    path.join(REPO, 'libs/papercusp/libs/db/sql/878-external-trigger-dispatch-routine.sql'),
     'utf8',
   );
   await sql.unsafe(migration);

@@ -1902,3 +1902,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
   });
 });
+
+describe('work_items:checkpoint — current-vs-retained provenance (EI-21165235642497045)', () => {
+  it('reports inherited lint under retainedProvenance, not provenanceLint', async () => {
+    const current = 'the owner said to run the focused suite';
+    const retained = 'the owner said to retain the old checkpoint';
+    const stored = [retained, current].join('\n');
+
+    getWorkItem.mockResolvedValue({ id: 'WI-PROVENANCE', harness: 'papercup' });
+    setWorkItemCheckpointWithPrior.mockResolvedValue({ stored, priorLength: retained.length });
+    getWorkItemCheckpoint.mockResolvedValue(stored);
+
+    const result = await one({ id: 'WI-PROVENANCE', checkpoint: current });
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches.map((match: { line: string }) => match.line)).toEqual([current]);
+    expect(result.retainedProvenance?.matches.map((match: { line: string }) => match.line)).toEqual([retained]);
+  });
+});

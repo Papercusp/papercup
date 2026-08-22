@@ -6,6 +6,7 @@ import {
   applyOwnerTurnAutoVerify,
   carryProvenanceFields,
   mergeQuoteMismatchesIntoLint,
+  retainedProvenanceText,
   stampCarrySurfaceProvenance,
 } from './carry-surface-provenance-stamp';
 import { lintCarrySurfaceProvenance, PROVENANCE_LINT_NOTE } from './carry-surface-provenance-lint';
@@ -34,6 +35,28 @@ describe('stampCarrySurfaceProvenance / carryProvenanceFields', () => {
     );
     expect(both.provenanceLint?.flagged).toBe(true);
     expect(both.typedSlotLint?.flagged).toBe(true);
+  });
+});
+
+describe('current-vs-retained provenance split (EI-21165235642497045)', () => {
+  const current = 'the owner said to run the focused suite';
+  const retained = 'the owner said to retain the old checkpoint';
+
+  it('keeps current lint separate from lint found only in inherited bytes', async () => {
+    const fields = await carryProvenanceFields(current, null, { retainedText: retained });
+
+    expect(fields.provenanceLint?.matches.map((match) => match.line)).toEqual([current]);
+    expect(fields.retainedProvenance?.matches.map((match) => match.line)).toEqual([retained]);
+    expect(fields.retainedProvenance?.flagged).toBe(true);
+  });
+
+  it('recognizes normalized since suffixes as the supplied row, not retained history', () => {
+    const stored = [
+      `${retained} (since 2026-08-22T18:00:00.000Z)`,
+      `${current} (since 2026-08-22T19:00:00.000Z)`,
+    ].join('\n');
+
+    expect(retainedProvenanceText(stored, current)).toBe(`${retained} (since 2026-08-22T18:00:00.000Z)`);
   });
 });
 

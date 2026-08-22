@@ -681,6 +681,33 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
   });
 });
 
+describe('loop:checkpoint — current-vs-retained provenance (EI-21165235642497045)', () => {
+  it('reports lint from carried rows under retainedProvenance, not provenanceLint', async () => {
+    const current = 'the owner said to run the focused suite';
+    const retained = 'the owner said to retain the old checkpoint';
+    const prior = mergeCarryRows({
+      priorNote: null,
+      baseNote: 'old narrative',
+      checks: [{ claim: retained }],
+      hasNoteWrite: true,
+    }).note;
+
+    getLoopCarryNote.mockResolvedValue(prior);
+    setLoopCarryNote.mockImplementation(async (_ref: unknown, note: unknown) => note as string);
+    withBoundedTimeout.mockImplementation(async (_work: unknown, options: unknown) => ({
+      value: (options as { label?: string } | undefined)?.label === 'carry-provenance-stamp' ? [[], null] : undefined,
+      degraded: false,
+      elapsedMs: 0,
+    }));
+
+    const result = body(await call({ note: current }));
+
+    expect(result.ok).toBe(true);
+    expect(result.provenanceLint?.matches.some((match: { line: string }) => match.line === current)).toBe(true);
+    expect(result.retainedProvenance?.matches.some((match: { line: string }) => match.line.includes(retained))).toBe(true);
+  });
+});
+
 describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {
   it('never-settled watermark + a real inbox read ⇒ the read is the cursor (the old permanent "inbox not evaluated" case)', async () => {
     const { pickUnreadCursor } = await import('./checkpoint');

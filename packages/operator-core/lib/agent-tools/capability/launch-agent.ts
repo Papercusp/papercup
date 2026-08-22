@@ -40,6 +40,7 @@ import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetHeadcountTarget, getFleetScheme } from '../../agent-fleets-store';
+import { latestFleetMembership } from '../../fleet-membership-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { fetchContextPressure } from '../coordination/context-pressure';
 import { resolveAgentIdentity } from '../coordination/identity';
@@ -183,7 +184,7 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe("Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and you launch a plain unfleeted agent. Omitted entirely, the tool falls back to YOUR OWN presence-fleet, so a fleet member's launches join their fleet by default (WI-4234)."),
+      .describe("Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and a FRESH launch falls back to YOUR OWN presence-fleet (WI-4234); a RESUME/FORK preserves the target session's latest durable fleet membership instead of inheriting the caller's fleet."),
     headless: z
       .boolean()
       .optional()
@@ -417,8 +418,10 @@ export default defineTool({
       }
     }
 
-    // Fleet: explicit name wins; else the caller's own presence fleet (WI-4234), so a
-    // fleet member's launches join their fleet by default. Colour + membership come
+    // Fleet: explicit name wins. For a resume/fork with no explicit fleet, preserve
+    // the target's durable membership from fleet_membership_events: its presence row
+    // may already have been reaped, and the caller's fleet is unrelated. Only a FRESH
+    // launch inherits the caller's presence fleet (WI-4234). Colour + membership come
     // from the SAME slug, so they can never diverge.
     let fleetSlug: string | null = args.fleet ? fleetSlugFromName(args.fleet) : null;
     let scheme: ColorScheme | null = null;
@@ -427,6 +430,23 @@ export default defineTool({
         scheme = await getFleetScheme(workspaceId, fleetSlug);
       } catch {
         scheme = null;
+      }
+    } else if (isResume) {
+      if (resumeOwnerId) {
+        try {
+          const membership = await latestFleetMembership(workspaceId, resumeOwnerId);
+          if (membership?.fleetSlug) {
+            fleetSlug = membership.fleetSlug;
+            scheme = await getFleetScheme(workspaceId, membership.fleetSlug);
+          }
+        } catch (e) {
+          // Do not fall back to the caller's fleet on a resume: that would attach
+          // the target to an unrelated claim spec. Launch unfleeted and make the
+          // degraded membership lookup visible in the result instead.
+          notes.push(
+            `⚠ Could not resolve the resumed target's durable fleet membership (${(e as Error)?.message ?? e}); launching unfleeted rather than inheriting the caller's fleet.`,
+          );
+        }
       }
     } else if (callerOwnerId) {
       try {
