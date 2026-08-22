@@ -76,6 +76,22 @@ provision workflow or its `provision_state` JSONB blob. The provision audit bus
 is reusable as an implementation pattern for workspace-host events, but its
 harness/plugin-keyed table is not the workspace-host state model.
 
+`runFakeWorkspaceHostProviderContractSuite` is the mandatory adapter preflight.
+It drives a deterministic in-memory backend through discovery, stable planning,
+one-resource apply, same-identity reconciliation, observation/transport/health,
+and fresh-read confirmed destroy. `DeterministicWorkspaceHostFaultInjector`
+adds exact before-call and timeout-after-success failures without sleeps or
+randomness.
+
+Real accounts use `WorkspaceHostLiveCanaryHarness`, never the fake runner. The
+harness refuses provider work until a current contract report is explicitly
+approved, caps cumulative spend at USD 25 (or a lower run cap), emits immutable
+run/workspace tags, tracks teardown deadlines and orphan census results, stores
+only typed credential references, and requires both provider cost evidence and
+fresh-read deletion receipts before completion. Emergency native cleanup is
+recorded with `createWorkspaceHostManualDestroyReceipt`; a successful delete
+request without an absence read is not a receipt.
+
 Generic + host-clean: the frame surface names no provider except `local`; the
 workspace-host surface names none. Each backend narrows and validates its own
 provider state host-side. The contracts stay separate because their ownership

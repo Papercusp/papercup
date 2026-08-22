@@ -16,6 +16,14 @@ Covered:
 - **`workspace-host-registry.test.ts`** — full durable-host lifecycle coverage,
   type-distinct credential channels, fresh-read destroy proof, no implicit local
   provider, and open-target register/configure/replace/resolve behavior.
+- **`workspace-host-workflow.test.ts`** — stable DBOS/dedup identities,
+  record-before-depend ordering, ambiguous recovery, bounded retries,
+  cancellation compensation, and confirmed destroy.
+- **`workspace-host-test-harness.test.ts`** — reusable fake-adapter conformance,
+  deterministic before/after-success fault injection, contract-approval gate,
+  USD 25 hard cumulative canary ceiling, mandatory resource tags, teardown
+  watchdog, orphan census, secret isolation, provider cost evidence, and
+  emergency manual-destroy receipts.
 
 Not covered here (lives with the consumers): the harness:create threading of
 `deployment` (operator-core), the orchestrator placement gate, and the concrete

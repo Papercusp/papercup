@@ -98,6 +98,38 @@ export {
   workspaceHostDestroyIsConfirmed,
   nextWorkspaceHostControllerAction,
 } from './workspace-host-workflow';
+export type {
+  WorkspaceHostProviderContractCheck,
+  FakeWorkspaceHostProviderContractFixture,
+  WorkspaceHostProviderContractReport,
+  WorkspaceHostInjectedFaultTiming,
+  WorkspaceHostInjectedFaultClass,
+  WorkspaceHostInjectedFaultSpec,
+  WorkspaceHostFaultHistoryEntry,
+  WorkspaceHostContractApproval,
+  WorkspaceHostLiveCanarySpec,
+  WorkspaceHostCanarySpendReservation,
+  WorkspaceHostCanaryCostEvidence,
+  WorkspaceHostCanaryResource,
+  WorkspaceHostObservedCanaryResource,
+  WorkspaceHostCanaryOrphanCensus,
+  WorkspaceHostTeardownWatchdogStatus,
+  WorkspaceHostManualDestroyReceipt,
+  WorkspaceHostCanaryCompletionReceipt,
+} from './workspace-host-test-harness';
+export {
+  WORKSPACE_HOST_PROVIDER_CONTRACT_VERSION,
+  WORKSPACE_HOST_LIVE_CANARY_MAX_SPEND_CENTS,
+  WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS,
+  WORKSPACE_HOST_CANARY_TAG_KEYS,
+  WorkspaceHostContractAssertionError,
+  WorkspaceHostInjectedFault,
+  DeterministicWorkspaceHostFaultInjector,
+  WorkspaceHostLiveCanaryHarness,
+  assertWorkspaceHostSecretIsolation,
+  runFakeWorkspaceHostProviderContractSuite,
+  createWorkspaceHostManualDestroyReceipt,
+} from './workspace-host-test-harness';
 export {
   registerWorkspaceHostProvider,
   configureWorkspaceHostProviders,
