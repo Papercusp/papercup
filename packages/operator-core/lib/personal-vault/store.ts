@@ -40,6 +40,165 @@ export function dedupeKeyFor(doc: PersonalDocumentInput): string {
   return createHash('sha256').update(stable).digest('hex');
 }
 
+type PersonalAliasKind = 'email' | 'contact' | 'social-handle' | 'name';
+
+interface PersonalAliasCandidate {
+  source: string;
+  kind: PersonalAliasKind;
+  normalized: string;
+  display: string;
+}
+
+function nonEmailAliasKind(source: string, value: string): PersonalAliasKind {
+  if (source === 'facebook' || source === 'instagram' || source === 'x') {
+    return value.trim().startsWith('@') || !/\s/.test(value.trim()) ? 'social-handle' : 'name';
+  }
+  return 'name';
+}
+
+/**
+ * Alias groups represent one human each. A contact row's multiple email
+ * addresses + display name are one group; message/event participants are
+ * separate people and must never be collapsed into one identity.
+ */
+export function personalAliasGroups(doc: PersonalDocumentInput): PersonalAliasCandidate[][] {
+  const source = normalizePersonalSource(doc.source);
+  const participants = [...new Set((doc.participants ?? []).map((value) => value.trim()).filter(Boolean))];
+  if (doc.kind.trim().toLowerCase() === 'contact') {
+    const group: PersonalAliasCandidate[] = participants.map((display) => {
+      const normalized = normalizeParticipant(display);
+      return { source, kind: normalized.includes('@') ? 'email' : nonEmailAliasKind(source, display), normalized, display };
+    });
+    const displayName = doc.title?.trim();
+    if (displayName) {
+      const normalized = normalizeParticipant(displayName);
+      if (normalized && !group.some((alias) => alias.normalized === normalized)) {
+        group.push({ source, kind: 'name', normalized, display: displayName });
+      }
+    }
+    return group.length ? [group] : [];
+  }
+  return participants.flatMap((display) => {
+    const normalized = normalizeParticipant(display);
+    if (!normalized) return [];
+    return [[{
+      source,
+      kind: normalized.includes('@') ? 'email' : nonEmailAliasKind(source, display),
+      normalized,
+      display,
+    } satisfies PersonalAliasCandidate]];
+  });
+}
+
+async function mergePersonalIdentities(
+  sql: Sql,
+  workspaceId: string,
+  userId: string,
+  targetId: string,
+  duplicateIds: string[],
+): Promise<void> {
+  if (!duplicateIds.length) return;
+  // Remove alias rows that would collide with an already-present canonical
+  // alias, then move every remaining alias and document reference to target.
+  await sql`
+    DELETE FROM harness_shared.personal_identity_aliases duplicate
+     USING harness_shared.personal_identity_aliases canonical
+     WHERE duplicate.workspace_id = ${workspaceId}
+       AND duplicate.user_id = ${userId}
+       AND duplicate.identity_id = ANY(${duplicateIds}::uuid[])
+       AND canonical.workspace_id = duplicate.workspace_id
+       AND canonical.user_id = duplicate.user_id
+       AND canonical.identity_id = ${targetId}::uuid
+       AND canonical.source = duplicate.source
+       AND canonical.alias_kind = duplicate.alias_kind
+       AND canonical.normalized_value = duplicate.normalized_value`;
+  await sql`
+    UPDATE harness_shared.personal_identity_aliases
+       SET identity_id = ${targetId}::uuid
+     WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+       AND identity_id = ANY(${duplicateIds}::uuid[])`;
+  await sql`
+    UPDATE harness_shared.personal_documents d
+       SET participant_ids = ARRAY(
+         SELECT DISTINCT CASE
+           WHEN participant_id = ANY(${duplicateIds}::uuid[]) THEN ${targetId}::uuid
+           ELSE participant_id
+         END
+         FROM unnest(d.participant_ids) AS participant_id
+       ),
+       updated_at = now()
+     WHERE d.workspace_id = ${workspaceId} AND d.user_id = ${userId}
+       AND d.participant_ids && ${duplicateIds}::uuid[]`;
+  await sql`
+    DELETE FROM harness_shared.personal_identities
+     WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+       AND id = ANY(${duplicateIds}::uuid[])`;
+}
+
+async function resolvePersonalAliasGroup(
+  sql: Sql,
+  workspaceId: string,
+  userId: string,
+  aliases: PersonalAliasCandidate[],
+): Promise<string> {
+  const values = [...new Set(aliases.map((alias) => alias.normalized))];
+  const existing = await sql<Array<{ identity_id: string; created_at: string }>>`
+    SELECT identity_id, min(created_at)::text AS created_at
+      FROM harness_shared.personal_identity_aliases
+     WHERE workspace_id = ${workspaceId} AND user_id = ${userId}
+       AND normalized_value = ANY(${values})
+     GROUP BY identity_id
+     ORDER BY min(created_at), identity_id`;
+  const email = aliases.find((alias) => alias.kind === 'email')?.normalized ?? null;
+  const displayName = aliases.find((alias) => alias.kind === 'name')?.display
+    ?? aliases.find((alias) => alias.kind !== 'email')?.display
+    ?? email
+    ?? '';
+  let identityId = existing[0]?.identity_id;
+  if (!identityId) {
+    const created = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.personal_identities
+        (workspace_id, user_id, display_name, primary_email, metadata)
+      VALUES (${workspaceId}, ${userId}, ${displayName}, ${email}, ${JSON.stringify({ resolver: 'exact-alias-v1' })}::jsonb)
+      RETURNING id`;
+    identityId = created[0]!.id;
+  } else {
+    await mergePersonalIdentities(sql, workspaceId, userId, identityId, existing.slice(1).map((row) => row.identity_id));
+    await sql`
+      UPDATE harness_shared.personal_identities
+         SET display_name = CASE WHEN display_name = '' THEN ${displayName} ELSE display_name END,
+             primary_email = COALESCE(primary_email, ${email}),
+             updated_at = now()
+       WHERE workspace_id = ${workspaceId} AND user_id = ${userId} AND id = ${identityId}::uuid`;
+  }
+  for (const alias of aliases) {
+    await sql`
+      INSERT INTO harness_shared.personal_identity_aliases
+        (workspace_id, user_id, identity_id, source, alias_kind,
+         normalized_value, display_value, metadata)
+      VALUES (${workspaceId}, ${userId}, ${identityId}::uuid, ${alias.source}, ${alias.kind},
+              ${alias.normalized}, ${alias.display}, ${JSON.stringify({ resolver: 'exact-alias-v1' })}::jsonb)
+      ON CONFLICT (workspace_id, user_id, source, alias_kind, normalized_value)
+      DO UPDATE SET identity_id = EXCLUDED.identity_id,
+                    display_value = EXCLUDED.display_value,
+                    metadata = EXCLUDED.metadata`;
+  }
+  return identityId;
+}
+
+export async function resolvePersonalIdentityIds(
+  sql: Sql,
+  workspaceId: string,
+  userId: string,
+  doc: PersonalDocumentInput,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (const group of personalAliasGroups(doc)) {
+    ids.push(await resolvePersonalAliasGroup(sql, workspaceId, userId, group));
+  }
+  return [...new Set(ids)];
+}
+
 export async function isPersonalVaultEnabled(sql: Sql, workspaceId: string, userId: string): Promise<boolean> {
   const rows = await sql<Array<{ enabled: boolean }>>`
     SELECT enabled
@@ -77,7 +236,10 @@ export async function upsertPersonalDocuments(
   for (const doc of documents) {
     const source = normalizePersonalSource(doc.source);
     const participants = [...new Set((doc.participants ?? []).map(normalizeParticipant).filter(Boolean))];
-    const participantIds = [...new Set(doc.participantIds ?? [])];
+    const resolvedParticipantIds = participants.length
+      ? await resolvePersonalIdentityIds(sql, workspaceId, userId, { ...doc, source })
+      : [];
+    const participantIds = [...new Set([...(doc.participantIds ?? []), ...resolvedParticipantIds])];
     const occurredAt = doc.occurredAt instanceof Date ? doc.occurredAt.toISOString() : doc.occurredAt ?? null;
     const metadata = JSON.stringify(doc.metadata ?? {});
     const rows = await sql<Array<{ id: string }>>`

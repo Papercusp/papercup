@@ -3,6 +3,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { authorizePersonalAccess } from './authorization';
 import {
   createPersonalGrant,
+  replacePersonalGrant,
   purgePersonalSource,
   searchPersonalDocuments,
   setPersonalSyncState,
@@ -32,6 +33,8 @@ beforeEach(async () => {
   await org.adminSql`DELETE FROM harness_shared.personal_grants WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_documents WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_sync_state WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_identity_aliases WHERE user_id = ${userId}`;
+  await org.adminSql`DELETE FROM harness_shared.personal_identities WHERE user_id = ${userId}`;
   await org.adminSql`DELETE FROM harness_shared.personal_vault_settings WHERE user_id = ${userId}`;
 });
 
@@ -67,6 +70,48 @@ describe('Personal Vault core', () => {
     expect(granted).toMatchObject({ allowed: true, scopes: ['personal:gmail'] });
     const coding = await authorizePersonalAccess(org.adminSql, { workspaceId: WS, role: 'worker' }, WS, userId, ['gmail']);
     expect(coding).toMatchObject({ allowed: false, reason: 'coding_agent_denied' });
+  });
+
+  it('owner approval replaces a broader live grant instead of leaving stale access', async () => {
+    await createPersonalGrant(org.adminSql, {
+      workspaceId: WS, userId, principalType: 'plan-template', principalId: 'meeting-prep',
+      scopes: ['gmail', 'calendar'], grantedBy: 'owner',
+    });
+    const replacement = await replacePersonalGrant(org.adminSql, {
+      workspaceId: WS, userId, principalType: 'plan-template', principalId: 'meeting-prep',
+      scopes: ['gmail'], grantedBy: 'owner',
+    });
+    expect(replacement).toMatchObject({ scopes: ['personal:gmail'], revoked: 1 });
+    const live = await org.adminSql<Array<{ scopes: string[] }>>`
+      SELECT scopes FROM harness_shared.personal_grants
+       WHERE user_id = ${userId} AND principal_type = 'plan-template'
+         AND principal_id = 'meeting-prep' AND revoked_at IS NULL`;
+    expect(live).toEqual([{ scopes: ['personal:gmail'] }]);
+  });
+
+  it('resolves one human across contact email, mail address, and social display name', async () => {
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [{
+      source: 'contacts', kind: 'contact', externalId: 'people/ada',
+      participants: ['ada@example.com'], title: 'Ada Lovelace', text: 'ada@example.com', dedupeKey: 'ada-contact',
+    }]);
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [{
+      source: 'gmail', kind: 'message', externalId: 'mail-ada',
+      participants: ['Ada Lovelace <ada@example.com>'], title: 'Project Phoenix', text: 'Project Phoenix update', dedupeKey: 'ada-mail',
+    }]);
+    await upsertPersonalDocuments(org.adminSql, WS, userId, [{
+      source: 'instagram', kind: 'message', externalId: 'social-ada',
+      participants: ['Ada Lovelace'], title: 'Ada thread', text: 'Project Phoenix follow-up', dedupeKey: 'ada-social',
+    }]);
+    const rows = await org.adminSql<Array<{ source: string; participant_ids: string[] }>>`
+      SELECT source, participant_ids FROM harness_shared.personal_documents
+       WHERE user_id = ${userId} ORDER BY source`;
+    expect(rows.every((row) => row.participant_ids.length === 1)).toBe(true);
+    expect(new Set(rows.flatMap((row) => row.participant_ids)).size).toBe(1);
+
+    const found = await searchPersonalDocuments(org.adminSql, WS, userId, {
+      query: 'Project Phoenix', participants: ['ada@example.com'], limit: 10,
+    });
+    expect(found.map((row) => row.source).sort()).toEqual(['gmail', 'instagram']);
   });
 
   it('kill-switches all writes and purge removes documents plus cursor state', async () => {
