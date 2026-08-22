@@ -124,6 +124,13 @@ const armInboxWakeMock = vi.fn(async (_opts: unknown) => ({ awaitId: 1, eventKey
 vi.mock('../../events/await/inbox-wake-arm', () => ({
   armInboxWake: (...a: unknown[]) => armInboxWakeMock(...(a as [any])),
 }));
+// WI-20241317226471456: bootstrap-su's launch-time implication repair is a
+// best-effort integration side effect. Keep this unit suite hermetic by
+// replacing the PG-backed reconciler with a deterministic no-op.
+const reconcileImpliedModesMock = vi.fn(async () => [] as Array<{ status: string }>);
+vi.mock('../../modes/store', () => ({
+  reconcileImpliedModes: (...a: unknown[]) => reconcileImpliedModesMock(...(a as [])),
+}));
 vi.mock('../../role-launch-spec', () => ({
   buildLaunchSpec: (...args: unknown[]) => buildLaunchSpecMock(...(args as [any])),
 }));
