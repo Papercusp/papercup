@@ -2146,6 +2146,24 @@ export type OrientLaneClaim = {
 const asStringArray = (v: unknown): string[] =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
+// `coord:declare-intent.items` is a P-NNN plan-item lane, while
+// `scheduler:get_next` / `work_items:claim` own WI-/EI-/F- work-item lanes.
+// Keep the recovery hint aligned with the identifier the caller actually
+// supplied; sending an issue-family id to plans:set-status is rejected by its
+// P-NNN schema and strands the member on a false fallback.
+const WORK_ITEM_ID_RE = /^(?:WI|EI|F)-\d+$/i;
+
+function laneClaimFallback(requested: readonly string[]): string {
+  const workItemIds = requested.filter((id) => WORK_ITEM_ID_RE.test(id));
+  if (workItemIds.length === requested.length && workItemIds.length > 0) {
+    return 'These are WI-/EI-/F- work-item IDs, not P-NNN plan items. Claim with work_items:claim { id } (or scheduler:get_next for fleet-scoped pulls) and check the claim result.';
+  }
+  if (workItemIds.length > 0) {
+    return "For WI-/EI-/F- work-item IDs, use work_items:claim { id } or scheduler:get_next; for P-NNN plan items, use plans:set-status { item, status: 'wip' }.";
+  }
+  return "Claim explicitly via plans:set-status { item, status: 'wip' } and check the result's claim object.";
+}
+
 /** EI-20013545515660920: turn coord:declare-intent's `claims` block into an
  *  UNAMBIGUOUS statement of whether the caller now holds the lane it asked for.
  *
@@ -2181,14 +2199,14 @@ export function summarizeLaneClaim(
   if (opts.declareFailed) {
     return {
       ...base,
-      warning: `coord:declare-intent FAILED, so NONE of the ${req.length} requested plan item(s) were claimed — you do NOT hold this lane. This usually means the caller lacks coord:write. Claim explicitly with plans:set-status { item, status: 'wip' } and check the result's claim object.`,
+      warning: `coord:declare-intent FAILED, so NONE of the ${req.length} requested plan item(s) were claimed — you do NOT hold this lane. This usually means the caller lacks coord:write. ${laneClaimFallback(req)}`,
     };
   }
 
   if (!opts.planSlugGiven) {
     return {
       ...base,
-      warning: `planItems was passed WITHOUT planSlug, so NOTHING was claimed — you do NOT hold this lane. A lane is reconciled only when BOTH are given. Re-call with planSlug, or claim explicitly via plans:set-status { item, status: 'wip' }.`,
+      warning: `planItems was passed WITHOUT planSlug, so NOTHING was claimed — you do NOT hold this lane. A lane is reconciled only when BOTH are given. Re-call with planSlug, or ${laneClaimFallback(req)}`,
     };
   }
 
@@ -2196,7 +2214,7 @@ export function summarizeLaneClaim(
   if (!c) {
     return {
       ...base,
-      warning: `coord:declare-intent returned no claims block, so NONE of the ${req.length} requested plan item(s) can be confirmed as claimed — do NOT assume you hold this lane. Verify with plans:set-status { item, status: 'wip' }.`,
+      warning: `coord:declare-intent returned no claims block, so NONE of the ${req.length} requested plan item(s) can be confirmed as claimed — do NOT assume you hold this lane. ${laneClaimFallback(req)}`,
     };
   }
 
@@ -2216,7 +2234,7 @@ export function summarizeLaneClaim(
     summary.warning =
       `NONE of the ${req.length} requested plan item(s) are held — you do NOT hold this lane, ` +
       `even though the declaration itself succeeded.${why} An unclaimed lane is invisible to peers ` +
-      `and the Mug, so work gets double-placed. ${summary.hint ?? "Claim explicitly via plans:set-status { item, status: 'wip' } and check its claim object."}`;
+      `and the Mug, so work gets double-placed. ${summary.hint ?? laneClaimFallback(req)}`;
   }
   return summary;
 }

@@ -2881,6 +2881,17 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
       expect(s.warning).toContain('FAILED');
     });
 
+    it('routes WI/EI/F work-item ids to work_items:claim instead of plans:set-status', () => {
+      const s = summarizeLaneClaim(['EI-20247200923975596'], undefined, {
+        planSlugGiven: true,
+        declareFailed: true,
+      });
+
+      expect(s.warning).toContain('work_items:claim');
+      expect(s.warning).toContain('scheduler:get_next');
+      expect(s.warning).not.toContain('plans:set-status');
+    });
+
     it('warns when no claims block came back at all', () => {
       const s = summarizeLaneClaim(['P-005'], undefined, { planSlugGiven: true });
       expect(s.warning).toContain('no claims block');
