@@ -3,6 +3,8 @@ URL: /internal/docs/agent-insights/coord-mid-turn-delivery
 
 How new coord:inbox messages reach a RUNNING agent between tool calls — not just at session/turn start — per client, why it's prompt-cache-safe, and the holder-intent enrichment on lock blocks.
 
+How new coord:inbox messages reach a RUNNING agent between tool calls — not just at session/turn start — per client, why it's prompt-cache-safe, and the holder-intent enrichment on lock blocks.
+
 ## What it is
 
 A peer's `coord:send` used to reach an agent only at **session start** (the
@@ -11,9 +13,11 @@ prompt tells SU agents to call `coord:inbox` once) or, for OMP, at
 minutes — many tool calls — blind to "stop, I'm refactoring that file."
 
 Mid-turn delivery closes that: after **each tool call**, the agent's own
-tool cadence is used to poll `coord:inbox` for messages newer than a cursor
-and inject any new ones. No model discipline (an LLM can't keep a wall-clock
-timer); the **system** rides the tool stream.
+tool cadence triggers a server-owned delivery fold. The fold reads the
+repeatable `coord:inbox` VIEW, applies the private delivery cursor, and injects
+new arrivals without asking the model to manage a timestamp. No model discipline
+(an LLM can't keep a wall-clock timer) is required; the **system** rides the tool
+stream. Direct callers do not supply that cursor to `coord:inbox`.
 
 ## Per client — three mechanisms, one behavior
 
@@ -41,7 +45,8 @@ the same id baked into the agent's MCP `&client=`, so the hook reads the *right*
 inbox/watermark.
 
 Current hook shape (2026-07-16): the shell hook is a dumb pipe for the FOLDED
-surface. It sends `hook_bundle{generation, since_ts}`, advances the local cursor
+surface. The `since_ts` field shown below is an internal hook-bundle cursor only;
+it is not an agent-facing `coord:inbox` argument. It sends `hook_bundle{generation, since_ts}`, advances the local cursor
 to the server's `generation` (only on a COMPLETE fold) + the inbox fold's
 `summary.newest_ts`, and injects the server-rendered `injection` block verbatim.
 Formatting, capping, and the `[coord+N]` layout live on the server side rather
@@ -78,9 +83,9 @@ nudges are an *optimization*; the wake + escalation-ladder legs are the
 
 ## The cursor / dedup protocol
 
-* **Per-owner cursor.** Claude/Codex: a local file
+* **Per-owner delivery cursor (internal).** Claude/Codex: a local file
   `activity-hook-bundle-<owner>.json` in `~/.papercusp/locks-cache/`, holding
-  `{generation, since_ts}` (EI-11405 — was `coord-cursor-<owner>.json` with just
+  `{generation, since_ts}` (the private hook-bundle cursor, not a public inbox argument) (EI-11405 — was `coord-cursor-<owner>.json` with just
   `since_ts`, back when this was the standalone coord-inbox hook). OMP: a
   module var (`_hookBundleGeneration` + `_midTurnCursor`) seeded at `turn_start`
   to the newest ts surfaced, advanced on each `tool_result`, persisted to the

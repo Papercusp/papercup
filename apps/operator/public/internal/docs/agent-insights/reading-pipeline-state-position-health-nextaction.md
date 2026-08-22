@@ -1,7 +1,7 @@
 # Reading pipeline state — position vs health vs nextAction (\"is my change live?\")
 URL: /internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction
 
-dev:pipeline_position answers three different questions and they are routinely conflated. POSITION is where your change sits (a boolean per stage). HEALTH is whether that stage is MOVING — the dimension a boolean cannot express, and the one behind most filed pipeline confusion (a 2h52m push freeze read as 'not yet'; 'deployed ✓' read as 'live' while the process served older code, filed 4x independently). NEXTACTION is the single lever, and a NULL nextAction is a positive answer ('waiting is correct'), never a missing one. Also: changeInCandidate (is the judged commit even your code) and sweepExposure (what the next git-sync tick will commit out of your half-finished tree).
+dev:pipeline_position answers position, health, and nextAction; this guide also explains candidate identity, sweep exposure, and the path-scoped state-plane handle that links release:trace target.sha back to the gate candidate cell.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -97,6 +97,39 @@ being judged contains your file's content:
 Every verdict is three-valued: an unresolvable read is `null` (unknown), never `false`
 and never a silent `true`. **A red from a run that does not carry your change is not
 evidence your change failed.**
+
+## Follow the candidate cell to the exact release trace
+
+The candidate cell is also discoverable from the composite release read. `gate.greenCheckpoint.candidate` declares a `doorProjections` mapping for `release:trace` at `target.sha`, so a trace result carries a state-plane handle back to the same path-scoped cell:
+
+```jsonc
+{
+  "target": { "sha": "..." },
+  "plane": {
+    "cells": [{
+      "path": "target.sha",
+      "cell": "gate.greenCheckpoint.candidate",
+      "reread": {
+        "tool": "state:read",
+        "args": {
+          "cell": "gate.greenCheckpoint.candidate",
+          "as": "packages/operator-core/lib/agent-tools/release/trace.ts"
+        }
+      }
+    }]
+  }
+}
+```
+
+Use the `reread` handle when the candidate SHA is about to drive a decision. `as` preserves the path subject from the original `release:trace { path: ... }` call; do not drop it or substitute an unqualified `state:read`, because this cell is caller-relative and an unqualified read can answer a different path. The handle re-reads the volatile value; it is not a second copy of `target.sha`.
+
+This closes the lookup loop:
+
+1. `state:read { cell: "gate.greenCheckpoint.candidate", as: "<path>" }` answers which candidate the gate is judging and whether it contains the path.
+2. `release:trace { path: "<path>" }` composes candidate, gate, deploy, await, and stale-wake evidence.
+3. `plane.cells[].reread` on that trace points back to the same cell when the candidate must be rechecked before acting.
+
+If the payload does not include `target.sha`, or the caller did not provide the path subject, no misleading handle is emitted. Treat that absence as an inability to build a path-scoped re-read, not as evidence that the candidate is absent.
 
 ### `sweepExposure` — what the next tick will commit out of your tree
 

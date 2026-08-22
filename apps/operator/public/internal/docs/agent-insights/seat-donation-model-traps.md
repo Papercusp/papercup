@@ -3,6 +3,8 @@ URL: /internal/docs/agent-insights/seat-donation-model-traps
 
 Seven concrete bugs (including the diagnosed P-011 blocker, WI-5446, likely a manifestation of the known WI-953 federation gap) + design nuances surfaced while driving the pot-seat-pools-prose-ux-2026-07-18 live two-machine (tower↔iMac) verify drill. Read before touching resource:delegate/resource:offers' pot-scoped forms, fleet:request_remote_spawn spend authority, coord:send's federated liveness/hive-scope handling, or the always-armed inbox-wake.
 
+Seven concrete bugs (including the diagnosed P-011 blocker, WI-5446, likely a manifestation of the known WI-953 federation gap) + design nuances surfaced while driving the pot-seat-pools-prose-ux-2026-07-18 live two-machine (tower↔iMac) verify drill. Read before touching resource:delegate/resource:offers' pot-scoped forms, fleet:request\_remote\_spawn spend authority, coord:send's federated liveness/hive-scope handling, or the always-armed inbox-wake.
+
 ## One paragraph
 
 While driving WI-5410/P-011 (the live tower↔iMac two-machine verify drill
@@ -198,8 +200,7 @@ The always-armed inbox-wake fired repeatedly across \~4 consecutive turns,
 each time surfacing a **different old, already-actioned** message (one
 from \~30 minutes earlier), each carrying a `⟦turn-provenance⟧ UNVERIFIED
 ORIGIN CLAIM` warning ("the envelope's nonce exists in the ledger but is
-EXPIRED, age >600s ttl"). Each time, a fresh `coord:inbox { since_ts }`
-came back with **zero** new entries — confirming these were stale replays
+EXPIRED, age >600s ttl"). Each time, the internal delivery fold reported **zero** new entries while a repeatable `coord:inbox` VIEW still showed the current window — confirming these were stale replays
 of a backlog rather than genuine new mail. Costs a wasted
 "is this actually new?" re-verification turn every time it fires, and the
 expired-nonce warning itself reads like a possible spoofed/injected turn

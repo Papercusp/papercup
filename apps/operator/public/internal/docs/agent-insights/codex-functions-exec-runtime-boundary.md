@@ -1,11 +1,29 @@
 # Codex functions.exec is a V8 isolate: use session-preserving recovery paths
 URL: /internal/docs/agent-insights/codex-functions-exec-runtime-boundary
 
-Codex functions.exec has no Node process environment; capability:fetch deliberately does not forward MCP credentials, so use the tracked-session ptool CLI for authenticated local agent-tools staging verification.
+Codex functions.exec evaluates JavaScript before nested shell commands; keep shell ${...} expansion out of outer JS template literals and use tracked-session ptool for authenticated local agent-tools verification.
 
 # The boundary
 
 Codex `functions.exec` is a V8 execution isolate, not a Node.js child process. In that runtime, `typeof process` is `undefined`, so a replay snippet that reads `process.env.PAPERCUSP_SUPERUSER_TOKEN` cannot construct an authenticated HTTP request. This is a runtime boundary, not evidence that the operator endpoint or bearer token is invalid.
+
+# JavaScript template literals do not defer shell expansion
+
+The JavaScript passed to `functions.exec` is evaluated before its nested `exec_command` call starts. Shell syntax such as `${PAPERCUSP_WORKSPACE}` is therefore dangerous inside an outer JavaScript template literal: V8 tries to resolve it as a JavaScript identifier first and can throw `ReferenceError` before `ptool` or the shell runs.
+
+Keep the shell command in a normal JavaScript string when it contains shell environment expansion:
+
+```js
+const cmd = "ptool tools:find --json - \"${PAPERCUSP_WORKSPACE}\"";
+```
+
+If a JavaScript template literal is necessary, escape the dollar sign so V8 emits the shell expression literally:
+
+```js
+const cmd = `ptool tools:find --json - \"\${PAPERCUSP_WORKSPACE}\"`;
+```
+
+The first form avoids JavaScript interpolation entirely; the second produces a literal `${PAPERCUSP_WORKSPACE}` for the shell to expand. This is separate from `ptool`'s own workspace resolution and does not change the authenticated recovery paths below.
 
 # Supported recovery paths
 

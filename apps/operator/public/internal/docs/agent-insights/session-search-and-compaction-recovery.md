@@ -76,6 +76,12 @@ op=list` and `omp:sessions op=list`).
 
 ## The tool surface
 
+### Search bounds and zero-hit results
+
+`sessions:search` validates its request before the handler runs: `limit` accepts 1–20 hits, and `context` accepts 0–5 turns on each side of a hit (default 2). A larger `context` value is a request error; it is not silently clipped after an expensive search.
+
+A `mode:'verbatim'` result with 0 hits also includes an inline `hint` explaining that matching is an exact, contiguous, case-insensitive substring search and suggesting a `mode:'hybrid'` retry or a shorter literal fragment. For `session:'self'`, `zeroHitCaveat` further distinguishes a query miss from an owner whose other indexed sessions exist. Treat either signal as guidance to refine the query, not evidence that the conversation never happened.
+
 * **`sessions:search`** — the fused, one-round-trip verb: search the session
   corpora → hydrate ±N-turn context windows around the top-k hits → `readMore`
   pointers into `sessions:read`. Prefer it over raw `search:*` when you want the

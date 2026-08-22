@@ -3,6 +3,8 @@ URL: /internal/docs/agent-insights/coord-injection-protocol
 
 How the continuous [coord] push surface is encoded. One coord-schema module drives both the server-side injection renderer and the psu-prompt legend; the cc/omp hooks are dumb pipes. Read before touching render.ts glyphs, the COORD_LEGEND, or the coord hooks.
 
+How the continuous \[coord] push surface is encoded. One coord-schema module drives both the server-side injection renderer and the psu-prompt legend; the cc/omp hooks are dumb pipes. Read before touching render.ts glyphs, the COORD\_LEGEND, or the coord hooks.
+
 ## The idea
 
 The `[coord …]` blocks injected after **every** psu tool call are the highest-
@@ -70,9 +72,12 @@ self-correct a schema mismatch (no inline header), so this is load-bearing.
    coord message via `coord:emit`, stamped `auto:true` + `lifecycle:'<category>'`.
    `render.ts` produces **glyph-free, sender-free** prose (the glyph + handle are
    presentation, added downstream — P-003/P-010).
-2. The cc/omp hook calls `coord:inbox { since_ts: <cursor> }`. The handler
+2. The cc/omp hook uses a private delivery cursor when it asks the server to fold the inbox; this cursor is not an agent-facing `coord:inbox` argument. The handler
    computes `injection = renderInjection(entries)` server-side and returns it
    alongside `entries`.
+
+The public `coord:inbox` call remains a repeatable VIEW. Cursor custody belongs to this delivery path; direct callers do not pass the hook's private cursor.
+
 3. The hook is a **dumb pipe**: it echoes `result.injection` into its envelope
    (Claude `additionalContext` / OMP `<system-reminder type="coord">`) and
    advances the cursor from `summary.newest_ts`. All formatting/capping/collapse
