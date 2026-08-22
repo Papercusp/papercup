@@ -136,7 +136,7 @@ listing, and the dep-validator can mark not-installed tools *installable*.
 ### The worker wire (migrations 006 + 008 + 011)
 
 The Cupboard worker (`apps/operator-public`) stores listings with
-`listing_kind ∈ {harness, blueprint, plugin, pack, knowledge-pack, template}`
+`listing_kind ∈ {harness, blueprint, plugin, pack, knowledge-pack, template, app, rubric, plan, recipe}`
 (`LISTING_KINDS` in `apps/operator-public/src/db.ts`) and a nullable
 `provides_tools` TEXT column (JSON `string[]`; migration
 `006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can't
@@ -165,8 +165,8 @@ Migration 008 also added a curated-pot-learnings listing kind (originally
 `pack` in the same worker schema and storefront this page describes — but
 it is a different thing: a distributable set of curated pot learnings
 (installed into a pot's shared memory through conflict review), not a
-code-tool pack. The instruction-carrying kinds (`knowledge-pack` + `blueprint`)
-also gain a pre-publication `review_status` (`pending` / `approved` /
+code-tool pack. The instruction/judgment-carrying kinds (`knowledge-pack`, `blueprint`,
+`rubric`, `plan`, and `recipe`) carry a pre-publication `review_status` (`pending` / `approved` /
 `rejected`, `REVIEW_POLICY_KINDS`): they publish `pending` and surface
 publicly only on operator approval, whereas code kinds (`pack` / `plugin`)
 keep install-consent + reactive moderation. The `pack` kind remains the

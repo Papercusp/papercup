@@ -1,7 +1,7 @@
 # 2. Vocabulary
 URL: /internal/docs/spec/vocabulary
 
-
+Canonical definitions for Papercusp domain terms and the live Cupboard listing-kind contract.
 
 :::caution\[**Mug**, **Kettle** and **Cup** below are RETIRED roles — the Pot is not]
 The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed), so
@@ -58,8 +58,8 @@ A package that extends one or more harness instances with new capabilities — a
 @papercupai/cloudflare-pages contributes a "Publish" button; @papercupai/slack-notifier sends a Slack message on mission-done. The retired @papercupai/vscode-server pilot used to contribute a code-server tab; IDE tabs remain plugin-shaped, not core. Multiple plugins compose per instance.
 
 Marketplace package kind
-The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a six-kind storefront (LISTING\_KINDS in packages/operator-core/lib/cupboard/types.ts): harness (the repo→Pot lookup index), blueprint (a GitHub-repo-backed harness recipe — the term that superseded the original name for harness recipes), plugin, pack (the runtime-less code-tool pack — briefly renamed tool-pack by migration 008 then renamed back to pack; the tool-pack value still parses as an alias), knowledge-pack (a distributable set of curated pot learnings — renamed from learning-pack by migration 011, whose value still parses as an alias), and template (a first-party app-template — an app scaffold GitHub-repo-backed per listing\_ref like a blueprint, a distinct kind from the retired harness-recipe sense of the word).
-All six go through the same publish + signing + retraction infrastructure; only the install handler differs. blueprint + knowledge-pack listings publish pending and surface only after operator approval.
+The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a ten-kind storefront (LISTING\_KINDS in packages/operator-core/lib/cupboard/types.ts): harness (repo→Pot lookup), blueprint (fork), plugin, pack, knowledge-pack, template, app, rubric, plan, and recipe. The last three distribute grading contracts, reusable plan templates, and runnable tool orchestrations; tool-pack/learning-pack remain normalized aliases and snapshot is retired.
+All ten go through the same publish + retraction infrastructure; the consumer action and install handler differ by kind. blueprint, knowledge-pack, rubric, plan, and recipe listings publish pending and surface only after operator approval.
 
 Goal
 The top-level mission. Every task traces back to a goal through a parent chain. Goals can themselves nest.

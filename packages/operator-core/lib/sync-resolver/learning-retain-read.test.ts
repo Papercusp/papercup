@@ -226,8 +226,10 @@ const emptyFeedDeps = (): RetainFeedDeps => ({
   listRubrics: async () => [],
   listRecipesPage: async () => [],
   countRecipes: async () => 0,
+  summarizeRecipes: async () => ({ total: 0, matched: 0 }),
   listRunbooksPage: async () => [],
   countRunbooks: async () => 0,
+  summarizeRunbooks: async () => ({ total: 0, matched: 0 }),
 });
 
 const planRow = (slug: string, ts: string, over: Record<string, unknown> = {}) => ({

@@ -10,11 +10,12 @@ marketplace (see the [Distribution](/spec/distribution) banner). The live
 distribution surface is the in-app **Cupboard** (`apps/operator-public`),
 a GitHub-project-backed listing registry: every listing is keyed on a
 GitHub project remote, not on a `papercusp.json` `version` field. The
-Cupboard distributes six listing kinds — **harness** (join), **blueprint**
-(fork), **plugin** / **pack** (install), **knowledge-pack** (install), and
-**template** (install) — where `knowledge-pack` and `blueprint` listings (the
-instruction-carrying kinds) land `pending` and require operator review before
-going public. (The runtime-less code-tool pack is `pack`; its interim
+Cupboard distributes ten listing kinds — **harness** (join), **blueprint**
+(fork), **plugin** / **pack** / **knowledge-pack** / **template** (install),
+**app** (download or install), and **rubric** / **plan** / **recipe** (install).
+The instruction/judgment-carrying kinds — `knowledge-pack`, `blueprint`,
+`rubric`, `plan`, and `recipe` — land `pending` and require operator review
+before going public. (The runtime-less code-tool pack is `pack`; its interim
 `tool-pack` value still parses as an alias.) The
 older `snapshot` kind and its tarball-SHA-256 content-addressing were
 retired (`retire-snapshots-instance-spec-2026-06-09`): the D1 `tarball_*`

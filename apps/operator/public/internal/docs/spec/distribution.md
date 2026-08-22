@@ -1,7 +1,7 @@
 # 11. Distribution
 URL: /internal/docs/spec/distribution
 
-
+Retired hosted-marketplace design history, prefaced by the live in-app Cupboard distribution contract.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -15,22 +15,21 @@ claims, the `marketplace-api`/`marketplace-site` apps, the Gitea/OCI and
 `marketplace-api`/`marketplace-site` apps are gone; the old
 `apps/papercup` reference install is retired to `_retired/papercup/`.
 
-The Cupboard is **one storefront with six listing kinds**
+The Cupboard is **one storefront with ten listing kinds**
 (`LISTING_KINDS` in `apps/operator-public/src/db.ts`): `harness` →
-join, `blueprint` → fork, `plugin` → install, `pack` → install (a
-runtime-less code-tool pack), `knowledge-pack` → install (curated
-pot learnings), and `template` → install (a first-party app-template,
-GitHub-repo-backed per `listing_ref` like a blueprint). Two earlier
+join; `blueprint` → fork; `plugin`, `pack`, `knowledge-pack`, and
+`template` → install; `app` → download or install; and `rubric`, `plan`,
+and `recipe` → install through their self-describing stores. Two earlier
 kind values survive only as normalized wire aliases for older clients
 (`normalizeListingKind`): `tool-pack` → `pack` (the runtime-less
 code-tool pack, briefly named `tool-pack` by migration 008 and renamed
 back to `pack`) and `learning-pack` → `knowledge-pack` (migration 011).
 Listings are keyed on the GitHub-backed project remote.
 
-Instruction-carrying kinds (`knowledge-pack`, `blueprint`) publish as
-`pending` and are publicly invisible until an operator approves them;
-the remaining kinds (`harness`, `plugin`, `pack`, `template`) publish
-as `approved` immediately. A non-approved row is `not_found` to
+Instruction/judgment-carrying kinds (`knowledge-pack`, `blueprint`,
+`rubric`, `plan`, `recipe`) publish as `pending` and are publicly invisible
+until an operator approves them; the remaining kinds (`harness`, `plugin`,
+`pack`, `template`, `app`) publish as `approved` immediately. A non-approved row is `not_found` to
 everyone except its publisher. See `REVIEW_POLICY_KINDS` in
 `apps/operator-public/src/routes/listings.ts`.
 

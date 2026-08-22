@@ -1,7 +1,7 @@
 # 15. Snapshots — share working harness state via marketplace (v1.2)
 URL: /internal/docs/spec/project-sharing
 
-
+Retired snapshot-sharing design history and the live Pot, InstanceSpec, and Cupboard replacements.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -38,7 +38,7 @@ indexes its member repos (`hive_pubkey` rows), and joiners join the pot
 (`shared-pot-federation-2026-06-08`, `pot-from-github-url-2026-06-11`).
 `kind='harness'` Cupboard rows remain as the repo→Pot lookup index only;
 the live Cupboard `LISTING_KINDS` are `['harness', 'blueprint', 'plugin',
-'pack', 'knowledge-pack', 'template']` (the `tool-pack` and `learning-pack`
+'pack', 'knowledge-pack', 'template', 'app', 'rubric', 'plan', 'recipe']` (the `tool-pack` and `learning-pack`
 values still parse as normalized aliases for `pack` / `knowledge-pack`) —
 there is no `snapshot` kind (the D1
 `tarball_*` columns from migration 005 remain only as vestigial/nullable
