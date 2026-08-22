@@ -13,7 +13,7 @@ import {
   setPersonalVaultEnabled,
   upsertPersonalDocuments,
 } from './store';
-import { ingestPersonalExternalEvent, syncGoogleContacts } from './live-sink';
+import { createPersonalVaultExternalSink, syncGoogleContacts } from './live-sink';
 
 let org: OrgTestDb;
 let userId: string;
@@ -169,7 +169,9 @@ describe('Personal Vault core', () => {
   });
 
   it('consumes normalized Gmail/Calendar events and paged Google Contacts locally', async () => {
-    await ingestPersonalExternalEvent(org.adminSql, WS, userId, {
+    const sink = createPersonalVaultExternalSink(org.adminSql, WS, userId);
+    expect(sink).toMatchObject({ kind: 'personal-vault', ref: `user:${userId}` });
+    await sink.deliver({
       key: 'ext:gmail:message-received', externalId: 'live-m1', occurredAt: '2026-08-22T00:00:00Z',
       payload: { from: 'ada@example.com', to: ['bob@example.com'], subject: 'Live mail', text: 'Hello' },
     });

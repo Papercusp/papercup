@@ -48,6 +48,36 @@ export async function ingestPersonalExternalEvent(
   return upsertPersonalDocuments(sql, workspaceId, userId, [personalDocumentFromExternalEvent(event)]);
 }
 
+/**
+ * Structural match for external-triggers/ingestion.ts's ExternalTriggerSink.
+ * Kept local instead of importing that interface so ingestion can continue to
+ * import NormalizedExternalEvent from this module without forming a cycle.
+ */
+export interface PersonalVaultExternalSink {
+  kind: 'personal-vault';
+  ref: string;
+  deliver(event: NormalizedExternalEvent): Promise<unknown>;
+}
+
+/**
+ * Ready-to-pass additional sink for one locally authenticated human. The user
+ * id is part of the delivery-ledger identity, so two users connected to the
+ * same provider event never dedupe each other's private vault writes.
+ */
+export function createPersonalVaultExternalSink(
+  sql: Sql,
+  workspaceId: string,
+  userId: string,
+): PersonalVaultExternalSink {
+  const normalizedUserId = userId.trim();
+  if (!normalizedUserId) throw new Error('personal_vault_user_required');
+  return {
+    kind: 'personal-vault',
+    ref: `user:${normalizedUserId}`,
+    deliver: (event) => ingestPersonalExternalEvent(sql, workspaceId, normalizedUserId, event),
+  };
+}
+
 export async function syncGoogleContacts(
   sql: Sql,
   input: {
