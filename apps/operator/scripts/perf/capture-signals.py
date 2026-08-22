@@ -14,6 +14,7 @@ the same `capturedAt`. Lane F (SLO budgets) consumes the perf-signals-v1 schema.
 Usage:  python3 capture-signals.py [--label round4] [--out DIR]
 Prints the written path on stdout. No shell=True (no injection surface).
 """
+import argparse
 import json, os, re, socket, subprocess, sys, time
 import urllib.request
 from datetime import datetime, timezone
@@ -604,13 +605,26 @@ def host_state(la):
     return "stable" if ratio < 0.7 else "loaded" if ratio < 1.2 else "wedge-suspect"
 
 
+def argument_parser():
+    parser = argparse.ArgumentParser(
+        description="Capture host-obtainable perf-signals-v1 metrics."
+    )
+    parser.add_argument(
+        "--label",
+        default="adhoc",
+        help="label to include in the snapshot filename (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--out",
+        default=OUT_DIR,
+        help="directory for the snapshot (default: %(default)s)",
+    )
+    return parser
+
+
 def main():
-    label, out_dir, args = "adhoc", OUT_DIR, sys.argv[1:]
-    for i, a in enumerate(args):
-        if a == "--label" and i + 1 < len(args):
-            label = args[i + 1]
-        if a == "--out" and i + 1 < len(args):
-            out_dir = args[i + 1]
+    args = argument_parser().parse_args()
+    label, out_dir = args.label, args.out
     os.makedirs(out_dir, exist_ok=True)
 
     la = loadavg()
