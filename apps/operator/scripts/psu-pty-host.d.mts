@@ -857,7 +857,7 @@ export function shouldReapDetachedPtyScopeResidue({ bridgeTty, launchedBy, reexe
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
  *  after "dis"), but explicit negatives keep this robust to copy drift. Pure —
  *  exported for tests. */
-export function mcpServerRowStatus(line: any, name: any): "unknown" | "not-connected" | "connected" | null;
+export function mcpServerRowStatus(line: any, name: any): "unknown" | "connected" | "not-connected" | null;
 /** Does the freshest paint read as "`name` is connected"? Two shapes exist:
  *  the LIST view puts name + status on ONE row (mcpServerRowStatus decides);
  *  the DETAIL view shows the name as a header and `Status: … connected` on its
