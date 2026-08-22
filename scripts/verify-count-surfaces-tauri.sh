@@ -114,8 +114,15 @@ P014_IMPROVE_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
   --clear \
   'input[aria-label="Search ideas and work"]' \
   "$P014_IMPROVE_SENTINEL" >/dev/null
-"$P014_TAURI_POLL" \
-  --eval 'document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim() === "0 of 0"'
+if ! "$P014_TAURI_POLL" \
+  --eval 'document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim() === "0 of 0"'; then
+  echo "P014_TAURI_DIAG learning-improve did not converge" >&2
+  "$P014_TAURI_TOOL" eval \
+    --pid "$P014_TAURI_PID" \
+    --strict \
+    'JSON.stringify({ route: location.pathname + location.search, query: document.querySelector("input[aria-label=\"Search ideas and work\"]")?.value, count: (() => { const e = document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount"); return { visible: e?.textContent?.trim(), title: e?.getAttribute("title") }; })(), allMatchCounts: [...document.querySelectorAll(".pc-learning__matchcount")].map((e) => ({ visible: e.textContent?.trim(), title: e.getAttribute("title") })) })' >&2 || true
+  exit 1
+fi
 p014_assert '(() => { const e = document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount"); if (!e) return false; const visible = (e.textContent || "").trim(); const title = e.getAttribute("title") || ""; return visible === "0 of 0" && /^Exact server-authored match count over \d[\d,]* merged Improve rows; at most 500 rows cross the sync wire\.$/.test(title); })()'
 p014_console_clean
 p014_capture learning-improve 'JSON.stringify({ route: location.pathname + location.search, selector: ".pc-learning__inlinetools .pc-learning__matchcount", query: document.querySelector("input[aria-label=\"Search ideas and work\"]")?.value, visible: document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim(), title: document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.getAttribute("title"), expected: "unique impossible-match predicate settles to exact server-authored 0 of 0 over the full Improve corpus; at most 500 rows cross the wire" })'
