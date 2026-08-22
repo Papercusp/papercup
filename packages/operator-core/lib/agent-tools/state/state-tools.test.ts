@@ -242,9 +242,12 @@ describe('state:read — the directory is audience-filtered, not audience-annota
 
     const b = body(await readTool.handler({} as never, CTX as never));
 
-    const byName = Object.fromEntries((b.cells as { cell: string; readable: boolean }[]).map((c) => [c.cell, c.readable]));
+    const listed = b.cells as { cell: string; readable: boolean; awaitKey?: string }[];
+    const byName = Object.fromEntries(listed.map((c) => [c.cell, c.readable]));
     expect(byName['polled.cell']).toBe(true);
     expect(byName['pushed.cell']).toBe(false);
+    expect(listed.find((c) => c.cell === 'pushed.cell')?.awaitKey).toBe('k');
+    expect(b.note).toContain('await its `awaitKey` with events:await instead');
   });
 });
 
