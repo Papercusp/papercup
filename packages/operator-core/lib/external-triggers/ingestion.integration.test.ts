@@ -92,6 +92,7 @@ describe('external trigger ingestion core', () => {
 
     expect(result.ok).toBe(true);
     expect(result.event.key).toBe('ext:gmail:message.received');
+    expect(result.event.workspaceId).toBe('papercusp-workspace');
     expect(normalize).toHaveBeenCalledTimes(1);
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({ key: 'ext:gmail:message.received' }));
     expect(vaultDeliver).toHaveBeenCalledWith(result.event);
@@ -106,6 +107,57 @@ describe('external trigger ingestion core', () => {
     expect(rows).toEqual([
       { sink_kind: 'event-bus', outcome: 'delivered' },
       { sink_kind: 'personal-vault', outcome: 'delivered' },
+    ]);
+  });
+
+  it('retries only the failed sink while preserving delivered-sink dedupe', async () => {
+    const firstEmit = vi.fn(async () => ({
+      ok: true as const, key: 'ext:gmail:message.received', woken: 0,
+      notified: [], msgId: null, waiters: 0,
+    }));
+    const failingVault = vi.fn(async () => {
+      throw new Error('vault unavailable');
+    });
+    const input = {
+      workspaceId: 'papercusp-workspace', sourceId, source: 'gmail',
+      event: 'message.received', externalId: 'm-retry', datatypeId: 'email-message',
+      adapterPayload: {}, normalize: () => ({ id: 'm-retry', subject: 'Retry me' }),
+    };
+
+    const first = await ingestExternalTriggerEvent(sql, {
+      ...input,
+      additionalSinks: [{ kind: 'personal-vault', ref: 'owner', deliver: failingVault }],
+    }, { emit: firstEmit });
+    expect(first.ok).toBe(false);
+    expect(firstEmit).toHaveBeenCalledTimes(1);
+    expect(first.deliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sinkKind: 'event-bus', outcome: 'delivered', deduped: false }),
+      expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'failed', deduped: false }),
+    ]));
+
+    const replayEmit = vi.fn(async () => ({
+      ok: true as const, key: 'ext:gmail:message.received', woken: 0,
+      notified: [], msgId: null, waiters: 0,
+    }));
+    const recoveredVault = vi.fn(async () => ({ id: 'doc-recovered' }));
+    const replay = await ingestExternalTriggerEvent(sql, {
+      ...input,
+      additionalSinks: [{ kind: 'personal-vault', ref: 'owner', deliver: recoveredVault }],
+    }, { emit: replayEmit });
+
+    expect(replay.ok).toBe(true);
+    expect(replayEmit).not.toHaveBeenCalled();
+    expect(recoveredVault).toHaveBeenCalledTimes(1);
+    expect(replay.deliveries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sinkKind: 'event-bus', outcome: 'delivered', deduped: true }),
+      expect.objectContaining({ sinkKind: 'personal-vault', outcome: 'delivered', deduped: false }),
+    ]));
+    const rows = await sql<{ sink_kind: string; outcome: string; attempts: number }[]>`
+      SELECT sink_kind, outcome, attempts FROM harness_shared.trigger_deliveries
+       WHERE dedupe_key = 'gmail:m-retry' ORDER BY sink_kind`;
+    expect(rows).toEqual([
+      { sink_kind: 'event-bus', outcome: 'delivered', attempts: 1 },
+      { sink_kind: 'personal-vault', outcome: 'delivered', attempts: 2 },
     ]);
   });
 
