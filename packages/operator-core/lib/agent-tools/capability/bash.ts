@@ -79,7 +79,7 @@ export default defineTool({
       'Run builds, tests, checks, or scripts. Use `rg -F` for literals; for repository regex searches, ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
     notWhen:
-      'Use capability:read/write/edit for one-file operations, dev:pg_query for read-only operator DB queries, and capability:git for git.',
+      'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
     chaining:
       'run_in_background:true returns bash_id + durable task_id; read with capability:bash_output { task_id }, stop with processes:kill { taskId }. Never push.',
     seeAlso: [
