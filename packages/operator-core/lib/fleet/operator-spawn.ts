@@ -1768,13 +1768,14 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       // which is what "no diagnostic" is supposed to look like.
       const childStderr = stripActivityHeartbeat(r.stderr || '');
       const errorMessage = r.timedOut
-        ? `invoke timeout after ${effectiveTimeoutMs}ms (${Math.round(effectiveTimeoutMs / 1000)}s) — SIGTERM'd (EI-361)`
+        ? `invoke timeout after ${effectiveTimeoutMs}ms (${Math.round(effectiveTimeoutMs / 1000)}s) — SIGTERM'd (EI-361)` +
+          (childStderr ? `; termination detail: ${childStderr.slice(-1200)}` : '')
         : childStderr.slice(-2000) || null;
       return completeSpawn({
         status: finalStatus,
         exitCode: r.exitCode,
         errorMessage,
-        outputTail: (r.output || '').slice(-2000) || null,
+        outputTail: (r.output || r.rawStdoutTail || '').slice(-2000) || null,
       });
     })
     .catch((err) => {

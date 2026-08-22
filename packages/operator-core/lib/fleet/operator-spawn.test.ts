@@ -428,6 +428,21 @@ describe('spawnAgentInHarness — happy path', () => {
     expect(call?.[1]?.errorMessage).toContain('120000ms');
   });
 
+  it('preserves first-turn termination detail instead of reducing it to a generic timeout', async () => {
+    vi.mocked(spawnInvokeOnceWithFallback).mockResolvedValue({
+      output: '', exitCode: 143,
+      stderr: 'release-fixer first-turn timeout after 180000ms (no agent stream)',
+      timedOut: true,
+      rawStdoutTail: 'invoke-once: received termination signal — aborting agent',
+    });
+    const res = await spawnAgentInHarness({ workspaceId: 'ws-1', harness: 'demo', role: FIXTURE_ROLE });
+    expect(res.ok).toBe(true);
+    await flush();
+    const call = vi.mocked(finishSpawn).mock.calls.find((c) => c[1]?.spawnId === res.spawnId);
+    expect(call?.[1]?.errorMessage).toContain('first-turn timeout after 180000ms');
+    expect(call?.[1]?.outputTail).toContain('received termination signal');
+  });
+
   it('an exit-0 child with non-empty stderr persists stderr as errorMessage (WI-111 — session-limit diagnostic)', async () => {
     // Root cause of the 3.5-day archaeology: the session-limit message ("You've hit
     // your session limit") reaches the parent as stderr on an exit-0 process. The old
