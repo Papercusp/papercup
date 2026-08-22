@@ -27,11 +27,7 @@ import { getTestPg } from '@papercusp/test-config/pg';
 const flagMock = vi.hoisted(() => ({ getFlag: vi.fn(async () => true) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: flagMock.getFlag }));
 
-import {
-  computeGoalSpendRollup,
-  runGoalSpendRollupOnce,
-  sessionSpendForGoal,
-} from './spend-rollup';
+import { computeGoalSpendRollup, runGoalSpendRollupOnce, sessionSpendForGoal } from './spend-rollup';
 import { GOAL_SPEND_TICK_SOURCE } from '@papercusp/db-org';
 import { GOAL_MODE } from '../modes/goal-session';
 
@@ -111,10 +107,12 @@ beforeEach(async () => {
                 harness_shared.agent_modes, harness_shared.session_briefs`;
 });
 
-async function seedGoal(over: { id?: string; status?: string; metadata?: postgres.JSONValue } = {}) {
-  await rootSql`INSERT INTO harness_shared.goals (id, workspace_id, status, metadata, created_at)
+async function seedGoal(
+  over: { id?: string; status?: string; metadata?: postgres.JSONValue; budgetCents?: number | null } = {},
+) {
+  await rootSql`INSERT INTO harness_shared.goals (id, workspace_id, status, metadata, budget_cents, created_at)
     VALUES (${over.id ?? GOAL}, ${WS}, ${over.status ?? 'active'},
-            ${over.metadata ? rootSql.json(over.metadata) : null}, ${GOAL_CREATED})`;
+            ${over.metadata ? rootSql.json(over.metadata) : null}, ${over.budgetCents ?? null}, ${GOAL_CREATED})`;
 }
 async function pot(harness: string, goalId = GOAL) {
   await rootSql`INSERT INTO harness_shared.goal_pots (workspace_id, goal_id, harness_slug)
@@ -159,7 +157,6 @@ async function seedPartitionFixture() {
 }
 
 describe('goal spend rollup (P-005 / D-003) — real PG', () => {
-
   it('partitions the ledger exactly: pot leg + session leg, the shared sample counted ONCE', async () => {
     await seedPartitionFixture();
     const r = await computeGoalSpendRollup(rootSql, { workspaceId: WS, goalId: GOAL });
@@ -313,9 +310,7 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     // The snapshot still records the floor — but the tripwire stays blank rather
     // than reporting a lower bound as though it were the measured figure.
     expect((await goalMetadata())?.spentCentsBreakdown).toMatchObject({ measured: false });
-    expect(await goalTripwires()).toEqual([
-      { metric: 'spend_usd', label: 'spend', threshold: 50, unit: 'usd' },
-    ]);
+    expect(await goalTripwires()).toEqual([{ metric: 'spend_usd', label: 'spend', threshold: 50, unit: 'usd' }]);
   });
 
   it('P-004: a goal with no tripwires is written once, not twice', async () => {
@@ -323,5 +318,31 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res).toMatchObject({ written: 1, tripwiresAdvanced: 0 });
     expect(await goalTripwires()).toBeNull();
+  });
+
+  it('kills an active goal when measured spend reaches its declared budget', async () => {
+    await seedGoal({ budgetCents: 200 });
+    await pot('hive-a');
+    await sample({ harness: 'hive-a', usd: 2.0 });
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, written: 1, errors: [] });
+    const rows = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(rows[0]?.status).toBe('killed');
+    expect(await goalMetadata()).toMatchObject({
+      autoKilled: { reason: 'measured-goal-breach', spentCents: 200, measured: true },
+    });
+  });
+
+  it('kills an active goal when a measured structured tripwire breaches', async () => {
+    await seedPartitionFixture();
+    await setTripwires([{ metric: 'spend_usd', label: 'spend', threshold: 2, unit: 'usd' }]);
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, written: 1, tripwiresAdvanced: 1, errors: [] });
+    const rows = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(rows[0]?.status).toBe('killed');
   });
 });

@@ -47,11 +47,8 @@ import { goalSpend, GOAL_SPEND_TICK_SOURCE, type GoalSpend } from '@papercusp/db
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { GOAL_MODE } from '../modes/goal-session';
-import {
-  breachedTripwires,
-  refreshTripwireCurrents,
-  type GoalTripwireLike,
-} from './tripwire-refresh';
+import { getGoalTransitionExecutor } from '@papercusp/agent-mcp';
+import { breachedTripwires, refreshTripwireCurrents, type GoalTripwireLike } from './tripwire-refresh';
 
 export const GOAL_SPEND_ROLLUP_INTERVAL_MS = 5 * 60_000;
 
@@ -156,10 +153,7 @@ export async function computeGoalSpendRollup(
   sql: Sql,
   opts: { workspaceId: string; goalId: string },
 ): Promise<GoalSpendRollup> {
-  const [pot, session] = await Promise.all([
-    goalSpend(sql, opts),
-    sessionSpendForGoal(sql, opts),
-  ]);
+  const [pot, session] = await Promise.all([goalSpend(sql, opts), sessionSpendForGoal(sql, opts)]);
   const potCents = Math.round(pot.costUsd * 100);
   const sessionCents = Math.round(session.costUsd * 100);
   const samples = pot.samples + session.samples;
@@ -240,7 +234,9 @@ export async function refreshGoalTripwires(
     measuredSpentCents: rollup.measured ? rollup.totalCents : null,
     goalAgeMs: nowMs - goal.createdAtMs,
   });
-  if (!res.changed) return { advanced: 0, written: false, breached: [] };
+  if (!res.changed) {
+    return { advanced: 0, written: false, breached: breachedTripwires(res.next) };
+  }
 
   // sql.json for the same double-encoding reason documented on the snapshot write.
   const upd = await sql`
@@ -251,16 +247,65 @@ export async function refreshGoalTripwires(
   `;
   if (upd.count !== 1) throw new Error(`tripwire UPDATE matched ${upd.count} rows`);
 
-  // Report breaches; never act on them. Firing a kill criterion is a deliberate
-  // decision with an owner in it, not a side effect of a reporting sweep.
   const breached = breachedTripwires(res.next);
-  for (const b of breached) {
-    console.warn(
-      `[goal-spend-rollup] goal ${opts.goalId}: tripwire ${b.metric} BREACHED — ` +
-        `${b.current}${b.unit ? ` ${b.unit}` : ''} of ${b.threshold}`,
-    );
-  }
   return { advanced: res.advanced, written: true, breached };
+}
+
+/**
+ * A measured ceiling breach is a terminal control, not merely telemetry. The
+ * launch gate prevents new work, but an active goal otherwise keeps its
+ * existing pots and attributed loops alive indefinitely. Transition through
+ * the shared goal-stop seam after the row is marked killed so placement and
+ * loops receive the same fan-out as an explicit goals:update call.
+ */
+async function enforceGoalBreaches(
+  sql: Sql,
+  scope: { workspaceId: string; goalId: string },
+  rollup: GoalSpendRollup,
+  breached: ReturnType<typeof breachedTripwires>,
+): Promise<void> {
+  const budgetRows = await sql<Array<{ budget_cents: string | null }>>`
+    SELECT budget_cents
+      FROM harness_shared.goals
+     WHERE id = ${scope.goalId}
+       AND workspace_id = ${scope.workspaceId}
+       AND status = 'active'
+     LIMIT 1
+  `;
+  const budgetCents = budgetRows[0]?.budget_cents == null ? null : Number(budgetRows[0].budget_cents);
+  const budgetBreached = rollup.measured && budgetCents !== null && rollup.totalCents >= budgetCents;
+  if (!budgetBreached && breached.length === 0) return;
+
+  const reasons = [
+    ...(budgetBreached ? [`measured spend ${rollup.totalCents}c reached budget ${budgetCents}c`] : []),
+    ...breached.map((b) => `${b.metric} ${b.current} reached threshold ${b.threshold}`),
+  ];
+  const evidence = {
+    reason: 'measured-goal-breach',
+    at: new Date().toISOString(),
+    reasons,
+    spentCents: rollup.totalCents,
+    measured: rollup.measured,
+  };
+  const changed = await sql`
+    UPDATE harness_shared.goals
+       SET status = 'killed',
+           metadata = COALESCE(metadata, '{}'::jsonb) || ${sql.json({ autoKilled: evidence })}
+     WHERE id = ${scope.goalId}
+       AND workspace_id = ${scope.workspaceId}
+       AND status = 'active'
+  `;
+  if (changed.count !== 1) return;
+
+  const executor = getGoalTransitionExecutor();
+  if (executor) {
+    await executor({
+      goalId: scope.goalId,
+      workspaceId: scope.workspaceId,
+      status: 'killed',
+      actor: 'goal-spend-rollup',
+    });
+  }
 }
 
 export interface GoalSpendRollupSweepResult {
@@ -280,8 +325,7 @@ export interface GoalSpendRollupSweepResult {
  */
 export async function runGoalSpendRollupOnce(sql: Sql): Promise<GoalSpendRollupSweepResult> {
   const enabled = await getFlag(FLAGS.GOAL_SPEND_ROLLUP_TICK, 'system').catch(() => false);
-  if (!enabled)
-    return { ok: true, ran: false, checked: 0, written: 0, tripwiresAdvanced: 0, errors: [] };
+  if (!enabled) return { ok: true, ran: false, checked: 0, written: 0, tripwiresAdvanced: 0, errors: [] };
   const goals = await sql<
     Array<{
       id: string;
@@ -310,11 +354,17 @@ export async function runGoalSpendRollupOnce(sql: Sql): Promise<GoalSpendRollupS
       // always meant to advance. Isolated from the snapshot write above — a
       // tripwire refresh failing must never lose the spend snapshot that
       // already succeeded, so it throws only after `written` is banked.
-      const refreshed = await refreshGoalTripwires(sql, scope, {
-        tripwires: g.tripwires ?? null,
-        createdAtMs: new Date(g.created_at).getTime(),
-      }, rollup);
+      const refreshed = await refreshGoalTripwires(
+        sql,
+        scope,
+        {
+          tripwires: g.tripwires ?? null,
+          createdAtMs: new Date(g.created_at).getTime(),
+        },
+        rollup,
+      );
       tripwiresAdvanced += refreshed.advanced;
+      await enforceGoalBreaches(sql, scope, rollup, refreshed.breached);
     } catch (e) {
       errors.push({ goalId: g.id, error: e instanceof Error ? e.message : String(e) });
     }
@@ -335,10 +385,7 @@ let tickTimer: ManagedHandle | null = null;
  * Start the recurring rollup tick. Idempotent. Runtime gate:
  * FLAGS.GOAL_SPEND_ROLLUP_TICK (checked per tick, default ON).
  */
-export function startGoalSpendRollupTick(
-  sql: Sql,
-  opts: { intervalMs?: number } = {},
-): void {
+export function startGoalSpendRollupTick(sql: Sql, opts: { intervalMs?: number } = {}): void {
   const intervalMs = opts.intervalMs ?? GOAL_SPEND_ROLLUP_INTERVAL_MS;
   if (tickTimer) tickTimer.stop();
   let sweeping = false;
@@ -350,9 +397,7 @@ export function startGoalSpendRollupTick(
       sweeping = true;
       void runGoalSpendRollupOnce(sql)
         .catch((e) => {
-          console.warn(
-            `[goal-spend-rollup] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
-          );
+          console.warn(`[goal-spend-rollup] sweep failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
         })
         .finally(() => {
           sweeping = false;
