@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkItem } from '../../work-items';
 
 const getWorkItem = vi.fn();
 const listWorkItems = vi.fn();
@@ -15,15 +16,17 @@ vi.mock('../../work-items', () => ({
   WORK_ITEMS_MAX_LIMIT: 2_000,
 }));
 
-import tool from './export';
+import tool, { WORK_ITEM_EXPORT_WRITE_CONCURRENCY, writeWorkItemFiles } from './export';
 
 type ExportResult = {
   content: Array<{ type: 'text'; text: string }>;
 };
 
-const handler = (tool as unknown as {
-  handler: (args: Record<string, unknown>) => Promise<ExportResult>;
-}).handler;
+const handler = (
+  tool as unknown as {
+    handler: (args: Record<string, unknown>) => Promise<ExportResult>;
+  }
+).handler;
 
 const cleanup: string[] = [];
 
@@ -37,7 +40,7 @@ beforeEach(() => {
   listAllWorkItemsForFileExport.mockReset();
 });
 
-function row(id: string) {
+function row(id: string): WorkItem {
   return {
     id,
     kind: 'change',
@@ -83,6 +86,34 @@ function payload(result: ExportResult): Record<string, unknown> {
 }
 
 describe('work_items:export harness enumeration', () => {
+  it('writes large exports with bounded parallelism and no dropped rows', async () => {
+    const rows = Array.from({ length: WORK_ITEM_EXPORT_WRITE_CONCURRENCY * 2 + 1 }, (_, index) =>
+      row(`WI-${index + 1}`),
+    );
+    const writtenFiles: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+
+    const written = await writeWorkItemFiles('/virtual/export', rows, async (file, body, encoding) => {
+      active++;
+      maxActive = Math.max(maxActive, active);
+      writtenFiles.push(file);
+      expect(encoding).toBe('utf8');
+      expect(JSON.parse(body)).toMatchObject({
+        id: file
+          .split('/')
+          .at(-1)
+          ?.replace(/\.json$/, ''),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 1));
+      active--;
+    });
+
+    expect(written).toBe(rows.length);
+    expect(new Set(writtenFiles).size).toBe(rows.length);
+    expect(maxActive).toBe(WORK_ITEM_EXPORT_WRITE_CONCURRENCY);
+  });
+
   it('uses the complete file-export path when limit is omitted', async () => {
     listAllWorkItemsForFileExport.mockResolvedValue([row('WI-1'), row('WI-2')]);
     const toDir = await directory();
