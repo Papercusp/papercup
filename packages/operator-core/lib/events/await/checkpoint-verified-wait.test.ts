@@ -48,6 +48,19 @@ describe('checkpoint verified-wait producer adapter', () => {
     });
   });
 
+  it('preserves unknown producer ownership as null', () => {
+    expect(
+      checkpointProducerCertificate({
+        pipeline: 'papercusp',
+        ownerId: null,
+        issuedAtMs: 1_500,
+        expectedCadenceMs: 5_000,
+        verificationDeadlineMs: 6_500,
+        snapshot: snapshot(),
+      }),
+    ).toMatchObject({ owner: { ownerId: null, workItemId: null } });
+  });
+
   it('observes an active producer without fabricating completion', async () => {
     const certificate = checkpointProducerCertificate({
       pipeline: 'papercusp', ownerId: 'su-1', issuedAtMs: 1_500,

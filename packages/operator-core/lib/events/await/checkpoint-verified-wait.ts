@@ -155,7 +155,7 @@ export function checkpointProducerCertificate(input: {
   pipeline: string;
   candidateSha?: string;
   runId?: string;
-  ownerId: string;
+  ownerId: string | null;
   workItemId?: string | null;
   issuedAtMs: number;
   expectedCadenceMs: number;

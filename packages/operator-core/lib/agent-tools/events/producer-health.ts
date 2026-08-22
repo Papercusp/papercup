@@ -37,7 +37,7 @@ export async function resolveProducerHealthCertificate(input: {
     pipeline: producer.pipeline,
     candidateSha: producer.candidate_sha,
     runId: producer.run_id,
-    ownerId: producer.owner_id ?? input.subscriberId,
+    ownerId: producer.owner_id ?? null,
     workItemId: producer.work_item_id ?? null,
     issuedAtMs,
     expectedCadenceMs,

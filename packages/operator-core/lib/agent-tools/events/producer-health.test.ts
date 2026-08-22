@@ -26,6 +26,7 @@ describe('raw wait producer-health adapter', () => {
           pipeline: 'papercusp',
           candidate_sha: 'abc1',
           expected_cadence_sec: 120,
+          owner_id: 'su-producer',
           work_item_id: 'WI-1',
         },
         subscriberId: 'su-waiter',
@@ -34,7 +35,7 @@ describe('raw wait producer-health adapter', () => {
       }),
     ).resolves.toMatchObject({
       producer: { kind: 'green-checkpoint', id: 'abc123' },
-      owner: { ownerId: 'su-waiter', workItemId: 'WI-1' },
+      owner: { ownerId: 'su-producer', workItemId: 'WI-1' },
       issuedAtMs: 10_000,
       lastProgressAtMs: 8_000,
       expectedCadenceMs: 120_000,
@@ -42,6 +43,32 @@ describe('raw wait producer-health adapter', () => {
       details: { pipeline: 'papercusp', candidateSha: 'abc1' },
     });
     expect(snapshot).toHaveBeenCalledWith('papercusp', { includeActiveRun: true });
+  });
+
+  it('preserves unknown producer ownership instead of assigning the subscriber as owner', async () => {
+    snapshot.mockResolvedValueOnce({
+      slug: 'papercusp',
+      generatedAtMs: 9_000,
+      routines: {
+        gitSync: null,
+        greenCheckpoint: { name: 'green-checkpoint', active: true, cron: null, lastFiredAtMs: 7_500, nextFireAtMs: null },
+        releaseTrigger: null,
+      },
+      activeRun: { active: true, candidate: 'abc123', startedAtMs: 8_000, elapsedSec: 1 },
+      recent: [],
+    });
+
+    await expect(
+      resolveProducerHealthCertificate({
+        producerHealth: {
+          kind: 'green-checkpoint',
+          pipeline: 'papercusp',
+          expected_cadence_sec: 120,
+        },
+        subscriberId: 'su-waiter',
+        nowMs: 10_000,
+      }),
+    ).resolves.toMatchObject({ owner: { ownerId: null, workItemId: null } });
   });
 
   it('rejects an unknown pipeline instead of registering a cross-wired verified wait', async () => {
