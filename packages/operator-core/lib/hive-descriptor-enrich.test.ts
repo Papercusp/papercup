@@ -2,7 +2,7 @@
  * hive-descriptor-enrich.test.ts — announce-build freshness (hardening P-004 /
  * D-004). Seams injected — no PG, keychain, or fs.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { enrichLocalHiveDescriptor } from './hive-descriptor-enrich';
 import type { LocalHiveDescriptor } from './hive-directory';
 
@@ -85,7 +85,13 @@ describe('enrichLocalHiveDescriptor (P-004)', () => {
     expect(await enrichLocalHiveDescriptor(d)).toBe(d);
   });
 
-  it('derivation failures fall back to the registered descriptor fields', async () => {
+  it('derivation failures fall back to the registered descriptor fields — LOUDLY (WI-3496 / D-032 R-3b)', async () => {
+    // The fallback itself is deliberate and stays. What changed is that it may no
+    // longer be SILENT: a pubkey derivation failure here strips the cross-Hive dial
+    // address from every announce this process makes, and swallowing that quietly is
+    // the defect D-032 R-3b exists to make observable. This spy is therefore a real
+    // assertion, not noise suppression — remove the warn and this test fails.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const d = desc({ memberRepos: ['stale/ref#1'], memberLinks: ['papercusp://harness?x'] });
     const out = await enrichLocalHiveDescriptor(d, {
       loadPubkey: async () => null,
@@ -99,5 +105,12 @@ describe('enrichLocalHiveDescriptor (P-004)', () => {
     // no pubkey → links untouched; repo derivation failed → registered set kept
     expect(out.memberRepos).toEqual(['stale/ref#1']);
     expect(out.memberLinks).toEqual(['papercusp://harness?x']);
+    // ...and the omission announced itself. Assert on the SUBSTANCE, not the prose:
+    // the hive it happened to, and that an outcome was named rather than a bare null.
+    const omitted = warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('hivePubkey OMITTED'));
+    expect(omitted).toHaveLength(1);
+    expect(omitted[0]).toContain(d.potId);
+    expect(omitted[0]).toMatch(/not_found|error:|threw:|injected_dep_returned_null/);
+    warn.mockRestore();
   });
 });
