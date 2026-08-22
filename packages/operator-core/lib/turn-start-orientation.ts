@@ -50,11 +50,31 @@
  */
 
 import type { CursorState } from './agent-tools/coordination/read-cursors';
+import { capPreservingOperativeDetailed } from './operative-clause';
 
 /** A held work-item, reduced to what the fold actually prints. */
 export interface OrientationHeldItem {
   id: string;
   status?: string | null;
+  /** In-flight state written through work_items:checkpoint. */
+  checkpoint?: string | null;
+  /** Write time for the absolute-staleness verdict below. */
+  checkpointUpdatedAtMs?: number | null;
+  /** True only when the shared turn-end checkpoint rule proves this snapshot old. */
+  checkpointStale?: boolean;
+}
+
+/** Actionable inbox context from the same primitive as fleet:leader-brief. */
+export interface OrientationInboxEntry {
+  msgId: string;
+  from: string;
+  summary?: string;
+}
+
+/** A declared, still-unfired gate visible in this caller's current scope. */
+export interface OrientationAnnouncedGate {
+  event: string;
+  note?: string | null;
 }
 
 /**
@@ -71,6 +91,10 @@ export interface OrientationState {
   held: OrientationHeldItem[];
   /** Directed messages awaiting THIS agent's reply. */
   unansweredDirected: number;
+  /** Newest actionable inbox headlines; count remains `unansweredDirected`. */
+  inboxRecent: OrientationInboxEntry[];
+  /** Declared-but-unfired gates visible to the caller's fleet/plan/harness. */
+  announcedGates: OrientationAnnouncedGate[];
   /** Whether an engine loop is armed — i.e. whether a wake source exists. */
   loopArmed: boolean;
 }
@@ -93,10 +117,20 @@ const HEADING = 'Orientation';
 /** Held items printed in full before collapsing to a count — keeps the line
  *  useful under pressure instead of dropping it wholesale. */
 const HELD_DISPLAY_CAP = 5;
+const CHECKPOINT_DISPLAY_CAP = 2;
+const CHECKPOINT_EXCERPT_CHARS = 150;
+const GATE_DISPLAY_CAP = 3;
+const INBOX_DISPLAY_CAP = 2;
 
 /** True when there is genuinely nothing worth spending a single character on. */
 export function isEmptyOrientation(state: OrientationState): boolean {
-  return state.held.length === 0 && state.unansweredDirected === 0 && !state.loopArmed;
+  return (
+    state.held.length === 0 &&
+    state.unansweredDirected === 0 &&
+    state.inboxRecent.length === 0 &&
+    state.announcedGates.length === 0 &&
+    !state.loopArmed
+  );
 }
 
 /**
@@ -141,10 +175,21 @@ export function isEmptyOrientation(state: OrientationState): boolean {
 export function fingerprintOrientation(state: OrientationState, epoch: number): CursorState {
   return {
     held: state.held
-      .map((h) => `${h.id}:${h.status ?? ''}`)
+      .map(
+        (h) =>
+          `${h.id}:${h.status ?? ''}:${h.checkpoint ? 1 : 0}:` +
+          `${h.checkpointUpdatedAtMs ?? ''}:${h.checkpointStale ? 1 : 0}`,
+      )
       .sort()
       .join(','),
     unanswered: state.unansweredDirected,
+    inbox: state.inboxRecent
+      .map((entry) => `${entry.msgId}:${entry.from}:${entry.summary ?? ''}`)
+      .join('|'),
+    gates: state.announcedGates
+      .map((gate) => `${gate.event}:${gate.note ?? ''}`)
+      .sort()
+      .join('|'),
     loop: state.loopArmed ? 1 : 0,
     epoch,
   };
@@ -161,9 +206,38 @@ export function orientationUnchanged(
   return (
     a.held === b.held &&
     a.unanswered === b.unanswered &&
+    a.inbox === b.inbox &&
+    a.gates === b.gates &&
     a.loop === b.loop &&
     a.epoch === b.epoch
   );
+}
+
+function compactIds(ids: string[], cap: number): string {
+  const shown = ids.slice(0, cap);
+  const rest = ids.length - shown.length;
+  return `${shown.join(', ')}${rest > 0 ? ` +${rest} more` : ''}`;
+}
+
+function compactActor(actor: string): string {
+  return actor.length <= 18 ? actor : `${actor.slice(0, 15)}…`;
+}
+
+function compactHeadline(summary: string | undefined): string {
+  const text = (summary ?? '(no summary)').replace(/\s+/g, ' ').trim();
+  return text.length <= 72 ? text : `${text.slice(0, 71)}…`;
+}
+
+function renderCheckpointLine(item: OrientationHeldItem): string | null {
+  const raw = item.checkpoint?.replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const excerpt = capPreservingOperativeDetailed(raw, CHECKPOINT_EXCERPT_CHARS, {
+    inlineNotice: true,
+    more: `work_items:get { id: '${item.id}' }`,
+    maxChars: 40,
+    maxClauses: 1,
+  }).text;
+  return `- checkpoint ${item.id}: ${excerpt}`;
 }
 
 /**
@@ -182,6 +256,29 @@ export function renderOrientationLines(state: OrientationState): string[] {
       `- ⚠ ${state.unansweredDirected} directed msg(s) awaiting YOUR reply — answer first.`,
     );
   }
+  // A missing wake source can strand every line below it, so the WARNING is
+  // high-priority. The reassuring ARMED line is cheap context and goes last.
+  if (!state.loopArmed) {
+    lines.push(
+      '- ⚠ engine loop: not armed — loop:arm open-ended work or you halt silently after this turn.',
+    );
+  }
+  const stale = state.held
+    .filter((h) => Boolean(h.checkpoint?.trim()) && h.checkpointStale)
+    .map((h) => h.id);
+  if (stale.length > 0) {
+    lines.push(
+      `- ⚠ stale checkpoint: ${compactIds(stale, HELD_DISPLAY_CAP)} — verify current files/state before trusting it.`,
+    );
+  }
+  const missing = state.held
+    .filter((h) => !h.checkpoint?.trim())
+    .map((h) => h.id);
+  if (missing.length > 0) {
+    lines.push(
+      `- ⚠ no checkpoint: ${compactIds(missing, HELD_DISPLAY_CAP)} — read work_items:get before acting.`,
+    );
+  }
   if (state.held.length > 0) {
     const shown = state.held.slice(0, HELD_DISPLAY_CAP);
     const rest = state.held.length - shown.length;
@@ -192,11 +289,22 @@ export function renderOrientationLines(state: OrientationState): string[] {
   } else {
     lines.push('- holding: nothing — claim before your first edit.');
   }
-  lines.push(
-    state.loopArmed
-      ? '- engine loop: ARMED (a wake source exists).'
-      : '- engine loop: not armed — if your directive is open-ended, loop:arm or you halt silently when this turn ends.',
-  );
+  if (state.announcedGates.length > 0) {
+    lines.push(
+      `- announced gates: ${compactIds(
+        state.announcedGates.map((gate) => gate.event),
+        GATE_DISPLAY_CAP,
+      )}${state.announcedGates.length > GATE_DISPLAY_CAP ? ' — events:catalog for all' : ''}`,
+    );
+  }
+  for (const item of state.held.slice(0, CHECKPOINT_DISPLAY_CAP)) {
+    const line = renderCheckpointLine(item);
+    if (line) lines.push(line);
+  }
+  for (const entry of state.inboxRecent.slice(0, INBOX_DISPLAY_CAP)) {
+    lines.push(`- inbox ${compactActor(entry.from)}: ${compactHeadline(entry.summary)}`);
+  }
+  if (state.loopArmed) lines.push('- engine loop: ARMED (a wake source exists).');
   return lines;
 }
 
@@ -247,7 +355,11 @@ export function composeOrientationBlock(input: {
  */
 export interface OrientationDeps {
   held: (ownerId: string, workspaceId: string) => Promise<OrientationHeldItem[]>;
-  unansweredDirected: (ownerId: string) => Promise<number>;
+  inbox: (ownerId: string) => Promise<{
+    count: number;
+    newest: OrientationInboxEntry[];
+  }>;
+  announcedGates: (ownerId: string) => Promise<OrientationAnnouncedGate[]>;
   loopArmed: (ownerId: string) => Promise<boolean>;
   /**
    * The agent's CONTEXT GENERATION (P-023 / D-008) — NOT part of the rendered
@@ -272,12 +384,19 @@ export async function resolveOrientationState(
   deps: Partial<OrientationDeps> = {},
 ): Promise<OrientationState> {
   const d = { ...defaultOrientationDeps(), ...deps };
-  const [held, unansweredDirected, loopArmed] = await Promise.all([
+  const [held, inbox, announcedGates, loopArmed] = await Promise.all([
     d.held(ownerId, workspaceId).catch(() => [] as OrientationHeldItem[]),
-    d.unansweredDirected(ownerId).catch(() => 0),
+    d.inbox(ownerId).catch(() => ({ count: 0, newest: [] as OrientationInboxEntry[] })),
+    d.announcedGates(ownerId).catch(() => [] as OrientationAnnouncedGate[]),
     d.loopArmed(ownerId).catch(() => false),
   ]);
-  return { held, unansweredDirected, loopArmed };
+  return {
+    held,
+    unansweredDirected: inbox.count,
+    inboxRecent: inbox.newest,
+    announcedGates,
+    loopArmed,
+  };
 }
 
 /** Default readers — each one is an EXISTING shared primitive, never a new query.
@@ -295,18 +414,75 @@ export function defaultOrientationDeps(): OrientationDeps {
     // right trade for a per-turn fold, but do not read the absence of a re-emit
     // as "nothing about my items changed".
     held: async (ownerId, workspaceId) => {
-      const { readHeldWorkItems } = await import('./carry-brief');
+      const [{ readHeldWorkItems }, { isStaleHeldCheckpoint }] = await Promise.all([
+        import('./carry-brief'),
+        import('./turn-end-tracking'),
+      ]);
       const rows = await readHeldWorkItems(ownerId, workspaceId);
-      return rows.map((r) => ({ id: r.id })).filter((r) => Boolean(r.id));
+      const nowMs = Date.now();
+      return rows
+        .map((r) => ({
+          id: r.id,
+          checkpoint: r.checkpoint,
+          checkpointUpdatedAtMs: r.checkpointUpdatedAtMs,
+          checkpointStale:
+            Boolean(r.checkpoint?.trim()) && isStaleHeldCheckpoint(r, nowMs),
+        }))
+        .filter((r) => Boolean(r.id));
     },
     // The SAME primitive fleet:assignments / leader-brief count with, so this
     // number can never disagree with the one a leader sees.
-    unansweredDirected: async (ownerId) => {
+    inbox: async (ownerId) => {
       const { fetchUnansweredDirected } = await import(
         './agent-tools/coordination/unanswered-directed'
       );
       const map = await fetchUnansweredDirected([ownerId]);
-      return map.get(ownerId)?.count ?? 0;
+      const summary = map.get(ownerId);
+      return summary
+        ? {
+            count: summary.count,
+            newest: summary.newest.map((entry) => ({
+              msgId: entry.msgId,
+              from: entry.from,
+              ...(entry.summary ? { summary: entry.summary } : {}),
+            })),
+          }
+        : { count: 0, newest: [] };
+    },
+    // D-004 keeps event discovery a directory. Reuse the SAME announcement
+    // store + visibility predicate as coord:orient/events:catalog, deriving the
+    // caller scope from its durable brief and live fleet label. Never copy gate
+    // keys into a hand-maintained table.
+    announcedGates: async (ownerId) => {
+      const [
+        { listActiveAnnouncements },
+        { announcementVisibleTo },
+        { getSessionBrief },
+        { fetchPresenceFleet },
+      ] = await Promise.all([
+        import('./events/await/store'),
+        import('./events/await/announce-key'),
+        import('./session-brief'),
+        import('./agent-tools/coordination/presence-fleet'),
+      ]);
+      const [announcements, brief, memberships] = await Promise.all([
+        listActiveAnnouncements({ unfiredOnly: true, limit: 50 }),
+        getSessionBrief({ ownerId }),
+        fetchPresenceFleet([ownerId]),
+      ]);
+      const fleet = memberships.get(ownerId)?.fleetSlug ?? null;
+      return announcements
+        .filter((announcement) =>
+          announcementVisibleTo(announcement, {
+            fleetSlug: fleet,
+            planSlug: brief?.currentPlanSlug ?? null,
+            harnessSlug: brief?.harnessSlug ?? null,
+          }),
+        )
+        .map((announcement) => ({
+          event: announcement.eventKey,
+          note: announcement.note,
+        }));
     },
     loopArmed: async (ownerId) => {
       const { activeLoopOwners } = await import('./adv-roster');

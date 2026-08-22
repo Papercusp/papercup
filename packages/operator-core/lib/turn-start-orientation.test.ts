@@ -12,14 +12,31 @@ import {
   orientationUnchanged,
   isEmptyOrientation,
   renderOrientationLines,
+  resolveOrientationState,
   ORIENTATION_BUDGET_CHARS,
   type OrientationState,
 } from './turn-start-orientation';
 
-const base: OrientationState = { held: [], unansweredDirected: 0, loopArmed: false };
+const base: OrientationState = {
+  held: [],
+  unansweredDirected: 0,
+  inboxRecent: [],
+  announcedGates: [],
+  loopArmed: false,
+};
 const withWork: OrientationState = {
-  held: [{ id: 'WI-1', status: 'wip' }],
+  held: [
+    {
+      id: 'WI-1',
+      status: 'wip',
+      checkpoint: 'Implemented the reader; next run the focused test.',
+      checkpointUpdatedAtMs: 1_000,
+      checkpointStale: false,
+    },
+  ],
   unansweredDirected: 2,
+  inboxRecent: [{ msgId: 'm-1', from: 'su-peer', summary: 'Need your decision on the shared seam.' }],
+  announcedGates: [{ event: 'fleet:atlas:phase-open', note: 'Phase 2 may begin.' }],
   loopArmed: true,
 };
 
@@ -51,6 +68,8 @@ describe('turn-start-orientation — when it speaks', () => {
       { ...withWork, loopArmed: false },
       { ...withWork, held: [{ id: 'WI-1', status: 'blocked' }] },
       { ...withWork, held: [{ id: 'WI-2', status: 'wip' }] },
+      { ...withWork, announcedGates: [{ event: 'fleet:atlas:another-gate' }] },
+      { ...withWork, inboxRecent: [{ msgId: 'm-2', from: 'su-peer', summary: 'New ask' }] },
     ] as OrientationState[]) {
       expect(composeOrientationBlock({ state: changed, committed, epoch: EPOCH })).not.toBe('');
     }
@@ -191,11 +210,64 @@ describe('turn-start-orientation — what it says', () => {
     });
     expect(out).toContain('holding: nothing');
   });
+
+  it('folds held checkpoints, staleness, announced gates, and actionable inbox headlines', () => {
+    const state: OrientationState = {
+      ...withWork,
+      held: [
+        { ...withWork.held[0]!, checkpointStale: true },
+        { id: 'WI-2', status: 'wip', checkpoint: null },
+      ],
+    };
+    const out = composeOrientationBlock({ state, committed: null, epoch: EPOCH });
+    expect(out).toContain('stale checkpoint: WI-1');
+    expect(out).toContain('no checkpoint: WI-2');
+    expect(out).toContain('announced gates: fleet:atlas:phase-open');
+    expect(out).toContain('checkpoint WI-1: Implemented the reader');
+    expect(out).toContain('inbox su-peer: Need your decision');
+  });
+
+  it('keeps no-wake and checkpoint warnings ahead of lower-priority fold content', () => {
+    const lines = renderOrientationLines({
+      ...withWork,
+      loopArmed: false,
+      held: [{ ...withWork.held[0]!, checkpointStale: true }],
+    });
+    const directed = lines.findIndex((line) => line.includes('awaiting YOUR reply'));
+    const noWake = lines.findIndex((line) => line.includes('no wake source'));
+    const stale = lines.findIndex((line) => line.includes('stale checkpoint'));
+    const gates = lines.findIndex((line) => line.includes('announced gates'));
+    expect(directed).toBeLessThan(noWake);
+    expect(noWake).toBeLessThan(stale);
+    expect(stale).toBeLessThan(gates);
+  });
+
+  it('resolves every new fold leg through injectable shared-reader seams', async () => {
+    const state = await resolveOrientationState('su-1', 'ws-1', {
+      held: async () => [
+        { id: 'WI-9', checkpoint: 'continue here', checkpointStale: true },
+      ],
+      inbox: async () => ({
+        count: 1,
+        newest: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
+      }),
+      announcedGates: async () => [{ event: 'fleet:f:ready' }],
+      loopArmed: async () => true,
+    });
+    expect(state).toEqual({
+      held: [{ id: 'WI-9', checkpoint: 'continue here', checkpointStale: true }],
+      unansweredDirected: 1,
+      inboxRecent: [{ msgId: 'm-9', from: 'su-2', summary: 'Please answer.' }],
+      announcedGates: [{ event: 'fleet:f:ready' }],
+      loopArmed: true,
+    });
+  });
 });
 
 describe('turn-start-orientation — what it costs', () => {
   it('never exceeds its budget, even with an absurd number of held items', () => {
     const state: OrientationState = {
+      ...base,
       held: Array.from({ length: 200 }, (_, i) => ({ id: `WI-${i}`, status: 'wip' })),
       unansweredDirected: 4,
       loopArmed: false,
@@ -206,6 +278,7 @@ describe('turn-start-orientation — what it costs', () => {
 
   it('drops the LOWEST-priority line under pressure, keeping unanswered mail', () => {
     const state: OrientationState = {
+      ...base,
       held: [{ id: `WI-${'x'.repeat(120)}`, status: 'wip' }],
       unansweredDirected: 4,
       loopArmed: false,
