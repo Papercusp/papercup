@@ -65,8 +65,15 @@ beforeAll(async () => {
   // widening (the real table is migration-132-owned; only `kind` matters here).
   await rootSql.unsafe(`
     CREATE TABLE harness_shared.coord_conversations (
-      id text PRIMARY KEY,
-      kind text NOT NULL DEFAULT 'question'
+      workspace_id text NOT NULL,
+      id text NOT NULL,
+      kind text NOT NULL DEFAULT 'question',
+      state text NOT NULL DEFAULT 'open',
+      accepted_answer text,
+      accepted_post_id bigint,
+      updated_at timestamptz,
+      resolved_at timestamptz,
+      PRIMARY KEY (workspace_id, id)
     )`);
   // The REAL migration — consult_state + consult_post_meta cannot drift.
   await rootSql.unsafe(readFileSync(MIGRATION_834, 'utf8'));
@@ -108,11 +115,22 @@ async function seedConsult(opts: SeedOpts = {}): Promise<string> {
        ${opts.maxExchanges ?? 4}, ${opts.exchangesUsed ?? 0}, ${opts.wakesUsed ?? 0},
        ${opts.originTaskRef ?? null}, ${rootSql.json((opts.routing ?? {}) as never)})
   `;
+  await rootSql`
+    INSERT INTO harness_shared.coord_conversations (workspace_id, id, kind, state, updated_at)
+    VALUES (${WS}, ${id}, 'consult', 'open', ${NOW.toISOString()}::timestamptz)
+  `;
   return id;
 }
 
 function makeDeps(
-  opts: { postError?: string; withReach?: boolean; withMint?: boolean; mintError?: string; withSettlement?: boolean } = {},
+  opts: {
+    postError?: string;
+    withReach?: boolean;
+    withMint?: boolean;
+    mintError?: string;
+    withSettlement?: boolean;
+    settlementError?: string;
+  } = {},
 ) {
   const posts: Array<{ conversation_id: string; body: string; via_consult_verb: true }> = [];
   const emits: Array<{ key: string; summary: string; payload: Record<string, unknown>; to: string[] }> = [];
@@ -140,8 +158,22 @@ function makeDeps(
     },
     ...(opts.withSettlement
       ? {
-          settleConversation: async (input: Parameters<NonNullable<ConsultVerbDeps['settleConversation']>>[0]) => {
+          settleConversation: async (
+            input: Parameters<NonNullable<ConsultVerbDeps['settleConversation']>>[0],
+            tx: Parameters<NonNullable<ConsultVerbDeps['settleConversation']>>[1],
+          ) => {
             settlements.push(input);
+            if (opts.settlementError) throw new Error(opts.settlementError);
+            if (!tx) throw new Error('settlement transaction missing');
+            await tx`
+              UPDATE harness_shared.coord_conversations
+                 SET state = ${input.outcome === 'answered' ? 'resolved' : 'closed'},
+                     accepted_answer = ${input.answer ?? null},
+                     accepted_post_id = ${input.outcome === 'answered' ? input.postId : null},
+                     updated_at = ${input.now}::timestamptz,
+                     resolved_at = ${input.outcome === 'answered' ? input.now : null}::timestamptz
+               WHERE workspace_id = ${WS} AND id = ${input.conversationId}
+            `;
           },
         }
       : {}),
@@ -500,6 +532,17 @@ describe('consultCloseCore', () => {
       },
     ]);
 
+    const [conversation] = await rootSql`
+      SELECT state, accepted_answer, accepted_post_id, resolved_at
+        FROM harness_shared.coord_conversations
+       WHERE workspace_id = ${WS} AND id = ${id}
+    `;
+    expect(conversation).toMatchObject({
+      state: 'resolved',
+      accepted_answer: 'the pool starves under POLLING',
+      accepted_post_id: String(r.post_id),
+    });
+
     expect(emits).toHaveLength(1);
     expect(emits[0].key).toBe(`consult:reply:${id}`);
   });
@@ -536,6 +579,27 @@ describe('consultCloseCore', () => {
     expect(
       await consultCloseCore({ workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'answered', answer: 'a' }, deps),
     ).toMatchObject({ error: 'consult_not_open', state: 'closed_cant_help' });
+  });
+
+  it('rolls back consult_state and close metadata when coarse settlement fails', async () => {
+    const id = await seedConsult({ state: 'active' });
+    const { deps } = makeDeps({ withSettlement: true, settlementError: 'coarse projection unavailable' });
+    await expect(
+      consultCloseCore(
+        { workspaceId: WS, authorId: RESPONDER, conversationId: id, outcome: 'answered', answer: 'rollback me' },
+        deps,
+      ),
+    ).rejects.toThrow('coarse projection unavailable');
+
+    expect((await stateRow(id)).state).toBe('active');
+    expect(await metaRows(id)).toHaveLength(0);
+    expect(
+      await rootSql`
+        SELECT state, accepted_answer, accepted_post_id, resolved_at
+          FROM harness_shared.coord_conversations
+         WHERE workspace_id = ${WS} AND id = ${id}
+      `,
+    ).toMatchObject([{ state: 'open', accepted_answer: null, accepted_post_id: null, resolved_at: null }]);
   });
 });
 

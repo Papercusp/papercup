@@ -15,6 +15,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import {
   PgEntitySubscriptionStore,
   PgTaggableStore,
@@ -280,15 +281,21 @@ export async function settleConsultConversation(
     postId: number;
     now: string;
   },
+  tx?: Sql,
 ): Promise<void> {
   await withConversationsIdentityScope(identity, undefined, () =>
-    settleConsultConversationCore(deps, {
-      conversation_id: input.conversationId,
-      outcome: input.outcome,
-      answer: input.answer,
-      post_id: input.postId,
-      now_ts: input.now,
-    }),
+    settleConsultConversationCore(
+      tx
+        ? { ...deps, conversations: new PgConversationStore({ ...storeOpts, getSql: () => tx }) }
+        : deps,
+      {
+        conversation_id: input.conversationId,
+        outcome: input.outcome,
+        answer: input.answer,
+        post_id: input.postId,
+        now_ts: input.now,
+      },
+    ),
   );
 }
 

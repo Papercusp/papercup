@@ -73,7 +73,7 @@ export default defineTool({
       {
         getSql: () => getOrgPg().sql,
         post: (input) => conversations.postReply(identity, input),
-        settleConversation: (input) => conversations.settleConsultConversation(identity, input),
+        settleConversation: (input, tx) => conversations.settleConsultConversation(identity, input, tx),
         emitReplyEvent: async (e) => {
           await import('../../events/await/engine')
             .then(({ emitAwaitedEvent }) => emitAwaitedEvent({ ...e, source: identity.ownerId }))

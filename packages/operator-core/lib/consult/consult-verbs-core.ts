@@ -97,7 +97,7 @@ export interface ConsultVerbDeps {
     answer?: string;
     postId: number;
     now: string;
-  }) => Promise<void>;
+  }, tx?: Sql) => Promise<void>;
   /** Latched `consult:reply:<conv>` emit → the (possibly parked) requester.
    * Prod binds emitAwaitedEvent; best-effort there (never breaks the verb). */
   emitReplyEvent: (input: {
@@ -703,13 +703,6 @@ export async function consultCloseCore(
   if ('error' in posted) return { error: 'post_failed', cause: posted.error };
   const postId = posted.post.id;
 
-  await sql`
-    INSERT INTO harness_shared.consult_post_meta
-      (workspace_id, post_id, conversation_id, author_id, kind, evidence)
-    VALUES
-      (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
-       'close', ${req.evidence ? sql.json(req.evidence as never) : null})
-  `;
   const outcome = {
     ...(answer ? { answer } : {}),
     ...(req.confidence != null ? { confidence: req.confidence } : {}),
@@ -717,29 +710,42 @@ export async function consultCloseCore(
     ...(reason ? { reason } : {}),
     ...(graduatedWorkItemId ? { work_item_id: graduatedWorkItemId } : {}),
   };
-  await sql`
-    UPDATE harness_shared.consult_state
-       SET state = ${state},
-           outcome = ${sql.json(outcome as never)},
-           closed_at = ${now}::timestamptz,
-           updated_at = ${now}::timestamptz
-     WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
-  `;
 
   // consult_state is the fine-grained consult authority, while
   // coord_conversations owns the coarse lifecycle consumed by
   // conversations:get/list. Keep both projections coherent at the close
-  // boundary; the callback is bound by the production consult:close tool so
-  // this core remains injectable and independently testable.
-  if (deps.settleConversation) {
-    await deps.settleConversation({
-      conversationId: req.conversationId,
-      outcome: req.outcome,
-      answer,
-      postId,
-      now,
-    });
-  }
+  // boundary. The metadata, consult state, and coarse projection share one
+  // transaction so a failed secondary write cannot leave consult_state
+  // terminal while conversations:get/list still reports the consult open.
+  await sql.begin(async (tx) => {
+    await tx`
+      INSERT INTO harness_shared.consult_post_meta
+        (workspace_id, post_id, conversation_id, author_id, kind, evidence)
+      VALUES
+        (${req.workspaceId}, ${postId}, ${req.conversationId}, ${req.authorId},
+         'close', ${req.evidence ? tx.json(req.evidence as never) : null})
+    `;
+    await tx`
+      UPDATE harness_shared.consult_state
+         SET state = ${state},
+             outcome = ${tx.json(outcome as never)},
+             closed_at = ${now}::timestamptz,
+             updated_at = ${now}::timestamptz
+       WHERE workspace_id = ${req.workspaceId} AND conversation_id = ${req.conversationId}
+    `;
+    if (deps.settleConversation) {
+      await deps.settleConversation(
+        {
+          conversationId: req.conversationId,
+          outcome: req.outcome,
+          answer,
+          postId,
+          now,
+        },
+        tx,
+      );
+    }
+  });
 
   // A responder close is the terminal reply — wake the parked requester. A
   // requester closing their own consult has nobody parked on the key.
