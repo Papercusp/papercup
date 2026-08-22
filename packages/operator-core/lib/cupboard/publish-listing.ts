@@ -77,6 +77,19 @@ export interface CupboardListingInput {
    */
   requires_events?: RequiredEventFamily[];
   /**
+   * The rubrics this unit REQUIRES (worker migration 015 /
+   * cupboard-plan-rubric-recipe-sharing D-001, P-009). Kind `plan` only today — the
+   * worker 400s (`plan_kind_only`) on any other kind, deliberately, so a declaration
+   * no install-time resolver reads can never be stored as a silent no-op.
+   *
+   * Published for the same reason as `requires_events`: the install gate
+   * (rubric-requirements.ts) HARD-FAILS an install whose required rubric nothing
+   * provides, and a refusal that arrives only after the click is a worse refusal. It
+   * is a DECLARATION, never a resolution — whether the installing workspace already
+   * has the rubric (its BUNDLED first-party set often does) is the resolver's answer.
+   */
+  requires_rubrics?: RubricRequirement[];
+  /**
    * App distribution (worker migration 014 / cupboard-app-distribution-2026-07-14
    * P-003, D-001). Kind `app` only — the worker 400s these on any other kind.
    * `delivery_type` discriminates the model: 'standalone' (a separate downloadable
