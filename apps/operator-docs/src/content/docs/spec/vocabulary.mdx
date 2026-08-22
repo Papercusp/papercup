@@ -4,18 +4,23 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: 2. Vocabulary
+title: "2. Vocabulary"
+description: "Canonical definitions for Papercusp domain terms and the live Cupboard listing-kind contract."
+type: Insight
+discovered: 2026-08-22
+status: active
+plans:
+  - "tool-distribution-granularity-2026-06-05"
+  - "learning-packs-2026-06-11"
+  - "official-blueprints-cupboard-publish-2026-06-05"
+  - "harness-blueprint-orchestration-2026-06-03"
+  - "blueprint-role-bundling-2026-06-15"
+  - "pot-blueprint-generalization-2026-06-15"
+  - "harness-to-pot-ui-terminology-2026-06-15"
+  - "autoloop-pot-operator-rebuild-2026-06-05"
+  - "cupboard-plan-rubric-recipe-sharing-2026-08-21"
 sidebar:
   order: 2
-plans:
-  - tool-distribution-granularity-2026-06-05
-  - learning-packs-2026-06-11
-  - official-blueprints-cupboard-publish-2026-06-05
-  - harness-blueprint-orchestration-2026-06-03
-  - blueprint-role-bundling-2026-06-15
-  - pot-blueprint-generalization-2026-06-15
-  - harness-to-pot-ui-terminology-2026-06-15
-  - autoloop-pot-operator-rebuild-2026-06-05
 ---
 
 :::caution[**Mug**, **Kettle** and **Cup** below are RETIRED roles — the Pot is not]
@@ -88,8 +93,8 @@ retired — the pot substrate is explicitly kept (D-003).
           </tr>
           <tr>
             <td><strong>Marketplace package <code>kind</code></strong></td>
-            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a six-kind storefront (<code>LISTING_KINDS</code> in <code>packages/operator-core/lib/cupboard/types.ts</code>): <code>harness</code> (the repo&rarr;Pot lookup index), <code>blueprint</code> (a GitHub-repo-backed harness recipe — the term that superseded the original name for harness recipes), <code>plugin</code>, <code>pack</code> (the runtime-less code-tool pack — briefly renamed <code>tool-pack</code> by migration 008 then renamed back to <code>pack</code>; the <code>tool-pack</code> value still parses as an alias), <code>knowledge-pack</code> (a distributable set of curated pot learnings — renamed from <code>learning-pack</code> by migration 011, whose value still parses as an alias), and <code>template</code> (a first-party app-template — an app scaffold GitHub-repo-backed per <code>listing_ref</code> like a blueprint, a distinct kind from the retired harness-recipe sense of the word).</td>
-            <td>All six go through the same publish + signing + retraction infrastructure; only the install handler differs. <code>blueprint</code> + <code>knowledge-pack</code> listings publish pending and surface only after operator approval.</td>
+            <td>The discriminator that tells the marketplace + Cupboard which install pipeline a published artifact follows. Implemented as a ten-kind storefront (<code>LISTING_KINDS</code> in <code>packages/operator-core/lib/cupboard/types.ts</code>): <code>harness</code> (repo→Pot lookup), <code>blueprint</code> (fork), <code>plugin</code>, <code>pack</code>, <code>knowledge-pack</code>, <code>template</code>, <code>app</code>, <code>rubric</code>, <code>plan</code>, and <code>recipe</code>. The last three distribute grading contracts, reusable plan templates, and runnable tool orchestrations; <code>tool-pack</code>/<code>learning-pack</code> remain normalized aliases and <code>snapshot</code> is retired.</td>
+            <td>All ten go through the same publish + retraction infrastructure; the consumer action and install handler differ by kind. <code>blueprint</code>, <code>knowledge-pack</code>, <code>rubric</code>, <code>plan</code>, and <code>recipe</code> listings publish pending and surface only after operator approval.</td>
           </tr>
           <tr>
             <td><strong>Goal</strong></td>
@@ -103,5 +108,3 @@ retired — the pot substrate is explicitly kept (D-003).
           </tr>
         </tbody>
       </table>
-
-      

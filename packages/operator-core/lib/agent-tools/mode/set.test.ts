@@ -495,6 +495,12 @@ describe('wakeSourceLostWarning (pure) — WI-7302 part 2', () => {
     expect(msg).toContain('loop:arm'); // the remedy, callable, not alluded to
   });
 
+  it('gives a valid mode:set shape for exiting the stranded mode', () => {
+    const msg = lost({});
+    expect(msg).toContain("mode:set { mode: '<active mode>', enabled: false, reason: '<why>' }");
+    expect(msg).not.toContain('mode:set { enabled: false }');
+  });
+
   it('does NOT warn a session correctly parked on an events:await', () => {
     // THE false-alarm case, and the reason this keys on wakeSource rather than
     // on !loop.active. A member parked on `events:await { work-item:claimable }`

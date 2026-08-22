@@ -4,14 +4,18 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Marketplace versioning
-description: When to bump patch / minor / major on a published template or plugin manifest.
+title: "Marketplace versioning"
+description: "When to bump patch / minor / major on a published template or plugin manifest."
+type: Insight
+discovered: 2026-08-22
+status: active
+plans:
+  - "revive-cupboard-distribution-2026-06-04"
+  - "retire-snapshots-instance-spec-2026-06-09"
+  - "fumadocs-to-starlight-2026-05-20"
+  - "cupboard-plan-rubric-recipe-sharing-2026-08-21"
 sidebar:
   order: 27
-plans:
-  - revive-cupboard-distribution-2026-06-04
-  - retire-snapshots-instance-spec-2026-06-09
-  - fumadocs-to-starlight-2026-05-20
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -22,11 +26,12 @@ marketplace (see the [Distribution](/spec/distribution) banner). The live
 distribution surface is the in-app **Cupboard** (`apps/operator-public`),
 a GitHub-project-backed listing registry: every listing is keyed on a
 GitHub project remote, not on a `papercusp.json` `version` field. The
-Cupboard distributes six listing kinds — **harness** (join), **blueprint**
-(fork), **plugin** / **pack** (install), **knowledge-pack** (install), and
-**template** (install) — where `knowledge-pack` and `blueprint` listings (the
-instruction-carrying kinds) land `pending` and require operator review before
-going public. (The runtime-less code-tool pack is `pack`; its interim
+Cupboard distributes ten listing kinds — **harness** (join), **blueprint**
+(fork), **plugin** / **pack** / **knowledge-pack** / **template** (install),
+**app** (download or install), and **rubric** / **plan** / **recipe** (install).
+The instruction/judgment-carrying kinds — `knowledge-pack`, `blueprint`,
+`rubric`, `plan`, and `recipe` — land `pending` and require operator review
+before going public. (The runtime-less code-tool pack is `pack`; its interim
 `tool-pack` value still parses as an alias.) The
 older `snapshot` kind and its tarball-SHA-256 content-addressing were
 retired (`retire-snapshots-instance-spec-2026-06-09`): the D1 `tarball_*`

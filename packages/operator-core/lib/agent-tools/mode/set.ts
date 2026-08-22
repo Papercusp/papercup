@@ -157,7 +157,7 @@ export function wakeSourceLostWarning(opts: {
     'loop, and no standing events:await. The next turn you end is your last, and a carry-respawn ' +
     'restores CONTEXT, not a TURN. Re-arm now: loop:arm { intervalSec, goal } — or, if you are ' +
     'deliberately waiting on a condition, park properly with events:await so something can wake you. ' +
-    'If you are genuinely finishing inside this turn, mode:set { enabled: false } instead of leaving ' +
+    "If you are genuinely finishing inside this turn, exit the mode with mode:set { mode: '<active mode>', enabled: false, reason: '<why>' } instead of leaving " +
     'a mode registered on a session that cannot act on it.'
   );
 }

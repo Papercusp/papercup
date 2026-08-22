@@ -4,19 +4,23 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Tool distribution — packs (tool = pack[n=1], plugin = pack+runtime)
-description: The pack model — one distribution concept for tools, packs, and plugins; authoring a runtime-less code-tool pack (kind 'pack'); declaring dependencies on units; the tool→provider resolver and the live pack catalog.
+title: "Tool distribution — packs (tool = pack[n=1], plugin = pack+runtime)"
+description: "The pack model — one distribution concept for tools, packs, and plugins; authoring a runtime-less code-tool pack (kind 'pack'); declaring dependencies on units; the tool→provider resolver and the live pack catalog."
+type: Insight
+discovered: 2026-08-22
+status: active
+documents:
+  - "packages/operator-core/lib/cupboard/pack-catalog.ts"
+  - "packages/operator-core/lib/cupboard/resolve-and-install.ts"
+  - "packages/operator-core/lib/cupboard/tools-discovery.ts"
+  - "packages/operator-core/lib/cupboard/tools-search.ts"
+  - "libs/papercusp/packages/blueprint-distribution/src/pack-model.ts"
+plans:
+  - "tool-distribution-granularity-2026-06-05"
+  - "tool-distribution-discovery-2026-06-08"
+  - "cupboard-plan-rubric-recipe-sharing-2026-08-21"
 sidebar:
   order: 4
-plans:
-  - tool-distribution-granularity-2026-06-05
-  - tool-distribution-discovery-2026-06-08
-documents:
-  - packages/operator-core/lib/cupboard/pack-catalog.ts
-  - packages/operator-core/lib/cupboard/resolve-and-install.ts
-  - packages/operator-core/lib/cupboard/tools-discovery.ts
-  - packages/operator-core/lib/cupboard/tools-search.ts
-  - libs/papercusp/packages/blueprint-distribution/src/pack-model.ts
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -156,7 +160,7 @@ listing, and the dep-validator can mark not-installed tools *installable*.
 ### The worker wire (migrations 006 + 008 + 011)
 
 The Cupboard worker (`apps/operator-public`) stores listings with
-`listing_kind ∈ {harness, blueprint, plugin, pack, knowledge-pack, template}`
+`listing_kind ∈ {harness, blueprint, plugin, pack, knowledge-pack, template, app, rubric, plan, recipe}`
 (`LISTING_KINDS` in `apps/operator-public/src/db.ts`) and a nullable
 `provides_tools` TEXT column (JSON `string[]`; migration
 `006_pack_kind_provides_tools.sql` — a table rebuild, since SQLite can't
@@ -185,8 +189,8 @@ Migration 008 also added a curated-pot-learnings listing kind (originally
 `pack` in the same worker schema and storefront this page describes — but
 it is a different thing: a distributable set of curated pot learnings
 (installed into a pot's shared memory through conflict review), not a
-code-tool pack. The instruction-carrying kinds (`knowledge-pack` + `blueprint`)
-also gain a pre-publication `review_status` (`pending` / `approved` /
+code-tool pack. The instruction/judgment-carrying kinds (`knowledge-pack`, `blueprint`,
+`rubric`, `plan`, and `recipe`) carry a pre-publication `review_status` (`pending` / `approved` /
 `rejected`, `REVIEW_POLICY_KINDS`): they publish `pending` and surface
 publicly only on operator approval, whereas code kinds (`pack` / `plugin`)
 keep install-consent + reactive moderation. The `pack` kind remains the
