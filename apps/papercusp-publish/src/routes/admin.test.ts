@@ -110,7 +110,7 @@ describe('POST /admin/gc/expired-archives', () => {
     // One UPDATE ... SET archive_path = NULL per purged row.
     const updates = db.runs.filter((r) => /archive_path\s*=\s*NULL/i.test(r.sql));
     expect(updates).toHaveLength(2);
-    expect(updates[0].binds).toEqual(['d1']);
+    expect(updates[0]?.binds).toEqual(['d1']);
   });
 
   it('reports purged:0 when no archives are expired', async () => {

@@ -12,6 +12,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
+import type { Env } from './env.ts';
+import type { JwtCtxVars } from './jwt-middleware.ts';
 
 const h = vi.hoisted(() => ({
   parseJwt: vi.fn(),
@@ -42,7 +44,7 @@ vi.mock('./db.ts', () => ({
 import { jwtMiddleware } from './jwt-middleware.ts';
 
 function appWithMw() {
-  const app = new Hono();
+  const app = new Hono<{ Bindings: Env; Variables: JwtCtxVars }>();
   app.use('*', jwtMiddleware({ audience: 'publish' }));
   app.get('/protected', (c) =>
     c.json({ ok: true, tenant: c.get('tenantId'), jti: (c.get('jwt') as { jti: string }).jti }),
@@ -57,7 +59,7 @@ const req = (token?: string) =>
     token ? { headers: { authorization: `Bearer ${token}` } } : {},
     env,
   );
-const outcomeOf = (callIndex = 0) => h.audit.mock.calls[callIndex]?.[2];
+const outcomeOf = (callIndex = 0) => (h.audit.mock.calls as unknown[][])[callIndex]?.[2];
 
 beforeEach(() => {
   vi.clearAllMocks();

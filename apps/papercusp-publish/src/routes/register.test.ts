@@ -37,6 +37,7 @@ import { registerRoute } from './register.ts';
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const env: any = { DB: {} };
 const register = () => registerRoute().request('/register-tenant', { method: 'POST' }, env);
+const auditOutcome = () => (h.audit.mock.calls as unknown[][])[0]?.[2];
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -53,7 +54,7 @@ describe('POST /register-tenant', () => {
       expect.anything(),
       expect.objectContaining({ id: 'tenant-xyz', status: 'active', tier: 'free' }),
     );
-    expect(h.audit.mock.calls[0][2]).toBe('registered');
+    expect(auditOutcome()).toBe('registered');
   });
 
   it('rate-limits register spam with 429 and does NOT create a tenant', async () => {
@@ -63,6 +64,6 @@ describe('POST /register-tenant', () => {
     const res = await register();
     expect(res.status).toBe(429);
     expect(h.insertTenant).not.toHaveBeenCalled();
-    expect(h.audit.mock.calls[0][2]).toBe('rate_limited');
+    expect(auditOutcome()).toBe('rate_limited');
   });
 });

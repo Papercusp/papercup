@@ -56,7 +56,7 @@ describe('POST /rotate-secret', () => {
   it('audits the rotation with the tenant + client IP', async () => {
     await rotate();
     expect(h.audit).toHaveBeenCalledTimes(1);
-    const [, , kind, detail] = h.audit.mock.calls[0];
+    const [, , kind, detail] = (h.audit.mock.calls as unknown[][])[0] ?? [];
     expect(kind).toBe('rotated');
     expect(detail).toMatchObject({ tenantId: 'tenant-auth', ip: '9.9.9.9' });
   });

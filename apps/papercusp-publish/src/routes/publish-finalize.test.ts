@@ -57,7 +57,7 @@ const finalize = (body: unknown) =>
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     execCtx as any,
   );
-const outcomes = () => h.audit.mock.calls.map((c) => c[2]);
+const outcomes = () => (h.audit.mock.calls as unknown[][]).map((c) => c[2]);
 
 beforeEach(() => {
   vi.clearAllMocks();

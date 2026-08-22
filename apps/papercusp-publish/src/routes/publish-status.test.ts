@@ -44,6 +44,7 @@ import { publishStatusRoute } from './publish-status.ts';
 const env: any = { DB: {} };
 const status = (id: string) =>
   publishStatusRoute().request(`/publish/status/${id}`, { method: 'GET' }, env);
+const responseStatus = async (res: Response) => ((await res.json()) as { status: string }).status;
 
 const baseDep = (over: Record<string, unknown> = {}) => ({
   id: 'dep-1',
@@ -95,7 +96,7 @@ describe('GET /publish/status/:deploymentId', () => {
     h.getDeployment.mockResolvedValue(baseDep({ cf_deployment_id: null }));
     const res = await status('dep-1');
     expect(res.status).toBe(200);
-    expect((await res.json()).status).toBe('building');
+    expect(await responseStatus(res)).toBe('building');
     expect(h.cfGetDeployment).not.toHaveBeenCalled();
   });
 
@@ -108,7 +109,7 @@ describe('GET /publish/status/:deploymentId', () => {
     });
     const res = await status('dep-1');
     expect(res.status).toBe(200);
-    expect((await res.json()).status).toBe('building');
+    expect(await responseStatus(res)).toBe('building');
     expect(h.cfGetDeployment).toHaveBeenCalled();
     expect(h.setDeploymentStatus).not.toHaveBeenCalled();
   });
@@ -151,7 +152,7 @@ describe('GET /publish/status/:deploymentId', () => {
     h.cfGetDeployment.mockRejectedValue(new Error('cf 503'));
     const res = await status('dep-1');
     expect(res.status).toBe(200);
-    expect((await res.json()).status).toBe('building');
+    expect(await responseStatus(res)).toBe('building');
     expect(h.setDeploymentStatus).not.toHaveBeenCalled();
   });
 
@@ -159,7 +160,7 @@ describe('GET /publish/status/:deploymentId', () => {
     h.getProject.mockResolvedValue(null);
     const res = await status('dep-1');
     expect(res.status).toBe(200);
-    expect((await res.json()).status).toBe('building');
+    expect(await responseStatus(res)).toBe('building');
     expect(h.cfGetDeployment).not.toHaveBeenCalled();
     expect(h.setDeploymentStatus).not.toHaveBeenCalled();
   });
