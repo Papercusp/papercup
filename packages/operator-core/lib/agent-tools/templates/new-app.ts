@@ -454,7 +454,13 @@ export default defineTool({
   // Fresh pot creation includes repo initialization, registry/schema setup and
   // routine seeding. Measured under load: the inner pot:create alone took 111s.
   // Match ptool's long-call budget so the compound can report its real outcome.
-  timeoutSec: 300,
+  // EI-21107910194803524: raised 300 -> 900. 300 was set against a 111s pot:create
+  // baseline, but a real materialization on 2026-08-21 spent ~290s inside pot:create
+  // ALONE under fleet load, before this compound's own overlay/manifest work. The
+  // outer budget must exceed the inner one (pot:create is now 900s) plus that work,
+  // and ptool's PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS is raised to match — otherwise the
+  // client aborts a call the server would have completed.
+  timeoutSec: 900,
   // EI-21107910194803524 / EI-18803497769946984: the INDIRECT half of the idle-tx
   // class. This handler blocks for minutes inside `pot:create` (repo init, schema
   // setup, routine seeding — measured 111s on its own) but never reads `ctx.tx`,

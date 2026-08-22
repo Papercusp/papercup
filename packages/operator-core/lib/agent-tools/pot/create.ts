@@ -32,6 +32,16 @@ export default defineTool({
   // so only the idle ambient transaction is skipped — `ctx.principal` is still
   // synthesized in its own short transaction and gating is unaffected.
   skipWorkspaceTx: true,
+  // EI-21107910194803524: this tool had NO timeoutSec, i.e. the 60s default, for an
+  // operation measured at 111s baseline and ~290s under fleet load (2026-08-21).
+  // It was invisible for as long as the idle-tx kill above fired first and masked
+  // it; with that fixed, the 60s abort became the next failure — the handler runs to
+  // completion and its result is then DISCARDED ("handler returned but signal had
+  // aborted"), which is pure waste plus a rollback. templates:new-app (its main
+  // caller) already budgets for the real duration, so the INNER budget must not be
+  // the tighter one. Sized with headroom over the worst measured run, not over the
+  // baseline — this box routinely runs ~55 load average.
+  timeoutSec: 900,
   profile: 'engineer',
   description:
     "Stand up a NEW local pot (root-only): provision a home harness running the pot (kind:'hive') blueprint, stamp it harness_kind:'hive', and optionally wake the Mug. Composes the harness-provision primitives + pot:wake, transactional with rollback. NOT callable from a cup/parented agent — pots are peers, never nested. Cloud placement is a separate step (deploy:pot).",
