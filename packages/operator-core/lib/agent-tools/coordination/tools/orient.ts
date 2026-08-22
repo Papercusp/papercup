@@ -124,6 +124,14 @@ const RECIPE_TITLE_CAP = 120;
  *  client timeout, in BOTH monitor and full mode (`me` runs unconditionally).
  *  Bound each so a slow leg degrades to an empty/null fallback instead. */
 const ORIENT_FLEET_LEG_TIMEOUT_MS = 8_000;
+/** EI-21127719036550806: the claimable backlog (work_items:list/claimable/observe),
+ *  coord:inbox, coord:plan-events, and coord:declare-intent legs carried NO internal
+ *  budget — under genuine host memory-pressure (PSI mem full, tasks stalled on
+ *  reclaim/swap) any ONE of these sequential DB round-trips could hang past the
+ *  caller's own deadline with the whole orient call reporting NOTHING back (an MCP
+ *  request_timeout), instead of the bounded degrade-to-fallback every other core leg
+ *  already gets (WI-3818). Same contract, same budget as the fleet leg above. */
+const ORIENT_CORE_LEG_TIMEOUT_MS = 8_000;
 /** WI-4533: the pipeline leg is a DECORATION on the wake read — cached, and started by the handler
  *  before the legs above, so by the time it is awaited it is almost always already resolved. Bound
  *  it tightly anyway: an agent must never wait on "is the gate green" to find out what it's
@@ -987,6 +995,11 @@ export async function composeOrient(
       admissibleOnly: true,
       ...extra,
     });
+  /** EI-21127719036550806: bound a core orient leg to ORIENT_CORE_LEG_TIMEOUT_MS,
+   *  degrading to `fallback` on EITHER a hang or a rejection — one call site for the
+   *  same fail-open contract every other WI-3818 leg already gets. */
+  const boundedCore = <T>(work: Promise<T>, fallback: T, label: string): Promise<T> =>
+    withBoundedTimeout(work, { fallback, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label }).then((r) => r.value);
   let list: unknown;
   /** EI-20113865649946366 — the AUTHORITATIVE issue-family claimable population, taken
    *  from the oracle's own `claimableCount` (work_items/claimable.ts: "rows passing
@@ -1011,19 +1024,21 @@ export async function composeOrient(
     // turning a deliberately lean orient into an argument error.
     list = [];
   } else if (!args.harness) {
-    list = await listLane({});
+    list = await boundedCore(listLane({}), [], 'orient:claimable:list');
   } else {
     const [issueRes, featureRows] = await Promise.all([
-      call('work_items:claimable', {
-        harness: args.harness,
-        limit: claimableLimit,
-        // Only override the oracle's state floor when the caller asked for one —
-        // otherwise the resolved claim-spec's own states win, as get_next uses them.
-        ...(args.claimableState ? { states: [args.claimableState] } : {}),
-      }).catch(() => null),
-      listLane({ kind: 'feature' })
-        .then(unwrapRows)
-        .catch(() => null),
+      boundedCore(
+        call('work_items:claimable', {
+          harness: args.harness,
+          limit: claimableLimit,
+          // Only override the oracle's state floor when the caller asked for one —
+          // otherwise the resolved claim-spec's own states win, as get_next uses them.
+          ...(args.claimableState ? { states: [args.claimableState] } : {}),
+        }),
+        null,
+        'orient:claimable:issues',
+      ),
+      boundedCore(listLane({ kind: 'feature' }).then(unwrapRows), null, 'orient:claimable:features'),
     ]);
     // Unwrap AFTER capturing the count — the count lives on the envelope `unwrapRows`
     // throws away. `null` (the caught failure) must stay distinguishable from `[]`
@@ -1047,7 +1062,7 @@ export async function composeOrient(
     }
     if (issueRows === null) {
       // Oracle unavailable ⇒ previous behaviour, never an empty backlog.
-      list = await listLane({});
+      list = await boundedCore(listLane({}), [], 'orient:claimable:list-fallback');
     } else {
       // Reserve room for the feature lane first: features are few and would
       // otherwise be truncated away by a full issue window.
@@ -1084,10 +1099,14 @@ export async function composeOrient(
   const inbox =
     inboxLimit === 0
       ? undefined
-      : ((await call('coord:inbox', {
-          limit: inboxLimit,
-          max_body_chars: args.afterCompaction ? 800 : 300,
-        })) as { summary?: unknown; entries?: unknown } | undefined);
+      : ((await boundedCore(
+          call('coord:inbox', {
+            limit: inboxLimit,
+            max_body_chars: args.afterCompaction ? 800 : 300,
+          }),
+          undefined,
+          'orient:coord:inbox',
+        )) as { summary?: unknown; entries?: unknown } | undefined);
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
   // about the wrapped shapes the unwrap may yield.
@@ -1120,12 +1139,16 @@ export async function composeOrient(
         .map((row) => (row as { id?: unknown } | null)?.id)
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
       if (ids.length > 0) {
-        const obs = (await call('work_items:observe', {
-          ids,
-          ...(claimableHarnessScope?.resolved ?? args.harness
-            ? { harness: claimableHarnessScope?.resolved ?? args.harness }
-            : {}),
-        })) as { results?: Array<{ id: string; ok?: boolean; available?: boolean }> } | undefined;
+        const obs = (await boundedCore(
+          call('work_items:observe', {
+            ids,
+            ...(claimableHarnessScope?.resolved ?? args.harness
+              ? { harness: claimableHarnessScope?.resolved ?? args.harness }
+              : {}),
+          }),
+          undefined,
+          'orient:claimable:observe',
+        )) as { results?: Array<{ id: string; ok?: boolean; available?: boolean }> } | undefined;
         const gatedIds = new Set(
           (obs?.results ?? []).filter((r) => r && r.ok !== false && r.available === false).map((r) => r.id),
         );
@@ -1644,11 +1667,15 @@ export async function composeOrient(
   // EI-8300: skipped entirely on a monitor tick.
   if (!monitor && args.includePlanEvents !== false) {
     try {
-      const pe = (await call('coord:plan-events', {
-        ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
-        ...(effectivePlanSlug ? { plan_slug: effectivePlanSlug } : {}),
-        limit: PLAN_EVENTS_FOLD,
-      })) as { events?: unknown[]; total?: number } | undefined;
+      const pe = (await boundedCore(
+        call('coord:plan-events', {
+          ...(args.planEventsSince ? { since_ts: args.planEventsSince } : {}),
+          ...(effectivePlanSlug ? { plan_slug: effectivePlanSlug } : {}),
+          limit: PLAN_EVENTS_FOLD,
+        }),
+        undefined,
+        'orient:coord:plan-events',
+      )) as { events?: unknown[]; total?: number } | undefined;
       const events = Array.isArray(pe?.events) ? (pe!.events as unknown[]) : [];
       const total = typeof pe?.total === 'number' ? pe.total : events.length;
       const recent = events.slice(0, PLAN_EVENTS_FOLD);
@@ -2106,17 +2133,30 @@ export async function composeOrient(
   // rather than an escalation). BEST-EFFORT.
   if (args.intent) {
     let declared: { claims?: unknown } | undefined;
-    try {
-      declared = (await call('coord:declare-intent', {
+    // EI-21127719036550806: bounded — this is a WRITE (claims the caller's plan-item
+    // lane), so a hang here used to block the ENTIRE orient call past any external
+    // deadline. Bounding it changes nothing about the write itself (it still runs to
+    // completion server-side, exactly like every other in-flight-but-abandoned call
+    // withBoundedTimeout races against — see bounded-timeout.ts); it only stops an
+    // unresponsive declare-intent from silently costing the rest of orientation. A
+    // timeout degrades identically to the pre-existing catch-based failure contract
+    // (`intentDeclared: false`), so a caller must still re-verify the lane rather than
+    // assume the write landed.
+    const declareResult = await withBoundedTimeout(
+      call('coord:declare-intent', {
         intent: args.intent,
         ...(args.planSlug ? { current_plan_slug: args.planSlug } : {}),
         ...(args.planItems ? { items: args.planItems } : {}),
         ...(args.harness ? { harness: args.harness } : {}),
         ...(args.declared_goal_refs ? { declared_goal_refs: args.declared_goal_refs } : {}),
-      })) as { claims?: unknown } | undefined;
-      result.intentDeclared = true;
-    } catch {
+      }),
+      { fallback: undefined, timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS, label: 'orient:coord:declare-intent' },
+    );
+    if (declareResult.degraded) {
       result.intentDeclared = false;
+    } else {
+      declared = declareResult.value as { claims?: unknown } | undefined;
+      result.intentDeclared = true;
     }
     // EI-20013545515660920: surface the lane-claim OUTCOME instead of dropping it.
     // declare-intent already computed it; discarding it here is what made a failed

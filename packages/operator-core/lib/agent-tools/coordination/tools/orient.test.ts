@@ -332,6 +332,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   });
 
   it('falls back to the unfiltered list when the oracle fails — never an empty backlog', async () => {
+    // EI-21127719036550806: the oracle leg is now wrapped in withBoundedTimeout
+    // (bounded-core), which logs a console.warn on a caught failure — expected
+    // here since this test deliberately makes work_items:claimable throw.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { call, calls } = fakeCall({
       ...CORE,
       'work_items:claimable': () => {
@@ -345,6 +349,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(listCalls).toHaveLength(2);
     // The fallback leg is family-agnostic (no `kind` filter) — the old whole-lane read.
     expect(listCalls[1].args.kind).toBeUndefined();
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('omits the oracle entirely when no harness is resolvable (it requires one)', async () => {
@@ -425,7 +431,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   // A monitor tick skips the claimable leg entirely (EI-8300) — it must not pay
   // the new observe round-trip either.
   it('WI-5343: a monitor tick never calls work_items:observe (claimable leg skipped entirely)', async () => {
-    const { call, calls } = fakeCall({ ...CORE });
+    // intent:'tick' still fires coord:declare-intent (not gated by monitor mode) —
+    // mock it so the observe assertion isn't incidentally tripped by an unrelated
+    // unmocked sub-call.
+    const { call, calls } = fakeCall({ ...CORE, 'coord:declare-intent': () => ({ ok: true }) });
     await composeOrient({ mode: 'monitor', intent: 'tick' }, call, 'me');
     expect(calls.some((c) => c.name === 'work_items:observe')).toBe(false);
   });
@@ -433,6 +442,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   // A failed/erroring observe batch must never break orientation — the claimable
   // list stays unfiltered (advisory, as documented) rather than throwing.
   it('WI-5343: fails OPEN — an observe error keeps the unfiltered claimable list', async () => {
+    // EI-21127719036550806: observe is now wrapped in withBoundedTimeout, which
+    // logs a console.warn on a caught failure — expected here since this test
+    // deliberately makes work_items:observe throw.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { call } = fakeCall({
       ...CORE,
       'work_items:observe': () => {
@@ -442,6 +455,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const r = await composeOrient({}, call, 'me');
     expect(r.ok).toBe(true);
     expect(r.claimable).toHaveLength(2);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('folds the injected ownerPresent bit verbatim (P-004), and omits the leg when not resolved', async () => {
@@ -672,7 +687,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     });
     // present + relevant → folded
     {
-      const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'recipes:search': recipeHandler,
+        'coord:declare-intent': () => ({ ok: true }),
+      });
       const r = await composeOrient({ intent: 'tidy the backlog' }, call, 'me');
       expect(calls.find((c) => c.name === 'recipes:search')!.args).toMatchObject({
         query: 'tidy the backlog',
@@ -691,7 +710,11 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     }
     // includeRecipes:false → no recipes:search call, field absent
     {
-      const { call, calls } = fakeCall({ ...CORE, 'recipes:search': recipeHandler });
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'recipes:search': recipeHandler,
+        'coord:declare-intent': () => ({ ok: true }),
+      });
       const r = await composeOrient({ intent: 'tidy the backlog', includeRecipes: false }, call, 'me');
       expect(calls.some((c) => c.name === 'recipes:search')).toBe(false);
       expect(r.recipes).toBeUndefined();
@@ -780,6 +803,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       'recipes:search': () => {
         throw new Error('capability: intel:read required');
       },
+      'coord:declare-intent': () => ({ ok: true }),
     });
     const r = await composeOrient({ intent: 'x' }, call, 'me');
     expect(r.ok).toBe(true);
@@ -896,6 +920,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   });
 
   it('best-effort: a failing memory recall or declare degrades to null/false, not a thrown orient', async () => {
+    // EI-21127719036550806: declare-intent is now wrapped in withBoundedTimeout,
+    // which logs a console.warn on a caught failure — expected here since this
+    // test deliberately makes coord:declare-intent throw.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const { call } = fakeCall({
       ...CORE,
       'memory:search': () => {
@@ -911,6 +939,8 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.intentDeclared).toBe(false);
     // core orientation still intact
     expect(r.claimable).toHaveLength(2);
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
   });
 
   it('folds a fleet catch-up when the caller belongs to a fleet (P-006 auto-catch-up)', async () => {
@@ -2969,6 +2999,10 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
     });
 
     it('still reports the lane as unheld when declare-intent throws', async () => {
+      // EI-21127719036550806: declare-intent is now wrapped in withBoundedTimeout,
+      // which logs a console.warn on a caught failure — expected here since this
+      // test deliberately makes coord:declare-intent throw.
+      const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
       const { call } = fakeCall({
         ...LANE_CORE,
         'coord:declare-intent': () => {
@@ -2982,6 +3016,8 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
       );
       expect(r.intentDeclared).toBe(false);
       expect(r.laneClaim?.warning).toContain('FAILED');
+      expect(warnSpy).toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
   });
 });
@@ -3111,6 +3147,7 @@ describe('EI-20113865649946366: orient discloses its own trims (two-directional)
       const { call, calls } = fakeCall({
         ...CORE,
         'recipes:search': () => ({ ok: true, recipes: [{ id: 'should-not-run' }] }),
+        'coord:declare-intent': () => ({ ok: true }),
       });
       const r = await composeOrient({ intent: 'batch some tools', recipesLimit: 0 }, call, 'me');
       expect(calls.some((c) => c.name === 'recipes:search')).toBe(false);
