@@ -22,6 +22,7 @@ import {
   recipeRevision,
   validateRecipeAuthorityProof,
 } from '../../recipe-authority';
+import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
@@ -183,9 +184,12 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(runOrchestrationMock).toHaveBeenCalledTimes(1);
     const [, opts] = runOrchestrationMock.mock.calls[0] as unknown as [
       string,
-      { allowed: ReadonlySet<string>; tools: unknown[] },
+      { allowed: ReadonlySet<string>; tools: unknown[]; wrapDispatch?: unknown },
     ];
     const allowed = opts.allowed;
+
+    // Saved replay and inline code:run enter the same current-caller dispatcher.
+    expect(opts.wrapDispatch).toBe(bindCurrentCallerDispatch);
 
     // The allow-set must EQUAL the WORKER's role-scoped set (exclude code:run),
     // NOT the operator author's. Compute both reference sets from the real registry.

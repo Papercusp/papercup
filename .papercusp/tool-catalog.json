@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 776,
+  "count": 778,
   "tools": [
     {
       "name": "ablation:report",
@@ -8282,7 +8282,7 @@
           "POST"
         ]
       },
-      "description": "code:run adoption: of spawns that COULD batch (same-tool burst / fan-out), how many folded the flow into one code:run — per role/day, a fleet rollup, and the graded tool-utilization rating. Last N days.",
+      "description": "code:run adoption: of spawns that COULD batch (same-tool burst / fan-out), how many folded the flow into one code:run — plus per-run instrumentation, aggregate-output escape alerts, native-exec routing, and the frozen P-002 comparison baseline. Last N days.",
       "capabilities": [
         "intel:read"
       ],
@@ -8344,7 +8344,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Grading pot-coordination-health tool-utilization, or checking whether the code:run nudges / recipes-at-orient are moving adoption. Returns the fleet rate + a ready rating + the per-role/day breakdown.",
+        "when": "Grading pot-coordination-health tool-utilization, or checking whether the code:run nudges / recipes-at-orient are moving adoption. Also use it to inspect run quality, aggregate-output escapes, or D-017 migration away from native client execution.",
         "notWhen": "Raw per-tool call counts (dev:telemetry); which tools co-occur in a spawn (dev:tool_cooccurrence)."
       }
     },
@@ -16722,6 +16722,80 @@
       "profile": "engineer"
     },
     {
+      "name": "orchestrate:run",
+      "http": {
+        "path": "/api/agent-tools/orchestrate/run",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Run a fresh server-side orchestration script through code:run and return one bounded authored-summary envelope. The adapter preserves current-caller authorization, typed signature repair, timeout handling, dry-run previews, media returns, and recipe capture.",
+      "capabilities": [
+        "capability:bash"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "You have a fresh multi-step server orchestration script and need one aggregate-safe output envelope.",
+        "notWhen": "You have a saved recipe id; use recipes:run until the saved-recipe adapter is joined into this facade.",
+        "chaining": "orchestrate:run { script:{ source, title?, description? }, execution?:{ mode:\"server\" }, capture?:{ mode:\"auto\"|\"never\" }, timeoutSec? }"
+      }
+    },
+    {
       "name": "orders:disposition",
       "http": {
         "path": "/api/agent-tools/orders/disposition",
@@ -25052,6 +25126,39 @@
       "guidance": {
         "when": "Onboarding/tutorial flows: read BEFORE offering a setup step (skip what is already ok) and RE-READ after acting — never tell the user a step is configured without this re-read.",
         "notWhen": "Per-provider sign-in token detail (expiry, refresh) — that lives on the /desktop/agent-auth-status route, not here."
+      }
+    },
+    {
+      "name": "slack:respond-in-thread",
+      "http": {
+        "path": "/api/agent-tools/slack/respond-in-thread",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Reply to the Slack thread that originated one completed external-trigger plan run. The server resolves source/channel/thread/credential from planRunId; callers cannot redirect the post or read the token.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator",
+        "papercup",
+        "papercup-deep"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "A Slack-triggered plan item asks you to respond to the originating mention. Read payload.plan_run.runId from the claimed work item and pass it with the final response text.",
+        "notWhen": "General Slack posting or a run that did not originate from an ext:slack event. This tool refuses arbitrary channel/thread coordinates.",
+        "chaining": "After posted:true or alreadyPosted:true, complete the plan-run work item with the returned messageTs as evidence."
       }
     },
     {

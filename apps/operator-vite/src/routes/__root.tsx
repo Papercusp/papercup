@@ -255,10 +255,11 @@ function RootComponent() {
               <GlobalVoiceShortcuts />
               <GlobalSearchDialog />
               {!chromeless && !wslGateBlocking && <PresenceRail />}
-              {/* Left sidebar — Swarm / Voice / Hives (left-sidebar-tauri-
-                  2026-06-07). Inside NuqsAdapter (its open/tab/selection state
-                  is URL-backed) + RootSyncProvider (its panels use
-                  useSyncQuery); docked via body.has-left-sidebar. Skipped
+              {/* Far-left steering/settings sidebar (D-009). Inside NuqsAdapter
+                  (its open/tab/selection state is URL-backed) + RootSyncProvider
+                  (its panels use useSyncQuery); docked via
+                  body.has-left-sidebar. Papercup chat mounts after it as the
+                  middle pane. Skipped
                   while the WSL onboarding gate is blocking (WI-2749 item
                   #2) — see useWslGateBlocking. */}
               {!wslGateBlocking && (

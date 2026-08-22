@@ -128,7 +128,7 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/gym/control-plane.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/gym/control-plane.ts:identity-field#2:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/harness-ops/proxy.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/projected-tool-deps.ts:fallback#1:input.ctx.harnessSlug ?? \"\",",
+  "packages/operator-core/lib/projected-tool-deps.ts:fallback#1:input.ctx.harnessSlug ?? '',",
 ]);
 
 /** Vendored/generated/test files are not operator source and are not scanned. */

@@ -207,6 +207,66 @@ describe('installInjectionHooks — install provenance', () => {
     expect(error).toHaveBeenCalledWith(expect.stringContaining('OMP hook bundle load check FAILED'));
   });
 
+  it('installs one self-contained vm-release .mjs bundle under the established .ts destination', async () => {
+    const ompSource = path.join(srcRoot, 'omp');
+    const destination = path.join(home, 'omp-release-dest');
+    await fs.mkdir(ompSource, { recursive: true });
+    await fs.writeFile(path.join(ompSource, 'coord-hook.mjs'), '// bundled coord release\nexport default {};\n');
+    await fs.writeFile(path.join(ompSource, 'inject-hook.mjs'), '// unrelated sibling bundle\n');
+
+    const result = await installOmpHookBundle({
+      sourceDir: ompSource,
+      entryFile: 'coord-hook.mjs',
+      destinationDir: destination,
+      destinationEntry: 'papercusp-coord.ts',
+    });
+
+    expect(result).toEqual({ installed: ['papercusp-coord.ts'], unresolved: [] });
+    expect(await fs.readFile(path.join(destination, 'papercusp-coord.ts'), 'utf8')).toContain(
+      'bundled coord release',
+    );
+    expect(await fs.readdir(destination)).toEqual(['papercusp-coord.ts']);
+  });
+
+  it('falls back to the bundled vm-release injection hook while preserving its install path and stamp', async () => {
+    await makeSources({ ompArtifact: false });
+    const ompSource = path.join(srcRoot, 'omp');
+    await fs.mkdir(ompSource, { recursive: true });
+    await fs.writeFile(path.join(ompSource, 'inject-hook.mjs'), '// bundled inject release\nexport {};\n');
+    await fs.writeFile(path.join(ompSource, 'coord-hook.mjs'), '// unrelated sibling bundle\n');
+
+    const installed = await installInjectionHooks(home, injectSrc);
+
+    expect(installed).toContain(path.join('omp', 'inject-hook.ts'));
+    expect(installed).not.toContain(path.join('omp', 'coord-hook.mjs'));
+    expect(await fs.readFile(path.join(ompDest(), 'inject-hook.ts'), 'utf8')).toContain(
+      'bundled inject release',
+    );
+    expect((await readInstallStamp(ompDest()))!).toMatchObject({
+      sourceDir: ompSource,
+      files: ['inject-hook.ts'],
+    });
+  });
+
+  it('auto-discovers the bundled vm-release coordination hook when TypeScript source is absent', async () => {
+    const operatorRoot = path.join(root, 'vm-release-operator');
+    const ompSource = path.join(operatorRoot, 'scripts', 'hooks', 'omp');
+    await fs.mkdir(ompSource, { recursive: true });
+    await fs.writeFile(path.join(ompSource, 'coord-hook.mjs'), '// bundled coord discovery\nexport {};\n');
+
+    const result = await installPapercuspFiles({
+      home,
+      operatorAppRoot: operatorRoot,
+      playbookSource: path.join(operatorRoot, 'missing-playbook.md'),
+    });
+
+    expect(result.extensionWritten).toBe(true);
+    expect(result.extensionSource).toBe(path.join(ompSource, 'coord-hook.mjs'));
+    expect(await fs.readFile(path.join(home, '.papercusp', 'papercusp-coord.ts'), 'utf8')).toContain(
+      'bundled coord discovery',
+    );
+  });
+
   it('logs one greppable line naming hooks/inject and inject-hook', async () => {
     // The exact probe the failed investigation ran was
     //   journalctl -u papercup-dev-api.service | grep -icE 'injectionHooks|hooks/inject|inject-hook'

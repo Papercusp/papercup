@@ -16,6 +16,7 @@ import {
   OPERATOR_CHAT_MIN_WIDTH,
   clampOperatorChatWidth,
   operatorChatOffsetWidth,
+  operatorChatWidthFromPointer,
   operatorChatWidthCeiling,
 } from './operator-chat-layout';
 
@@ -60,5 +61,16 @@ describe('operatorChatOffsetWidth', () => {
     expect(operatorChatOffsetWidth(true, 700, 1200)).toBe(700);
     expect(operatorChatOffsetWidth(true, 5000, 1200)).toBe(900);
     expect(operatorChatOffsetWidth(true, Number.NaN, 1200)).toBe(OPERATOR_CHAT_DEFAULT_WIDTH);
+  });
+});
+
+describe('operatorChatWidthFromPointer', () => {
+  it('subtracts the far-left steering rail before sizing the middle chat pane', () => {
+    expect(operatorChatWidthFromPointer(784, 384, 1440)).toBe(400);
+  });
+
+  it('treats a missing/non-finite rail offset as zero and still clamps', () => {
+    expect(operatorChatWidthFromPointer(420, Number.NaN, 1200)).toBe(420);
+    expect(operatorChatWidthFromPointer(10, 384, 1200)).toBe(OPERATOR_CHAT_MIN_WIDTH);
   });
 });

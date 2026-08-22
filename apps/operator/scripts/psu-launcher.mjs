@@ -1882,6 +1882,21 @@ export function recoverSessionOwner(nativeSessionId, { home = homedir() } = {}) 
 }
 
 /**
+ * Recover the canonical coordination owner for a session found outside the
+ * recent adv_sessions window. A tracked session's adv-keyed binding wins: it
+ * names the owner still attached to the durable row (and therefore its fleet,
+ * loop, locks, and checkpoints). The native id remains the fallback for raw
+ * sessions and older launches that predate the adv-keyed index.
+ */
+export function recoverResumeSessionOwner(session, { home = homedir() } = {}) {
+  if (session?.id != null) {
+    const advOwner = recoverSessionOwner(`adv-${session.id}`, { home });
+    if (advOwner) return advOwner;
+  }
+  return recoverSessionOwner(session?.sessionId || session?.ompThreadId, { home });
+}
+
+/**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:
  *   1. `--session-id <uuid>` wins — it declares the launched session's OWN id
@@ -8008,11 +8023,25 @@ export async function ensureInteractiveConfigViaOperator(
  * dies on the missing provider or, worse, comes up quietly with no coordination
  * MCP at all. Presence of the MCP block distinguishes ours from that stub.
  */
-export function isCodexHomeLaunchReady(codexHome) {
+export function isCodexHomeLaunchReady(codexHome, expectedOwner = null) {
   try {
     if (!codexHome) return false;
     const text = readFileSync(join(codexHome, 'config.toml'), 'utf8'); // throws when absent
-    return text.includes('[mcp_servers.papercusp-su]');
+    if (!text.includes('[mcp_servers.papercusp-su]')) return false;
+    if (!expectedOwner) return true;
+    if (!text.includes(`client=${encodeURIComponent(expectedOwner)}`)) return false;
+
+    const diagnostics = JSON.parse(
+      readFileSync(join(codexHome, 'papercusp-diagnostics.json'), 'utf8'),
+    );
+    if (diagnostics?.lockOwnerSid !== expectedOwner) return false;
+    if (diagnostics?.lockEnforcement === 'hooks-missing') return true;
+    const hooksText = readFileSync(join(codexHome, 'hooks.json'), 'utf8');
+    const hookOwners = Array.from(
+      hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g),
+      (match) => match[1],
+    );
+    return hookOwners.length > 0 && hookOwners.every((owner) => owner === expectedOwner);
   } catch {
     return false;
   }
@@ -8048,7 +8077,7 @@ export async function ensureCodexHomeViaOperator(
   // otherwise have a DIFFERENT home rebuilt behind its back while the one it
   // actually launches with stays broken (the same guard the claude twin uses).
   if (codexHome !== join(homedir(), '.papercusp', 'su-codex-homes', `session-${advSessionId}`)) return null;
-  if (isCodexHomeLaunchReady(codexHome)) return null; // healthy — no call, no write
+  if (isCodexHomeLaunchReady(codexHome, owner)) return null; // healthy + same owner — no call, no write
   try {
     const tok = token ?? readToken();
     const res = await fetchImpl(operatorUrl + '/api/adv/sessions/ensure-codex-home', {
@@ -8064,7 +8093,7 @@ export async function ensureCodexHomeViaOperator(
     if (!r?.ok) return null;
     if (r.repaired) {
       console.error(
-        'psu: rebuilt this session\'s codex home config (it carried rollouts but no MCP/provider state — the resume would have failed on a missing model provider, or come up with no coordination MCP).',
+        'psu: repaired this session\'s codex home config/hooks identity in place (rollouts and prompts were preserved).',
       );
     }
     return r;
@@ -8278,7 +8307,7 @@ async function resumeFlow(args = {}) {
     //    identity — fleet leadership, file locks, presence, pty-host discovery —
     //    instead of minting a fresh SID and orphaning all four (the 2026-07-02
     //    identity-split bug). A fork still mints (resumeEnvFor's fork branch).
-    const bornOwnerId = recoverSessionOwner(untracked.sessionId || untracked.ompThreadId);
+    const bornOwnerId = recoverResumeSessionOwner(untracked);
     if (bornOwnerId) untracked.coordOwnerId = bornOwnerId;
 
     // 4. Untracked = NOT launched by psu → its engineer playbook (and, for codex,

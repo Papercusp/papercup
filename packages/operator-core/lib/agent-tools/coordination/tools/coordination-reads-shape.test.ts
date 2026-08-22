@@ -360,6 +360,30 @@ describe("shapeFleetAssignments (P-022)", () => {
     expect(out).not.toHaveProperty("coverage_collisions");
   });
 
+  it("carries same-principal coverage_duplicates through both tiers (EI-21188799646985672)", () => {
+    const withDuplicate = {
+      ...data,
+      summary: { ...data.summary, coverage_duplicates: 1 },
+      coverage_duplicates: [
+        {
+          ref: "plan-x#P-004",
+          holder: "su-A",
+          workItemIds: ["WI-1347", "WI-1348"],
+        },
+      ],
+    };
+    for (const tier of ["trimmed", "standard"] as const) {
+      const out = shapeFleetAssignments(withDuplicate, tier) as Record<string, unknown>;
+      expect(out.coverage_duplicates).toEqual(withDuplicate.coverage_duplicates);
+      expect((out.summary as Record<string, unknown>).coverage_duplicates).toBe(1);
+    }
+  });
+
+  it("omits coverage_duplicates when clean", () => {
+    const out = shapeFleetAssignments(data, "trimmed") as Record<string, unknown>;
+    expect(out).not.toHaveProperty("coverage_duplicates");
+  });
+
   it("non-conforming data passes through", () => {
     const weird = { ok: false, error: "x" };
     expect(shapeFleetAssignments(weird, "trimmed")).toBe(weird);

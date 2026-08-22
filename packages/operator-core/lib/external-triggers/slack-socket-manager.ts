@@ -1,5 +1,6 @@
 /** Process-local Slack Socket Mode connection manager, visible through schedule:inventory. */
 import { WebSocket } from 'ws';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
@@ -207,19 +208,30 @@ export class SlackSocketManager {
 }
 
 type GlobalState = { manager: SlackSocketManager; timer: ManagedHandle };
-const STATE = Symbol.for('papercusp.external-triggers.slack-socket-manager');
+interface GlobalStateHolder {
+  current?: GlobalState;
+}
+
+/**
+ * Pin the holder through the shared primitive so duplicate module records stay
+ * on one manager and the split remains visible to the module-duplication audit.
+ * The holder is eager, while the manager/timer stay lazy so the first caller's
+ * injected dependencies retain the existing startup contract.
+ */
+const state = pinModuleState<GlobalStateHolder>(
+  'papercusp.external-triggers.slack-socket-manager',
+  () => ({}),
+);
 
 /** Start once in the background host. The managed timer is the schedule:inventory health row. */
 export function startSlackSocketManager(deps: SlackSocketManagerDeps = {}): GlobalState {
-  const globalState = globalThis as typeof globalThis & { [STATE]?: GlobalState };
-  if (globalState[STATE]) return globalState[STATE]!;
+  if (state.current) return state.current;
   const manager = new SlackSocketManager(deps);
   const timer = managedSetInterval('slack-socket-reconcile', RECONCILE_MS, () => manager.reconcile(), {
     category: 'lifecycle',
     classification: 'timeout-reaper',
     fireOnArm: true,
   });
-  const state = { manager, timer };
-  globalState[STATE] = state;
-  return state;
+  state.current = { manager, timer };
+  return state.current;
 }

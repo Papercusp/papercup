@@ -652,6 +652,16 @@ export function recoverSessionOwner(nativeSessionId: any, { home }?: {
     home?: string | undefined;
 }): any;
 /**
+ * Recover the canonical coordination owner for a session found outside the
+ * recent adv_sessions window. A tracked session's adv-keyed binding wins: it
+ * names the owner still attached to the durable row (and therefore its fleet,
+ * loop, locks, and checkpoints). The native id remains the fallback for raw
+ * sessions and older launches that predate the adv-keyed index.
+ */
+export function recoverResumeSessionOwner(session: any, { home }?: {
+    home?: string | undefined;
+}): any;
+/**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:
  *   1. `--session-id <uuid>` wins — it declares the launched session's OWN id
@@ -2372,7 +2382,7 @@ export function ensureInteractiveConfigViaOperator(owner: any, configDir: any, {
  * dies on the missing provider or, worse, comes up quietly with no coordination
  * MCP at all. Presence of the MCP block distinguishes ours from that stub.
  */
-export function isCodexHomeLaunchReady(codexHome: any): boolean;
+export function isCodexHomeLaunchReady(codexHome: any, expectedOwner?: null): boolean;
 /**
  * WI-38706 — the codex twin of `ensureInteractiveConfigViaOperator`, and for the
  * same structural reason: a FRESH psu launch has its CODEX_HOME materialized

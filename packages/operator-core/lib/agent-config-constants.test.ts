@@ -186,7 +186,7 @@ describe('defaultCompactionLimitForWindow (live backend window)', () => {
 
 describe('selfSetCeilingForWindow (measured runtime override ceiling)', () => {
   it('allows a leader/solo override above the 400k seeded cap when the window supports it', () => {
-    expect(selfSetCeilingForWindow(828_400)).toBe(681_000);
+    expect(selfSetCeilingForWindow(828_400)).toBe(682_000);
   });
 
   it('keeps fleet members at their role ceiling even with a wider measured window', () => {

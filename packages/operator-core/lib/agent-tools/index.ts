@@ -66,6 +66,9 @@ import './lsp/pack';
 
 // code-execution-tool-orchestration (B-CX-2A): the code:run code-mode tool.
 import './code/run';
+// orchestration-runtime-unification P-009: server-script facade over code:run
+// with the shared P-006 authored-summary envelope.
+import './orchestration/run';
 // code-execution-tool-orchestration (B-CX-API): the code:tools on-demand signature lookup.
 import './code/tools';
 // code-recipes-2026-06-21 Phase 2 (P-005) — the recipe reuse verbs: list / get /
@@ -255,6 +258,8 @@ import './search/semantic';
 // personal-vault-2026-08-22: default-deny owner-local recall + owner-only purge.
 import './personal/search';
 import './personal/purge';
+// external-triggers P-008: reply only to the Slack thread anchored by a durable plan run.
+import './slack/respond-in-thread';
 import './memory/remember';
 import './memory/search';
 import './memory/list';

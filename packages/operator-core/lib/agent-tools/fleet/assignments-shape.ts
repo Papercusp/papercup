@@ -40,6 +40,7 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
         stalled?: unknown[];
         coverage?: unknown[];
         coverage_collisions?: unknown[];
+        coverage_duplicates?: unknown[];
       } & Record<string, unknown>)
     | null
     | undefined;
@@ -160,6 +161,10 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   // kept (capped) at every tier like orphaned/stalled, since the whole point is
   // the Queen sees the cross-table duplicate without a full-payload read.
   const collisions = capList(d.coverage_collisions, c.reclaim);
+  // Same-principal duplicate coverage (EI-21188799646985672) is the sibling
+  // coordination smell: keep it at every tier, capped like collisions, so a
+  // trimmed monitor can see it without fetching the full assignment payload.
+  const duplicates = capList(d.coverage_duplicates, c.reclaim);
 
   const agents = d.agents.slice(0, c.agents).map(projectAgent);
   if (d.agents.length > c.agents) {
@@ -216,6 +221,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(stalled.note ? { stalled_note: stalled.note } : {}),
     ...(collisions.rows.length ? { coverage_collisions: collisions.rows } : {}),
     ...(collisions.note ? { coverage_collisions_note: collisions.note } : {}),
+    ...(duplicates.rows.length ? { coverage_duplicates: duplicates.rows } : {}),
+    ...(duplicates.note ? { coverage_duplicates_note: duplicates.note } : {}),
     ...coverageOut,
     ...dagOut,
     agents,

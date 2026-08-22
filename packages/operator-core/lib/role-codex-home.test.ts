@@ -448,6 +448,48 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(idempotent.configPath, 'utf8')).toBe(upgradedToml);
   });
 
+  it('repairs a reused SU home from a prior owner without deleting its rollout or prompt', async () => {
+    await installFakeHooks();
+    const { ensureSuCodexHomeConfig, writeSuCodexHome } = await loadMod();
+    const oldOwner = 'su-old-owner';
+    const newOwner = 'su-current-owner';
+    const home = writeSuCodexHome({
+      sessionKey: 'identity-repair',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      promptText: 'PRESERVE THIS PROMPT',
+      sid: oldOwner,
+    });
+    const rollout = join(home.codexHome, 'sessions', '2026', '08', '22', 'rollout.jsonl');
+    mkdirSync(join(home.codexHome, 'sessions', '2026', '08', '22'), { recursive: true });
+    writeFileSync(rollout, '{"type":"session_meta"}\n');
+
+    const repaired = ensureSuCodexHomeConfig({
+      sessionKey: 'identity-repair',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: newOwner,
+    });
+
+    expect(repaired.repaired).toBe(true);
+    expect(repaired.identityRepaired).toBe(true);
+    expect(readFileSync(repaired.configPath, 'utf8')).toContain(`client=${newOwner}`);
+    expect(readFileSync(repaired.configPath, 'utf8')).not.toContain(`client=${oldOwner}`);
+    const hooks = readFileSync(join(home.codexHome, 'hooks.json'), 'utf8');
+    expect(hooks).toContain(`PAPERCUSP_LOCK_SID='${newOwner}'`);
+    expect(hooks).not.toContain(oldOwner);
+    const diagnostics = JSON.parse(readFileSync(join(home.codexHome, 'papercusp-diagnostics.json'), 'utf8'));
+    expect(diagnostics.lockOwnerSid).toBe(newOwner);
+    expect(readFileSync(join(home.codexHome, '.owner-sid'), 'utf8')).toBe(newOwner);
+    expect(readFileSync(join(home.codexHome, 'AGENTS.md'), 'utf8')).toContain('PRESERVE THIS PROMPT');
+    expect(readFileSync(rollout, 'utf8')).toContain('session_meta');
+
+    const idempotent = ensureSuCodexHomeConfig({
+      sessionKey: 'identity-repair',
+      mcpUrl: 'http://x/api/mcp?superuser=1',
+      sid: newOwner,
+    });
+    expect(idempotent).toMatchObject({ repaired: false, identityRepaired: false });
+  });
+
   it('rekeys a prepared home to the durable adv-session id without rebuilding or overwriting', async () => {
     const { rekeyCodexHome, writeSuCodexHome } = await loadMod();
     const prepared = writeSuCodexHome({

@@ -6,8 +6,8 @@
  * The rail (left-sidebar-tauri-2026-06-07) is the desktop twin of the pui
  * dock's old main pane: Swarm / Voice / Hives as TABS. DOCKED on the LEFT —
  * it reserves layout space (body.has-left-sidebar padding-left + the
- * --left-sidebar-w var) so the app shifts right, sits AFTER the op-chat
- * sidebar (offset by --op-chat-w), collapses to a thin expand-rail, and is
+ * --left-sidebar-w var) so the app shifts right, sits at the FAR LEFT before
+ * the Papercup chat pane, collapses to a thin expand-rail, and is
  * drag-resizable from its RIGHT edge. Everything is prefixed pclsb.
  *
  * ⚠ The whole sheet below is ONE TEMPLATE LITERAL. A stray backtick or `${` —
@@ -22,7 +22,7 @@ export const LEFT_SIDEBAR_CSS = `
   --pclsb-current-accent: var(--accent, #38bdf8);
   position: fixed;
   top: 0;
-  left: var(--op-chat-w, 0px); /* dock AFTER the op-chat sidebar */
+  left: 0; /* D-009: steering/settings is the far-left dock */
   bottom: 0;
   z-index: 1290; /* just under the op-chat sidebar / dev rail layer */
   display: flex;
@@ -74,6 +74,7 @@ body.has-left-sidebar {
   padding-left: calc(var(--op-chat-w, 0px) + var(--left-sidebar-w, 48px));
 }
 body.has-left-sidebar .pc-header {
+  left: calc(var(--left-sidebar-w, 0px) + var(--op-chat-w, 0px));
   width: calc(100vw - var(--op-chat-w, 0px) - var(--left-sidebar-w, 0px) - var(--dev-rail-w, 0px));
 }
 

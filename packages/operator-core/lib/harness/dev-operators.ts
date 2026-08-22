@@ -28,6 +28,7 @@
  */
 
 import { defaultDetectSourceRoot } from './env-operator-launcher';
+import { isVmReleaseDistribution } from '../vm-release-runtime-policy';
 
 export interface DevOperatorDescriptor {
   /** Stable id (persisted/selected). */
@@ -129,6 +130,8 @@ export interface ResolveDevOperatorsDeps {
    * (dev/local) are omitted from the result entirely — see the descriptor doc.
    */
   hasSourceTree?: boolean;
+  /** Test seam; defaults to the live process environment. */
+  env?: NodeJS.ProcessEnv;
 }
 
 /** This operator's listen port, from the same env the host reads (PAPERCUSP_HONO_PORT / PORT). */
@@ -213,6 +216,24 @@ export async function resolveDevOperators(
   const timeoutMs = deps.timeoutMs ?? 700;
   const selfPort = deps.selfPort !== undefined ? deps.selfPort : detectSelfPort();
   const disabled = new Set(deps.disabledIds ?? []);
+  if (isVmReleaseDistribution(deps.env ?? process.env)) {
+    const origin = selfPort == null ? `http://${host}:3070` : `http://${host}:${selfPort}`;
+    return {
+      selfPort,
+      operators: [{
+        id: 'release',
+        label: 'release',
+        port: selfPort ?? 3070,
+        origin,
+        tooltip: 'Immutable Papercusp VM runtime (single operator).',
+        reachable: true,
+        sha: null,
+        isSelf: true,
+        kind: 'release',
+        enabled: true,
+      }],
+    };
+  }
   // Omit source-tree-only envs (dev/local) where no runnable source tree exists —
   // without one they CANNOT run, and rendering them as permanently grey buttons
   // is the WI-3284 owner-reported wall. prod/staging remain (the per-branch

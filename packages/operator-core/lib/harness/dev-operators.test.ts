@@ -9,6 +9,20 @@ function versionResponse(sha: string): Response {
 }
 
 describe('resolveDevOperators', () => {
+  it('returns only the single immutable operator for vm-release', async () => {
+    const fetchMock = vi.fn();
+    const { operators, selfPort } = await resolveDevOperators({
+      fetch: fetchMock as unknown as typeof fetch,
+      selfPort: 45821,
+      env: { PAPERCUSP_DISTRIBUTION_PROFILE: 'vm-release' },
+    });
+    expect(selfPort).toBe(45821);
+    expect(operators).toEqual([
+      expect.objectContaining({ id: 'release', port: 45821, isSelf: true, kind: 'release' }),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('returns one entry per canonical env PLUS a trailing release entry', async () => {
     const fetchMock = vi.fn(async () => versionResponse('aaaaaaaa'));
     const { operators } = await resolveDevOperators({

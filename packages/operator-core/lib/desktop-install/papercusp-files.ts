@@ -268,11 +268,15 @@ function localOmpImportCandidates(importer: string, specifier: string): string[]
     ...new Set([
       raw,
       `${raw}.ts`,
+      `${raw}.mjs`,
       `${stem}.ts`,
       `${stem}.mts`,
       `${stem}.tsx`,
+      `${stem}.mjs`,
       path.join(raw, 'index.ts'),
       path.join(stem, 'index.ts'),
+      path.join(raw, 'index.mjs'),
+      path.join(stem, 'index.mjs'),
     ]),
   ];
 }
@@ -336,13 +340,19 @@ async function refuseKnownOlderHookSource(
 }
 
 /**
- * Install an OMP TypeScript hook together with every sibling `.ts` artifact.
+ * Install an OMP TypeScript hook together with every sibling `.ts` artifact,
+ * or install one self-contained `.mjs` release bundle under the caller's
+ * established destination name.
  *
- * The OMP runner loads these files independently from the esbuild bundle, so a
+ * The OMP runner loads TypeScript files independently from the sidecar's main
+ * esbuild bundle, so a
  * new relative import must travel with the importer. Direct siblings are used
  * deliberately (rather than naming today's `non-preempting-delivery.ts`) so a
  * future extraction cannot recreate the same partial-install class. `entryFile`
  * may be renamed at the destination (`coord-hook.ts` → `papercusp-coord.ts`).
+ * A `.mjs` entry is already bundled and therefore copies only that entry, never
+ * unrelated sibling bundles; vm-release uses this path while preserving the
+ * `.ts` destination names consumed by existing OMP launchers.
  * `__tests__` is a directory and is therefore never copied.
  *
  * The post-copy import check is an out-of-band detector: a broken OMP extension
@@ -369,10 +379,14 @@ export async function installOmpHookBundle(opts: {
     throw e;
   }
 
-  const sourceFiles = entries
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
-    .map((entry) => entry.name)
-    .sort();
+  const sourceFiles = opts.entryFile.endsWith('.mjs')
+    ? entries
+        .filter((entry) => entry.isFile() && entry.name === opts.entryFile)
+        .map((entry) => entry.name)
+    : entries
+        .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+        .map((entry) => entry.name)
+        .sort();
   if (!sourceFiles.includes(opts.entryFile)) {
     return { installed: [], unresolved: [] };
   }
@@ -803,14 +817,19 @@ function playbookCandidates(operatorAppRoot: string, explicitRoot: boolean, prof
 }
 
 function extensionCandidates(operatorAppRoot: string, explicitRoot: boolean): string[] {
-  const fromRoot = [path.join(operatorAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts')];
+  const fromRoot = [
+    path.join(operatorAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+    path.join(operatorAppRoot, 'scripts', 'hooks', 'omp', 'coord-hook.mjs'),
+  ];
   if (explicitRoot) return fromRoot;
   const sidecarRoot = process.cwd();
   // Plain-cwd candidate for the dist-host layout — same miss as ccHookDirCandidates.
   return [
     ...fromRoot,
     path.join(sidecarRoot, 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+    path.join(sidecarRoot, 'scripts', 'hooks', 'omp', 'coord-hook.mjs'),
     path.join(sidecarRoot, 'apps', 'operator', 'scripts', 'hooks', 'omp', 'coord-hook.ts'),
+    path.join(sidecarRoot, 'apps', 'operator', 'scripts', 'hooks', 'omp', 'coord-hook.mjs'),
   ];
 }
 
@@ -1122,7 +1141,14 @@ function hookDirCandidates(operatorAppRoot: string, explicitRoot: boolean, subdi
  * Best-effort like its CC sibling: never throws, never blocks install.
  */
 export async function installInjectionHooks(home: string, injectSrcDir: string): Promise<string[]> {
-  const ompHookSrc = path.join(path.dirname(injectSrcDir), 'omp', 'inject-hook.ts');
+  const ompSourceDir = path.join(path.dirname(injectSrcDir), 'omp');
+  const ompTypeScriptSource = path.join(ompSourceDir, 'inject-hook.ts');
+  const ompBundledSource = path.join(ompSourceDir, 'inject-hook.mjs');
+  // Dogfood/dev keeps the readable TypeScript family. vm-release ships the
+  // self-contained esbuild fallback instead, but installs it under the same
+  // inject-hook.ts destination so the existing psu/OMP launch contract does not
+  // fork by distribution profile.
+  const ompHookSrc = (await isRegularFile(ompTypeScriptSource)) ? ompTypeScriptSource : ompBundledSource;
   const installed: string[] = [];
   // EI-20006285243973245 — until now this installer recorded NOTHING, anywhere.
   // The CC hooks beside it have carried a provenance stamp since WI-37405, but
@@ -1149,7 +1175,7 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
   // Either destination proving a newer install protects the pair as a unit.
   if (
     (await refuseKnownOlderHookSource('injection hooks', injectSrcDir, injectDest, incomingProvenance)) ||
-    (await refuseKnownOlderHookSource('OMP injection hook', path.dirname(ompHookSrc), ompDest, incomingProvenance))
+    (await refuseKnownOlderHookSource('OMP injection hook', ompSourceDir, ompDest, incomingProvenance))
   ) {
     return [];
   }
@@ -1222,13 +1248,14 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
       sourceDir: path.dirname(ompHookSrc),
       entryFile: path.basename(ompHookSrc),
       destinationDir: ompDest,
+      destinationEntry: 'inject-hook.ts',
       provenanceGuardDir: ompDest,
       provenanceLabel: 'OMP injection hook',
     });
     installed.push(...ompBundle.installed.map((file) => path.join('omp', file)));
     if (ompBundle.installed.length > 0) {
       await writeInstallStamp(ompDest, {
-        sourceDir: path.dirname(ompHookSrc),
+        sourceDir: ompSourceDir,
         ...stampBase,
         files: ompBundle.installed,
       });

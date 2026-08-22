@@ -36,6 +36,7 @@ export function shapeLocksList(data: unknown, tier: LocksTier): unknown {
   const projectHolder = (row: unknown): Record<string, unknown> => {
     const r = (row ?? {}) as Record<string, unknown>;
     return {
+      resource: r.resource ?? null,
       owner: r.owner ?? null,
       mode: r.mode ?? null,
       status: r.status ?? null,

@@ -73,7 +73,19 @@ vi.mock('./ConversationsTab', () => ({ default: () => <div data-testid="panel-co
 // them at all (WI-5162 — they are op-chat sidebar faces now). A stub here would
 // hide a regression that re-added them. See the "moved out" test below.
 
-import LeftSidebar from './LeftSidebar';
+import LeftSidebar, { leftSidebarWidthFromPointer } from './LeftSidebar';
+
+describe('far-left dock width math (D-009)', () => {
+  it('uses viewport clientX directly, independent of the chat pane width', () => {
+    document.documentElement.style.setProperty('--op-chat-w', '720px');
+    expect(leftSidebarWidthFromPointer(420, 1440)).toBe(420);
+  });
+
+  it('retains the rail minimum and viewport ceiling', () => {
+    expect(leftSidebarWidthFromPointer(10, 1200)).toBe(300);
+    expect(leftSidebarWidthFromPointer(2000, 1200)).toBe(600);
+  });
+});
 
 beforeAll(() => {
   // The vitest jsdom localStorage shim can be broken (`getItem is not a function`);

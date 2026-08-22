@@ -33,6 +33,7 @@ const readMigration = (f: string) =>
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const releaseReclaimedWorkItemLocks = vi.hoisted(() => vi.fn());
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
@@ -41,6 +42,9 @@ vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
   return { ...actual, activeWorkspaceId: () => 'default' };
 });
+vi.mock('./work-item-lock-release', () => ({
+  releaseReclaimedWorkItemLocks: (...args: unknown[]) => releaseReclaimedWorkItemLocks(...args),
+}));
 
 const wi = await import('./work-items');
 const H = 'papercup';
@@ -107,7 +111,11 @@ beforeAll(async () => {
   await ensureCoordCapabilityTables(db.sql);
 }, 90_000);
 afterAll(async () => { await db.cleanup(); });
-beforeEach(async () => { await db.sql`TRUNCATE harness_shared.work_items`; });
+beforeEach(async () => {
+  await db.sql`TRUNCATE harness_shared.work_items`;
+  releaseReclaimedWorkItemLocks.mockReset();
+  releaseReclaimedWorkItemLocks.mockResolvedValue({ releases: [], failures: 0, skipped: null });
+});
 
 describe('work_items claim — atomic `in` (D-004, real PG)', () => {
   it('two competing claims on one item ⇒ exactly one wins', async () => {
@@ -171,6 +179,26 @@ describe('work_items claim — atomic `in` (D-004, real PG)', () => {
       await seedIssue('EI-race-3');
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
       expect((await wi.claimWorkItem('EI-race-3', 'agA', { harness: H }))?.assignee).toBe('agA');
+    });
+
+    it('expected-holder transfer releases only the prior holder touch-set', async () => {
+      const transferPath = 'packages/operator-core/lib/external-triggers/slack-socket-manager.ts';
+      await seedFeature('F-transfer-locks', { takenBy: 'former-holder' });
+      await db.sql`
+        UPDATE harness_shared.harness_features_consolidated
+           SET payload = ${db.sql.json({ paths: [transferPath] })}
+         WHERE feature_id = 'F-transfer-locks'`;
+
+      const claimed = await wi.claimWorkItem('F-transfer-locks', 'successor', {
+        harness: H,
+        expectedAssignee: 'former-holder',
+      });
+
+      expect(claimed?.assignee).toBe('successor');
+      expect(releaseReclaimedWorkItemLocks).toHaveBeenCalledWith({
+        ownerId: 'former-holder',
+        paths: [transferPath],
+      });
     });
 
     it('releasing an issue (assignee -> null) still works under the new guard', async () => {

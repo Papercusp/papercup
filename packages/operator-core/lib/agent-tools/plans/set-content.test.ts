@@ -9,7 +9,8 @@
  * is an intentional rewrite and is left untouched.
  */
 import { describe, it, expect } from 'vitest';
-import { evaluateSetContent } from './set-content';
+import { z } from 'zod';
+import { argsSchema, evaluateSetContent } from './set-content';
 import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 
 const FRONTMATTER = `---
@@ -35,6 +36,41 @@ Where it stands now. The single next concrete action and who does it.
 `;
 
 const CURRENT = FRONTMATTER + BODY;
+
+describe('plans:set-content expectedVersion args (EI-21189868558705461)', () => {
+  const base = { slug: 'ei-1812-test', content: CURRENT };
+
+  it('accepts the decimal string returned by dev:pg_query and normalizes it to a number', () => {
+    const parsed = argsSchema.safeParse({ ...base, expectedVersion: '97' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.expectedVersion).toBe(97);
+  });
+
+  it('keeps numeric versions working', () => {
+    const parsed = argsSchema.safeParse({ ...base, expectedVersion: 97 });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.expectedVersion).toBe(97);
+  });
+
+  it('rejects non-decimal, negative, fractional, and unsafe versions', () => {
+    for (const expectedVersion of ['1.5', '-1', ' 97', '1e2', ''] as unknown[]) {
+      expect(argsSchema.safeParse({ ...base, expectedVersion }).success).toBe(false);
+    }
+    expect(argsSchema.safeParse({ ...base, expectedVersion: -1 }).success).toBe(false);
+    expect(argsSchema.safeParse({ ...base, expectedVersion: 1.5 }).success).toBe(false);
+    expect(argsSchema.safeParse({ ...base, expectedVersion: '9007199254740992' }).success).toBe(false);
+    expect(argsSchema.safeParse({ ...base, expectedVersion: Number.MAX_SAFE_INTEGER + 1 }).success).toBe(false);
+  });
+
+  it('publishes expectedVersion as an integer JSON-schema property', () => {
+    const json = z.toJSONSchema(argsSchema) as {
+      properties?: Record<string, { type?: string; minimum?: number; maximum?: number }>;
+    };
+    expect(json.properties?.expectedVersion?.type).toBe('integer');
+    expect(json.properties?.expectedVersion?.minimum).toBe(0);
+    expect(json.properties?.expectedVersion?.maximum).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});
 
 describe('evaluateSetContent — EI-1812 frontmatter re-attach', () => {
   it('a PG-canonical body that OMITS the leading frontmatter re-attaches it instead of rejecting would_orphan_frontmatter', async () => {

@@ -4216,6 +4216,37 @@ export async function claimWorkItem(
   if (claimed) {
     const won = claimed;
     const priorHolder = prior?.assignee?.trim() || null;
+    const explicitTransferHolder =
+      priorHolder &&
+      priorHolder !== assignee &&
+      ([opts.fromHolder?.trim(), opts.expectedAssignee?.trim()].includes(priorHolder)
+        ? priorHolder
+        : null);
+    // EI-21190135248554341: an atomic prior-holder transfer bypasses the stale-claim
+    // sweep, so release only that holder's declared paths here. The helper is dynamic
+    // and fail-open: a side lock-store outage must not turn a successful CAS transfer
+    // into a failed claim, and the lock TTL remains the fallback for that outage.
+    if (explicitTransferHolder) {
+      try {
+        const [{ releaseReclaimedWorkItemLocks }, { readWorkItemPaths }] = await Promise.all([
+          import('./work-item-lock-release'),
+          import('./work-items-release-request'),
+        ]);
+        const lockRelease = await releaseReclaimedWorkItemLocks({
+          ownerId: explicitTransferHolder,
+          paths: readWorkItemPaths(prior?.payload),
+        });
+        if (lockRelease.failures > 0) {
+          console.warn(
+            `[claim] ${won.id}: targeted lock release had ${lockRelease.failures} failure(s); transfer continues with lock TTL fallback`,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[claim] ${won.id}: targeted lock cleanup unavailable; transfer continues with lock TTL fallback (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+    }
     if (priorHolder && priorHolder !== assignee) {
       const events = await import('./work-items-events');
       await events.emitClaimReleasedEventAwaited(prior!, { announceClaimable: false });

@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path';
 import { ensureHarnessFsWatcher } from '@papercusp/operator-core/lib/harness-fs-watcher';
 import { ensureHarnessStatusSweep } from '@papercusp/operator-core/lib/harness-status-sweep';
 import { startEventLoopLagMonitor } from '@papercusp/operator-core/lib/event-loop-lag-monitor';
+import { isVmReleaseDistribution } from '@papercusp/operator-core/lib/vm-release-runtime-policy';
 // ensureWaveAdvanceSweep — RETIRED (P-044): the 30s wave-advance poll is no longer
 // started; all-waves-up-front promotion + the dispatch frontier replace it.
 import { registerAllExpirables } from '@papercusp/operator-core/lib/expirable-registrations';
@@ -675,6 +676,7 @@ export function runBootstrap(): void {
   // own per-env errors). The launch is deferred ~20s so the PRIMARY's migrations + substrate
   // boot win the race against the request-only siblings (no cold-boot migration contention).
   if (
+    !isVmReleaseDistribution() &&
     process.env.PAPERCUSP_DESKTOP === '1' &&
     process.env.PAPERCUSP_PROVISION_ENV_OPERATORS !== '0'
   ) {

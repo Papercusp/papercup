@@ -27,6 +27,21 @@ const connectSlack = vi.fn(async (_sql: unknown, input: Record<string, unknown>)
   credentialRef: `slack-socket:${input.field ?? input.ownerUserId}`,
   config: { teamId: 'T1' },
 }));
+const ensureSlackFlagship = vi.fn(async (_sql: unknown, _workspaceId: string, source: { id: string }) => ({
+  plan: { created: true, schemaAdded: true },
+  binding: {
+    id: BINDING_ID,
+    sourceId: source.id,
+    sourceKind: 'slack',
+    planHarnessSlug: 'papercusp',
+    planSlug: 'slack-respond-in-thread-2026-08-22',
+    eventPattern: 'ext:slack:mention',
+    eventFilter: {},
+    action: { type: 'launch-plan' },
+    armed: false,
+    stormPolicy: {},
+  },
+}));
 const sql = {};
 
 vi.mock('../../auth/require-principal', () => ({
@@ -75,6 +90,10 @@ vi.mock('../../external-triggers/admin', () => ({
 vi.mock('../../external-triggers/slack', () => ({
   SLACK_APP_MANIFEST_TEMPLATE: { settings: { socket_mode_enabled: true } },
   connectOwnedSlackSource: (...args: Parameters<typeof connectSlack>) => connectSlack(...args),
+}));
+vi.mock('../../external-triggers/slack-flagship', () => ({
+  SLACK_RESPOND_IN_THREAD_PLAN: 'slack-respond-in-thread-2026-08-22',
+  ensureSlackRespondInThreadBinding: (...args: Parameters<typeof ensureSlackFlagship>) => ensureSlackFlagship(...args),
 }));
 vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
@@ -195,7 +214,12 @@ describe('external-trigger admin route pair', () => {
     });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toMatchObject({ ok: true, source: { kind: 'slack', status: 'connecting' } });
+    expect(body).toMatchObject({
+      ok: true,
+      source: { kind: 'slack', status: 'connecting' },
+      binding: { eventPattern: 'ext:slack:mention', armed: false },
+      plan: { slug: 'slack-respond-in-thread-2026-08-22', created: true, armed: false },
+    });
     expect(JSON.stringify(body)).not.toContain('xapp-private');
     expect(JSON.stringify(body)).not.toContain('xoxb-private');
     expect(connectSlack).toHaveBeenCalledWith(sql, expect.objectContaining({
@@ -204,6 +228,12 @@ describe('external-trigger admin route pair', () => {
       appToken: 'xapp-private',
       botToken: 'xoxb-private',
     }));
+    expect(ensureSlackFlagship).toHaveBeenCalledWith(
+      sql,
+      'ws-test',
+      expect.objectContaining({ kind: 'slack' }),
+      'owner:22222222-2222-4222-8222-222222222222',
+    );
     expect(notify).toHaveBeenCalledWith('externalTriggers.admin', { workspaceId: 'ws-test' });
   });
 });

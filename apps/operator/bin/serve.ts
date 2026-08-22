@@ -67,6 +67,10 @@ import { readProcessIdentity } from "@papercusp/operator-core/lib/process-identi
 import { managedSetInterval } from "@papercusp/scheduled-registry";
 import { installTimestampedConsole } from "@papercusp/operator-core/lib/timestamped-console";
 import { installStdioPeerGuard } from "@papercusp/operator-core/lib/process-supervision/stdio-peer-guard";
+import {
+  assertVmReleaseRuntimePolicy,
+  assertVmReleaseRuntimePort,
+} from "@papercusp/operator-core/lib/vm-release-runtime-policy";
 
 // WI-5778 (P-422): install as the very first statement below the imports —
 // before ANYTHING else in this file has a chance to console.log/warn/error —
@@ -1507,6 +1511,16 @@ async function main(): Promise<void> {
   // baked 3070 default — it would squat the prod operator's port on this box.
   const honoPortHint = resolveHonoPortHint(process.env, ENV_OPERATOR_ID);
 
+  // D-043 / P-050: an immutable VM package must prove its package-contained
+  // manifest and one-operator network/environment contract BEFORE --ensure can
+  // adopt an already-running process. Non-vm-release profiles no-op here.
+  assertVmReleaseRuntimePolicy({
+    env: process.env,
+    sidecarDir: dirname(fileURLToPath(import.meta.url)),
+    hostname,
+    port: honoPortHint,
+  });
+
   // --ensure: reuse a healthy running operator and exit 0 — UNLESS it's a
   // DIFFERENT build (EI-9002). Before this check, an install-then-relaunch
   // would find the OLD operator still alive+healthy on the port (a Windows
@@ -1540,6 +1554,9 @@ async function main(): Promise<void> {
   const port = ENV_OPERATOR_ID
     ? honoPortHint
     : await resolveStickyPort(honoPortHint, hostname);
+  // The sticky resolver may replace the launch hint; enforce the same forbidden
+  // dev/local/staging port set on the effective listener too.
+  assertVmReleaseRuntimePort(port, process.env);
   const httpUrl = `http://${hostname}:${port}`;
 
   // Cold-start race guard.

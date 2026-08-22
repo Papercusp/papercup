@@ -408,22 +408,21 @@ export default defineTool({
       ? resolvePotHomeSlug(undefined, ctx.harnessSlug)
       : null;
 
-    // EI-21183575241304993: a client-less ptool dispatch has no concrete harness in
-    // ctx (the transport supplies '*'), but coord:orient has already persisted the
-    // session's real harness in session_briefs. Read that durable scope BEFORE the
-    // owner-only getLoopStatus fallback: an owner may have loops under several
-    // harnesses, and getLoopStatus intentionally returns only one of them. Selecting
-    // that arbitrary row silently writes this note where the current cold reader will
-    // never look. Explicit args and a concrete context still follow the existing
-    // routine-first rule so the writer matches the armed routine's read-side key.
+    // An ACTIVE routine is the cold reader's authority: loop-fire stamps its fixed
+    // install_slug into the wake marker, so a checkpoint for that loop must use the
+    // same scope even when a stale session brief points elsewhere. An inactive or
+    // unrelated owner routine is only a fallback; preserve EI-211835's wildcard
+    // transport behavior by consulting the durable session scope before that fallback.
+    const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
+    const activeRoutineHarness = armedRoutine?.active === true ? armedRoutine.harnessSlug : null;
     const sessionBrief =
       !explicitHarness && !contextHarness ? await getSessionBrief({ ownerId }).catch(() => null) : null;
     const briefHarness = hasConcreteContextHarness(sessionBrief?.harnessSlug)
       ? resolvePotHomeSlug(sessionBrief!.harnessSlug, undefined)
       : null;
-    const armedRoutine = await getLoopStatus(ownerId).catch(() => null);
     const harness =
       explicitHarness ??
+      activeRoutineHarness ??
       briefHarness ??
       armedRoutine?.harnessSlug ??
       contextHarness ??

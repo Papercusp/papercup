@@ -268,6 +268,7 @@ afterEach(() => {
   document.body.className = '';
   document.body.style.cssText = '';
   document.documentElement.style.removeProperty('--op-chat-w');
+  document.documentElement.style.removeProperty('--left-sidebar-w');
 });
 
 describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', () => {
@@ -290,7 +291,10 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(bodyRule).toContain('var(--left-sidebar-w, 0px)');
     const headerRule = css.match(/body\.has-op-chat \.pc-header\s*\{[^}]*\}/)?.[0] ?? '';
     expect(headerRule).toContain('var(--left-sidebar-w, 0px)');
+    expect(headerRule).toMatch(/left:\s*calc\(var\(--left-sidebar-w, 0px\) \+ var\(--op-chat-w, 360px\)\)/);
     expect(headerRule).toContain('var(--dev-rail-w, 0px)');
+    const sidebarRule = css.match(/\.op-chat-sidebar\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(sidebarRule).toContain('left: var(--left-sidebar-w, 0px)');
   });
 
   it('the fixed sidebar sits below the dev env-switcher bar (WI-4729 clipped header orb)', async () => {

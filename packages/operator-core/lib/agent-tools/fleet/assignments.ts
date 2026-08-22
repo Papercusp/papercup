@@ -55,7 +55,9 @@ import {
   getAllPlanItemCoverage,
   compactCoverage,
   coverageCollisions,
+  duplicateCoverage,
   type CoverageCollision,
+  type CoverageDuplicate,
   type PlanItemCoverage,
 } from '../../plan-item-coverage';
 import { listParkedAwaitsForSubscribers } from '../../events/await/store';
@@ -969,6 +971,7 @@ export default defineTool({
     }[] = [];
     let coverageTruncated = false;
     let collisions: CoverageCollision[] = [];
+    let duplicates: CoverageDuplicate[] = [];
     // Hoisted so the DAG-frontier block (includeDag) reuses the SAME fused
     // coverage map for its claims — one getAllPlanItemCoverage() call, not two.
     let covMap: Awaited<ReturnType<typeof getAllPlanItemCoverage>> | null = null;
@@ -1014,6 +1017,9 @@ export default defineTool({
       // Collisions are computed over the UNTRIMMED scope — the active-coverage
       // default below is a payload filter, never a correctness filter.
       collisions = coverageCollisions(scoped);
+      // Same-principal duplicates use the same untrimmed scope: active-coverage
+      // filtering is a payload reduction, never a correctness filter.
+      duplicates = duplicateCoverage(scoped);
       const entries = filterActiveCoverage(scoped, {
         explicitPlan: args.plan ?? null,
         lanePlans: agentPlans,
@@ -1085,6 +1091,10 @@ export default defineTool({
       // EI-6074: distinct plan-item deliverables held by >1 principal via the
       // work-item↔plan-item coverage edge — the silent cross-table duplicate.
       coverage_collisions: collisions.length,
+      // EI-21188799646985672: distinct non-terminal linked work-items held by
+      // one principal for the same plan-item deliverable — the same-principal
+      // duplicate that the cross-principal collision detector cannot see.
+      coverage_duplicates: duplicates.length,
       declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
       // P-001 (fleet-member-dx): members deliberately parked on an events:await —
       // idle-by-design, not stalled/abandoned.
@@ -1217,6 +1227,10 @@ export default defineTool({
         // Coverage collisions (EI-6074): two distinct principals resolving to the
         // same deliverable via the work-item↔plan-item coverage edge. Omitted when clean.
         ...(collisions.length ? { coverage_collisions: collisions } : {}),
+        // Same-principal duplicate coverage (EI-21188799646985672): one holder
+        // resolving the same deliverable through multiple distinct live linked
+        // work-items. Omitted when clean, like the collision list above.
+        ...(duplicates.length ? { coverage_duplicates: duplicates } : {}),
         // Plan-item coverage: items being worked via a linked work-item / direct
         // claim (even with no plan-item lease). 'none' is omitted (no signal).
         ...(coverageOut.length

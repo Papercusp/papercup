@@ -3,6 +3,7 @@ import {
   acknowledgeSlackSocketEnvelope,
   connectOwnedSlackSource,
   normalizeSlackSocketEnvelope,
+  postSlackThreadMessage,
   reconcileSlackHistoryOnce,
   resolveSlackSocketCredentials,
   SLACK_APP_MANIFEST_TEMPLATE,
@@ -101,6 +102,32 @@ describe('Slack external-trigger adapter', () => {
       appToken: 'xapp-secret', botToken: 'xoxb-secret',
     });
     expect(calls).toHaveLength(1);
+  });
+
+  it('posts a bounded bot reply to the exact originating thread', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      channel: 'C1',
+      ts: '1777000001.4',
+    }))) as never;
+    await expect(postSlackThreadMessage('xoxb-secret', {
+      channelId: 'C1',
+      threadId: '1777000000.1',
+      text: '  Done — here is the answer.  ',
+    }, { fetch: fetchImpl, apiOrigin: 'https://slack.test' })).resolves.toEqual({
+      channelId: 'C1',
+      threadId: '1777000000.1',
+      messageTs: '1777000001.4',
+    });
+    expect(fetchImpl).toHaveBeenCalledWith('https://slack.test/api/chat.postMessage', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ authorization: 'Bearer xoxb-secret' }),
+      body: JSON.stringify({
+        channel: 'C1',
+        thread_ts: '1777000000.1',
+        text: 'Done — here is the answer.',
+      }),
+    }));
   });
 
   it('honors Retry-After and advances a bounded history cursor one page at a time', async () => {

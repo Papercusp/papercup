@@ -109,6 +109,7 @@ vi.mock('../../plan-item-coverage', () => ({
   getAllPlanItemCoverage: vi.fn(async () => coverageMap),
   compactCoverage: vi.fn((c: PlanItemCoverage) => ({ level: c.level, workers: c.workers, links: [] })),
   coverageCollisions: vi.fn(() => []),
+  duplicateCoverage: vi.fn(() => []),
 }));
 
 import fleetAssignmentsTool from './assignments';

@@ -351,6 +351,7 @@ export const sedRangeRead: BashSubstitutionPair = {
   toolName: 'capability:read',
   advisoryText:
     "capability:read { file_path, offset, limit } reads a line range directly — sed -n 'N,Mp' FILE is offset=N, limit=M-N+1. " +
+    'Line ranges are inclusive: when combining adjacent reads, start the next range at the previous end + 1 (or label each range); overlapping endpoints repeat a source line and can fabricate duplicate-content findings. ' +
     'capability:read is a DEFERRED MCP tool (ToolSearch select:mcp__papercusp-su__capability_read first if not already loaded) ' +
     "— but a Claude Code (psu) session's ambient Read tool takes the SAME { file_path, offset, limit } shape directly, no ToolSearch needed there.",
   routing: {

@@ -29,6 +29,7 @@ import { shapeLocksList } from './list-shape';
 
 function holderJson(h: ResourceHolder) {
   return {
+    resource: h.resource,
     owner: h.owner,
     owner_label: h.owner_label,
     mode: h.mode,

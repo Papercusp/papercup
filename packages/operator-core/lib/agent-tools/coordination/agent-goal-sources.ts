@@ -348,6 +348,12 @@ async function readGoalOverride(owner: string): Promise<GoalCandidates['override
  * The corroboration edges — `coord_links` rows proving a held work-item
  * IMPLEMENTS a plan item.
  *
+ * Feature-family work-items are stored in `coord_links` with a harness-qualified
+ * source ref (`<harness>#<feature_id>`), while the held work-item leg exposes the
+ * bare `feature_id`. Issue-family refs are bare in both places. Normalize the
+ * feature side through the canonical feature row before returning links so the
+ * pure resolver can compare both families in the same ref space.
+ *
  * ⚠ SKIPPED WHEN ITS ANSWER CANNOT CHANGE THE RESULT. With no held work-item, or
  * no plan-item claim to corroborate AGAINST, there is no ambiguity for an edge to
  * resolve — and this decorates a hot path, so the query does not run.
@@ -360,14 +366,23 @@ async function readImplementsLinks(
 ): Promise<GoalLink[]> {
   const ids = workItems.map((w) => w.id).filter(Boolean);
   if (ids.length === 0 || planItems.length === 0) return [];
-  const rows = await sql<{ src_ref: string; dst_ref: string }[]>`
-    SELECT src_ref, dst_ref
-      FROM harness_shared.coord_links
-     WHERE workspace_id = ${ws}
-       AND dst_kind = 'plan_item'
-       AND rel = 'implements'
-       AND src_ref = ANY(${ids})`;
-  return rows.filter((r) => r.src_ref && r.dst_ref).map((r) => ({ workItemId: r.src_ref, planItemRef: r.dst_ref }));
+  const rows = await sql<{ work_item_id: string; dst_ref: string }[]>`
+    SELECT CASE WHEN l.src_kind = 'feature' THEN f.feature_id ELSE l.src_ref END AS work_item_id,
+           l.dst_ref
+      FROM harness_shared.coord_links l
+      LEFT JOIN harness_shared.harness_features_consolidated f
+        ON l.src_kind = 'feature'
+       AND (f.harness_slug || '#' || f.feature_id) = l.src_ref
+       AND f.workspace_id = ${ws}
+     WHERE l.dst_kind = 'plan_item'
+       AND l.rel = 'implements'
+       AND (
+         (l.src_kind = 'feature' AND f.feature_id = ANY(${ids}))
+         OR (l.src_kind = 'issue' AND l.src_ref = ANY(${ids}))
+       )`;
+  return rows
+    .filter((r) => r.work_item_id && r.dst_ref)
+    .map((r) => ({ workItemId: r.work_item_id, planItemRef: r.dst_ref }));
 }
 
 /**

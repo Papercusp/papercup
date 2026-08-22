@@ -27430,7 +27430,7 @@ html[data-visual-effects='minimal'] .operator-panel__metric-card {
 
 /* Deck panel usability refresh */
 body.has-op-chat:has(.operator-panel) .operator-panel {
-  left: calc(var(--op-chat-w, 360px) + 16px) !important;
+  left: calc(var(--left-sidebar-w, 0px) + var(--op-chat-w, 360px) + 16px) !important;
 }
 
 body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
@@ -27442,7 +27442,7 @@ body.has-op-chat:not(.op-chat-collapsed):has(.operator-panel) .op-chat-sidebar {
 /* Deck panel ↔ chat sidebar interaction (restored from fd17294e40^ /
    6f4b259c75^ — deleted as dead rules while the sidebar was retired). */
 body.has-op-chat:has(.operator-panel) .operator-panel {
-  left: calc(var(--op-chat-w, 360px) + 16px) !important;
+  left: calc(var(--left-sidebar-w, 0px) + var(--op-chat-w, 360px) + 16px) !important;
 }
 
 body.has-op-chat:has(.operator-panel) .op-chat-sidebar {

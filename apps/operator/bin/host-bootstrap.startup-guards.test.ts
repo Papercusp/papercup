@@ -160,6 +160,15 @@ describe('host-bootstrap emits a machine-readable source-pass verdict', () => {
   });
 });
 
+describe('host-bootstrap keeps vm-release single-operator', () => {
+  it('gates environment-operator provisioning on the immutable distribution profile', () => {
+    expect(bootSrc).toContain('isVmReleaseDistribution');
+    expect(bootSrc).toMatch(
+      /!isVmReleaseDistribution\(\)[\s\S]*?PAPERCUSP_DESKTOP[\s\S]*?PAPERCUSP_PROVISION_ENV_OPERATORS/,
+    );
+  });
+});
+
 describe('host-bootstrap validates the bundled DBOS work-items import contract', () => {
   it('uses the sidecar build marker and checks the current exclusion export before startDbos()', () => {
     expect(bootSrc).toContain('__PAPERCUSP_BUNDLED_SIDECAR__');

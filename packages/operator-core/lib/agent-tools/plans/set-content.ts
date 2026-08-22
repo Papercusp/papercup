@@ -45,16 +45,25 @@ import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
 import { stampTerminalNowBlock } from './terminal-now-stamp';
 
-const argsSchema = z.object({
+/**
+ * `dev:pg_query` exposes PostgreSQL bigint values as decimal strings, while
+ * the plan version CAS itself is a nonnegative safe JS integer. Accept that
+ * read-then-write wire shape without weakening the published JSON schema or
+ * silently coercing arbitrary numeric strings.
+ */
+const expectedVersionSchema = z.preprocess(
+  (value) => (typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value),
+  z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+);
+
+export const argsSchema = z.object({
   slug: z.string().min(1),
   harness: harnessArg,
   content: z
     .string()
     .min(1)
     .describe('The full new markdown document body — replaces the file wholesale.'),
-  expectedVersion: z
-    .number()
-    .int()
+  expectedVersion: expectedVersionSchema
     .optional()
     .describe(
       'The `version` from the plans:get that loaded the editor — the optimistic compare-and-swap baseline (plans-pg-canonical-migration D-005). When the live row has moved past it the write is rejected as stale. Preferred over expectedHash.',

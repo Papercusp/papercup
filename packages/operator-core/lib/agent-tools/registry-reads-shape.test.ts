@@ -23,6 +23,7 @@ describe("shapeLocksList (P-023)", () => {
     })),
     holders: [
       {
+        resource: "dev-server",
         owner: "su-1",
         owner_label: "su · 1",
         mode: "shared",
@@ -46,6 +47,7 @@ describe("shapeLocksList (P-023)", () => {
     expect(out.resources[0]).not.toHaveProperty("description");
     expect(out.holders[0]).not.toHaveProperty("reason");
     expect(out.holders[0]).not.toHaveProperty("acquired_ts");
+    expect(out.holders[0].resource).toBe("dev-server");
     const std = shapeLocksList(data, "standard") as {
       resources: Record<string, unknown>[];
       holders: Record<string, unknown>[];
@@ -56,6 +58,7 @@ describe("shapeLocksList (P-023)", () => {
     expect(String(std.holders[0].reason).length).toBeLessThanOrEqual(
       LOCKS_LIST_TIER_CAPS.standard.reason,
     );
+    expect(std.holders[0].resource).toBe("dev-server");
   });
 
   it("caps resources with a uniform-key notice row", () => {

@@ -1381,6 +1381,70 @@ describe('executeWake — the liveness ladder', () => {
     expect(out).toMatchObject({ kind: 'park' });
   });
 
+  it('exited codex with a stale row session id but no rollout in its derived home → park', async () => {
+    const advSessionId = 999;
+    const home = codexHomeForAdvSession(advSessionId);
+    const spawnDetached = vi.fn(() => 4321);
+    mkdirSync(home, { recursive: true });
+    try {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            }),
+          ) as never,
+          spawnDetached,
+          // The rematerialization attempt did not restore the missing rollout.
+          rematerializeSession: vi.fn(async () => ({ ok: true, written: 0 })) as never,
+        }),
+      );
+      expect(out).toMatchObject({ kind: 'park' });
+      expect(spawnDetached).not.toHaveBeenCalled();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('exited codex resumes with the rollout restored by rematerialization, not the stale row id', async () => {
+    const advSessionId = 1000;
+    const home = codexHomeForAdvSession(advSessionId);
+    const restoredSessionId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const spawnDetached = vi.fn(() => 4321);
+    mkdirSync(home, { recursive: true });
+    try {
+      const out = await executeWake(
+        work({ wakeHandle: advHandle({ agent: 'codex', sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', advSessionId }) }),
+        deps({
+          alive: vi.fn(() => false),
+          getSession: vi.fn(async () =>
+            session({
+              id: advSessionId,
+              agent: 'codex',
+              sessionId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            }),
+          ) as never,
+          spawnDetached,
+          rematerializeSession: vi.fn(async () => {
+            const sessionsDir = join(home, 'sessions', '2026', '08', '22');
+            mkdirSync(sessionsDir, { recursive: true });
+            writeFileSync(join(sessionsDir, `rollout-2026-08-22T17-00-00-${restoredSessionId}.jsonl`), '{}');
+            return { ok: true, written: 1 };
+          }) as never,
+        }),
+      );
+      expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+      const [, args] = spawnDetached.mock.calls[0] as unknown as [string, string[]];
+      expect(args[5]).toBe(restoredSessionId);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('a session row marked ended is exited even if the recorded pid is reused-alive', async () => {
     const spawnDetached = vi.fn(() => 4321);
     const out = await executeWake(

@@ -63,6 +63,7 @@ import {
   isRecipeCaptureEligible,
   codeRunReturnedContextBytes,
   codeRunFailureClass,
+  withCodeRunCaptureMode,
 } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
@@ -265,6 +266,12 @@ describe('code:run → recipe capture (P-003)', () => {
   it('does NOT capture on a dry-run preview', async () => {
     const tool = codeRun();
     await tool.fn({ script: 'return 1;', dryRun: true }, mkCtx());
+    expect(captureRecipeMock).not.toHaveBeenCalled();
+  });
+
+  it('honors the internal capture-mode override without changing the public args', async () => {
+    const tool = codeRun();
+    await tool.fn({ script: 'return 1;' }, withCodeRunCaptureMode(mkCtx(), 'never') as never);
     expect(captureRecipeMock).not.toHaveBeenCalled();
   });
 

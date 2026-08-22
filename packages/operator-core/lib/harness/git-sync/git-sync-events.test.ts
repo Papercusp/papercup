@@ -19,6 +19,7 @@ const SHA = 'abcdef1234567890fedcba';
 const SCOPE_A = { installSlug: 'harness-a', workspaceId: 'workspace-a' };
 const SCOPE_B = { installSlug: 'harness-b', workspaceId: 'workspace-a' };
 const HOLDER = {
+  resource: 'git-sync:harness-a',
   owner: 'su-peer',
   owner_label: 'peer agent',
   mode: 'exclusive' as const,

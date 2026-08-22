@@ -120,6 +120,47 @@ describe('scheduleSessionEndLeaseRelease', () => {
     expect(h.releaseLocks).toHaveBeenCalledTimes(1);
     expect(h.releaseWorkItems).toHaveBeenCalledTimes(1);
   });
+
+  it('retries a transient owner-live result and releases after the owner disappears', async () => {
+    vi.useFakeTimers();
+    h.loadProtectedOwners
+      .mockResolvedValueOnce(new Set(['su-ended']))
+      .mockResolvedValueOnce(new Set());
+
+    scheduleSessionEndLeaseRelease(77, { delayMs: 25, retryDelayMs: 25, deps: deps() });
+    await vi.advanceTimersByTimeAsync(25);
+    expect(h.releaseLocks).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(24);
+    expect(h.releaseLocks).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(h.loadProtectedOwners).toHaveBeenCalledTimes(2);
+    expect(h.releaseLocks).toHaveBeenCalledTimes(1);
+    expect(h.releaseWorkItems).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds repeated owner-live retries and leaves the periodic reaper as backstop', async () => {
+    vi.useFakeTimers();
+    h.loadProtectedOwners.mockResolvedValue(new Set(['su-ended']));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    scheduleSessionEndLeaseRelease(77, {
+      delayMs: 25,
+      retryDelayMs: 25,
+      maxOwnerLiveRetries: 2,
+      deps: deps(),
+    });
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(h.loadProtectedOwners).toHaveBeenCalledTimes(3);
+    expect(h.releaseLocks).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('periodic lease reaper remains the backstop'));
+    warn.mockRestore();
+  });
 });
 
 describe('markAdvSessionEnded wiring', () => {

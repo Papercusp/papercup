@@ -639,6 +639,86 @@ function writeCodexHomeDiagnostics(
   writeFileSync(join(codexHome, 'papercusp-diagnostics.json'), `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
 }
 
+/**
+ * Repair only the managed identity files of an EXISTING SU Codex home.
+ *
+ * A tracked resume intentionally preserves the home's `sessions/**` rollouts,
+ * AGENTS.md, auth link, plugins and skills.  It may nevertheless resume that
+ * home under a newer coord owner (for example after a cold successor adopts the
+ * same adv-session row).  Before EI-211903 the launcher treated any config with
+ * an MCP block as "ready", so `config.toml`, hooks.json and diagnostics could
+ * keep the prior owner while PAPERCUSP_SID/ptool used the successor.  The lock
+ * hook then acquired as the prior owner and reported the successor's deliberate
+ * manual lock as foreign contention.
+ *
+ * This helper is deliberately narrower than `writeSuCodexHome`: it never
+ * rebuilds the directory and never touches transcripts or prompts.  It rewrites
+ * the canonical hooks, merges the current owner into diagnostics, and advances
+ * the collision sentinel.  A same-owner home remains byte-identical.
+ */
+export function repairSuCodexHomeIdentity(
+  codexHome: string,
+  sid: string,
+): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
+  if (!existsSync(codexHome)) return { repaired: false, hooksInstalled: false, reason: 'no-home' };
+
+  const diagnosticsPath = join(codexHome, 'papercusp-diagnostics.json');
+  const hooksPath = join(codexHome, 'hooks.json');
+  let diagnostics: Record<string, unknown> = {};
+  let hooksText = '';
+  try {
+    const parsed = JSON.parse(readFileSync(diagnosticsPath, 'utf8')) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      diagnostics = parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* missing/malformed is a repair input */
+  }
+  try {
+    hooksText = readFileSync(hooksPath, 'utf8');
+  } catch {
+    /* missing/unreadable is a repair input */
+  }
+
+  const hookOwners = Array.from(
+    hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g),
+    (match) => match[1],
+  );
+  const hooksExpected = diagnostics.lockEnforcement === 'hooks-configured' || existsSync(hooksPath);
+  const hooksMatch = hooksExpected
+    ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
+    : hookOwners.length === 0;
+  const diagnosticsMatch = diagnostics.lockOwnerSid === sid;
+  const sentinelMatches = existingCodexHomeOwnerSid(codexHome) === sid;
+  if (hooksMatch && diagnosticsMatch && sentinelMatches) {
+    return { repaired: false, hooksInstalled: hooksExpected };
+  }
+
+  const hooksInstalled = writeCodexLockHooks(codexHome, {
+    lockSid: sid,
+    coordSid: sid,
+    activitySid: sid,
+    objectiveSid: sid,
+    injectSid: sid,
+  });
+  const lockRuntime = readCodexLockRuntimeVerdict({ ownerId: sid, hooksConfigured: hooksInstalled });
+  const nextDiagnostics = {
+    ...diagnostics,
+    lockEnforcement: hooksInstalled ? 'hooks-configured' : 'hooks-missing',
+    codexPreToolUseStatus: lockRuntime.hookHealth,
+    lockMode: lockRuntime.lockMode,
+    hookHealth: lockRuntime.hookHealth,
+    runtimeProbed: lockRuntime.runtimeProbed,
+    lockGeneration: lockRuntime.generation,
+    lockReason: lockRuntime.reason,
+    requiresExplicitPapercuspLocks: lockRuntime.lockMode === 'manual',
+    lockOwnerSid: sid,
+  };
+  writeFileSync(diagnosticsPath, `${JSON.stringify(nextDiagnostics, null, 2)}\n`, { mode: 0o600 });
+  writeFileSync(join(codexHome, '.owner-sid'), sid, { mode: 0o600 });
+  return { repaired: true, hooksInstalled };
+}
+
 function codexAgentsPrompt(promptText: string, lockRuntime: CodexLockRuntimeVerdict): string {
   const withoutStaticLockAdvice = promptText.replace(CODEX_LOCK_GUIDANCE_RE, '').replace(/\n{3,}/g, '\n\n');
   return `${withoutStaticLockAdvice.replace(/\n+$/, '')}\n\n${codexLockEnforcementNote(lockRuntime)}`;
@@ -838,8 +918,9 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  * `writeSuCodexHome` starts with `freshCodexHome`, which rm -rf's the directory.
  * That is right for preparing a session, and catastrophic for repairing one: the
  * home holds every `sessions/**​/rollout-*.jsonl` the resume is about to read, so
- * rebuilding it would destroy the very transcripts being resumed. This writes one
- * file and touches nothing else.
+ * rebuilding it would destroy the very transcripts being resumed. This repairs
+ * only managed launch files in place: config.toml plus identity-bearing hooks /
+ * diagnostics when their owner has drifted. Rollouts, prompts and auth survive.
  *
  * WI-38706: the archiver had been unlinking these configs (it took the home's
  * shared state under one thread's session id), leaving codex to re-create an
@@ -856,27 +937,40 @@ export function suCodexConfigToml(opts: SuCodexConfigInput): string {
  */
 export function ensureSuCodexHomeConfig(
   opts: SuCodexConfigInput & { sessionKey: string | number },
-): { codexHome: string; configPath: string; repaired: boolean; reason?: 'no-home' } {
+): { codexHome: string; configPath: string; repaired: boolean; identityRepaired: boolean; reason?: 'no-home' } {
   const codexHome = codexHomeForSessionKey(opts.sessionKey);
   const configPath = join(codexHome, 'config.toml');
-  if (!existsSync(codexHome)) return { codexHome, configPath, repaired: false, reason: 'no-home' };
+  if (!existsSync(codexHome)) {
+    return { codexHome, configPath, repaired: false, identityRepaired: false, reason: 'no-home' };
+  }
   const logDir = join(codexHome, 'log');
   mkdirSync(logDir, { recursive: true });
   const expectedContextConfig = codexContextConfigToml(opts.model);
   const expectedLogDir = `log_dir = "${tomlEscape(logDir)}"`;
+  const expectedClient = `client=${encodeURIComponent(opts.sid)}`;
+  let configReady = false;
   try {
     const current = readFileSync(configPath, 'utf8');
     const contextMatches = expectedContextConfig
       ? current.startsWith(expectedContextConfig)
       : !/^model_(?:context_window|auto_compact_token_limit)\s*=/m.test(current);
-    if (current.includes('[mcp_servers.papercusp-su]') && contextMatches && current.includes(expectedLogDir)) {
-      return { codexHome, configPath, repaired: false };
-    }
+    configReady = current.includes('[mcp_servers.papercusp-su]')
+      && current.includes(expectedClient)
+      && contextMatches
+      && current.includes(expectedLogDir);
   } catch {
     /* absent or unreadable — that is precisely the repair case */
   }
-  writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
-  return { codexHome, configPath, repaired: true };
+  if (!configReady) {
+    writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
+  }
+  const identity = repairSuCodexHomeIdentity(codexHome, opts.sid);
+  return {
+    codexHome,
+    configPath,
+    repaired: !configReady || identity.repaired,
+    identityRepaired: identity.repaired,
+  };
 }
 
 export function writeSuCodexHome(opts: {

@@ -336,6 +336,41 @@ export async function openSlackSocketUrl(
   return body.url;
 }
 
+export interface SlackThreadMessageResult {
+  channelId: string;
+  threadId: string;
+  messageTs: string;
+}
+
+/** Post one bounded bot reply to the exact Slack thread selected by the caller. */
+export async function postSlackThreadMessage(
+  botToken: string,
+  input: { channelId: string; threadId: string; text: string },
+  deps: { fetch?: typeof fetch; apiOrigin?: string } = {},
+): Promise<SlackThreadMessageResult> {
+  const channelId = input.channelId.trim();
+  const threadId = input.threadId.trim();
+  const message = input.text.trim();
+  if (!channelId || channelId.length > 80) throw new Error('slack_reply_channel_invalid');
+  if (!/^\d+(?:\.\d+)?$/.test(threadId)) throw new Error('slack_reply_thread_invalid');
+  if (!message || message.length > 4_000) throw new Error('slack_reply_text_invalid');
+  const origin = (deps.apiOrigin ?? SLACK_API_ORIGIN).replace(/\/$/, '');
+  const body = await slackJson<{ ok?: boolean; channel?: string; ts?: string }>(
+    await (deps.fetch ?? fetch)(`${origin}/api/chat.postMessage`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${assertToken(botToken, 'xoxb-', 'bot_token')}`,
+        accept: 'application/json',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ channel: channelId, thread_ts: threadId, text: message }),
+    }),
+    'chat_post_message',
+  );
+  if (!body.ts) throw new Error('slack_reply_message_ts_missing');
+  return { channelId: body.channel?.trim() || channelId, threadId, messageTs: body.ts };
+}
+
 function historyChannels(source: ExternalTriggerSourceRow): string[] {
   return uniqueStrings([
     ...uniqueStrings(source.config.channels),

@@ -304,6 +304,51 @@ export function coverageCollisions(cov: Iterable<PlanItemCoverage>): CoverageCol
   return out;
 }
 
+/**
+ * One same-principal duplicate-coverage finding (EI-21188799646985672): a
+ * single live holder owns two or more DISTINCT non-terminal linked work-items
+ * for one plan item. This is intentionally separate from CoverageCollision:
+ * the latter detects contention between a direct plan-item claim and a linked
+ * work-item claim held by a DIFFERENT principal, while this detector mirrors
+ * the plan-item reflection guard's all-non-terminal-linked-work-items rule.
+ */
+export interface CoverageDuplicate {
+  /** '<slug>#<item>'. */
+  ref: string;
+  /** The principal holding the duplicate linked work-items. */
+  holder: string;
+  /** Distinct non-terminal linked work-item IDs held by `holder`. */
+  workItemIds: string[];
+}
+
+/**
+ * Detect same-principal duplicate coverage across a coverage map (EI-21188799646985672).
+ * Pure; no I/O. A work-item may have multiple coverage edges (for example
+ * `fixes` and `relates`), so IDs are deduplicated before applying the
+ * two-or-more threshold. `holder` is only populated for live linked claims by
+ * getAllPlanItemCoverage; stalled/dead links therefore cannot raise this signal.
+ * Direct plan-item claims are deliberately ignored: one direct claim plus one
+ * linked work-item is the cross-table case owned by coverageCollisions, not a
+ * same-principal linked-sibling duplicate.
+ */
+export function duplicateCoverage(cov: Iterable<PlanItemCoverage>): CoverageDuplicate[] {
+  const out: CoverageDuplicate[] = [];
+  for (const c of cov) {
+    const byHolder = new Map<string, Set<string>>();
+    for (const link of c.links) {
+      if (link.terminal || link.holder == null) continue;
+      const workItems = byHolder.get(link.holder) ?? new Set<string>();
+      workItems.add(link.workItemId);
+      byHolder.set(link.holder, workItems);
+    }
+    for (const [holder, workItems] of byHolder) {
+      if (workItems.size < 2) continue;
+      out.push({ ref: c.ref, holder, workItemIds: [...workItems] });
+    }
+  }
+  return out;
+}
+
 /** Lean wire shape attached per plan item (omit empty arrays to keep payload small). */
 export interface CompactCoverage {
   level: CoverageLevel;

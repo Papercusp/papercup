@@ -26,6 +26,7 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveDevOperators } from '../../../harness/dev-operators';
 import { readEnvSwitcherPrefs, setEnvEnabled } from '../../../harness/env-switcher-prefs';
+import { isVmReleaseDistribution } from '../../../vm-release-runtime-policy';
 
 const JSON_HEADERS: Record<string, string> = { 'content-type': 'application/json' };
 const CORS_HEADERS: Record<string, string> = {
@@ -60,6 +61,12 @@ export default [
     path: '/desktop/dev-operators/set-enabled',
     auth: 'loopback',
     async handler(req) {
+      if (isVmReleaseDistribution()) {
+        return new Response(JSON.stringify({ ok: false, error: 'vm_release_immutable' }), {
+          status: 403,
+          headers: JSON_HEADERS,
+        });
+      }
       // CSRF guard: refuse a cross-site browser request before any write.
       const site = req?.headers?.get?.('sec-fetch-site');
       if (site === 'cross-site') {

@@ -1991,8 +1991,16 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
         }
       }
       if (existsSync(home)) {
-        codexHome = home;
-        codexSessionId = sid || findCodexRolloutSessionId(home);
+        // The adv-session/handle id is only an archive lookup hint. It may be
+        // stale, and using it here would let a missing/failed rematerialize
+        // launch `codex exec resume` against a home with no matching rollout.
+        // Re-resolve after the rematerialize attempt and resume only when the
+        // home proves an exact native Codex session (rollout or history).
+        const recoveredSessionId = findCodexRolloutSessionId(home);
+        if (recoveredSessionId) {
+          codexHome = home;
+          codexSessionId = recoveredSessionId;
+        }
       }
     }
     // omp keeps flat per-cwd transcripts under the shared sessions root — same

@@ -20,6 +20,13 @@ import { fileLockCoordinationDomain, lockDomainForProjectDir } from './agent-too
 import { releaseAllOwnedLocks } from './agent-tools/locks/release-all-owned';
 
 export const SESSION_END_LEASE_RELEASE_DELAY_MS = 15_000;
+/**
+ * A liveness signal can still belong to the ending process when the first
+ * settle pass runs. Retry that protected result instead of leaving the lock
+ * until the periodic reaper, but keep the retry window bounded.
+ */
+export const SESSION_END_LEASE_RELEASE_RETRY_DELAY_MS = 15_000;
+export const SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES = 3;
 
 export interface SessionEndLeaseRow {
   id: number;
@@ -34,6 +41,13 @@ export interface SessionEndLeaseReleaseDeps {
   loadProtectedOwners?: () => Promise<ReadonlySet<string>>;
   releaseLocks?: typeof releaseAllOwnedLocks;
   releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
+}
+
+interface SessionEndLeaseReleaseScheduleOptions {
+  delayMs?: number;
+  retryDelayMs?: number;
+  maxOwnerLiveRetries?: number;
+  deps?: SessionEndLeaseReleaseDeps;
 }
 
 export type SessionEndLeaseReleaseReason =
@@ -153,15 +167,36 @@ export async function runSessionEndLeaseRelease(
   };
 }
 
-/** Schedule the post-end pass without delaying the exiting parent/report. */
-export function scheduleSessionEndLeaseRelease(
+function scheduleSessionEndLeaseReleaseAttempt(
   advSessionId: number,
-  opts: { delayMs?: number; deps?: SessionEndLeaseReleaseDeps } = {},
+  opts: SessionEndLeaseReleaseScheduleOptions,
+  ownerLiveRetries: number,
 ): void {
+  const delayMs =
+    ownerLiveRetries === 0
+      ? (opts.delayMs ?? SESSION_END_LEASE_RELEASE_DELAY_MS)
+      : (opts.retryDelayMs ?? SESSION_END_LEASE_RELEASE_RETRY_DELAY_MS);
   const timer = setTimeout(() => {
     void runSessionEndLeaseRelease(advSessionId, opts.deps)
       .then((result) => {
-        if (result.reason === 'owner-live' || result.reason === 'owner-resumed') return;
+        // An open successor is authoritative: its owner is intentionally
+        // protected for this ended row, so retrying would only add timers.
+        if (result.reason === 'owner-resumed') return;
+        if (result.reason === 'owner-live') {
+          const maxRetries = Math.max(
+            0,
+            opts.maxOwnerLiveRetries ?? SESSION_END_LEASE_RELEASE_MAX_OWNER_LIVE_RETRIES,
+          );
+          if (ownerLiveRetries < maxRetries) {
+            scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, ownerLiveRetries + 1);
+          } else {
+            console.warn(
+              `[session-end-lease-release] adv ${advSessionId} owner ${result.ownerId ?? 'unknown'} ` +
+                `remained live after ${maxRetries} retry(ies); periodic lease reaper remains the backstop`,
+            );
+          }
+          return;
+        }
         if (!result.ok) {
           console.warn(
             `[session-end-lease-release] adv ${advSessionId} cleanup did not fully apply: ${result.reason ?? 'unknown'}`,
@@ -186,6 +221,14 @@ export function scheduleSessionEndLeaseRelease(
           `[session-end-lease-release] adv ${advSessionId} pass failed: ${error instanceof Error ? error.message : String(error)}`,
         );
       });
-  }, opts.delayMs ?? SESSION_END_LEASE_RELEASE_DELAY_MS);
+  }, delayMs);
   timer.unref?.();
+}
+
+/** Schedule the post-end pass without delaying the exiting parent/report. */
+export function scheduleSessionEndLeaseRelease(
+  advSessionId: number,
+  opts: SessionEndLeaseReleaseScheduleOptions = {},
+): void {
+  scheduleSessionEndLeaseReleaseAttempt(advSessionId, opts, 0);
 }

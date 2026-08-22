@@ -121,6 +121,25 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect((await status(x.lock_id)).status).toBe('held');
   });
 
+  it.skipIf(!live)('unscoped queue identifies each simultaneous holder by named resource', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const dev = await acq(ws, 'dev-owner', 'dev-server', 'shared');
+    const db = await acq(ws, 'db-owner', 'db-schema', 'shared');
+    expect(dev.ok && db.ok).toBe(true);
+
+    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws });
+    expect(q.holders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ owner: 'dev-owner', resource: 'dev-server' }),
+        expect.objectContaining({ owner: 'db-owner', resource: 'db-schema' }),
+      ]),
+    );
+
+    if (dev.ok) await rel(ws, 'dev-owner', dev.lock_id);
+    if (db.ok) await rel(ws, 'db-owner', db.lock_id);
+  });
+
   // B4 — drain-timeout queue fairness. A holds shared (long TTL); B requests
   // exclusive with a SHORT drain budget and a queued exclusive waiter C sits
   // behind it. B's drain times out (A never drains) → B must NOT be silently

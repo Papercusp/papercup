@@ -74,17 +74,11 @@ export function DogfoodBootstrapBanner() {
         // WI-4729: the HORIZONTAL half of the same clearance convention as the
         // `top` offset above — EI-9921 stopped this bar eclipsing the
         // EnvSwitcherBar vertically, but at `left: 0` it still spans the full
-        // viewport width at that same top, so its ~2.1e9 z-index (vs the chat
-        // sidebar's 1300) covered the top ~30px of `.op-chat-sidebar` — i.e.
-        // its header row, cutting off the Papercup cup mark. OperatorChatSidebar
-        // publishes its rendered width as `--op-chat-w` on :root (collapsed rail
-        // OR dragged width), which is the established offset every other
-        // viewport-anchored surface already uses to dock after it (LeftSidebar
-        // `left: var(--op-chat-w, 0px)`, the dev-admin-rail + quick-panel width
-        // calcs, globals.css's `.operator-panel`). The 0px fallback keeps the
-        // bar flush left when the sidebar is absent (flag off / off-desktop) —
-        // same shape as the `--pc-env-bar-h` fallback above.
-        left: 'var(--op-chat-w, 0px)',
+        // viewport width at that same top, so its ~2.1e9 z-index covered the
+        // dock headers. D-009 puts steering/settings first and Papercup chat
+        // second; both publish their rendered widths, so clear their FULL sum.
+        // Each 0px fallback keeps the bar flush left when that dock is absent.
+        left: 'calc(var(--left-sidebar-w, 0px) + var(--op-chat-w, 0px))',
         right: 0,
         zIndex: 2147483645, // just under the sonner Toaster (…646)
         display: 'flex',

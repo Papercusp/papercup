@@ -1,8 +1,8 @@
 /**
  * Left sidebar (left-sidebar-tauri-2026-06-07) — the desktop twin of the pui
  * dock's retired main pane: tabs in a docked, collapsible, drag-resizable
- * MIDDLE rail (it docks after the op-chat sidebar, which is the leftmost
- * surface). The zellij dock is now consoles-only (operator chat ⇄ brain ⇄ live
+ * FAR-LEFT rail. The Papercup chat sidebar docks after it as the middle pane.
+ * The zellij dock is now consoles-only (operator chat ⇄ brain ⇄ live
  * bees); the tab-style surfaces live HERE.
  *
  * SCOPE (owner placement corrections, 2026-07-16 → 2026-07-17): this rail is
@@ -15,8 +15,8 @@
  *
  * Architecture mirrors the proven DevAdminRail (dev-admin-sidebar-2026-06-05):
  *   - DOCKED, not floating — reserves layout space (body.has-left-sidebar
- *     padding-left + --left-sidebar-w) so the app shifts right; sits AFTER the
- *     op-chat sidebar (offset by --op-chat-w).
+ *     padding-left + --left-sidebar-w) so the app shifts right; it is the
+ *     far-left dock at x=0.
  *   - Collapses to a thin icon rail (the three tab icons — clicking one
  *     expands straight into that tab), never disappears.
  *   - Drag-resizable from its RIGHT edge, width persisted per-workspace.
@@ -274,6 +274,11 @@ function clampWidth(width: number, viewportWidth: number): number {
   return Math.max(MIN_WIDTH, Math.min(widthCeiling(viewportWidth), width));
 }
 
+/** Far-left rail resize math: the pointer's viewport x is the rail width. */
+export function leftSidebarWidthFromPointer(clientX: number, viewportWidth: number): number {
+  return clampWidth(clientX, viewportWidth);
+}
+
 function readStoredWidth(): number {
   if (typeof window === 'undefined') return DEFAULT_WIDTH;
   try {
@@ -403,14 +408,9 @@ export default function LeftSidebar() {
     };
   }, []);
 
-  // Drag-to-resize from the RIGHT edge: the rail starts at --op-chat-w, so its
-  // width is clientX minus that left offset.
+  // Drag-to-resize from the RIGHT edge. This is now the far-left pane, so its
+  // width is the pointer's viewport x directly (no chat offset subtraction).
   const draggingRef = useRef(false);
-  const leftOffset = () => {
-    const v = getComputedStyle(document.documentElement).getPropertyValue('--op-chat-w');
-    const n = Number.parseFloat(v);
-    return Number.isFinite(n) ? n : 0;
-  };
   const onHandleDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = true;
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -419,7 +419,7 @@ export default function LeftSidebar() {
   }, []);
   const onHandleMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
-    setWidth(clampWidth(e.clientX - leftOffset(), window.innerWidth));
+    setWidth(leftSidebarWidthFromPointer(e.clientX, window.innerWidth));
   }, []);
   const onHandleUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = false;

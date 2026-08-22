@@ -90,6 +90,40 @@ describe('isCodexHomeLaunchReady — a codex-written stub must NOT read as a usa
     expect(isCodexHomeLaunchReady(null)).toBe(false);
     expect(isCodexHomeLaunchReady('')).toBe(false);
   });
+
+  it('FALSE for a structurally ready home whose config/hooks/diagnostics belong to a prior owner', () => {
+    const oldOwner = 'su-old-owner';
+    const currentOwner = 'su-current-owner';
+    writeFileSync(
+      join(dir, 'config.toml'),
+      `${REAL_CONFIG}\n[mcp_servers.papercusp-su]\nurl = "http://x/api/mcp?superuser=1&client=${oldOwner}"\n`,
+    );
+    writeFileSync(
+      join(dir, 'papercusp-diagnostics.json'),
+      JSON.stringify({ lockOwnerSid: oldOwner }),
+    );
+    writeFileSync(
+      join(dir, 'hooks.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: `PAPERCUSP_LOCK_SID='${oldOwner}' PAPERCUSP_SID='${oldOwner}' lock.sh` }] }] } }),
+    );
+
+    expect(isCodexHomeLaunchReady(dir, currentOwner)).toBe(false);
+    expect(isCodexHomeLaunchReady(dir, oldOwner)).toBe(true);
+
+    writeFileSync(
+      join(dir, 'config.toml'),
+      `${REAL_CONFIG}\n[mcp_servers.papercusp-su]\nurl = "http://x/api/mcp?superuser=1&client=${currentOwner}"\n`,
+    );
+    writeFileSync(
+      join(dir, 'papercusp-diagnostics.json'),
+      JSON.stringify({ lockOwnerSid: currentOwner }),
+    );
+    writeFileSync(
+      join(dir, 'hooks.json'),
+      JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: `PAPERCUSP_LOCK_SID='${currentOwner}' PAPERCUSP_SID='${currentOwner}' lock.sh` }] }] } }),
+    );
+    expect(isCodexHomeLaunchReady(dir, currentOwner)).toBe(true);
+  });
 });
 
 describe('codexGatewayConfigPatch — a default-mode RESUME must not strip a bound provider', () => {

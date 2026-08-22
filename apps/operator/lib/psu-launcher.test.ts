@@ -90,6 +90,7 @@ import {
   sessionOwnersRoot,
   recordSessionOwner,
   recoverSessionOwner,
+  recoverResumeSessionOwner,
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
   mintCarryRespawnArgs,
@@ -4304,6 +4305,35 @@ describe('session-owner index (identity-split fix 2026-07-02 — untracked resum
     expect(nativeSessionIdFromLaunchArgs(['--resume', 'my-omp-thread'])).toBeNull();
     expect(nativeSessionIdFromLaunchArgs([])).toBeNull();
     expect(nativeSessionIdFromLaunchArgs()).toBeNull();
+  });
+
+  it('WI-40723: tracked Codex recovery prefers the adv-keyed born owner and never mints a split SID', () => {
+    const codexHome = join(home, '.papercusp', 'su-codex-homes', 'session-16515');
+    const dir = join(codexHome, 'sessions', '2026', '08', '22');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `rollout-2026-08-22T17-00-00-${UUID}.jsonl`),
+      '{"type":"session_meta","payload":{"cwd":"/home/me/tracked-proj"}}\n',
+    );
+    recordSessionOwner('adv-16515', 'su-born-leader', { home, advSessionId: '16515' });
+
+    const untracked = findUntrackedSession(UUID, { home });
+    expect(untracked).toMatchObject({
+      agent: 'codex', sessionId: UUID, id: 16515, codexHome, psuTracked: true,
+    });
+    expect(recoverSessionOwner(UUID, { home })).toBeNull();
+    expect(recoverResumeSessionOwner(untracked, { home })).toBe('su-born-leader');
+
+    // A later split launch may have written the UUID key under its freshly
+    // minted SID. The adv-row binding remains canonical and must still win.
+    recordSessionOwner(UUID, 'su-later-split', { home, advSessionId: '16515' });
+    const bornOwnerId = recoverResumeSessionOwner(untracked, { home });
+    const mintSid = vi.fn(() => 'su-new-split');
+    expect(resumeEnvFor({ ...untracked, coordOwnerId: bornOwnerId }, { mintSid })).toMatchObject({
+      PAPERCUSP_SID: 'su-born-leader',
+      PAPERCUSP_ADV_SESSION_ID: '16515',
+    });
+    expect(mintSid).not.toHaveBeenCalled();
   });
 
   it('END-TO-END: the untracked-resume path re-attaches the born identity instead of minting', () => {

@@ -305,6 +305,10 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
         // tail bytes additionally require an EOF-relative start the tool lacks.
         'byte_limit',
         'byte_offset',
+        // Stable result-door content selection is a different mode from file
+        // line windows; account for the real tool surface without widening
+        // this answer-equivalent text family.
+        'content_indexes',
         'file_path',
         'limit',
         'offset',
@@ -342,6 +346,12 @@ describe('file-read.ts model tracks the real capability:read (D-015)', () => {
       `catFileRead's advisoryText tells agents the read is "paged at ${quoted?.[1]} lines", but capability:read ` +
         `actually pages at ${DEFAULT_LIMIT}. The advisory is user-facing guidance and is now wrong.`,
     ).toBe(DEFAULT_LIMIT);
+  });
+
+  it('sed range guidance prevents inclusive endpoint overlap false alarms', () => {
+    expect(sedRangeRead.advisoryText).toContain('Line ranges are inclusive');
+    expect(sedRangeRead.advisoryText).toContain('previous end + 1');
+    expect(sedRangeRead.advisoryText).toContain('overlapping endpoints repeat a source line');
   });
 });
 

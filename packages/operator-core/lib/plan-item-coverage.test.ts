@@ -11,6 +11,7 @@ import {
   classifyCoverage,
   compactCoverage,
   coverageCollisions,
+  duplicateCoverage,
   isCoverageDivergent,
   type CoverageWorkLink,
   type PlanItemCoverage,
@@ -318,5 +319,72 @@ describe('coverageCollisions (EI-6074)', () => {
 
   it('empty coverage map → no collisions', () => {
     expect(coverageCollisions([])).toEqual([]);
+  });
+});
+
+describe('duplicateCoverage (EI-21188799646985672)', () => {
+  const cov = (
+    over: Partial<PlanItemCoverage> & { ref: string },
+  ): PlanItemCoverage => ({
+    links: [],
+    directlyClaimed: false,
+    directHolder: null,
+    directActivity: null,
+    holder: null,
+    level: 'none',
+    workers: [],
+    lastActivityAt: null,
+    ...over,
+  });
+
+  const liveLink = (workItemId: string, holder: string, terminal = false): CoverageWorkLink => ({
+    workItemId,
+    rel: 'relates',
+    terminal,
+    activity: terminal ? 'free' : 'progressing',
+    holder: terminal ? null : holder,
+  });
+
+  it('flags two distinct live linked work-items held by the same principal', () => {
+    expect(
+      duplicateCoverage([
+        cov({
+          ref: 'plan#P-007',
+          links: [liveLink('WI-1', 'su-A'), liveLink('WI-2', 'su-A')],
+        }),
+      ]),
+    ).toEqual([{ ref: 'plan#P-007', holder: 'su-A', workItemIds: ['WI-1', 'WI-2'] }]);
+  });
+
+  it('deduplicates repeated edges and ignores terminal links, direct claims, and different holders', () => {
+    expect(
+      duplicateCoverage([
+        cov({
+          ref: 'plan#P-008',
+          directlyClaimed: true,
+          directHolder: 'su-A',
+          links: [
+            liveLink('WI-1', 'su-A'),
+            { ...liveLink('WI-1', 'su-A'), rel: 'fixes' },
+            liveLink('WI-done', 'su-A', true),
+            liveLink('WI-2', 'su-B'),
+          ],
+        }),
+      ]),
+    ).toEqual([]);
+  });
+
+  it('does not treat stalled/dead links as live duplicate coverage', () => {
+    expect(
+      duplicateCoverage([
+        cov({
+          ref: 'plan#P-009',
+          links: [
+            { workItemId: 'WI-stalled', rel: 'relates', terminal: false, activity: 'stalled', holder: null },
+            { workItemId: 'WI-dead', rel: 'relates', terminal: false, activity: 'dead', holder: null },
+          ],
+        }),
+      ]),
+    ).toEqual([]);
   });
 });

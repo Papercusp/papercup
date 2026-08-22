@@ -65,6 +65,7 @@ import {
   OPERATOR_CHAT_DEFAULT_WIDTH,
   OPERATOR_CHAT_OPEN_QUERY_KEY,
   clampOperatorChatWidth,
+  operatorChatWidthFromPointer,
 } from './operator-chat-layout';
 
 const STORAGE_KEY = 'papercusp.operatorChat.width';
@@ -233,10 +234,15 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
     };
   }, []);
 
-  // Drag-to-resize handle. Pointer events are captured on the handle,
-  // moves are tracked at window level so the cursor stays grabby even
-  // if it drifts off the handle during a fast drag.
+  // Drag-to-resize handle. The steering/settings rail is the FAR-LEFT dock;
+  // this chat pane is the MIDDLE dock, so clientX includes --left-sidebar-w.
+  // Subtract that offset before clamping the chat pane's own width.
   const draggingRef = useRef(false);
+  const leftSidebarOffset = () => {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue('--left-sidebar-w');
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
   const onHandleDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = true;
     (e.target as Element).setPointerCapture?.(e.pointerId);
@@ -245,7 +251,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
   }, []);
   const onHandleMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!draggingRef.current) return;
-    const next = clampOperatorChatWidth(e.clientX, window.innerWidth);
+    const next = operatorChatWidthFromPointer(e.clientX, leftSidebarOffset(), window.innerWidth);
     setWidth(next);
   }, []);
   const onHandleUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -257,7 +263,7 @@ export function OperatorChatSidebar({ faces = [] }: { faces?: readonly OpChatFac
     // per resize, not per pointermove. The cache is kept in sync by the width
     // effect; this just makes it durable across reload/restart.
     try {
-      const final = clampOperatorChatWidth(e.clientX, window.innerWidth);
+      const final = operatorChatWidthFromPointer(e.clientX, leftSidebarOffset(), window.innerWidth);
       writeProfileField('op_chat_width', final);
     } catch { /* ignore */ }
   }, []);
@@ -867,7 +873,9 @@ const OP_CHAT_SIDEBAR_CSS = `
      the sidebar flush to the top everywhere else — same convention as
      .pclsb/.pcdar and .pc-header. */
   top: var(--pc-env-bar-h, 0px);
-  left: 0;
+  /* D-009: the steering/settings rail is the far-left dock; chat is the
+     middle dock and therefore begins at that rail's rendered width. */
+  left: var(--left-sidebar-w, 0px);
   bottom: 0;
   /* Above .operator-panel (z-index 1200) so the Deck scrim + backdrop-filter
      don't dim/blur the chat when the Deck panel is open. */
@@ -1494,7 +1502,7 @@ body.has-op-chat {
    above) — 100vw minus only --op-chat-w over-widens by the rail width and
    pushes the right-side nav off-viewport when the rail is open. */
 body.has-op-chat .pc-header {
-  left: var(--op-chat-w, 360px);
+  left: calc(var(--left-sidebar-w, 0px) + var(--op-chat-w, 360px));
   width: calc(100vw - var(--op-chat-w, 360px) - var(--left-sidebar-w, 0px) - var(--dev-rail-w, 0px));
 }
 

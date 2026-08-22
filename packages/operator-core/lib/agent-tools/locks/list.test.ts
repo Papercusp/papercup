@@ -51,7 +51,8 @@ type Out = {
 };
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
 
-const holder = (owner: string) => ({
+const holder = (owner: string, resource = 'dev-server') => ({
+  resource,
   owner,
   owner_label: owner,
   mode: 'exclusive' as const,
@@ -78,7 +79,7 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
 
   it('scoped to a host-global resource: queries hostGlobalLockDomain, NOT the caller domain', async () => {
     getResourceM.mockResolvedValue({ resource: 'release-deploy', description: '', rule_text: '', enforcement: 'enforced' } as never);
-    queueM.mockResolvedValue({ holders: [holder('release-deploy:123:uuid')], draining: false });
+    queueM.mockResolvedValue({ holders: [holder('release-deploy:123:uuid', 'release-deploy')], draining: false });
 
     const b = await call({ resource: 'release-deploy' });
 
@@ -108,7 +109,7 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
   // it as unheld because it only ever queried the caller's tree-scoped domain.
   it('scoped to a workspace-scoped resource (git-sync:<slug>): queries workspaceScopedLockDomain, NOT the caller domain', async () => {
     getResourceM.mockResolvedValue({ resource: 'git-sync:papercusp', description: '', rule_text: '', enforcement: 'advisory' } as never);
-    queueM.mockResolvedValue({ holders: [holder('system:git-sync')], draining: false });
+    queueM.mockResolvedValue({ holders: [holder('system:git-sync', 'git-sync:papercusp')], draining: false });
 
     const b = await call({ resource: 'git-sync:papercusp' });
 
@@ -124,8 +125,8 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     listResourcesM.mockResolvedValue([]);
     queueM
       .mockResolvedValueOnce({ holders: [holder('caller-owner')], draining: false })
-      .mockResolvedValueOnce({ holders: [holder('release-deploy:999:uuid')], draining: true })
-      .mockResolvedValueOnce({ holders: [holder('system:git-sync')], draining: false });
+      .mockResolvedValueOnce({ holders: [holder('release-deploy:999:uuid', 'release-deploy')], draining: true })
+      .mockResolvedValueOnce({ holders: [holder('system:git-sync', 'git-sync:papercusp')], draining: false });
 
     const b = await call({});
 
@@ -135,6 +136,13 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     expect(queueM).toHaveBeenNthCalledWith(3, expect.anything(), { coordinationDomain: 'ws-scoped-domain', resource: undefined });
     expect(b.data.holders).toHaveLength(3);
     expect(b.data.draining).toBe(true);
+    expect(b.data.holders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ owner: 'caller-owner', resource: 'dev-server' }),
+        expect.objectContaining({ owner: 'release-deploy:999:uuid', resource: 'release-deploy' }),
+        expect.objectContaining({ owner: 'system:git-sync', resource: 'git-sync:papercusp' }),
+      ]),
+    );
   });
 
   it('marks the resource plane and routes file-holder checks to locks:queue', async () => {

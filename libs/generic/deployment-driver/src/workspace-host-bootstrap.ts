@@ -10,10 +10,15 @@ import { assertWorkspaceHostSecretIsolation } from './workspace-host-test-harnes
  * attestation.
  */
 export const WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION =
-  'papercusp-workspace-host-bootstrap-v1';
+  'papercusp-workspace-host-bootstrap-v2';
 export const WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION = '24.04';
 export const WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX =
   'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
+export const DEFAULT_WORKSPACE_HOST_SERVICE_USER = 'papercusp';
+export const DEFAULT_WORKSPACE_HOST_WORKSPACE_USER = 'papercusp-workspace';
+export const WORKSPACE_HOST_RUNTIME_ROOT = '/opt/papercusp';
+export const WORKSPACE_HOST_STATE_ROOT = '/var/lib/papercusp';
+export const WORKSPACE_HOST_DATA_ROOT = '/srv/papercusp/workspaces';
 
 /** Ordered, observable phases of every generated install/upgrade/rollback. */
 export const WORKSPACE_HOST_BOOTSTRAP_PHASES = [
@@ -36,6 +41,11 @@ export const WORKSPACE_HOST_BOOTSTRAP_CHECKS = [
   'embedded-postgres-migration',
   'agent-cli-prerequisites',
   'loopback-service',
+  'service-identity',
+  'runtime-permissions',
+  'workspace-identity',
+  'workspace-acl',
+  'ssh-forwarding-policy',
 ] as const;
 export type WorkspaceHostBootstrapCheckName =
   (typeof WORKSPACE_HOST_BOOTSTRAP_CHECKS)[number];
@@ -92,6 +102,14 @@ export interface WorkspaceHostBootstrapService {
   group?: string;
 }
 
+/** Distinct interactive identity; it never shares the runtime service group. */
+export interface WorkspaceHostBootstrapIsolation {
+  /** SSH login account that can access customer workspace/data only. */
+  workspaceUser?: string;
+  /** Primary group for the SSH account; must differ from the service group. */
+  workspaceGroup?: string;
+}
+
 export interface WorkspaceHostBootstrapInput {
   contractVersion: typeof WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION;
   action: 'install' | 'upgrade' | 'rollback';
@@ -101,6 +119,7 @@ export interface WorkspaceHostBootstrapInput {
   migrationId: string;
   minimumNodeMajor: number;
   service: WorkspaceHostBootstrapService;
+  isolation?: WorkspaceHostBootstrapIsolation;
   entrypoints?: Partial<WorkspaceHostBootstrapEntrypoints>;
   /** Persistable labels only. Secret-shaped keys and private-key values are rejected. */
   publicMetadata?: Readonly<Record<string, unknown>>;
@@ -139,9 +158,25 @@ export interface WorkspaceHostBootstrapAttestation {
   };
   service: {
     name: string;
+    user: string;
+    group: string;
     bindHost: '127.0.0.1';
     port: number;
     active: true;
+  };
+  isolation: {
+    workspaceUser: string;
+    workspaceGroup: string;
+    runtimeRoot: typeof WORKSPACE_HOST_RUNTIME_ROOT;
+    stateRoot: typeof WORKSPACE_HOST_STATE_ROOT;
+    workspaceRoot: typeof WORKSPACE_HOST_DATA_ROOT;
+    runtimeReadableByWorkspaceUser: false;
+    workspaceWritableByService: true;
+    workspaceWritableBySshUser: true;
+    sudo: false;
+    serviceGroupMember: false;
+    operatorIngress: 'ssh-local-forward';
+    updateMode: 'signed-atomic-release-swap';
   };
   checks: readonly WorkspaceHostBootstrapAttestationCheck[];
 }
@@ -257,9 +292,17 @@ function normalizedEntrypoints(
   return entrypoints;
 }
 
+interface ValidatedBootstrapInput {
+  entrypoints: WorkspaceHostBootstrapEntrypoints;
+  serviceUser: string;
+  serviceGroup: string;
+  workspaceUser: string;
+  workspaceGroup: string;
+}
+
 function validateInput(
   input: WorkspaceHostBootstrapInput,
-): WorkspaceHostBootstrapEntrypoints {
+): ValidatedBootstrapInput {
   requireCondition(
     input.contractVersion === WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
     `Unsupported workspace-host bootstrap contract '${input.contractVersion}'`,
@@ -298,13 +341,34 @@ function validateInput(
       input.service.port <= 65_535,
     'service.port must be an unprivileged TCP port',
   );
+  const serviceUser = input.service.user ?? DEFAULT_WORKSPACE_HOST_SERVICE_USER;
+  const serviceGroup = input.service.group ?? serviceUser;
+  const workspaceUser =
+    input.isolation?.workspaceUser ?? DEFAULT_WORKSPACE_HOST_WORKSPACE_USER;
+  const workspaceGroup = input.isolation?.workspaceGroup ?? workspaceUser;
   requireCondition(
-    SAFE_LINUX_NAME.test(input.service.user ?? 'papercusp'),
+    SAFE_LINUX_NAME.test(serviceUser) && serviceUser !== 'root',
     'service.user must be a safe Linux name',
   );
   requireCondition(
-    SAFE_LINUX_NAME.test(input.service.group ?? 'papercusp'),
+    SAFE_LINUX_NAME.test(serviceGroup) && serviceGroup !== 'root',
     'service.group must be a safe Linux name',
+  );
+  requireCondition(
+    SAFE_LINUX_NAME.test(workspaceUser) && workspaceUser !== 'root',
+    'isolation.workspaceUser must be a safe non-root Linux name',
+  );
+  requireCondition(
+    SAFE_LINUX_NAME.test(workspaceGroup) && workspaceGroup !== 'root',
+    'isolation.workspaceGroup must be a safe non-root Linux name',
+  );
+  requireCondition(
+    workspaceUser !== serviceUser,
+    'workspace SSH user must differ from the runtime service user',
+  );
+  requireCondition(
+    workspaceGroup !== serviceGroup,
+    'workspace SSH group must differ from the runtime service group',
   );
   assertWorkspaceHostSecretIsolation(
     input.publicMetadata ?? {},
@@ -314,7 +378,13 @@ function validateInput(
     input.publicMetadata ?? {},
     'bootstrap.publicMetadata',
   );
-  return normalizedEntrypoints(input.entrypoints);
+  return {
+    entrypoints: normalizedEntrypoints(input.entrypoints),
+    serviceUser,
+    serviceGroup,
+    workspaceUser,
+    workspaceGroup,
+  };
 }
 
 function assignment(name: string, value: string): string {
@@ -329,9 +399,13 @@ function assignment(name: string, value: string): string {
 export function buildWorkspaceHostBootstrap(
   input: WorkspaceHostBootstrapInput,
 ): string {
-  const entrypoints = validateInput(input);
-  const serviceUser = input.service.user ?? 'papercusp';
-  const serviceGroup = input.service.group ?? serviceUser;
+  const {
+    entrypoints,
+    serviceUser,
+    serviceGroup,
+    workspaceUser,
+    workspaceGroup,
+  } = validateInput(input);
   const digest = input.release.bundleSha256.toLowerCase();
   const signingKeyDigest = input.release.signingKeySha256.toLowerCase();
   const checksJson = JSON.stringify(
@@ -361,6 +435,11 @@ export function buildWorkspaceHostBootstrap(
     `SERVICE_PORT=${input.service.port}`,
     assignment('SERVICE_USER', serviceUser),
     assignment('SERVICE_GROUP', serviceGroup),
+    assignment('WORKSPACE_USER', workspaceUser),
+    assignment('WORKSPACE_GROUP', workspaceGroup),
+    assignment('RUNTIME_ROOT', WORKSPACE_HOST_RUNTIME_ROOT),
+    assignment('STATE_ROOT', WORKSPACE_HOST_STATE_ROOT),
+    assignment('WORKSPACE_ROOT', WORKSPACE_HOST_DATA_ROOT),
     assignment('INSTALL_ENTRYPOINT', entrypoints.install),
     assignment('ROLLBACK_ENTRYPOINT', entrypoints.rollback),
     assignment('NODE_ENTRYPOINT', entrypoints.node),
@@ -385,21 +464,39 @@ export function buildWorkspaceHostBootstrap(
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[1]}'`,
     'export DEBIAN_FRONTEND=noninteractive',
     'apt-get update -qq',
-    'apt-get install -y --no-install-recommends ca-certificates curl jq minisign openssh-server ufw unattended-upgrades',
+    'apt-get install -y --no-install-recommends acl ca-certificates curl jq minisign openssh-server ufw unattended-upgrades',
     'getent group "$SERVICE_GROUP" >/dev/null || groupadd --system "$SERVICE_GROUP"',
-    'id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --gid "$SERVICE_GROUP" --home-dir /var/lib/papercusp --create-home --shell /usr/sbin/nologin "$SERVICE_USER"',
+    'id -u "$SERVICE_USER" >/dev/null 2>&1 || useradd --system --gid "$SERVICE_GROUP" --home-dir "$STATE_ROOT" --create-home --shell /usr/sbin/nologin "$SERVICE_USER"',
     'usermod --lock --shell /usr/sbin/nologin "$SERVICE_USER"',
-    'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 /var/lib/papercusp /var/lib/papercusp/embedded-pg',
-    'install -d -o root -g "$SERVICE_GROUP" -m 0750 /opt/papercusp /opt/papercusp/releases /etc/papercusp',
-    "cat > /etc/ssh/sshd_config.d/60-papercusp-workspace.conf <<'PAPERCUSP_SSH'",
+    'getent group "$WORKSPACE_GROUP" >/dev/null || groupadd "$WORKSPACE_GROUP"',
+    'id -u "$WORKSPACE_USER" >/dev/null 2>&1 || useradd --gid "$WORKSPACE_GROUP" --home-dir "/home/$WORKSPACE_USER" --create-home --shell /bin/bash "$WORKSPACE_USER"',
+    'usermod --lock --gid "$WORKSPACE_GROUP" --groups "" --home "/home/$WORKSPACE_USER" --shell /bin/bash "$WORKSPACE_USER"',
+    'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user must not belong to the runtime service group"; fi',
+    'install -d -o "$SERVICE_USER" -g "$SERVICE_GROUP" -m 0750 "$STATE_ROOT" "$STATE_ROOT/embedded-pg"',
+    'install -d -o root -g "$SERVICE_GROUP" -m 0750 "$RUNTIME_ROOT" "$RUNTIME_ROOT/releases" /etc/papercusp',
+    'install -d -o root -g root -m 0711 /srv/papercusp',
+    'install -d -o root -g root -m 0770 "$WORKSPACE_ROOT"',
+    'setfacl --remove-all "$WORKSPACE_ROOT"',
+    'setfacl --remove-default "$WORKSPACE_ROOT"',
+    'setfacl -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
+    'setfacl -d -m "u:$SERVICE_USER:rwx,u:$WORKSPACE_USER:rwx,m::rwx,o::---" "$WORKSPACE_ROOT"',
+    'install -d -o "$WORKSPACE_USER" -g "$WORKSPACE_GROUP" -m 0700 "/home/$WORKSPACE_USER"',
+    'ln -sfn "$WORKSPACE_ROOT" "/home/$WORKSPACE_USER/workspaces"',
+    'chown -h "$WORKSPACE_USER:$WORKSPACE_GROUP" "/home/$WORKSPACE_USER/workspaces"',
+    'cat > /etc/ssh/sshd_config.d/60-papercusp-workspace.conf <<PAPERCUSP_SSH',
     '# Managed by Papercusp workspace-host bootstrap.',
     'PasswordAuthentication no',
     'KbdInteractiveAuthentication no',
+    'AuthenticationMethods publickey',
     'PermitRootLogin no',
     'PubkeyAuthentication yes',
-    'AllowTcpForwarding yes',
+    'AllowUsers $WORKSPACE_USER',
+    'AllowTcpForwarding local',
+    'AllowStreamLocalForwarding no',
+    'PermitOpen 127.0.0.1:$SERVICE_PORT',
     'GatewayPorts no',
     'X11Forwarding no',
+    'PermitTunnel no',
     'PAPERCUSP_SSH',
     'sshd -t',
     'systemctl reload ssh 2>/dev/null || systemctl reload sshd',
@@ -415,12 +512,12 @@ export function buildWorkspaceHostBootstrap(
     'SIGNATURE_PATH="$WORK_DIR/server-bundle.tgz.minisig"',
     'PUBLIC_KEY_PATH="$WORK_DIR/bootstrap-public.key"',
     'STAGE_DIR=""',
-    'PREVIOUS_TARGET="$(readlink -f /opt/papercusp/current 2>/dev/null || true)"',
+    'PREVIOUS_TARGET="$(readlink -f "$RUNTIME_ROOT/current" 2>/dev/null || true)"',
     'SWITCHED=0',
     'restore_previous() {',
     '  [[ "$SWITCHED" -eq 1 && -n "$PREVIOUS_TARGET" && -d "$PREVIOUS_TARGET" ]] || return 0',
-    '  ln -sfn "$PREVIOUS_TARGET" /opt/papercusp/current.next',
-    '  mv -Tf /opt/papercusp/current.next /opt/papercusp/current',
+    '  ln -sfn "$PREVIOUS_TARGET" "$RUNTIME_ROOT/current.next"',
+    '  mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"',
     '  systemctl restart "$SERVICE_NAME.service" || true',
     '}',
     'cleanup() {',
@@ -439,19 +536,23 @@ export function buildWorkspaceHostBootstrap(
     'minisign -Vm "$BUNDLE_PATH" -x "$SIGNATURE_PATH" -p "$PUBLIC_KEY_PATH" >/dev/null',
     '',
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[3]}'`,
-    'RELEASE_DIR="/opt/papercusp/releases/$RELEASE_VERSION"',
+    'RELEASE_DIR="$RUNTIME_ROOT/releases/$RELEASE_VERSION"',
     'if [[ ! -d "$RELEASE_DIR" ]]; then',
-    '  STAGE_DIR="$(mktemp -d "/opt/papercusp/releases/.${RELEASE_VERSION}.XXXXXX")"',
+    '  STAGE_DIR="$(mktemp -d "$RUNTIME_ROOT/releases/.${RELEASE_VERSION}.XXXXXX")"',
     '  tar --extract --gzip --file "$BUNDLE_PATH" --directory "$STAGE_DIR" --no-same-owner --no-same-permissions',
     '  mv -T "$STAGE_DIR" "$RELEASE_DIR"',
     '  STAGE_DIR=""',
     'fi',
+    'chown -R "root:$SERVICE_GROUP" "$RELEASE_DIR"',
+    'chmod -R g-w,o-rwx "$RELEASE_DIR"',
+    'find "$RELEASE_DIR" -type d -exec chmod g+rx {} +',
+    'find "$RELEASE_DIR" -type f -exec chmod g+r {} +',
     'for entrypoint in "$INSTALL_ENTRYPOINT" "$ROLLBACK_ENTRYPOINT" "$NODE_ENTRYPOINT" "$MIGRATE_ENTRYPOINT" "$OPERATOR_ENTRYPOINT" "$HEALTH_ENTRYPOINT" "$PSU_ENTRYPOINT" "$CLAUDE_ENTRYPOINT" "$CODEX_ENTRYPOINT" "$OMP_ENTRYPOINT"; do',
     '  [[ -x "$RELEASE_DIR/$entrypoint" ]] || die "missing executable release entrypoint: $entrypoint"',
     'done',
-    '"$RELEASE_DIR/$INSTALL_ENTRYPOINT" --action "$BOOTSTRAP_ACTION" --release-root "$RELEASE_DIR" --state-root /var/lib/papercusp',
+    '"$RELEASE_DIR/$INSTALL_ENTRYPOINT" --action "$BOOTSTRAP_ACTION" --release-root "$RELEASE_DIR" --state-root "$STATE_ROOT"',
     'if [[ "$BOOTSTRAP_ACTION" == "rollback" ]]; then',
-    '  "$RELEASE_DIR/$ROLLBACK_ENTRYPOINT" --from "$PREVIOUS_TARGET" --to "$RELEASE_DIR" --state-root /var/lib/papercusp',
+    '  "$RELEASE_DIR/$ROLLBACK_ENTRYPOINT" --from "$PREVIOUS_TARGET" --to "$RELEASE_DIR" --state-root "$STATE_ROOT"',
     'fi',
     'NODE_VERSION="$("$RELEASE_DIR/$NODE_ENTRYPOINT" --version)"',
     'NODE_MAJOR="${NODE_VERSION#v}"',
@@ -459,11 +560,11 @@ export function buildWorkspaceHostBootstrap(
     '[[ "$NODE_MAJOR" =~ ^[0-9]+$ && "$NODE_MAJOR" -ge "$MINIMUM_NODE_MAJOR" ]] || die "bundled Node runtime is below the required floor"',
     '',
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[4]}'`,
-    '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root /var/lib/papercusp/embedded-pg --migration-id "$MIGRATION_ID"',
+    '"$RELEASE_DIR/$MIGRATE_ENTRYPOINT" --database-root "$STATE_ROOT/embedded-pg" --migration-id "$MIGRATION_ID"',
     '',
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[5]}'`,
-    'ln -sfn "$RELEASE_DIR" /opt/papercusp/current.next',
-    'mv -Tf /opt/papercusp/current.next /opt/papercusp/current',
+    'ln -sfn "$RELEASE_DIR" "$RUNTIME_ROOT/current.next"',
+    'mv -Tf "$RUNTIME_ROOT/current.next" "$RUNTIME_ROOT/current"',
     'SWITCHED=1',
     'cat > "/etc/systemd/system/$SERVICE_NAME.service" <<PAPERCUSP_SERVICE',
     '[Unit]',
@@ -475,21 +576,24 @@ export function buildWorkspaceHostBootstrap(
     'Type=simple',
     'User=$SERVICE_USER',
     'Group=$SERVICE_GROUP',
-    'WorkingDirectory=/var/lib/papercusp',
+    'WorkingDirectory=$STATE_ROOT',
     'Environment=PAPERCUSP_BIND_HOST=127.0.0.1',
     'Environment=PAPERCUSP_PORT=$SERVICE_PORT',
-    'Environment=PAPERCUSP_EMBEDDED_PG_ROOT=/var/lib/papercusp/embedded-pg',
-    'ExecStart=/opt/papercusp/current/$OPERATOR_ENTRYPOINT',
-    'ExecStartPost=/opt/papercusp/current/$HEALTH_ENTRYPOINT --host 127.0.0.1 --port $SERVICE_PORT',
+    'Environment=PAPERCUSP_EMBEDDED_PG_ROOT=$STATE_ROOT/embedded-pg',
+    'Environment=PAPERCUSP_WORKSPACE_ROOT=$WORKSPACE_ROOT',
+    'ExecStart=$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT',
+    'ExecStartPost=$RUNTIME_ROOT/current/$HEALTH_ENTRYPOINT --host 127.0.0.1 --port $SERVICE_PORT',
     'Restart=on-failure',
     'RestartSec=5s',
     'NoNewPrivileges=true',
     'PrivateTmp=true',
     'ProtectHome=true',
     'ProtectSystem=strict',
-    'ReadWritePaths=/var/lib/papercusp',
+    'ReadOnlyPaths=$RUNTIME_ROOT',
+    'ReadWritePaths=$STATE_ROOT $WORKSPACE_ROOT',
     'RestrictSUIDSGID=true',
     'LockPersonality=true',
+    'UMask=0027',
     'StandardOutput=journal',
     'StandardError=journal',
     'SyslogIdentifier=papercusp-workspace',
@@ -502,12 +606,24 @@ export function buildWorkspaceHostBootstrap(
     '',
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[6]}'`,
     'systemctl is-active --quiet "$SERVICE_NAME.service"',
-    '"/opt/papercusp/current/$HEALTH_ENTRYPOINT" --host 127.0.0.1 --port "$SERVICE_PORT"',
+    '"$RUNTIME_ROOT/current/$HEALTH_ENTRYPOINT" --host 127.0.0.1 --port "$SERVICE_PORT"',
+    '[[ "$(systemctl show "$SERVICE_NAME.service" --property User --value)" == "$SERVICE_USER" ]] || die "workspace service is not running under the dedicated service user"',
+    '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',
+    '[[ "$(stat -c %U "$RUNTIME_ROOT")" == "root" ]] || die "runtime root must be owned by root"',
+    '[[ -z "$(find "$RUNTIME_ROOT/releases" -xdev \\( -type f -o -type d \\) -perm -0004 -print -quit)" ]] || die "runtime release tree must not be world-readable"',
+    'runuser -u "$WORKSPACE_USER" -- test ! -r "$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT" || die "workspace SSH user can read the Papercusp runtime"',
+    'runuser -u "$WORKSPACE_USER" -- test -w "$WORKSPACE_ROOT" || die "workspace SSH user cannot write the scoped workspace root"',
+    'runuser -u "$SERVICE_USER" -- test -w "$WORKSPACE_ROOT" || die "runtime service cannot write the scoped workspace root"',
+    'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx "$SERVICE_GROUP" >/dev/null; then die "workspace SSH user belongs to the runtime service group"; fi',
+    'if id -nG "$WORKSPACE_USER" | tr " " "\\n" | grep -Fx sudo >/dev/null; then die "workspace SSH user belongs to sudo"; fi',
+    'SSHD_POLICY="$(sshd -T -C user="$WORKSPACE_USER",host=localhost,addr=127.0.0.1)"',
+    'grep -Fx "allowtcpforwarding local" <<<"$SSHD_POLICY" >/dev/null || die "SSH TCP forwarding must be local-only"',
+    'grep -Fx "permitopen 127.0.0.1:$SERVICE_PORT" <<<"$SSHD_POLICY" >/dev/null || die "SSH forwarding must be restricted to the loopback operator"',
     'OBSERVED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"',
     `CHECKS_JSON=${shellQuote(checksJson)}`,
-    'ATTESTATION_PATH=/var/lib/papercusp/bootstrap-attestation.json',
-    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
-    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,claude:true,codex:true,omp:true},service:{name:$serviceName,bindHost:"127.0.0.1",port:$servicePort,active:true},checks:$checks}\' > "$ATTESTATION_PATH"',
+    'ATTESTATION_PATH="$STATE_ROOT/bootstrap-attestation.json"',
+    'jq -n --arg contractVersion "$CONTRACT_VERSION" --arg hostId "$HOST_ID" --arg action "$BOOTSTRAP_ACTION" --arg ubuntuVersion "$VERSION_ID" --arg observedAt "$OBSERVED_AT" --arg releaseVersion "$RELEASE_VERSION" --arg source "$BUNDLE_URL" --arg bundleSha256 "$BUNDLE_SHA256" --arg signingKeySha256 "$SIGNING_KEY_SHA256" --arg migrationId "$MIGRATION_ID" --arg serviceName "$SERVICE_NAME" --arg serviceUser "$SERVICE_USER" --arg serviceGroup "$SERVICE_GROUP" --arg workspaceUser "$WORKSPACE_USER" --arg workspaceGroup "$WORKSPACE_GROUP" --arg runtimeRoot "$RUNTIME_ROOT" --arg stateRoot "$STATE_ROOT" --arg workspaceRoot "$WORKSPACE_ROOT" --argjson nodeMajor "$NODE_MAJOR" --argjson minimumNodeMajor "$MINIMUM_NODE_MAJOR" --argjson servicePort "$SERVICE_PORT" --argjson checks "$CHECKS_JSON" \\',
+    '  \'{contractVersion:$contractVersion,hostId:$hostId,action:$action,ubuntuVersion:$ubuntuVersion,observedAt:$observedAt,status:"healthy",release:{version:$releaseVersion,source:$source,bundleSha256:$bundleSha256,signingKeySha256:$signingKeySha256,signatureVerified:true},migration:{id:$migrationId,applied:true},runtime:{nodeMajor:$nodeMajor,minimumNodeMajor:$minimumNodeMajor,psu:true,claude:true,codex:true,omp:true},service:{name:$serviceName,user:$serviceUser,group:$serviceGroup,bindHost:"127.0.0.1",port:$servicePort,active:true},isolation:{workspaceUser:$workspaceUser,workspaceGroup:$workspaceGroup,runtimeRoot:$runtimeRoot,stateRoot:$stateRoot,workspaceRoot:$workspaceRoot,runtimeReadableByWorkspaceUser:false,workspaceWritableByService:true,workspaceWritableBySshUser:true,sudo:false,serviceGroupMember:false,operatorIngress:"ssh-local-forward",updateMode:"signed-atomic-release-swap"},checks:$checks}\' > "$ATTESTATION_PATH"',
     'chown "$SERVICE_USER:$SERVICE_GROUP" "$ATTESTATION_PATH"',
     'chmod 0640 "$ATTESTATION_PATH"',
     `printf '${WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX}%s\\n' "$(base64 --wrap=0 < \"$ATTESTATION_PATH\")"`,
@@ -565,7 +681,7 @@ export function validateWorkspaceHostBootstrapAttestation(
   attestation: unknown,
   expected: WorkspaceHostBootstrapInput,
 ): WorkspaceHostBootstrapAttestationValidation {
-  validateInput(expected);
+  const validated = validateInput(expected);
   const errors: string[] = [];
   try {
     assertWorkspaceHostSecretIsolation(attestation, 'bootstrap.attestation');
@@ -581,6 +697,7 @@ export function validateWorkspaceHostBootstrapAttestation(
     !isRecord(attestation.migration) ||
     !isRecord(attestation.runtime) ||
     !isRecord(attestation.service) ||
+    !isRecord(attestation.isolation) ||
     !Array.isArray(attestation.checks)
   ) {
     return {
@@ -679,6 +796,16 @@ export function validateWorkspaceHostBootstrapAttestation(
   );
   addMismatch(
     errors,
+    candidate.service.user === validated.serviceUser,
+    'service user mismatch',
+  );
+  addMismatch(
+    errors,
+    candidate.service.group === validated.serviceGroup,
+    'service group mismatch',
+  );
+  addMismatch(
+    errors,
     candidate.service.bindHost === '127.0.0.1',
     'operator must bind to loopback',
   );
@@ -691,6 +818,50 @@ export function validateWorkspaceHostBootstrapAttestation(
     errors,
     candidate.service.active === true,
     'workspace service is not active',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.workspaceUser === validated.workspaceUser,
+    'workspace SSH user mismatch',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.workspaceGroup === validated.workspaceGroup,
+    'workspace SSH group mismatch',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.runtimeRoot === WORKSPACE_HOST_RUNTIME_ROOT &&
+      candidate.isolation.stateRoot === WORKSPACE_HOST_STATE_ROOT &&
+      candidate.isolation.workspaceRoot === WORKSPACE_HOST_DATA_ROOT,
+    'workspace isolation path mismatch',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.runtimeReadableByWorkspaceUser === false,
+    'workspace SSH user can read the runtime',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.workspaceWritableByService === true &&
+      candidate.isolation.workspaceWritableBySshUser === true,
+    'scoped workspace ACL verification failed',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.sudo === false &&
+      candidate.isolation.serviceGroupMember === false,
+    'workspace SSH user has privileged runtime membership',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.operatorIngress === 'ssh-local-forward',
+    'operator ingress is not restricted to authenticated SSH forwarding',
+  );
+  addMismatch(
+    errors,
+    candidate.isolation.updateMode === 'signed-atomic-release-swap',
+    'runtime update mode is not a signed atomic release swap',
   );
 
   const checks = candidate.checks.filter(

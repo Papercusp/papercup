@@ -140,7 +140,7 @@ WITH native AS (
   FROM harness_shared.session_turn_parts
   WHERE workspace_id = 'default' AND source_kind = 'codex'
     AND ts >= now() - (($1)::int || ' days')::interval
-    AND part_kind = 'tool' AND tool_name = 'exec'
+    AND part_kind = 'tool_use' AND tool_name = 'exec'
 ), routed AS (
   SELECT count(*)::int AS calls, count(DISTINCT spawn_id)::int AS sessions
   FROM harness_shared.tool_invocations

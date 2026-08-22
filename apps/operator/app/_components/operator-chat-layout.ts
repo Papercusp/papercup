@@ -15,6 +15,23 @@ export function clampOperatorChatWidth(width: number, viewportWidth: number): nu
   return Math.max(OPERATOR_CHAT_MIN_WIDTH, Math.min(operatorChatWidthCeiling(viewportWidth), width));
 }
 
+/**
+ * Convert a viewport pointer coordinate into the middle chat pane's own width.
+ *
+ * The steering/settings rail is now the leftmost dock, so the chat resize
+ * handle's clientX includes that rail. Keeping this subtraction in the pure
+ * layout module makes the pane-order contract unit-testable instead of hiding
+ * it in a pointer handler.
+ */
+export function operatorChatWidthFromPointer(
+  clientX: number,
+  leftSidebarWidth: number,
+  viewportWidth: number,
+): number {
+  const left = Number.isFinite(leftSidebarWidth) ? Math.max(0, leftSidebarWidth) : 0;
+  return clampOperatorChatWidth(clientX - left, viewportWidth);
+}
+
 export function operatorChatOffsetWidth(isOpen: boolean, width: number, viewportWidth: number): number {
   return isOpen
     ? clampOperatorChatWidth(width, viewportWidth)

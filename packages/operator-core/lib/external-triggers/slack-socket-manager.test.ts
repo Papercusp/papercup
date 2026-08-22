@@ -1,6 +1,10 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { SlackSocketManager, type SlackSocketLike } from './slack-socket-manager';
+import {
+  SlackSocketManager,
+  startSlackSocketManager,
+  type SlackSocketLike,
+} from './slack-socket-manager';
 import type { ExternalTriggerSourceRow } from './source-store';
 
 class FakeSocket extends EventEmitter implements SlackSocketLike {
@@ -72,5 +76,29 @@ describe('SlackSocketManager', () => {
     await manager.reconcile();
     expect(sockets).toHaveLength(2);
     manager.stop();
+  });
+
+  it('reuses one starter state across repeated module evaluation', async () => {
+    const first = startSlackSocketManager({
+      listSources: vi.fn(async () => []),
+    });
+    const secondListSources = vi.fn(async () => {
+      throw new Error('a repeated module record must not start another manager');
+    });
+
+    try {
+      vi.resetModules();
+      const repeated = await import('./slack-socket-manager');
+      const second = repeated.startSlackSocketManager({ listSources: secondListSources });
+
+      expect(repeated.startSlackSocketManager).not.toBe(startSlackSocketManager);
+      expect(second).toBe(first);
+      expect(second.manager).toBe(first.manager);
+      expect(second.timer).toBe(first.timer);
+      expect(secondListSources).not.toHaveBeenCalled();
+    } finally {
+      first.timer.stop();
+      first.manager.stop();
+    }
   });
 });

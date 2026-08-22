@@ -96,6 +96,10 @@ describe('P-008 run instrumentation and native-exec routing reads', () => {
       routedFraction: 0.7,
     });
     expect(seen).toEqual([[14]]);
+    // search/session-ingest.ts writes Codex custom-tool calls with this exact
+    // vocabulary. A generic-looking `tool` predicate silently returns zero.
+    expect(NATIVE_EXEC_ROUTING_SQL).toContain("part_kind = 'tool_use'");
+    expect(NATIVE_EXEC_ROUTING_SQL).not.toContain("part_kind = 'tool'");
 
     const empty = await readNativeExecRouting(async <T>(): Promise<T[]> => [] as T[], 7);
     expect(empty.routedFraction).toBeNull();

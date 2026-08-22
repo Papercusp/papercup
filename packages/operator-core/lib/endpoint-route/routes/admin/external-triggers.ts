@@ -12,10 +12,11 @@ import {
   setExternalTriggerBindingArmed,
   updateExternalTriggerBindingStormPolicy,
 } from '../../../external-triggers/admin';
+import { connectOwnedSlackSource, SLACK_APP_MANIFEST_TEMPLATE } from '../../../external-triggers/slack';
 import {
-  connectOwnedSlackSource,
-  SLACK_APP_MANIFEST_TEMPLATE,
-} from '../../../external-triggers/slack';
+  ensureSlackRespondInThreadBinding,
+  SLACK_RESPOND_IN_THREAD_PLAN,
+} from '../../../external-triggers/slack-flagship';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 
@@ -132,13 +133,15 @@ const slackManifest = defineTool({
   },
 });
 
-const slackConnectSchema = z.object({
-  appToken: z.string().min(6).max(2_000),
-  botToken: z.string().min(6).max(2_000),
-  installSlug: z.string().min(1).max(120).default('papercusp'),
-  field: z.string().min(1).max(128).optional(),
-  channels: z.array(z.string().min(1).max(80)).max(500).optional(),
-}).strict();
+const slackConnectSchema = z
+  .object({
+    appToken: z.string().min(6).max(2_000),
+    botToken: z.string().min(6).max(2_000),
+    installSlug: z.string().min(1).max(120).default('papercusp'),
+    field: z.string().min(1).max(128).optional(),
+    channels: z.array(z.string().min(1).max(80)).max(500).optional(),
+  })
+  .strict();
 
 const slackConnect = defineTool({
   method: 'POST',
@@ -153,28 +156,44 @@ const slackConnect = defineTool({
       return Response.json({ ok: false, error: 'disabled' }, { status: 409 });
     }
     let raw: unknown;
-    try { raw = await req.json(); } catch {
+    try {
+      raw = await req.json();
+    } catch {
       return Response.json({ ok: false, error: 'bad_request', detail: 'body must be JSON' }, { status: 400 });
     }
     const parsed = slackConnectSchema.safeParse(raw);
     if (!parsed.success) {
-      return Response.json({
-        ok: false,
-        error: 'bad_request',
-        detail: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
-      }, { status: 400 });
+      return Response.json(
+        {
+          ok: false,
+          error: 'bad_request',
+          detail: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; '),
+        },
+        { status: 400 },
+      );
     }
     try {
       const user = await getSessionUserOrDefault(req.headers);
       const workspaceId = activeWorkspaceId();
+      const createdBy = `owner:${user.id}`;
       const source = await connectOwnedSlackSource(getOrgPg().sql, {
         workspaceId,
         ownerUserId: user.id,
-        createdBy: `owner:${user.id}`,
+        createdBy,
         ...parsed.data,
       });
+      const flagship = await ensureSlackRespondInThreadBinding(getOrgPg().sql, workspaceId, source, createdBy);
       void notifySyncInvalidate('externalTriggers.admin', { workspaceId }).catch(() => {});
-      return Response.json({ ok: true, source });
+      return Response.json({
+        ok: true,
+        source,
+        binding: flagship.binding,
+        plan: {
+          slug: SLACK_RESPOND_IN_THREAD_PLAN,
+          created: flagship.plan.created,
+          armed: flagship.binding.armed,
+        },
+      });
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       return Response.json({ ok: false, error: 'slack_connect_failed', detail }, { status: 400 });

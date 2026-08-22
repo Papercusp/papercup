@@ -68,6 +68,8 @@ vi.mock('../harness/routines/release-actions', () => ({
 
 import {
   evaluateGreenStall,
+  evaluatePausedGreenCheckpoint,
+  greenCheckpointPausedEscalationBody,
   checkGreenStall,
   parseGreenCheckpointStallEscalation,
   decideGreenCheckpointStallRecovery,
@@ -611,6 +613,176 @@ describe('checkGreenStall checkpoint-run routing (EI-20378004056924553)', () => 
       recovered: [],
       suppressed: [],
     });
+  });
+});
+
+describe('evaluatePausedGreenCheckpoint (EI-21190903677660085)', () => {
+  const overdue = {
+    active: false,
+    groupSlug: 'release',
+    targetRole: 'system:green-checkpoint',
+    nextFireMs: NOW - H,
+    pauseRecorded: true,
+    pauseReason: 'until the release writer regression is verified',
+    pausedBy: 'su-dead-owner',
+    pausedAtMs: NOW - 2 * H,
+  } as const;
+
+  it('alarms only when a release green-checkpoint pause is past next_fire_at', () => {
+    const v = evaluatePausedGreenCheckpoint(overdue, NOW);
+    expect(v.overdue).toBe(true);
+    expect(v.reason).toContain('PAUSED');
+    expect(v.reason).toContain('until the release writer regression is verified');
+    expect(v.reason).toContain('su-dead-owner');
+    expect(v.reason).toContain(new Date(NOW - H).toISOString());
+  });
+
+  it.each([
+    ['active routine', { ...overdue, active: true }],
+    ['non-release group', { ...overdue, groupSlug: 'other' }],
+    ['non-green target', { ...overdue, targetRole: 'system:release-trigger' }],
+    ['not overdue', { ...overdue, nextFireMs: NOW }],
+    ['no pause record', { ...overdue, pauseRecorded: false, pauseReason: null, pausedBy: null, pausedAtMs: null }],
+  ])('%s is not an overdue paused gate', (_label, snapshot) => {
+    expect(evaluatePausedGreenCheckpoint(snapshot, NOW)).toEqual({ overdue: false, reason: null });
+  });
+
+  it('serializes the pause owner, pause time, next fire, and reason in the durable body', () => {
+    const verdict = evaluatePausedGreenCheckpoint(overdue, NOW);
+    const body = JSON.parse(
+      greenCheckpointPausedEscalationBody({
+        installSlug: 'papercusp',
+        verdict,
+        pauseReason: overdue.pauseReason,
+        pausedBy: overdue.pausedBy,
+        pausedAtMs: overdue.pausedAtMs,
+        nextFireMs: overdue.nextFireMs,
+        nowMs: NOW,
+      }),
+    );
+    expect(body.kind).toBe('green-checkpoint-paused-watchdog');
+    expect(body.pauseReason).toBe(overdue.pauseReason);
+    expect(body.pausedBy).toBe(overdue.pausedBy);
+    expect(body.pausedAt).toBe(new Date(overdue.pausedAtMs).toISOString());
+    expect(body.nextFireAt).toBe(new Date(overdue.nextFireMs).toISOString());
+    expect(body.detail).toContain('paused-release watchdog');
+  });
+});
+
+describe('checkGreenStall paused release green-checkpoint watchdog (EI-21190903677660085)', () => {
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+  let dateNowSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    dateNowSpy = vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    readRoutineEngineLivenessMock.mockResolvedValue({ stale: false });
+    resolveCheckpointRoutingMock.mockResolvedValue({ skip: true });
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    broadcastSevereEventResolvedMock.mockClear();
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    dateNowSpy.mockRestore();
+    readRoutineEngineLivenessMock.mockReset();
+    resolveCheckpointRoutingMock.mockReset();
+    notifyAttentionMock.mockClear();
+    broadcastSevereEventMock.mockClear();
+    broadcastSevereEventResolvedMock.mockClear();
+  });
+
+  function makeFakeSql(opts: {
+    pausedRows: Array<Record<string, unknown>>;
+    activeRows?: Array<Record<string, unknown>>;
+    existingPaused?: Array<{ escalation: unknown }>;
+  }) {
+    const calls: unknown[][] = [];
+    const activeRows = opts.activeRows ?? [];
+    const existingPaused = opts.existingPaused ?? [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join('?');
+      calls.push([text, ...values]);
+      if (text.includes("metadata->'pause' AS pause")) return Promise.resolve(opts.pausedRows);
+      if (text.includes('FROM harness_shared.routines')) return Promise.resolve(activeRows);
+      if (
+        text.includes('FROM harness_shared.harness_escalations') &&
+        values.includes('green-checkpoint-paused-watchdog')
+      ) {
+        return Promise.resolve(existingPaused);
+      }
+      if (text.includes('UPDATE harness_shared.harness_escalations')) {
+        return Promise.resolve(Object.assign([], { count: 1 }));
+      }
+      if (text.includes('UPDATE harness_shared.routines')) {
+        return Promise.resolve(Object.assign([], { count: 0 }));
+      }
+      return Promise.resolve(Object.assign([], { count: 0 }));
+    }) as unknown as import('postgres').Sql;
+    return { sql, calls };
+  }
+
+  const overdueRow = {
+    install_slug: 'papercusp',
+    workspace_id: 'papercusp-workspace',
+    active: false,
+    group_slug: 'release',
+    target_role: 'system:green-checkpoint',
+    next_fire_ms: NOW - H,
+    pause: {
+      reason: 'until EI-40422 is terminal',
+      pausedBy: 'su-dead-owner',
+      pausedAtMs: NOW - 2 * H,
+    },
+  };
+
+  it('alarms once and writes the independent durable paused-watchdog row', async () => {
+    const { sql, calls } = makeFakeSql({ pausedRows: [overdueRow] });
+    const result = await checkGreenStall(sql);
+
+    expect(result).toEqual({ alarmed: ['papercusp'], recovered: [], suppressed: [] });
+    expect(notifyAttentionMock).toHaveBeenCalledTimes(1);
+    expect(broadcastSevereEventMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conditionKey: 'green-checkpoint-paused:papercusp', oneShot: true }),
+    );
+    const insert = calls.find(
+      (call) =>
+        String(call[0]).includes('INSERT INTO harness_shared.harness_escalations') &&
+        call.includes('green-checkpoint-paused-watchdog'),
+    );
+    expect(insert).toBeDefined();
+    expect(insert![2]).toBe('green-checkpoint-paused-watchdog');
+    const body = JSON.parse(String(insert![3]));
+    expect(body.pauseReason).toBe('until EI-40422 is terminal');
+    expect(body.pausedBy).toBe('su-dead-owner');
+    expect(body.nextFireAt).toBe(new Date(NOW - H).toISOString());
+  });
+
+  it('does not re-alarm while the paused-watchdog escalation is already present', async () => {
+    const { sql, calls } = makeFakeSql({
+      pausedRows: [overdueRow],
+      existingPaused: [{ escalation: { kind: 'green-checkpoint-paused-watchdog' } }],
+    });
+    const result = await checkGreenStall(sql);
+
+    expect(result).toEqual({ alarmed: [], recovered: [], suppressed: [] });
+    expect(notifyAttentionMock).not.toHaveBeenCalled();
+    expect(broadcastSevereEventMock).not.toHaveBeenCalled();
+    expect(calls.some((call) => String(call[0]).includes('INSERT INTO harness_shared.harness_escalations'))).toBe(false);
+  });
+
+  it('clears the paused alarm when the routine resumes', async () => {
+    const { sql } = makeFakeSql({
+      pausedRows: [{ ...overdueRow, active: true }],
+      existingPaused: [{ escalation: { kind: 'green-checkpoint-paused-watchdog' } }],
+    });
+    const result = await checkGreenStall(sql);
+
+    expect(result).toEqual({ alarmed: [], recovered: ['papercusp'], suppressed: [] });
+    expect(broadcastSevereEventResolvedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ conditionKey: 'green-checkpoint-paused:papercusp' }),
+    );
   });
 });
 

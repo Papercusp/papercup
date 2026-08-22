@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { Buffer } from 'node:buffer';
-import { withWorkspace, getOrgPg } from '@papercusp/db-org';
+import { getOrgPg } from '@papercusp/db-org';
 import { maybeEmptyMappingHint, EMPTY_MAPPING_METADATA_KEY } from '../../empty-mapping-hint';
 import { DISPATCH_WRAPPER_METADATA_KEY } from '../sessions/automatic-tool-names';
 import { dispatchWrapperMarkEnabled } from '../../telemetry-dispatch-wrapper';
@@ -13,21 +13,41 @@ import {
   listFacadeNamespaces,
   nearestByLevenshtein,
   AGENT_ROLES,
-  type ToolResult,
   type UnifiedToolContext,
-  type WrapDispatch,
 } from '@papercusp/agent-mcp';
+import type { ToolResult } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../../projected-tool-deps';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { captureRecipe } from './capture-recipe';
 import type { SimilarRecipe } from '../../code-recipes-search';
 import { recipeRevision } from '../../recipe-authority';
-import { runWithWorkspaceIfConcrete } from '../../workspace-als';
-import {
-  dispatchNeedsTx,
-  effectiveDispatchWorkspace,
-  synthesizeDispatchPrincipal,
-} from '../../endpoint-route/routes/transport/role-principal-caps';
+import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
+
+export type CodeRunCaptureMode = 'auto' | 'never';
+
+const CODE_RUN_CAPTURE_MODE = Symbol('papercusp.code-run.capture-mode');
+
+/**
+ * Internal adapter seam for orchestrate:run. The public code:run contract keeps
+ * mandatory capture, while the orchestration facade can honor its explicit
+ * capture.mode:"never" policy without copying the code:run execution path.
+ */
+export function withCodeRunCaptureMode(ctx: UnifiedToolContext, mode: CodeRunCaptureMode): UnifiedToolContext {
+  const captureCtx: UnifiedToolContext & {
+    [CODE_RUN_CAPTURE_MODE]: CodeRunCaptureMode;
+  } = { ...ctx, [CODE_RUN_CAPTURE_MODE]: mode };
+  return captureCtx;
+}
+
+function codeRunCaptureMode(ctx: UnifiedToolContext): CodeRunCaptureMode {
+  return (
+    (ctx as UnifiedToolContext & { [CODE_RUN_CAPTURE_MODE]?: CodeRunCaptureMode })[CODE_RUN_CAPTURE_MODE] ?? 'auto'
+  );
+}
+
+// Compatibility export for the focused branch tests and any internal callers
+// that predate the shared P-005 name. There is only one implementation.
+export { bindCurrentCallerDispatch as bindInnerDispatch } from '../orchestration/current-caller-dispatch';
 
 /**
  * `code:run` — execute a multi-step tool-orchestration SCRIPT in one call
@@ -175,7 +195,7 @@ export default defineTool({
       // EI-6073 fix) so a script_timeout fires cleanly here instead of the caller getting an
       // opaque transport-level request_timeout after the script's own budget was never reached.
       timeoutMs: args.timeoutSec ? clampForegroundTimeoutMs(args.timeoutSec * 1000) : undefined,
-      wrapDispatch: bindInnerDispatch,
+      wrapDispatch: bindCurrentCallerDispatch,
     });
 
     // CAPTURE + DEDUP (code-recipes-2026-06-21 P-003/P-004): every SUCCESSFUL, non-dry-run
@@ -193,7 +213,7 @@ export default defineTool({
     // isolating the bad ref, but a captured recipe with a known-bad name is a poor thing to reuse.
     // EI-7669: also don't save one where a write-effect call reported ok:false — a "successful"
     // recipe that includes a known-rejected mutation is a poor thing to reuse verbatim.
-    if (!(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
+    if (codeRunCaptureMode(ctx) !== 'never' && !(args.dryRun ?? false) && isRecipeCaptureEligible(result, all)) {
       recipeCapture = await maybeCaptureRecipe(args, ctx, all, allowed);
       similarRecipes = recipeCapture?.similarRecipes ?? [];
     }
@@ -351,146 +371,6 @@ export default defineTool({
     } as unknown as ToolResult;
   },
 });
-
-/**
- * WI-1411: per-inner-call workspace/identity rebinding.
- *
- * `dispatch-binding.ts`'s `realDispatch(ctx, deps)` closes over ONE fixed `ctx`
- * for every call a `code:run` script makes — so a batch never gets the
- * per-call binding a DIRECT (non-batch) MCP dispatch of the same tool
- * receives from `_mcp-handler.ts`: the EI-30 superuser-per-call-`workspace`
- * hop (`effectiveDispatchWorkspace`), the workspace tx + synthesized
- * principal (`dispatchNeedsTx`/`synthesizeDispatchPrincipal`/`withWorkspace`),
- * and the ALS pin (`runWithWorkspaceIfConcrete`) so `activeWorkspaceId()`
- * resolves correctly inside the tool's own handler. Concretely: an unscoped
- * superuser session (`ctx.isSuperuser === true`, `ctx.workspaceId === '*'`)
- * running a `code:run` script that calls e.g. `tools.fleet.assignments({
- * workspace: 'X', ... })` intending the EI-30 hop had that per-call
- * `workspace` silently ignored — `resolveAgentIdentity(ctx)` (and any
- * `activeWorkspaceId()` fallback) saw the OUTER ctx's `'*'` — so the read
- * matched no real workspace and came back EMPTY (the reported "pgQuery /
- * fleet:assignments return EMPTY inside a code:run batch" symptom).
- *
- * This mirrors `_mcp-handler.ts`'s exact branch structure
- * (`crossWorkspace` → `needsTx` → plain) PER inner call, with a fast path:
- * when the effective workspace for THIS call is unchanged from the ctx
- * already bound (the common case — every non-superuser caller, and any
- * superuser call without a per-call `workspace` override), the outer
- * code:run dispatch may already have bound `ctx.tx`/`ctx.principal` correctly, so we
- * dispatch under the SAME ctx unchanged — no extra transaction per call. The production
- * code:run tool opts out of that outer transaction because its handler does not read `ctx.tx`;
- * when the fast-path binding is absent, this function creates the same short-lived per-call
- * workspace transaction as the direct MCP dispatcher. That commit boundary is load-bearing:
- * a later inner read must see an earlier inner write, including a `dev:pg_query` verification.
- */
-export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx, next) => {
-  const spawnCtxLike = {
-    workspaceId: ctx.workspaceId ?? '',
-    role: ctx.role ?? '',
-    isSuperuser: ctx.isSuperuser,
-  };
-  const effectiveWs = effectiveDispatchWorkspace(spawnCtxLike, args);
-
-  // EI-18699443874201617: force FULL payload tier for every inner call a code:run
-  // script makes. Only the script's own RETURNED value re-enters the caller's
-  // context (per code:run's own contract) — an intermediate call exists purely
-  // for the SCRIPT's control flow (`.length`, `.filter()`, a completeness check
-  // over a nested field), so it must see the tool's true full data. Without this,
-  // an inner call silently inherited the OUTER session's `ctx.contextTier` (e.g. a
-  // trimmed session), so a large nested field (rubrics:get's `criteria[]`) got
-  // shaped/truncated by applyPayloadTier with no error — indistinguishable from a
-  // correct small result to the script's own `.length` read. A script can still
-  // request a narrower tier for one specific call by passing `payloadTier` in
-  // that call's own args — extracted independently downstream (define-tool.ts's
-  // `extractPayloadTier`) and takes precedence over this ctx-level default.
-  //
-  // EI-18719561823587590: clearing `contextTier` is only HALF the job, and the
-  // other half is why this bug survived that fix. `applyPayloadTier` shapes in
-  // two independent steps: (1) tier shaping, which resolving to 'full' does
-  // skip, and (2) a HARD CEILING that force-applies the smallest shaper / the
-  // generic bounded projection to any result over
-  // PAYLOAD_TIER_HARD_CEILING_CHARS — REGARDLESS of the resolved tier. Step 2's
-  // only exit is `explicitFullRequest`, so an inner call whose result merely
-  // ran large was still silently row-truncated. That made in-script filtering —
-  // the idiom the batch-hint nudge actively recommends — search a SUBSET, with
-  // a `.find()` miss indistinguishable from real absence (measured: a 40-row
-  // facts:list surviving as 8 rows, and the needle among the 32 dropped).
-  // Because the row count depended on ROW SIZE, the same script was correct on
-  // small data and silently wrong on large.
-  //
-  // The ceiling protects the agent-facing TRANSPORT; an inner result never
-  // reaches it (only the script's own returned value does, and THAT is shaped
-  // by the outer code:run call under the caller's real ctx). So mark inner
-  // calls transport-cap-exempt — the same exemption WI-5078 already grants the
-  // in-process sync-resolver / admin-UI dispatch, for the same reason.
-  //
-  // Always COPY: this must never leak onto the outer `ctx`, whose own result
-  // does cross the transport.
-  // `codeMode` is NOT a synonym for `transportCapExempt` even though code:run is
-  // today the only setter of both: that one exempts the result from the transport
-  // CAP, this one tells a text-rendering handler its result is about to be read as
-  // a JS VALUE, not by a model (EI-20066912585022608). Separate names because they
-  // answer different questions and will not always travel together.
-  const baseCtx: UnifiedToolContext = {
-    ...ctx,
-    contextTier: undefined,
-    transportCapExempt: true,
-    codeMode: true,
-  };
-
-  if (tool.crossWorkspace === true) {
-    const { sql: adminTx } = getOrgPg();
-    const callCtx: UnifiedToolContext = {
-      ...baseCtx,
-      workspaceId: effectiveWs,
-      tx: adminTx,
-      principal: await synthesizeDispatchPrincipal(adminTx, { ...spawnCtxLike, workspaceId: effectiveWs }),
-    };
-    return runWithWorkspaceIfConcrete(effectiveWs, () => next(callCtx));
-  }
-
-  if (effectiveWs === spawnCtxLike.workspaceId && ctx.tx != null) {
-    // Already correctly bound by the outer code:run dispatch (module workspace/tx/
-    // principal unchanged) — reuse baseCtx as-is (contextTier already forced above). The
-    // production code:run handler opts out of its outer workspace transaction, so a missing
-    // tx deliberately falls through to the per-inner-call binding below.
-    return next(baseCtx);
-  }
-
-  // Re-derive the binding for THIS call exactly as a direct (non-batch) MCP call would. This
-  // covers both EI-30's unscoped-superuser workspace hop and code:run's per-inner-call
-  // transaction boundary after the outer handler opts out of its ambient tx.
-  const callSpawnCtx = { ...spawnCtxLike, workspaceId: effectiveWs };
-  if (!dispatchNeedsTx(callSpawnCtx)) {
-    return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...baseCtx, workspaceId: effectiveWs }));
-  }
-
-  // Mirror the direct dispatcher for tools that explicitly opt out of holding a workspace
-  // transaction while their handler runs (typically a long child-process wait). We still use a
-  // short transaction to synthesize the principal, then invoke the handler without ctx.tx.
-  if (tool.skipWorkspaceTx === true) {
-    return runWithWorkspaceIfConcrete(effectiveWs, () =>
-      withWorkspace(effectiveWs, async (tx) => {
-        const principal = await synthesizeDispatchPrincipal(tx, callSpawnCtx);
-        return next({ ...baseCtx, workspaceId: effectiveWs, tx: undefined, principal });
-      }),
-    );
-  }
-
-  // A scoped inner call gets its own transaction. Besides matching direct MCP dispatch, this
-  // is the commit boundary that makes a write visible to the next inner read in the same script.
-  return runWithWorkspaceIfConcrete(effectiveWs, () =>
-    withWorkspace(effectiveWs, async (tx) => {
-      const callCtx: UnifiedToolContext = {
-        ...baseCtx,
-        workspaceId: effectiveWs,
-        tx,
-        principal: await synthesizeDispatchPrincipal(tx, callSpawnCtx),
-      };
-      return next(callCtx);
-    }),
-  );
-};
 
 type OrchestrationRunResult = Awaited<ReturnType<typeof runToolOrchestration>>;
 

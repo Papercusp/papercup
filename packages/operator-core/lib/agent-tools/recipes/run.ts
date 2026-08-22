@@ -54,6 +54,7 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { getTxPool } from '../locks/su-lock-store';
 import { readIdentity } from '../locks/identity';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
+import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
 interface RunItem {
   id: string;
@@ -330,6 +331,7 @@ export default defineTool({
           allowed,
           dryRun,
           timeoutMs: it.timeoutSec ? it.timeoutSec * 1000 : undefined,
+          wrapDispatch: bindCurrentCallerDispatch,
         });
         // P-012: counted before any early return below — a failed item's dispatches
         // still wrote their own telemetry rows.

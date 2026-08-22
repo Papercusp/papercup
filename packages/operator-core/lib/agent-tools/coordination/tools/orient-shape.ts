@@ -307,6 +307,18 @@ function projectCoverageCollision(row: unknown, textCap: number): unknown {
   };
 }
 
+function projectCoverageDuplicate(row: unknown, textCap: number): unknown {
+  if (!row || typeof row !== 'object') return row;
+  const r = row as Record<string, unknown>;
+  return {
+    ...(r.ref != null ? { ref: cap(r.ref, textCap) } : {}),
+    ...(r.holder != null ? { holder: cap(r.holder, textCap) } : {}),
+    ...(Array.isArray(r.workItemIds)
+      ? { workItemIds: r.workItemIds.slice(0, 4).map((v) => cap(v, textCap)) }
+      : {}),
+  };
+}
+
 /** Project one assignment-coverage row to the placement fields an orient caller
  * can act on. `fleet:assignments` may return a coverage row with a large `links`
  * array; carrying that nested evidence through `me` is what made the generic
@@ -337,28 +349,53 @@ function projectCoverageRow(row: unknown, textCap: number): unknown {
 function projectCoverageTable(me: unknown, tier: TierName): unknown {
   if (!me || typeof me !== 'object' || Array.isArray(me)) return me;
   const r = me as Record<string, unknown>;
-  if (!Array.isArray(r.coverage)) return me;
+  const coverage = Array.isArray(r.coverage) ? (r.coverage as unknown[]) : null;
+  const collisions = Array.isArray(r.coverage_collisions)
+    ? (r.coverage_collisions as unknown[])
+    : null;
+  const duplicates = Array.isArray(r.coverage_duplicates)
+    ? (r.coverage_duplicates as unknown[])
+    : null;
+  if (!coverage && !collisions && !duplicates) return me;
 
-  const total = r.coverage.length;
   const textCap = tier === 'trimmed' ? 180 : 260;
   const rowCap = tier === 'trimmed' ? 0 : 24;
-  if (rowCap === 0) {
+  const out: Record<string, unknown> = { ...r };
+  if (coverage && rowCap === 0) {
     const { coverage: _coverage, ...withoutCoverage } = r;
-    return {
+    delete out.coverage;
+    Object.assign(out, {
       ...withoutCoverage,
-      coverage_note: `coverage table (${total} rows) omitted at trimmed tier — payloadTier:"standard"/"full", or narrow with {plan}`,
-    };
+      coverage_note: `coverage table (${coverage.length} rows) omitted at trimmed tier — payloadTier:"standard"/"full", or narrow with {plan}`,
+    });
+  } else if (coverage) {
+    const total = coverage.length;
+    out.coverage = coverage.slice(0, rowCap).map((row) => projectCoverageRow(row, textCap));
+    if (total > rowCap) {
+      out.coverage_note = `nested orient coverage showing ${rowCap} of ${total}; use fleet:assignments { plan } for the full list`;
+    }
   }
 
-  return {
-    ...r,
-    coverage: r.coverage.slice(0, rowCap).map((row) => projectCoverageRow(row, textCap)),
-    ...(total > rowCap
-      ? {
-          coverage_note: `nested orient coverage showing ${rowCap} of ${total}; use fleet:assignments { plan } for the full list`,
-        }
-      : {}),
-  };
+  const anomalyCap = tier === 'trimmed' ? 4 : 8;
+  if (collisions) {
+    const total = collisions.length;
+    out.coverage_collisions = collisions
+      .slice(0, anomalyCap)
+      .map((row) => projectCoverageCollision(row, textCap));
+    if (total > anomalyCap) {
+      out.coverage_collisions_note = `nested orient coverage collisions showing ${anomalyCap} of ${total}; use fleet:assignments for the full list`;
+    }
+  }
+  if (duplicates) {
+    const total = duplicates.length;
+    out.coverage_duplicates = duplicates
+      .slice(0, anomalyCap)
+      .map((row) => projectCoverageDuplicate(row, textCap));
+    if (total > anomalyCap) {
+      out.coverage_duplicates_note = `nested orient coverage duplicates showing ${anomalyCap} of ${total}; use fleet:assignments for the full list`;
+    }
+  }
+  return out;
 }
 
 /**
@@ -436,6 +473,15 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
       .map((row) => projectCoverageCollision(row, caps.text));
     if (total > caps.collisions) {
       out.coverage_collisions_note = `nested orient coverage collisions showing ${caps.collisions} of ${total}; use fleet:assignments for the full list`;
+    }
+  }
+  if (Array.isArray(d.coverage_duplicates)) {
+    const total = d.coverage_duplicates.length;
+    out.coverage_duplicates = d.coverage_duplicates
+      .slice(0, caps.collisions)
+      .map((row) => projectCoverageDuplicate(row, caps.text));
+    if (total > caps.collisions) {
+      out.coverage_duplicates_note = `nested orient coverage duplicates showing ${caps.collisions} of ${total}; use fleet:assignments for the full list`;
     }
   }
   if (Array.isArray(d.coverage) && d.coverage.length > caps.coverage) {

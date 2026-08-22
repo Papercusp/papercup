@@ -453,13 +453,26 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
   it('EI-21183575241304993: uses the durable session scope before an unrelated owner loop under wildcard transport', async () => {
     getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
-    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive' } as never);
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: false } as never);
 
     await call({ next: 'x' }, { harnessSlug: '*', workspaceId: 'ws-1' });
 
     expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ harness: 'papercusp', ownerId: 'su-caller' }),
+      expect.any(String),
+    );
+  });
+
+  it('EI-21189207633735449: an active routine install_slug wins over a stale session scope', async () => {
+    getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercusp' } as never);
+    getLoopStatus.mockResolvedValueOnce({ harnessSlug: 'sb-devboard-hive', active: true } as never);
+
+    await call({ next: 'x' }, { harnessSlug: '*', workspaceId: 'ws-1' });
+
+    expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: 'su-caller' });
+    expect(setLoopCarryNote).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'sb-devboard-hive', ownerId: 'su-caller' }),
       expect.any(String),
     );
   });

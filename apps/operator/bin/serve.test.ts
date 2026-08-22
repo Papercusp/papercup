@@ -32,6 +32,7 @@ const pcDir = () => join(tmpHome, ".papercusp");
 const operatorJson = () => join(pcDir(), "operator.json");
 const tokenFile = () => join(pcDir(), "superuser-token");
 const lockFile = () => join(pcDir(), "operator.lock");
+const serveSrc = readFileSync(join(__dirname, "serve.ts"), "utf8");
 
 beforeAll(async () => {
   origHome = process.env.HOME;
@@ -49,6 +50,20 @@ beforeAll(async () => {
   serve = await import("./serve");
   process.env.HOME = origHome;
   if (origPapercuspHome !== undefined) process.env.PAPERCUSP_HOME = origPapercuspHome;
+});
+
+
+describe("vm-release boot ordering (D-043 / P-050)", () => {
+  it("verifies the immutable manifest before --ensure reuse and the effective port after sticky resolution", () => {
+    const policy = serveSrc.indexOf("assertVmReleaseRuntimePolicy({");
+    const ensureReuse = serveSrc.indexOf("if (ensure) {", policy);
+    const sticky = serveSrc.indexOf("await resolveStickyPort", ensureReuse);
+    const effectivePort = serveSrc.indexOf("assertVmReleaseRuntimePort(port", sticky);
+    expect(policy).toBeGreaterThan(-1);
+    expect(ensureReuse).toBeGreaterThan(policy);
+    expect(sticky).toBeGreaterThan(ensureReuse);
+    expect(effectivePort).toBeGreaterThan(sticky);
+  });
 });
 
 afterAll(() => {

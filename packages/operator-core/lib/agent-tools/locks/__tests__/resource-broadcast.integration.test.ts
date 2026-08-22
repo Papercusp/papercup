@@ -46,6 +46,7 @@ const mkIdentity = (ownerId: string): AgentIdentity => ({
 });
 
 const sharedHolder = (owner: string): ResourceHolder => ({
+  resource: 'dev-server',
   owner,
   owner_label: `res:${owner}`,
   mode: 'shared',

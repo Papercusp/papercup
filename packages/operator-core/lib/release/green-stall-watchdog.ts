@@ -116,6 +116,15 @@ const MAIN_BEHIND_PHASE = 'main-behind-staging-watchdog';
 const WATCHDOG_PHASE = 'green-checkpoint-watchdog';
 const WATCHDOG_KIND = 'green-checkpoint-watchdog';
 
+/**
+ * A paused release gate is a different failure axis from an active gate that
+ * stopped firing. Keep its durable row and condition independent so clearing
+ * one signal can never erase the other.
+ */
+const PAUSED_GREEN_CHECKPOINT_PHASE = 'green-checkpoint-paused-watchdog';
+const PAUSED_GREEN_CHECKPOINT_KIND = 'green-checkpoint-paused-watchdog';
+const PAUSED_GREEN_CHECKPOINT_CONDITION_PREFIX = 'green-checkpoint-paused:';
+
 export interface GreenStallThresholds {
   fireStaleMs?: number;
   noGreenMs?: number;
@@ -159,6 +168,106 @@ export interface GreenCheckpointStallRecoveryDecision {
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value != null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+
+const parseTimestamp = (value: unknown): number | null => {
+  const numeric = finiteTimestamp(value);
+  if (numeric != null) return numeric;
+  if (value instanceof Date && Number.isFinite(value.getTime())) return value.getTime();
+  if (typeof value === 'string') {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+};
+
+const displayTimestamp = (value: number | null): string =>
+  value != null && Number.isFinite(value) ? new Date(value).toISOString() : '(unknown)';
+
+const displayPauseText = (value: string | null, fallback: string): string => {
+  const text = value?.trim();
+  return text ? text.slice(0, 1000) : fallback;
+};
+
+/** The pause evidence needed to judge one release green-checkpoint row. */
+export interface PausedGreenCheckpointSnapshot {
+  active: boolean | null;
+  /** Optional in direct unit calls; the DB scan supplies both discriminators. */
+  groupSlug?: string | null;
+  targetRole?: string | null;
+  nextFireMs: number | null;
+  /** True when metadata.pause was present, even if all of its fields are empty. */
+  pauseRecorded?: boolean;
+  pauseReason?: string | null;
+  pausedBy?: string | null;
+  pausedAtMs?: number | null;
+}
+
+export interface PausedGreenCheckpointVerdict {
+  overdue: boolean;
+  reason: string | null;
+}
+
+/**
+ * Pure: an explicitly paused release green-checkpoint is overdue only after
+ * its next scheduled fire has passed. Unknown/missing pause evidence is not a
+ * verdict; the caller must not turn an unscoped inactive routine into a gate
+ * alarm merely because its next_fire_at is old.
+ */
+export function evaluatePausedGreenCheckpoint(
+  s: PausedGreenCheckpointSnapshot,
+  now: number,
+): PausedGreenCheckpointVerdict {
+  if (s.active !== false) return { overdue: false, reason: null };
+  if (s.groupSlug != null && s.groupSlug !== 'release') return { overdue: false, reason: null };
+  if (s.targetRole != null && s.targetRole !== 'system:green-checkpoint') return { overdue: false, reason: null };
+  if (s.pauseRecorded === false) return { overdue: false, reason: null };
+  const hasPauseEvidence =
+    s.pauseRecorded === true || s.pauseReason != null || s.pausedBy != null || s.pausedAtMs != null;
+  if (!hasPauseEvidence || s.nextFireMs == null || !Number.isFinite(s.nextFireMs) || now <= s.nextFireMs) {
+    return { overdue: false, reason: null };
+  }
+
+  const pauseReason = displayPauseText(s.pauseReason ?? null, '(no pause reason recorded)');
+  const pausedBy = displayPauseText(s.pausedBy ?? null, '(unknown pause owner)');
+  const nextFireAt = displayTimestamp(s.nextFireMs);
+  const pausedAt = displayTimestamp(s.pausedAtMs ?? null);
+  return {
+    overdue: true,
+    reason:
+      `green-checkpoint is PAUSED (active:false) past its scheduled fire at ${nextFireAt}; ` +
+      `pause reason: ${pauseReason}; paused by: ${pausedBy}; paused at: ${pausedAt}. ` +
+      `This is a release-critical hold that will not self-clear while inactive. ` +
+      `Review the hold before resuming it with routines:set { name: 'green-checkpoint', active: true }`,
+  };
+}
+
+/** Durable body for the paused-gate alarm; keep the raw pause evidence visible. */
+export function greenCheckpointPausedEscalationBody(opts: {
+  installSlug: string;
+  verdict: PausedGreenCheckpointVerdict;
+  pauseReason: string | null;
+  pausedBy: string | null;
+  pausedAtMs: number | null;
+  nextFireMs: number | null;
+  nowMs: number;
+}): string {
+  return JSON.stringify({
+    kind: PAUSED_GREEN_CHECKPOINT_KIND,
+    harness_slug: opts.installSlug,
+    overdue: opts.verdict.overdue,
+    reason: opts.verdict.reason,
+    pauseReason: opts.pauseReason,
+    pausedBy: opts.pausedBy,
+    pausedAt: displayTimestamp(opts.pausedAtMs),
+    pausedAtMs: opts.pausedAtMs,
+    nextFireAt: displayTimestamp(opts.nextFireMs),
+    nextFireMs: opts.nextFireMs,
+    emitted_at: opts.nowMs,
+    detail:
+      `green-checkpoint paused-release watchdog: ${opts.verdict.reason ?? 'no overdue pause detected'}. ` +
+      `The release gate is inactive, so it cannot self-recover or advance deploys until the hold is reviewed.`,
+  });
+}
 
 const finiteNonNegativeInt = (value: unknown, fallback: number): number => {
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN;
@@ -824,6 +933,158 @@ async function recoverStaleGreenCheckpointStalls(
   }
 }
 
+type PausedGreenCheckpointRoutineRow = {
+  install_slug: string;
+  workspace_id: string;
+  active: boolean | null;
+  group_slug: string | null;
+  target_role: string | null;
+  next_fire_ms: string | number | null;
+  pause: unknown;
+};
+
+type PausedGreenCheckpointEscalationRow = {
+  escalation: unknown;
+};
+
+type PausedGreenCheckpointPauseEvidence = {
+  pauseRecorded: boolean;
+  pauseReason: string | null;
+  pausedBy: string | null;
+  pausedAtMs: number | null;
+};
+
+function readPausedGreenCheckpointPause(value: unknown): PausedGreenCheckpointPauseEvidence {
+  const pause = asRecord(value);
+  if (!pause) {
+    return { pauseRecorded: false, pauseReason: null, pausedBy: null, pausedAtMs: null };
+  }
+  const reason = pause.reason ?? pause.pauseReason;
+  const by = pause.pausedBy ?? pause.by ?? pause.owner;
+  const at = pause.pausedAtMs ?? pause.pausedAt ?? pause.atMs ?? pause.at;
+  return {
+    pauseRecorded: true,
+    pauseReason: typeof reason === 'string' ? reason : null,
+    pausedBy: typeof by === 'string' ? by : null,
+    pausedAtMs: parseTimestamp(at),
+  };
+}
+
+/**
+ * Scan the release-group paused gate independently from the active-stall loop.
+ * The query intentionally includes resumed/future rows too: an existing
+ * paused-watchdog escalation must be cleared when the routine becomes active
+ * again or its next fire is no longer overdue.
+ */
+async function checkPausedGreenCheckpoint(
+  sql: Sql,
+  nowMs: number,
+): Promise<{ alarmed: string[]; recovered: string[] }> {
+  const out = { alarmed: [] as string[], recovered: [] as string[] };
+  try {
+    const rows = await sql<PausedGreenCheckpointRoutineRow[]>`
+      SELECT install_slug,
+             workspace_id,
+             active,
+             group_slug,
+             target_role,
+             extract(epoch from next_fire_at) * 1000 AS next_fire_ms,
+             metadata->'pause' AS pause
+        FROM harness_shared.routines
+       WHERE group_slug = 'release'
+         AND target_role = 'system:green-checkpoint'`;
+
+    for (const row of rows) {
+      const pause = readPausedGreenCheckpointPause(row.pause);
+      const nextFireMs = row.next_fire_ms != null ? Number(row.next_fire_ms) : null;
+      const verdict = evaluatePausedGreenCheckpoint(
+        {
+          active: row.active,
+          groupSlug: row.group_slug,
+          targetRole: row.target_role,
+          nextFireMs: Number.isFinite(nextFireMs) ? nextFireMs : null,
+          ...pause,
+        },
+        nowMs,
+      );
+
+      const existing = await sql<PausedGreenCheckpointEscalationRow[]>`
+        SELECT escalation
+          FROM harness_shared.harness_escalations
+         WHERE harness_slug = ${row.install_slug}
+           AND phase = ${PAUSED_GREEN_CHECKPOINT_PHASE}`;
+      const alreadyAlarmed = existing.length > 0 && existing[0]?.escalation != null;
+
+      if (verdict.overdue) {
+        if (alreadyAlarmed) continue; // one-shot until the pause clears or is no longer overdue
+
+        const body = greenCheckpointPausedEscalationBody({
+          installSlug: row.install_slug,
+          verdict,
+          pauseReason: pause.pauseReason,
+          pausedBy: pause.pausedBy,
+          pausedAtMs: pause.pausedAtMs,
+          nextFireMs,
+          nowMs,
+        });
+        try {
+          const { notifyAttention } = await import('../attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title: 'Release pipeline PAUSED — green-checkpoint hold is overdue',
+            body: verdict.reason ?? '',
+            importance: 'urgent',
+            workspaceId: row.workspace_id,
+            data: {
+              pausedBy: pause.pausedBy,
+              pausedAtMs: pause.pausedAtMs,
+              nextFireMs,
+              condition: PAUSED_GREEN_CHECKPOINT_KIND,
+            },
+          });
+        } catch (e) {
+          console.warn(`[green-stall-watchdog] paused green-checkpoint notify failed: ${e instanceof Error ? e.message : e}`);
+        }
+        await broadcastSevereEvent({
+          summary: `green-checkpoint PAUSED on ${row.install_slug} — scheduled fire is overdue; release deploys may be frozen.`,
+          body: verdict.reason ?? '',
+          category: 'severe-event',
+          conditionKey: `${PAUSED_GREEN_CHECKPOINT_CONDITION_PREFIX}${row.install_slug}`,
+          oneShot: true,
+        });
+        try {
+          await sql`
+            INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+            VALUES (${row.install_slug}, ${PAUSED_GREEN_CHECKPOINT_PHASE}, ${body}, ${nowMs}, ${row.workspace_id})
+            ON CONFLICT (harness_slug, phase)
+            DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+        } catch (e) {
+          console.warn(`[green-stall-watchdog] paused green-checkpoint escalation write failed for ${row.install_slug}: ${e instanceof Error ? e.message : e}`);
+        }
+        out.alarmed.push(row.install_slug);
+        console.warn(`[green-stall-watchdog] PAUSED ALARM ${row.install_slug}: ${verdict.reason}`);
+      } else if (alreadyAlarmed) {
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${nowMs}
+           WHERE harness_slug = ${row.install_slug}
+             AND phase = ${PAUSED_GREEN_CHECKPOINT_PHASE}
+             AND escalation IS NOT NULL`;
+        await broadcastSevereEventResolved({
+          conditionKey: `${PAUSED_GREEN_CHECKPOINT_CONDITION_PREFIX}${row.install_slug}`,
+          summary: `green-checkpoint PAUSED alarm recovered on ${row.install_slug} — the hold is active no longer overdue.`,
+        });
+        out.recovered.push(row.install_slug);
+      }
+    }
+    return out;
+  } catch (e) {
+    // A paused-gate read must never disable the existing active-stall watchdog.
+    console.warn(`[green-stall-watchdog] paused green-checkpoint scan failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
+    return out;
+  }
+}
+
 /**
  * One watchdog pass: scan every ACTIVE green-checkpoint routine, alarm once per
  * stall transition (cross-process exactly-once via a conditional flag flip), and
@@ -853,6 +1114,16 @@ export async function checkGreenStall(
          AND active = true`;
 
     const now = Date.now();
+    // This axis is deliberately independent: a paused routine never reaches
+    // the active-fire query below, and its escalation/condition must not share
+    // the active watchdog's dedup flag or recovery row.
+    const paused = await checkPausedGreenCheckpoint(sql, now);
+    for (const installSlug of paused.alarmed) {
+      if (!out.alarmed.includes(installSlug)) out.alarmed.push(installSlug);
+    }
+    for (const installSlug of paused.recovered) {
+      if (!out.recovered.includes(installSlug)) out.recovered.push(installSlug);
+    }
     await recoverStaleGreenCheckpointStalls(sql, now, opts);
     const routineEngine = await readRoutineEngineLiveness(sql, { nowMs: now });
     for (const row of rows) {

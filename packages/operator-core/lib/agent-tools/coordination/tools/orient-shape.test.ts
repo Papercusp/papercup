@@ -250,6 +250,28 @@ describe('shapeOrient trimmed', () => {
     expect(shapedMe.coverage_note).toContain('showing 24 of 37');
   });
 
+  it('preserves same-principal coverage_duplicates through nested orient shaping (EI-21188799646985672)', () => {
+    const duplicate = {
+      ref: 'plan-x#P-004',
+      holder: 'su-A',
+      workItemIds: ['WI-1347', 'WI-1348'],
+    };
+    const me = {
+      ok: true,
+      summary: { agents: 1, coverage_duplicates: 1 },
+      orphaned: [],
+      stalled: [],
+      coverage_duplicates: [duplicate],
+      agents: [{ agentId: 'su-A', claims: [], queued: [], isSelf: true }],
+    };
+
+    const out = shapeOrient({ ...fixture(), me }, 'trimmed') as Record<string, any>;
+    const shapedMe = out.me as Record<string, any>;
+
+    expect(shapedMe.coverage_duplicates).toEqual([duplicate]);
+    expect(shapedMe.summary.coverage_duplicates).toBe(1);
+  });
+
   it('caps standing facts with a pointer, keeping owner + harness scope first (WI-2859)', () => {
     const facts = out.facts as Array<{ scope: string; body: string }>;
     expect(facts).toHaveLength(8);

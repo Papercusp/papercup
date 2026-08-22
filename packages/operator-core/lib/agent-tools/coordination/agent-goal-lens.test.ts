@@ -60,6 +60,12 @@ interface ClaimRow {
   lease_valid: boolean;
 }
 
+interface RawLinkRow {
+  src_kind: 'feature' | 'issue';
+  src_ref: string;
+  dst_ref: string;
+}
+
 /** A claim whose TTL has lapsed but which was never RELEASED — the live case. */
 const LAPSED: ClaimRow = {
   plan_slug: 'retire-mug-kettle-su-only-2026-08-09',
@@ -85,7 +91,13 @@ const LIVE: ClaimRow = {
  * ASSERTIONS that matter are on the returned rows: text assertions cannot tell a
  * threaded parameter from a hard-coded `true`.
  */
-function primeSql(claims: ClaimRow[], opts: { workItems?: { id: string; taken_at: string | null }[] } = {}) {
+function primeSql(
+  claims: ClaimRow[],
+  opts: {
+    workItems?: { id: string; taken_at: string | null }[];
+    links?: RawLinkRow[];
+  } = {},
+) {
   const claimQueries: { text: string; values: unknown[] }[] = [];
   sqlMock.mockImplementation((strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = Array.isArray(strings) ? strings.join('?') : String(strings);
@@ -103,7 +115,23 @@ function primeSql(claims: ClaimRow[], opts: { workItems?: { id: string; taken_at
     }
     if (text.includes('work_items')) return Promise.resolve(opts.workItems ?? []);
     if (text.includes('fleet_membership_events')) return Promise.resolve([]);
-    if (text.includes('coord_links')) return Promise.resolve([]);
+    if (text.includes('coord_links')) {
+      // Model the production join: feature edges carry a harness-qualified ref,
+      // but the goal candidate carries the bare feature id. The conditional on
+      // the feature join makes the regression fail against the old bare-id query
+      // instead of handing it an already-normalized canned row.
+      if (!text.includes('harness_features_consolidated')) return Promise.resolve([]);
+      const heldIds = new Set((opts.workItems ?? []).map((w) => w.id));
+      const normalized = (opts.links ?? []).flatMap((link) => {
+        if (link.src_kind === 'issue') {
+          return heldIds.has(link.src_ref) ? [{ work_item_id: link.src_ref, dst_ref: link.dst_ref }] : [];
+        }
+        const separator = link.src_ref.indexOf('#');
+        const featureId = separator < 0 ? '' : link.src_ref.slice(separator + 1);
+        return heldIds.has(featureId) ? [{ work_item_id: featureId, dst_ref: link.dst_ref }] : [];
+      });
+      return Promise.resolve(normalized);
+    }
     return Promise.resolve([]);
   });
   return claimQueries;
@@ -201,6 +229,34 @@ describe('the query itself', () => {
     await resolveOwnerGoal(OWNER, 'self');
     expect(seen[0].text).toContain('clock_timestamp()');
     expect(seen[0].text).not.toMatch(/expires_ts > now\(\)/);
+  });
+});
+
+describe('implements-link ref normalization', () => {
+  it('normalizes a harness-qualified feature edge to the held bare feature id', async () => {
+    const featureId = 'WI-feature-goal';
+    const planItemRef = `${LIVE.plan_slug}#${LIVE.item_id}`;
+    primeSql([LIVE], {
+      workItems: [{ id: featureId, taken_at: '2026-08-11T00:00:00.000Z' }],
+      links: [{ src_kind: 'feature', src_ref: `papercusp#${featureId}`, dst_ref: planItemRef }],
+    });
+
+    const candidates = await readGoalCandidates(OWNER, 'self');
+
+    expect(candidates.links).toEqual([{ workItemId: featureId, planItemRef }]);
+  });
+
+  it('keeps issue-family implements edges in their existing bare-ref form', async () => {
+    const issueId = 'EI-issue-goal';
+    const planItemRef = `${LIVE.plan_slug}#${LIVE.item_id}`;
+    primeSql([LIVE], {
+      workItems: [{ id: issueId, taken_at: '2026-08-11T00:00:00.000Z' }],
+      links: [{ src_kind: 'issue', src_ref: issueId, dst_ref: planItemRef }],
+    });
+
+    const candidates = await readGoalCandidates(OWNER, 'self');
+
+    expect(candidates.links).toEqual([{ workItemId: issueId, planItemRef }]);
   });
 });
 
