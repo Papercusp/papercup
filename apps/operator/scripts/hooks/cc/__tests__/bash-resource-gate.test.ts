@@ -438,6 +438,7 @@ describe('native-scheduler lockout (agent sessions)', () => {
     ['quoted semicolon before batch (echo only)', 'echo "run this; batch job"'],
     ['batch only as a filename substring (no command-position token)', 'wc -l packages/operator-core/lib/code-run-batch-nudge.ts'],
     ['SQL heredoc column named at (not an OS schedule)', 'cat > /tmp/health.mts <<EOF\nSELECT at, statuses FROM harness_shared.system_health_ticks WHERE at >= 0\nEOF'],
+    ['Python heredoc variable named batch (not an OS schedule)', 'python3 - <<\'PY\nrows = []\nbatch = [r["txt"] for r in rows]\nPY'],
   ])('allows %s', (_label, command) => {
     expectAllow(runGate(bashCmd(command), AGENT));
   });

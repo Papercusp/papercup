@@ -1180,6 +1180,23 @@ export function stripShellQuotes(s: string): string {
 }
 
 /**
+ * Remove heredoc payloads interpreted by another language before scanning shell
+ * command positions. A Python/Node variable named `batch` is not the shell's
+ * `batch` scheduler; shell-fed heredocs remain visible so real schedules are
+ * still denied.
+ */
+export function stripNonShellHeredocBodies(s: string): string {
+  return s.replace(
+    /^([^\n]*)<<-?\s*(["']?)([A-Za-z_]\w*)\2([^\n]*)\n([\s\S]*?)^\s*\3\s*$/gm,
+    (whole, before: string, quote: string, delimiter: string, after: string) => {
+      const opener = `${before}${after}`;
+      const isShell = /(?:^|[;&|]\s*)(?:\S*\/)?(?:ba|da|k|z)?sh(?:\s|$)/.test(opener);
+      return isShell ? whole : `${before}<<${quote}${delimiter}${quote}${after}\n`;
+    },
+  );
+}
+
+/**
  * Same anchors as {@link OS_SCHEDULER_CMD_RE}, but CAPTURING the invocation head
  * so a match can be widened to the command segment it starts and then classified
  * read-vs-write. Global: a compound command can hold several invocations.
@@ -1223,7 +1240,7 @@ export function isReadOnlySchedulerInvocation(seg: string): boolean {
  * {@link OS_SCHEDULER_CMD_RE} stays exported for the raw-anchor unit tests.
  */
 export function isOsSchedulerCommand(cmd: string): boolean {
-  const scannable = stripShellQuotes(cmd);
+  const scannable = stripShellQuotes(stripNonShellHeredocBodies(cmd));
   const re = new RegExp(OS_SCHEDULER_CMD_HEAD_RE.source, 'g');
   let m: RegExpExecArray | null;
   while ((m = re.exec(scannable)) !== null) {

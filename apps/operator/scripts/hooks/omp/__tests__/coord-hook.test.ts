@@ -435,6 +435,15 @@ describe('isOsSchedulerCommand — quote-aware matcher (EI-9937)', () => {
       expect(isOsSchedulerCommand(cmd)).toBe(true);
     }
   });
+
+  it('ignores scheduler words inside interpreter heredocs but scans shell heredocs', () => {
+    expect(
+      isOsSchedulerCommand(`python3 - <<'PY'\nrows = []\nbatch = [r["txt"] for r in rows]\nPY`),
+    ).toBe(false);
+    expect(
+      isOsSchedulerCommand(`cat <<'SH' | bash\nbatch < jobs.txt\nSH`),
+    ).toBe(true);
+  });
 });
 
 describe('the lockout refusal answers the INTENT, not the token (EI-10940)', () => {

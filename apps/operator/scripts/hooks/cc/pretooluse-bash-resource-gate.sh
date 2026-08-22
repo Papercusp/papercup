@@ -1385,8 +1385,12 @@ def _scannable_quote_stripped():
     the `bash -c "crontab -e"` hole without weakening the prose exemption."""
     if 'qs' not in _SCANNABLE_CACHE:
         try:
-            payloads = _scan_executed_payloads(_scan_strip_written_heredocs(command))
-            parts = [_strip_quotes_and_comments(command)]
+            # Interpreter heredocs are data from the shell's perspective. A
+            # Python variable named `batch` must not look like the `batch`
+            # scheduler; shell-fed heredocs remain scannable.
+            shell_scannable = _scan_strip_nonexecuted_heredocs(command)
+            payloads = _scan_executed_payloads(shell_scannable)
+            parts = [_strip_quotes_and_comments(shell_scannable)]
             seen = set()
             for p in payloads:
                 if p in seen:
