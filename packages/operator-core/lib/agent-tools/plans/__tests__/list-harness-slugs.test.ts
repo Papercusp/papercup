@@ -9,9 +9,12 @@
  * Verified live (curl) that the fan-out itself works against the running host.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import { z } from 'zod';
 
 import { PLAN_STATUSES } from '../parser';
+
+const plansListSource = readFileSync(new URL('../list.ts', import.meta.url), 'utf8');
 
 // Mirror of the argsSchema in list.ts. Kept in sync deliberately —
 // list.ts is the source of truth; if it drifts, this test catches it
@@ -31,6 +34,11 @@ const argsSchema = z.object({
 });
 
 describe('plans:list argsSchema (P-029)', () => {
+  it('describes the PG-canonical plan store instead of the retired filesystem path', () => {
+    expect(plansListSource).toMatch(/List SU plans from the PG-canonical plan store/i);
+    expect(plansListSource).not.toContain('List SU plans under apps/operator/docs/plans');
+  });
+
   it('accepts an omitted harness_slugs', () => {
     expect(argsSchema.parse({}).harness_slugs).toBeUndefined();
   });

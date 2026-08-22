@@ -406,7 +406,7 @@ export async function resolveFanOutPlanScopes(
 export default defineTool({
   name: "plans:list",
   description:
-    'List SU plans under apps/operator/docs/plans/. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
+    'List SU plans from the PG-canonical plan store. One row per plan with title, status, item counts by effectiveStatus, and the ## Now next-action line; groupBy returns { key, count } aggregates instead of hand-written SQL. Legacy plans (no frontmatter) surface as status="draft" (flagged via isLegacy).',
   guidance: {
     when: 'A directory of plans — "what plans exist / are active", or the entry point before plans:get. For RECENT plans, pass updatedSince/createdSince (ISO or "4d") + order:"updated" + limit — these filter SERVER-SIDE (PG), so do NOT fetch every plan and post-filter (that returns a huge result). For COUNTS ("how many plans by status / per harness / created per day"), pass groupBy (+ aggregateOnly for counts only) rather than hand-writing SQL over harness_plans — this read always applies the workspace+harness scope a raw predicate silently omits. For a fast scan that skips item-count resolution, add compact:true.',
     notWhen:
