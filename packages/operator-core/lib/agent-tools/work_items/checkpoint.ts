@@ -144,7 +144,7 @@ import { CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
-import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import { carryProvenanceFields, retainedProvenanceText } from '../../carry-surface-provenance-stamp';
 import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
@@ -696,6 +696,14 @@ export default defineTool({
             );
           return out;
         });
+        // P-014: provenanceLint describes only bytes supplied by THIS write. The
+        // stored checkpoint may also carry old checks/body bytes through the locked
+        // transform below; those are separated at the response boundary as
+        // retainedProvenance instead of being misreported as current activity.
+        const currentProvenanceText = (() => {
+          const submittedBody = splitCarryNoteChecks(it.checkpoint ?? '').body;
+          return suppliedChecks !== undefined ? withCarryNoteChecks(submittedBody, suppliedChecks) : submittedBody;
+        })();
         const isClear = !(checkpointToStore && checkpointToStore.length > 0);
         // EI-19447043119380534: `checks` supplied while `checkpoint` is ENTIRELY OMITTED
         // (undefined — NOT an explicit null/'' clear) is a checks-only PATCH: carry the
@@ -1096,8 +1104,14 @@ export default defineTool({
               }
             : {}),
           // WI-3801 lint + P-014 turn-ref verification/origin stamp — warn-only,
-          // absent (no fields) on the overwhelming common clean case.
-          ...(stored !== null ? await carryProvenanceFields(stored, ident.ownerId) : {}),
+          // absent (no fields) on the overwhelming common clean case. Lint the
+          // submitted text separately from final stored bytes so inherited history
+          // is visible under `retainedProvenance`, not `provenanceLint`.
+          ...(stored !== null
+            ? await carryProvenanceFields(currentProvenanceText, ident.ownerId, {
+                retainedText: retainedProvenanceText(stored, currentProvenanceText),
+              })
+            : {}),
           // EI-9325: warn-only nudge — a plain replace-on-write that shrank the
           // checkpoint by more than half, off a substantial prior checkpoint, usually
           // means an accidental placeholder/truncated paste rather than an

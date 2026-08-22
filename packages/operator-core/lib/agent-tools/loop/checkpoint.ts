@@ -46,6 +46,10 @@ import {
   findVerificationConflict,
   sanitizeCarryRowId,
   truncateCarryField,
+  splitCarryNoteChecks,
+  splitCarryNoteWalls,
+  withCarryNoteChecks,
+  withCarryNoteWalls,
   type CarryArgRepair,
 } from '../../carry-note';
 import { getOrgPg } from '@papercusp/db-org';
@@ -62,7 +66,7 @@ import {
 } from '../coordination/tools/continuation-gate';
 import { CONTEXT_GAUGE_CRITICAL_PCT, contextUsagePct } from '../coordination/tools/inbox-context-usage';
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
-import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
+import { carryProvenanceFields, retainedProvenanceText } from '../../carry-surface-provenance-stamp';
 import { detectAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -521,6 +525,19 @@ export default defineTool({
     const effectiveWalls = capRows(args.walls ?? rescued?.walls, 'walls');
     const effectiveChecks = capRows(args.checks ?? rescued?.checks, 'checks');
     const hasNoteWrite = hasStructured || args.note !== undefined;
+    // P-014: lint only what this call supplied as current provenance. Rows and
+    // narrative inherited by mergeCarryRows remain in the stored note, but are
+    // reported separately as retainedProvenance rather than as fresh activity.
+    const currentProvenanceText = (() => {
+      let text = baseNote ?? '';
+      if (effectiveChecks !== undefined) {
+        text = withCarryNoteChecks(splitCarryNoteChecks(text).body, effectiveChecks);
+      }
+      if (effectiveWalls !== undefined) {
+        text = withCarryNoteWalls(splitCarryNoteWalls(text).body, effectiveWalls);
+      }
+      return text;
+    })();
     // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
     // silently switching every existing caller to merge would make a clear impossible.
     const rowsMode = args.rowsMode ?? 'merge';
@@ -889,8 +906,14 @@ export default defineTool({
     const verifiedWaitTakeoverRows = verifiedWaitTakeovers.value ?? [];
 
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — both warn-only,
-    // absent (no fields) on a clean/cleared write.
-    const provenanceFields = stored !== null ? await carryProvenanceFields(stored, ownerId) : {};
+    // absent (no fields) on a clean/cleared write. The final stored note is used
+    // only to derive inherited lines; current lint receives submitted bytes.
+    const provenanceFields =
+      stored !== null
+        ? await carryProvenanceFields(currentProvenanceText, ownerId, {
+            retainedText: retainedProvenanceText(stored, currentProvenanceText),
+          })
+        : {};
     return {
       content: [
         {
