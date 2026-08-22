@@ -2046,6 +2046,65 @@ describe('EI-21025158485847408 — ambient host memory-pressure infra crit downg
     expect(escalated).toHaveLength(1);
     expect(escalated[0]?.severity).toBe('advisory');
   });
+
+  it('sustained ambient pressure across repeated ticks stays advisory and durably deduped', async () => {
+    const health = mkHealth({
+      panels: {
+        infra: {
+          status: 'crit',
+          summary: 'HOST MEMORY PRESSURE: PSI memory full avg60 10.13 ≥ 5',
+          data: { perf: ambientPerf },
+        },
+      },
+    });
+    let now = 1_000_000;
+    let open: EscalationRecord | null = null;
+    const escalated: Array<{ severity: string; summary: string }> = [];
+    const pages: string[] = [];
+    const deps = {
+      readLast: () => health,
+      computeHealth: async () => health,
+      escalate: async (input: { severity: string; summary: string; meta?: Record<string, unknown> }) => {
+        escalated.push({ severity: input.severity, summary: input.summary });
+        open = {
+          msg_id: 'ambient-1',
+          ts: new Date(0).toISOString(),
+          from: INFRA_LIVENESS_IDENTITY.ownerId,
+          to: ['human'],
+          kind: 'escalation',
+          severity: input.severity as EscalationRecord['severity'],
+          summary: input.summary,
+          resolved: null,
+          ...(input.meta ?? {}),
+        } as unknown as EscalationRecord;
+      },
+      listOpen: async () => (open ? [open] : []),
+      resolve: async () => {},
+      page: async (signal: { key: string }) => { pages.push(signal.key); },
+      now: () => now,
+      snapshotStaleMs: 6 * 60_000,
+      debounceMs: 30 * 60_000,
+    };
+
+    for (let tickNumber = 0; tickNumber < 3; tickNumber += 1) {
+      // Simulate separate request workers: durable open-row dedup must hold even
+      // after the process-local cooldown is discarded between ticks.
+      _resetLivenessAlarmDebounce();
+      const tick = await runLivenessAlarmTick('ws', deps);
+      expect(tick.signals).toHaveLength(1);
+      expect(tick.signals[0]?.key).toBe('panel:infra');
+      expect(tick.signals[0]?.severity).toBe('advisory');
+      expect(tick.fired.map((signal) => signal.key)).toEqual(
+        tickNumber === 0 ? ['panel:infra'] : [],
+      );
+      now += 60_000;
+    }
+
+    expect(escalated).toHaveLength(1);
+    expect(escalated[0]?.severity).toBe('advisory');
+    expect(open?.severity).toBe('advisory');
+    expect(pages).toEqual([]);
+  });
 });
 
 describe('EI-19462267124852221 — an UNREADABLE input must not auto-resolve as "recovered"', () => {
