@@ -102,6 +102,16 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
       'document.querySelector(".pc-learning__matchcount")',
     );
     expect(countSurfacesSrc).not.toContain('"$P014_TAURI_TOOL" wait');
+    expect(countSurfacesSrc).not.toContain('"$P014_TAURI_TOOL" type');
+    expect(countSurfacesSrc).toContain('p014_type_controlled()');
+    expect(countSurfacesSrc).toContain(
+      "Object.getOwnPropertyDescriptor(proto, 'value')?.set",
+    );
+    expect(countSurfacesSrc).toContain(
+      'new URLSearchParams(location.search).get(${query_key_json}) === ${text_json}',
+    );
+    expect(countSurfacesSrc).toContain('  impq');
+    expect(countSurfacesSrc).toContain('  rq');
     expect(countSurfacesSrc.match(/"\$P014_TAURI_POLL" \\\n  --eval/g)).toHaveLength(3);
     expect(
       countSurfacesSrc.match(

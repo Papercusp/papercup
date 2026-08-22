@@ -37,6 +37,24 @@ p014_navigate() {
   "$P014_TAURI_TOOL" eval --pid "$P014_TAURI_PID" --strict "$expression" >/dev/null
 }
 
+# tauri-agent-tools 0.9.1 `type` assigns through the element instance's value
+# setter. React tracks that setter, so the synthetic input event can be treated
+# as a no-op even though the command reports success (WI-40609). Drive the same
+# browser primitive through the native prototype setter, then require BOTH the
+# controlled value and its URL-backed state to settle before reading counts.
+p014_type_controlled() {
+  local selector="$1"
+  local text="$2"
+  local query_key="$3"
+  local selector_json text_json query_key_json
+  selector_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$selector")"
+  text_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$text")"
+  query_key_json="$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$query_key")"
+  p014_assert "(() => { const el = document.querySelector(${selector_json}); if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return false; const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set; if (!setter) return false; el.focus(); setter.call(el, ${text_json}); el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); return el.value === ${text_json}; })()"
+  "$P014_TAURI_POLL" \
+    --eval "document.querySelector(${selector_json})?.value === ${text_json} && new URLSearchParams(location.search).get(${query_key_json}) === ${text_json}"
+}
+
 p014_assert() {
   local expression="$1"
   "$P014_TAURI_TOOL" check --pid "$P014_TAURI_PID" --strict --eval "$expression"
@@ -108,12 +126,10 @@ p014_capture learning-observations 'JSON.stringify({ route: location.pathname + 
 p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/adv", search: { tab: "learning", lview: "improvements" } })'
 "$P014_TAURI_POLL" --selector 'input[aria-label="Search ideas and work"]'
 P014_IMPROVE_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
-"$P014_TAURI_TOOL" type \
-  --pid "$P014_TAURI_PID" \
-  --strict \
-  --clear \
+p014_type_controlled \
   'input[aria-label="Search ideas and work"]' \
-  "$P014_IMPROVE_SENTINEL" >/dev/null
+  "$P014_IMPROVE_SENTINEL" \
+  impq
 if ! "$P014_TAURI_POLL" \
   --eval 'document.querySelector(".pc-learning__inlinetools .pc-learning__matchcount")?.textContent?.trim() === "0 of 0"'; then
   echo "P014_TAURI_DIAG learning-improve did not converge" >&2
@@ -133,12 +149,10 @@ p014_capture learning-improve 'JSON.stringify({ route: location.pathname + locat
 p014_navigate 'window.__TSR_ROUTER__?.navigate({ to: "/adv", search: { tab: "learning", lview: "learnings" } })'
 "$P014_TAURI_POLL" --selector 'input[aria-label="Filter retained items"]'
 P014_RETAIN_SENTINEL="p014-no-match-${PAPERCUSP_SID}"
-"$P014_TAURI_TOOL" type \
-  --pid "$P014_TAURI_PID" \
-  --strict \
-  --clear \
+p014_type_controlled \
   'input[aria-label="Filter retained items"]' \
-  "$P014_RETAIN_SENTINEL" >/dev/null
+  "$P014_RETAIN_SENTINEL" \
+  rq
 "$P014_TAURI_POLL" \
   --eval 'document.querySelector(".pc-learning__retained .pc-advpanel__count")?.textContent?.trim()?.startsWith("0 of ") === true'
 p014_assert '(() => { const e = document.querySelector(".pc-learning__retained .pc-advpanel__count"); if (!e) return false; const visible = (e.textContent || "").trim(); const aria = e.getAttribute("aria-label") || ""; return /^0 of \d[\d,]* match$/.test(visible) && aria.startsWith(visible) && /complete selected Retain corpus/i.test(aria) && !/loaded/i.test(aria); })()'

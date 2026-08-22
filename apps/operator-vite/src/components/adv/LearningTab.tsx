@@ -2035,7 +2035,12 @@ function ImprovementsView({
   };
 
   const resolved = digest?.byState?.resolved ?? 0;
-  const showDashboard = (digest?.open ?? 0) >= 4;
+  // A predicate-bearing zero result is still dashboard mode: the search,
+  // filters, exact `0 of 0` evidence, and reset controls must remain mounted so
+  // the user can recover from the empty result. Keying this only to the
+  // FILTERED digest's `open` count made an exact zero unmount the very controls
+  // that produced it (WI-40590 / EI-21160436085146708).
+  const showDashboard = serverPredicateActive || (digest?.open ?? 0) >= 4;
   // The badge reports whether the LOOP is healthy, not whether the pile is big.
   // The drift markers (single-lens collapse, budget-exhausted streak, grading
   // starvation) are server-evaluated against the blender-release-readiness

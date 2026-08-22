@@ -599,6 +599,13 @@ let retainSummaryResult: Record<string, unknown> = {
   error: null,
   invalidate: vi.fn(),
 };
+let improvementsSummaryResult: Record<string, unknown> = {
+  data: [{ total: 4, matched: 1, facets: [] }],
+  loading: false,
+  fetching: false,
+  error: null,
+  invalidate: vi.fn(),
+};
 // WI-6383: when set, `learning.hiveThroughput` returns THIS — lets a test model
 // the DEGRADED snapshot the resolver returns for an unreadable substrate (a
 // successful read carrying `unavailable`, never a thrown transport error).
@@ -659,13 +666,7 @@ vi.mock("@papercusp/sync", async () => ({
       };
     }
     if (opts.queryName === "learning.improvements.summary") {
-      return {
-        data: [{ total: 4, matched: 1, facets: [] }],
-        loading: false,
-        fetching: false,
-        error: null,
-        invalidate: vi.fn(),
-      };
+      return improvementsSummaryResult;
     }
     return opts.queryName === "learning.apiary"
       ? apiaryResult
@@ -764,6 +765,13 @@ beforeEach(() => {
   for (const k of Object.keys(seenArgs)) delete seenArgs[k];
   improvementsResult = {
     data: [improvementsDigest],
+    loading: false,
+    fetching: false,
+    error: null,
+    invalidate: vi.fn(),
+  };
+  improvementsSummaryResult = {
+    data: [{ total: 4, matched: 1, facets: [] }],
     loading: false,
     fetching: false,
     error: null,
@@ -1009,6 +1017,51 @@ describe("LearningTab — Improvements view (default)", () => {
     // than the digest's own row count.
     expect(screen.getByText(/^1 of \d+$/)).toBeTruthy();
     nuqsState.impq = "";
+  });
+
+  it("keeps the toolbar and exact zero evidence mounted for an empty server-filter result", () => {
+    nuqsState.impq = "p014-impossible-match";
+    improvementsResult = {
+      data: [
+        {
+          ...improvementsDigest,
+          open: 0,
+          total: 0,
+          returned: 0,
+          windowed: false,
+          autoEligible: [],
+          humanQueue: [],
+          routedRows: [],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    improvementsSummaryResult = {
+      data: [{ total: 2_295, matched: 0, facets: [] }],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+
+    render(<LearningTab />);
+
+    expect(screen.getByLabelText("Search ideas and work")).toBeTruthy();
+    expect(screen.getByText("0 of 0")).toBeTruthy();
+    expect(
+      screen.getByText("Nothing matches the current filter / search"),
+    ).toBeTruthy();
+    expect(seenArgs["learning.improvements"]).toEqual({
+      hive: "alpha-hive",
+      q: "p014-impossible-match",
+    });
+    expect(seenArgs["learning.improvements.summary"]).toEqual({
+      hive: "alpha-hive",
+      q: "p014-impossible-match",
+    });
   });
 
   it("preserves a server-classified auto-row whose only search hit was raw tierReason", () => {
