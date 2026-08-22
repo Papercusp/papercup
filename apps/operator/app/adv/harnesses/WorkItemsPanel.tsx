@@ -5,15 +5,22 @@ import { parseAsString, useQueryState } from 'nuqs';
 import { RefreshCw } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import { VirtualGrid, usePersistedColumnWidths } from '@papercusp/grid-core';
-import { readListTotal } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import type { CompanionListSummary } from '@papercusp/facets';
 import {
-  useColumnFilters,
+  useColumnFilterState,
+  useColumnFiltersFromState,
   ColumnFilterBar,
   filterCountLabel,
   type CountEvidence,
 } from '../../harness/filters';
 import { Tooltip } from '../../harness/Tooltip';
 import { buildWorkItemColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
+import {
+  mergeWorkItemPage,
+  workItemFacetOptions,
+  workItemServerFilters,
+} from './work-item-list-query';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 
 /**
@@ -79,10 +86,8 @@ export interface WorkItemRow {
  * re-export of a mocked symbol resolves to undefined at import time rather than
  * failing loudly at the mock. Import `filterCountLabel` from the barrel instead.
  *
- * ⚠ Read filter-count-label.ts's header before adopting it elsewhere: "N of total"
- * is only honest for a pane that GROWS its fetch window to the store total (this
- * one does, via `onEndReached`). A pane filtering one fixed page must fix that
- * first — the label and the growing window ship together or not at all.
+ * P-004 replaces the old growing-window premise: exact match + total now come
+ * from workItems.summary while bounded keyset pages supply rows.
  */
 
 /** Stable empty-rows sentinel — see the `useColumnFilters` call below. */
@@ -103,28 +108,6 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // preference, not user-meaningful URL state → localStorage, not nuqs.
   const [colWidths, setColWidths] = usePersistedColumnWidths('pc-colw:adv:work-items');
 
-  // Infinite scroll: start with a generous desktop page and grow the fetch
-  // window as the user reaches the end (see the VirtualGrid `onEndReached`
-  // wiring below). We DO pass an explicit `limit` now — the resolver argsSchema
-  // CLAMPS (it no longer rejects), so there's no rollout-skew "Too big" risk.
-  // The grid is virtualized so render cost stays bounded regardless, and the
-  // true store total rides row[0]._meta (readListTotal), so the count shows the
-  // DB total no matter how much is currently loaded.
-  const PAGE = WORK_ITEMS_PAGE;
-  const [limit, setLimit] = useState(PAGE);
-  // Reset the window when the harness changes (a different store).
-  useEffect(() => {
-    setLimit(PAGE);
-  }, [slug]);
-  const query = useSyncQuery<WorkItemRow>({
-    queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit },
-    enabled: Boolean(slug),
-  });
-  const items = query.loading ? null : query.data;
-  const loading = query.fetching;
-  const error = query.error ? query.error.message : null;
-
   // The owner's trust list — to mark a verified remote author as "trusted" on the
   // badge (Trust A4). Fail-soft: no data ⇒ empty set ⇒ verified authors read as
   // "admitted"/"pending", never falsely "trusted".
@@ -133,16 +116,6 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     () => new Set((trustQuery.data ?? []).map((t) => t.githubUserId)),
     [trustQuery.data],
   );
-  // True total in the store (carried on row[0]._meta by the resolver), falling
-  // back to the downloaded length. This is what the count label reports — the DB
-  // total, not the loaded length.
-  const total = readListTotal(items);
-
-  // Infinite scroll: if the store holds more rows than are loaded, grow the
-  // window. When the loaded length reaches `total`, everything is fetched.
-  const hasMore = items != null && items.length < total;
-  const loadMore = useCallback(() => setLimit((n) => n + PAGE), []);
-
   // Column + filter definitions live in ./work-item-columns — SHARED with the
   // dependency-graph pane (dependency-health-pane-2026-08-02 P-010 / D-003 req 4:
   // "all the filters from the work item list pane should also be brought over").
@@ -169,6 +142,64 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
     [trustedSet],
   );
 
+  // The URL state exists BEFORE the row request so every filter compiles into
+  // the server predicate. Both list and graph share this same `wif` binding.
+  const filterBinding = useColumnFilterState(columns, WORK_ITEM_FILTER_NS);
+  const serverFilters = useMemo(
+    () => workItemServerFilters(filterBinding.state),
+    [filterBinding.state],
+  );
+  const filterFingerprint = JSON.stringify(serverFilters);
+
+  // Bounded keyset pagination: every request stays at 500 rows. Cursor pages
+  // append idempotently in the client; the server never re-fetches a growing
+  // LIMIT over this mutable newest-first corpus.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [rows, setRows] = useState<WorkItemRow[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  useEffect(() => {
+    setCursor(null);
+    setNextCursor(null);
+    setRows([]);
+  }, [slug, search, filterFingerprint]);
+
+  const sharedArgs = useMemo(
+    () => ({ harnessSlug: slug, q: search, filters: serverFilters }),
+    [slug, search, serverFilters],
+  );
+  const query = useSyncQuery<WorkItemRow>({
+    queryName: 'workItems.byHarness',
+    args: {
+      ...sharedArgs,
+      limit: WORK_ITEMS_PAGE,
+      ...(cursor ? { cursor } : {}),
+    },
+    enabled: Boolean(slug),
+  });
+  const summaryQuery = useSyncQuery<CompanionListSummary>({
+    queryName: 'workItems.summary',
+    args: sharedArgs,
+    enabled: Boolean(slug),
+  });
+  useEffect(() => {
+    if (query.loading || !query.data) return;
+    setRows((previous) => mergeWorkItemPage(previous, query.data, cursor));
+    setNextCursor(
+      typeof readListMeta(query.data)?.nextCursor === 'string'
+        ? readListMeta(query.data)!.nextCursor as string
+        : null,
+    );
+  }, [query.data, query.loading, cursor]);
+  const items = query.loading && cursor === null && rows.length === 0 ? null : rows;
+  const summary = summaryQuery.data?.[0] ?? null;
+  const pairedFetching = Boolean(query.fetching || summaryQuery.fetching);
+  const loading = pairedFetching;
+  const error = query.error?.message ?? summaryQuery.error?.message ?? null;
+  const hasMore = nextCursor !== null;
+  const loadMore = useCallback(() => {
+    if (nextCursor) setCursor(nextCursor);
+  }, [nextCursor]);
+
   // Per-column filters (kind/state/severity/priority/…) → ONE `wif` nuqs param.
   // The hook re-derives enum options from the live rows and AND-s every active
   // filter; `cf.rows` is the input ref when nothing is active (cheap fast-path).
@@ -180,21 +211,22 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // which is precisely the "callers must hold up their end" contract ColumnFilterBar's
   // memo() note spells out (P-BUG-WI-37386). The sibling DepGraphPanel shipped the same
   // class of instability into an effect dep and ran a real render loop for it (WI-39552).
-  const filterCountEvidence = useMemo<CountEvidence>(
-    () => items == null
-      ? { kind: 'unknown', reason: 'loading' }
-      : {
-          kind: 'window',
-          count: items.length,
-          window: `latest ${items.length.toLocaleString('en-US')} loaded work items`,
-          corpusTotal: total,
-        },
-    [items, total],
-  );
-  const cf = useColumnFilters(columns, items ?? NO_ROWS, {
+  const filterCountEvidence = useMemo<CountEvidence>(() => {
+    if (!summary) return { kind: 'unknown', reason: summaryQuery.error ? 'failed' : 'loading' };
+    if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
+    return {
+      kind: 'corpus',
+      count: summary.matched,
+      total: summary.total,
+      population: 'the selected harness work-item corpus',
+    };
+  }, [summary, summaryQuery.error, pairedFetching]);
+  const facetOptions = useMemo(() => workItemFacetOptions(summary), [summary]);
+  const cf = useColumnFiltersFromState(columns, items ?? NO_ROWS, {
     ns: WORK_ITEM_FILTER_NS,
     countEvidence: filterCountEvidence,
-  });
+    serverEnumOptions: facetOptions,
+  }, filterBinding);
 
   // Global quick-search (`wq`) is a separate affordance — apply it as a substring
   // match ON TOP of the column-filtered rows (id/title/state/assignee).
@@ -210,21 +242,8 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
   // narrowing the list shows how many rows matched out of the store total; when
   // unfiltered it's just the store total.
   const isFiltered = cf.hasActive || search.trim() !== '';
-  const displayedCountEvidence = useMemo<CountEvidence>(
-    () => items == null
-      ? { kind: 'unknown', reason: 'loading' }
-      : isFiltered
-        ? {
-            kind: 'window',
-            count: filtered.length,
-            windowTotal: items.length,
-            window: `latest ${items.length.toLocaleString('en-US')} loaded work items`,
-            corpusTotal: total,
-          }
-        : { kind: 'corpus', count: total, population: 'the selected harness work-item corpus' },
-    [filtered.length, isFiltered, items, total],
-  );
-  const counts = items ? filterCountLabel(displayedCountEvidence) : null;
+  const displayedCountEvidence = filterCountEvidence;
+  const counts = filterCountLabel(displayedCountEvidence);
   const titleCount = counts?.title;
   useEffect(() => {
     if (titleCount != null) api.setTitle(`Work items · ${slug} (${titleCount})`);
@@ -278,7 +297,10 @@ export default function WorkItemsPanel({ params, api }: PanelComponentProps) {
           <button
             type="button"
             className="pc-advpanel__iconbtn"
-            onClick={() => query.invalidate()}
+            onClick={() => {
+              query.invalidate();
+              summaryQuery.invalidate();
+            }}
             disabled={loading}
             aria-label="Refresh work items"
           >

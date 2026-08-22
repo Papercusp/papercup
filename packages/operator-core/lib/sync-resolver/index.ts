@@ -946,6 +946,42 @@ async function retainHiveScopes(hive: string | undefined, label: string): Promis
   }
 }
 
+const workItemsListQueryPair = createCompanionListQueryPair({
+  domain: 'workItems',
+  rowsQueryName: 'workItems.byHarness',
+  argsSchema: workItemsListArgsSchema,
+  backingTables: [
+    'harness_shared.work_items',
+    'harness_shared.spawned_agents',
+  ] as const,
+  normalizeArgs: (args: WorkItemsListWireArgs) =>
+    normalizeWorkItemsListArgs(args),
+  buildPredicate: buildWorkItemsPredicate,
+  readPage: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+    ]);
+    return readWorkItemsPageFromStore(
+      getOrgPg().sql,
+      activeWorkspaceId(),
+      predicate,
+    );
+  },
+  readSummaryAggregateRows: async ({ predicate }) => {
+    const [{ getOrgPg }, { activeWorkspaceId }] = await Promise.all([
+      import('@papercusp/db-org'),
+      import('../workspace-registry'),
+    ]);
+    return readWorkItemsSummaryFromStore(
+      getOrgPg().sql,
+      activeWorkspaceId(),
+      predicate,
+    );
+  },
+  summarySelection: workItemsSummarySelection,
+});
+
 const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // storage.usage — live storage usage by category for Settings → Storage
   // (storage-settings-page-2026-06-15 P-003). Reuses the audit introspection
@@ -2608,106 +2644,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // `harness_features_consolidated` etc — the prefix mismatch is
   // historical, drizzle's canonical name wins).
 
-  // workItems.byHarness — the UNIFIED work-items read (feature + issue families,
-  // enriched route-side with plan-link + spine-position) serving WorkItemsPanel's
-  // live path (blueprint-aware-harness-ui-2026-06-09 P-010 polish). Reuses the
-  // route's exported assembly so this sync read and
-  // GET /api/harness/:slug/work-items return identical rows. Invalidated via the
-  // table bridge from harness_features_consolidated + engineer_issues (migration
-  // 215) + spawned_agents (outcome flips re-fire the spine-position column).
-  'workItems.byHarness': {
-    argsSchema: z.object({
-      harnessSlug: z.string().optional(),
-      harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
-      kind: z.string().optional(),
-      state: z.string().optional(),
-      // CLAMP, don't REJECT. A hard `.max()` makes the schema error on a client
-      // that requests more than the cap — turning a client/server version skew
-      // (a newer client asking for a higher limit than an older deployed resolver
-      // allowed) into a panel-breaking "Too big" error instead of graceful
-      // degradation. The resolver body already Math.min-clamps to
-      // WORK_ITEMS_MAX_LIMIT, so an over-large request is bounded server-side.
-      limit: z.number().int().positive().default(2000),
-      /**
-       * hud-open-destinations-and-true-counts-2026-07-27 P-004 — a FAIR window.
-       *
-       * The single `limit` window above is ordered `updated_ts DESC` across
-       * every status at once, which makes it a poor sample for any board that
-       * groups BY status: measured live on `papercusp` (27,514 rows), a 500-row
-       * window held `done 264, open 197, resolved 21, dropped 9, blocked 8,
-       * closed 1` and **zero** of the 45 `needs-human` rows — so the HUD's
-       * "needs you" column rendered no work items at all while claiming a count.
-       * Recently-touched terminal work simply crowds out everything else.
-       *
-       * Passing `states` fetches up to `perState` rows for EACH status named,
-       * so every group the caller intends to render is actually represented.
-       * Costs less data than one big window, not more.
-       */
-      states: z.array(z.string().max(40)).max(20).optional(),
-      perState: z.number().int().positive().max(200).optional(),
-    }),
-    resolve: async (args) => {
-      const { harnessSlug, harnessSlugs, kind, state, limit, states, perState } = args as {
-        harnessSlug?: string;
-        harnessSlugs?: string[];
-        kind?: string;
-        state?: string;
-        limit: number;
-        states?: string[];
-        perState?: number;
-      };
-      const [{ listEnrichedWorkItems }, { isWorkItemKind, countWorkItems }] = await Promise.all([
-        import('../endpoint-route/routes/harness/work-items'),
-        import('../work-items'),
-      ]);
-      const k = kind && isWorkItemKind(kind) ? kind : undefined;
-      const scope = { harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k };
-      // BOUNDED (WI-39825) via the shared rows+count fan-out. Both branches read
-      // twice under one deadline: a wedged COUNT — the leg this view lives
-      // perfectly well without — used to take the whole grid past the sync
-      // layer's resolver timeout, and a FAILED one used to render as the page
-      // length rather than as unknown. See `bounded-list-read.ts`.
-      //
-      // The per-state branch's rows leg is itself a fan-out, and stays ONE leg on
-      // purpose: the rows ARE the grid, so a wedge in any state's window is a
-      // failure of the list rather than of a section it can render without.
-      const { readBoundedList } = await import('./bounded-list-read');
-      const rows = await readBoundedList({
-        rows:
-          states && states.length > 0
-            ? Promise.all(
-                states.map((s) =>
-                  listEnrichedWorkItems({ ...scope, state: s, limit: perState ?? 60 }),
-                ),
-              ).then((perStateRows) => perStateRows.flat())
-            : listEnrichedWorkItems({ ...scope, state, limit }),
-        // The TRUE corpus total. In the per-state branch it is deliberately NOT
-        // scoped to `states` — it is what row[0]._meta.total is for (see below),
-        // and a total that only counted the sampled states would restate the
-        // sample, not the store.
-        count:
-          states && states.length > 0
-            ? countWorkItems(scope)
-            : countWorkItems({ ...scope, state }),
-        label: 'workItems.byHarness',
-      });
-      // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
-      // envelope) so the UI shows "N of TOTAL" instead of the capped length.
-      // P-006: drop the heavy per-row `summary` (avg ~694 chars, the dominant
-      // remaining field in the 3.79MB payload) at the SYNC boundary only — the
-      // grid never renders/filters/searches it; DetailPanel fetches the selected
-      // row's full detail on demand via workItems.detail. The /api HTTP route
-      // (pui TUI) keeps the full row.
-      // P-028/D-022: that projection is now an ALLOW-LIST of the 18 fields the
-      // panels render, not "blank summary, spread the rest" — measured 429KB →
-      // 258KB (−40%) live, because ~14 unread fields (three of them already
-      // force-nulled by slimListRow) were pure key-name overhead on the wire.
-      const { projectWorkItemsListForUi } = await import('./work-items-ui-projection');
-      // `rows` already carries its list `_meta` — readBoundedList attaches it, so
-      // the total (or its `totalUnavailable` flag) survives the UI projection.
-      return projectWorkItemsListForUi(rows);
-    },
-  },
+  // P-004: one normalized harness predicate backs the bounded keyset page and
+  // the exact workItems.summary aggregate. The paired factory makes args,
+  // backing tables, deadline behavior and invalidation ownership structural.
+  'workItems.byHarness': workItemsListQueryPair.rowsEntry as QueryEntry<unknown>,
+  'workItems.summary': workItemsListQueryPair.summaryEntry as QueryEntry<unknown>,
 
   // workItems.detail — the single-item ON-DEMAND detail read (P-006). The Detail
   // pane fetches ONE enriched row (with the full `summary` + payload/completion

@@ -45,12 +45,18 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { useSyncQuery } from '@papercusp/sync';
-import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import type { CompanionListSummary } from '@papercusp/facets';
 import type { PanelComponentProps } from '../../harness/dock/panel-registry';
 import { Button } from '../../harness/Button';
-import { useColumnFilters, ColumnFilterBar, type CountEvidence } from '../../harness/filters';
+import {
+  useColumnFilterState,
+  useColumnFiltersFromState,
+  ColumnFilterBar,
+  type CountEvidence,
+} from '../../harness/filters';
 import { WORK_ITEMS_PAGE, type WorkItemRow } from './WorkItemsPanel';
 import { workItemFilterColumns, WORK_ITEM_FILTER_NS } from './work-item-columns';
+import { workItemFacetOptions, workItemServerFilters } from './work-item-list-query';
 import {
   buildDepSubgraph,
   DEP_GRAPH_NODE_BUDGET,
@@ -319,10 +325,26 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     parseAsStringEnum(['fit', '50', '67', '75', '100', '125', '150']).withDefault('100'),
   );
 
-  // SAME queryName + SAME limit as WorkItemsPanel ⇒ one shared subscription (see header).
+  // FULL FILTER PARITY with the list pane. Read the shared URL state before the
+  // queries so rows and the authoritative companion summary use one predicate.
+  const filterColumns = useMemo(() => workItemFilterColumns(), []);
+  const filterBinding = useColumnFilterState(filterColumns, WORK_ITEM_FILTER_NS);
+  const serverFilters = useMemo(
+    () => workItemServerFilters(filterBinding.state),
+    [filterBinding.state],
+  );
+  const sharedArgs = useMemo(
+    () => ({ harnessSlug: slug, filters: serverFilters }),
+    [slug, serverFilters],
+  );
   const itemsQuery = useSyncQuery<WorkItemRow>({
     queryName: 'workItems.byHarness',
-    args: { harnessSlug: slug, limit: WORK_ITEMS_PAGE },
+    args: { ...sharedArgs, limit: WORK_ITEMS_PAGE },
+    enabled: Boolean(slug),
+  });
+  const summaryQuery = useSyncQuery<CompanionListSummary>({
+    queryName: 'workItems.summary',
+    args: sharedArgs,
     enabled: Boolean(slug),
   });
   const edgesQuery = useSyncQuery<DepEdgeRow>({
@@ -336,7 +358,7 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   // bug this codebase has already shipped once.
   const items = itemsQuery.loading ? null : itemsQuery.data;
   const edgeRows = edgesQuery.loading ? null : edgesQuery.data;
-  const error = itemsQuery.error?.message ?? edgesQuery.error?.message ?? null;
+  const error = itemsQuery.error?.message ?? summaryQuery.error?.message ?? edgesQuery.error?.message ?? null;
 
   // FULL FILTER PARITY with the list pane (P-010 / D-003 req 4). The columns come
   // from the SHARED definition module, and the `ns` is the SAME one WorkItemsPanel
@@ -344,7 +366,6 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
   // narrows the graph and vice versa, with no cross-pane wiring: the URL is the bus.
   //
   // Declared BEFORE the early returns below — hooks must run unconditionally.
-  const filterColumns = useMemo(() => workItemFilterColumns(), []);
 
   // ── THE FILTER'S CORPUS MUST BE THE GRAPH'S CORPUS, NOT THE LIST'S WINDOW ──────────
   // This plan's D-001/D-002. `items` is the list's 500-row `updated_ts DESC` page; the

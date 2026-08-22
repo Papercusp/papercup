@@ -467,6 +467,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     // to any member busts the whole hive rollup (the rollup is hive-grained).
     'featuresConsolidated.byHive',
     'workItems.byHarness',
+    'workItems.summary',
     // dependency-health-pane P-003: the graph pane's edge query resolves BOTH
     // endpoints against work_items, so a STATUS flip (a blocker going terminal)
     // or a rename changes what an edge MEANS even though work_item_deps itself
@@ -513,6 +514,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'featuresConsolidated.byPlanSlug',
     'featuresConsolidated.byHive',
     'workItems.byHarness',
+    'workItems.summary',
     // P-006: the single-item on-demand detail read — bridged wherever byHarness is
     // so an open Detail pane live-refreshes on the same writes (state, blockers,
     // spine, plan-link) that move the list row.
@@ -532,7 +534,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   'harness_shared.harness_issues_consolidated': ['issuesConsolidated.bySlug'],
   // engineer_issues = the issue-family compat view over work_items (post-374; the base
   // table is the real producer above).
-  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.detail', 'workItems.stats', 'workItems.delta24h'],
+  'harness_shared.engineer_issues': ['workItems.byHarness', 'workItems.summary', 'workItems.detail', 'workItems.stats', 'workItems.delta24h'],
   // coord_links = the rel='blocks' feature/work-item blocking edge table (EI-1/D-027,
   // the single source of truth for blocking) + the rel='implements' plan↔work-item
   // ledger edges. A blocks-edge add/remove is the single most important
@@ -545,6 +547,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
   // bus-deduped at coord_links's low write rate (~30/hr).
   'harness_shared.coord_links': [
     'workItems.byHarness',
+    'workItems.summary',
     // P-006: the single-item on-demand detail read — bridged wherever byHarness is
     // so an open Detail pane live-refreshes on the same writes (state, blockers,
     // spine, plan-link) that move the list row.
@@ -566,6 +569,7 @@ export const TABLE_TO_QUERY_NAMES: Readonly<Record<string, readonly QueryNameTar
     'agentRunsConsolidated.bySlug',
     'agentRunsConsolidated.recent',
     'workItems.byHarness',
+    'workItems.summary',
     // P-006: the single-item on-demand detail read — bridged wherever byHarness is
     // so an open Detail pane live-refreshes on the same writes (state, blockers,
     // spine, plan-link) that move the list row.
