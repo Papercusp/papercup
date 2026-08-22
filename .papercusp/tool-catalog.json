@@ -26810,7 +26810,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "After verification, pass `completion`, successful terminal `state:\"done\"` (or legacy `resolved`/`passed`), and `assumptions` (`\"none\"` or fact keys). Reserve `state:\"dropped\"` and legacy `closed`/`deprecated` for discard/wontfix. Put structured evidence in `completion.verification` (`filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.",
+        "when": "After verification, pass `completion`, successful terminal `state:\"done\"` (or legacy `resolved`/`passed`), and `assumptions` (`\"none\"` or fact keys). Reserve `state:\"dropped\"` and legacy `closed`/`deprecated` for discard/wontfix. Put structured evidence in `completion.verification` using only `filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`, or `summary`; do not put descriptive `tests`, `typecheck`, or `diff` keys there — use `testsRun`/`testResult` (or top-level `tests`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.",
         "notWhen": "Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.",
         "chaining": "work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits."
       }
