@@ -348,6 +348,21 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
   });
 
+  it('refuses a terminal workItem discovered from a COLD goal without claiming or binding it to the wake prompt', async () => {
+    detectM.mockReturnValue('EI-DONE');
+    getWiM.mockResolvedValue({ id: 'EI-DONE', state: 'done', assignee: null } as never);
+    const b = body(await call({ carry: 'cold', goal: 'EI-DONE is CLOSED; do not re-litigate it.' }));
+
+    expect(detectM).toHaveBeenCalledWith('EI-DONE is CLOSED; do not re-litigate it.');
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: { id: 'EI-DONE', claimed: false, reason: 'terminal' },
+    });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
   it('does NOT auto-detect from the goal on a WARM loop — warm behaviour stays byte-identical', async () => {
     detectM.mockReturnValue('WI-7' as never);
     const b = body(await call({ carry: 'warm', goal: 'root-cause WI-7' }));
