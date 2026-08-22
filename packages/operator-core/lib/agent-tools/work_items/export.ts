@@ -88,6 +88,27 @@ function serializeRow(row: WorkItem): string {
   return `${JSON.stringify(row, null, 2)}\n`;
 }
 
+export const WORK_ITEM_EXPORT_WRITE_CONCURRENCY = 64;
+
+type WriteFile = (file: string, body: string, encoding: 'utf8') => Promise<void>;
+
+/**
+ * Keep large harness exports under the MCP deadline without opening one file
+ * descriptor per row. Each slice finishes before the next starts, so at most 64
+ * writes are in flight while every row still lands as its own complete JSON file.
+ */
+export async function writeWorkItemFiles(
+  toDir: string,
+  rows: readonly WorkItem[],
+  writeFile: WriteFile = fs.writeFile,
+): Promise<number> {
+  for (let offset = 0; offset < rows.length; offset += WORK_ITEM_EXPORT_WRITE_CONCURRENCY) {
+    await Promise.all(rows.slice(offset, offset + WORK_ITEM_EXPORT_WRITE_CONCURRENCY).map((row) =>
+      writeFile(path.join(toDir, `${row.id}.json`), serializeRow(row), 'utf8')));
+  }
+  return rows.length;
+}
+
 export default defineTool({
   name: 'work_items:export',
   profile: 'engineer',
@@ -164,11 +185,7 @@ export default defineTool({
     }
 
     await fs.mkdir(args.toDir, { recursive: true });
-    let written = 0;
-    for (const row of rows) {
-      await fs.writeFile(path.join(args.toDir, `${row.id}.json`), serializeRow(row), 'utf8');
-      written++;
-    }
+    const written = await writeWorkItemFiles(args.toDir, rows);
 
     return {
       content: [

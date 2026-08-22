@@ -1,4 +1,5 @@
-import { writeFile } from 'node:fs/promises';
+import { access, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const resolveHarnessRepoRoot = vi.fn();
@@ -74,7 +75,9 @@ describe('GET /harness/:slug/project-history', () => {
 
     expect(document).toEqual({ schemaVersion: 2, harness: 'demo-provider' });
     const runnerEnv = resolvePtool.mock.calls[0]?.[0] as NodeJS.ProcessEnv;
-    expect(runnerEnv.PAPERCUSP_INTEGRATION_ROOT).toMatch(/\/papercusp$/);
+    const integrationRoot = runnerEnv.PAPERCUSP_INTEGRATION_ROOT;
+    expect(integrationRoot).toEqual(expect.any(String));
+    await expect(access(join(integrationRoot!, 'libs/papercusp/packages/cli/bin/papercusp'))).resolves.toBeUndefined();
     expect(resolveCliBin).toHaveBeenCalledWith(runnerEnv);
     expect(runProjectHistoryGenerate).toHaveBeenCalledWith(
       '/repo/libs/papercusp/packages/cli/bin/papercusp',
