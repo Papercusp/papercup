@@ -39,6 +39,7 @@ export const POT_BAR_TAB_IDS: ReadonlySet<AdvTabId> = new Set<AdvTabId>([
   'insights',
   'settings',
   'docs',
+  'history',
   'git',
   'stats',
   'testing',

@@ -140,6 +140,7 @@ import harnessPhases from './harness/phases';
 import harnessIssues from './harness/issues';
 import harnessStreams from './harness/streams';
 import harnessStatus from './harness/status';
+import harnessProjectHistory from './harness/project-history';
 import harnessLogHistory from './harness/log-history';
 import harnessSpawn from './harness/spawn';
 import harnessBootstrapFromTemplate from './harness/bootstrap-from-template';
@@ -406,6 +407,7 @@ import adminTestingFileHistory from './admin/testing-file-history';
 import adminTestingHealthStrip from './admin/testing-health-strip';
 import adminDbosStatus from './admin/dbos-status';
 import adminSchedulesInventory from './admin/schedules-inventory';
+import adminExternalTriggers from './admin/external-triggers';
 // task-manager-no-escape-2026-07-27 P-017: the read side of the Task Manager pane.
 // Read-only by construction — the kill/freeze/limit verbs are MCP tools behind
 // processes:kill / processes:control, never a dashboard fetch.
@@ -692,6 +694,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(harnessIssues as AnyRoute[]),
   ...flatten(harnessStreams as AnyRoute[]),
   ...flatten([harnessStatus] as AnyRoute[]),
+  ...flatten([harnessProjectHistory] as AnyRoute[]),
   ...flatten([harnessLogHistory] as AnyRoute[]),
   ...flatten(harnessSpawn as AnyRoute[]),
   ...flatten([harnessBootstrapFromTemplate] as AnyRoute[]),
@@ -880,6 +883,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminTestingDomainDetail as AnyRoute),
   ...flatten(adminDbosStatus as AnyRoute),
   ...flatten(adminSchedulesInventory as AnyRoute),
+  ...flatten(adminExternalTriggers as AnyRoute[]),
   ...flatten(adminTaskManager as unknown as AnyRoute[]),
   ...flatten(adminGoals as unknown as AnyRoute[]),
   ...flatten(adminDbosPipelineStart as AnyRoute),

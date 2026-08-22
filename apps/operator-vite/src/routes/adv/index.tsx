@@ -12,6 +12,7 @@ import AdvFramesTab from '../../components/adv/AdvFramesTab';
 import AdvEvalsTab from '../../components/adv/AdvEvalsTab';
 import ScheduledCalendarTab from '../../components/adv/ScheduledCalendarTab';
 import HealthTab from '../../components/adv/HealthTab';
+import AdvHistoryTab from '../../components/adv/AdvHistoryTab';
 import AdvHarnessPanelPage from '../../components/adv/AdvHarnessPanelPage';
 import HarnessesWorkspace from '@/app/adv/harnesses/HarnessesWorkspace';
 import AdvCreateDock from '@/app/adv/create/AdvCreateDock';
@@ -105,6 +106,8 @@ function renderAdvTab(tab: AdvTabId, potScope: AdvScope) {
       // Calendar — the schedulable time-surface: FullCalendar over the
       // backend-computed scheduled-plan occurrences (scheduled-recurring-plans P-018/P-019).
       return <ScheduledCalendarTab />;
+    case 'history':
+      return <AdvHistoryTab />;
     // ('brainstorm' removed — the surface lives in the Quick Panel popup now; P-010.)
     case 'prs':
     case 'insights':

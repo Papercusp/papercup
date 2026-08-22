@@ -40,7 +40,7 @@ vi.mock('../../components/adv/AdvShell', () => ({
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
     'overview', 'hud', 'conversations', 'learning', 'harnesses', 'health', 'frames',
-    'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
+    'evals', 'calendar', 'plans', 'prs', 'insights', 'settings', 'history',
     'docs', 'git', 'stats', 'testing',
   ].map((id) => ({ id })),
   useAdvScope: () => advScopeBoundary.entered
@@ -77,6 +77,7 @@ vi.mock('../../components/adv/AdvFramesTab', () => ({ default: () => <div data-t
 vi.mock('../../components/adv/AdvEvalsTab', () => ({ default: () => <div data-testid="tab-evals" /> }));
 vi.mock('../../components/adv/ScheduledCalendarTab', () => ({ default: () => <div data-testid="tab-calendar" /> }));
 vi.mock('../../components/adv/HealthTab', () => ({ default: () => <div data-testid="tab-health" /> }));
+vi.mock('../../components/adv/AdvHistoryTab', () => ({ default: () => <div data-testid="tab-history" /> }));
 vi.mock('../../components/adv/AdvHarnessPanelPage', () => ({
   default: ({ panel }: { panel: string }) => <div data-testid="harness-panel" data-panel={panel} />,
 }));
@@ -117,6 +118,7 @@ describe('/adv tab router', () => {
     { tab: 'calendar', child: 'tab-calendar', bar: false, pills: false },
     { tab: 'plans', child: 'tab-create-dock', bar: true, pills: false },
     { tab: 'stats', child: 'tab-stats', bar: true, pills: false },
+    { tab: 'history', child: 'tab-history', bar: true, pills: false },
   ] as const;
 
   it.each(FIRST_CLASS)('renders the $tab surface (pot bar: $bar, pills: $pills)', ({ tab, child, bar, pills }) => {
