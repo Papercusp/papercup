@@ -35,7 +35,10 @@ import {
   readlinkSync,
   readdirSync,
   realpathSync,
-} from 'node:fs';
+  openSync,
+  closeSync,
+  utimesSync,
+} from "node:fs";
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -932,6 +935,118 @@ describe('assert_checkout_landed (WI-5110)', () => {
       expect(r.stderr).toContain('unknown');
     } finally {
       rmSync(notARepo, { recursive: true, force: true });
+    }
+  });
+});
+
+/**
+ * EI-21181583819839124: a dead Git process left the checkpoint linked
+ * worktree's index.lock behind. The gate's run-lock was idle and healthy, but
+ * checkout setup failed before a test could run. The setup script may recover
+ * only when the exact Git-resolved lock is old AND unowned; otherwise it must
+ * leave the lock untouched and fail closed.
+ */
+describe('refresh_release_worktree — stale Git index.lock recovery (EI-21181583819839124)', () => {
+  let releaseRoot: string;
+  let quarantineRoot: string;
+  let firstSha: string;
+  let targetSha: string;
+
+  const git = (...args: string[]) => {
+    const r = spawnSync('git', ['-C', releaseRoot, '-c', 'user.email=t@t', '-c', 'user.name=t', ...args], {
+      encoding: 'utf8',
+    });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+
+  function runRefresh(): {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+  } {
+    const wrapper = [
+      'set -uo pipefail',
+      'log() { printf "[test] %s\\n" "$*"; }',
+      'source <(sed -n "/^index_lock_has_live_holder()/,/^}/p" "$SETUP_SCRIPT")',
+      'source <(sed -n "/^quarantine_stale_worktree_index_lock()/,/^}/p" "$SETUP_SCRIPT")',
+      'source <(sed -n "/^refresh_release_worktree()/,/^}/p" "$SETUP_SCRIPT")',
+      'refresh_release_worktree',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        RELEASE_ROOT: releaseRoot,
+        TARGET_SHA: targetSha,
+        TMPDIR: quarantineRoot,
+      },
+      encoding: 'utf8',
+    });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+  }
+
+  function createIndexLock(ageMs: number): string {
+    const lockPath = join(releaseRoot, '.git/index.lock');
+    writeFileSync(lockPath, 'stale-test-lock');
+    const timestamp = new Date(Date.now() - ageMs);
+    utimesSync(lockPath, timestamp, timestamp);
+    return lockPath;
+  }
+
+  beforeEach(() => {
+    releaseRoot = realpathSync(mkdtempSync(join(tmpdir(), 'stale-index-lock-release-')));
+    quarantineRoot = realpathSync(mkdtempSync(join(tmpdir(), 'stale-index-lock-quarantine-')));
+    git('init', '-q');
+    writeFileSync(join(releaseRoot, 'f.txt'), 'v1');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'c1');
+    firstSha = git('rev-parse', 'HEAD');
+    writeFileSync(join(releaseRoot, 'f.txt'), 'v2');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'c2');
+    targetSha = git('rev-parse', 'HEAD');
+    git('checkout', '-q', '--detach', firstSha);
+  });
+
+  afterEach(() => {
+    rmSync(releaseRoot, { recursive: true, force: true });
+    rmSync(quarantineRoot, { recursive: true, force: true });
+  });
+
+  it('moves an old unowned lock to recoverable quarantine, retries once, and lands TARGET_SHA', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    const result = runRefresh();
+
+    expect(result.status).toBe(0);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git('rev-parse', 'HEAD')).toBe(targetSha);
+    const quarantineDir = join(quarantineRoot, 'papercusp-stale-git-locks');
+    expect(readdirSync(quarantineDir)).toHaveLength(1);
+    expect(result.stdout).toContain('quarantined stale unowned Git index lock');
+  });
+
+  it('refuses a fresh lock and leaves both the lock and checkout untouched', () => {
+    const lockPath = createIndexLock(1_000);
+    const result = runRefresh();
+
+    expect(result.status).not.toBe(0);
+    expect(existsSync(lockPath)).toBe(true);
+    expect(git('rev-parse', 'HEAD')).toBe(firstSha);
+    expect(result.stdout).toContain('refusing to reclaim fresh Git index lock');
+  });
+
+  it('refuses an old lock while a live process still holds it open', () => {
+    const lockPath = createIndexLock(10 * 60_000);
+    const fd = openSync(lockPath, 'r');
+    try {
+      const result = runRefresh();
+      expect(result.status).not.toBe(0);
+      expect(existsSync(lockPath)).toBe(true);
+      expect(git('rev-parse', 'HEAD')).toBe(firstSha);
+      expect(result.stdout).toContain('held by a live process');
+    } finally {
+      closeSync(fd);
     }
   });
 });
