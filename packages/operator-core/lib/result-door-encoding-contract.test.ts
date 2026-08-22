@@ -35,6 +35,7 @@ vi.mock('./context-doors-config', () => ({ getDoorConstantsSync: doorConstantsMo
 import type { DoorableResult } from './result-door';
 import { applyResultDoor, RESULT_DOOR_TOKENS } from './result-door';
 import readTool from './agent-tools/capability/read';
+import { parseScratchReference } from './scratch-reference';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '77777777-8888-4999-8aaa-bbbbbbbbbbbb';
@@ -133,7 +134,9 @@ function spillBytes(): Buffer {
   const dir = join(process.env.PAPERCUSP_SCRATCH_ROOT!, WS, TOOL, RUN_ID);
   const files = readdirSync(dir);
   expect(files).toHaveLength(1);
-  return readFileSync(join(dir, files[0]));
+  const reference = parseScratchReference(readFileSync(join(dir, files[0])));
+  expect(reference).not.toBeNull();
+  return reference!.payload;
 }
 
 describe('EI-20685195115158619: spill cursor encoding contract', () => {
@@ -214,7 +217,7 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
     expect(body._projection.next).toContain('fails EMPTY');
   });
 
-  it('writes the spill as PLAINTEXT — the file is greppable, not base64', () => {
+  it('keeps the referenced payload as plaintext — capability:read unwraps the manifest', () => {
     doorOversizedResult();
     const bytes = spillBytes();
     const text = bytes.toString('utf8');
@@ -250,7 +253,10 @@ describe('EI-20685195115158619: spill cursor encoding contract', () => {
 
     // Execute the instruction exactly as an agent would: the cursor's own args,
     // through the actual tool handler — no re-implementation of the byte window.
-    const res = (await readTool.handler(cursor.args as never, { projectDir: sandbox } as never)) as {
+    const res = (await readTool.handler(cursor.args as never, {
+      projectDir: sandbox,
+      workspaceId: WS,
+    } as never)) as {
       content: Array<{ text: string }>;
     };
     const page = JSON.parse(res.content[0].text) as {

@@ -42,8 +42,6 @@
  */
 
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { projectBoundedPayload } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from './context-doors';
 import { getDoorConstantsSync } from './context-doors-config';
@@ -51,6 +49,7 @@ import { buildScratchUri, safeScratchFilesystemPath } from './scratch-uri';
 import { buildSpillIndex } from './result-door-index';
 import { classifyProjectionBody } from './result-projection';
 import { buildOutputEnvelope, type OutputReferenceContentItem } from './output-envelope';
+import { contentMetadata, writeScratchReference, type ScratchReferenceManifest } from './scratch-reference';
 
 /** The BAKED floor `resultEach` door (window 0 ⇒ the 8K-floor split ⇒ 1500 tokens).
  *  The live door is resolved per call through the P-023 config surface
@@ -257,10 +256,7 @@ function detectInnerTruncationMarkers(text: string): string[] {
  * to find the body `pick` operates on, so the advertised operator cannot drift
  * from the one that would actually run.
  */
-export function buildProjectionHint(
-  textItems: ReadonlyArray<{ text: string }>,
-  toolName: string,
-): string {
+export function buildProjectionHint(textItems: ReadonlyArray<{ text: string }>, toolName: string): string {
   // BUDGET NOTE (measured, not assumed — the correction in D-016): this string
   // is emitted on EVERY doored result, ~2,600 times per 6 days, 83% of them
   // JSON. A first cut of this function was 570 chars against the 420-char
@@ -318,6 +314,16 @@ function nonTextSize(it: unknown): number {
   }
 }
 
+/** Context-bearing bytes in an MCP result. Shared with the post-door telemetry
+ * backfill so the metric and the enforcing door cannot drift on units. */
+export function measureResultContextBytes(result: Pick<DoorableResult, 'content'>): number {
+  let bytes = 0;
+  for (const item of result.content) {
+    bytes += isTextItem(item) ? Buffer.byteLength(item.text, 'utf8') : nonTextSize(item);
+  }
+  return bytes;
+}
+
 function isTextItem(it: unknown): it is { type: 'text'; text: string } {
   return (
     !!it &&
@@ -331,8 +337,7 @@ function isTextItem(it: unknown): it is { type: 'text'; text: string } {
  *  never fail-the-spill on a weird caller identity). */
 function scratchParts(opts: ResultDoorOpts): { workspaceId: string; toolName: string; runId: string } {
   const rawWs = opts.workspaceId ?? '';
-  const workspaceId =
-    TOOL_SEGMENT_REGEX.test(rawWs) && rawWs !== '.' && rawWs !== '..' ? rawWs : 'unscoped';
+  const workspaceId = TOOL_SEGMENT_REGEX.test(rawWs) && rawWs !== '.' && rawWs !== '..' ? rawWs : 'unscoped';
   let toolName = TOOL_SEGMENT_REGEX.test(opts.toolName) ? opts.toolName : 'unknown:tool';
   if (!toolName.includes('.') && !toolName.includes(':')) toolName = `tool:${toolName}`;
   const runId = opts.runId && UUID_V4_REGEX.test(opts.runId) ? opts.runId : randomUUID();
@@ -358,19 +363,25 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
     content: input.result.content,
     ...(input.result.isError !== undefined ? { isError: input.result.isError } : {}),
   });
-  const byteCount = Buffer.byteLength(payload, 'utf8');
-  const sha256 = createHash('sha256').update(payload).digest('hex');
   let spillPath: string | null = null;
   let spillUri: string | null = null;
   let spillError: string | null = null;
   let spillErrorCode: string | null = null;
+  let manifest: ScratchReferenceManifest | null = null;
   try {
     const parts = scratchParts(input.opts);
     const basename = `result-door-${Date.now()}-${randomUUID().slice(0, 8)}.json`;
     spillUri = buildScratchUri({ ...parts, basename });
     spillPath = safeScratchFilesystemPath(spillUri);
-    mkdirSync(dirname(spillPath), { recursive: true });
-    writeFileSync(spillPath, payload, { mode: 0o600 });
+    manifest = writeScratchReference({
+      filePath: spillPath,
+      payload,
+      workspaceId: parts.workspaceId,
+      ownerId: input.opts.ownerId,
+      audience: input.opts.ownerId ? 'owner' : 'workspace',
+      mediaType: 'application/json',
+      content: contentMetadata(input.result.content),
+    });
   } catch (err) {
     spillError = err instanceof Error ? err.message : String(err);
     spillErrorCode = (err as NodeJS.ErrnoException | undefined)?.code ?? 'unknown error';
@@ -381,17 +392,17 @@ function spillResultAsReferenceEnvelope<T extends DoorableResult>(input: {
   const firstText = input.result.content.find(isTextItem)?.text ?? '';
   const preview = firstText
     ? firstText.slice(0, 240)
-    : `[${input.result.content
-        .map((item) => String((item as { type?: unknown }).type ?? 'unknown'))
-        .join(', ')}]`;
-  const reference: OutputReferenceContentItem | null = spillUri
+    : `[${input.result.content.map((item) => String((item as { type?: unknown }).type ?? 'unknown')).join(', ')}]`;
+  const reference: OutputReferenceContentItem | null = spillUri && manifest
     ? {
         kind: 'reference',
         uri: spillUri,
         preview,
-        byteCount,
-        sha256,
-        ...(input.opts.ownerId ? { ownerId: input.opts.ownerId, audience: 'owner' as const } : {}),
+        byteCount: manifest.byteCount,
+        sha256: manifest.sha256,
+        expiresAt: manifest.expiresAt,
+        ...(manifest.ownerId ? { ownerId: manifest.ownerId } : {}),
+        audience: manifest.audience,
       }
     : null;
   const envelope = reference
@@ -477,10 +488,18 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // sniffing the serialized JSON text, and pick truthful header/footer
     // wording for each case instead of unconditionally claiming "FULL".
     const upstreamProjection = (
-      result._meta as { payloadProjection?: {
-        truncated: true; tier: string; forced: boolean;
-        originalChars: number; returnedChars: number; omittedCount: number;
-      } } | undefined
+      result._meta as
+        | {
+            payloadProjection?: {
+              truncated: true;
+              tier: string;
+              forced: boolean;
+              originalChars: number;
+              returnedChars: number;
+              omittedCount: number;
+            };
+          }
+        | undefined
     )?.payloadProjection;
     let totalChars = 0;
     let textBytes = 0;
@@ -491,8 +510,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       if (isTextItem(it)) {
         totalChars += it.text.length;
         textBytes += Buffer.byteLength(it.text, 'utf8');
-      }
-      else nonTextChars += nonTextSize(it);
+      } else nonTextChars += nonTextSize(it);
     }
     const sourceBytes = textBytes + nonTextChars;
     const aggregate = opts.aggregateScope
@@ -519,9 +537,7 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       return spillResultAsReferenceEnvelope({
         result,
         opts,
-        reason: aggregate?.exceeded
-          ? 'aggregate-output-budget-exceeded'
-          : 'non-text-result-budget-exceeded',
+        reason: aggregate?.exceeded ? 'aggregate-output-budget-exceeded' : 'non-text-result-budget-exceeded',
         sourceBytes,
         nonTextBytes: nonTextChars,
         doorTokens,
@@ -548,12 +564,12 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       if (upstreamProjection?.truncated) {
         fastPathNotices.push(
           `\n[⚠ PARTIAL RESULT — this fit the per-result door, but it is NOT the tool's full ` +
-              `output: it was tier-projected upstream (payloadProjection: tier=${upstreamProjection.tier} ` +
-              `forced=${upstreamProjection.forced} omittedCount=${upstreamProjection.omittedCount}, ` +
-              `${upstreamProjection.returnedChars} of ${upstreamProjection.originalChars} chars). Those ` +
-              `${upstreamProjection.omittedCount} field(s)/row(s) were never serialized, so nothing ` +
-              `downstream can recover them and their ABSENCE HERE IS NOT EVIDENCE THEY DO NOT EXIST. ` +
-              `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args) for the missing detail.]`,
+            `output: it was tier-projected upstream (payloadProjection: tier=${upstreamProjection.tier} ` +
+            `forced=${upstreamProjection.forced} omittedCount=${upstreamProjection.omittedCount}, ` +
+            `${upstreamProjection.returnedChars} of ${upstreamProjection.originalChars} chars). Those ` +
+            `${upstreamProjection.omittedCount} field(s)/row(s) were never serialized, so nothing ` +
+            `downstream can recover them and their ABSENCE HERE IS NOT EVIDENCE THEY DO NOT EXIST. ` +
+            `Re-call ${opts.toolName} with payloadTier:'full' (or narrower args) for the missing detail.]`,
         );
       }
       return {
@@ -629,24 +645,24 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
         `# What follows is only that already-partial projection, further capped at the ` +
         `per-result door (${doorTokens} tokens) below.\n\n`
       : innerTruncationMarkers.length > 0
-      ? `# result-door spill — FULL door-level text, but the TOOL ITSELF already truncated field(s)\n` +
-        `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
-        `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n` +
-        `# detected marker(s): ${innerTruncationMarkers.join(', ')} — these mark field(s) the tool cut\n` +
-        `# short BEFORE this door ever ran. This file holds everything the tool DID emit, but the\n` +
-        `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
-        `# file will NOT recover them. Re-call ${opts.toolName} with a wider per-field limit/budget\n` +
-        `# argument for the missing detail.\n\n`
-      : // EI-18762253154342502: never claim "FULL" unconditionally — no marker firing
-        // proves nothing was cut upstream, only that no DETECTED marker was found (a
-        // tool can truncate a field with a plain ellipsis and no `_truncated` flag,
-        // as plans:items did before this fix). "as it reached this door" is always
-        // true and never overclaims what was actually recoverable.
-        `# result-door spill — the text as it reached this door (no upstream truncation marker detected;\n` +
-        `# that does NOT guarantee the tool emitted every field in full — only that none of its known\n` +
-        `# _truncated markers fired)\n` +
-        `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
-        `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
+        ? `# result-door spill — FULL door-level text, but the TOOL ITSELF already truncated field(s)\n` +
+          `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
+          `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n` +
+          `# detected marker(s): ${innerTruncationMarkers.join(', ')} — these mark field(s) the tool cut\n` +
+          `# short BEFORE this door ever ran. This file holds everything the tool DID emit, but the\n` +
+          `# marked field(s) are themselves incomplete and were never fully serialized — paging this\n` +
+          `# file will NOT recover them. Re-call ${opts.toolName} with a wider per-field limit/budget\n` +
+          `# argument for the missing detail.\n\n`
+        : // EI-18762253154342502: never claim "FULL" unconditionally — no marker firing
+          // proves nothing was cut upstream, only that no DETECTED marker was found (a
+          // tool can truncate a field with a plain ellipsis and no `_truncated` flag,
+          // as plans:items did before this fix). "as it reached this door" is always
+          // true and never overclaims what was actually recoverable.
+          `# result-door spill — the text as it reached this door (no upstream truncation marker detected;\n` +
+          `# that does NOT guarantee the tool emitted every field in full — only that none of its known\n` +
+          `# _truncated markers fired)\n` +
+          `# tool: ${opts.toolName}\n# spilled: ${new Date().toISOString()}\n` +
+          `# original ~${Math.ceil(totalChars / CHARS_PER_TOKEN_ESTIMATE)} tokens (${totalChars} chars); door ${doorTokens} tokens\n\n`;
     // P-003 (agent-epistemics-2026-08-02): for a LIST-shaped result, lead the file
     // with one line per entry. The door already solves SIZE; this solves the question
     // the reader actually arrives with — "which of these do I care about" — which was
@@ -659,9 +675,15 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     const spillPrefix = header + (spillIndex ? `${spillIndex}\n` : '');
     if (fsPath != null) {
       try {
-        mkdirSync(dirname(fsPath), { recursive: true });
-        writeFileSync(fsPath, spillPrefix + fullText, {
-          mode: 0o600,
+        const parts = scratchParts(opts);
+        writeScratchReference({
+          filePath: fsPath,
+          payload: spillPrefix + fullText,
+          workspaceId: parts.workspaceId,
+          ownerId: opts.ownerId,
+          audience: opts.ownerId ? 'owner' : 'workspace',
+          mediaType: 'text/plain',
+          content: contentMetadata(items),
         });
       } catch (err) {
         // WI-36047: the write failed — fall through to the CAP anyway, and null
@@ -687,6 +709,9 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
       spillError,
       spillErrorCode,
       originalChars: totalChars,
+      /** Exact UTF-8 bytes as they reached the door. Unlike originalChars this
+       * remains comparable to intermediateBytes for non-ASCII payloads. */
+      originalBytes: sourceBytes,
       /** UTF-8 bytes of non-text content carried by this result. Kept under the
        *  legacy key for telemetry compatibility; D-021 makes it enforced. */
       nonTextChars,
@@ -722,114 +747,108 @@ export function applyResultDoor<T extends DoorableResult>(result: T, opts: Resul
     // JSON recovery point — the omitted records were never serialized.
     const partialJsonBody = parsedJsonBody && innerTruncationMarkers.length > 0;
     const spillBodyByteOffset = Buffer.byteLength(spillPrefix, 'utf8');
-    const recovery = fsPath != null && uri != null
-      ? {
-          cursor: {
-            kind: 'scratch-page',
-            tool: 'capability:read',
-            args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
-            uri,
-            // EI-20685195115158619: named `dataEncoding`, not `encoding`. Bare
-            // and adjacent to `file_path`, it read as "the file at that path is
-            // base64" — an agent took that reading, ran `base64 -d <path>`, got
-            // `invalid input`, and burned calls. Only capability:read's response
-            // `data` field is base64 (byte-window mode, read.ts); the spill FILE
-            // is plaintext UTF-8, and being directly greppable/tailable is the
-            // point of writing it that way. The key binds to the field it
-            // describes and costs 4 chars against the budget guarded below;
-            // `result-door-encoding-contract.test.ts` then follows this cursor
-            // end-to-end so the declaration and the bytes cannot drift apart.
-            dataEncoding: 'base64',
-            // The spill is plaintext with a Markdown header (and, for
-            // list-shaped results, an index) before the body. JSON callers
-            // need the exact byte boundary instead of guessing where jq can
-            // start parsing — but only when the tool emitted a complete JSON
-            // body. A tool-internally clipped JSON body is valid JSON while
-            // still being an incomplete population, so do not present its
-            // boundary as an exact recovery cursor.
-            ...(parsedJsonBody && !partialJsonBody ? { bodyByteOffset: spillBodyByteOffset } : {}),
-          },
-          next:
-            // `response.data` rather than a bare `data`: naming the field's OWNER
-            // is what stops the misread, and stating the file's encoding outright
-            // beats the old "begins with a text header" hint that left the reader
-            // to infer it. Both are paid for by tightening the trailing sentence
-            // — this pointer is NET SHORTER than the ambiguous version it
-            // replaced, which is the only reason it clears WI-5656 below.
-            `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
-            `next_cursor until eof to ` +
-            (partialJsonBody
-              ? `inspect the emitted spill bytes. The tool marked ${innerTruncationMarkers.join(', ')}; ` +
-                `this JSON is partial and paging cannot recover omitted fields. Re-call ${opts.toolName} ` +
-                `with a wider per-field limit.`
-              : `recover the exact spill bytes. File is plaintext; ` +
-                (parsedJsonBody
-                  ? `skip cursor.bodyByteOffset bytes for JSON.`
-                  : `it opens with a text header.`)) +
-            // Keep the established JSON recovery pointer deliberately terse. The
-            // payload projector budgets the pointer together with the retained
-            // JSON preview; expanding it here can evict coord:orient's recovery
-            // fields from that preview (WI-5656) — re-measured on
-            // EI-20685195115158619, where a ~90-char plaintext warning added here
-            // reded orient-recovery-door-priority. That canary sits AT the
-            // ceiling: assume zero headroom and pay for any addition. Raw text
-            // needs the fuller honesty wording because its new
-            // `{ text, _projection }` envelope replaced the former prose footer
-            // that carried those disclosures.
-            (parsedJsonBody
-              ? ''
-              : ` The spill FILE is plaintext — grep/tail it directly; \`base64 -d\` on ` +
-                `args.file_path fails EMPTY, which reads as an empty spill.`) +
-            (parsedJsonBody || partialJsonBody
-              ? ''
-              : upstreamProjection
-                ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
-                  `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
-                  `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
-                  `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
-                : innerTruncationMarkers.length > 0
-                  ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
-                    `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
-                    `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
-                  : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
-                    `every field in full.`) +
-            buildProjectionHint(textItems, opts.toolName),
-        }
-      : {
-          cursor: {
-            kind: 'unavailable',
-            tool: opts.toolName,
-            args: {},
-            reason: 'spill-write-failed',
-          },
-          next:
-            `The result was structurally bounded, but its spill write failed ` +
-            `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are NOT recoverable and no ` +
-            `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
-            (upstreamProjection
-              ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
-                `so those fields were never serialized either.`
-              : '') +
-            buildProjectionHint(textItems, opts.toolName),
-        };
-    const projected = projectBoundedPayload(
-      parsedJsonBody ? bodyShape.json!.parsed : { text: fullText },
-      {
-        toolName: opts.toolName,
-        tier: 'trimmed',
-        forced: true,
-        originalChars: totalChars,
-        targetChars: budgetChars,
-        recovery,
-        // coord:orient's self/recovery legs are the only model-facing bootstrap
-        // state that cannot be reconstructed from the generic identity fields.
-        // Keep them visible even if projection metadata forces the final
-        // identity-only fallback; ordinary tools retain the generic behavior.
-        ...(opts.toolName === 'coord:orient'
-          ? { preserveTopLevelKeys: ['self', 'recovery'] as const }
-          : {}),
-      },
-    );
+    const recovery =
+      fsPath != null && uri != null
+        ? {
+            cursor: {
+              kind: 'scratch-page',
+              tool: 'capability:read',
+              args: { file_path: fsPath, byte_offset: 0, byte_limit: 3_072 },
+              uri,
+              // EI-20685195115158619: named `dataEncoding`, not `encoding`. Bare
+              // and adjacent to `file_path`, it read as "the file at that path is
+              // base64" — an agent took that reading, ran `base64 -d <path>`, got
+              // `invalid input`, and burned calls. Only capability:read's response
+              // `data` field is base64 (byte-window mode, read.ts); the spill FILE
+              // is plaintext UTF-8, and being directly greppable/tailable is the
+              // point of writing it that way. The key binds to the field it
+              // describes and costs 4 chars against the budget guarded below;
+              // `result-door-encoding-contract.test.ts` then follows this cursor
+              // end-to-end so the declaration and the bytes cannot drift apart.
+              dataEncoding: 'base64',
+              // The spill is plaintext with a Markdown header (and, for
+              // list-shaped results, an index) before the body. JSON callers
+              // need the exact byte boundary instead of guessing where jq can
+              // start parsing — but only when the tool emitted a complete JSON
+              // body. A tool-internally clipped JSON body is valid JSON while
+              // still being an incomplete population, so do not present its
+              // boundary as an exact recovery cursor.
+              ...(parsedJsonBody && !partialJsonBody ? { bodyByteOffset: spillBodyByteOffset } : {}),
+            },
+            next:
+              // `response.data` rather than a bare `data`: naming the field's OWNER
+              // is what stops the misread, and stating the file's encoding outright
+              // beats the old "begins with a text header" hint that left the reader
+              // to infer it. Both are paid for by tightening the trailing sentence
+              // — this pointer is NET SHORTER than the ambiguous version it
+              // replaced, which is the only reason it clears WI-5656 below.
+              `Call capability:read with _projection.cursor.args, base64-decode response.data, then follow ` +
+              `next_cursor until eof to ` +
+              (partialJsonBody
+                ? `inspect the emitted spill bytes. The tool marked ${innerTruncationMarkers.join(', ')}; ` +
+                  `this JSON is partial and paging cannot recover omitted fields. Re-call ${opts.toolName} ` +
+                  `with a wider per-field limit.`
+                : `recover the exact spill bytes. File is plaintext; ` +
+                  (parsedJsonBody ? `skip cursor.bodyByteOffset bytes for JSON.` : `it opens with a text header.`)) +
+              // Keep the established JSON recovery pointer deliberately terse. The
+              // payload projector budgets the pointer together with the retained
+              // JSON preview; expanding it here can evict coord:orient's recovery
+              // fields from that preview (WI-5656) — re-measured on
+              // EI-20685195115158619, where a ~90-char plaintext warning added here
+              // reded orient-recovery-door-priority. That canary sits AT the
+              // ceiling: assume zero headroom and pay for any addition. Raw text
+              // needs the fuller honesty wording because its new
+              // `{ text, _projection }` envelope replaced the former prose footer
+              // that carried those disclosures.
+              (parsedJsonBody
+                ? ''
+                : ` The spill FILE is plaintext — grep/tail it directly; \`base64 -d\` on ` +
+                  `args.file_path fails EMPTY, which reads as an empty spill.`) +
+              (parsedJsonBody || partialJsonBody
+                ? ''
+                : upstreamProjection
+                  ? ` ⚠ This is NOT the tool's full output: it was ALREADY tier-projected upstream ` +
+                    `(tier=${upstreamProjection.tier}, forced=${upstreamProjection.forced}, ` +
+                    `omittedCount=${upstreamProjection.omittedCount}); paging cannot recover those omitted ` +
+                    `fields. Re-call ${opts.toolName} with payloadTier:'full' for full detail.`
+                  : innerTruncationMarkers.length > 0
+                    ? ` ⚠ The TOOL ITSELF already truncated field(s) before this door ` +
+                      `(${innerTruncationMarkers.join(', ')}); paging preserves what it emitted but cannot ` +
+                      `recover those fields. Re-call ${opts.toolName} with a wider per-field limit.`
+                    : ` No upstream truncation marker was detected; that does not prove the tool emitted ` +
+                      `every field in full.`) +
+              buildProjectionHint(textItems, opts.toolName),
+          }
+        : {
+            cursor: {
+              kind: 'unavailable',
+              tool: opts.toolName,
+              args: {},
+              reason: 'spill-write-failed',
+            },
+            next:
+              `The result was structurally bounded, but its spill write failed ` +
+              `(${spillErrorCode ?? 'unknown error'}), so the omitted bytes are NOT recoverable and no ` +
+              `spill path exists. Re-call ${opts.toolName} with narrower arguments or a projection.` +
+              (upstreamProjection
+                ? ` It was ALSO tier-projected upstream (omittedCount=${upstreamProjection.omittedCount}), ` +
+                  `so those fields were never serialized either.`
+                : '') +
+              buildProjectionHint(textItems, opts.toolName),
+          };
+    const projected = projectBoundedPayload(parsedJsonBody ? bodyShape.json!.parsed : { text: fullText }, {
+      toolName: opts.toolName,
+      tier: 'trimmed',
+      forced: true,
+      originalChars: totalChars,
+      targetChars: budgetChars,
+      recovery,
+      // coord:orient's self/recovery legs are the only model-facing bootstrap
+      // state that cannot be reconstructed from the generic identity fields.
+      // Keep them visible even if projection metadata forces the final
+      // identity-only fallback; ordinary tools retain the generic behavior.
+      ...(opts.toolName === 'coord:orient' ? { preserveTopLevelKeys: ['self', 'recovery'] as const } : {}),
+    });
     const structuralText = JSON.stringify(projected);
     let inserted = false;
     const structuralContent: Array<{ type: 'text'; text: string } | Record<string, unknown>> = [];

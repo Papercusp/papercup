@@ -9,8 +9,7 @@
  * catch-all → Hono `:path{.+}`. `auth: 'public'` — the handler's own
  * workspace check is the gate.
  */
-import { createReadStream, existsSync, statSync } from 'node:fs';
-import { Readable } from 'node:stream';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import {
   parseScratchUri,
   safeScratchFilesystemPath,
@@ -19,6 +18,11 @@ import {
 } from '../../../scratch-uri';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
+import {
+  authorizeScratchReference,
+  parseScratchReference,
+  ScratchReferenceError,
+} from '../../../scratch-reference';
 
 function json400(message: string): Response {
   return new Response(JSON.stringify({ error: { code: 'bad_request', message } }), {
@@ -47,6 +51,14 @@ function guessContentType(basename: string): string {
     case 'gz': return 'application/gzip';
     default: return 'application/octet-stream';
   }
+}
+
+function safeManifestContentType(mediaType: string): string {
+  const normalized = mediaType.toLowerCase().split(';', 1)[0].trim();
+  if (normalized === 'text/html' || normalized === 'image/svg+xml') return 'application/octet-stream';
+  return /^(?:text\/[a-z0-9.+-]+|application\/(?:json|pdf|zip|gzip)|image\/(?:png|jpeg|gif|webp))$/u.test(normalized)
+    ? normalized
+    : 'application/octet-stream';
 }
 
 export default defineTool({
@@ -100,12 +112,33 @@ export default defineTool({
       );
     }
 
-    const webStream = Readable.toWeb(createReadStream(fsPath)) as unknown as ReadableStream;
-    return new Response(webStream, {
+    let payload = readFileSync(fsPath);
+    let contentType = guessContentType(parts.basename);
+    try {
+      const reference = parseScratchReference(payload);
+      if (reference) {
+        authorizeScratchReference(reference.manifest, {
+          workspaceId: ws,
+          ownerId: ctx.principal?.slug ?? null,
+        });
+        payload = Buffer.from(reference.payload);
+        contentType = safeManifestContentType(reference.manifest.mediaType);
+      }
+    } catch (err) {
+      if (err instanceof ScratchReferenceError) {
+        const status = err.code === 'expired_reference' ? 410 : err.code === 'invalid_reference' || err.code === 'integrity_mismatch' ? 422 : 403;
+        return new Response(JSON.stringify({ error: { code: err.code, message: err.message } }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw err;
+    }
+    return new Response(payload, {
       status: 200,
       headers: {
-        'content-type': guessContentType(parts.basename),
-        'content-length': String(st.size),
+        'content-type': contentType,
+        'content-length': String(payload.length),
         'cache-control': 'private, no-store',
         'content-disposition': `attachment; filename="${parts.basename}"`,
         'x-content-type-options': 'nosniff',

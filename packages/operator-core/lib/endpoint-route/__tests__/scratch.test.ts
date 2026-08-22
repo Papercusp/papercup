@@ -9,9 +9,10 @@
  * Carried over from app/api/scratch/[...path]/route.test.ts.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { Hono } from 'hono';
+import { writeScratchReference } from '../../scratch-reference';
 
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => 'default',
@@ -55,6 +56,66 @@ describe('GET /scratch/:path{.+} — round-11 bug #27 headers', () => {
     expect(resp.headers.get('content-disposition')).toBe('attachment; filename="out.csv"');
     expect(resp.headers.get('x-content-type-options')).toBe('nosniff');
     expect(resp.headers.get('content-type')).toBe('text/csv');
+  });
+
+  it('unwraps an authorized stable reference and serves only its payload', async () => {
+    const filePath = join(ROOT, WS, TOOL, RUN, 'result.json');
+    writeScratchReference({
+      filePath,
+      payload: '{"ok":true}',
+      workspaceId: WS,
+      audience: 'workspace',
+      mediaType: 'application/json',
+    });
+
+    const resp = await appWith().request(`/scratch/${WS}/${TOOL}/${RUN}/result.json`);
+    expect(resp.status).toBe(200);
+    expect(resp.headers.get('content-type')).toBe('application/json');
+    expect(resp.headers.get('content-length')).toBe(String(Buffer.byteLength('{"ok":true}')));
+    expect(await resp.text()).toBe('{"ok":true}');
+  });
+
+  it('fails closed for owner-restricted, expired, and tampered stable references', async () => {
+    const ownerPath = join(ROOT, WS, TOOL, RUN, 'owner.txt');
+    writeScratchReference({
+      filePath: ownerPath,
+      payload: 'secret',
+      workspaceId: WS,
+      ownerId: 'su-owner',
+      audience: 'owner',
+      mediaType: 'text/plain',
+    });
+    const ownerResp = await appWith().request(`/scratch/${WS}/${TOOL}/${RUN}/owner.txt`);
+    expect(ownerResp.status).toBe(403);
+    expect(await ownerResp.json()).toMatchObject({ error: { code: 'forbidden_reference' } });
+
+    const expiredPath = join(ROOT, WS, TOOL, RUN, 'expired.txt');
+    writeScratchReference({
+      filePath: expiredPath,
+      payload: 'old',
+      workspaceId: WS,
+      audience: 'workspace',
+      mediaType: 'text/plain',
+      nowMs: 0,
+    });
+    const expiredResp = await appWith().request(`/scratch/${WS}/${TOOL}/${RUN}/expired.txt`);
+    expect(expiredResp.status).toBe(410);
+    expect(await expiredResp.json()).toMatchObject({ error: { code: 'expired_reference' } });
+
+    const tamperedPath = join(ROOT, WS, TOOL, RUN, 'tampered.txt');
+    writeScratchReference({
+      filePath: tamperedPath,
+      payload: 'intact',
+      workspaceId: WS,
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    });
+    const tampered = readFileSync(tamperedPath);
+    tampered[tampered.length - 1] ^= 1;
+    writeFileSync(tamperedPath, tampered);
+    const tamperedResp = await appWith().request(`/scratch/${WS}/${TOOL}/${RUN}/tampered.txt`);
+    expect(tamperedResp.status).toBe(422);
+    expect(await tamperedResp.json()).toMatchObject({ error: { code: 'integrity_mismatch' } });
   });
 
   it('serves .html as text/plain (NOT text/html) — XSS downgrade', async () => {

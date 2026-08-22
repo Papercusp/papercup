@@ -13,6 +13,13 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveCapabilityBaseDir } from './base-dir';
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
+import {
+  authorizeScratchReference,
+  parseScratchReference,
+  ScratchReferenceError,
+  type ScratchReferenceManifest,
+} from '../../scratch-reference';
+import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
 
 /**
  * Exported so the bash-substitution audit can PIN its model to it
@@ -136,6 +143,12 @@ export default defineTool({
         `Bytes to return as base64 (max ${MAX_BYTE_PAGE}), an UPPER BOUND — the page is clamped to ` +
         `fit the result door, so read byte_length and follow next_cursor. Use with byte_offset.`,
       ),
+    content_indexes: z
+      .array(z.number().int().nonnegative())
+      .min(1)
+      .max(64)
+      .optional()
+      .describe('For a stable result-door reference whose payload contains an MCP content array, return only these item indexes. The dispatch-level projection can then pick fields from the selected result.'),
   }),
   async handler(args, ctx) {
     const baseDir = resolveCapabilityBaseDir(ctx);
@@ -159,6 +172,64 @@ export default defineTool({
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e);
       return err('read_failed', msg);
+    }
+
+    let reference: ScratchReferenceManifest | undefined;
+    try {
+      const parsed = parseScratchReference(bytes);
+      if (parsed) {
+        reference = parsed.manifest;
+        let ownerId: string | null = null;
+        if (reference.audience === 'owner') {
+          try {
+            ownerId = resolveAgentIdentity(ctx as ResolveIdentityCtx).ownerId;
+          } catch {
+            ownerId = null;
+          }
+        }
+        authorizeScratchReference(reference, {
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? null,
+          ownerId,
+        });
+        bytes = parsed.payload;
+      }
+    } catch (e: unknown) {
+      if (e instanceof ScratchReferenceError) return err(e.code, e.message);
+      return err('invalid_reference', e instanceof Error ? e.message : String(e));
+    }
+
+    if (args.content_indexes) {
+      if (args.byte_offset !== undefined || args.byte_limit !== undefined || args.offset !== undefined || args.limit !== undefined || args.tail !== undefined) {
+        return err('mixed_window_modes', 'content_indexes cannot be combined with line or byte windows.');
+      }
+      if (!reference) return err('not_a_reference', 'content_indexes requires a stable scratch reference.');
+      let decoded: unknown;
+      try {
+        decoded = JSON.parse(bytes.toString('utf8'));
+      } catch {
+        return err('content_not_selectable', 'scratch reference payload is not JSON. Use line or byte windows.');
+      }
+      const row = decoded && typeof decoded === 'object' ? decoded as Record<string, unknown> : null;
+      const content = row?.content;
+      if (!row || !Array.isArray(content)) {
+        return err('content_not_selectable', 'scratch reference payload has no MCP content array.');
+      }
+      const unique = [...new Set(args.content_indexes)];
+      const invalid = unique.filter((index) => index >= content.length);
+      if (invalid.length > 0) {
+        return err('content_index_out_of_range', `content index(es) ${invalid.join(', ')} exceed ${content.length - 1}.`);
+      }
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({
+          ok: true,
+          file_path: abs,
+          reference,
+          selected_indexes: unique,
+          total_content_items: content.length,
+          content: unique.map((index) => content[index]),
+          ...(row.isError !== undefined ? { isError: row.isError } : {}),
+        }) }],
+      };
     }
 
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
@@ -193,6 +264,7 @@ export default defineTool({
             byte_offset: start,
             byte_length: page.length,
             total_bytes: bytes.length,
+            ...(reference ? { reference } : {}),
             eof: nextOffset >= bytes.length,
             data: page.toString('base64'),
             // Echo the EFFECTIVE limit, not the caller's: a cursor that keeps

@@ -18,16 +18,18 @@ import readTool from './read';
 import writeTool from './write';
 import editTool from './edit';
 import { mkNonRepoTmpDir } from '../locks/non-repo-tmpdir';
+import { writeScratchReference } from '../../scratch-reference';
 
 const DIR = mkNonRepoTmpDir('cap-file-');
-const ctx = {
+const baseCtx = {
   projectDir: DIR,
   stateDir: DIR,
   signal: new AbortController().signal,
   emit: () => {},
   progress: () => {},
   log: () => {},
-} as never;
+};
+const ctx = baseCtx as never;
 
 function parse(r: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(r.content[0].text);
@@ -114,6 +116,81 @@ describe('capability:read', () => {
       if (previousScratchRoot === undefined) delete process.env.PAPERCUSP_SCRATCH_ROOT;
       else process.env.PAPERCUSP_SCRATCH_ROOT = previousScratchRoot;
     }
+  });
+
+  it('unwraps and authorizes stable references before applying byte windows', async () => {
+    const f = join(DIR, 'stable-reference.bin');
+    writeScratchReference({
+      filePath: f,
+      payload: 'first line\nsecond line\n',
+      workspaceId: 'ws-1',
+      audience: 'workspace',
+      mediaType: 'text/plain',
+    });
+    const r = (await readTool.handler!({
+      file_path: f,
+      byte_offset: 0,
+      byte_limit: 512,
+    }, { ...baseCtx, workspaceId: 'ws-1' } as never)) as { content: Array<{ text: string }> };
+    const page = parse(r) as { data: string; reference: { workspaceId: string; sha256: string } };
+    expect(Buffer.from(page.data, 'base64').toString('utf8')).toBe('first line\nsecond line\n');
+    expect(page.reference.workspaceId).toBe('ws-1');
+    expect(page.reference.sha256).toMatch(/^[a-f0-9]{64}$/);
+
+    const lines = (await readTool.handler!({
+      file_path: f,
+      offset: 2,
+      limit: 1,
+    }, { ...baseCtx, workspaceId: 'ws-1' } as never)) as { content: Array<{ text: string }> };
+    expect(lines.content[0].text).toContain('second line');
+    expect(lines.content[0].text).not.toContain('first line');
+  });
+
+  it('selects only requested MCP content items and rejects the wrong owner', async () => {
+    const f = join(DIR, 'owner-reference.json');
+    writeScratchReference({
+      filePath: f,
+      payload: JSON.stringify({
+        content: [
+          { type: 'text', text: 'omit me' },
+          { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+          { type: 'text', text: 'keep me too' },
+        ],
+        isError: false,
+      }),
+      workspaceId: 'ws-1',
+      ownerId: 'su-owner',
+      mediaType: 'application/json',
+    });
+    const ownerCtx = {
+      ...baseCtx,
+      workspaceId: 'ws-1',
+      uiClientId: 'su-owner',
+      isSuperuser: true,
+    };
+    const selected = (await readTool.handler!({
+      file_path: f,
+      content_indexes: [2, 1, 2],
+    }, ownerCtx as never)) as { content: Array<{ text: string }> };
+    expect(parse(selected)).toMatchObject({
+      selected_indexes: [2, 1],
+      total_content_items: 3,
+      content: [
+        { type: 'text', text: 'keep me too' },
+        { type: 'image', mimeType: 'image/png' },
+      ],
+    });
+
+    const denied = (await readTool.handler!({
+      file_path: f,
+      byte_offset: 0,
+      byte_limit: 512,
+    }, { ...ownerCtx, uiClientId: 'su-other' } as never)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(denied.isError).toBe(true);
+    expect(parse(denied).reason).toBe('forbidden_reference');
   });
 
   it('rejects a non-scratch URI instead of resolving it under the project directory', async () => {
