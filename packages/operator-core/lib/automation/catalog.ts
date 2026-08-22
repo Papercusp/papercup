@@ -467,6 +467,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       group_slug: string | null;
       trigger_config: Record<string, unknown> | null;
       target_role: string | null;
+      payload_template: Record<string, unknown> | null;
       target_owner_id: string | null;
       reschedule_interval_sec: number | null;
       active: boolean;
@@ -476,6 +477,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
     }>
   >`
     SELECT r.name, r.install_slug, r.group_slug, r.trigger_config, r.target_role,
+           r.payload_template,
            r.target_owner_id, r.reschedule_interval_sec, r.active,
            r.last_fired_at, r.next_fire_at,
            p.last_active_at AS owner_last_active_at
@@ -489,7 +491,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
   const routines: AutomationRoutine[] = rows.map((r) => {
     const cron = typeof r.trigger_config?.cron === 'string' ? (r.trigger_config.cron as string) : null;
     const kind = routineKind({ name: r.name });
-    const spend = spendForTargetRole(r.target_role);
+    const spend = spendForTargetRole(r.target_role, r.payload_template);
     const active = r.active === true;
     const clockDriven = isClockDriven({
       source: 'routines',
@@ -508,7 +510,7 @@ export async function getAutomationCatalog(): Promise<AutomationCatalog> {
       cadence: cronCadence(cron) ?? loopCadence(r.reschedule_interval_sec),
       active,
       spend,
-      spendWhy: spendReasonForTargetRole(r.target_role),
+      spendWhy: spendReasonForTargetRole(r.target_role, r.payload_template),
       spawnsAgent: spend === 'llm',
       kind,
       family: routineFamily(r.name, kind),

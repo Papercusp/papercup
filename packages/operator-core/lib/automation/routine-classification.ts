@@ -245,6 +245,28 @@ export interface SpendEntry {
 }
 
 /**
+ * Spend metadata for blueprint payloads handled by `system:blueprint-run`.
+ *
+ * That target role is a dispatcher, not an executable unit: a payload can select
+ * a pure deterministic program or a program whose step calls an LLM/spawns agents.
+ * Keep the exceptions explicit and runtime-import-free so the browser-safe
+ * classification module does not load the blueprint resolver. Unknown blueprint
+ * ids conservatively retain the dispatcher's `llm` classification.
+ */
+export const BLUEPRINT_SPEND: Readonly<Record<string, SpendEntry>> = {
+  calibration: { spend: 'none', why: 'Runs the deterministic calibration SQL sweep; no agent or LLM turn' },
+  'change-ledger': { spend: 'none', why: 'Runs the deterministic git/SQL change-ledger scan; no agent or LLM turn' },
+  'deferral-interest': { spend: 'none', why: 'Runs the deterministic SQL/math pricing refit; no agent or LLM turn' },
+  'fleet-ekg': { spend: 'none', why: 'Runs the deterministic Fleet EKG SQL scan; no agent or LLM turn' },
+  graduation: { spend: 'none', why: 'Runs the deterministic graduation SQL scan; no agent or LLM turn' },
+  'memory-live-recall-canary': { spend: 'none', why: 'Runs the deterministic live-memory canary; no agent or LLM turn' },
+  'memory-precision': { spend: 'none', why: 'Runs the deterministic memory-precision bench; no agent or LLM turn' },
+  'negative-space': { spend: 'none', why: 'Runs the deterministic negative-space SQL/filesystem miner; no agent or LLM turn' },
+  neologism: { spend: 'none', why: 'Runs the deterministic SQL/filesystem neologism miner; no agent or LLM turn' },
+  'red-queen': { spend: 'none', why: 'Runs the deterministic red-queen drill; no agent or LLM turn' },
+};
+
+/**
  * `system:loop-wake` is a SENTINEL target_role, not a registered handler: the DBOS
  * fire recognises a loop by `reschedule_interval_sec IS NOT NULL` + `target_owner_id`
  * and delivers a `coord:send {wake}` to the owner rather than running an action
@@ -334,7 +356,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     why: "Shells out to `papercusp project-history generate` to refresh a hive's committed History artifact — subprocess CPU/FS plus PG reads, no model call",
   },
   'system:knowledge-pack-delivery': { spend: 'none', why: 'Copies pack items into pools — no authoring' },
-  'system:knowledge-pack-hygiene': { spend: 'none', why: 'Rule-based stale/contradiction sweep over pack rows' },
+  'system:knowledge-pack-hygiene': {
+    spend: 'llm',
+    why: 'Runs up to 10 bounded transferability-judge LLM calls while reviewing pack rows',
+  },
   'system:pot-git-gc': { spend: 'none', why: 'Garbage-collects pot git objects' },
   'system:coverage-census': {
     spend: 'none',
@@ -420,7 +445,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'none',
     why: 'Reconciles the work_item_blocked readiness sidecar against its SQL oracle and repairs drift',
   },
-  'system:fleet-headcount-governor': { spend: 'none', why: 'Caps fleet headcount — throttles spend, never causes it' },
+  'system:fleet-headcount-governor': {
+    spend: 'llm',
+    why: 'Spawns replacement fleet members through the headless or visible launch seam',
+  },
   'system:autonomy-trust-scan': { spend: 'none', why: 'Scores autonomy trust from recorded dispositions' },
   'system:hive-canary-sla': { spend: 'none', why: 'Checks yesterday’s canaries against their deadline' },
   'system:cross-hive-outbox-drain': { spend: 'none', why: 'Drains durable cross-hive outboxes' },
@@ -439,14 +467,34 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
  * pane surfaces `unknown` as its own state, and the registry cross-check test turns
  * it into a build failure.
  */
-export function spendForTargetRole(targetRole: string | null | undefined): RoutineSpend | 'unknown' {
+export function spendForTargetRole(
+  targetRole: string | null | undefined,
+  payloadTemplate?: Readonly<Record<string, unknown>> | null,
+): RoutineSpend | 'unknown' {
   if (!targetRole) return 'unknown';
+  if (targetRole === 'system:blueprint-run') {
+    const blueprintId = payloadTemplate?.blueprintId;
+    if (typeof blueprintId === 'string' && blueprintId.trim()) {
+      const declared = BLUEPRINT_SPEND[blueprintId.trim()];
+      if (declared) return declared.spend;
+    }
+  }
   return TARGET_ROLE_SPEND[targetRole]?.spend ?? 'unknown';
 }
 
 /** The one-line reason behind a row's spend classification (the row tooltip). */
-export function spendReasonForTargetRole(targetRole: string | null | undefined): string | null {
+export function spendReasonForTargetRole(
+  targetRole: string | null | undefined,
+  payloadTemplate?: Readonly<Record<string, unknown>> | null,
+): string | null {
   if (!targetRole) return null;
+  if (targetRole === 'system:blueprint-run') {
+    const blueprintId = payloadTemplate?.blueprintId;
+    if (typeof blueprintId === 'string' && blueprintId.trim()) {
+      const declared = BLUEPRINT_SPEND[blueprintId.trim()];
+      if (declared) return `${declared.why} (blueprint '${blueprintId.trim()}')`;
+    }
+  }
   return TARGET_ROLE_SPEND[targetRole]?.why ?? null;
 }
 

@@ -6,6 +6,7 @@
  * rather than through the catalog. The cases that matter are the ones the OLD
  * name-regex got wrong, and the `stalled` state it could not express at all.
  */
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   AGENT_FAMILY_ORDER,
@@ -26,6 +27,11 @@ import {
   spendReasonForTargetRole,
 } from './routine-classification';
 
+const FLEET_HEADCOUNT_ACTION_SOURCE = readFileSync(
+  new URL('../harness/routines/fleet-headcount-action.ts', import.meta.url),
+  'utf8',
+);
+
 describe('spendForTargetRole', () => {
   it('classifies the agent-spawning roles as llm', () => {
     for (const role of [
@@ -38,6 +44,41 @@ describe('spendForTargetRole', () => {
     ]) {
       expect(spendForTargetRole(role), role).toBe('llm');
     }
+  });
+
+  it.each([
+    'calibration',
+    'change-ledger',
+    'deferral-interest',
+    'fleet-ekg',
+    'graduation',
+    'memory-live-recall-canary',
+    'memory-precision',
+    'negative-space',
+    'neologism',
+    'red-queen',
+  ])('uses the declared deterministic spend metadata for blueprint %s', (blueprintId) => {
+    expect(spendForTargetRole('system:blueprint-run', { blueprintId })).toBe('none');
+    expect(spendReasonForTargetRole('system:blueprint-run', { blueprintId })).toMatch(/no agent or LLM turn/i);
+  });
+
+  it('keeps unknown and LLM-backed blueprint payloads conservative', () => {
+    expect(spendForTargetRole('system:blueprint-run', { blueprintId: 'scout' })).toBe('llm');
+    expect(spendForTargetRole('system:blueprint-run', { blueprintId: 'not-installed' })).toBe('llm');
+    expect(spendForTargetRole('system:blueprint-run', null)).toBe('llm');
+  });
+
+  it('classifies knowledge-pack hygiene from its transferability-judge writer', () => {
+    expect(spendForTargetRole('system:knowledge-pack-hygiene')).toBe('llm');
+    expect(spendReasonForTargetRole('system:knowledge-pack-hygiene')).toMatch(/judge LLM/i);
+  });
+
+  it('classifies the fleet headcount writer from its replacement-member spawn seam', () => {
+    expect(FLEET_HEADCOUNT_ACTION_SOURCE).toMatch(/registerSystemAction\('fleet-headcount-governor'/);
+    expect(FLEET_HEADCOUNT_ACTION_SOURCE).toMatch(/spawnHeadless/);
+    expect(FLEET_HEADCOUNT_ACTION_SOURCE).toMatch(/spawnConsole/);
+    expect(spendForTargetRole('system:fleet-headcount-governor')).toBe('llm');
+    expect(spendReasonForTargetRole('system:fleet-headcount-governor')).toMatch(/spawn/i);
   });
 
   it('classifies system:template-gym now that its live row has a registered handler', () => {
