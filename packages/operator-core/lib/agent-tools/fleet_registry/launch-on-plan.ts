@@ -1896,11 +1896,19 @@ export default defineTool({
           };
         }
       } else {
-        // planSlug! is safe: the early `plan || claimKinds` guard means this (no-claimKinds)
-        // branch is only reached when a plan was given (P-003).
-        specToApply = args.claimKinds?.length
-          ? buildFleetKindClaimSpec(fleetSlug, args.claimKinds)
-          : buildFleetPlanClaimSpec(fleetSlug, planSlug!);
+        // EI-21148090110387275: COMPOSE claimKinds with the plan predicate rather than
+        // replacing it. buildFleetPlanClaimSpec already ANDs a `kind ∈ claimKinds` leaf onto
+        // the `plan = <planSlug>` leaf when kinds are given — so whenever a plan was supplied,
+        // route through it (with or without claimKinds) so an existing tool-generated
+        // `fleet-launch-<slug>-plan` spec is refreshed IN PLACE (same specId, plan predicate
+        // preserved) instead of being clobbered by the global, plan-blind
+        // `fleet-launch-<slug>-kinds` spec buildFleetKindClaimSpec produces. Only a
+        // claimKinds-only launch (no plan — P-003's "pure claim-spec fleet") falls back to
+        // buildFleetKindClaimSpec; the early `plan || claimKinds` validation guarantees
+        // claimKinds is non-empty whenever planSlug is absent here.
+        specToApply = planSlug
+          ? buildFleetPlanClaimSpec(fleetSlug, planSlug, args.claimKinds)
+          : buildFleetKindClaimSpec(fleetSlug, args.claimKinds!);
       }
 
       // P-010 (WI-5212 pool-collapse guard): run the SAME write-time pool-effect count +
