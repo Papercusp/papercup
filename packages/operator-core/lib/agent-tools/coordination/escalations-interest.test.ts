@@ -34,7 +34,13 @@ import {
   resolveEscalationsBatch,
 } from './escalations';
 
-const identity = { ownerId: 'requester-1' } as const;
+const identity = {
+  ownerId: 'requester-1',
+  ownerLabel: 'Requester 1',
+  source: 'static-client' as const,
+  workspaceId: 'ws-test',
+  userId: null,
+};
 
 beforeEach(() => {
   configureCoordLog(new InMemoryCoordLog());
