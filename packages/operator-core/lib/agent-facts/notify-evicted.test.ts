@@ -108,7 +108,7 @@ describe('renderEvictionNotice — which key actually decided', () => {
     // The operative instruction. Without it the reader still reasonably concludes
     // "mark it verified next time" — which is a no-op, because it already was.
     expect(body).toMatch(/re-asserting at a HIGHER CONFIDENCE cannot help/i);
-    expect(body).toMatch(/LONGER TTL/i);
+    expect(body).toMatch(/remaining fraction of (?:your )?declared TTL/i);
     expect(body).toContain('`verified`');
   });
 

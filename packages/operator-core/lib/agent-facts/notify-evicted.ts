@@ -40,7 +40,8 @@ import type { FactConfidence, FactEviction } from './store';
 /**
  * EI-19449079650310753: which ranking key ACTUALLY decided this eviction.
  *
- * The cap ranks by confidence, THEN by `expires_at DESC`, then write-recency.
+ * The cap ranks by confidence, THEN by remaining declared-TTL fraction, then
+ * write-recency.
  * Reciting that ordering as the explanation is misleading in the ONLY case that
  * occurs in practice: measured 2026-08-03, EVERY scope at or near the cap held
  * exactly ONE distinct confidence tier (harness/papercusp 50/50 verified,
@@ -132,8 +133,9 @@ export function renderEvictionNotice(
     `so prefer re-asserting only what is still load-bearing.\n\n` +
     `HOW VICTIMS ARE CHOSEN (so this is predictable rather than mysterious): the cap keeps the ` +
     `most valuable and drops the tail, ranked by confidence first ('verified' survives longest, ` +
-    `'suspected' dies first), then by declared TTL (a longer TTL survives), then write-recency. ` +
-    `A fact can still be evicted despite a long TTL if enough higher-ranked facts fill the scope.\n\n` +
+    `'suspected' dies first), then by the FRACTION of your declared TTL that remains, then ` +
+    `write-recency. A long absolute TTL does not automatically survive: a fact near the end ` +
+    `of its own life can rank below a shorter-lived fact that was asserted recently.\n\n` +
     decidingKeyParagraph(args.ranking);
 
   return { summary, body };
@@ -180,8 +182,9 @@ function decidingKeyParagraph(ranking?: EvictionRankingContext | null): string {
     `nothing at all: it is inert precisely where the cap runs. Your fact was dropped ` +
     `because its declared TTL was the shortest of the tail, and for no other reason.\n` +
     `So re-asserting at a HIGHER CONFIDENCE cannot help — it is already the same tier as ` +
-    `everything else here. If the fact must survive, give it a LONGER TTL, or retract ` +
-    `something in this scope you no longer need. Note the perverse consequence, stated ` +
+    `everything else here. An absolute LONGER TTL is not a guaranteed lever under this ` +
+    `fraction-based ranking; retract something in this scope you no longer need. Note the ` +
+    `perverse consequence, stated ` +
     `plainly rather than left for you to discover: a SHORT TTL is how an author says ` +
     `"urgent, and this stops being true soon", and it is exactly what this cap destroys ` +
     `first.`
