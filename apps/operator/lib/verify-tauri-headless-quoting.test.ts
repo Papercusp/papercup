@@ -103,6 +103,12 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     );
     expect(countSurfacesSrc).not.toContain('"$P014_TAURI_TOOL" wait');
     expect(countSurfacesSrc.match(/"\$P014_TAURI_POLL" \\\n  --eval/g)).toHaveLength(3);
+    expect(
+      countSurfacesSrc.match(
+        /if \(\/\^Count \(\?:loading…\|updating…\|unavailable\)\$\/\.test\(visible\)\) return aria === visible;/g,
+      ),
+    ).toHaveLength(2);
+    expect(countSurfacesSrc).not.toContain('if (visible === "—")');
     expect(countSurfacesSrc).toContain(
       'P014_TAURI_DIAG learning-improve did not converge',
     );
