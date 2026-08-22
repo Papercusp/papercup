@@ -537,7 +537,9 @@ export function wakeTurnText(d: DeliveryWork): string {
  */
 
 type LoopStatusSnapshot = Awaited<ReturnType<typeof getLoopStatus>>;
-type LoopDeliverySupersession = { kind: 'ended' | 're-armed' };
+type LoopDeliverySupersession =
+  | { kind: 'ended' | 're-armed' }
+  | { kind: 'lineage-mismatch'; markerHarness: string; currentHarness: string };
 
 /**
  * Classify a loop delivery against the loop lifecycle observed at delivery time.
@@ -550,6 +552,18 @@ function classifyLoopDeliverySupersession(
   status: LoopStatusSnapshot,
 ): LoopDeliverySupersession | null {
   if (!status || status.active === false) return { kind: 'ended' };
+
+  // A queued fire carries the routine's install_slug in its marker. If the same
+  // owner now has an active loop under a different harness, the fire belongs to
+  // an older loop lineage. Do not read that marker's carry-note: the same owner
+  // can legitimately have a fresh note under the current routine's harness, and
+  // selecting the old row would make the delivery-time re-check authoritative for
+  // the wrong mission (EI-21164618811036992).
+  const markerHarness = readColdLoopMarker(d.payload)?.harness;
+  const currentHarness = typeof status.harnessSlug === 'string' ? status.harnessSlug.trim() : '';
+  if (markerHarness && currentHarness && markerHarness !== currentHarness) {
+    return { kind: 'lineage-mismatch', markerHarness, currentHarness };
+  }
 
   const armedAtMs = status.armedAt ? new Date(status.armedAt).getTime() : NaN;
   const createdAtMs = new Date(d.createdAt).getTime();
@@ -586,11 +600,31 @@ export async function rehydrateLoopWakeText(
     const marker = readColdLoopMarker(d.payload);
     if (!marker?.harness) return baseText; // not a loop wake — untouched, no DB read
     const getNoteMeta = deps.getLoopCarryNoteWithMetaFn ?? defaultGetLoopCarryNoteWithMeta;
-    const meta = await getNoteMeta({
-      harness: marker.harness,
-      ownerId: d.subscriberId,
-      workspaceId: d.workspaceId,
-    });
+    const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
+    let statusRead = false;
+    let deliverySupersession: LoopDeliverySupersession | null = null;
+    try {
+      const status = await getStatus(d.subscriberId);
+      statusRead = true;
+      deliverySupersession = classifyLoopDeliverySupersession(d, status);
+    } catch {
+      // Status is a safety signal, not a new delivery dependency. If it is
+      // unavailable, preserve the existing fail-soft carry-note read below.
+    }
+
+    // Never read a carry-note under a marker whose harness no longer owns the
+    // subscriber's active loop. The stale fire text remains available below for
+    // diagnosis, but the live block must not manufacture authority from the old
+    // same-owner row.
+    const lineageMismatch =
+      deliverySupersession?.kind === 'lineage-mismatch' ? deliverySupersession : null;
+    const meta = lineageMismatch
+      ? { note: null, updatedAtMs: null }
+      : await getNoteMeta({
+          harness: marker.harness,
+          ownerId: d.subscriberId,
+          workspaceId: d.workspaceId,
+        });
     const { walls } = splitCarryNoteWalls(meta.note);
     const wallsNow = renderLoopWallsBlock(walls) ?? '  (none open — any wall shown OPEN above has been CLEARED since)';
     // P-001 (cold-carry-system-hardening) delivery parity: the live re-read covers
@@ -618,7 +652,12 @@ export async function rehydrateLoopWakeText(
     const hasCommittedTimestamp =
       typeof meta.updatedAtMs === 'number' && Number.isFinite(meta.updatedAtMs) && meta.updatedAtMs > 0;
     const checkpointProvenCurrent = Boolean(liveNote && checkpointHash && hasCommittedTimestamp);
-    const checkpointState = checkpointProvenCurrent
+    const checkpointState = lineageMismatch
+      ? `⚠ LOOP DELIVERY LINEAGE MISMATCH for owner ${d.subscriberId}: the wake marker names harness ` +
+        `${lineageMismatch.markerHarness}, but the current active loop is scoped to harness ` +
+        `${lineageMismatch.currentHarness}. The marker-scoped carry-note was NOT read; the wake text below ` +
+        `may be a stale prior-lineage snapshot. Reconcile loop:status / coord:orient before acting.`
+      : checkpointProvenCurrent
       ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}; ` +
         `contentHash=${checkpointHash}; writtenAt=${new Date(meta.updatedAtMs!).toISOString()}):\n${liveNote}`
       : liveNote
@@ -634,10 +673,8 @@ export async function rehydrateLoopWakeText(
     // EI-18825117783927950: best-effort, SEPARATELY caught so a status-read hiccup
     // degrades only this banner, never the walls/checks rehydration above it.
     let supersededNote = '';
-    try {
-      const getStatus = deps.getLoopStatusFn ?? getLoopStatus;
-      const status = await getStatus(d.subscriberId);
-      const supersession = classifyLoopDeliverySupersession(d, status);
+    if (statusRead) {
+      const supersession = deliverySupersession;
       if (supersession?.kind === 'ended') {
         supersededNote =
           `\n\n🛑 THIS LOOP WAS ENDED (loop:end) before this wake was actually delivered — it was queued while ` +
@@ -650,9 +687,12 @@ export async function rehydrateLoopWakeText(
           `\n\n🛑 THIS LOOP WAS RE-ARMED (loop:arm) after this wake was queued but before it was delivered — the ` +
           `goal/checkpoint text above is from the PRIOR arm and may no longer reflect the current goal. Call ` +
           `loop:status / coord:orient to read the CURRENT goal before treating the text above as authoritative.`;
+      } else if (supersession?.kind === 'lineage-mismatch') {
+        supersededNote =
+          `\n\n🛑 THIS LOOP WAKE HAS A HARNESS LINEAGE MISMATCH — it was queued by harness ` +
+          `${supersession.markerHarness}, but the owner's current active loop is harness ` +
+          `${supersession.currentHarness}. The queued wake is NOT authoritative; do not resume work from it.`;
       }
-    } catch {
-      /* best-effort — never blocks or alters the walls/checks rehydration above */
     }
 
     const liveRecheck =
@@ -1671,7 +1711,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       const lifecycleReason =
         loopSupersession.kind === 'ended'
           ? 'the loop is ended or has no current active row'
-          : 'the loop was re-armed after this delivery was created';
+          : loopSupersession.kind === 're-armed'
+            ? 'the loop was re-armed after this delivery was created'
+            : `the wake harness lineage ${loopSupersession.markerHarness} does not match the current active loop ` +
+              `harness ${loopSupersession.currentHarness}`;
       return {
         kind: 'drop',
         reason:

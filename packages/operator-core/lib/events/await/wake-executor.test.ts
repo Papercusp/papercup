@@ -577,6 +577,32 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.spawnDetached).not.toHaveBeenCalled();
   });
 
+  it('drops a delivery whose marker harness does not match the current active loop lineage', async () => {
+    const d = deps({
+      getLoopStatusFn: vi.fn(async () => ({
+        active: true,
+        harnessSlug: 'current-loop-harness',
+        armedAt: '1970-01-01T00:00:00.000Z',
+      })) as never,
+    });
+    const out = await executeWake(
+      work({
+        payload: { harness: 'stale-loop-harness', wakeCount: 4 },
+        wakeHandle: advHandle(),
+      }),
+      d,
+    );
+
+    expect(out).toMatchObject({ kind: 'drop' });
+    expect((out as { reason: string }).reason).toContain('harness lineage');
+    expect((out as { reason: string }).reason).toContain('stale-loop-harness');
+    expect((out as { reason: string }).reason).toContain('current-loop-harness');
+    expect(d.findPsuHost).not.toHaveBeenCalled();
+    expect(d.injectPsuHost).not.toHaveBeenCalled();
+    expect(d.resumePlanRun).not.toHaveBeenCalled();
+    expect(d.spawnDetached).not.toHaveBeenCalled();
+  });
+
   it('fails open when the lifecycle read errors, preserving a valid loop delivery', async () => {
     const findPty = vi.fn(() => ({ id: 'pty-loop' }));
     const write = vi.fn(() => true);
@@ -788,6 +814,35 @@ describe('rehydrateLoopWakeText — EI-18825117783927950 (loop:end / re-arm does
     });
     expect(out).toMatch(/THIS LOOP WAS RE-ARMED/);
     expect(out).toMatch(/PRIOR arm/);
+  });
+
+  it('does not read a marker-scoped carry note when the active loop has a different harness lineage', async () => {
+    const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
+      note: '## Next action\nDo not use this stale prior-lineage candidate.',
+      updatedAtMs: Date.now() - 1_000,
+    }));
+    const getLoopStatusFn = vi.fn(async () =>
+      loopStatus({
+        active: true,
+        harnessSlug: 'current-loop-harness',
+        armedAt: new Date(Date.now() - 600_000).toISOString(),
+      }),
+    );
+    const out = await rehydrateLoopWakeText(
+      work({
+        payload: { harness: 'stale-loop-harness', wakeCount: 4 },
+        subscriberId: 'su-loop-1',
+      }),
+      FROZEN_TEXT,
+      { getLoopCarryNoteWithMetaFn, getLoopStatusFn },
+    );
+
+    expect(getLoopCarryNoteWithMetaFn).not.toHaveBeenCalled();
+    expect(out).toContain('LOOP DELIVERY LINEAGE MISMATCH');
+    expect(out).toContain('stale-loop-harness');
+    expect(out).toContain('current-loop-harness');
+    expect(out).not.toContain('Current verified loop:checkpoint');
+    expect(out).toContain(FROZEN_TEXT);
   });
 
   it('a fire queued AFTER the current arm (the normal case) carries NO superseded banner', async () => {
