@@ -60,7 +60,7 @@ function desired(): WorkspaceHostDesiredSpec {
   };
 }
 
-function context(): WorkspaceHostProviderContext {
+function context(provider: Readonly<Record<string, unknown>> = {}): WorkspaceHostProviderContext {
   return {
     workspaceId: 'workspace-aws-1',
     requestId: 'request-aws-1',
@@ -68,7 +68,7 @@ function context(): WorkspaceHostProviderContext {
       target: 'aws',
       cloudCredentialRef: { kind: 'cloud', ref: 'resolver://aws/development' },
       scope: { kind: 'account', id: '123456789012' },
-      provider: { region: 'us-east-1', credentialSource: 'shared-profile' },
+      provider: { region: 'us-east-1', credentialSource: 'shared-profile', ...provider },
     },
   };
 }
@@ -184,7 +184,7 @@ class FakeAwsWorkspaceHostSdkClient implements AwsWorkspaceHostSdkClient {
   async runInstances(input: AwsRunInstancesInput): Promise<AwsCreatedInstance> {
     this.runInstancesCalls.push(input);
     const existing = this.instanceTokens.get(input.ClientToken);
-    const instanceId = existing ?? `i-${this.instanceTokens.size + 1}`;
+    const instanceId = existing ?? `i-${String(this.instanceTokens.size + 1).padStart(17, '0')}`;
     this.instanceTokens.set(input.ClientToken, instanceId);
     this.instances.set(instanceId, {
       instanceId,
@@ -460,7 +460,7 @@ describe('AWS workspace-host provider planning', () => {
 });
 
 describe('AWS workspace-host provider contract and lifecycle', () => {
-  it('declares versioned SSM prerequisites and rejects false bulk-transfer parity in its profile', async () => {
+  it('declares versioned SSM SSH prerequisites and separates interactive SCP from bulk transfer', async () => {
     const { client, provider } = providerAndClient();
     const { host } = await provision(client, provider);
     const profile = await provider.getTransportProfile(host, context());
@@ -471,11 +471,43 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
         expect.objectContaining({ id: 'aws-ssm-agent', minimumVersion: '2.3.672.0' }),
       ]),
     );
-    expect(profile.compatibility.traffic['bulk-transfer']).toBe('unsupported');
+    expect(profile.kind).toBe('aws-ssm-ssh');
+    expect(profile.features.fileTransfer).toBe(true);
+    expect(profile.compatibility.traffic['bulk-transfer']).toBe('discouraged');
     expect(profile.compatibility.audit).toMatchObject({ controlPlaneEvents: true, sessionContent: false });
     expect(profile.compatibility.fallbacks).toContainEqual(
-      expect.objectContaining({ feature: 'fileTransfer', strategy: 'provider-object-storage' }),
+      expect.objectContaining({
+        feature: 'fileTransfer',
+        trafficClass: 'bulk-transfer',
+        strategy: 'provider-object-storage',
+      }),
     );
+  });
+
+  it('exposes restricted direct SSH only when the caller supplies an explicit non-/0 allowlist', async () => {
+    const { client, provider } = providerAndClient();
+    const { host } = await provision(client, provider);
+
+    await expect(
+      provider.getTransportProfile(
+        host,
+        context({ transportPreference: 'aws-direct-ssh', directAddress: '203.0.113.17' }),
+      ),
+    ).rejects.toThrow('explicit restricted source CIDR allowlist');
+
+    const profile = await provider.getTransportProfile(
+      host,
+      context({
+        transportPreference: 'aws-direct-ssh',
+        directAddress: '203.0.113.17',
+        directSshSourceRanges: ['198.51.100.42/32'],
+      }),
+    );
+    expect(profile).toMatchObject({
+      kind: 'aws-direct-ssh',
+      audited: false,
+      compatibility: { traffic: { interactive: 'recommended', 'bulk-transfer': 'supported' } },
+    });
   });
 
   it('passes the shared fake provider contract including reconcile, observation, transport, and confirmed destroy', async () => {
@@ -494,7 +526,10 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
     expect(report.passed).toBe(true);
     expect(report.checks).toEqual(WORKSPACE_HOST_PROVIDER_CONTRACT_CHECKS);
     expect(report.provisionedResources.map((item) => item.kind)).toEqual(['disk', 'vm']);
-    expect(report.destroyConfirmations.map((item) => item.providerResourceId)).toEqual(['i-1', 'vol-1']);
+    expect(report.destroyConfirmations.map((item) => item.providerResourceId)).toEqual([
+      'i-00000000000000001',
+      'vol-1',
+    ]);
   });
 
   it('uses observed-state waiters for lifecycle actions, snapshots and repairs, then confirms instance and volume absence', async () => {
@@ -549,10 +584,10 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
       expect(result.state).toBe('destroyed');
       if (result.state === 'destroyed') confirmations.push(result.confirmation.providerResourceId);
     }
-    expect(confirmations).toEqual(['i-1', 'vol-1']);
+    expect(confirmations).toEqual(['i-00000000000000001', 'vol-1']);
     expect(client.terminateCalls).toBe(1);
     expect(client.deleteVolumeCalls).toBe(1);
-    expect(client.describedInstances).toContain('i-1');
+    expect(client.describedInstances).toContain('i-00000000000000001');
     expect(client.describedVolumes).toContain('vol-1');
     expect(client.waitedInstanceStates.map(({ state }) => state)).toContain('terminated');
     expect(client.waitedVolumeStates.map(({ state }) => state)).toContain('deleted');
@@ -588,7 +623,7 @@ describe('AWS workspace-host provider contract and lifecycle', () => {
       context(),
     );
     expect(reconciled.state).toBe('unchanged');
-    expect('resource' in reconciled && reconciled.resource?.providerId).toBe('i-1');
+    expect('resource' in reconciled && reconciled.resource?.providerId).toBe('i-00000000000000001');
     expect(client.runInstancesCalls).toHaveLength(1);
   });
 });

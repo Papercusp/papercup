@@ -27,6 +27,11 @@ import type {
 } from '@papercusp/deployment-driver';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
 import { AWS_WORKSPACE_HOST_TARGET } from './aws-connection';
+import {
+  AWS_WORKSPACE_HOST_TRANSPORTS,
+  buildAwsWorkspaceHostTransportProfile,
+  type AwsWorkspaceHostTransport,
+} from './aws-connection-profile';
 
 export const AWS_WORKSPACE_HOST_PROVIDER_VERSION = 'aws-workspace-host-provider-v1';
 export const AWS_WORKSPACE_HOST_CLIENT_TOKEN_LENGTH = 64;
@@ -245,7 +250,7 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
     repair: true,
     confirmedDestroy: true,
   },
-  transportKinds: ['aws-ssm'],
+  transportKinds: AWS_WORKSPACE_HOST_TRANSPORTS,
   constraints: [
     'Launch Template, subnet, security groups, IAM instance profile, and customer KMS key are required',
     'Restore and in-place image upgrades are not yet supported',
@@ -255,6 +260,18 @@ const CAPABILITIES: WorkspaceHostProviderCapabilities = {
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} must be a non-empty string`);
   return value.trim();
+}
+
+function optionalString(value: unknown, label: string): string | undefined {
+  return value === undefined ? undefined : requireString(value, label);
+}
+
+function optionalStringArray(value: unknown, label: string): readonly string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
+    throw new Error(`${label} must be an array of strings`);
+  }
+  return value;
 }
 
 function requirePositiveInteger(value: unknown, label: string): number {
@@ -1001,99 +1018,30 @@ export class AwsWorkspaceHostProvider implements WorkspaceHostProvider {
 
   async getTransportProfile(
     host: WorkspaceHostRef,
-    _ctx: WorkspaceHostProviderContext,
+    ctx: WorkspaceHostProviderContext,
   ): Promise<WorkspaceHostTransportProfile> {
     const instance = requireKnownResource(host.resources, AWS_INSTANCE_RESOURCE_KIND, 'get-transport-profile');
-    return {
-      kind: 'aws-ssm',
-      endpoint: `aws-ssm://${instance.providerId}`,
-      supportedClientPlatforms: ['linux', 'macos', 'windows'],
-      features: {
-        command: true,
-        pty: true,
-        tcpForward: true,
-        fileTransfer: false,
-        clipboard: false,
-      },
-      prerequisites: ['AWS Systems Manager agent online', 'ssmmessages endpoints reachable'],
-      constraints: ['No native file-transfer or clipboard parity; use command or audited object-store transfer'],
-      reconnect: 'recreate',
-      audited: true,
-      compatibility: {
-        requirements: [
-          {
-            id: 'aws-cli',
-            label: 'AWS CLI',
-            kind: 'client-tool',
-            requiredFor: ['command', 'pty', 'tcpForward'],
-          },
-          {
-            id: 'aws-session-manager-plugin',
-            label: 'AWS Session Manager plugin',
-            kind: 'client-plugin',
-            minimumVersion: '1.1.23.0',
-            requiredFor: ['command', 'pty', 'tcpForward'],
-          },
-          {
-            id: 'aws-ssm-agent',
-            label: 'AWS Systems Manager Agent',
-            kind: 'remote-agent',
-            minimumVersion: '2.3.672.0',
-            requiredFor: ['command', 'pty', 'tcpForward'],
-          },
-          {
-            id: 'aws-ssm-session-permission',
-            label: 'Systems Manager StartSession permission',
-            kind: 'provider-permission',
-            requiredFor: ['command', 'pty', 'tcpForward'],
-          },
-          {
-            id: 'aws-ssmmessages-network',
-            label: 'Reachable Systems Manager message endpoints',
-            kind: 'network',
-            requiredFor: ['command', 'pty', 'tcpForward'],
-          },
-        ],
-        traffic: { interactive: 'supported', 'bulk-transfer': 'unsupported' },
-        limits: {
-          unknown: ['session-duration', 'idle-timeout', 'concurrency', 'throughput'],
-          notes: ['Session quotas and idle timeouts depend on the AWS account and Session Manager preferences'],
-        },
-        proxy: {
-          mode: 'supported',
-          notes: ['Preflight must verify the AWS CLI and Session Manager plugin can reach regional HTTPS endpoints'],
-        },
-        cost: {
-          model: 'included',
-          meters: ['network egress'],
-          notes: ['Session Manager has no separate connection charge; network and fallback storage charges may apply'],
-        },
-        audit: {
-          controlPlaneEvents: true,
-          sessionMetadata: true,
-          sessionContent: false,
-          fileTransferEvents: false,
-          notes: ['Port-forwarded and SSH payloads are encrypted and are not available in Session Manager logs'],
-        },
-        hostKey: {
-          initialEnrollment: 'verify-before-connect',
-          replacement: 'block-and-reverify',
-          notes: ['Pin the instance SSH host key through the SSM tunnel; do not silently accept replacement'],
-        },
-        fallbacks: [
-          {
-            feature: 'fileTransfer',
-            strategy: 'provider-object-storage',
-            description: 'Use an identity-scoped, audited S3 transfer instead of tunneling bulk bytes through SSM',
-          },
-          {
-            feature: 'clipboard',
-            strategy: 'unsupported',
-            description: 'Use explicit local-client copy/paste; SSM does not synchronize clipboards',
-          },
-        ],
-      },
-    };
+    const provider = ctx.connection.provider ?? {};
+    const requested = optionalString(provider.transportPreference, 'AWS connection transportPreference') ?? 'aws-ssm-ssh';
+    if (!(AWS_WORKSPACE_HOST_TRANSPORTS as readonly string[]).includes(requested)) {
+      throw new Error(`AWS transportPreference must be one of ${AWS_WORKSPACE_HOST_TRANSPORTS.join(', ')}`);
+    }
+    return buildAwsWorkspaceHostTransportProfile({
+      kind: requested as AwsWorkspaceHostTransport,
+      instanceId: instance.providerId,
+      region: requireString(instance.region ?? provider.region, 'AWS transport region'),
+      ...(provider.directAddress !== undefined
+        ? { directAddress: requireString(provider.directAddress, 'AWS direct SSH address') }
+        : {}),
+      ...(provider.directSshSourceRanges !== undefined
+        ? {
+            directSshSourceRanges: optionalStringArray(
+              provider.directSshSourceRanges,
+              'AWS direct SSH source ranges',
+            ),
+          }
+        : {}),
+    });
   }
 
   async attestHealth(
