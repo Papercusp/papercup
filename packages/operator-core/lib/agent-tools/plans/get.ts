@@ -334,10 +334,10 @@ export function narrowHeadingPayload(
  * avoid. `decisionSelection` is deliberately in-band so a missing id cannot
  * be mistaken for a complete read.
  */
-export function narrowDecisionPayload(
+export function narrowDecisionPayload<T extends { id: string }>(
   base: Record<string, unknown>,
   requestedIds: string[],
-  selected: Array<Record<string, unknown>>,
+  selected: T[],
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const identityFields = new Set([
@@ -682,7 +682,7 @@ export default defineTool({
                 ...narrowDecisionPayload(
                   base,
                   requestedDecisionIds,
-                  selectedDecisions as Array<Record<string, unknown>>,
+                  selectedDecisions,
                 ),
               };
             }

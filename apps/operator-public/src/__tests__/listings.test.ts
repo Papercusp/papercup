@@ -275,6 +275,21 @@ describe('Cupboard /listings — authoritative pagination summary', () => {
     api = buildApi();
   });
 
+  it('treats an unsupported claim filter as absent instead of passing an arbitrary value to the query', async () => {
+    const { env, store } = makeEnv();
+    store.tables.harnesses.push(
+      makeListingRow({ id: 'unclaimed' }),
+      makeListingRow({ id: 'claimed', claim_status: 'claimed' }),
+    );
+
+    const res = await api.request('/listings?claim=bogus', {}, env);
+    const body = await res.json() as { results: Array<{ id: string }>; total: number };
+
+    expect(res.status).toBe(200);
+    expect(body.results.map((row) => row.id)).toEqual(['claimed', 'unclaimed']);
+    expect(body.total).toBe(2);
+  });
+
   it('keeps totals/facets corpus-accurate beyond 100 and excludes banned publishers before LIMIT', async () => {
     const { env, store } = makeEnv();
     store.tables.harnesses.push(

@@ -6,12 +6,10 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
-  buildPrettierCheckArgs,
-  characterRangeForLines,
-  normalizeScopedPaths,
-  parseAddedLineRanges,
-} from '../../../scripts/check-format.mjs';
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// prettier-ignore
+// @ts-ignore -- plain .mjs formatter script, no declaration file.
+import { buildPrettierCheckArgs, characterRangeForLines, normalizeScopedPaths, parseAddedLineRanges } from '../../../scripts/check-format.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
 

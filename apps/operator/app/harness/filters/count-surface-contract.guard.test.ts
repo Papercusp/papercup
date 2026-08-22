@@ -111,6 +111,17 @@ describe("bounded count surface declaration + behavior ratchet (P-003)", () => {
           surface.id,
         ).toBe(true);
       }
+      if (surface.classification === "control") {
+        expect(
+          surface.regressionGuardPaths?.length,
+          `${surface.id} no-change coverage`,
+        ).toBeGreaterThan(0);
+        for (const path of surface.regressionGuardPaths ?? []) {
+          expect(existsSync(join(ROOT, path)), `${surface.id}: ${path}`).toBe(
+            true,
+          );
+        }
+      }
     }
   });
 
@@ -144,6 +155,24 @@ describe("bounded count surface declaration + behavior ratchet (P-003)", () => {
       .map((surface) => surface.id)
       .sort();
     expect(live).toEqual([...UNARMED_COUNT_BEHAVIOR_BASELINE].sort());
+  });
+
+  it("P-014 leaves no audited bounded-array count without corpus, window, or control evidence", () => {
+    expect(UNARMED_COUNT_BEHAVIOR_BASELINE).toEqual([]);
+    for (const surface of COUNT_SURFACE_DECLARATIONS) {
+      if (
+        surface.classification === "active-defect" ||
+        surface.classification === "latent-defect"
+      ) {
+        expect(surface.evidence, surface.id).toBe("corpus");
+        expect(surface.behaviorGuard, surface.id).toBeDefined();
+      } else if (surface.classification === "window-disclosure") {
+        expect(surface.evidence, surface.id).toBe("window");
+        expect(surface.behaviorGuard, surface.id).toBeDefined();
+      } else {
+        expect(surface.regressionGuardPaths?.length, surface.id).toBeGreaterThan(0);
+      }
+    }
   });
 
   it("seeds every unarmed domain beyond its real configured cap", () => {

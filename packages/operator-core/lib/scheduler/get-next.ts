@@ -1627,7 +1627,7 @@ export async function readIssueClaimability(
     // literal table name never collides across concurrent readIssueClaimability calls
     // (Postgres temp tables are per-backend-session, invisible across connections).
     const states = [...(opts.states ?? ISSUE_FAMILY_CLAIMABLE_STATES)];
-    const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
+    const issueWs = resolveIssuesScopeWorkspace();
     const operatorScopeSlug = `operator:${issueWs}`;
     const assignee = opts.assignee ?? '';
     const sub = issueClaimCandidateSubquery(client, {
@@ -1750,6 +1750,8 @@ export async function readClaimSpecDelta(
   proposed: ClaimSpecDeltaSide,
   opts: {
     harness: string;
+    /** Already-resolved caller workspace; omitted preserves the legacy ambient fallback. */
+    workspaceId?: string;
     assignee?: string;
     rigAvailable?: boolean;
     /** Inject the sql client (tests / a non-default backend). Default getOrgPg().sql. */
@@ -1777,7 +1779,7 @@ export async function readClaimSpecDelta(
     await tx.unsafe(`SET LOCAL statement_timeout = ${stmtMs}`);
     const client = tx as unknown as OrgSql;
 
-    const issueWs = issuesScopeWorkspace();
+    const issueWs = resolveIssuesScopeWorkspace(opts.workspaceId);
     const operatorScopeSlug = `operator:${issueWs}`;
     const assignee = opts.assignee ?? '';
     // `spec_match` on the materialized table is the CURRENT filter; the proposed filter is

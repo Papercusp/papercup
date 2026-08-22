@@ -26,6 +26,8 @@ export interface CountSurfaceDeclaration {
   pageCap?: number;
   /** Filled, and removed from the shrink-only baseline, when a domain migrates. */
   behaviorGuard?: CountSurfaceBehaviorGuard;
+  /** Existing no-change tests that pin an audited control surface's honest semantics. */
+  regressionGuardPaths?: readonly string[];
   /** Production useColumnFilters call counts owned by this surface, by file. */
   columnFilterCalls?: Readonly<Record<string, number>>;
 }
@@ -83,9 +85,14 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "learning-improve",
     label: "Learning Improve",
     classification: "active-defect",
-    evidence: "window",
+    evidence: "corpus",
     pageCap: 500,
     sourcePaths: ["apps/operator-vite/src/components/adv/LearningTab.tsx"],
+    behaviorGuard: {
+      planItem: "P-006",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/learning-improve-view-query.integration.test.ts",
+    },
     columnFilterCalls: {
       "apps/operator-vite/src/components/adv/LearningTab.tsx": 1,
     },
@@ -94,17 +101,27 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     id: "learning-retain",
     label: "Learning Retain",
     classification: "active-defect",
-    evidence: "window",
+    evidence: "corpus",
     pageCap: 100,
     sourcePaths: ["apps/operator-vite/src/components/adv/LearningTab.tsx"],
+    behaviorGuard: {
+      planItem: "P-007",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/learning-retain-query.integration.test.ts",
+    },
   },
   {
     id: "agent-runs",
     label: "Agent Runs history",
     classification: "active-defect",
-    evidence: "window",
+    evidence: "corpus",
     pageCap: 2_000,
     sourcePaths: ["apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx"],
+    behaviorGuard: {
+      planItem: "P-008",
+      testPath:
+        "packages/operator-core/lib/sync-resolver/agent-runs-list-query.integration.test.ts",
+    },
   },
   {
     id: "rubric-history",
@@ -219,6 +236,10 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
       "apps/operator/app/adv/harnesses/MemberWorkPanel.tsx": 1,
       "apps/operator/app/adv/harnesses/AdvAgentsPanel.tsx": 1,
     },
+    regressionGuardPaths: [
+      "apps/operator/app/adv/harnesses/MemberWorkPanel.component.test.tsx",
+      "apps/operator/app/adv/harnesses/AdvAgentsPanel.test.tsx",
+    ],
   },
   {
     id: "plans-attention",
@@ -226,6 +247,7 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     classification: "control",
     evidence: "corpus",
     sourcePaths: ["apps/operator/app/admin/plans/PlansClient.tsx"],
+    regressionGuardPaths: ["apps/operator/app/admin/plans/PlansClient.test.tsx"],
   },
   {
     id: "rubrics-overview",
@@ -233,6 +255,7 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     classification: "control",
     evidence: "corpus",
     sourcePaths: ["apps/operator/app/_components/RubricsPanel.tsx"],
+    regressionGuardPaths: ["apps/operator/app/_components/RubricsPanel.test.tsx"],
   },
   {
     id: "user-memory",
@@ -240,13 +263,29 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     classification: "control",
     evidence: "window",
     sourcePaths: ["apps/operator-vite/src/components/adv/MemoryHealthCard.tsx"],
+    regressionGuardPaths: [
+      "apps/operator-vite/src/components/adv/MemoryHealthCard.test.tsx",
+    ],
   },
   {
     id: "coverage-hud-admin-dossier",
     label: "Coverage, HUD, table admin, and dossier capped sections",
     classification: "control",
     evidence: "corpus",
-    sourcePaths: ["apps/operator/app/adv/harnesses/DetailPanel.tsx"],
+    sourcePaths: [
+      "apps/operator/app/adv/harnesses/DetailPanel.tsx",
+      "apps/operator/app/admin/testing/_components/CoverageTab.tsx",
+      "apps/operator/app/adv/hud/HudEntityColumns.tsx",
+      "apps/operator/app/admin/_components/TableAdmin.tsx",
+      "apps/operator/app/adv/sessions/AgentDossier.tsx",
+    ],
+    regressionGuardPaths: [
+      "apps/operator/app/adv/harnesses/DetailPanel.workitem-dedup.test.tsx",
+      "apps/operator/app/admin/testing/_components/CoverageTab.test.ts",
+      "apps/operator/app/adv/hud/HudEntityColumns.test.tsx",
+      "apps/operator/app/admin/_components/TableAdmin.test.tsx",
+      "apps/operator/app/adv/sessions/__tests__/AgentDossier.test.tsx",
+    ],
   },
   {
     id: "pot-content-contributors-rosters",
@@ -254,6 +293,9 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
     classification: "control",
     evidence: "corpus",
     sourcePaths: ["apps/operator/app/adv/harnesses/PotContentPanel.tsx"],
+    regressionGuardPaths: [
+      "apps/operator/app/adv/harnesses/PotContentPanel.component.test.tsx",
+    ],
   },
 ];
 
@@ -262,8 +304,4 @@ export const COUNT_SURFACE_DECLARATIONS: readonly CountSurfaceDeclaration[] = [
  * REMOVE entries as P-004..P-012 land. Never add a new surface here: a new
  * bounded count surface must ship with its behavior guard already armed.
  */
-export const UNARMED_COUNT_BEHAVIOR_BASELINE = [
-  "agent-runs",
-  "learning-improve",
-  "learning-retain",
-] as const;
+export const UNARMED_COUNT_BEHAVIOR_BASELINE = [] as const;

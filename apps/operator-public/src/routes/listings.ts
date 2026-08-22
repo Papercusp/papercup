@@ -47,6 +47,7 @@ import {
   setHarnessClaim,
   summarizePublicHarnesses,
   type ListingKind,
+  type PublicListOpts,
 } from '../db.ts';
 import {
   AuthError,
@@ -193,10 +194,12 @@ function registerListingEndpoints(
     }
     const search = url.searchParams.get('q') ?? undefined;
     const claim_status_raw = url.searchParams.get('claim');
-    const claim_status =
-      claim_status_raw === 'claimed' || claim_status_raw === 'unclaimed'
-        ? claim_status_raw
-        : undefined;
+    const claim_status: PublicListOpts['claim_status'] =
+      claim_status_raw === 'claimed'
+        ? 'claimed'
+        : claim_status_raw === 'unclaimed'
+          ? 'unclaimed'
+          : undefined;
     // Kind: pinned on /harnesses; from ?kind= on /listings (omit ⇒ all kinds).
     let kind: ListingKind | undefined = fixedKind;
     if (!kind) {
