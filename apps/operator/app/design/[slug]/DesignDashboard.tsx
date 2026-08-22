@@ -1,4 +1,4 @@
-"use client";
+'use client';
 
 /**
  * Design tab — v0.1.
@@ -14,16 +14,16 @@
  * until the existing component is refactored without paperclip
  * collision risk.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useQueryState, parseAsString, parseAsStringEnum } from "nuqs";
-import type React from "react";
-import { useSyncQuery } from "@papercusp/sync";
-import type { CompanionListSummary } from "@papercusp/facets";
-import { readListMeta } from "@papercusp/operator-core/lib/sync-resolver/list-meta";
-import { filterCountLabel, type CountEvidence } from "@/app/harness/filters";
-import { useWorkspaceId } from "@/lib/use-workspace-id";
-import SketchPane from "./SketchPane";
-import RegressionPane from "./RegressionPane";
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useQueryState, parseAsString, parseAsStringEnum } from 'nuqs';
+import type React from 'react';
+import { useSyncQuery } from '@papercusp/sync';
+import type { CompanionListSummary } from '@papercusp/facets';
+import { readListMeta } from '@papercusp/operator-core/lib/sync-resolver/list-meta';
+import { filterCountLabel, type CountEvidence } from '@/app/harness/filters';
+import { useWorkspaceId } from '@/lib/use-workspace-id';
+import SketchPane from './SketchPane';
+import RegressionPane from './RegressionPane';
 
 /** The LIST row (WI-7232) — exactly the three fields the queue renders.
  *  `summary` and the other detail-card-only fields moved to
@@ -32,7 +32,7 @@ import RegressionPane from "./RegressionPane";
 interface DesignFeature {
   featureId: string;
   title: string | null;
-  designStatus: "pending" | "accepted" | "ignored" | null;
+  designStatus: 'pending' | 'accepted' | 'ignored' | null;
 }
 
 /** The on-demand single-feature read backing the detail card. */
@@ -74,25 +74,12 @@ interface DtcgTokenList {
   tokens: DtcgToken[];
 }
 
-type Pane =
-  | "features"
-  | "memos"
-  | "registry"
-  | "tokens"
-  | "sketch"
-  | "regressions";
+type Pane = 'features' | 'memos' | 'registry' | 'tokens' | 'sketch' | 'regressions';
 
-type Bucket = "all" | "pending" | "accepted" | "ignored";
+type Bucket = 'all' | 'pending' | 'accepted' | 'ignored';
 
-const PANES: Pane[] = [
-  "features",
-  "memos",
-  "registry",
-  "tokens",
-  "sketch",
-  "regressions",
-];
-const BUCKETS: Bucket[] = ["all", "pending", "accepted", "ignored"];
+const PANES: Pane[] = ['features', 'memos', 'registry', 'tokens', 'sketch', 'regressions'];
+const BUCKETS: Bucket[] = ['all', 'pending', 'accepted', 'ignored'];
 const DESIGN_FEATURES_PAGE = 100;
 
 type DesignFeatureCounts = Record<Bucket, number>;
@@ -113,13 +100,13 @@ export function mergeDesignFeaturePage<T extends { featureId: string }>(
 export function designFeatureBucketCounts(
   summary: CompanionListSummary | null | undefined,
 ): DesignFeatureCounts | null {
-  const status = summary?.facets.find((facet) => facet.key === "status");
+  const status = summary?.facets.find((facet) => facet.key === 'status');
   if (!status) return null;
-  const count = (value: Exclude<Bucket, "all">) =>
+  const count = (value: Exclude<Bucket, 'all'>) =>
     status.values.find((entry) => entry.value === value)?.count ?? 0;
-  const pending = count("pending");
-  const accepted = count("accepted");
-  const ignored = count("ignored");
+  const pending = count('pending');
+  const accepted = count('accepted');
+  const ignored = count('ignored');
   return {
     all: pending + accepted + ignored,
     pending,
@@ -132,36 +119,25 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   const workspaceId = useWorkspaceId();
   // Pane + bucket are user-meaningful selectors → URL via nuqs (agents read
   // the URL through ui:get_state; useState would make them invisible).
-  const [activePane, setActivePane] = useQueryState(
-    "pane",
-    parseAsStringEnum<Pane>(PANES).withDefault("features"),
-  );
-  const [bucket, setBucket] = useQueryState(
-    "bucket",
-    parseAsStringEnum<Bucket>(BUCKETS).withDefault("all"),
-  );
-  const [selectedFeatureId, setSelectedFeatureId] = useQueryState(
-    "feature",
-    parseAsString,
-  );
+  const [activePane, setActivePane] = useQueryState('pane', parseAsStringEnum<Pane>(PANES).withDefault('features'));
+  const [bucket, setBucket] = useQueryState('bucket', parseAsStringEnum<Bucket>(BUCKETS).withDefault('all'));
+  const [selectedFeatureId, setSelectedFeatureId] = useQueryState('feature', parseAsString);
   const [featureSearch, setFeatureSearch] = useQueryState(
-    "featureQuery",
-    parseAsString.withDefault(""),
+    'featureQuery',
+    parseAsString.withDefault(''),
   );
-  const [registryQuery, setRegistryQuery] = useState("");
+  const [registryQuery, setRegistryQuery] = useState('');
 
   const [featureCursor, setFeatureCursor] = useState<string | null>(null);
   const [loadedFeatures, setLoadedFeatures] = useState<DesignFeature[]>([]);
-  const [nextFeatureCursor, setNextFeatureCursor] = useState<string | null>(
-    null,
-  );
+  const [nextFeatureCursor, setNextFeatureCursor] = useState<string | null>(null);
   const [featurePageReady, setFeaturePageReady] = useState(false);
   const sharedFeatureArgs = useMemo(
     () => ({
       harnessSlug: slug,
-      workspaceId: workspaceId ?? "default",
+      workspaceId: workspaceId ?? 'default',
       q: featureSearch,
-      ...(bucket === "all" ? {} : { statuses: [bucket] }),
+      ...(bucket === 'all' ? {} : { statuses: [bucket] }),
     }),
     [slug, workspaceId, featureSearch, bucket],
   );
@@ -174,7 +150,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   }, [slug, workspaceId, featureSearch, bucket]);
 
   const featuresQ = useSyncQuery<DesignFeature>({
-    queryName: "designFeatures.byHarness",
+    queryName: 'designFeatures.byHarness',
     args: {
       ...sharedFeatureArgs,
       limit: DESIGN_FEATURES_PAGE,
@@ -183,7 +159,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
     enabled: Boolean(slug),
   });
   const featuresSummaryQ = useSyncQuery<CompanionListSummary>({
-    queryName: "designFeatures.summary",
+    queryName: 'designFeatures.summary',
     args: sharedFeatureArgs,
     enabled: Boolean(slug),
   });
@@ -195,26 +171,26 @@ export default function DesignDashboard({ slug }: { slug: string }) {
     );
     const meta = readListMeta(featuresQ.data);
     setNextFeatureCursor(
-      typeof meta?.nextCursor === "string" ? meta.nextCursor : null,
+      typeof meta?.nextCursor === 'string' ? meta.nextCursor : null,
     );
     setFeaturePageReady(true);
   }, [featuresQ.data, featuresQ.loading, featuresQ.fetching, featureCursor]);
 
   const memosQ = useSyncQuery<MemoEntry>({
-    queryName: "designMemos.list",
-    args: { status: "any" },
-    enabled: activePane === "memos",
+    queryName: 'designMemos.list',
+    args: { status: 'any' },
+    enabled: activePane === 'memos',
   });
 
   const registryQ = useSyncQuery<RegistryEntry>({
-    queryName: "designRegistry.search",
-    args: { ecosystem: "react-tailwind", query: registryQuery },
-    enabled: activePane === "registry",
+    queryName: 'designRegistry.search',
+    args: { ecosystem: 'react-tailwind', query: registryQuery },
+    enabled: activePane === 'registry',
   });
 
   const tokensQ = useSyncQuery<DtcgToken>({
-    queryName: "designTokens.list",
-    enabled: activePane === "tokens",
+    queryName: 'designTokens.list',
+    enabled: activePane === 'tokens',
   });
 
   const features = featurePageReady ? loadedFeatures : [];
@@ -228,66 +204,50 @@ export default function DesignDashboard({ slug }: { slug: string }) {
     featuresQ.loading ||
     featuresQ.fetching ||
     featuresSummaryQ.loading ||
-    featuresSummaryQ.fetching,
+    featuresSummaryQ.fetching
   );
   const countError = Boolean(featuresQ.error || featuresSummaryQ.error);
   const countEvidence = useCallback(
     (count: number | undefined): CountEvidence => {
-      if (countError) return { kind: "unknown", reason: "failed" };
-      if (pairedFetching) return { kind: "unknown", reason: "updating" };
-      if (count === undefined) return { kind: "unknown", reason: "loading" };
+      if (countError) return { kind: 'unknown', reason: 'failed' };
+      if (pairedFetching) return { kind: 'unknown', reason: 'updating' };
+      if (count === undefined) return { kind: 'unknown', reason: 'loading' };
       return {
-        kind: "corpus",
+        kind: 'corpus',
         count,
         population: featureSearch.trim()
-          ? "the Design feature queue matching the current search"
-          : "the Design feature queue",
+          ? 'the Design feature queue matching the current search'
+          : 'the Design feature queue',
       };
     },
     [countError, pairedFetching, featureSearch],
   );
   const countLabels = useMemo(
-    () =>
-      Object.fromEntries(
-        BUCKETS.map((entry) => [
-          entry,
-          filterCountLabel(countEvidence(counts?.[entry]), "feature"),
-        ]),
-      ) as Record<Bucket, ReturnType<typeof filterCountLabel>>,
+    () => Object.fromEntries(
+      BUCKETS.map((entry) => [
+        entry,
+        filterCountLabel(countEvidence(counts?.[entry]), 'feature'),
+      ]),
+    ) as Record<Bucket, ReturnType<typeof filterCountLabel>>,
     [countEvidence, counts],
   );
   const loadedCountLabel = useMemo(() => {
     if (countError) {
-      return filterCountLabel({ kind: "unknown", reason: "failed" }, "feature");
+      return filterCountLabel({ kind: 'unknown', reason: 'failed' }, 'feature');
     }
     if (pairedFetching) {
-      return filterCountLabel(
-        { kind: "unknown", reason: "updating" },
-        "feature",
-      );
+      return filterCountLabel({ kind: 'unknown', reason: 'updating' }, 'feature');
     }
     if (!featurePageReady || !featuresSummary) {
-      return filterCountLabel(
-        { kind: "unknown", reason: "loading" },
-        "feature",
-      );
+      return filterCountLabel({ kind: 'unknown', reason: 'loading' }, 'feature');
     }
-    return filterCountLabel(
-      {
-        kind: "window",
-        count: features.length,
-        window: "loaded server-filtered Design page",
-        corpusTotal: featuresSummary.matched,
-      },
-      "feature",
-    );
-  }, [
-    countError,
-    pairedFetching,
-    featurePageReady,
-    featuresSummary,
-    features.length,
-  ]);
+    return filterCountLabel({
+      kind: 'window',
+      count: features.length,
+      window: 'loaded server-filtered Design page',
+      corpusTotal: featuresSummary.matched,
+    }, 'feature');
+  }, [countError, pairedFetching, featurePageReady, featuresSummary, features.length]);
   const loadMoreFeatures = useCallback(() => {
     if (nextFeatureCursor) setFeatureCursor(nextFeatureCursor);
   }, [nextFeatureCursor]);
@@ -303,12 +263,8 @@ export default function DesignDashboard({ slug }: { slug: string }) {
   // WI-7232: the heavy fields (summary, status, designSpecId, discardedDesignWork)
   // are fetched for the ONE selected feature instead of all 390.
   const featureDetailQ = useSyncQuery<DesignFeatureDetail>({
-    queryName: "designFeatures.detail",
-    args: {
-      harnessSlug: slug,
-      workspaceId: workspaceId ?? "default",
-      featureId: selectedFeatureId ?? "",
-    },
+    queryName: 'designFeatures.detail',
+    args: { harnessSlug: slug, workspaceId: workspaceId ?? 'default', featureId: selectedFeatureId ?? '' },
     enabled: Boolean(slug && selectedListRow),
   });
   const selectedDetail = featureDetailQ.data?.[0] ?? null;
@@ -321,9 +277,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
           <h1 className="d-title">
             Design <span>· {slug}</span>
           </h1>
-          <p className="d-subtitle">
-            IR specs, registry, tokens, sketches, and visual regression review.
-          </p>
+          <p className="d-subtitle">IR specs, registry, tokens, sketches, and visual regression review.</p>
         </div>
         <div className="d-metrics" aria-label="Design queue summary">
           <Metric label="features" count={countLabels.all} tone="info" />
@@ -371,11 +325,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
               className="d-search-input d-feature-search-input"
             />
           </div>
-          <div
-            className="d-buckets"
-            role="group"
-            aria-label="Filter design features by status"
-          >
+          <div className="d-buckets" role="group" aria-label="Filter design features by status">
             {BUCKETS.map((b) => (
               <button
                 key={b}
@@ -397,9 +347,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
             {featuresQ.loading && !featurePageReady ? (
               <StateRow tone="info">Loading design features…</StateRow>
             ) : featuresQ.error ? (
-              <StateRow tone="bad">
-                Failed to load: {featuresQ.error.message}
-              </StateRow>
+              <StateRow tone="bad">Failed to load: {featuresQ.error.message}</StateRow>
             ) : features.length === 0 ? (
               <StateRow tone="muted">
                 No design features match the current search and status filter.
@@ -414,14 +362,10 @@ export default function DesignDashboard({ slug }: { slug: string }) {
                       className="d-feature-row"
                       data-active={selectedFeatureId === f.featureId}
                     >
-                      <span className="d-feature-title">
-                        {f.title || f.featureId}
-                      </span>
+                      <span className="d-feature-title">{f.title || f.featureId}</span>
                       <span className="d-feature-meta">
                         <code>{f.featureId}</code>
-                        <span className={designStatusClass(f.designStatus)}>
-                          {f.designStatus ?? "pending"}
-                        </span>
+                        <span className={designStatusClass(f.designStatus)}>{f.designStatus ?? 'pending'}</span>
                       </span>
                     </button>
                   </li>
@@ -434,9 +378,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
                       onClick={loadMoreFeatures}
                       disabled={featuresQ.fetching}
                     >
-                      {featuresQ.fetching
-                        ? "Loading more…"
-                        : "Load more design features"}
+                      {featuresQ.fetching ? 'Loading more…' : 'Load more design features'}
                     </button>
                   </li>
                 )}
@@ -446,7 +388,7 @@ export default function DesignDashboard({ slug }: { slug: string }) {
         </aside>
 
         <main className="d-content">
-          {activePane === "features" && (
+          {activePane === 'features' && (
             <FeatureDetailPane
               listRow={selectedListRow}
               detail={selectedDetail}
@@ -454,14 +396,14 @@ export default function DesignDashboard({ slug }: { slug: string }) {
               counts={countLabels}
             />
           )}
-          {activePane === "memos" && (
+          {activePane === 'memos' && (
             <MemosPane
               memos={memosQ.data ?? []}
               loading={memosQ.loading}
               error={memosQ.error ? memosQ.error.message : null}
             />
           )}
-          {activePane === "registry" && (
+          {activePane === 'registry' && (
             <RegistryPane
               entries={registryQ.data ?? []}
               loading={registryQ.loading}
@@ -470,24 +412,15 @@ export default function DesignDashboard({ slug }: { slug: string }) {
               onQueryChange={setRegistryQuery}
             />
           )}
-          {activePane === "tokens" && (
+          {activePane === 'tokens' && (
             <TokensPane
-              data={
-                {
-                  source: "design/tokens/base.json",
-                  error: null,
-                  count: tokenRows.length,
-                  tokens: tokenRows,
-                } satisfies DtcgTokenList
-              }
+              data={{ source: 'design/tokens/base.json', error: null, count: tokenRows.length, tokens: tokenRows } satisfies DtcgTokenList}
               loading={tokensQ.loading}
               error={tokensQ.error ? tokensQ.error.message : null}
             />
           )}
-          {activePane === "sketch" && (
-            <SketchPane slug={slug} featureId={selectedFeatureId} />
-          )}
-          {activePane === "regressions" && <RegressionPane />}
+          {activePane === 'sketch' && <SketchPane slug={slug} featureId={selectedFeatureId} />}
+          {activePane === 'regressions' && <RegressionPane />}
         </main>
       </div>
     </div>
@@ -501,7 +434,7 @@ function Metric({
 }: {
   label: string;
   count: ReturnType<typeof filterCountLabel>;
-  tone: "info" | "warn" | "good";
+  tone: 'info' | 'warn' | 'good';
 }) {
   return (
     <div
@@ -515,26 +448,18 @@ function Metric({
   );
 }
 
-function StateRow({
-  children,
-  tone,
-}: {
-  children: React.ReactNode;
-  tone: "info" | "bad" | "muted";
-}) {
+function StateRow({ children, tone }: { children: React.ReactNode; tone: 'info' | 'bad' | 'muted' }) {
   return <li className={`d-state-row d-state-row--${tone}`}>{children}</li>;
 }
 
-function designStatusClass(
-  s: "pending" | "accepted" | "ignored" | null,
-): string {
-  return `d-chip d-chip--${s ?? "pending"}`;
+function designStatusClass(s: 'pending' | 'accepted' | 'ignored' | null): string {
+  return `d-chip d-chip--${s ?? 'pending'}`;
 }
 
 function memoStatusChipClass(status: string): string {
-  if (status === "addressed") return "d-chip d-chip--accepted";
-  if (status === "wontfix") return "d-chip d-chip--ignored";
-  return "d-chip d-chip--pending";
+  if (status === 'addressed') return 'd-chip d-chip--accepted';
+  if (status === 'wontfix') return 'd-chip d-chip--ignored';
+  return 'd-chip d-chip--pending';
 }
 
 /** WI-7232: the shared fields (title / featureId / designStatus) come from the
@@ -558,17 +483,13 @@ function FeatureDetailPane({
         <div className="d-empty-icon">◇</div>
         <h2>Pick a feature to inspect</h2>
         <p>
-          Choose a queue item on the left to review its design status, linked
-          design spec, discarded work flag, and implementation summary.
+          Choose a queue item on the left to review its design status, linked design spec, discarded work flag,
+          and implementation summary.
         </p>
         <div className="d-empty-chips">
           <span className="d-chip d-chip--info">{counts.all.title} total</span>
-          <span className="d-chip d-chip--pending">
-            {counts.pending.title} pending
-          </span>
-          <span className="d-chip d-chip--accepted">
-            {counts.accepted.title} accepted
-          </span>
+          <span className="d-chip d-chip--pending">{counts.pending.title} pending</span>
+          <span className="d-chip d-chip--accepted">{counts.accepted.title} accepted</span>
         </div>
       </section>
     );
@@ -580,30 +501,24 @@ function FeatureDetailPane({
           <div className="d-section-label">Selected feature</div>
           <h2>{feature.title || feature.featureId}</h2>
         </div>
-        <span className={designStatusClass(feature.designStatus)}>
-          {feature.designStatus ?? "pending"}
-        </span>
+        <span className={designStatusClass(feature.designStatus)}>{feature.designStatus ?? 'pending'}</span>
       </header>
       <div className="d-kv-grid">
         <div>
           <dt>Feature ID</dt>
-          <dd>
-            <code>{feature.featureId}</code>
-          </dd>
+          <dd><code>{feature.featureId}</code></dd>
         </div>
         <div>
           <dt>Status</dt>
-          <dd>{detail ? (detail.status ?? "—") : "…"}</dd>
+          <dd>{detail ? (detail.status ?? '—') : '…'}</dd>
         </div>
         <div>
           <dt>Design spec</dt>
-          <dd>
-            <code>{detail ? (detail.designSpecId ?? "—") : "…"}</code>
-          </dd>
+          <dd><code>{detail ? (detail.designSpecId ?? '—') : '…'}</code></dd>
         </div>
         <div>
           <dt>Discarded work</dt>
-          <dd>{detail ? (detail.discardedDesignWork ? "yes" : "no") : "…"}</dd>
+          <dd>{detail ? (detail.discardedDesignWork ? 'yes' : 'no') : '…'}</dd>
         </div>
       </div>
       {detailLoading && !detail && (
@@ -663,32 +578,25 @@ function TokensPane({
   loading,
   error,
 }: {
-  data: {
-    source: string | null;
-    error: string | null;
-    count: number;
-    tokens: DtcgToken[];
-  } | null;
+  data: { source: string | null; error: string | null; count: number; tokens: DtcgToken[] } | null;
   loading: boolean;
   error: string | null;
 }) {
   if (loading) return <PanelState>Loading tokens…</PanelState>;
   if (error) return <PanelState tone="bad">Failed: {error}</PanelState>;
   if (!data) return <PanelState>No tokens loaded.</PanelState>;
-  if (data.error)
-    return <PanelState tone="bad">Token store error: {data.error}</PanelState>;
+  if (data.error) return <PanelState tone="bad">Token store error: {data.error}</PanelState>;
   if (data.tokens.length === 0) {
     return (
       <PanelState>
-        No DTCG tokens found at workspace root{" "}
-        <code>design/tokens/base.json</code>.
+        No DTCG tokens found at workspace root <code>design/tokens/base.json</code>.
       </PanelState>
     );
   }
 
   const groups = new Map<string, DtcgToken[]>();
   for (const t of data.tokens) {
-    const top = t.id.split(".")[0] || "misc";
+    const top = t.id.split('.')[0] || 'misc';
     const arr = groups.get(top) ?? [];
     arr.push(t);
     groups.set(top, arr);
@@ -715,9 +623,7 @@ function TokensPane({
                 <TokenSwatch token={t} />
                 <div>
                   <code>{t.id}</code>
-                  <span>
-                    {String(t.value)} · {t.type}
-                  </span>
+                  <span>{String(t.value)} · {t.type}</span>
                 </div>
               </li>
             ))}
@@ -729,16 +635,10 @@ function TokensPane({
 }
 
 function TokenSwatch({ token }: { token: DtcgToken }) {
-  if (token.type === "color" && typeof token.value === "string") {
-    return (
-      <span
-        className="d-token-swatch"
-        title={String(token.value)}
-        style={{ background: token.value }}
-      />
-    );
+  if (token.type === 'color' && typeof token.value === 'string') {
+    return <span className="d-token-swatch" title={String(token.value)} style={{ background: token.value }} />;
   }
-  if (token.type === "dimension" && typeof token.value === "string") {
+  if (token.type === 'dimension' && typeof token.value === 'string') {
     const px = parseFloat(token.value);
     if (Number.isFinite(px) && px > 0 && px < 80) {
       return (
@@ -748,11 +648,7 @@ function TokenSwatch({ token }: { token: DtcgToken }) {
       );
     }
   }
-  return (
-    <span className="d-token-swatch d-token-swatch--type">
-      {token.type.slice(0, 3)}
-    </span>
-  );
+  return <span className="d-token-swatch d-token-swatch--type">{token.type.slice(0, 3)}</span>;
 }
 
 function RegistryPane({
@@ -801,16 +697,11 @@ function RegistryPane({
               <p>{e.summary}</p>
               {e.inputs && e.inputs.length > 0 && (
                 <div className="d-registry-meta">
-                  inputs:{" "}
-                  {e.inputs
-                    .map((i) => `${i.name}${i.required ? "*" : ""}: ${i.type}`)
-                    .join(", ")}
+                  inputs: {e.inputs.map((i) => `${i.name}${i.required ? '*' : ''}: ${i.type}`).join(', ')}
                 </div>
               )}
               {e.variants && e.variants.length > 0 && (
-                <div className="d-registry-meta">
-                  variants: {e.variants.join(" · ")}
-                </div>
+                <div className="d-registry-meta">variants: {e.variants.join(' · ')}</div>
               )}
             </li>
           ))}
@@ -820,14 +711,6 @@ function RegistryPane({
   );
 }
 
-function PanelState({
-  children,
-  tone = "muted",
-}: {
-  children: React.ReactNode;
-  tone?: "muted" | "bad";
-}) {
-  return (
-    <div className={`d-panel-state d-panel-state--${tone}`}>{children}</div>
-  );
+function PanelState({ children, tone = 'muted' }: { children: React.ReactNode; tone?: 'muted' | 'bad' }) {
+  return <div className={`d-panel-state d-panel-state--${tone}`}>{children}</div>;
 }

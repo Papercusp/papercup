@@ -11,13 +11,20 @@
  * once in the corpus CTE so the row query, selected total, and facet counts can
  * never disagree about that bucket.
  */
-import type { CompanionSummaryAggregateRow, FacetSelection } from '@papercusp/facets';
+import type {
+  CompanionSummaryAggregateRow,
+  FacetSelection,
+} from '@papercusp/facets';
 import type { OrgSql } from '../work-items';
 import type { BoundedListPage } from './bounded-list-read';
 
 export const DESIGN_FEATURES_PAGE_LIMIT = 250;
 export const DESIGN_FEATURES_DEFAULT_PAGE = 100;
-export const DESIGN_FEATURE_STATUSES = ['pending', 'accepted', 'ignored'] as const;
+export const DESIGN_FEATURE_STATUSES = [
+  'pending',
+  'accepted',
+  'ignored',
+] as const;
 
 export type DesignFeatureStatus = (typeof DESIGN_FEATURE_STATUSES)[number];
 
@@ -62,12 +69,15 @@ interface DesignFeatureDbRow {
   created_ts: number | string;
 }
 
-const finite = (value: unknown): number | null => (typeof value === 'number' && Number.isFinite(value) ? value : null);
+const finite = (value: unknown): number | null =>
+  typeof value === 'number' && Number.isFinite(value) ? value : null;
 
 const isDesignFeatureStatus = (value: string): value is DesignFeatureStatus =>
   (DESIGN_FEATURE_STATUSES as readonly string[]).includes(value);
 
-export function decodeDesignFeaturesCursor(raw: string | null | undefined): DesignFeaturesCursor | null {
+export function decodeDesignFeaturesCursor(
+  raw: string | null | undefined,
+): DesignFeaturesCursor | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<DesignFeaturesCursor>;
@@ -82,16 +92,26 @@ export function decodeDesignFeaturesCursor(raw: string | null | undefined): Desi
   }
 }
 
-export const encodeDesignFeaturesCursor = (row: Pick<DesignFeaturesCursor, 'createdTs' | 'featureId'>): string =>
-  JSON.stringify({ createdTs: row.createdTs, featureId: row.featureId });
+export const encodeDesignFeaturesCursor = (
+  row: Pick<DesignFeaturesCursor, 'createdTs' | 'featureId'>,
+): string => JSON.stringify({ createdTs: row.createdTs, featureId: row.featureId });
 
-export function normalizeDesignFeaturesListArgs(args: DesignFeaturesListWireArgs): NormalizedDesignFeaturesListArgs {
+export function normalizeDesignFeaturesListArgs(
+  args: DesignFeaturesListWireArgs,
+): NormalizedDesignFeaturesListArgs {
   const limit = Math.min(
-    Math.max(Math.trunc(finite(args.limit) ?? DESIGN_FEATURES_DEFAULT_PAGE), 1),
+    Math.max(
+      Math.trunc(finite(args.limit) ?? DESIGN_FEATURES_DEFAULT_PAGE),
+      1,
+    ),
     DESIGN_FEATURES_PAGE_LIMIT,
   );
   const statuses = [
-    ...new Set((args.statuses ?? []).map((value) => value.trim()).filter(isDesignFeatureStatus)),
+    ...new Set(
+      (args.statuses ?? [])
+        .map((value) => value.trim())
+        .filter(isDesignFeatureStatus),
+    ),
   ].sort();
   return {
     harnessSlug: args.harnessSlug.trim(),
@@ -103,12 +123,18 @@ export function normalizeDesignFeaturesListArgs(args: DesignFeaturesListWireArgs
   };
 }
 
-export function buildDesignFeaturesPredicate(args: NormalizedDesignFeaturesListArgs): DesignFeaturesCompiledPredicate {
+export function buildDesignFeaturesPredicate(
+  args: NormalizedDesignFeaturesListArgs,
+): DesignFeaturesCompiledPredicate {
   return { args, fingerprint: JSON.stringify(args) };
 }
 
-export function designFeaturesSummarySelection(args: NormalizedDesignFeaturesListArgs): FacetSelection | undefined {
-  return args.statuses.length > 0 ? new Map([['status', new Set(args.statuses)]]) : undefined;
+export function designFeaturesSummarySelection(
+  args: NormalizedDesignFeaturesListArgs,
+): FacetSelection | undefined {
+  return args.statuses.length > 0
+    ? new Map([['status', new Set(args.statuses)]])
+    : undefined;
 }
 
 /**
@@ -118,7 +144,11 @@ export function designFeaturesSummarySelection(args: NormalizedDesignFeaturesLis
  * paths. Legacy null births sort at zero and remain pageable; unlike a mutable
  * `updated_ts` cursor they cannot jump across an already-issued boundary.
  */
-function designCorpusCte(sql: OrgSql, args: NormalizedDesignFeaturesListArgs, materialized: boolean) {
+function designCorpusCte(
+  sql: OrgSql,
+  args: NormalizedDesignFeaturesListArgs,
+  materialized: boolean,
+) {
   return sql`
     design_corpus AS ${materialized ? sql`MATERIALIZED` : sql`NOT MATERIALIZED`} (
       SELECT f.feature_id,
@@ -134,9 +164,17 @@ function designCorpusCte(sql: OrgSql, args: NormalizedDesignFeaturesListArgs, ma
 }
 
 /** Shared selected predicate; omit status for drill-down-aware status facets. */
-function selectedPredicateSql(sql: OrgSql, args: NormalizedDesignFeaturesListArgs, omitStatus = false) {
+function selectedPredicateSql(
+  sql: OrgSql,
+  args: NormalizedDesignFeaturesListArgs,
+  omitStatus = false,
+) {
   return sql`
-    ${omitStatus || args.statuses.length === 0 ? sql`TRUE` : sql`d.design_status = ANY(${args.statuses}::text[])`}
+    ${
+      omitStatus || args.statuses.length === 0
+        ? sql`TRUE`
+        : sql`d.design_status = ANY(${args.statuses}::text[])`
+    }
     AND ${
       args.q
         ? sql`(
@@ -185,7 +223,9 @@ export async function readDesignFeaturesPageFromStore(
             featureId: tail.feature_id,
           })
         : null,
-    previousCursor: args.cursor ? encodeDesignFeaturesCursor(args.cursor) : null,
+    previousCursor: args.cursor
+      ? encodeDesignFeaturesCursor(args.cursor)
+      : null,
   };
 }
 
@@ -235,16 +275,15 @@ export async function readDesignFeaturesSummaryFromStore(
     SELECT 'facet', 'status', 'Design status', value, n, NULL, NULL
       FROM status_facets`;
 
-  return rows.map(
-    (row): CompanionSummaryAggregateRow =>
-      row.kind === 'totals'
-        ? { kind: 'totals', total: row.total ?? 0, matched: row.matched ?? 0 }
-        : {
-            kind: 'facet',
-            facet: row.facet ?? '',
-            label: row.label ?? undefined,
-            value: row.value ?? '',
-            count: row.count ?? 0,
-          },
+  return rows.map((row): CompanionSummaryAggregateRow =>
+    row.kind === 'totals'
+      ? { kind: 'totals', total: row.total ?? 0, matched: row.matched ?? 0 }
+      : {
+          kind: 'facet',
+          facet: row.facet ?? '',
+          label: row.label ?? undefined,
+          value: row.value ?? '',
+          count: row.count ?? 0,
+        },
   );
 }

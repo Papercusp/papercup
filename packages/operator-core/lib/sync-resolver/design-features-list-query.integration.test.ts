@@ -1,7 +1,10 @@
 // @vitest-environment node
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
-import { composeCompanionSummary, type CompanionListSummary } from '@papercusp/facets';
+import {
+  composeCompanionSummary,
+  type CompanionListSummary,
+} from '@papercusp/facets';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import {
   buildDesignFeaturesPredicate,
@@ -35,22 +38,36 @@ const expectedStatusCounts = (): Record<DesignFeatureStatus, number> => {
   return counts;
 };
 
-const pageFor = async (args: DesignFeaturesListWireArgs, cursor: string | null = null) => {
+const pageFor = async (
+  args: DesignFeaturesListWireArgs,
+  cursor: string | null = null,
+) => {
   const normalized = normalizeDesignFeaturesListArgs({ ...args, cursor });
-  return readDesignFeaturesPageFromStore(sql, buildDesignFeaturesPredicate(normalized));
+  return readDesignFeaturesPageFromStore(
+    sql,
+    buildDesignFeaturesPredicate(normalized),
+  );
 };
 
-const summaryFor = async (args: DesignFeaturesListWireArgs): Promise<CompanionListSummary> => {
+const summaryFor = async (
+  args: DesignFeaturesListWireArgs,
+): Promise<CompanionListSummary> => {
   const normalized = normalizeDesignFeaturesListArgs(args);
-  const aggregate = await readDesignFeaturesSummaryFromStore(sql, buildDesignFeaturesPredicate(normalized));
+  const aggregate = await readDesignFeaturesSummaryFromStore(
+    sql,
+    buildDesignFeaturesPredicate(normalized),
+  );
   return composeCompanionSummary(aggregate, {
     selection: designFeaturesSummarySelection(normalized),
   });
 };
 
-const statusCounts = (summary: CompanionListSummary): Record<DesignFeatureStatus, number> => {
+const statusCounts = (
+  summary: CompanionListSummary,
+): Record<DesignFeatureStatus, number> => {
   const values = summary.facets.find((facet) => facet.key === 'status')?.values ?? [];
-  const count = (status: DesignFeatureStatus) => values.find((value) => value.value === status)?.count ?? -1;
+  const count = (status: DesignFeatureStatus) =>
+    values.find((value) => value.value === status)?.count ?? -1;
   return {
     pending: count('pending'),
     accepted: count('accepted'),
@@ -178,8 +195,13 @@ describe('Design feature list + summary real-PG P-011 contract', () => {
       statuses: ['accepted', 'ignored'],
       limit: 250,
     };
-    const [multiPage, multiSummary] = await Promise.all([pageFor(multiArgs), summaryFor(multiArgs)]);
-    expect(multiPage.rows.every((row) => row.designStatus === 'accepted' || row.designStatus === 'ignored')).toBe(true);
+    const [multiPage, multiSummary] = await Promise.all([
+      pageFor(multiArgs),
+      summaryFor(multiArgs),
+    ]);
+    expect(multiPage.rows.every((row) =>
+      row.designStatus === 'accepted' || row.designStatus === 'ignored',
+    )).toBe(true);
     expect(multiSummary.matched).toBe(expected.accepted + expected.ignored);
     // Status facets omit their own selected dimension, so every bucket remains
     // an exact drill-down promise instead of collapsing to the selected pair.
@@ -192,7 +214,10 @@ describe('Design feature list + summary real-PG P-011 contract', () => {
       statuses: ['ignored'],
       limit: 25,
     };
-    const [emptyPage, emptySummary] = await Promise.all([pageFor(emptyArgs), summaryFor(emptyArgs)]);
+    const [emptyPage, emptySummary] = await Promise.all([
+      pageFor(emptyArgs),
+      summaryFor(emptyArgs),
+    ]);
     expect(emptyPage).toMatchObject({
       rows: [],
       nextCursor: null,
