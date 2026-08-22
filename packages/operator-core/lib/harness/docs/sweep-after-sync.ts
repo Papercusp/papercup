@@ -16,11 +16,12 @@ import { projectDirForSlug } from '../../operator-notes';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { relative } from 'node:path';
-import { runGit, repoHeadSha, repoChangedPaths, listSubmodulePaths } from './git-runner';
+import { runGit, repoHeadSha, repoChangedPathPairs, listSubmodulePaths } from './git-runner';
 import { makeFeatureCommitLookup } from './feature-commits';
 import { sweepHarnessDocs, recomputeDocStatus, type SweepResult } from './freshness-sweep';
-import { listDocRecords, setDocStatus, markRegenEnqueued, markReverifyFlagged } from './doc-record';
+import { deleteDocRecord, listDocRecords, setDocStatus, markRegenEnqueued, markReverifyFlagged } from './doc-record';
 import { resolveHarnessDocPaths } from './harness-repo';
+import { readDocBody } from './doc-fs';
 import { anchorManualDoc } from './manual-anchor';
 import { dispatchDocStewardForDrift, type DriftedDoc } from './doc-steward-dispatch';
 import {
@@ -142,14 +143,16 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
   // Derive the changed paths for the prefilter AND the self-bootstrap. prevSha==headSha
   // → nothing moved.
   let changedPaths: string[] | undefined;
+  let changedPathPairs: Awaited<ReturnType<typeof repoChangedPathPairs>> = null;
   const prev = (input.prevSha ?? '').trim();
   const head = (input.headSha ?? '').trim();
   if (prev && head) {
     if (prev === head) return null;
-    const diff = await repoChangedPaths(repoRoot, prev, head);
-    if (diff) {
-      if (diff.length === 0) return null;
-      changedPaths = diff;
+    changedPathPairs = await repoChangedPathPairs(repoRoot, prev, head);
+    if (changedPathPairs) {
+      if (changedPathPairs.length === 0) return null;
+      // Keep the existing prefilter semantics: a rename contributes its new path.
+      changedPaths = changedPathPairs.map((change) => change.path);
     }
   }
 
@@ -167,6 +170,26 @@ export async function runDocFreshnessSweepAfterSync(input: SweepAfterSyncInput):
       if (paths) {
         const docsRel = relative(paths.repoRoot, paths.docsRoot);
         const prefix = docsRel && docsRel !== '.' ? docsRel.replace(/\/?$/, '/') : '';
+        const docIdForRepoPath = (repoPath: string): string | null => {
+          if (!/\.(md|mdx)$/i.test(repoPath)) return null;
+          if (prefix && !repoPath.startsWith(prefix)) return null;
+          const docId = prefix ? repoPath.slice(prefix.length) : repoPath;
+          return docId || null;
+        };
+
+        // A rename is different from a delete + unrelated add: Git gives us both paths,
+        // so retire only the old tracking row for a move. Otherwise the self-bootstrap
+        // below correctly creates the new archive/ doc but leaves the old doc_id forever.
+        for (const change of changedPathPairs ?? []) {
+          if (!change.previousPath) continue;
+          const oldDocId = docIdForRepoPath(change.previousPath);
+          const newDocId = docIdForRepoPath(change.path);
+          if (!oldDocId || !newDocId || oldDocId === newDocId || !records.has(oldDocId)) continue;
+          if (await readDocBody(paths.docsRoot, newDocId) === null) continue;
+          await deleteDocRecord(harnessSlug, oldDocId, workspaceId);
+          records.delete(oldDocId);
+        }
+
         const reanchorDeps = {
           runGit,
           repoRoot,

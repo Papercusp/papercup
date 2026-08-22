@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -31,7 +31,7 @@ let sidecarEnabledMock: (...a: unknown[]) => boolean = () => false;
 let sidecarRunMock: (...a: unknown[]) => Promise<{ code: number; stdout: string; stderr: string }> =
   () => Promise.reject(new Error('not configured'));
 
-const { runGit, runGitLocal } = await import('./git-runner');
+const { runGit, runGitLocal, repoChangedPathPairs } = await import('./git-runner');
 
 let repo: string;
 
@@ -137,5 +137,17 @@ describe('harness-docs runGit', () => {
     };
     await runGit(['rev-parse', 'HEAD'], repo);
     expect(seenTimeout).toBeGreaterThan(0);
+  });
+
+  it('preserves old and new paths for a detected rename', async () => {
+    sidecarEnabledMock = () => false;
+    const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+    await rename(join(repo, 'f.txt'), join(repo, 'moved.md'));
+    execFileSync('git', ['add', '-A'], { cwd: repo, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-q', '-m', 'rename doc'], { cwd: repo, stdio: 'ignore' });
+    const after = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' }).trim();
+
+    const changes = await repoChangedPathPairs(repo, before, after);
+    expect(changes).toEqual([{ status: 'R100', previousPath: 'f.txt', path: 'moved.md' }]);
   });
 });

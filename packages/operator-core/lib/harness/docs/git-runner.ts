@@ -92,6 +92,38 @@ export async function repoChangedPaths(repoRoot: string, a: string, b: string): 
   return r.stdout.split('\n').map((l) => l.trim()).filter(Boolean);
 }
 
+export interface ChangedPathPair {
+  /** Git's name-status token, e.g. `M`, `A`, `D`, or `R100`. */
+  status: string;
+  /** The path present at the newer ref (or the only path for non-renames). */
+  path: string;
+  /** The path present at the older ref for a detected rename. */
+  previousPath?: string;
+}
+
+/** Parse `git diff --name-status --find-renames` without losing rename provenance. */
+export function parseChangedPathPairs(stdout: string): ChangedPathPair[] {
+  const out: ChangedPathPair[] = [];
+  for (const line of stdout.split('\n')) {
+    const fields = line.trimEnd().split('\t');
+    const status = fields[0]?.trim();
+    if (!status || !fields[1]) continue;
+    if (status.startsWith('R') && fields[2]) {
+      out.push({ status, previousPath: fields[1], path: fields[2] });
+    } else {
+      out.push({ status, path: fields[1] });
+    }
+  }
+  return out;
+}
+
+/** Changed paths plus old/new provenance for Git-detected renames. */
+export async function repoChangedPathPairs(repoRoot: string, a: string, b: string): Promise<ChangedPathPair[] | null> {
+  const r = await runGit(['diff', '--name-status', '--find-renames', a, b], repoRoot);
+  if (r.code !== 0) return null;
+  return parseChangedPathPairs(r.stdout);
+}
+
 /** Submodule paths (repo-relative) declared in `<repoRoot>/.gitmodules`, or [] if none.
  *  Used by the drift checker to route a submodule anchor's `git log` into the submodule
  *  against its own baseline (docs-audit 2026-06-23 #3). */
