@@ -1912,6 +1912,43 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   });
 
   describe('WI-5228 (kickoff-prompt-absorption-2026-07-17 P-002): orient-first plan bootstrap', () => {
+    it('P-024: an explicit planSlug scopes the plan-events fold to that plan', async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'plans:get': () => ({ results: [{ now: null, items: [] }] }),
+      });
+      await composeOrient({ planSlug: 'explicit-plan', harness: 'h' }, call, 'me');
+      expect(calls.find((c) => c.name === 'coord:plan-events')?.args).toMatchObject({
+        plan_slug: 'explicit-plan',
+        limit: 10,
+      });
+    });
+
+    it("P-024: an omitted planSlug scopes plan-events to the self row's declared plan", async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'fleet:assignments': () => ({
+          ok: true,
+          summary: { agents: 1 },
+          agents: [{ agentId: 'me', isSelf: true, declaredPlanSlug: 'presence-bound-plan', claims: [] }],
+        }),
+        'plans:get': () => ({ results: [{ now: null, items: [] }] }),
+      });
+      await composeOrient({}, call, 'me');
+      expect(calls.find((c) => c.name === 'coord:plan-events')?.args).toMatchObject({
+        plan_slug: 'presence-bound-plan',
+        limit: 10,
+      });
+    });
+
+    it('P-024: a genuinely planless caller keeps the broad plan-events fallback', async () => {
+      const { call, calls } = fakeCall({ ...CORE });
+      await composeOrient({}, call, 'me');
+      const args = calls.find((c) => c.name === 'coord:plan-events')?.args;
+      expect(args).toMatchObject({ limit: 10 });
+      expect(args).not.toHaveProperty('plan_slug');
+    });
+
     it('an explicit planSlug folds the Now block + next actionable item + my claims', async () => {
       const { call } = fakeCall({
         ...CORE,

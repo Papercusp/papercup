@@ -16,13 +16,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   consume: vi.fn(async () => false),
   openEscalation: vi.fn(async () => ({ msg_id: 'esc-123' })),
+  armEscalationRequesterInterest: vi.fn(async () => ({
+    event_keys: ['escalation:resolved:esc-123'],
+    await_ids: [123],
+    cancel: { tool: 'events:cancel' as const, args: { await_ids: [123] } },
+    handle_note: 'captured requester wake handle',
+  })),
   getSpawnHeadroom: vi.fn(async () => ({ ceiling: 16, running: 2, headroom: 14 })),
 }));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'worker-1', ownerLabel: 'Worker 1' }),
 }));
-vi.mock('../coordination/escalations', () => ({ openEscalation: h.openEscalation }));
+vi.mock('../coordination/escalations', () => ({
+  openEscalation: h.openEscalation,
+  armEscalationRequesterInterest: h.armEscalationRequesterInterest,
+}));
 vi.mock('../../fleet/operator-spawn', () => ({ getSpawnHeadroom: h.getSpawnHeadroom }));
 // Partial mock — agent-mcp's bootstrap statically imports db-org's `generated`, so
 // keep the real module and override only getOrgPg (the handler dynamically imports it).
@@ -44,6 +53,7 @@ const parse = (res: any) => JSON.parse(res.content[0].text);
 beforeEach(() => {
   h.consume.mockReset().mockResolvedValue(false);
   h.openEscalation.mockReset().mockResolvedValue({ msg_id: 'esc-123' });
+  h.armEscalationRequesterInterest.mockClear();
   h.getSpawnHeadroom.mockReset().mockResolvedValue({ ceiling: 16, running: 2, headroom: 14 });
 });
 afterEach(() => vi.restoreAllMocks());
@@ -61,7 +71,17 @@ describe('new_subagent:request handler (P-005 / P-009 / P-016)', () => {
     expect(h.openEscalation).toHaveBeenCalledTimes(1);
     const esc = (h.openEscalation.mock.calls[0] as any[])[1];
     expect(esc.meta).toMatchObject({ spawnRequest: true, requestedRole: 'worker', requester: 'worker-1' });
-    expect(out).toMatchObject({ ok: true, request_id: 'esc-123', await_event: 'escalation:resolved:esc-123' });
+    expect(h.armEscalationRequesterInterest).toHaveBeenCalledWith('worker-1', 'esc-123');
+    expect(out).toMatchObject({
+      ok: true,
+      request_id: 'esc-123',
+      await_event: 'escalation:resolved:esc-123',
+      interest_watch: {
+        event_keys: ['escalation:resolved:esc-123'],
+        await_ids: [123],
+        cancel: { tool: 'events:cancel', args: { await_ids: [123] } },
+      },
+    });
   });
 
   it('surfaces the live spawn headroom to inform the brain (P-007)', async () => {
