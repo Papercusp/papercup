@@ -370,8 +370,11 @@ export default defineTool({
           },
           async () => {
             const result = await readPlanBySlug(slug, opts);
-            if (!result)
-              return { ok: false as const, slug, error: "not_found" };
+            // cachedRead caches every non-null result, so returning a `{ok:false}`
+            // not_found object here would make a transient read miss sticky for
+            // the full plans:get soft TTL. Let runBulk preserve the per-slug error
+            // while the rejected factory result remains uncached.
+            if (!result) throw new Error("not_found");
 
             const { parsed, archived, row } = result;
             ctxAny.metadata?.({ slug, archived, legacy: parsed.isLegacy });

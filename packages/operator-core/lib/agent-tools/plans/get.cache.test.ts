@@ -166,6 +166,24 @@ describe("plans:get — cache wiring", () => {
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
   });
 
+  it("does not cache a not_found result when a later read succeeds", async () => {
+    M.readPlanBySlug.mockResolvedValueOnce(null as never);
+
+    const missing = await run({ slug: "eventually-present" });
+    expect(missing.results[0]).toMatchObject({
+      ok: false,
+      slug: "eventually-present",
+      error: "not_found",
+    });
+
+    const recovered = await run({ slug: "eventually-present" });
+    expect(recovered.results[0]).toMatchObject({
+      ok: true,
+      slug: "eventually-present",
+    });
+    expect(M.readPlanBySlug).toHaveBeenCalledTimes(2);
+  });
+
   it("a harness_plans write BUSTS the entry (tag invalidation rebuilds)", async () => {
     await run({ slug: "alpha" });
     expect(M.readPlanBySlug).toHaveBeenCalledTimes(1);
