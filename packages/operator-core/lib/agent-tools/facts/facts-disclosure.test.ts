@@ -368,3 +368,16 @@ describe('facts:assert body schema — declared vs enforced cap must not mislead
     expect(result.success).toBe(false);
   });
 });
+
+describe('facts:assert measurement schema — measuredAt inference is disclosed (EI-20981827026547630)', () => {
+  it('explains both the explicit requirement and the recoverable measuredAt-only form', () => {
+    const subjectVolatile = assertSchemaField('subjectVolatile').description ?? '';
+    const measuredAt = assertSchemaField('measuredAt').description ?? '';
+
+    expect(subjectVolatile).toMatch(/measuredAt is required/i);
+    expect(subjectVolatile).toMatch(/store infers subjectVolatile:true/i);
+    expect(measuredAt).toMatch(/required with subjectVolatile:true/i);
+    expect(measuredAt).toMatch(/supplying measuredAt alone is accepted.*store infers subjectVolatile:true/i);
+    expect(measuredAt).not.toMatch(/refused by the store otherwise/i);
+  });
+});

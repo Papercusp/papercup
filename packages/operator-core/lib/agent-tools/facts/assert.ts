@@ -244,7 +244,7 @@ export default defineTool({
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under ${FACT_BODY_MAX_CHARS} chars; the per-scope cap ${FACTS_PER_SCOPE_CAP} evicts the lowest-ranked live fact. A fact is not a live measurement: do not pin changing counts/statuses — store the invariant conclusion plus a pointer to the live source a reader can remeasure. For a necessary moving sample, pass subjectVolatile:true and measuredAt; it becomes a ≤15-minute SNAPSHOT. Label intentional history as historical.`,
+      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under ${FACT_BODY_MAX_CHARS} chars; the per-scope cap ${FACTS_PER_SCOPE_CAP} evicts the lowest-ranked live fact. A fact is not a live measurement: do not pin changing counts/statuses — store the invariant conclusion plus a pointer to the live source a reader can remeasure. For a necessary moving sample, pass measuredAt (prefer subjectVolatile:true for clarity); the store infers subjectVolatile:true when measuredAt is supplied and makes it a ≤15-minute SNAPSHOT. Label intentional history as historical.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
@@ -306,14 +306,14 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'Mark the asserted values as a snapshot of a subject that may still be changing. Requires measuredAt; the fold renders an explicit SNAPSHOT marker and the TTL is limited to 15 minutes.',
+        'Mark the asserted values as a snapshot of a subject that may still be changing. When true, measuredAt is required; if measuredAt is supplied without this flag, the store infers subjectVolatile:true. The fold renders an explicit SNAPSHOT marker and the TTL is limited to 15 minutes.',
       ),
     measuredAt: z
       .string()
       .max(80)
       .optional()
       .describe(
-        'ISO timestamp at which a subjectVolatile snapshot was sampled. Required with subjectVolatile:true and refused by the store otherwise.',
+        'ISO timestamp at which a snapshot was sampled. Required with subjectVolatile:true; supplying measuredAt alone is accepted and the store infers subjectVolatile:true, the SNAPSHOT marker, and the 15-minute TTL. Omit it for durable invariant conclusions.',
       ),
     dependsOn: z
       .array(
