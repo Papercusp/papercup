@@ -1784,7 +1784,7 @@
           "POST"
         ]
       },
-      "description": "Read-only: what the Blender WOULD have proposed as goal-scale work, from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns each draft with the rails the goal rail would have set (killCriterion, budgetCents) and, ALWAYS, the marker provenance that triggered it (markerHits: which fields, and whether the match is only inside quoted code). An EMPTY result is the measured normal state, not a fault — it comes back with `empty.meaning` explaining that the rail is unused rather than blocked.",
+      "description": "Read-only historical/override projection of goal-scale work from persisted cycle artifacts. Writes NOTHING — creates no goal and mints no agent. Returns pre-D-016 dropped asks and plan-hinted proposals the live override would bump, with drafted rails (killCriterion, budgetCents) and marker provenance. Accepted post-D-016 direct goal hints route live and are intentionally absent. An EMPTY result comes with `empty.meaning` so it is not misread as a blocked current rail.",
       "capabilities": [
         "curation:read"
       ],
@@ -1801,8 +1801,8 @@
         "curator"
       ],
       "guidance": {
-        "when": "Deciding whether the Blender should be given any authority near goals, or auditing what goal-scale work it has actually been generating. This is the evidence surface that argument is supposed to rest on.",
-        "notWhen": "Creating or amending a goal (goals:create / goals:update) — this verb only reports what a draft WOULD have been. Reading routed ideas that actually landed on a rail is the routed-idea ledger, not this.",
+        "when": "Auditing historical pre-D-016 goal asks or reviewing which persisted plan-hinted proposals the current override classifies as goal-scale, without writing anything.",
+        "notWhen": "Creating or amending a goal (goals:create / goals:update), or reading accepted post-D-016 direct goal routes — use the routed-idea ledger for work that actually landed on a rail.",
         "chaining": "Read `summary` first. If total is 0, read `empty.meaning` before concluding anything is broken. For any draft you take seriously, check `markerHits` BEFORE the prose: a draft whose only marker sits in `mechanism` with onlyInCodeSpan:true is a vocabulary artifact (D-012 measured exactly one such draft in the whole corpus), and `incidentalMatchOnly` names that case at the row."
       }
     },
