@@ -418,6 +418,11 @@ const CLEAR_SETTLE_MS = Number(process.env.PAPERCUSP_PSU_PTY_CLEAR_SETTLE_MS) ||
  *  (su-cold-auto-mode P-004b). Fail-safe: on cap we spawn anyway (the old pid is
  *  being torn down regardless). */
 const RECYCLE_KILL_TIMEOUT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS) || 5_000;
+/** After the graceful recycle signal's cap, give the forced process-tree kill a
+ * short bounded hand-off window to report the pty child exit before spawning its
+ * successor. SIGKILL itself is the lifetime fence; this wait only lets node-pty
+ * reap the leader cleanly when it can. */
+const RECYCLE_FORCE_KILL_WAIT_MS = Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_FORCE_KILL_WAIT_MS) || 1_000;
 
 /** WI-1941: total wall-clock budget the recycle carry-note inject retries across
  *  before it is dropped LOUDLY. A fresh COLD child can stay busy past one
@@ -4994,7 +4999,23 @@ export function hostThroughPty(o) {
         } catch {
           /* already gone */
         }
-        await Promise.race([dead, new Promise((r) => setTimeout(r, RECYCLE_KILL_TIMEOUT_MS))]);
+        const exitedGracefully = await Promise.race([
+          dead.then(() => true),
+          new Promise((resolve) => setTimeout(() => resolve(false), RECYCLE_KILL_TIMEOUT_MS)),
+        ]);
+        if (!exitedGracefully) {
+          // child.kill() sends the backend's graceful signal, but a CLI (or a
+          // continuation helper it launched) can ignore it. Spawning after the
+          // old cap without a hard tree kill creates two writers under the same
+          // owner/SID — the cold-respawn duplicate-continuation failure. The
+          // process group is this host's pty scope, so SIGKILL is the smallest
+          // durable predecessor fence and also catches ordinary descendants.
+          killPtyProcessTree(child, 'SIGKILL');
+          await Promise.race([
+            dead,
+            new Promise((resolve) => setTimeout(resolve, RECYCLE_FORCE_KILL_WAIT_MS)),
+          ]);
+        }
         // WI-1980: a RECYCLE is a HARD cold reset — mint a FRESH --session-id so
         // we don't re-declare the prior child's already-on-disk id (which claude
         // rejects → boot-retry storm). env (PAPERCUSP_SID) is untouched, so coord
