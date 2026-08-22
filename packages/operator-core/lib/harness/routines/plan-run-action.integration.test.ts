@@ -134,6 +134,58 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
     expect(runCount[0].n).toBe(1);
   });
 
+  it('rolls back a partial mint so a durable replay can heal the complete run', async () => {
+    const runToken = '1780000000001';
+    await sql.unsafe(`
+      CREATE OR REPLACE FUNCTION harness_shared.fail_plan_run_insert_once()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'injected plan_runs failure';
+      END
+      $$;
+      CREATE TRIGGER fail_plan_run_insert_once
+      BEFORE INSERT ON harness_shared.plan_runs
+      FOR EACH ROW EXECUTE FUNCTION harness_shared.fail_plan_run_insert_once();
+    `);
+    try {
+      await expect(runScheduledPlanFire(sql, {
+        installSlug: HARNESS,
+        workspaceId: WS,
+        templateSlug: TEMPLATE,
+        trigger: 'event',
+        runToken,
+      })).rejects.toThrow(/injected plan_runs failure/);
+    } finally {
+      await sql.unsafe(`
+        DROP TRIGGER IF EXISTS fail_plan_run_insert_once ON harness_shared.plan_runs;
+        DROP FUNCTION IF EXISTS harness_shared.fail_plan_run_insert_once();
+      `);
+    }
+
+    const instanceSlug = `${TEMPLATE}@run-${runToken}`;
+    const partial = await sql<{ plans: number; runs: number; items: number }[]>`
+      SELECT
+        (SELECT count(*)::int FROM harness_shared.harness_plans
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+            AND plan_slug = ${instanceSlug}) AS plans,
+        (SELECT count(*)::int FROM harness_shared.plan_runs
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+            AND instance_plan_slug = ${instanceSlug}) AS runs,
+        (SELECT count(*)::int FROM harness_shared.work_items
+          WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}
+            AND payload -> 'plan_run' ->> 'instancePlanSlug' = ${instanceSlug}) AS items`;
+    expect(partial[0]).toEqual({ plans: 0, runs: 0, items: 0 });
+
+    const replay = await runScheduledPlanFire(sql, {
+      installSlug: HARNESS,
+      workspaceId: WS,
+      templateSlug: TEMPLATE,
+      trigger: 'event',
+      runToken,
+    });
+    expect(replay).toMatchObject({ instanceSlug, replayed: false, minted: 2 });
+  });
+
   // EI-1386 — the overlap policy (D-014) was authored (set-schedule → routines.concurrency)
   // but nothing at fire time ever read it. beforeEach's default materialize omits
   // `concurrency`, which materializePlanSchedule defaults to 'skip'.
